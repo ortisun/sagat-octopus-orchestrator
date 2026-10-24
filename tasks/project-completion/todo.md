@@ -216,13 +216,13 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [x] B1b.2c.1d.0Q6a: Declare effective RunTx output-byte scalar with complete-data compatibility default; port compile/static gates; PG override source preparation now a7dc19b3, actual legacy acceptance/consumer activation remain pending.
 - [x] B1b.2c.1d.0Q5: Verified read-only legacy aggregate overlay/effective scalar/full writer guard, including actual frozen6c44a0e4 old producer and current owner/runtime five-case matrices; sourcece0cb786, evidence/legacy-output-view-20261018. Full process rollout and native drain producers remain separate.
 - [x] B1b.2c.1d.0Q6b: Use the authoritative effective scalar in existing full preflights after the PG override, preserving typed outcomes. Source012d746f; existing result gRPC5/5 each mode, legacy signal-specific acceptance separate.
-- [ ] B1b.2c.1d.0Q7c: Accept effective path/frontier accounting and same-snapshot stop/E behavior. Sourceb0a7ea5e; the three genuine old frontier shapes, equality and selected cancellation/failed-member precedence have bounded acceptance below. Held-lock/CAS and broader accounting controls remain pending.
+- [ ] B1b.2c.1d.0Q7c: Accept effective path/frontier accounting and same-snapshot stop/E behavior. Sourceb0a7ea5e; three genuine old shapes, equality, selected cancellation/failed-member priority and original-success/frontier held-lock CAS have bounded acceptance below. Parent closure still requires scope/evidence reconciliation; no broader activation inferred.
 - [x] B1b.2c.1d.0Q7c.1: Prove genuine old pending NONFINAL Return is drained before checkpoint/admission, with exact old source/bytes and actual original-target compensation through terminal native publication; b8f44488, evidence/legacy-nonfinal-return-acceptance-20261023. Four new positive phases and four preserved output-view phases pass; two separate old guard tests fail as expected. No production activation or broader Q7c closure.
 - [x] B1b.2c.1d.0Q7c.2: Prove genuine old OPEN/free-capacity scope drains before first admission and finalizes FAILED without new obligations;528e10fd, evidence/legacy-free-admission-acceptance-20261023. Five selectors pass12positive processes and four separate expected old failures; current cold verification/source/roles/native finish and owned cleanup are exact. Parent Q7c and canonical tasks remain open.
 - [x] B1b.2c.1d.0Q7c.3: Prove isolated genuine-old Waiting RED and exact public current DrainStarted for the only-live-work frontier;59618184, evidence/legacy-live-frontier-acceptance-20261023. Six selectors pass20positive processes and two separate expected old failures; original lifecycle/source/roles/cleanup preserved. Parent Q7c and canonical tasks remain open.
 - [x] B1b.2c.1d.0Q7c.4: Prove genuine old E==4194304 free-admission via exact current Admitted0, complete native delta and cold verification;52c827c7, evidence/legacy-equal-limit-acceptance-20261023. Six selectors pass16positive processes and four expected old failures; no production change or observed wire key. Parent Q7c/canonical tasks remain open.
 - [x] B1b.2c.1d.0Q7c.5: Prove real old nonretryable failed-member precedence over E>limit and preserve its first custom-code stop through native drain/finish;21294435, evidence/legacy-failed-member-acceptance-20261023. Eight coordinators pass24positive processes and four expected old failures, including prior cancellation regression; no fabricated preexisting FAILED Run. Parent Q7c/canonical tasks remain open.
-- [ ] B1b.2c.1d.0Q7c.6: Prove genuine original-success report versus frontier CAS with held telemetry/run locks, exact native RevisionConflict and fresh stopped-limit drain/real compensation; reviewed plan evidence/legacy-frontier-cas-decision-20261023. No CAS scenario executed yet; no production change or source activation.
+- [x] B1b.2c.1d.0Q7c.6: Prove original-success report/frontier CAS with real telemetry/run locks, exact native RevisionConflict and fresh stopped-limit drain/real compensation;f821de85, evidence/legacy-frontier-cas-acceptance-20261023. Seven selectors pass24positive processes and two expected old Waiting failures; original capability/source/stop/capacity/replay preserved. No production activation or broader parent closure.
 - [ ] B1b.2c.1d.0Q8: Accept guarded native new-reason writer. Source9fd9405f/109908be; four native behavioral cases pass, plus genuine empty/checkpointed guards and stopped-report compensation. ExistingOutputs live-worker discovery passes in ce6560c5; remaining evidence controls/upgrade gates stay open.
 - [x] B1b.2c.1d.0Q7bD: Correct unconditional report-outbox assumption to existing durable collection discovery, reviewed source/constitution/ADR mapping; scoped-output-refusal-discovery.md. Actual current report/discovery/compensation now has focused acceptance; post-ACK process recovery remains separate.
 - [ ] B1b.2c.1d.0Q7b: Complete exceptional report acceptance over the coupled implementation3710a5b7, preserving all current authority, exact receipt/fence/secret checks and one-transaction root/scoped phases; remaining fence/terminal/race/recovery controls are pending.
@@ -662,3 +662,44 @@ reviewsNone. No production change or manufactured RED. Evidence/reproduction:
 `tasks/project-completion/evidence/legacy-failed-member-acceptance-20261023/README.md`.
 OnlyQ7c.5 closes. ParentQ7c/Q8/Q10/quota, CAS/OS-restart/rollout/nesting/canonical014
 stayopen; source/scoped-Finish activation remainsclosed.
+
+### Genuine original-success/frontier CAS — 2026-10-23
+
+Source/evidencef821de85 accepts only localQ7c.6. Original immutable-old ordinary
+19-field handoff/session/lease/request and E4200020 are unchanged. Initial actual
+frontier proves OPEN/no-stop/original live uncancelled member/no failure/Return/
+capacity, exact source/revision105 and existing telemetry. Dedicated owner holderH
+locks telemetry; pinned autocommit API-role observerO proves real committing
+refusalR waiting there while owning RunTx, then dedicated role-correct max1
+schedulerS waiting behindR at EXACT native drain run-lock SQL. Both blocking edges
+and unchanged committed footprint are observed before holderROLLBACK.
+
+Actual report commits success/nooutput plus first FAILED/RDL stop and ACKs revision
+107. Public staleadvance returns exact native Primitive RevisionConflict current107;
+no stale drain/audit/outbox/capacity/rejection effect. Exact member/run/tenant usage
+and canonical receipt remain intact before fresh scheduling. Capture complete
+original stop/event/trace before advancement; compare afterreplay/freshdrain.
+Fresh store/cache publicadvance selects stopped_for_run_data_limit, preserves
+stop, orders stop<completion<drain and retains trace in event/audit/hint. Refusal
+counter+1; primitive rejection+0 stale/+1 fresh. Reused shared genuine compensation
+checks originaltarget/key, held nonfinality, realcompletion, COMPENSATED/FAILED-RDL/
+DONE-COMPENSATED, terminaloriginalACK replay and freshverify. No capability reset,
+full-scheduler fallback, source repair, output/blob/charge or forward work.
+
+Final frozen coordinator wall times, including sequential builds: report-frontier-cas 106.06s, live-work-frontier-red 101.22s, live-work-frontier 105.94s, report-before-drain 103.81s, drain-before-report 105.95s, cancellation-before-report 105.00s, under-limit-increment-before-drain 105.66s.
+Seven selectors:24positive separate1passed/0failed/0ignored processes plus two
+expectedoldWaiting0passed/1failed/0ignored exit101 controls. Actual queried role
+binding, exactmarkers/testcounts/commands/exits/harness/source/archive/restored-
+migration/compiler/lock/fixture/binary/receipt hashes retained. Fourteen final DBs/
+private receipts/source directories removed; original22 harness DBs unchanged.
+All1127native/eight fixture hashes identical. StrictClippy13.49s/fmt4.45s/
+architecture0.31s andshell/source checks pass. C1 missing selectormap caused real
+validationfailure beforeconsumer/cleanuprefusal; exactownedDB creation interval/
+ordinaryfixture content independently proved and removed23→22. C1 proof gaps
+(frontier/capacity/originalstop/trace/servercleanup) fixed; freshC2 reviewsNone.
+First realCAS105.01s fourphases pass; unused-assignment warnings andcollapsible-if
+failure/fix retained. No production fix or artificialRED. Emergency cleanup source
+reviewed, injected runtime emergency acceptance not claimed. Evidence/reproduction:
+`tasks/project-completion/evidence/legacy-frontier-cas-acceptance-20261023/README.md`.
+OnlyQ7c.6 closes. ParentQ7c/Q8/Q10/quota/otherfaults/Applied/rollout/nesting/canonical
+remainopen; source/scoped-Finish activation staysclosed.

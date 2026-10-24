@@ -669,3 +669,44 @@ reviewsNone. No production change or manufactured RED. Evidence/reproduction:
 `tasks/project-completion/evidence/legacy-failed-member-acceptance-20261023/README.md`.
 OnlyQ7c.5 closes. ParentQ7c/Q8/Q10/quota, CAS/OS-restart/rollout/nesting/canonical014
 stayopen; source/scoped-Finish activation remainsclosed.
+
+### Genuine original-success/frontier CAS — 2026-10-23
+
+Source/evidencef821de85 accepts only localQ7c.6. Original immutable-old ordinary
+19-field handoff/session/lease/request and E4200020 are unchanged. Initial actual
+frontier proves OPEN/no-stop/original live uncancelled member/no failure/Return/
+capacity, exact source/revision105 and existing telemetry. Dedicated owner holderH
+locks telemetry; pinned autocommit API-role observerO proves real committing
+refusalR waiting there while owning RunTx, then dedicated role-correct max1
+schedulerS waiting behindR at EXACT native drain run-lock SQL. Both blocking edges
+and unchanged committed footprint are observed before holderROLLBACK.
+
+Actual report commits success/nooutput plus first FAILED/RDL stop and ACKs revision
+107. Public staleadvance returns exact native Primitive RevisionConflict current107;
+no stale drain/audit/outbox/capacity/rejection effect. Exact member/run/tenant usage
+and canonical receipt remain intact before fresh scheduling. Capture complete
+original stop/event/trace before advancement; compare afterreplay/freshdrain.
+Fresh store/cache publicadvance selects stopped_for_run_data_limit, preserves
+stop, orders stop<completion<drain and retains trace in event/audit/hint. Refusal
+counter+1; primitive rejection+0 stale/+1 fresh. Reused shared genuine compensation
+checks originaltarget/key, held nonfinality, realcompletion, COMPENSATED/FAILED-RDL/
+DONE-COMPENSATED, terminaloriginalACK replay and freshverify. No capability reset,
+full-scheduler fallback, source repair, output/blob/charge or forward work.
+
+Final frozen coordinator wall times, including sequential builds: report-frontier-cas 106.06s, live-work-frontier-red 101.22s, live-work-frontier 105.94s, report-before-drain 103.81s, drain-before-report 105.95s, cancellation-before-report 105.00s, under-limit-increment-before-drain 105.66s.
+Seven selectors:24positive separate1passed/0failed/0ignored processes plus two
+expectedoldWaiting0passed/1failed/0ignored exit101 controls. Actual queried role
+binding, exactmarkers/testcounts/commands/exits/harness/source/archive/restored-
+migration/compiler/lock/fixture/binary/receipt hashes retained. Fourteen final DBs/
+private receipts/source directories removed; original22 harness DBs unchanged.
+All1127native/eight fixture hashes identical. StrictClippy13.49s/fmt4.45s/
+architecture0.31s andshell/source checks pass. C1 missing selectormap caused real
+validationfailure beforeconsumer/cleanuprefusal; exactownedDB creation interval/
+ordinaryfixture content independently proved and removed23→22. C1 proof gaps
+(frontier/capacity/originalstop/trace/servercleanup) fixed; freshC2 reviewsNone.
+First realCAS105.01s fourphases pass; unused-assignment warnings andcollapsible-if
+failure/fix retained. No production fix or artificialRED. Emergency cleanup source
+reviewed, injected runtime emergency acceptance not claimed. Evidence/reproduction:
+`tasks/project-completion/evidence/legacy-frontier-cas-acceptance-20261023/README.md`.
+OnlyQ7c.6 closes. ParentQ7c/Q8/Q10/quota/otherfaults/Applied/rollout/nesting/canonical
+remainopen; source/scoped-Finish activation staysclosed.
