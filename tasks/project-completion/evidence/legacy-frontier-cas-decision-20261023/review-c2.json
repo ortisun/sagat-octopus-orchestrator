@@ -1,0 +1,13 @@
+{
+  "review": "None after explicit cleanup ordering",
+  "model": "gpt-6-astra",
+  "reasoning_effort": "xhigh",
+  "read_only_no_tests": true,
+  "clarifications": [
+    "owner connection checks H transaction state; runtimeO observes same-roleR/S",
+    "release pinnedO afteractorverification and beforemainAPIpoolclose; H/Sdedicatedpoolscloseindependently",
+    "90s cooperativebudget isplannednew, actualexistingrunnerphase300s; cleanup mustsurviveexpiry"
+  ],
+  "source_existing_apis": "PoolConfig/BeginSafely/TestApi Options.statement_timeout suffice",
+  "cas_tests_executed": false
+}

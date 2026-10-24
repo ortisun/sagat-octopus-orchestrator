@@ -1,0 +1,11 @@
+{
+  "review": "two material refinements, no feasibility blocker",
+  "model": "gpt-6-astra",
+  "reasoning_effort": "xhigh",
+  "findings": [
+    "pin distinct autocommit observerO before reportR so cleanup cannot reuse R to observe itself",
+    "use BeginSafely and bounded holder rollback with verified session release/termination, not raw timed begin or TestApi drop"
+  ],
+  "corrected_in_c2_plan": true,
+  "new_cas_tests_executed": false
+}

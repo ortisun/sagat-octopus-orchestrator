@@ -1,0 +1,17 @@
+{
+  "production_baseline": "b5030e36",
+  "q10_baseline": "59618184",
+  "q5_failed_member_prerequisite": "21294435",
+  "official_postgresql16_sources_verified_by_root": [
+    "https://www.postgresql.org/docs/16/transaction-iso.html",
+    "https://www.postgresql.org/docs/16/monitoring-stats.html",
+    "https://www.postgresql.org/docs/16/functions-info.html"
+  ],
+  "root_local_reads": [
+    "crates/infra-postgres/src/pool.rs:12-135",
+    "tests/support/api.rs:232-340",
+    "tests/support/mod.rs:233",
+    "Q10 consumer:1897-1960,1997-2034,2206-2475"
+  ],
+  "no_new_runtime_result": true
+}

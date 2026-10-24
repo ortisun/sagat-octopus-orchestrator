@@ -1,0 +1,160 @@
+# Genuine original report versus stale frontier: held telemetry barrier
+
+Design only, local2026-10-23. No new CAS scenario executed. Inspect committed
+productionb5030e36/Q10fixture59618184, old6c44a0e49670cf19660792cd1518d241e6c99b3b.
+Implement only after the separate Q5 failed-member increment is committed. User
+all-open-tasks/split-decisions scope applies. No production/schema/grant/SDK/main
+registration/producer/activation change. Positive current-behavior coverage; do
+not manufacture a production RED if existing CAS works.
+
+## Four existing logical paths
+
+Current Q10consumer tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs;
+scripts/test-legacy-collection-inflight-report-v1.sh;
+tests/fixtures/legacy-collection-inflight-report-v1/README.md;
+tasks/project-completion/todo.md (plan/trace separately). Root solewriter/executor.
+Producer and pending Q5 files untouched. Reuse ordinary19-field handoff/session/
+lease/request and existing public report-before-drain compensation lifecycle.
+Add small ReportDelivery Direct/FrontierCas enum/helper, not a copied lifecycle or
+new byte preset/forwarding store/production test hook. Keep every prior selector.
+
+New exact ignored current test:
+legacy_collection_inflight_report_v1::old_original_success_forces_frontier_cas_then_fresh_stopped_drain.
+CLI --case report-frontier-cas reuses frozen_old_ordinary_success_before_drain_producer.
+Same q10c-ordinary-before-drain-v1 format/SAGAT_Q10C_ORDINARY_PHASE_RECEIPT.
+
+## Why hold telemetry, not an initial report run lock
+
+scoped_reports230/398–399 drops the initial PathTx on output refusal, then
+scoped_output_refusal32 reacquires a full RunTx. Queueing a drain behind the
+initial path report does not force report commit first. Instead block the actual
+refusal's root telemetry upsert while it ALREADY owns the run: refusal86–101 /
+PGexecution4230–4249. No telemetry row is inserted/updated by fixture SQL.
+
+Before concurrency, existing migration/source/authority checks, normal Keeper
+renewal, original live uncancelled c10[0]/reserve, scopeOPEN/no stop/failure/Return/
+free slot and E4200020. Require zero selected-run chain membership. Capture v0,
+complete existing execution footprint and telemetry row head=v0.
+Create separate role-correct max1 PgRunStore scheduler pool, fresh cache and same
+real Keeper placement; capture backendPID S/database/current_user/backend_start.
+Set native S PoolConfig statement_timeout30s/idle_transaction60s. For CAS only,
+existing TestApi Options.statement_timeout=30s configures the actual API pool;
+keep Direct10s default untouched. Keep pools alive and identities verified. All
+participants use owner or sagat_app URLs derived from the exact owned fixture.
+No permissions are widened. Before launching reportR, acquire/pin observerO from
+API pool; validate role/database/PID/backend_start, O!=S and retain O through
+cleanup. Each observation executes on O in autocommit, never a new pool checkout.
+Later require O!=H/R/S. Thus cleanup never reuses R to observe its own active
+transaction. API pool has8 connections; O is independent of reporting R.
+Initialize Metrics::global before race; capture relevant existing counters.
+
+## Two observed blocking edges and actual typed CAS
+
+Create dedicated owner holder pool max1 with PoolConfig statement_timeout30s,
+idle_transaction60s/acquire3s. Capture verifiedH/database/user/backend_start before
+BEGIN; use existing BeginSafely under bounded acquisition (never timed raw begin),
+recheck same identity in returned tx, then bounded keyed telemetry FOR UPDATE.
+No lock is held before identity checks. O/H/S distinct before report launch. Send unchanged retained original complete_step via a
+cloned current authenticated client, retaining its JoinHandle. No new worker,
+registration, poll, key, renewal, rebuilt report or capability edit.
+Observe exactly one actual API-role report backend R active/Lock at native
+telemetry upsert and blocked byH. Use fresh autocommit observer queries through
+API-role pool (same role sessions visible); match db/user/queryshape/PID/edges,
+not generic lock counts or whole session dumps. Report actor remains held there.
+Committed full footprint must still equal prestate; uncommitted stop is invisible.
+
+Launch actual public scheduler.advance_collection using dedicated actorS. Its
+read-only repeatable-read frontier sees old v0/no stop/E; native start-drain then
+blocks on run owned byR. Require S active/Lock at EXACT native drain SQL selecting
+namespace_id,workflow_version_id,run_version,status,stop_reason,stop_code,paused
+FROM runs ... FOR UPDATE (primitives648–684). A full-run fallback waits at a
+different query and is a failure. Recheck both H→R and R→S blocking edges together,
+known actors/databases/roles/queryshapes and unchanged committed footprint.
+
+Only after both edges, ROLLBACK holder. Join actual report and scheduler under
+bounded deadlines. Report must deliver accepted original SUCCEEDED/CANCELLING ACK.
+Scheduler MUST return CollectionAdvanceError::Primitive(PrimitiveStoreError::
+RevisionConflict{current:v1}); no retry/fallback, Waiting/Skipped/arbitrary error.
+v1>v0 and v1 equals independently persisted head, receipt revision and ACK revision.
+Native drain checks revision before evidence/mutation (primitives2494/687–696);
+public advance propagates it (passes1830–1837), while tick would hide it asSkipped.
+
+## Exact post-report and fresh decision
+
+Before ANY fresh scheduling, existing actual refusal/receipt/footprint helpers
+prove one FAILED/RDL stop before one original genuine completed success/nooutput,
+original attempt/generation/worker actor/reported hash, original uncancelled lease
+settledSUCCEEDED, scopeOPEN/memberADMITTED/heldslot, original source/authority/
+reservations/retained outputs. One exact report receipt/refusal audit/originaltrace;
+no candidate payload/blob/charge/forward release/Return/drain/compensation, no
+outbox delta. Run/journal/telemetry head=v1. No effect belongs to rejected CAS.
+Existing helper names may be narrowly generalized; preserve prior assertions.
+
+Fresh store/cache public advance MUST DrainStarted. It selects
+stopped_for_run_data_limit before E, preserving original stop/seq. Exactly one
+new drain event/hint and stopped-for-limit audit; zero existing_outputs/aggregate
+audit from the stale command. Exact order stop→completion→drain and original
+trace/identity/source. Metric refusal+1 on report, primitiveRDL+0 for stale CAS,
+then+1 for fresh drain; no invented CAS metric.
+
+Rejoin accepted report-first body: original canonical replay; one actual
+line.release targeting original instance/key; held compensation cannot finalize;
+real completion, COMPENSATED/FAILED-RDL/DONE-COMPENSATED, terminal original ACK
+replay and fresh_verify. Apply existing stronger pending and terminal replay
+oracles currently under-limit-only to CAS too; no weakening original presets.
+E4200020, original source/payload/authority witnesses stay exact throughout.
+
+## Bounded error cleanup is part of proof
+
+Use5s per blocking-edge observation,3s bounded proof queries and bounded actor
+joins inside existing300s phase;90s cooperative scenario budget is NEW and must not cancel cleanup. Actor statement30s
+exceeds the combined happy-path observation budget; idle timeout60s bounds held
+tx. Use timeout+yield_now barrier pattern, no sleeps. PinnedO autocommit stats
+queries avoid both snapshot caching and self-observation.
+Never assert/panic while holder is retained: collect proof Result, rollback holder
+on every path, then surface errors only AFTER actor cleanup. Bound holder
+rollback5s. If rollback fails/times out, acceptance fails: close holder pool and
+use independent bounded owner cleanup connection to terminate ONLY verified
+holder identity (PID+database+user+backend_start all match). Verify original H
+session absent, or idle with no transaction after successful rollback, before
+joining blocked actors. H status is ALWAYS read through an independent OWNER
+cleanup connection (runtimeO cannot see owner transaction fields). Same-identity predicate prevents PID-reuse termination.
+Do not infer lock release from drop, timeout or TestApi::drop alone. Existing witness
+helpers that panic must run in an owned joined task or equivalent capture so an
+unexpected read failure still releases holder. Keep all actor handles; aborting
+a client alone does not prove the server stopped. After rollback, bounded-join
+both actors, verify their server transactions are closed, then close dedicated
+H/S pools. PinnedO observes only same-role R/S; release O after those checks and
+BEFORE any main API-pool close. On the happy path main API stays open for the
+accepted lifecycle. TestApi drop never replaces these verified close/join steps. If cleanup requires cancelling a known actor backend, use only identified
+owned PID after barrier release, record failure, and never count it as CAS success.
+On failure before reportPID identification, release holder first and ensure
+bounded API/server/pool closure and verified actor server-state cleanup; retain
+safe evidence, no loose actors. TestApi::drop only aborts private server handles,
+so it is not the cleanup proof: actor joins/pool closures plus pinnedO backend
+checks are required. Any emergency actor cancellation/termination uses the same
+verified identity predicate and makes the test fail; it never proves CAS success.
+No sql state/status/lease/receipt/output edits, sleeps, alternate success or retry
+on mutated handoff. Real timeout/query/error/cleanup failure stops acceptance.
+
+## Sources and root gates
+
+PG16 READ COMMITTED may lock the row version committed by a concurrent updater;
+separate read-only frontier retains its own earlier snapshot. Root verified
+[isolation](https://www.postgresql.org/docs/16/transaction-iso.html).
+Use fresh stats reads, observing only sessions of the participant role; root
+verified [visibility/snapshots](https://www.postgresql.org/docs/16/monitoring-stats.html).
+Blocking PIDs can include earlier incompatible waiters, so query and both edges
+are required; root verified [blocking semantics](https://www.postgresql.org/docs/16/functions-info.html).
+
+Review barrier/typed-conflict proof first, lifecycle/selector wiring second, final
+evidence third. Actual owner/runtime four native phases after assertions and fresh
+internal reviews; all prior six Q10 selectors (including existing live old-only
+RED) rerun after shared lifecycle changes. Seven selectors total24positive/native
+processes plus2expected old Waiting failures. Record exact counts/roles/commands/
+exits/times/source/archive/restoredmigration/compiler/lock/fixture/binary/receipt
+hashes; frozen inputs; owned credential/DB cleanup. Sourceproducer unchanged.
+Repository-owned Compose65118/private outside target, df/sequential heavy builds.
+Root strictClippy/fmt/architecture/Bash/overlay checks; missing tools not invented.
+Only local bounded original-success/frontier CAS may close. ParentQ7c/Q8/Q10,
+other report/Applied/secret/blob/OS-restart/rollout/nesting/canonical gates remain.
