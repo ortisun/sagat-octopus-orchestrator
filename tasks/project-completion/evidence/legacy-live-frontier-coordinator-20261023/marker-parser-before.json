@@ -1,0 +1,6 @@
+{
+  "source": "actual owner RED log",
+  "expected_exact_line_count": 1,
+  "observed_exact_line_count": 0,
+  "cause": "Rust test harness prefixes the first stdout line"
+}

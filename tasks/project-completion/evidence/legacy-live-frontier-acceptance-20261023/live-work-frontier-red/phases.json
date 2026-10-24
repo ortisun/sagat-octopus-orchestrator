@@ -1,0 +1,24 @@
+[
+  {
+    "case": "live-work-frontier-red",
+    "role": "owner",
+    "phase": "producer",
+    "native_exit_code": 101,
+    "passed": 0,
+    "failed": 1,
+    "ignored": 0,
+    "test_harness_seconds": 6.01,
+    "artifact_run": "/tmp/sagat-completion-20261023/live-final/artifacts-live-work-frontier-red/run.txugxM"
+  },
+  {
+    "case": "live-work-frontier-red",
+    "role": "runtime",
+    "phase": "producer",
+    "native_exit_code": 101,
+    "passed": 0,
+    "failed": 1,
+    "ignored": 0,
+    "test_harness_seconds": 5.78,
+    "artifact_run": "/tmp/sagat-completion-20261023/live-final/artifacts-live-work-frontier-red/run.txugxM"
+  }
+]

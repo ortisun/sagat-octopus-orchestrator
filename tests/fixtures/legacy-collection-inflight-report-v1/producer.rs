@@ -439,15 +439,20 @@ fn publish_receipt(path: &std::path::Path, receipt: &Value) {
 
 #[tokio::test]
 async fn frozen_old_ordinary_success_before_drain_producer() {
-    produce(FixturePreset::Ordinary).await;
+    produce(FixturePreset::Ordinary, false).await;
 }
 
 #[tokio::test]
 async fn frozen_old_ordinary_under_limit_increment_producer() {
-    produce(FixturePreset::UnderLimitIncrement).await;
+    produce(FixturePreset::UnderLimitIncrement, false).await;
 }
 
-async fn produce(preset: FixturePreset) {
+#[tokio::test]
+async fn frozen_old_live_work_frontier_guard_red() {
+    produce(FixturePreset::Ordinary, true).await;
+}
+
+async fn produce(preset: FixturePreset, live_frontier_red: bool) {
     assert_eq!(env!("SAGAT_Q10C_SOURCE_COMMIT"), OLD_COMMIT);
     assert!(std::env::var_os("SAGAT_TEST_DATABASE_URL").is_some());
     let receipt_path = std::env::var_os("SAGAT_Q10C_ORDINARY_PHASE_RECEIPT")
@@ -499,7 +504,9 @@ async fn produce(preset: FixturePreset) {
         )
         .await;
     assert_eq!(quota.0, 200, "{}", quota.1);
-    let workflow = platform.publish(preset.workflow_name(), &document(preset)).await;
+    let workflow = platform
+        .publish(preset.workflow_name(), &document(preset))
+        .await;
     let run: RunId = platform
         .start(&workflow, &json!({"lines": [1]}))
         .await
@@ -565,23 +572,22 @@ async fn produce(preset: FixturePreset) {
     let completion_json = preset.completion_json();
     assert!(completion_json.len() < 262_144);
     let expected_totals = preset.expected_totals();
-    assert!(expected_totals.0 + i64::try_from(completion_json.len()).expect("candidate length")
-        < 4 * 1024 * 1024);
+    assert!(
+        expected_totals.0 + i64::try_from(completion_json.len()).expect("candidate length")
+            < 4 * 1024 * 1024
+    );
     if matches!(preset, FixturePreset::UnderLimitIncrement) {
         assert_eq!(completion_json.len(), 250_000);
         assert_eq!(
-            expected_totals.0
-                + i64::try_from(completion_json.len()).expect("candidate length"),
+            expected_totals.0 + i64::try_from(completion_json.len()).expect("candidate length"),
             2_250_000
         );
         assert_eq!(
-            expected_totals.2
-                + i64::try_from(completion_json.len()).expect("candidate length"),
+            expected_totals.2 + i64::try_from(completion_json.len()).expect("candidate length"),
             4_250_020
         );
         assert!(
-            expected_totals.2
-                + i64::try_from(completion_json.len()).expect("candidate length")
+            expected_totals.2 + i64::try_from(completion_json.len()).expect("candidate length")
                 > 4 * 1024 * 1024
         );
     }
@@ -596,6 +602,98 @@ async fn produce(preset: FixturePreset) {
         preset,
     )
     .await;
+
+    if live_frontier_red {
+        use sagat_application::scope_frontier::ScopeFrontierStore as _;
+        use sagat_domain::execution::{CollectionPhase, ExecutionInstanceId};
+        use sagat_domain::workflow::NodeId;
+        use sagat_scheduler::CollectionAdvance;
+        let inspection_role: String = sqlx::query_scalar("SELECT current_user::text")
+            .fetch_one(&platform.api.db.pool)
+            .await
+            .expect("old inspection database role");
+        assert!(
+            producer_api_role
+                == if crate::support::as_runtime_role() {
+                    crate::support::RUNTIME_ROLE
+                } else {
+                    inspection_role.as_str()
+                },
+            "actual selected old API and shared execution-store role"
+        );
+        println!(
+            "old_live_work_frontier_role api={} store={} database={}",
+            producer_api_role, producer_api_role, platform.api.db.name
+        );
+        let owner = ExecutionInstanceId::root(NodeId::parse("c10").expect("live scope owner"));
+        let frontier = match platform
+            .api
+            .executions
+            .collection_frontier(platform.tenant, run, &owner)
+            .await
+        {
+            Ok(Some(value)) => value,
+            _ => panic!("actual immutable-old live frontier"),
+        };
+        assert!(
+            frontier.phase == CollectionPhase::Open
+                && frontier.run.stop_reason.is_none()
+                && frontier.item_count == 1
+                && frontier.next_admission == 1
+                && frontier.completed == 0
+                && frontier.max_concurrency == 1
+                && frontier.active.len() == 1,
+            "old only-live-work frontier has no stop or admission capacity"
+        );
+        let stored:(bool,i64,bool,Uuid)=sqlx::query_as("SELECT r.stop_code IS NULL,(SELECT count(*) FROM iteration_checkpoints k WHERE k.tenant_id=s.tenant_id AND k.run_id=s.run_id AND k.scope_id=s.scope_id),(SELECT w.status='LEASED' AND NOT w.cancel_requested FROM steps w WHERE w.tenant_id=r.tenant_id AND w.run_id=r.id AND w.step_id=$3),s.scope_id FROM runs r JOIN iteration_scopes s ON s.tenant_id=r.tenant_id AND s.run_id=r.id AND s.owner_node='c10' AND cardinality(s.owner_path_nodes)=0 WHERE r.tenant_id=$1 AND r.id=$2")
+            .bind(platform.tenant.as_uuid()).bind(run.as_uuid()).bind(Uuid::parse_str(&final_lease.step_id).expect("original lease step id"))
+            .fetch_one(&platform.api.db.pool).await.expect("old uncancelled original lease and no stop/checkpoint");
+        assert!(
+            stored.0 && stored.1 == 0 && stored.2 && stored.3 == frontier.scope_id.as_uuid(),
+            "old exact live scope, uncancelled lease, absent stop code and checkpoints"
+        );
+        let member = &frontier.active[0];
+        assert!(
+            member.entry.node().as_str() == "reserve"
+                && member.entry.path().segments().len() == 1
+                && member.entry.path().segments()[0].scope_node().as_str() == "c10"
+                && member.entry.path().segments()[0].iteration_index() == 0
+                && member.steps.len() == 1
+                && member
+                    .steps
+                    .get(&member.entry)
+                    .is_some_and(|step| step.status()
+                        == sagat_domain::execution::StepStatus::Leased
+                        && !step.cancel_requested()),
+            "frontier contains exactly the original leased uncancelled reserve"
+        );
+        assert!(
+            member.index == 0
+                && member.first_failure().is_none()
+                && member.pending_return(&frontier.run.definition).is_none(),
+            "old live member has neither failure nor pending Return"
+        );
+        drop(frontier);
+        let before = projection_witness(&platform, run).await;
+        let source = source_witness(&platform, run).await;
+        let result = scheduler
+            .advance_collection(platform.tenant, run, &owner)
+            .await
+            .expect("normal immutable-old live advance");
+        assert!(
+            projection_witness(&platform, run).await == before
+                && source_witness(&platform, run).await == source,
+            "old Waiting must leave execution and immutable source unchanged"
+        );
+        let waiting = matches!(result, CollectionAdvance::Waiting);
+        println!("\nlive_frontier_red_database={}", platform.api.db.name);
+        println!("observed_legacy_live_work_waiting={waiting}");
+        assert!(
+            matches!(result, CollectionAdvance::DrainStarted),
+            "old live-work guard RED: expected DrainStarted instead of Waiting"
+        );
+        return;
+    }
 
     let receipt = json!({
         "format": preset.format(),

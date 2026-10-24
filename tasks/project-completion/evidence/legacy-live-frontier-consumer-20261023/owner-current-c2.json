@@ -1,0 +1,18 @@
+{
+  "command": [
+    "gtimeout",
+    "--signal=TERM",
+    "--kill-after=5s",
+    "300s",
+    "/Users/marcelo/.cache/sagat-project-completion-20261023-target/debug/deps/integration_workflow_primitives-e4da7cb26c8c0369",
+    "--ignored",
+    "--exact",
+    "legacy_collection_inflight_report_v1::old_live_work_frontier_drains_before_waiting",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 0,
+  "seconds": 3.38,
+  "started_utc": "2026-10-24T01:24:58.218237+00:00",
+  "log": "owner-current-c2.txt"
+}

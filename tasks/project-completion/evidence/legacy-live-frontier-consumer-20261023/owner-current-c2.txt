@@ -1,0 +1,7 @@
+
+running 1 test
+test legacy_collection_inflight_report_v1::old_live_work_frontier_drains_before_waiting ... q10c ordinary-drain-before-report API roles: producer=postgres, consumer=postgres
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 547 filtered out; finished in 1.82s
+

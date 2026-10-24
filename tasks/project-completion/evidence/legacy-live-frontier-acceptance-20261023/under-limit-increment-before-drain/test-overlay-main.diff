@@ -1,0 +1,10 @@
+--- /tmp/sagat-completion-20261023/live-final/artifacts-under-limit-increment-before-drain/run.5NLvna/artifacts/old-main.original.rs	2026-10-23 22:39:08
++++ /tmp/sagat-completion-20261023/live-final/artifacts-under-limit-increment-before-drain/run.5NLvna/old-source/tests/integration/workflow-primitives/main.rs	2026-10-23 22:39:08
+@@ -26,6 +26,7 @@
+ mod chains_http;
+ mod collection_10k;
+ mod collection_budgets;
++mod legacy_collection_inflight_report_producer_v1;
+ mod collection_pipeline;
+ mod collection_restore;
+ mod collection_sources;

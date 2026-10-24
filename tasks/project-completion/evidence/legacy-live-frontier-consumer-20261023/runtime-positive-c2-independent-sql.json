@@ -1,0 +1,43 @@
+{
+  "L": 2100000,
+  "V": 2100020,
+  "head": 118,
+  "work": [
+    {
+      "node": "reserve",
+      "cancel": false,
+      "status": "SUCCEEDED",
+      "no_output": true
+    },
+    {
+      "node": "reserve~c",
+      "cancel": false,
+      "status": "SUCCEEDED",
+      "no_output": true
+    }
+  ],
+  "scope": "FAILED",
+  "member": {
+    "slot": false,
+    "state": "DRAINED",
+    "remaining": 0
+  },
+  "status": "COMPENSATED",
+  "database": "t_01a16b7ffbe2773fb9af00b9521fa436",
+  "progress": [
+    1,
+    1,
+    1,
+    0
+  ],
+  "reserved": 0,
+  "stop_code": "RUN_DATA_LIMIT",
+  "rdl_audits": 1,
+  "checkpoints": 0,
+  "stop_reason": "FAILED",
+  "certificates": 0,
+  "journal_head": 118,
+  "quota_deltas": 0,
+  "capacity_rows": 0,
+  "telemetry_head": 118
+}

@@ -1,0 +1,17 @@
+{
+  "command": [
+    "gtimeout",
+    "--signal=TERM",
+    "--kill-after=5s",
+    "300s",
+    "/tmp/sagat-completion-20261023/live-producer-gate/old-c2-binary",
+    "--exact",
+    "legacy_collection_inflight_report_producer_v1::frozen_old_live_work_frontier_guard_red",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 101,
+  "seconds": 6.19,
+  "started_utc": "2026-10-24T01:21:39.384290+00:00",
+  "log": "runtime-red-c2.txt"
+}

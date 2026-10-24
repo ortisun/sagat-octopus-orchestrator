@@ -1,0 +1,46 @@
+[
+  {
+    "case": "drain-before-report",
+    "role": "owner",
+    "phase": "producer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 4.99,
+    "artifact_run": "/tmp/sagat-completion-20261023/live-final/artifacts-drain-before-report/run.M2EKB3"
+  },
+  {
+    "case": "drain-before-report",
+    "role": "owner",
+    "phase": "consumer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 1.59,
+    "artifact_run": "/tmp/sagat-completion-20261023/live-final/artifacts-drain-before-report/run.M2EKB3"
+  },
+  {
+    "case": "drain-before-report",
+    "role": "runtime",
+    "phase": "producer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 4.98,
+    "artifact_run": "/tmp/sagat-completion-20261023/live-final/artifacts-drain-before-report/run.M2EKB3"
+  },
+  {
+    "case": "drain-before-report",
+    "role": "runtime",
+    "phase": "consumer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 1.59,
+    "artifact_run": "/tmp/sagat-completion-20261023/live-final/artifacts-drain-before-report/run.M2EKB3"
+  }
+]

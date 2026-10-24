@@ -1,0 +1,10 @@
+from pathlib import Path
+import os,json,subprocess
+root=Path('/tmp/sagat-completion-20261023/live-producer-gate');out=Path('/tmp/sagat-completion-20261023/live-current');admin=os.environ['SAGAT_TEST_DATABASE_URL'];q=Path('/tmp/sagat-completion-20261023/live-inspect.sql').read_text()
+for role in ['owner','runtime']:
+ for kind in ['red','positive']:
+  name=f'{role}-{kind}-c2';db=json.loads((root/name/'safe-phase.json').read_text())['database'];v=json.loads(subprocess.check_output(['psql',admin.rsplit('/',1)[0]+'/'+db,'-XAtq','-v','ON_ERROR_STOP=1','-c',q],env=dict(os.environ,PGCONNECT_TIMEOUT='5',PGOPTIONS='-c statement_timeout=5000'),timeout=12))
+  assert v['L']==2100000 and v['V']==2100020 and v['head']==v['journal_head']==v['telemetry_head'] and v['checkpoints']==v['capacity_rows']==v['certificates']==v['quota_deltas']==0
+  if kind=='red':assert v['status']=='RUNNING' and v['scope']=='OPEN' and v['stop_reason'] is None and v['stop_code'] is None and v['progress']==[1,1,0,1] and v['member']['state']=='ADMITTED' and v['member']['slot'] and v['work']==[{'node':'reserve','status':'LEASED','no_output':True,'cancel':False}] and v['rdl_audits']==0
+  else:assert v['status']=='COMPENSATED' and v['scope']=='FAILED' and v['stop_reason']=='FAILED' and v['stop_code']=='RUN_DATA_LIMIT' and v['progress']==[1,1,1,0] and v['member']=={'state':'DRAINED','slot':False,'remaining':0} and v['reserved']==0 and len(v['work'])==2 and all(w['status']=='SUCCEEDED' and w['no_output'] for w in v['work']) and v['rdl_audits']==1
+  (out/(name+'-independent-sql.json')).write_text(json.dumps(v,indent=2)+'\n');print(name,'independent state verified')

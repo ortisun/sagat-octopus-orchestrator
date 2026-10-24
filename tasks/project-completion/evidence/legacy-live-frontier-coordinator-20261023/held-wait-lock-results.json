@@ -1,0 +1,16 @@
+[
+  {
+    "helper": "phase",
+    "expected": "after",
+    "deadlock_observed": false,
+    "exit_code": 143,
+    "handler_returned_under_held_wait_lock": true
+  },
+  {
+    "helper": "admin",
+    "expected": "after",
+    "deadlock_observed": false,
+    "exit_code": 143,
+    "handler_returned_under_held_wait_lock": true
+  }
+]

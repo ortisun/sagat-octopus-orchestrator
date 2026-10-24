@@ -1,0 +1,6 @@
+
+running 1 test
+test legacy_collection_inflight_report_producer_v1::frozen_old_ordinary_success_before_drain_producer ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 503 filtered out; finished in 4.96s
+

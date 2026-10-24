@@ -1,0 +1,46 @@
+[
+  {
+    "case": "under-limit-increment-before-drain",
+    "role": "owner",
+    "phase": "producer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 4.94,
+    "artifact_run": "/tmp/sagat-completion-20261023/live-final/artifacts-under-limit-increment-before-drain/run.5NLvna"
+  },
+  {
+    "case": "under-limit-increment-before-drain",
+    "role": "owner",
+    "phase": "consumer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 2.1,
+    "artifact_run": "/tmp/sagat-completion-20261023/live-final/artifacts-under-limit-increment-before-drain/run.5NLvna"
+  },
+  {
+    "case": "under-limit-increment-before-drain",
+    "role": "runtime",
+    "phase": "producer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 4.97,
+    "artifact_run": "/tmp/sagat-completion-20261023/live-final/artifacts-under-limit-increment-before-drain/run.5NLvna"
+  },
+  {
+    "case": "under-limit-increment-before-drain",
+    "role": "runtime",
+    "phase": "consumer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 2.09,
+    "artifact_run": "/tmp/sagat-completion-20261023/live-final/artifacts-under-limit-increment-before-drain/run.5NLvna"
+  }
+]

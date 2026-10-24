@@ -2722,6 +2722,42 @@ async fn old_under_limit_increment_before_drain_preserves_the_report_and_compens
 #[tokio::test]
 #[ignore = "requires scripts/test-legacy-collection-inflight-report-v1.sh --case drain-before-report"]
 async fn old_ordinary_success_after_drain_preserves_the_report_and_compensation() {
+    run_drain_before_report_case(false).await;
+}
+
+#[tokio::test]
+#[ignore = "requires scripts/test-legacy-collection-inflight-report-v1.sh --case live-work-frontier"]
+async fn old_live_work_frontier_drains_before_waiting() {
+    run_drain_before_report_case(true).await;
+}
+
+async fn live_frontier_inventory(pool: &PgPool, receipt: &Receipt) -> Value {
+    let value:Value=sqlx::query_scalar(r#"SELECT jsonb_build_object(
+      'scope_id',s.scope_id,
+      'progress',jsonb_build_array(s.next_admission_index,s.admitted_count,s.completed_count,s.active_count),
+      'members',(SELECT jsonb_agg(to_jsonb(m) ORDER BY m.iteration_index) FROM collection_iterations m WHERE m.tenant_id=s.tenant_id AND m.run_id=s.run_id AND m.scope_id=s.scope_id),
+      'identities',(SELECT jsonb_agg(jsonb_build_array(w.step_id,w.node,w.instance_path_nodes,w.instance_path_indices,w.kind) ORDER BY w.step_id) FROM steps w WHERE w.tenant_id=s.tenant_id AND w.run_id=s.run_id),
+      'target_step_count',(SELECT count(*) FROM steps w WHERE w.tenant_id=s.tenant_id AND w.run_id=s.run_id AND w.instance_path_nodes[1]='c10'),
+      'checkpoints',(SELECT count(*) FROM iteration_checkpoints c WHERE c.tenant_id=s.tenant_id AND c.run_id=s.run_id AND c.scope_id=s.scope_id),
+      'done',(SELECT count(*) FROM steps w WHERE w.tenant_id=s.tenant_id AND w.run_id=s.run_id AND w.node='done'))
+      FROM iteration_scopes s WHERE s.tenant_id=$1 AND s.run_id=$2 AND s.owner_node='c10' AND cardinality(s.owner_path_nodes)=0"#)
+        .bind(receipt.tenant.as_uuid()).bind(receipt.run.as_uuid()).fetch_one(pool).await.expect("original live-only frontier inventory");
+    assert!(
+        value["progress"] == json!([1, 1, 0, 1])
+            && value["target_step_count"] == 1
+            && value["checkpoints"] == 0
+            && value["done"] == 0
+            && value["members"].as_array().is_some_and(|m| m.len() == 1
+                && m[0]["iteration_index"] == 0
+                && m[0]["lifecycle"] == "ADMITTED"
+                && m[0]["slot_held"] == true
+                && m[0]["entry_instance_id"] == receipt.lease.step_id),
+        "one exact held original member, no Return/checkpoint/End or free slot"
+    );
+    value
+}
+
+async fn run_drain_before_report_case(explicit_live_frontier: bool) {
     let receipt_path = std::env::var_os("SAGAT_Q10C_ORDINARY_PHASE_RECEIPT")
         .map(std::path::PathBuf::from)
         .expect("phased runner receipt path");
@@ -2859,12 +2895,86 @@ async fn old_ordinary_success_after_drain_preserves_the_report_and_compensation(
     .with_placement(placement);
 
     let reservations_before = reservation_usage_fingerprint(&platform.api.db.pool, &receipt).await;
-    let drain_report = scheduler.tick().await;
-    assert_eq!(drain_report.failed, 0, "normal drain discovery failed");
-    assert_eq!(
-        drain_report.collections_advanced, 1,
-        "normal discovery did not select the legacy c10 scope"
-    );
+    let frontier_inventory = if explicit_live_frontier {
+        use sagat_application::scope_frontier::ScopeFrontierStore as _;
+        use sagat_domain::execution::CollectionPhase;
+        let owner = ExecutionInstanceId::root(NodeId::parse("c10").expect("live scope owner"));
+        let frontier = match platform
+            .api
+            .executions
+            .collection_frontier(receipt.tenant, receipt.run, &owner)
+            .await
+        {
+            Ok(Some(value)) => value,
+            _ => panic!("actual current live frontier"),
+        };
+        assert!(
+            frontier.phase == CollectionPhase::Open
+                && frontier.run.stop_reason.is_none()
+                && frontier.run.stop_code.is_none()
+                && frontier.run.effective_output_bytes == 4_200_020
+                && frontier.item_count == 1
+                && frontier.next_admission == 1
+                && frontier.completed == 0
+                && frontier.max_concurrency == 1
+                && frontier.active.len() == 1,
+            "genuine over-budget only-live-work frontier with no free admission slot"
+        );
+        let inventory = live_frontier_inventory(&platform.api.db.pool, &receipt).await;
+        assert!(
+            inventory["scope_id"] == frontier.scope_id.as_uuid().to_string(),
+            "actual original frontier scope identity"
+        );
+        let stored_head: i64 =
+            sqlx::query_scalar("SELECT run_version FROM runs WHERE tenant_id=$1 AND id=$2")
+                .bind(receipt.tenant.as_uuid())
+                .bind(receipt.run.as_uuid())
+                .fetch_one(&platform.api.db.pool)
+                .await
+                .expect("original live frontier revision");
+        assert!(
+            frontier.run.version == u64::try_from(stored_head).expect("positive run revision"),
+            "frontier revision matches the untouched original Run"
+        );
+        let member = &frontier.active[0];
+        assert!(
+            member.steps.len() == 1
+                && member
+                    .steps
+                    .get(&member.entry)
+                    .is_some_and(|step| step.status()
+                        == sagat_domain::execution::StepStatus::Leased
+                        && !step.cancel_requested()),
+            "current frontier contains the original leased uncancelled reserve"
+        );
+        assert!(
+            member.index == 0
+                && member.first_failure().is_none()
+                && member.pending_return(&frontier.run.definition).is_none()
+                && member.entry.node().as_str() == "reserve"
+                && member.entry.path().segments().len() == 1
+                && member.entry.path().segments()[0].scope_node().as_str() == "c10"
+                && member.entry.path().segments()[0].iteration_index() == 0,
+            "live original member has no failure or pending Return"
+        );
+        drop(frontier);
+        let result = scheduler
+            .advance_collection(receipt.tenant, receipt.run, &owner)
+            .await;
+        assert!(
+            matches!(result, Ok(CollectionAdvance::DrainStarted)),
+            "first current public advance starts ExistingOutputs drain before Waiting"
+        );
+        Some(inventory)
+    } else {
+        let drain_report = scheduler.tick().await;
+        assert_eq!(drain_report.failed, 0, "normal drain discovery failed");
+        assert_eq!(
+            drain_report.collections_advanced, 1,
+            "normal discovery did not select the legacy c10 scope"
+        );
+        None
+    };
     let frozen_stop_drain = assert_first_drain(
         &platform.api.db.pool,
         &receipt,
@@ -2873,6 +2983,12 @@ async fn old_ordinary_success_after_drain_preserves_the_report_and_compensation(
         &output_fingerprint,
     )
     .await;
+    if let Some(inventory) = frontier_inventory {
+        assert!(
+            live_frontier_inventory(&platform.api.db.pool, &receipt).await == inventory,
+            "explicit drain preserves admission/member/identity inventories without checkpoint or successor"
+        );
+    }
     assert_live_target(&platform.api.db.pool, &receipt, true).await;
     assert!(
         identity_witness(&platform.api.db.pool, &receipt).await == authority_before,

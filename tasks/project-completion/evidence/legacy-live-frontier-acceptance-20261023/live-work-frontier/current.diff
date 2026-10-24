@@ -1,0 +1,846 @@
+diff --git a/scripts/test-legacy-collection-inflight-report-v1.sh b/scripts/test-legacy-collection-inflight-report-v1.sh
+index c249bc0b..eca2c2c1 100755
+--- a/scripts/test-legacy-collection-inflight-report-v1.sh
++++ b/scripts/test-legacy-collection-inflight-report-v1.sh
+@@ -7,11 +7,13 @@ readonly old_commit="6c44a0e49670cf19660792cd1518d241e6c99b3b"
+ case_name="report-before-drain"
+ if (( $# != 0 )); then
+   if (( $# != 2 )) || [[ "$1" != "--case" ]]; then
+-    echo "usage: $0 [--case report-before-drain|drain-before-report|cancellation-before-report|under-limit-increment-before-drain]" >&2
++    echo "usage: $0 [--case report-before-drain|drain-before-report|cancellation-before-report|under-limit-increment-before-drain|live-work-frontier|live-work-frontier-red]" >&2
+     exit 2
+   fi
+   case_name="$2"
+ fi
++phase_seconds=1200
++expected_red_marker=""
+ case "${case_name}" in
+   report-before-drain)
+     old_test="legacy_collection_inflight_report_producer_v1::frozen_old_ordinary_success_before_drain_producer"
+@@ -37,12 +39,63 @@ case "${case_name}" in
+     artifact_namespace="sagat-q10c-ordinary-under-limit-increment-v1"
+     log_label="ordinary-under-limit-increment-before-drain"
+     ;;
++  live-work-frontier|live-work-frontier-red)
++    old_test="legacy_collection_inflight_report_producer_v1::frozen_old_ordinary_success_before_drain_producer"
++    current_test="legacy_collection_inflight_report_v1::old_live_work_frontier_drains_before_waiting"
++    artifact_namespace="sagat-q10c-${case_name}"
++    log_label="${case_name}"
++    phase_seconds=300
++    if [[ "${case_name}" == live-work-frontier-red ]]; then
++      old_test="legacy_collection_inflight_report_producer_v1::frozen_old_live_work_frontier_guard_red"
++      expected_red_marker='observed_legacy_live_work_waiting=true'
++    fi
++    ;;
+   *)
+     echo "unknown case: ${case_name}" >&2
+     exit 2
+     ;;
+ esac
+-readonly case_name old_test current_test artifact_namespace log_label
++readonly case_name old_test current_test artifact_namespace log_label phase_seconds expected_red_marker
++# Bound the entire new fixture, including builds and cleanup, in a separate process group.
++if [[ "${case_name}" == live-work-frontier || "${case_name}" == live-work-frontier-red ]] && [[ "${SAGAT_Q10C_SUPERVISED:-}" != 1 ]]; then
++  exec python3 - "$0" "$@" <<'SUPERVISOR'
++import os,select,signal,subprocess,sys,time
++child=None
++pending=None
++def interrupted(signum,_frame):
++    global pending
++    pending=signum
++def stop(signum):
++    # The leader is still unreaped: retain ownership of its PGID through KILL.
++    try:os.killpg(child.pid,signal.SIGTERM)
++    except ProcessLookupError:pass
++    deadline=time.monotonic()+5
++    while time.monotonic()<deadline:
++        select.select([],[],[],max(0,deadline-time.monotonic()))
++    try:os.killpg(child.pid,signal.SIGKILL)
++    except ProcessLookupError:pass
++    child.wait()
++    raise SystemExit(128+signum)
++signal.signal(signal.SIGTERM,interrupted);signal.signal(signal.SIGINT,interrupted)
++env=dict(os.environ,SAGAT_Q10C_SUPERVISED='1')
++child=subprocess.Popen(['bash',*sys.argv[1:]],env=env,start_new_session=True)
++deadline=time.monotonic()+2400
++while True:
++    if pending is not None:stop(pending)
++    if time.monotonic()>=deadline:
++        print('whole fixture exceeded 2400s; inspect retained owned artifacts',file=sys.stderr)
++        stop(signal.SIGTERM)
++    # WNOWAIT observes completion without releasing the owned group leader.
++    finished=os.waitid(os.P_PID,child.pid,os.WEXITED|os.WNOHANG|os.WNOWAIT)
++    if finished is not None:
++        if pending is not None:continue
++        result=child.wait()
++        break
++    select.select([],[],[],min(0.1,max(0,deadline-time.monotonic())))
++raise SystemExit(result)
++SUPERVISOR
++fi
++
+ repo_root="$(git rev-parse --show-toplevel)"
+ producer_overlay="${repo_root}/tests/fixtures/legacy-collection-inflight-report-v1/producer.rs"
+ consumer_source="${repo_root}/tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs"
+@@ -89,6 +142,10 @@ active_before=""
+ producer_started_marker=""
+ active_phase_pid=""
+ phase_launching=0
++cleanup_receipt_database=""
++cleanup_receipt_sha=""
++receipt_established=0
++receipt_cache_failed=0
+ 
+ sha256() {
+   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}';
+@@ -111,16 +168,58 @@ for path in sorted(p for p in root.rglob('*') if p.is_file()):
+ PY
+ }
+ 
++bounded_psql() {
++  # The DSN stays in the environment and is never printed into evidence.
++  python3 - "$@" <<'PSQL'
++import os,select,signal,subprocess,sys,time
++child=None
++pending=None
++stopping=False
++shared=os.environ.get('SAGAT_Q10C_SUPERVISED')=='1'
++def terminate_child():
++    global stopping
++    if child is None or stopping:return
++    stopping=True
++    try:
++        if shared:child.terminate()
++        else:os.killpg(child.pid,signal.SIGTERM)
++    except ProcessLookupError:pass
++    try:child.wait(timeout=1)
++    except subprocess.TimeoutExpired:
++        try:
++            if shared:child.kill()
++            else:os.killpg(child.pid,signal.SIGKILL)
++        except ProcessLookupError:pass
++        child.wait()
++def interrupted(signum,_frame):
++    global pending
++    pending=signum
++signal.signal(signal.SIGTERM,interrupted);signal.signal(signal.SIGINT,interrupted)
++env=dict(os.environ,PGCONNECT_TIMEOUT='5',PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=4000')
++child=subprocess.Popen(['psql',os.environ['SAGAT_TEST_DATABASE_URL'],'-X','-v','ON_ERROR_STOP=1',*sys.argv[1:]],env=env,start_new_session=not shared)
++deadline=time.monotonic()+12
++while True:
++    if pending is not None:
++        terminate_child();raise SystemExit(128+pending)
++    if time.monotonic()>=deadline:
++        terminate_child();raise SystemExit('bounded PostgreSQL administration timed out')
++    finished=os.waitid(os.P_PID,child.pid,os.WEXITED|os.WNOHANG|os.WNOWAIT)
++    if finished is not None:
++        if pending is not None:continue
++        result=child.wait();break
++    select.select([],[],[],min(0.1,max(0,deadline-time.monotonic())))
++raise SystemExit(result)
++PSQL
++}
++
+ list_test_databases() {
+-  psql "${SAGAT_TEST_DATABASE_URL}" -XAtq -v ON_ERROR_STOP=1 \
+-    -c "SELECT datname FROM pg_database WHERE datname ~ '^t_[0-9a-f]{32}$' ORDER BY datname"
++  bounded_psql -Atq -c "SELECT datname FROM pg_database WHERE datname ~ '^t_[0-9a-f]{32}$' ORDER BY datname"
+ }
+ 
+ drop_database() {
+   local name="$1"
+   [[ "${name}" =~ ^t_[0-9a-f]{32}$ ]] || { echo "refusing unsafe database name" >&2; return 1; }
+-  psql "${SAGAT_TEST_DATABASE_URL}" -Xq -v ON_ERROR_STOP=1 \
+-    -c "DROP DATABASE IF EXISTS \"${name}\" WITH (FORCE)" >/dev/null
++  bounded_psql -q -c "DROP DATABASE IF EXISTS \"${name}\" WITH (FORCE)" >/dev/null
+ }
+ 
+ terminate_active_phase() {
+@@ -141,30 +240,89 @@ cleanup_new_databases() {
+   [[ -n "${active_before}" && -f "${active_before}" ]] || return 0
+   [[ -n "${producer_started_marker}" && -f "${producer_started_marker}" ]] || return 0
+   local after="${run_root}/databases.after.cleanup"
+-  list_test_databases > "${after}" || return 0
+-  while IFS= read -r database; do
+-    [[ -n "${database}" ]] && drop_database "${database}" || true
+-  done < <(comm -13 "${active_before}" "${after}")
++  list_test_databases > "${after}" || return 1
++  validate_database_snapshot "${after}" || return 1
++  local additions="${run_root}/databases.cleanup-owned"
++  comm -13 "${active_before}" "${after}" > "${additions}"
++  local count
++  count="$(wc -l < "${additions}" | tr -d ' ')"
++  if [[ "${count}" != 1 ]]; then
++    echo "cleanup cannot prove one phase-owned database; retained for inspection" >&2
++    return 1
++  fi
++  local database
++  IFS= read -r database < "${additions}"
++  [[ "${receipt_cache_failed}" == 0 ]] || return 1
++  if [[ -n "${receipt:-}" && -e "${receipt}" ]]; then
++    cache_private_receipt || return 1
++  fi
++  local receipt_database="${cleanup_receipt_database}"
++  if [[ "${receipt_established}" == 1 ]]; then
++    [[ -n "${receipt_database}" && "${cleanup_receipt_sha}" =~ ^[0-9a-f]{64}$ ]] || {
++      echo "established receipt has no valid cached identity; refusing fallback deletion" >&2; return 1;
++    }
++  fi
++  if [[ -n "${receipt_database}" ]]; then
++    if [[ "${receipt_database}" != "${database}" ]]; then
++      echo "receipt disagrees with sole new database; refusing deletion" >&2
++      return 1
++    fi
++  fi
++  drop_database "${database}" || return 1
+   active_before=""
+   producer_started_marker=""
+ }
+ 
++cache_private_receipt() {
++  receipt_established=1
++  receipt_cache_failed=1
++  local checked_database checked_sha
++  checked_database="$(receipt_database_name "${receipt}")" || return 1
++  checked_sha="$(sha256 "${receipt}")" || return 1
++  [[ "${checked_sha}" =~ ^[0-9a-f]{64}$ ]] || return 1
++  printf '%s-receipt-sha256 %s\n%s-database %s\n' \
++    "${role}" "${checked_sha}" "${role}" "${checked_database}" >> "${manifest}" || return 1
++  cleanup_receipt_database="${checked_database}"
++  cleanup_receipt_sha="${checked_sha}"
++  receipt_cache_failed=0
++}
++
++remove_private_receipts() {
++  python3 - "${run_root}" <<'PRIVATE'
++from pathlib import Path
++import sys
++root=Path(sys.argv[1])
++for role in ('owner','runtime'):
++    for name in ('receipt.json','receipt.json.tmp','receipt.tmp'):
++        (root/role/name).unlink(missing_ok=True)
++    # publish_receipt creates only this exact randomized private temporary form.
++    for temporary in (root/role).glob('.receipt.*.tmp'):
++        import re
++        if re.fullmatch(r'\.receipt\.[0-9a-f]{32}\.tmp',temporary.name):temporary.unlink(missing_ok=True)
++PRIVATE
++}
++
+ cleanup() {
+   local status=$?
+   trap - INT TERM
+   terminate_active_phase
+-  cleanup_new_databases
+-  python3 - "${old_source}" "${run_root}" <<'PY'
++  local receipt_valid=1
++  [[ "${receipt_cache_failed}" == 0 ]] || receipt_valid=0
++  if [[ -n "${receipt:-}" && -e "${receipt}" ]]; then
++    cache_private_receipt || receipt_valid=0
++  fi
++  # Remove all exact owned credential paths before database administration or
++  # archive removal: the outer termination deadline can interrupt either.
++  remove_private_receipts
++  if [[ "${receipt_valid}" != 1 ]] || ! cleanup_new_databases; then
++    echo "owned database cleanup failed; inspect retained artifacts" >&2; status=1
++  fi
++  python3 - "${old_source}" <<'SOURCE'
+ from pathlib import Path
+-import shutil, sys
+-source, run = map(Path, sys.argv[1:])
+-if source.exists():
+-    shutil.rmtree(source)
+-for receipt in run.glob('*/receipt.json*'):
+-    receipt.unlink(missing_ok=True)
+-for receipt in run.glob('*/.receipt.*.tmp'):
+-    receipt.unlink(missing_ok=True)
+-PY
++import shutil,sys
++source=Path(sys.argv[1])
++if source.exists():shutil.rmtree(source)
++SOURCE
+   exit "${status}"
+ }
+ 
+@@ -187,6 +345,8 @@ run_bounded() {
+ import os
+ from pathlib import Path
+ import signal
++import select
++import time
+ import subprocess
+ import sys
+ 
+@@ -194,32 +354,35 @@ timeout = int(sys.argv[1])
+ marker = sys.argv[2]
+ child = None
+ pending_signal = None
++stopping = False
++# These native fixtures use embedded Tokio servers and external PostgreSQL;
++# they spawn no OS children. The outer supervisor owns their collective group.
++shared = os.environ.get('SAGAT_Q10C_SUPERVISED') == '1'
+ 
+ def terminate_child():
+-    global child
+-    if child is None or child.poll() is not None:
+-        return
+-    os.killpg(child.pid, signal.SIGTERM)
++    global stopping
++    if child is None or stopping:return
++    stopping=True
+     try:
+-        child.wait(timeout=5)
++        if shared:child.terminate()
++        else:os.killpg(child.pid,signal.SIGTERM)
++    except ProcessLookupError:pass
++    try:child.wait(timeout=1 if shared else 5)
+     except subprocess.TimeoutExpired:
+-        os.killpg(child.pid, signal.SIGKILL)
++        try:
++            if shared:child.kill()
++            else:os.killpg(child.pid,signal.SIGKILL)
++        except ProcessLookupError:pass
+         child.wait()
+ 
+ def interrupted(signum, _frame):
+     global pending_signal
+-    if child is None:
+-        pending_signal = signum
+-        return
+-    terminate_child()
+-    raise SystemExit(128 + signum)
++    # Never reap inside a signal handler: Popen may hold its waitpid lock.
++    pending_signal = signum
+ 
+ signal.signal(signal.SIGINT, interrupted)
+ signal.signal(signal.SIGTERM, interrupted)
+-child = subprocess.Popen(sys.argv[3:], start_new_session=True)
+-if pending_signal is not None:
+-    terminate_child()
+-    raise SystemExit(128 + pending_signal)
++child = subprocess.Popen(sys.argv[3:], start_new_session=not shared)
+ try:
+     if marker != '-':
+         temporary = Path(marker + '.tmp')
+@@ -228,11 +391,17 @@ try:
+ except BaseException:
+     terminate_child()
+     raise
+-try:
+-    result = child.wait(timeout=timeout)
+-except subprocess.TimeoutExpired:
+-    terminate_child()
+-    raise SystemExit(f"timed out after {timeout}s")
++deadline=time.monotonic()+timeout
++while True:
++    if pending_signal is not None:
++        terminate_child();raise SystemExit(128+pending_signal)
++    if time.monotonic()>=deadline:
++        terminate_child();raise SystemExit(f'timed out after {timeout}s')
++    finished=os.waitid(os.P_PID,child.pid,os.WEXITED|os.WNOHANG|os.WNOWAIT)
++    if finished is not None:
++        if pending_signal is not None:continue
++        result=child.wait();break
++    select.select([],[],[],min(0.1,max(0,deadline-time.monotonic())))
+ raise SystemExit(result)
+ PY
+   active_phase_pid=$!
+@@ -258,6 +427,24 @@ if any(re.fullmatch(r't_[0-9a-f]{32}', line) is None for line in lines):
+ PY
+ }
+ 
++receipt_database_name() {
++  python3 - "$1" "${case_name}" "${role}" <<'RECEIPT'
++from pathlib import Path
++import json,re,stat,sys
++p=Path(sys.argv[1])
++if stat.S_IMODE(p.stat().st_mode)!=0o600:raise SystemExit('receipt is not private')
++v=json.loads(p.read_text())
++fields='format source_commit database_name producer_api_role tenant_id other_tenant_id namespace_id namespace_slug worker_subject tenant_alias worker_id session_token run_id selected_owner scheduler_owner task_lease_b64 completion_request_b64 producer_projection_witness_sha256 closed_source_witness_sha256'.split()
++formats={'report-before-drain':'q10c-ordinary-before-drain-v1','drain-before-report':'q10c-ordinary-before-drain-v1','cancellation-before-report':'q10c-ordinary-before-drain-v1','under-limit-increment-before-drain':'q10c-ordinary-under-limit-increment-v1','live-work-frontier':'q10c-ordinary-before-drain-v1','live-work-frontier-red':'q10c-ordinary-before-drain-v1'}
++if sys.argv[2] not in formats or set(v)!=set(fields) or v['format']!=formats[sys.argv[2]] or v['source_commit']!='6c44a0e49670cf19660792cd1518d241e6c99b3b' or v['selected_owner']!='c10':raise SystemExit('invalid private in-flight envelope')
++role=v['producer_api_role']
++if not isinstance(role,str) or not role or (sys.argv[3]=='runtime' and role!='sagat_app') or (sys.argv[3]=='owner' and role=='sagat_app'):raise SystemExit('in-flight receipt role mismatch')
++name=v['database_name']
++if not isinstance(name,str) or re.fullmatch(r't_[0-9a-f]{32}',name) is None:raise SystemExit('unsafe receipt database')
++print(name)
++RECEIPT
++}
++
+ find_test_binary() {
+   python3 - "$1" "$2" <<'PY'
+ import json, sys
+@@ -381,6 +568,8 @@ echo "old-registered-test-count 1" >> "${manifest}"
+ echo "current-registered-test-count 1" >> "${manifest}"
+ 
+ for role in owner runtime; do
++  receipt_established=0
++  receipt_cache_failed=0
+   role_root="${run_root}/${role}"
+   mkdir -m 0700 "${role_root}"
+   receipt="${role_root}/receipt.json"
+@@ -400,30 +589,44 @@ for role in owner runtime; do
+   export SAGAT_Q10C_ORDINARY_PHASE_RECEIPT="${receipt}"
+ 
+   producer_log="${logs}/${log_label}-${role}-producer.log"
+-  if ! run_bounded 1200 "${producer_started_marker}" \
+-    "${old_binary}" --exact "${old_test}" --nocapture > "${producer_log}" 2>&1; then
+-    cat "${producer_log}" >&2
+-    exit 1
+-  fi
++  producer_status=0
++  run_bounded "${phase_seconds}" "${producer_started_marker}" \
++    "${old_binary}" --exact "${old_test}" --nocapture > "${producer_log}" 2>&1 || producer_status=$?
+   [[ -f "${producer_started_marker}" ]] || {
+     echo "old producer was not launched; cleanup remains disarmed" >&2; exit 1;
+   }
+-  grep -Fq "test result: ok. 1 passed; 0 failed;" "${producer_log}" || {
+-    echo "old producer did not execute exactly one passing test" >&2; exit 1;
+-  }
++  if [[ -n "${expected_red_marker}" ]]; then
++    if [[ "${producer_status}" != 101 ]] || ! grep -Fq "${expected_red_marker}" "${producer_log}" || ! grep -Fq 'test result: FAILED. 0 passed; 1 failed; 0 ignored;' "${producer_log}"; then
++      cat "${producer_log}" >&2; echo "not the expected old Waiting RED" >&2; exit 1
++    fi
++    cleanup_receipt_database="$(python3 - "${producer_log}" <<'RED_DATABASE'
++from pathlib import Path
++import re,sys
++matches=re.findall(r'^live_frontier_red_database=(t_[0-9a-f]{32})$',Path(sys.argv[1]).read_text(),re.M)
++if len(matches)!=1:raise SystemExit('one safe RED database marker required')
++print(matches[0])
++RED_DATABASE
++)"
++    [[ ! -e "${receipt}" ]] || { echo "old RED unexpectedly published a private receipt" >&2; exit 1; }
++    remove_private_receipts
++    echo "${role}-expected-red-exit 101" >> "${manifest}"
++    echo "${role}-producer-reaped yes" >> "${manifest}"
++    echo "${role}-red-database ${cleanup_receipt_database}" >> "${manifest}"
++    cleanup_new_databases
++    cleanup_receipt_database=""
++    continue
++  fi
++  if [[ "${producer_status}" != 0 ]] || ! grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "${producer_log}"; then
++    cat "${producer_log}" >&2; exit 1
++  fi
++  receipt_established=1
+   [[ -s "${receipt}" ]] || { echo "old producer wrote no receipt" >&2; exit 1; }
+   [[ "$(file_mode "${role_root}")" == 700 ]] || { echo "receipt directory is not mode 0700" >&2; exit 1; }
+   [[ "$(file_mode "${receipt}")" == 600 ]] || { echo "receipt is not mode 0600" >&2; exit 1; }
+   echo "${role}-producer-exit-status 0" >> "${manifest}"
+   echo "${role}-producer-reaped yes" >> "${manifest}"
+ 
+-  database_name="$(python3 - "${receipt}" <<'PY'
+-import json, re, sys
+-value = json.load(open(sys.argv[1], encoding='utf-8'))['database_name']
+-if not re.fullmatch(r't_[0-9a-f]{32}', value): raise SystemExit('unsafe receipt database')
+-print(value)
+-PY
+-)"
++  database_name="$(receipt_database_name "${receipt}")"
+   after_producer="${role_root}/databases.after-producer"
+   list_test_databases > "${after_producer}"
+   validate_database_snapshot "${after_producer}"
+@@ -435,7 +638,7 @@ PY
+   }
+ 
+   consumer_log="${logs}/${log_label}-${role}-consumer.log"
+-  if ! run_bounded 1200 - \
++  if ! run_bounded "${phase_seconds}" - \
+     "${current_binary}" --ignored --exact "${current_test}" --nocapture \
+     > "${consumer_log}" 2>&1; then
+     cat "${consumer_log}" >&2
+@@ -445,17 +648,18 @@ PY
+     echo "current consumer did not execute exactly one passing test" >&2; exit 1;
+   }
+   echo "${role}-consumer-exit-status 0" >> "${manifest}"
+-  echo "${role}-receipt-sha256 $(sha256 "${receipt}")" >> "${manifest}"
+-  echo "${role}-database ${database_name}" >> "${manifest}"
+-  drop_database "${database_name}"
+-  python3 - "${receipt}" "${producer_started_marker}" <<'PY'
++  cache_private_receipt
++  remove_private_receipts
++  completed_marker="${producer_started_marker}"
++  cleanup_new_databases
++  python3 - "${completed_marker}" <<'PY'
+ from pathlib import Path
+ import sys
+-for name in sys.argv[1:]:
+-    Path(name).unlink(missing_ok=True)
++Path(sys.argv[1]).unlink(missing_ok=True)
+ PY
+-  active_before=""
+-  producer_started_marker=""
++  cleanup_receipt_database=""
++  cleanup_receipt_sha=""
++
+ done
+ unset SAGAT_TEST_AS_RUNTIME_ROLE SAGAT_Q10C_ORDINARY_PHASE_RECEIPT || true
+ 
+diff --git a/tests/fixtures/legacy-collection-inflight-report-v1/README.md b/tests/fixtures/legacy-collection-inflight-report-v1/README.md
+index 34128acc..7286b793 100644
+--- a/tests/fixtures/legacy-collection-inflight-report-v1/README.md
++++ b/tests/fixtures/legacy-collection-inflight-report-v1/README.md
+@@ -109,3 +109,43 @@ once behavior, Applied reconciliation, a post ACK process restart,
+ output-dependent compensation, secret or blob policy, or the remaining
+ authority, race, and fault matrix. A passing run does not close the full Q10c
+ row or the open feature 014 release tasks.
++
++## Explicit only-live-work frontier
++
++`--case live-work-frontier-red` adds a separate immutable-old control. Immediately
++after genuine ordinary setup (L2100000,V2100020,E4200020), it proves the original
++uncancelled leased c10[0]/reserve is the only active member: no stop, failure,
++pending Return, checkpoint or free admission slot. Old public advance_collection
++actually returns Waiting without changing execution/source witnesses. The fixed
++marker observed_legacy_live_work_waiting=true precedes an intentionally failing
++DrainStarted assertion. Exactly one failure/exit101 is required per role; a setup
++error, timeout or different result is not that RED. No private receipt is published
++and no current consumer runs for either RED database.
++
++`--case live-work-frontier` uses the existing ordinary producer and unchanged
++19-field q10c-ordinary-before-drain-v1 handoff. The new current wrapper verifies the
++same actual frontier and makes public advance_collection its first Run execution
++operation, requiring exactly DrainStarted. Admission/member/execution inventories
++must remain unchanged apart from cancellation of the original live lease. It then
++reuses the accepted original report, replay, real compensation and verification
++lifecycle. The existing discovery-tick drain-before-report test remains separate.
++
++Original selectors/formats/role meanings stay intact. New phases have a300-second
++process deadline and overall2400-second supervisor plus5-second termination grace.
++Cleanup uses a fresh strict single-new-database proof, checked safe receipt/RED
++identity and bounded administration; ambiguous or failed identity/hash caching
++refuses DROP. Private receipt and .receipt.UUID.tmp files are removed before DB
++administration, after active phases are terminated/reaped. A published/failed-cache
++receipt cannot be treated as a pre-receipt failure. Actual source/restoration/
++executable/role/count/cleanup results belong in project-completion evidence; these
++commands alone are not passing results.
++
++```sh
++scripts/test-legacy-collection-inflight-report-v1.sh --case live-work-frontier-red
++scripts/test-legacy-collection-inflight-report-v1.sh --case live-work-frontier
++```
++
++Use only the repository-declared healthchecked Compose fixture and an exclusive
++private CARGO_TARGET_DIR outside checkouts. This adds §11.4(c) observation only;
++CAS, equality/precedence, OS restart, rollout, provider undo and nesting remain
++separate. Source certification/scoped Finish production activation stays closed.
+diff --git a/tests/fixtures/legacy-collection-inflight-report-v1/producer.rs b/tests/fixtures/legacy-collection-inflight-report-v1/producer.rs
+index 5f83c1d1..2cc03621 100644
+--- a/tests/fixtures/legacy-collection-inflight-report-v1/producer.rs
++++ b/tests/fixtures/legacy-collection-inflight-report-v1/producer.rs
+@@ -439,15 +439,20 @@ fn publish_receipt(path: &std::path::Path, receipt: &Value) {
+ 
+ #[tokio::test]
+ async fn frozen_old_ordinary_success_before_drain_producer() {
+-    produce(FixturePreset::Ordinary).await;
++    produce(FixturePreset::Ordinary, false).await;
+ }
+ 
+ #[tokio::test]
+ async fn frozen_old_ordinary_under_limit_increment_producer() {
+-    produce(FixturePreset::UnderLimitIncrement).await;
++    produce(FixturePreset::UnderLimitIncrement, false).await;
+ }
+ 
+-async fn produce(preset: FixturePreset) {
++#[tokio::test]
++async fn frozen_old_live_work_frontier_guard_red() {
++    produce(FixturePreset::Ordinary, true).await;
++}
++
++async fn produce(preset: FixturePreset, live_frontier_red: bool) {
+     assert_eq!(env!("SAGAT_Q10C_SOURCE_COMMIT"), OLD_COMMIT);
+     assert!(std::env::var_os("SAGAT_TEST_DATABASE_URL").is_some());
+     let receipt_path = std::env::var_os("SAGAT_Q10C_ORDINARY_PHASE_RECEIPT")
+@@ -499,7 +504,9 @@ async fn produce(preset: FixturePreset) {
+         )
+         .await;
+     assert_eq!(quota.0, 200, "{}", quota.1);
+-    let workflow = platform.publish(preset.workflow_name(), &document(preset)).await;
++    let workflow = platform
++        .publish(preset.workflow_name(), &document(preset))
++        .await;
+     let run: RunId = platform
+         .start(&workflow, &json!({"lines": [1]}))
+         .await
+@@ -565,23 +572,22 @@ async fn produce(preset: FixturePreset) {
+     let completion_json = preset.completion_json();
+     assert!(completion_json.len() < 262_144);
+     let expected_totals = preset.expected_totals();
+-    assert!(expected_totals.0 + i64::try_from(completion_json.len()).expect("candidate length")
+-        < 4 * 1024 * 1024);
++    assert!(
++        expected_totals.0 + i64::try_from(completion_json.len()).expect("candidate length")
++            < 4 * 1024 * 1024
++    );
+     if matches!(preset, FixturePreset::UnderLimitIncrement) {
+         assert_eq!(completion_json.len(), 250_000);
+         assert_eq!(
+-            expected_totals.0
+-                + i64::try_from(completion_json.len()).expect("candidate length"),
++            expected_totals.0 + i64::try_from(completion_json.len()).expect("candidate length"),
+             2_250_000
+         );
+         assert_eq!(
+-            expected_totals.2
+-                + i64::try_from(completion_json.len()).expect("candidate length"),
++            expected_totals.2 + i64::try_from(completion_json.len()).expect("candidate length"),
+             4_250_020
+         );
+         assert!(
+-            expected_totals.2
+-                + i64::try_from(completion_json.len()).expect("candidate length")
++            expected_totals.2 + i64::try_from(completion_json.len()).expect("candidate length")
+                 > 4 * 1024 * 1024
+         );
+     }
+@@ -597,6 +603,98 @@ async fn produce(preset: FixturePreset) {
+     )
+     .await;
+ 
++    if live_frontier_red {
++        use sagat_application::scope_frontier::ScopeFrontierStore as _;
++        use sagat_domain::execution::{CollectionPhase, ExecutionInstanceId};
++        use sagat_domain::workflow::NodeId;
++        use sagat_scheduler::CollectionAdvance;
++        let inspection_role: String = sqlx::query_scalar("SELECT current_user::text")
++            .fetch_one(&platform.api.db.pool)
++            .await
++            .expect("old inspection database role");
++        assert!(
++            producer_api_role
++                == if crate::support::as_runtime_role() {
++                    crate::support::RUNTIME_ROLE
++                } else {
++                    inspection_role.as_str()
++                },
++            "actual selected old API and shared execution-store role"
++        );
++        println!(
++            "old_live_work_frontier_role api={} store={} database={}",
++            producer_api_role, producer_api_role, platform.api.db.name
++        );
++        let owner = ExecutionInstanceId::root(NodeId::parse("c10").expect("live scope owner"));
++        let frontier = match platform
++            .api
++            .executions
++            .collection_frontier(platform.tenant, run, &owner)
++            .await
++        {
++            Ok(Some(value)) => value,
++            _ => panic!("actual immutable-old live frontier"),
++        };
++        assert!(
++            frontier.phase == CollectionPhase::Open
++                && frontier.run.stop_reason.is_none()
++                && frontier.item_count == 1
++                && frontier.next_admission == 1
++                && frontier.completed == 0
++                && frontier.max_concurrency == 1
++                && frontier.active.len() == 1,
++            "old only-live-work frontier has no stop or admission capacity"
++        );
++        let stored:(bool,i64,bool,Uuid)=sqlx::query_as("SELECT r.stop_code IS NULL,(SELECT count(*) FROM iteration_checkpoints k WHERE k.tenant_id=s.tenant_id AND k.run_id=s.run_id AND k.scope_id=s.scope_id),(SELECT w.status='LEASED' AND NOT w.cancel_requested FROM steps w WHERE w.tenant_id=r.tenant_id AND w.run_id=r.id AND w.step_id=$3),s.scope_id FROM runs r JOIN iteration_scopes s ON s.tenant_id=r.tenant_id AND s.run_id=r.id AND s.owner_node='c10' AND cardinality(s.owner_path_nodes)=0 WHERE r.tenant_id=$1 AND r.id=$2")
++            .bind(platform.tenant.as_uuid()).bind(run.as_uuid()).bind(Uuid::parse_str(&final_lease.step_id).expect("original lease step id"))
++            .fetch_one(&platform.api.db.pool).await.expect("old uncancelled original lease and no stop/checkpoint");
++        assert!(
++            stored.0 && stored.1 == 0 && stored.2 && stored.3 == frontier.scope_id.as_uuid(),
++            "old exact live scope, uncancelled lease, absent stop code and checkpoints"
++        );
++        let member = &frontier.active[0];
++        assert!(
++            member.entry.node().as_str() == "reserve"
++                && member.entry.path().segments().len() == 1
++                && member.entry.path().segments()[0].scope_node().as_str() == "c10"
++                && member.entry.path().segments()[0].iteration_index() == 0
++                && member.steps.len() == 1
++                && member
++                    .steps
++                    .get(&member.entry)
++                    .is_some_and(|step| step.status()
++                        == sagat_domain::execution::StepStatus::Leased
++                        && !step.cancel_requested()),
++            "frontier contains exactly the original leased uncancelled reserve"
++        );
++        assert!(
++            member.index == 0
++                && member.first_failure().is_none()
++                && member.pending_return(&frontier.run.definition).is_none(),
++            "old live member has neither failure nor pending Return"
++        );
++        drop(frontier);
++        let before = projection_witness(&platform, run).await;
++        let source = source_witness(&platform, run).await;
++        let result = scheduler
++            .advance_collection(platform.tenant, run, &owner)
++            .await
++            .expect("normal immutable-old live advance");
++        assert!(
++            projection_witness(&platform, run).await == before
++                && source_witness(&platform, run).await == source,
++            "old Waiting must leave execution and immutable source unchanged"
++        );
++        let waiting = matches!(result, CollectionAdvance::Waiting);
++        println!("\nlive_frontier_red_database={}", platform.api.db.name);
++        println!("observed_legacy_live_work_waiting={waiting}");
++        assert!(
++            matches!(result, CollectionAdvance::DrainStarted),
++            "old live-work guard RED: expected DrainStarted instead of Waiting"
++        );
++        return;
++    }
++
+     let receipt = json!({
+         "format": preset.format(),
+         "source_commit": OLD_COMMIT,
+diff --git a/tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs b/tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs
+index 82936f36..f71e89eb 100644
+--- a/tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs
++++ b/tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs
+@@ -2722,6 +2722,42 @@ async fn old_under_limit_increment_before_drain_preserves_the_report_and_compens
+ #[tokio::test]
+ #[ignore = "requires scripts/test-legacy-collection-inflight-report-v1.sh --case drain-before-report"]
+ async fn old_ordinary_success_after_drain_preserves_the_report_and_compensation() {
++    run_drain_before_report_case(false).await;
++}
++
++#[tokio::test]
++#[ignore = "requires scripts/test-legacy-collection-inflight-report-v1.sh --case live-work-frontier"]
++async fn old_live_work_frontier_drains_before_waiting() {
++    run_drain_before_report_case(true).await;
++}
++
++async fn live_frontier_inventory(pool: &PgPool, receipt: &Receipt) -> Value {
++    let value:Value=sqlx::query_scalar(r#"SELECT jsonb_build_object(
++      'scope_id',s.scope_id,
++      'progress',jsonb_build_array(s.next_admission_index,s.admitted_count,s.completed_count,s.active_count),
++      'members',(SELECT jsonb_agg(to_jsonb(m) ORDER BY m.iteration_index) FROM collection_iterations m WHERE m.tenant_id=s.tenant_id AND m.run_id=s.run_id AND m.scope_id=s.scope_id),
++      'identities',(SELECT jsonb_agg(jsonb_build_array(w.step_id,w.node,w.instance_path_nodes,w.instance_path_indices,w.kind) ORDER BY w.step_id) FROM steps w WHERE w.tenant_id=s.tenant_id AND w.run_id=s.run_id),
++      'target_step_count',(SELECT count(*) FROM steps w WHERE w.tenant_id=s.tenant_id AND w.run_id=s.run_id AND w.instance_path_nodes[1]='c10'),
++      'checkpoints',(SELECT count(*) FROM iteration_checkpoints c WHERE c.tenant_id=s.tenant_id AND c.run_id=s.run_id AND c.scope_id=s.scope_id),
++      'done',(SELECT count(*) FROM steps w WHERE w.tenant_id=s.tenant_id AND w.run_id=s.run_id AND w.node='done'))
++      FROM iteration_scopes s WHERE s.tenant_id=$1 AND s.run_id=$2 AND s.owner_node='c10' AND cardinality(s.owner_path_nodes)=0"#)
++        .bind(receipt.tenant.as_uuid()).bind(receipt.run.as_uuid()).fetch_one(pool).await.expect("original live-only frontier inventory");
++    assert!(
++        value["progress"] == json!([1, 1, 0, 1])
++            && value["target_step_count"] == 1
++            && value["checkpoints"] == 0
++            && value["done"] == 0
++            && value["members"].as_array().is_some_and(|m| m.len() == 1
++                && m[0]["iteration_index"] == 0
++                && m[0]["lifecycle"] == "ADMITTED"
++                && m[0]["slot_held"] == true
++                && m[0]["entry_instance_id"] == receipt.lease.step_id),
++        "one exact held original member, no Return/checkpoint/End or free slot"
++    );
++    value
++}
++
++async fn run_drain_before_report_case(explicit_live_frontier: bool) {
+     let receipt_path = std::env::var_os("SAGAT_Q10C_ORDINARY_PHASE_RECEIPT")
+         .map(std::path::PathBuf::from)
+         .expect("phased runner receipt path");
+@@ -2859,12 +2895,86 @@ async fn old_ordinary_success_after_drain_preserves_the_report_and_compensation(
+     .with_placement(placement);
+ 
+     let reservations_before = reservation_usage_fingerprint(&platform.api.db.pool, &receipt).await;
+-    let drain_report = scheduler.tick().await;
+-    assert_eq!(drain_report.failed, 0, "normal drain discovery failed");
+-    assert_eq!(
+-        drain_report.collections_advanced, 1,
+-        "normal discovery did not select the legacy c10 scope"
+-    );
++    let frontier_inventory = if explicit_live_frontier {
++        use sagat_application::scope_frontier::ScopeFrontierStore as _;
++        use sagat_domain::execution::CollectionPhase;
++        let owner = ExecutionInstanceId::root(NodeId::parse("c10").expect("live scope owner"));
++        let frontier = match platform
++            .api
++            .executions
++            .collection_frontier(receipt.tenant, receipt.run, &owner)
++            .await
++        {
++            Ok(Some(value)) => value,
++            _ => panic!("actual current live frontier"),
++        };
++        assert!(
++            frontier.phase == CollectionPhase::Open
++                && frontier.run.stop_reason.is_none()
++                && frontier.run.stop_code.is_none()
++                && frontier.run.effective_output_bytes == 4_200_020
++                && frontier.item_count == 1
++                && frontier.next_admission == 1
++                && frontier.completed == 0
++                && frontier.max_concurrency == 1
++                && frontier.active.len() == 1,
++            "genuine over-budget only-live-work frontier with no free admission slot"
++        );
++        let inventory = live_frontier_inventory(&platform.api.db.pool, &receipt).await;
++        assert!(
++            inventory["scope_id"] == frontier.scope_id.as_uuid().to_string(),
++            "actual original frontier scope identity"
++        );
++        let stored_head: i64 =
++            sqlx::query_scalar("SELECT run_version FROM runs WHERE tenant_id=$1 AND id=$2")
++                .bind(receipt.tenant.as_uuid())
++                .bind(receipt.run.as_uuid())
++                .fetch_one(&platform.api.db.pool)
++                .await
++                .expect("original live frontier revision");
++        assert!(
++            frontier.run.version == u64::try_from(stored_head).expect("positive run revision"),
++            "frontier revision matches the untouched original Run"
++        );
++        let member = &frontier.active[0];
++        assert!(
++            member.steps.len() == 1
++                && member
++                    .steps
++                    .get(&member.entry)
++                    .is_some_and(|step| step.status()
++                        == sagat_domain::execution::StepStatus::Leased
++                        && !step.cancel_requested()),
++            "current frontier contains the original leased uncancelled reserve"
++        );
++        assert!(
++            member.index == 0
++                && member.first_failure().is_none()
++                && member.pending_return(&frontier.run.definition).is_none()
++                && member.entry.node().as_str() == "reserve"
++                && member.entry.path().segments().len() == 1
++                && member.entry.path().segments()[0].scope_node().as_str() == "c10"
++                && member.entry.path().segments()[0].iteration_index() == 0,
++            "live original member has no failure or pending Return"
++        );
++        drop(frontier);
++        let result = scheduler
++            .advance_collection(receipt.tenant, receipt.run, &owner)
++            .await;
++        assert!(
++            matches!(result, Ok(CollectionAdvance::DrainStarted)),
++            "first current public advance starts ExistingOutputs drain before Waiting"
++        );
++        Some(inventory)
++    } else {
++        let drain_report = scheduler.tick().await;
++        assert_eq!(drain_report.failed, 0, "normal drain discovery failed");
++        assert_eq!(
++            drain_report.collections_advanced, 1,
++            "normal discovery did not select the legacy c10 scope"
++        );
++        None
++    };
+     let frozen_stop_drain = assert_first_drain(
+         &platform.api.db.pool,
+         &receipt,
+@@ -2873,6 +2983,12 @@ async fn old_ordinary_success_after_drain_preserves_the_report_and_compensation(
+         &output_fingerprint,
+     )
+     .await;
++    if let Some(inventory) = frontier_inventory {
++        assert!(
++            live_frontier_inventory(&platform.api.db.pool, &receipt).await == inventory,
++            "explicit drain preserves admission/member/identity inventories without checkpoint or successor"
++        );
++    }
+     assert_live_target(&platform.api.db.pool, &receipt, true).await;
+     assert!(
+         identity_witness(&platform.api.db.pool, &receipt).await == authority_before,

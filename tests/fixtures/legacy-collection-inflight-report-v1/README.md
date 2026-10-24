@@ -109,3 +109,43 @@ once behavior, Applied reconciliation, a post ACK process restart,
 output-dependent compensation, secret or blob policy, or the remaining
 authority, race, and fault matrix. A passing run does not close the full Q10c
 row or the open feature 014 release tasks.
+
+## Explicit only-live-work frontier
+
+`--case live-work-frontier-red` adds a separate immutable-old control. Immediately
+after genuine ordinary setup (L2100000,V2100020,E4200020), it proves the original
+uncancelled leased c10[0]/reserve is the only active member: no stop, failure,
+pending Return, checkpoint or free admission slot. Old public advance_collection
+actually returns Waiting without changing execution/source witnesses. The fixed
+marker observed_legacy_live_work_waiting=true precedes an intentionally failing
+DrainStarted assertion. Exactly one failure/exit101 is required per role; a setup
+error, timeout or different result is not that RED. No private receipt is published
+and no current consumer runs for either RED database.
+
+`--case live-work-frontier` uses the existing ordinary producer and unchanged
+19-field q10c-ordinary-before-drain-v1 handoff. The new current wrapper verifies the
+same actual frontier and makes public advance_collection its first Run execution
+operation, requiring exactly DrainStarted. Admission/member/execution inventories
+must remain unchanged apart from cancellation of the original live lease. It then
+reuses the accepted original report, replay, real compensation and verification
+lifecycle. The existing discovery-tick drain-before-report test remains separate.
+
+Original selectors/formats/role meanings stay intact. New phases have a300-second
+process deadline and overall2400-second supervisor plus5-second termination grace.
+Cleanup uses a fresh strict single-new-database proof, checked safe receipt/RED
+identity and bounded administration; ambiguous or failed identity/hash caching
+refuses DROP. Private receipt and .receipt.UUID.tmp files are removed before DB
+administration, after active phases are terminated/reaped. A published/failed-cache
+receipt cannot be treated as a pre-receipt failure. Actual source/restoration/
+executable/role/count/cleanup results belong in project-completion evidence; these
+commands alone are not passing results.
+
+```sh
+scripts/test-legacy-collection-inflight-report-v1.sh --case live-work-frontier-red
+scripts/test-legacy-collection-inflight-report-v1.sh --case live-work-frontier
+```
+
+Use only the repository-declared healthchecked Compose fixture and an exclusive
+private CARGO_TARGET_DIR outside checkouts. This adds §11.4(c) observation only;
+CAS, equality/precedence, OS restart, rollout, provider undo and nesting remain
+separate. Source certification/scoped Finish production activation stays closed.

@@ -1,0 +1,37 @@
+{
+  "L": 2100000,
+  "V": 2100020,
+  "head": 105,
+  "work": [
+    {
+      "node": "reserve",
+      "cancel": false,
+      "status": "LEASED",
+      "no_output": true
+    }
+  ],
+  "scope": "OPEN",
+  "member": {
+    "slot": true,
+    "state": "ADMITTED",
+    "remaining": 2
+  },
+  "status": "RUNNING",
+  "database": "t_01a16b7fb2057485a8c216f7a1386d27",
+  "progress": [
+    1,
+    1,
+    0,
+    1
+  ],
+  "reserved": 2,
+  "stop_code": null,
+  "rdl_audits": 0,
+  "checkpoints": 0,
+  "stop_reason": null,
+  "certificates": 0,
+  "journal_head": 105,
+  "quota_deltas": 0,
+  "capacity_rows": 0,
+  "telemetry_head": 105
+}

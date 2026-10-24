@@ -1,0 +1,17 @@
+
+running 1 test
+test legacy_collection_inflight_report_producer_v1::frozen_old_live_work_frontier_guard_red ... live_frontier_red_database=t_01a16b7fca55732cbccf724e19bebc8f
+observed_legacy_live_work_waiting=true
+
+thread 'legacy_collection_inflight_report_producer_v1::frozen_old_live_work_frontier_guard_red' (238759136) panicked at tests/integration/workflow-primitives/legacy_collection_inflight_report_producer_v1.rs:674:9:
+old live-work guard RED: expected DrainStarted instead of Waiting
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    legacy_collection_inflight_report_producer_v1::frozen_old_live_work_frontier_guard_red
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 503 filtered out; finished in 6.18s
+

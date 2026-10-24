@@ -1,0 +1,17 @@
+{
+  "command": [
+    "gtimeout",
+    "--signal=TERM",
+    "--kill-after=5s",
+    "300s",
+    "/tmp/sagat-completion-20261023/live-producer-gate/old-c2-binary",
+    "--exact",
+    "legacy_collection_inflight_report_producer_v1::frozen_old_ordinary_success_before_drain_producer",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 0,
+  "seconds": 6.02,
+  "started_utc": "2026-10-24T01:21:45.808833+00:00",
+  "log": "owner-positive-c2.txt"
+}

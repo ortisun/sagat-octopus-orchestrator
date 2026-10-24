@@ -1,0 +1,7 @@
+{
+  "selector_private_format_cleanup_unit": "fresh C1 None",
+  "process_helper_reuse_unit": "fresh C1 None",
+  "model": "gpt-6-astra",
+  "reasoning_effort": "xhigh",
+  "external_review": "previously declined by owner"
+}

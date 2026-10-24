@@ -1,0 +1,11 @@
+SELECT jsonb_build_object('database',current_database(),'status',r.status,'stop_reason',r.stop_reason,'stop_code',r.stop_code,'head',r.run_version,
+'journal_head',(SELECT max(seq) FROM run_events WHERE run_id=r.id),'telemetry_head',(SELECT head_seq FROM telemetry_pending WHERE run_id=r.id),
+'scope',s.lifecycle,'progress',jsonb_build_array(s.next_admission_index,s.admitted_count,s.completed_count,s.active_count),'L',u.logical_output_bytes,'reserved',u.reserved_instances,
+'V',(SELECT sum(octet_length(p.content)) FROM iteration_scopes x JOIN payloads p ON p.tenant_id=x.tenant_id AND p.digest=x.result_digest WHERE x.run_id=r.id AND x.lifecycle='SUCCEEDED'),
+'member',(SELECT jsonb_build_object('state',m.lifecycle,'slot',m.slot_held,'remaining',m.remaining_reservations) FROM collection_iterations m WHERE m.scope_id=s.scope_id),
+'work',(SELECT jsonb_agg(jsonb_build_object('node',node,'status',status,'no_output',output_digest IS NULL,'cancel',cancel_requested) ORDER BY node) FROM steps WHERE run_id=r.id AND instance_path_nodes=ARRAY['c10']),
+'checkpoints',(SELECT count(*) FROM iteration_checkpoints WHERE scope_id=s.scope_id),
+'rdl_audits',(SELECT count(*) FROM audit_records WHERE resource_id=r.id::text AND action='run.data_limit_exceeded' AND reason='existing_outputs'),
+'capacity_rows',(SELECT count(*) FROM capacity_groups)+(SELECT count(*) FROM capacity_group_members)+(SELECT count(*) FROM capacity_group_finish_receipts),
+'certificates',(SELECT count(*) FROM leaf_collection_success_certifications WHERE run_id=r.id),'quota_deltas',(SELECT count(*) FROM quota_transaction_deltas))
+FROM runs r JOIN iteration_scopes s ON s.run_id=r.id AND s.owner_node='c10' JOIN run_instance_usage u ON u.run_id=r.id;

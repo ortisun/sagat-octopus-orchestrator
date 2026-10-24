@@ -1,0 +1,10 @@
+--- /tmp/sagat-completion-20261023/live-final/artifacts-cancellation-before-report/run.MMU7XN/artifacts/old-main.original.rs	2026-10-23 22:37:23
++++ /tmp/sagat-completion-20261023/live-final/artifacts-cancellation-before-report/run.MMU7XN/old-source/tests/integration/workflow-primitives/main.rs	2026-10-23 22:37:23
+@@ -26,6 +26,7 @@
+ mod chains_http;
+ mod collection_10k;
+ mod collection_budgets;
++mod legacy_collection_inflight_report_producer_v1;
+ mod collection_pipeline;
+ mod collection_restore;
+ mod collection_sources;

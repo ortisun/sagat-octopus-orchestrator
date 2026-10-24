@@ -1,0 +1,23 @@
+[
+  {
+    "case": "phase",
+    "exit_code": 143,
+    "seconds_after_signal": 1.1,
+    "child_running": false,
+    "barrier": "child published pid after installing TERM ignore"
+  },
+  {
+    "case": "admin",
+    "exit_code": 143,
+    "seconds_after_signal": 1.05,
+    "child_running": false,
+    "barrier": "child published pid after installing TERM ignore"
+  },
+  {
+    "case": "outer",
+    "exit_code": 143,
+    "seconds_after_signal": 5.09,
+    "child_running": false,
+    "barrier": "child published pid after installing TERM ignore"
+  }
+]
