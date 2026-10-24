@@ -240,7 +240,7 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [x] B1b.2c.1d.0Q10c.2: Prove ordinary E>limit drain-before-report with a still-live cancellation-requested lease and unchanged first stop/drain; four old/current phases pass, plus four default report-first regression phases. Evidence/legacy-inflight-drain-first-20261018; cancellation-first has separate evidence in .3.
 - [x] B1b.2c.1d.0Q10c.3: Prove public CANCEL precedence over genuine old E>limit success, original operation/report receipts and one permitted refusal audit, normal cancelled drain and real compensation;5ad34370, evidence/legacy-cancellation-first-20261018. Both shared ordering regressions pass; full Q10c stays open.
 - [x] B1b.2c.1d.0Q10c.4: Prove genuine old E<=limit<E+candidate ordinary report-first, pre-report Waiting/native ExistingOutputs rejection, fresh StoppedForRunDataLimit discovery, exact receipt/replay and real compensation;8b8046e5, evidence/legacy-underlimit-increment-20261018. Three original ordering regressions pass; other byte/order/Applied/recovery controls remain open.
-- [ ] B1b.2c.1d.0Q10c.5: Prove genuine old E4000020 fits but E+250000 exceeds after actual public CANCEL/native cancelled drain, retaining original stop/capability and real compensation/terminal replay; reviewed plan evidence/legacy-underlimit-cancel-decision-20261024. Only cancellation driver/helpers parameterized; producer/other orderings unchanged; no new scenario executed yet.
+- [x] B1b.2c.1d.0Q10c.5: Prove genuine old fitting E4000020/refused250000-byte increment after public CANCEL/native cancelled drain; e2c0237c, evidence/legacy-underlimit-cancel-acceptance-20261024. New and ordinary cancellation selectors pass eight separate owner/runtime old/current processes; original stop/authority/source/real compensation and terminal saved ACK retained. Only this composition closes; Applied/OS recovery/master tasks stay open.
 - [x] B1b.2c.1e: Prove real DETACH parent settlement followed by legitimate later child execution and original source replay.
 
 The bounded ordinary-child source master remains open; its enumerated .1a/.1b/.1c/.1e
@@ -704,3 +704,30 @@ reviewed, injected runtime emergency acceptance not claimed. Evidence/reproducti
 `tasks/project-completion/evidence/legacy-frontier-cas-acceptance-20261023/README.md`.
 OnlyQ7c.6 closes. ParentQ7c/Q8/Q10/quota/otherfaults/Applied/rollout/nesting/canonical
 remainopen; source/scoped-Finish activation staysclosed.
+
+### Genuine under-limit increment after cancellation — 2026-10-24
+
+Source/evidence e2c0237c accepts only local Q10c.5. Immutable old6c44a0e4 produces
+L2000000/V2000020/E4000020 and retains the original250000-byte success: L+candidate
+fits while E+candidate4250020 exceeds4194304. Read-only full overlay agrees before
+public CANCEL. Native cancelled drain precedes exact original report; accepted
+SUCCEEDED/CANCELLING retains no output/new charge/successor. First CANCELLED/null
+stop, original authority/capability/source, exact receipts and one refusal audit
+remain; zero data-limit-drain audits. Real original-target/key compensation stays
+nonfinal while held, then finishes Run/scope/owner CANCELLED, saga DONE/COMPENSATED.
+Terminal original-report replay returns SAVED SUCCEEDED/CANCELLING ACK with same
+command ID/already_applied, unchanged complete footprint/retained output/source/
+stop/drain/authority. Fresh store/cache verification remains read-only.
+
+Final new and ordinary cancellation selectors take107.49s/104.40s including builds:
+eight separate old/current owner/runtime processes, each1passed/0failed/0ignored.
+Actual API roles postgres/sagat_app; four created DBs/private handoffs removed,
+original22 owned harness DBs unchanged. All1127 native/eight fixture hashes match.
+Strict Clippy24.20s/fmt4.42s/architecture0.34s and Bash/source checks pass. Source
+review C1 None; exploratory four-phase105.84s and compile31.54s are separate from
+final counts. No production change/manufactured RED. Root executes; consequential
+review GPT-6 Astra/xhigh, Sol unavailable without substitution, optional external
+review previously declined. Evidence and reproduction:
+`tasks/project-completion/evidence/legacy-underlimit-cancel-acceptance-20261024/README.md`.
+Only local Q10c.5 closes. Applied, output-dependent compensation, post-ACK/OS/
+uncertain-COMMIT compositions, Q10c/quota/rollout/nesting/canonical tasks stay open.
