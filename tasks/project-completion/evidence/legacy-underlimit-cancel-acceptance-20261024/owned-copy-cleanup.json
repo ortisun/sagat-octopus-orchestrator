@@ -1,0 +1,52 @@
+{
+  "removed_after_sealing": [
+    {
+      "path": "/tmp/sagat-completion-20261023/underlimit-cancel-first/artifacts/run.WbEQyN/artifacts/old-source.tar",
+      "bytes": 59392000,
+      "sha256": "50e6c054052e2a1cad6c75eaafcec8e3e4bcafb5eb7b80caa81b6e5634776e2d"
+    },
+    {
+      "path": "/tmp/sagat-completion-20261023/underlimit-cancel-first/artifacts/run.WbEQyN/artifacts/integration-workflow-primitives-old",
+      "bytes": 176515520,
+      "sha256": "9876afca1300e69ed1aac24911c6788b1d1d5f7d74a0545978360147601d645d"
+    },
+    {
+      "path": "/tmp/sagat-completion-20261023/underlimit-cancel-first/artifacts/run.WbEQyN/artifacts/integration-workflow-primitives-current",
+      "bytes": 183955008,
+      "sha256": "33aac3919a1719c152542a5cca37f877e8ec644d5209591007a5625b92108fad"
+    },
+    {
+      "path": "/tmp/sagat-completion-20261023/underlimit-cancel-final/artifacts-under-limit-increment-cancellation-before-report/run.XN6pW5/artifacts/old-source.tar",
+      "bytes": 59392000,
+      "sha256": "50e6c054052e2a1cad6c75eaafcec8e3e4bcafb5eb7b80caa81b6e5634776e2d"
+    },
+    {
+      "path": "/tmp/sagat-completion-20261023/underlimit-cancel-final/artifacts-under-limit-increment-cancellation-before-report/run.XN6pW5/artifacts/integration-workflow-primitives-old",
+      "bytes": 176515520,
+      "sha256": "bf2b348744ffcda0c249288721b7b3ead955bc2e587784aae0c4be7b03aeeb6a"
+    },
+    {
+      "path": "/tmp/sagat-completion-20261023/underlimit-cancel-final/artifacts-under-limit-increment-cancellation-before-report/run.XN6pW5/artifacts/integration-workflow-primitives-current",
+      "bytes": 183955008,
+      "sha256": "33aac3919a1719c152542a5cca37f877e8ec644d5209591007a5625b92108fad"
+    },
+    {
+      "path": "/tmp/sagat-completion-20261023/underlimit-cancel-final/artifacts-cancellation-before-report/run.89X4hV/artifacts/old-source.tar",
+      "bytes": 59392000,
+      "sha256": "50e6c054052e2a1cad6c75eaafcec8e3e4bcafb5eb7b80caa81b6e5634776e2d"
+    },
+    {
+      "path": "/tmp/sagat-completion-20261023/underlimit-cancel-final/artifacts-cancellation-before-report/run.89X4hV/artifacts/integration-workflow-primitives-old",
+      "bytes": 176515520,
+      "sha256": "746b2174bf7aaf956a8f4bd49b69c617b07fab9603a2c3be4ef213fb5e078e37"
+    },
+    {
+      "path": "/tmp/sagat-completion-20261023/underlimit-cancel-final/artifacts-cancellation-before-report/run.89X4hV/artifacts/integration-workflow-primitives-current",
+      "bytes": 183955008,
+      "sha256": "33aac3919a1719c152542a5cca37f877e8ec644d5209591007a5625b92108fad"
+    }
+  ],
+  "bytes_removed": 1259587584,
+  "ongoing_target_retained": true,
+  "no_additional_database_drop": true
+}
