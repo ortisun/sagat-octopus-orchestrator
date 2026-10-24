@@ -1,0 +1,19 @@
+{
+  "independent_root_reads": [
+    "6c44a0e4:crates/domain/src/execution/path_state.rs:810-894",
+    "6c44a0e4:crates/domain/src/execution/state.rs:400-440",
+    "6c44a0e4:crates/infra-postgres/src/execution/path.rs:1105-1160",
+    "6c44a0e4:crates/application/src/worker/scoped_reports.rs:262-332",
+    "specs/001-platform-foundation/contracts/worker.proto:145-150",
+    "tests/support/worker.rs:568-617"
+  ],
+  "implementation_constraints": [
+    "require FAILED/WAITING original ACK and canonical exact replay",
+    "no heartbeat: exact six-event suffix after c9 cutoff and H=cutoff+6",
+    "reported lease hash retained, active lease fields cleared; hash-only identity witness",
+    "reuse Worker::fail_message and actual client.fail_step, no fabricated protocol",
+    "failure receipt scope includes exact path/node and lease-hash prefix; bind actual receipt and failed step",
+    "both drain fields explicit null at handoff; immutable failed entry through terminal drain"
+  ],
+  "tests_executed": false
+}

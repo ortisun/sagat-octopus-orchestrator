@@ -1,0 +1,16 @@
+{
+  "review": "None",
+  "model": "gpt-6-astra",
+  "reasoning_effort": "xhigh",
+  "read_only_no_tests": true,
+  "source_baseline": "a982058a",
+  "old_pin": "6c44a0e49670cf19660792cd1518d241e6c99b3b",
+  "cancellation_coverage_commit": "59618184",
+  "verified_details": [
+    "real old nonretryable FailStep ACK FAILED/WAITING; exact replay supported before lease verification",
+    "without heartbeat exact suffix entered/admitted/released/leased/failed/routed implies H=cutoff+6",
+    "first active-member failure precedes E; native five-event drain sequence and1/1/2 outboxes match",
+    "failure receipt and reported identity belong to immutable source; changing counters excluded",
+    "seven Q5 selectors20positive processes and4expected old failures; existing Q10 cancellation control reused"
+  ]
+}

@@ -1,0 +1,102 @@
+# Genuine failed-member precedence over retained legacy excess
+
+Design only, local2026-10-23. No new failed-member scenario executed. Inspected
+committed Q5 baselinea982058a, old6c44a0e49670cf19660792cd1518d241e6c99b3b;
+separate equality increment must be committed before this implementation begins.
+No dependence on its unfinished output. User all-open-tasks/split-decisions scope.
+No production/schema/grant/SDK/activation change or product question required.
+
+## Existing coverage and honest state
+
+Do not duplicate cancellation acceptance: committed59618184 Q10 cancellation-before-
+report publicly CANCELs genuine old E4200020, then normal tick selects CANCELLED
+drain, retains exact prior stop and no RDL audit, later real success/compensation/
+terminalCANCELLED and fresh verify. Sources consumer3477ff/helper1639ff, evidence
+legacy-cancellation-first-20261018 and legacy-live-frontier-acceptance-20261023.
+
+Missing bounded observation: a genuine prior FAILED member wins before E and its
+first custom-code stop is preserved thereafter (passes1888–1948). Public scoped
+FailStep itself emits addressed step.failed/step.routed, NOT a root stop. Do not
+claim a preexisting FAILED Run stop at handoff. Root FAILED stop over empty OPEN
+collection is unsupported (domainplan325–338); no SQL or typed command fabrication.
+Both old/current already prioritize failure; positive control, no artificial RED.
+
+## Four existing Q5 paths, root sole writer/executor
+
+Producer tests/fixtures/legacy-collection-output/producer.rs; current consumer
+ tests/integration/workflow-primitives/legacy_collection_output_view.rs; coordinator
+ scripts/test-legacy-collection-output-view.sh; fixtureREADME. Preserve all six
+accepted selectors/formats/tests. Add only failed-member / dedicated exact
+legacy-failed-member-frontier-v1,18 non-capability fields like free-admission.
+An explicit local scenario enum may replace bool combinations if needed; no broad
+refactor or new main registration/metrics/process/cleanup machinery.
+
+## Genuine old setup and private receipt
+
+Reuse plain legacyLine, actual selected owner/runtime public worker binding/quota/
+publish/start/register/completions and Keeper authority.20public105000B outputs,
+ten210003B aggregates, L2100000/V2100030/E4200030, payload content/SHA and exact
+historical coordinates. After completion20 exact c9Checkpointed1→Finished→c10Entered;
+then old normaladvance(c10)=Admitted0. Poll same registered worker once for actual
+c10[0]/legacyWork lease. No generic tick. Send real gRPC FailStep with actual full
+lease/instance identity, fixed safe Q5_MEMBER_FAILURE code, retryablefalse, actual
+idempotency key. Read API/protobuf contract before constructing; no invented method.
+Replay exact request in old process to prove canonical failure receipt if supported.
+
+Handoff RunWAITING/no stop/code, c10OPEN; oneADMITTED member, sole entryFAILED/
+routed/customcode/nooutput/nolivelease; no Return/item1/compensation. Progress
+next1/admitted1/completed0/active1; heldslot/reserved1/remaining1. HeadH is actual
+admission/claim/failure/routing suffix after c9 cutoff; do NOT keep free receipt's
+head=cutoff+1 rule. Bind actual version/scope/path/member/digest/stepUUID/receipt/
+reported identity, full old journal and source witnesses. Do not hand off worker
+session/token/lease/request.18closed fields, typed role/IDs/hash/DB/source pin,
+private0700 dirs/exclusive0600 atomic receipt, original ownership/credential-first
+cleanup. Current derives DB URLs from owned admin+checked name, not arbitrary URL.
+
+## Exact current progress
+
+Projection and source identical before/after migration, actual role/tenant/scope/
+head/definition, independentL/V and frontierE4200030; one real first_failure custom
+code with original terminal entry, no root stop/Return/free admission capacity.
+Normal Keeper same-owner restart. First execution is public advance_collection.
+
+1.DrainStarted: H+1 root run.stop_requested{reason:FAILED,code:Q5_MEMBER_FAILURE};
+H+2 owner collection.drain_started{reason:failed,iteration:0,code:Q5_MEMBER_FAILURE}.
+RunCANCELLING, scopeDRAINING/FAILED iteration0/customcode; original terminal step,
+member/counters/reservation remain exact. No live-cancel event. One native drain
+outbox with public reasonFAILED, originaltenant/namespace/run/scope/trace/UUID.
+2.Drained0: H+3 collection.iteration_drained{index:0}; memberDRAINED, completed1/
+active0, slotoff,remaining0,tenantactive0, runreserved-1/retired+1, drainedUUID/seq.
+One native iteration-drained outbox, original failed step unchanged.
+3.DrainFinished: H+4 collection.finished{outcome:failed,code:Q5_MEMBER_FAILURE};
+H+5 run.finished{status:FAILED}. Run/scope/ownerFAILED/customcode, ownerunrouted/
+outputfree, no End. Exactly two finish outboxes. First stop/drain identities exact.
+Fresh store/cacheverify succeeds then AlreadyFinished; neither mutates projection.
+
+Every call asserts exact complete ordered envelopes/atomic timestamps/outboxrows,
+original actor/trace/identities, telemetryH+2/H+3/H+5. Preserve old journal/outbox
+prefixes, failure receipt/reported identity, payload bytes/SHA, historical source,
+L/V/E, captured items/definition. No RDL audit at all (ordinary failure drain adds
+none), no new work/Return/checkpoint/output/item1/saga/compensation/backfill.
+Compare narrowly enumerated complete target deltas; old free source includes
+legitimately changing active/completed counters and cannot be required unchanged
+through member drain. Separate immutable source including original failed step/
+failure events/receipt; full pre/post migration hash still identical. Read actual
+schema defaults/drain columns before complete-row oracles; safe field-name-only
+diagnostics, no full state Debug or sensitive failure output.
+
+## Gates and narrow closure
+
+Use inherited300s phase/2400s whole+5grace,256oldsetup bound (including explicit
+admit and bounded poll), bounded admin/pool closes, frozen archive/source/migration/
+compiler/lock/binary/receipt/fixture pins. Repository-owned Compose65118/private
+outside target, df before sequential heavy builds, max2. No process/cleanup rewrite.
+Write assertions first, fresh internal source reviews, then four separate positive
+old/current owner/runtime processes, actual queried roles and cold verification.
+Rerun all seven Q5 selectors after shared fixture edits (20positive processes and
+four expectedold failures) and committed Q10 cancellation-before-report on final
+source. Root strict Clippy/fmt/architecture/Bash/overlay and source/fixture freezes;
+all owned credentials/DBs cleaned with accepted checks, actual failures retained.
+No missing agent-config/fullworkspace/SDK/performance gate claimed. Only local
+failed-member selection/first-stop preservation may close, alongside existing
+cancellation evidence; parentQ7c/Q8/quota/CAS/rollout/nesting/canonical014 stayopen.
