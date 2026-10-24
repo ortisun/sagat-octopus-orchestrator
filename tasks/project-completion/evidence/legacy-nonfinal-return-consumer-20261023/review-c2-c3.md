@@ -16,6 +16,10 @@ Independent owner SQL verifies both exploratory compensated databases and both
 isolated old checkpoint databases. The old checkpoint leaves Run WAITING (not
 RUNNING); the inspection assertion was corrected to the observed native state.
 A preliminary inspection used an incorrect capacity receipt table name; the
-correct table is capacity_group_finish_receipts. Old RED inspection excludes
-capacity tables absent from that old schema. No SQL modified business state.
+correct table is capacity_group_finish_receipts. The old RED inspection omitted
+capacity-row counts; it did not establish table absence. Correction after checking
+the immutable old tree: 6c44a0e4 already contains the capacity and leaf-certification
+migrations. No old capacity-row absence is claimed from that inspection, and no SQL
+modified business state. The current exploratory positive inspections do assert
+zero capacity rows using the correct table name.
 Final source-frozen acceptance is recorded separately in the acceptance evidence.
