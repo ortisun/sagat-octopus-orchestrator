@@ -803,3 +803,35 @@ optionalexternalreviewdeclined. Exact evidence/reproduction:
 Only prerequisite closes; actualAppliedreport/refusal/drain/compensation/oldquotaRED,
 otherorders/bytes/outputdependent/OS/COMMIT recovery, Q10c/quota/rollout/nesting/
 canonicaltasks stayopen. Source/scoped-Finish production activation remainsclosed.
+
+### Genuine immutable-old Applied quota RED — 2026-10-24
+
+Source/evidence 10b61669 accepts only localQ10c.6b/B1, upstreamA299f8b2e. Applied-only
+endmode reaches genuineoldlookup, submits exact40-byte retained Appliedrequest before
+handoffpublication. ActualoldAPI identitylookups increase; ACKSUCCEEDED/RUNNING,
+bothstepsSUCCEEDED, originalforward retains exact10B{"hold":7}, lookupoutputNULL.
+L2100010/V2100020/E4200030 withnoRDLstop/audit; returnedPENDING, no postreporttick/
+checkpoint/saga/compensation. Originalauthority EXACTexpiry/poolgrants/closedsource
+preserved; actualconcludedApplied andlookupcompletion/fences, nofakeforwardcomplete.
+OriginalLOOKUPreceipt scope/hashofwhole40wire/resource/created_at is capturedwith
+safeSHA; ACK/head/version/telemetry aligned. Onlythen emitexactrole/DB/proofmarkers
+andfail REQUIREDcurrentrefusal (RDLstop/nooutput): native101,onefailure/zeroignored.
+No handoff/currentconsumer, even ifguardunexpectedlypasses. SeparateB2 usesfreshDB.
+
+Finalfivecoordinator times includingbuilds: applied-report-before-drain-red 145.9s, applied-handoff 133.4s, report-before-drain 122.89s, under-limit-increment-cancellation-before-report 136.32s, live-work-frontier-red 121.55s.
+Twelve separate positive1passed/0failed/0ignored processes andfour expectedold
+native101/0passed/1failed/0ignored (twoAppliedquota,twoWaiting). Outercoordinator0
+validatesexpectedfailure, notcurrentGREEN. Actualpostgres/sagat_appAPI/sharedstore
+roles andpositivehandoffbindings queried. TencreatedDB/privatehandoffs/sourcefolders
+removed; original22ownedDBinventory unchanged. All1128native/twelvefixture-docpins
+match. StrictClippy30.45s/fmt5.27s/architecture0.68s/standaloneproducerfmt/Bash pass.
+SourceC1/C2None; root actualsource-markercontrol REDsuffixacceptance thenApplied-only
+Fxqfix gives12positive/negativechecks withoutSQL/DROP. Firstexploratory101.21s/two
+nativeexpectedfailures keptseparate. Sourceimplementationroot whileSolunavailable;
+consequentialreviewsGPT-6Astra/xhigh, optionalexternalreviewdeclined. Directowned
+containerinspection running/healthy/127.0.0.1:65118 afterread-onlyComposequerymissing
+interpolationvars; noinfrachange. Exactevidence/reproduction:
+`tasks/project-completion/evidence/legacy-applied-quota-red-acceptance-20261024/README.md`.
+OnlyB1closes; currentAppliedreport/refusal/drain/comp/replay, otherorders/bytes/
+fault/OS/COMMIT recovery/outputdependentcomp/quota/Q10c/rollout/nesting/canonical
+remainopen; productionactivation staysclosed/noexternalprovidereffectorundoguarantee.
