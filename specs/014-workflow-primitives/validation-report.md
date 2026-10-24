@@ -3576,3 +3576,29 @@ Evidence/reproduction: `tasks/project-completion/evidence/legacy-nonfinal-return
 Only local Q7c.1 closes. Free-admission/live-only/boundary/competing-stop/CAS/rollout,
 Q7c/Q8/master quota correction, general nesting and canonical014 tasks remain open.
 No production/schema/grants/SDK or source/scoped-Finish activation changed.
+
+
+### Genuine old free-admission frontier — 2026-10-23
+
+Source/evidence528e10fd accepts only §11.4(a), local Q7c.2. After20old public105000B
+successes, exact old c9Checkpointed1→Finished→c10Entered creates OPEN/WAITING with
+captured[[0,1],[1,2]], progress/members/reservations/tasks0 and actual L/V/E=
+2100000/2100030/4200030. Separate old controls actually admit0 and fail the expected
+DrainStarted assertion. Untouched handoffs reach current: exact DrainStarted then
+DrainFinished FAILED/RDL without admission, no compensation/effect flags, then fresh
+store/cache verification and AlreadyFinished with unchanged full projection/source.
+Complete stable Run/entry/version/snapshot/items/old history hashes, exact stop/drain/
+finish envelopes/native UUID outboxes/telemetry/audit and zero obligations pass.
+Final five-selector matrix: free RED121.13s, free positive146.92s, preserved nonfinal
+positive132.89s, nonfinal RED119.82s, original output-view184.04s including sequential
+builds. Twelve separate1/1positive processes and four separate0passed/1failed old
+controls exit101 with exact markers; no old RED DB is used by current. Ten final
+coordinator DBs/private receipts/source directories removed;1127native and four
+fixture hashes identical. Clippy27.67s/fmt4.72s/architecture0.41s, overlay rustfmt,
+shell/source checks pass. Root independently inspects all four exploratory DBs,
+including actual admitted READY work in old RED and FAILED/no-member current.
+Evidence/reproduction: `tasks/project-completion/evidence/legacy-free-admission-acceptance-20261023/README.md`.
+Only Q7c.2 closes. Live-only exact entry/oldWaiting RED, equality/precedence/CAS,
+rollout, general nesting, parent Q7c/Q8/quota and canonical014 remain open. Existing
+live-worker discovery/report/compensation evidence is preserved, not invalidated.
+No production/schema/grant/SDK or source/scoped-Finish activation change.

@@ -218,7 +218,7 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [x] B1b.2c.1d.0Q6b: Use the authoritative effective scalar in existing full preflights after the PG override, preserving typed outcomes. Source012d746f; existing result gRPC5/5 each mode, legacy signal-specific acceptance separate.
 - [ ] B1b.2c.1d.0Q7c: Accept effective path/frontier accounting and same-snapshot stop/E behavior. Sourceb0a7ea5e; genuine old pending-nonfinal-Return acceptance is recorded in .1 below. Other frontier shapes, competing stops and held-lock/CAS controls remain pending.
 - [x] B1b.2c.1d.0Q7c.1: Prove genuine old pending NONFINAL Return is drained before checkpoint/admission, with exact old source/bytes and actual original-target compensation through terminal native publication; b8f44488, evidence/legacy-nonfinal-return-acceptance-20261023. Four new positive phases and four preserved output-view phases pass; two separate old guard tests fail as expected. No production activation or broader Q7c closure.
-- [ ] B1b.2c.1d.0Q7c.2: Prove genuine old OPEN/free-capacity scope drains before first admission and finalizes FAILED without new obligations; bounded reviewed design in evidence/legacy-free-admission-decision-20261023, no new scenario executed yet. Preserve prior nonfinal/default selectors and role meaning.
+- [x] B1b.2c.1d.0Q7c.2: Prove genuine old OPEN/free-capacity scope drains before first admission and finalizes FAILED without new obligations;528e10fd, evidence/legacy-free-admission-acceptance-20261023. Five selectors pass12positive processes and four separate expected old failures; current cold verification/source/roles/native finish and owned cleanup are exact. Parent Q7c and canonical tasks remain open.
 - [ ] B1b.2c.1d.0Q8: Accept guarded native new-reason writer. Source9fd9405f/109908be; four native behavioral cases pass, plus genuine empty/checkpointed guards and stopped-report compensation. ExistingOutputs live-worker discovery passes in ce6560c5; remaining evidence controls/upgrade gates stay open.
 - [x] B1b.2c.1d.0Q7bD: Correct unconditional report-outbox assumption to existing durable collection discovery, reviewed source/constitution/ADR mapping; scoped-output-refusal-discovery.md. Actual current report/discovery/compensation now has focused acceptance; post-ACK process recovery remains separate.
 - [ ] B1b.2c.1d.0Q7b: Complete exceptional report acceptance over the coupled implementation3710a5b7, preserving all current authority, exact receipt/fence/secret checks and one-transaction root/scoped phases; remaining fence/terminal/race/recovery controls are pending.
@@ -539,3 +539,29 @@ Evidence/reproduction: `tasks/project-completion/evidence/legacy-nonfinal-return
 Only local Q7c.1 closes. Free-admission/live-only/boundary/competing-stop/CAS/rollout,
 Q7c/Q8/master quota correction, general nesting and canonical014 tasks remain open.
 No production/schema/grants/SDK or source/scoped-Finish activation changed.
+
+
+### Genuine old free-admission frontier — 2026-10-23
+
+Source/evidence528e10fd accepts only §11.4(a), local Q7c.2. After20old public105000B
+successes, exact old c9Checkpointed1→Finished→c10Entered creates OPEN/WAITING with
+captured[[0,1],[1,2]], progress/members/reservations/tasks0 and actual L/V/E=
+2100000/2100030/4200030. Separate old controls actually admit0 and fail the expected
+DrainStarted assertion. Untouched handoffs reach current: exact DrainStarted then
+DrainFinished FAILED/RDL without admission, no compensation/effect flags, then fresh
+store/cache verification and AlreadyFinished with unchanged full projection/source.
+Complete stable Run/entry/version/snapshot/items/old history hashes, exact stop/drain/
+finish envelopes/native UUID outboxes/telemetry/audit and zero obligations pass.
+Final five-selector matrix: free RED121.13s, free positive146.92s, preserved nonfinal
+positive132.89s, nonfinal RED119.82s, original output-view184.04s including sequential
+builds. Twelve separate1/1positive processes and four separate0passed/1failed old
+controls exit101 with exact markers; no old RED DB is used by current. Ten final
+coordinator DBs/private receipts/source directories removed;1127native and four
+fixture hashes identical. Clippy27.67s/fmt4.72s/architecture0.41s, overlay rustfmt,
+shell/source checks pass. Root independently inspects all four exploratory DBs,
+including actual admitted READY work in old RED and FAILED/no-member current.
+Evidence/reproduction: `tasks/project-completion/evidence/legacy-free-admission-acceptance-20261023/README.md`.
+Only Q7c.2 closes. Live-only exact entry/oldWaiting RED, equality/precedence/CAS,
+rollout, general nesting, parent Q7c/Q8/quota and canonical014 remain open. Existing
+live-worker discovery/report/compensation evidence is preserved, not invalidated.
+No production/schema/grant/SDK or source/scoped-Finish activation change.
