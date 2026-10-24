@@ -62,7 +62,7 @@
       "ok": true,
       "op": "probeWorker",
       "result": {
-        "accepted": "1.5"
+        "accepted": "1.6"
       }
     },
     {
@@ -172,7 +172,7 @@
       "ok": true,
       "op": "startWorker",
       "result": {
-        "protocolVersion": "1.5"
+        "protocolVersion": "1.4"
       }
     },
     {
