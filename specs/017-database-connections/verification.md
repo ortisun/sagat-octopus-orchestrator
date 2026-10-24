@@ -559,3 +559,75 @@ and a restarted runner with no repeat of that effect.
   [UI guide](../../docs/guides/managed-database-executions.md),
   [SDK guide](../../docs/guides/managed-database-sdk.md) and
   [recovery runbook](../../docs/runbooks/database-recovery.md) describe the delivered behavior.
+
+## Integration into develop — 2026-10-24
+
+Feature 017 was built on `6ede1c78` and merged into the feature-014 base of `develop`
+(`9a57861b`) on `feature/017-database-connections-integration`; the 30 original commits are
+kept in history. Numbers D600+/G600+/O600+ were taken after scanning every local and remote
+branch (highest in use: D527, G526, O501), so they cannot clash. Nothing of feature 016 payload
+classification, of the 014 follow-up runtime work or of `tasks/project-completion` was taken;
+`feature/016-project-completion` was only read, to see how its author resolved the same conflicts
+(its migration numbers were reused so the open branches agree, see D602).
+
+### Decisions
+
+- **D600 — worker protocol.** `1.5` stays the scoped execution identity of feature 014
+  (ADR-0030, ADR-0032). Managed database capabilities are `1.6`, a superset of `1.5`. The ceiling a
+  session may negotiate is `protocol_ceiling(role, scoped_store, database_store)`: a store that
+  proves only the database path leaves ordinary workers at `1.4`; scoped without database gives
+  `1.5`; both give `1.6`; the `database-runner` machine role, which handles root work only,
+  reaches `1.6` on the database proof alone. `WorkerStore::supports_database_worker_protocol`
+  is the new port, true for PostgreSQL. `/version` and the CLI doctor report `1.6` as the
+  maximum. Workers that offer `1.0`-`1.5` are served at the version they offer; the SDK
+  default stays `1.5`; a managed lease still needs the runner role, a current binding and `1.6`.
+  The runner registers and expects `1.6`. Conformance: `protocol-negotiation` (offer `1.9`
+  is served at `1.6`) and `database-connections` (ordinary SDK workers pinned at `1.4`).
+- **D601 — a managed database node is root-only.** `step_database_credentials` keeps a
+  `instance_path_nodes/indices` pair that a CHECK forces empty, the executor ownership and
+  credential pin are addressed by root node, and the runner refuses a lease whose instance path
+  is not empty. The domain therefore rejects (`INVALID_DATABASE_NODE`) a database node in a loop or
+  collection body (the schema does not even know the node type in a body), a database node in a
+  definition that also has a `forEach`, `while` or `repeatUntil` node, and one with a continuation
+  policy. Help text and `docs/quickstarts/errors.md` say so. See G600.
+- **D602 — migrations.** The seven 017 migrations sort after develop's latest
+  (`20261122000000_steps_open_index`): `20261122000100_openbao_secrets` and
+  `20261123000000_database_connections` ... `20261128000000_secret_cleanup`, up/down pairs
+  kept. The names and the six later versions equal those the other open branches already
+  carry; only `openbao_secrets` differs (`...000100` instead of `20261122000000`, which now
+  belongs to `steps_open_index`). Content changes: the provider intent has a `pools` column;
+  the step credential pin is keyed by the root instance path; `database_policies` keeps
+  `iteration_concurrency` in the quota ceiling CHECK that `iteration_capacity_quota` had added
+  (it dropped it, so the iteration ceiling could not be stored), up and down.
+- **D603 — ADR number.** 017's ADR-0033 collided with develop's ADR-0033 (payload classification).
+  It is `ADR-0035-database-connections-and-managed-execution`, like on the other open branches;
+  every link and code comment was updated.
+- **D604 — secret pools with OpenBao.** The worker pools of a secret (feature 009 G48, merged
+  after 017 was written) are part of the durable provider intent, bound by its HMAC, applied
+  in the activation transaction and audited; `put_with_pools` exists on the managed service. The
+  HTTP `pools` field works for both authorities.
+- **D605 — report fence.** A failure that acknowledges a cancellation (`CANCELLED`, not
+  retryable) of a step with declared secrets is judged on lease and attempt when its code is
+  scanned; every other failure and every completion keeps the full fence (a cancellation during
+  provider I/O still discards the report).
+- **D606 — run creation order.** A retained ad hoc definition is created before the declared
+  state of the version is read back (014 verifies it), in the same transaction.
+
+### Gaps and owner question
+
+- **G600** — managed database nodes cannot yet run inside loop or collection bodies, or in a
+  definition with a continuation policy (D601). Needs scoped credential pins and executor
+  ownership.
+- **G601** — the five SDK builders do not pre-check D601; the server refuses it at publication
+  with `INVALID_DATABASE_NODE`.
+- **G602** — `approval-chain` (014 scenario) failed once in the first full `sdk_conformance` run with
+  TypeScript at `runVersion` 4 against 3 in the other four languages (a `queryChain` read right after
+  the head change) while the machine load average was above 20; it passed on rerun. The race
+  belongs to the scenario, not to 017, and is not explained here.
+- **G603** — the `database_policies` fix changes the content of a migration other open branches
+  carry unchanged; they must take the same two lines (up and down).
+- **O600** — does the owner want managed database operations inside loop and collection bodies
+  (G600)? It changes the executor ownership model and needs a plan of its own.
+
+### What was run on the merged tree
+
