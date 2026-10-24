@@ -20,7 +20,7 @@
 
 ## Evidence protocol
 
-Feature [017 database-connections](../specs/017-database-connections/spec.md) is approved and implementing (2026-10-16). FR-017-001..022 and SC-017-001..011 are tracked in its [tasks](../specs/017-database-connections/tasks.md). Runtime evidence is pending; approval does not close any runtime criterion.
+Feature [017 database-connections](../specs/017-database-connections/spec.md) is approved (2026-10-16), implemented and integrated with the feature-014 base of `develop` on `feature/017-database-connections-integration` (2026-10-24). FR-017-001..022 and SC-017-001..011 are tracked in its [tasks](../specs/017-database-connections/tasks.md), its [traceability](../specs/017-database-connections/traceability.md) and the "Integration into develop" section of its [verification](../specs/017-database-connections/verification.md). Deployment-gated criteria (private-network egress, three-member Raft restore, Kubernetes) keep the limits recorded there.
 
 1. Link the PR to the FR and SC satisfied; reference the exact test (name and CI execution).
 2. For durability invariants: failure scenario, journal evidence and absence of a double transition.

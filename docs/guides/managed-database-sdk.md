@@ -7,7 +7,7 @@ must be active; a reference may also select an immutable revision.
 
 The server must support the `database` IR node and have an authorized
 [`database-runner`](../runbooks/database-runner.md). Ordinary SDK workers continue
-using protocol 1.4; the separate managed runner uses protocol 1.5. SDK workers do
+using their own protocol minor (1.5 for the scoped identity, older ones still served); the separate managed runner uses protocol 1.6. SDK workers do
 not execute the SQL or receive its credential. An older server rejects unsupported
 IR during validation/publication.
 

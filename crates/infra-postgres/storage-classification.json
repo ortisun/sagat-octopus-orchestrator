@@ -3818,6 +3818,42 @@
     },
     {
       "table": "step_database_credentials",
+      "column": "instance_path_nodes",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Root-only managed credential pin: a database CHECK requires the array to be empty (managed database nodes are root-only, D601). Writer/source: execution/database.rs."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/database.rs"
+      ]
+    },
+    {
+      "table": "step_database_credentials",
+      "column": "instance_path_indices",
+      "sql_type": "_int4",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Root-only managed credential pin: a database CHECK requires the array to be empty (managed database nodes are root-only, D601). Writer/source: execution/database.rs."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/database.rs"
+      ]
+    },
+    {
+      "table": "step_database_credentials",
       "column": "node_id",
       "sql_type": "text",
       "class": "protected_system",

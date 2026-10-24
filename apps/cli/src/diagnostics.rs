@@ -81,7 +81,7 @@ pub const CATALOG: &[(&str, &str)] = &[
     ),
     (
         "INVALID_DATABASE_NODE",
-        "Check the connection reference, query or execute operation, typed parameters and finite limits. Managed database steps cannot declare automatic retries or impersonate an ordinary activity.",
+        "Check the connection reference, query or execute operation, typed parameters and finite limits. Managed database steps cannot declare automatic retries or impersonate an ordinary activity. A managed database step belongs to the root graph of a definition without loops, collections or a continuation policy.",
     ),
     (
         "INVALID_NODE_ID",

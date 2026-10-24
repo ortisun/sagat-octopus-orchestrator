@@ -89,7 +89,7 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
     p.bind_everything("database-blobs").await;
     let mut worker = p.connect("database-blobs", "acme").await;
     worker
-        .register_version(&[MANAGED_DATABASE_ACTIVITY], "1.5")
+        .register_version(&[MANAGED_DATABASE_ACTIVITY], "1.6")
         .await;
     let result = |value: String| {
         serde_json::to_vec(&json!({"columns":[{"name":"v","type":"text"}],"rows":[[{"type":"text","value":value}]],"affectedRows":"1","truncated":false})).unwrap()

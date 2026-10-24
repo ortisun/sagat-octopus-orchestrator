@@ -1234,7 +1234,7 @@ impl WorkflowDefinition {
         continuation_policy: Option<ContinuationPolicy>,
     ) -> Result<Self, WorkflowError> {
         // Attempt credential pins and managed executor authorization address root nodes only
-        // (D600, migration 20261124 pins `instance_path` to the root). A managed database node
+        // (D601, migration 20261124 pins `instance_path` to the root). A managed database node
         // may not sit in a loop or collection body, nor share a definition with a scope-producing
         // node or a continuation policy, until a later feature proves scoped database attempts.
         let managed_root = nodes.iter().any(|node| node.database_operation().is_some());

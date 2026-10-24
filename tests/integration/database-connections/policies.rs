@@ -215,7 +215,7 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
                 languages: vec![],
                 pools: vec![],
                 max_inflight: 8,
-                protocol_version: "1.5".into(),
+                protocol_version: "1.6".into(),
             },
         )
         .await

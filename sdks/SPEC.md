@@ -449,8 +449,9 @@ basic shapes and finite contract ceilings, and raises `VALIDATION_FAILED` with a
 fixed message that contains no SQL or values. It adds neither retry policy nor
 secret references. SQL parsing, permission checks, connection/credential pinning,
 execution and unknown-write handling are server responsibilities. Writes have no
-automatic retry. Ordinary SDK workers continue negotiating 1.4; only the dedicated
-managed executor uses 1.5. The server rejects unsupported IR before execution.
+automatic retry. Ordinary SDK workers keep negotiating the scoped-identity minor 1.5 (or
+older); only the dedicated managed executor offers 1.6, which carries `ResolveDatabase` and is a
+superset of 1.5. The server rejects unsupported IR before execution.
 
 Inline results retain `{columns, rows, affectedRows, truncated}` with ordered tagged cells,
 exact numeric strings and explicit nulls. They use the ordinary retained steps map

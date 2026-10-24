@@ -4,7 +4,7 @@ use sagat_application::execution::RunTx;
 use sagat_application::execution::instance_step_id;
 use sagat_application::maintenance::{MaintenanceStore, Window};
 use sagat_application::runs::{Lock, RunStore};
-use sagat_domain::definition::WorkflowVersionId;
+use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::execution::{ExecutionInstanceId, InstancePath, RunId};
 use sagat_domain::workflow::NodeId;
 use sagat_infra_postgres::{MIGRATOR, migrate};
@@ -33,8 +33,13 @@ async fn column_exists(pool: &sqlx::PgPool, table: &str, column: &str) -> bool {
     .expect("column lookup")
 }
 
-pub(super) async fn insert_legacy_root_run(w: &World, name: &str) -> (RunId, WorkflowVersionId) {
-    let (workflow, version) = w.publish(chain(name)).await;
+/// The caller publishes an ordinary definition before undoing newer migrations. Run and journal
+/// rows are inserted only after the schema is old; this helper does not call a current writer
+/// against that schema (publication reads columns added by later migrations).
+pub(super) async fn insert_legacy_root_run(
+    w: &World,
+    (workflow, version): (WorkflowId, WorkflowVersionId),
+) -> (RunId, WorkflowVersionId) {
     let run = RunId::generate();
     let tenant = w.admin.tenant_id().as_uuid();
     let input = b"{}";
@@ -110,13 +115,14 @@ pub(super) async fn insert_legacy_root_run(w: &World, name: &str) -> (RunId, Wor
 #[tokio::test]
 async fn upgrading_populated_storage_keeps_root_rows_and_does_not_rewrite_the_journal() {
     let w = world().await;
+    let definition = w.publish(chain("legacy-root-identity")).await;
     MIGRATOR
         .undo(&w.db.pool, BEFORE)
         .await
         .expect("return to the legacy identity schema");
     assert!(!column_exists(&w.db.pool, "steps", "instance_path_nodes").await);
 
-    let (run, _) = insert_legacy_root_run(&w, "legacy-root-identity").await;
+    let (run, _) = insert_legacy_root_run(&w, definition).await;
 
     let before: Vec<LegacyEvent> = sqlx::query(
         "SELECT seq, event_type, node, detail FROM run_events \

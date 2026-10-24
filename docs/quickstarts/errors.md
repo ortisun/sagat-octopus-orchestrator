@@ -116,7 +116,7 @@ Paste the digest into the `script` node's `artifactDigest`.
 
 ### INVALID_DATABASE_NODE
 
-Check the connection reference, query or execute operation, typed parameters and finite limits. Managed database steps cannot declare automatic retries or impersonate an ordinary activity.
+Check the connection reference, query or execute operation, typed parameters and finite limits. Managed database steps cannot declare automatic retries or impersonate an ordinary activity. A managed database step belongs to the root graph of a definition without loops, collections or a continuation policy.
 
 Use a namespace connection with an OpenBao credential and positional SQL parameters.
 Integer and decimal literal values are strings; expression bindings must declare their type.

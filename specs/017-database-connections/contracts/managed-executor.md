@@ -6,7 +6,7 @@ Implementation contract for T017-013..017; executed evidence is in [verification
   Human administrators, ordinary workers and sandbox runners cannot claim or resolve a managed
   database step, including through a wildcard binding. Database runners advertise only supported
   managed database activities and still need a current namespace/activity binding.
-- Protocol 1.5 `ResolveDatabase` uses the existing task id, run/node, attempt, generation
+- Protocol 1.6 `ResolveDatabase` uses the existing task id, run/node, attempt, generation
   and lease token. A managed lease requires the dedicated executor protocol revision. Registration,
   claiming and capability use check current authority; a stale in-memory role does not suffice.
 - Resolution first opens the run transaction, checks the lease, executor/session ownership,
@@ -76,7 +76,7 @@ not proof that a client received every byte. Generic payload inspection stays st
 
 ## Runner process configuration (T017-015)
 
-The runner is a separate Rust process with a gRPC worker identity and protocol 1.5.
+The runner is a separate Rust process with a gRPC worker identity and protocol 1.6 (1.5 is scoped execution identity, D600).
 It holds no platform SQL pool, scheduler store, local keyring or OpenBao token.
 Each configured namespace has its own registered session. A resolved capability
 includes namespace UUID and logical connection name so the runner can verify the
@@ -114,7 +114,7 @@ attempts through socket cleanup; saturation fails before SQL dispatch. Distribut
 server admission intersects persisted connection limits with current operator/tenant/namespace
 quota policies. Narrower runner policies independently constrain the delivered capability.
 
-The runner registers only `sagat.database.postgresql` with protocol 1.5. Heartbeats
+The runner registers only `sagat.database.postgresql` with protocol 1.6. Heartbeats
 start before policy/provider I/O; loss, cancellation or lease expiry cancels target
 execution. A target statement cannot outlive the capability's returned lease deadline
 or its query deadline; renewing the worker lease does not extend that captured SQL

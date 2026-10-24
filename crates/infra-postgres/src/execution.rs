@@ -472,6 +472,13 @@ impl RunStore for PgRunStore {
                     .await?;
                 return Ok(Applied::Replayed(existing));
             }
+            // A retained ad hoc definition is created in this transaction, before anything reads its
+            // version back.
+            if let Some(retained) = &new.retained {
+                ad_hoc::retain(&mut tx, &mut new.info, retained).await?;
+            } else if new.info.origin.is_some() {
+                return Err(StoreError::MissingReference);
+            }
             let version_row = sqlx::query(
                 "SELECT workflow_id, document FROM workflow_versions \
                  WHERE tenant_id = $1 AND id = $2",
@@ -513,11 +520,6 @@ impl RunStore for PgRunStore {
                 declared_state.as_ref(),
             )
             .await?;
-            if let Some(retained) = &new.retained {
-                ad_hoc::retain(&mut tx, &mut new.info, retained).await?;
-            } else if new.info.origin.is_some() {
-                return Err(StoreError::MissingReference);
-            }
             sqlx::query(
                 "INSERT INTO payloads (tenant_id, digest, content) VALUES ($1, $2, $3) \
                  ON CONFLICT DO NOTHING",

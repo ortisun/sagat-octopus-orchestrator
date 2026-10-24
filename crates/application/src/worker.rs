@@ -1021,7 +1021,7 @@ where
             let managed = tx
                 .parts()
                 .0
-                .node(instance.node())
+                .node_for_instance(&instance)
                 .is_some_and(|n| n.database_operation().is_some());
             // Managed runners only need the fenced capability. ResolveDatabase evaluates typed
             // parameters server-side, so unrelated run payloads never cross this boundary.
@@ -1215,7 +1215,7 @@ where
         let managed = tx
             .parts()
             .0
-            .node(instance.node())
+            .node_for_instance(instance)
             .is_some_and(|node| node.database_operation().is_some());
         let mut effects = Effects::by(
             Actor::Worker(if managed {
@@ -1735,7 +1735,15 @@ where
         // worker that reports its own secret as the reason it failed fails for good instead.
         let mut retryable = retryable;
         let leaked = match self
-            .checked_secret_report(principal, task, tx, &idempotency, error_code.as_bytes())
+            .checked_secret_report(
+                principal,
+                task,
+                tx,
+                &idempotency,
+                error_code.as_bytes(),
+                // Only the worker's acknowledgement of a cancellation may follow the request to stop.
+                error_code == "CANCELLED" && !retryable,
+            )
             .await?
         {
             SecretReport::Ready(current, leaked) => {
@@ -1950,14 +1958,14 @@ where
     fn managed_database<Tx: RunTx>(tx: &mut Tx, task: &TaskRef<'_>) -> bool {
         tx.parts()
             .0
-            .node(task.instance.node())
+            .node_for_instance(task.instance)
             .is_some_and(|n| n.database_operation().is_some())
     }
 
     fn database_write<Tx: RunTx>(tx: &mut Tx, task: &TaskRef<'_>) -> bool {
         tx.parts()
             .0
-            .node(task.instance.node())
+            .node_for_instance(task.instance)
             .and_then(sagat_domain::workflow::Node::database_operation)
             .is_some_and(|op| op.kind == sagat_domain::database::OperationKind::Execute)
     }
@@ -2026,7 +2034,7 @@ where
         let managed = tx
             .parts()
             .0
-            .node(task.instance.node())
+            .node_for_instance(task.instance)
             .is_some_and(|n| n.database_operation().is_some());
         if managed
             && !tx
@@ -2092,14 +2100,40 @@ where
         tx: &mut Tx,
         task: &TaskRef<'_>,
     ) -> Result<(), AppError> {
+        self.attempt_authority_fence(principal, tx, task, false)
+            .await
+    }
+
+    /// The fence of a report that scans the output for secrets. A failure report may acknowledge a
+    /// cancellation or a stop, so it is judged on the lease and the attempt, not on the request to
+    /// stop; a completion keeps the full fence.
+    async fn report_authority_fence<Tx: RunTx>(
+        &self,
+        principal: &Principal,
+        tx: &mut Tx,
+        task: &TaskRef<'_>,
+        cancellation_acknowledgement: bool,
+    ) -> Result<(), AppError> {
+        self.attempt_authority_fence(principal, tx, task, cancellation_acknowledgement)
+            .await
+    }
+
+    async fn attempt_authority_fence<Tx: RunTx>(
+        &self,
+        principal: &Principal,
+        tx: &mut Tx,
+        task: &TaskRef<'_>,
+        allow_cancellation_report: bool,
+    ) -> Result<(), AppError> {
         self.verify(tx, task).await?;
         self.ensure_bound(principal, tx, task).await?;
         let legacy_attempt = task.fence.attempt == 0 && !Self::managed_database(tx, task);
         let valid_step = tx.parts().1.instance(task.instance).is_some_and(|s| {
             (legacy_attempt || s.attempt() == task.fence.attempt)
                 && s.generation() == task.fence.generation
-                && !s.cancel_requested()
-        }) && (tx.parts().1.stop_reason().is_none()
+                && (allow_cancellation_report || !s.cancel_requested())
+        }) && (allow_cancellation_report
+            || tx.parts().1.stop_reason().is_none()
             || task.instance.node().is_derived())
             && !tx.parts().1.is_finished();
         if !valid_step
@@ -2322,8 +2356,9 @@ mod tests {
 
     #[test]
     fn scoped_identity_negotiation_is_gated_by_storage_support() {
-        assert_eq!(PROTOCOL_MINOR, 5);
+        assert_eq!(PROTOCOL_MINOR, 6);
         assert_eq!(ROOT_PROTOCOL_MINOR, 4);
+        assert_eq!(SCOPED_PROTOCOL_MINOR, 5);
         assert_eq!(negotiate_protocol("1.5").as_deref(), Some("1.5"));
         assert_eq!(
             negotiate_protocol_details("1.5", ROOT_PROTOCOL_MINOR),
@@ -2332,6 +2367,27 @@ mod tests {
         assert_eq!(
             negotiate_protocol_details("1.999", SCOPED_PROTOCOL_MINOR),
             Some(("1.5".to_owned(), SCOPED_PROTOCOL_MINOR))
+        );
+    }
+
+    #[test]
+    fn managed_support_does_not_enable_scoped_protocol_for_ordinary_workers() {
+        use sagat_domain::identity::Role;
+        for role in [Role::Worker, Role::Runner, Role::Admin] {
+            // A store that proves only the database path leaves ordinary workers at 1.4.
+            assert_eq!(super::protocol_ceiling(role, false, true), 4);
+            assert_eq!(super::protocol_ceiling(role, true, false), 5);
+            // 1.6 is a superset of 1.5, so it needs both proofs.
+            assert_eq!(super::protocol_ceiling(role, true, true), 6);
+        }
+        // The database runner only handles root work: it reaches 1.6 on the database proof alone.
+        assert_eq!(
+            super::protocol_ceiling(Role::DatabaseRunner, false, true),
+            6
+        );
+        assert_eq!(
+            super::protocol_ceiling(Role::DatabaseRunner, false, false),
+            4
         );
     }
 

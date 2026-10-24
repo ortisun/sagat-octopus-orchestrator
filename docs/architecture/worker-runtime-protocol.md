@@ -128,10 +128,10 @@ locked-run transaction checks it again before consuming an attempt. Incompatible
 and committed `STEP_OUTPUT` catalog rows, so inline JSON that resembles a blob descriptor does not
 silently become a 1.3-only capability.
 
-## Managed database capability (protocol 1.5, feature 017)
+## Managed database capability (protocol 1.6, feature 017)
 
 The reserved `sagat.database.postgresql` activity is created only by a typed database IR node.
-Registration and claiming require the current `database-runner` machine role and protocol 1.5.
+Registration and claiming require the current `database-runner` machine role and protocol 1.6. Minor 1.5 is the scoped execution identity of feature 014 and keeps its meaning; 1.6 is a superset of 1.5 for ordinary workers (so it is offered only by a store that proves the scoped path), while the database runner, which handles root work only, reaches 1.6 on the database proof alone. A worker that offers 1.4 or 1.5 is served at that version (D600).
 This role grants only `worker:execute` and `database:execute`, plus a namespace/activity binding.
 Human administrators and ordinary workers cannot claim or resolve these tasks through a wildcard.
 

@@ -101,7 +101,7 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         languages: vec![],
         pools: vec![],
         max_inflight: 32,
-        protocol_version: "1.5".into(),
+        protocol_version: "1.6".into(),
     };
     for principal in [&w.admin, &w.worker, &w.runner_identity] {
         w.bind_everything(principal).await;
@@ -157,7 +157,7 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         .register(&runner, "payments", "database-machine", &caps)
         .await
         .unwrap();
-    assert_eq!(registered.accepted_protocol_version, "1.5");
+    assert_eq!(registered.accepted_protocol_version, "1.6");
     let session = Session {
         principal: runner.clone(),
         worker_id: registered.worker_id,
@@ -562,7 +562,7 @@ pub async fn grpc(provider: Arc<dyn SecretProvider>) {
     p.bind_everything("database-grpc").await;
     let mut worker = p.connect("database-grpc", "acme").await;
     worker
-        .register_version(&[MANAGED_DATABASE_ACTIVITY], "1.5")
+        .register_version(&[MANAGED_DATABASE_ACTIVITY], "1.6")
         .await;
     let lease = worker.one_task().await;
     assert_eq!(
