@@ -3791,3 +3791,41 @@ canonical/master closure is inferred. Evidence with exact mapping/limitations:
 `tasks/project-completion/evidence/quota-parent-closure-audit-20261024/README.md`.
 Historical “parent open” notes describe their then-current state; this scoped audit
 supersedes them only for Q7c and current ordinary-inline Q7b.5.
+
+### Genuine-old Applied-ready handoff prerequisite — 2026-10-24
+
+Source/evidence 299f8b2e accepts only local Q10c.6a. Actual old public ten210000B
+completions retain L2100000/V2100020/E4200020 with absent owner outputs. Separate
+Applied workflow/binding/session publicly fails original reserve OUTCOME_UNKNOWN;
+normal old scheduler/poll produces real reserve~r lookup. Its target/key match
+ORIGINALforward, notlookup. Distinct private21-field handoff retains originalforward
+andlookup protobufs, exact Appliedrequest and full authority hash; noSQLstatefab.
+
+Strict canonicalwire/request and BOTH run/node/generation taskIDs, original fence/
+reportedhash/requestedevent, lookup LEASED/live/uncancelled and forward WAITING/
+RECONCILIATION hold. Before/after migration/startup/clientconstruction/freshrole
+frontier+verify_run: completeprojection/source/fullmembership/bindingtimestamps/
+poolgrant/session EXACTexpiry and bounded audit/receipt/telemetry/saga/usage/
+policy/quota/activecounter footprints are unchanged. SQL E and nativefrontier4200020
+agree; no checkpoint/success/conclusion/drain/reportreceipt/compensation/newoutput.
+Current reconciliation/refusal/primitive counters stay unchanged. Client signs
+original bytes but sends NO current RPC: authentication/Appliedacceptance are NOT
+claimed by attachment.
+
+Final affected coordinator times including builds: applied-handoff 103.53s, report-before-drain 103.67s, under-limit-increment-cancellation-before-report 105.67s, live-work-frontier-red 101.73s.
+Four selectors produce12separate1passed/0failed/0ignored positives plus two isolated
+oldWaiting0passed/1failed/0ignored exit101 controls. Actualqueried APIroles postgres/
+sagat_app, oldRED API/store rolechecks. Eight created DBs/privatehandoffs/source
+folders removed; same22previousownedDBs. All1128native/elevenfixture-docpins match.
+StrictClippy24.32s/fmt4.42s/architecture0.34s, finalseparateparserunit1/1 andBash/
+overlay/sourcechecks pass. Actualfixture RED ordinary1passed/currentkind1failed
+native101/outer1 in95.39s; priorcompile/setupfailures excluded. SourceC1 fixes absent
+oldcolumns, uncheckedtaskIDs, omittedcapacity/pool/audit witnesses. Coherentmutated
+syntheticwireunit observedRED33.73s thenGREEN33.82s; actualAppliedfirstfourphase
+102.84s exploratory predates finalstrengthening. FreshsourceC2 None/focusedfourcase
+scopeaccepted. Root executes; reviewGPT-6Astra/xhigh, Sol unavailable/no substitution,
+optionalexternalreviewdeclined. Exact evidence/reproduction:
+`tasks/project-completion/evidence/legacy-applied-handoff-acceptance-20261024/README.md`.
+Only prerequisite closes; actualAppliedreport/refusal/drain/compensation/oldquotaRED,
+otherorders/bytes/outputdependent/OS/COMMIT recovery, Q10c/quota/rollout/nesting/
+canonicaltasks stayopen. Source/scoped-Finish production activation remainsclosed.
