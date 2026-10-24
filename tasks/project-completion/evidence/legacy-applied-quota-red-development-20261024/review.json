@@ -1,0 +1,20 @@
+{
+  "reviewer": "gpt-6-astra",
+  "reasoning_effort": "xhigh",
+  "fresh_context_each_cycle": true,
+  "read_only_no_execution": true,
+  "C1_findings": null,
+  "root_marker_finding": {
+    "classification": "valid actionable",
+    "failure": "non-exact marker suffix accepted by commonFq",
+    "RED": "actual source guard check exit1",
+    "fix": "new Applied case only exactFxq guard",
+    "GREEN": "12 actual marker/proof source checks exit0"
+  },
+  "C2_findings": null,
+  "regression_scope": "new RED plus acceptedA4selectors; shared lifecycle unchanged",
+  "first_real_run": "101.21s outer0 validates2native101 expectedquota failures, no currentconsumer",
+  "final_execution_pending": false,
+  "final_scope": "newquotaRED + four acceptedA selectors:12positive+4expectedoldfailures, sharedlifecycleunchanged",
+  "final_evidence": "legacy-applied-quota-red-acceptance-20261024"
+}

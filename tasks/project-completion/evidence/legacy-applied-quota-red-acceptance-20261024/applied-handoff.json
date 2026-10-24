@@ -1,0 +1,16 @@
+{
+  "command": [
+    "gtimeout",
+    "--signal=TERM",
+    "--kill-after=5s",
+    "2500s",
+    "bash",
+    "scripts/test-legacy-collection-inflight-report-v1.sh",
+    "--case",
+    "applied-handoff"
+  ],
+  "exit_code": 0,
+  "seconds": 133.4,
+  "started_utc": "2026-10-24T12:22:19.157708+00:00",
+  "log": "applied-handoff.txt"
+}

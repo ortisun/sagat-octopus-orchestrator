@@ -1,0 +1,62 @@
+[
+  {
+    "case": "new-valid",
+    "exit_code": 0,
+    "expected_accept": true
+  },
+  {
+    "case": "new-old-prefix",
+    "exit_code": 1,
+    "expected_accept": false
+  },
+  {
+    "case": "new-unsafe",
+    "exit_code": 1,
+    "expected_accept": false
+  },
+  {
+    "case": "new-duplicate",
+    "exit_code": 1,
+    "expected_accept": false
+  },
+  {
+    "case": "new-missing",
+    "exit_code": 1,
+    "expected_accept": false
+  },
+  {
+    "case": "old-valid",
+    "exit_code": 0,
+    "expected_accept": true
+  },
+  {
+    "case": "old-new-prefix",
+    "exit_code": 1,
+    "expected_accept": false
+  },
+  {
+    "case": "guard-valid",
+    "exit_code": 0,
+    "expected_accept": true
+  },
+  {
+    "case": "guard-native-zero",
+    "exit_code": 1,
+    "expected_accept": false
+  },
+  {
+    "case": "guard-missing-proof",
+    "exit_code": 1,
+    "expected_accept": false
+  },
+  {
+    "case": "guard-wrong-summary",
+    "exit_code": 1,
+    "expected_accept": false
+  },
+  {
+    "case": "guard-nonexact-proof",
+    "exit_code": 1,
+    "expected_accept": false
+  }
+]

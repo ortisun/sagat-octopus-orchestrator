@@ -765,8 +765,22 @@ JOIN worker_sessions w ON w.tenant_id=r.tenant_id AND w.id::text=q.leased_by
 WHERE r.tenant_id=$1 AND r.id=$2
 "#;
 
+enum AppliedEnd {
+    Handoff,
+    QuotaRed,
+}
+
 #[tokio::test]
 async fn frozen_old_applied_handoff_producer() {
+    produce_applied_handoff(AppliedEnd::Handoff).await;
+}
+
+#[tokio::test]
+async fn frozen_old_applied_output_quota_guard_red() {
+    produce_applied_handoff(AppliedEnd::QuotaRed).await;
+}
+
+async fn produce_applied_handoff(end: AppliedEnd) {
     let preset = FixturePreset::Ordinary;
     let activities = ["line.work", "line.reserve", "line.release", "line.lookup"];
     assert_eq!(env!("SAGAT_Q10C_SOURCE_COMMIT"), OLD_COMMIT);
@@ -973,6 +987,148 @@ async fn frozen_old_applied_handoff_producer() {
             valid.as_bool() == Some(true),
             "old Applied-ready invariant: {name}"
         );
+    }
+    if matches!(end, AppliedEnd::QuotaRed) {
+        let authority_before = applied_authority_witness(&platform, &worker_id).await;
+        let source_before = source_witness(&platform, run).await;
+        let retained_request = completion.encode_to_vec();
+        assert_eq!(completion.output_json.len(), 40);
+        let lookups_before = platform.api.authentication_lookups();
+        let request = worker.req(completion.clone());
+        let ack = worker
+            .client
+            .complete_step(request)
+            .await
+            .expect("real immutable-old Applied report")
+            .into_inner();
+        assert!(
+            !ack.already_applied && ack.step_status == "SUCCEEDED" && ack.run_status == "RUNNING",
+            "actual old successful Applied ACK"
+        );
+        assert!(
+            platform.api.authentication_lookups() > lookups_before,
+            "old public report authenticates the original subject/tenant"
+        );
+        assert!(
+            completion.encode_to_vec() == retained_request,
+            "retained original request bytes"
+        );
+        assert!(
+            applied_authority_witness(&platform, &worker_id).await == authority_before,
+            "old completion does not rebind, grant or renew the original session"
+        );
+        assert!(
+            source_witness(&platform, run).await == source_before,
+            "closed legacy source unchanged by old Applied success"
+        );
+
+        let proof: Value = sqlx::query_scalar(r#"SELECT jsonb_build_object(
+          'run',r.status='RUNNING' AND r.stop_reason IS NULL AND r.stop_code IS NULL AND r.finished_at IS NULL AND r.result_digest IS NULL,
+          'forward',f.status='SUCCEEDED' AND f.attempt=$5 AND f.generation=$6 AND f.reported_lease_token_hash=$7 AND NOT f.cancel_requested AND p.content=convert_to('{"hold":7}','UTF8') AND octet_length(p.content)=10,
+          'lookup',q.status='SUCCEEDED' AND q.attempt=$8 AND q.generation=$9 AND q.reported_lease_token_hash=$10 AND q.output_digest IS NULL AND NOT q.cancel_requested,
+          'scope',s.lifecycle='OPEN' AND s.result_digest IS NULL AND s.drain_kind IS NULL AND s.drain_sequence IS NULL,
+          'return_pending',t.status='PENDING' AND t.output_digest IS NULL,
+          'actual_applied',(SELECT count(*)=1 AND bool_and(e.detail->>'verdict'='applied' AND e.detail->'result'->>'kind'='succeeded') FROM run_events e WHERE e.tenant_id=$1 AND e.run_id=$2 AND e.event_type='reconciliation.concluded' AND e.node='reserve' AND e.instance_path_nodes=ARRAY['c10']::text[] AND e.instance_path_indices=ARRAY[0]::integer[]),
+          'lookup_completed',(SELECT count(*)=1 AND bool_and((e.detail->>'attempt')::int=$8 AND (e.detail->>'generation')::bigint=$9) FROM run_events e WHERE e.tenant_id=$1 AND e.run_id=$2 AND e.event_type='step.completed' AND e.node='reserve~r' AND e.instance_path_nodes=ARRAY['c10']::text[] AND e.instance_path_indices=ARRAY[0]::integer[]),
+          'no_forward_completion',NOT EXISTS(SELECT 1 FROM run_events e WHERE e.tenant_id=$1 AND e.run_id=$2 AND e.event_type='step.completed' AND e.node='reserve' AND e.instance_path_nodes=ARRAY['c10']::text[] AND e.instance_path_indices=ARRAY[0]::integer[]),
+          'no_refusal',NOT EXISTS(SELECT 1 FROM audit_records a WHERE a.tenant_id=$1 AND a.resource_type='run' AND a.resource_id=$2::text AND a.action='run.data_limit_exceeded'),
+          'no_checkpoint',NOT EXISTS(SELECT 1 FROM iteration_checkpoints k WHERE k.tenant_id=$1 AND k.run_id=$2 AND k.scope_id=s.scope_id),
+          'no_saga',NOT EXISTS(SELECT 1 FROM scope_sagas z WHERE z.tenant_id=$1 AND z.run_id=$2),
+          'no_comp_or_done',NOT EXISTS(SELECT 1 FROM steps z WHERE z.tenant_id=$1 AND z.run_id=$2 AND z.node IN ('reserve~c','done')))
+          FROM runs r
+          JOIN iteration_scopes s ON s.tenant_id=r.tenant_id AND s.run_id=r.id AND s.owner_node='c10' AND s.owner_path_nodes='{}'::text[] AND s.owner_path_indices='{}'::integer[]
+          JOIN steps f ON f.tenant_id=r.tenant_id AND f.run_id=r.id AND f.step_id=$3
+          JOIN steps q ON q.tenant_id=r.tenant_id AND q.run_id=r.id AND q.step_id=$4
+          JOIN steps t ON t.tenant_id=r.tenant_id AND t.run_id=r.id AND t.node='returned' AND t.instance_path_nodes=ARRAY['c10']::text[] AND t.instance_path_indices=ARRAY[0]::integer[]
+          JOIN payloads p ON p.tenant_id=f.tenant_id AND p.digest=f.output_digest
+          WHERE r.tenant_id=$1 AND r.id=$2"#)
+            .bind(platform.tenant.as_uuid()).bind(run.as_uuid())
+            .bind(Uuid::parse_str(&forward.step_id).expect("original forward step"))
+            .bind(Uuid::parse_str(&lookup.step_id).expect("original lookup step"))
+            .bind(forward.attempt).bind(forward.generation).bind(Token::hash_of(&forward.lease_token))
+            .bind(lookup.attempt).bind(lookup.generation).bind(Token::hash_of(&lookup.lease_token))
+            .fetch_one(&platform.api.db.pool).await.expect("actual old Applied bypass proof");
+        for (name, valid) in proof.as_object().expect("old quota bypass proof flags") {
+            assert!(
+                valid.as_bool() == Some(true),
+                "actual old Applied bypass invariant: {name}"
+            );
+        }
+        let totals: (i64,i64,i64) = sqlx::query_as(r#"SELECT u.logical_output_bytes,
+          sum(octet_length(p.content)) FILTER (WHERE o.output_digest IS NULL)::bigint,
+          u.logical_output_bytes+sum(octet_length(p.content)) FILTER (WHERE o.output_digest IS NULL)::bigint
+          FROM run_instance_usage u JOIN iteration_scopes s ON s.tenant_id=u.tenant_id AND s.run_id=u.run_id
+          JOIN steps o ON o.tenant_id=s.tenant_id AND o.run_id=s.run_id AND o.node=s.owner_node AND o.instance_path_nodes='{}'::text[] AND o.instance_path_indices='{}'::integer[]
+          JOIN payloads p ON p.tenant_id=s.tenant_id AND p.digest=s.result_digest
+          WHERE u.tenant_id=$1 AND u.run_id=$2 AND s.lifecycle='SUCCEEDED' AND s.owner_path_nodes='{}'::text[] AND s.owner_path_indices='{}'::integer[] GROUP BY u.logical_output_bytes"#)
+            .bind(platform.tenant.as_uuid()).bind(run.as_uuid()).fetch_one(&platform.api.db.pool).await.expect("old real retained output totals");
+        assert_eq!(totals, (2_100_010, 2_100_020, 4_200_030));
+        let heads:(i64,i64,i64)=sqlx::query_as("SELECT r.run_version,(SELECT max(e.seq) FROM run_events e WHERE e.tenant_id=r.tenant_id AND e.run_id=r.id),t.head_seq FROM runs r JOIN telemetry_pending t ON t.tenant_id=r.tenant_id AND t.run_id=r.id WHERE r.tenant_id=$1 AND r.id=$2")
+            .bind(platform.tenant.as_uuid()).bind(run.as_uuid()).fetch_one(&platform.api.db.pool).await.expect("actual old committed heads");
+        assert!(
+            heads.0 == heads.1
+                && heads.0 == heads.2
+                && ack.command_id == format!("{run}:{}", heads.0)
+        );
+        let prefix = Token::hash_of(&lookup.lease_token)
+            .iter()
+            .take(8)
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        let scope = format!("step:{run}:scoped:3:c10:0;9:reserve~r:{prefix}");
+        let mut fingerprint = Vec::new();
+        let attempt = u32::try_from(lookup.attempt)
+            .expect("original attempt")
+            .to_be_bytes();
+        let generation = u64::try_from(lookup.generation)
+            .expect("original generation")
+            .to_be_bytes();
+        for part in [
+            b"complete".as_slice(),
+            attempt.as_slice(),
+            generation.as_slice(),
+            completion.output_json.as_bytes(),
+        ] {
+            fingerprint.extend_from_slice(&(part.len() as u64).to_be_bytes());
+            fingerprint.extend_from_slice(part);
+        }
+        let receipt_rows:Vec<(Vec<u8>,String,time::OffsetDateTime)>=sqlx::query_as("SELECT request_hash,resource_id,created_at FROM command_dedupe WHERE tenant_id=$1 AND scope=$2 AND idempotency_key=$3")
+            .bind(platform.tenant.as_uuid()).bind(&scope).bind(&completion.idempotency_key).fetch_all(&platform.api.db.pool).await.expect("original actual Applied completion receipt");
+        assert!(
+            receipt_rows.len() == 1
+                && receipt_rows[0].0 == Sha256::digest(&fingerprint).to_vec()
+                && receipt_rows[0].1 == format!("SUCCEEDED|RUNNING|{}", heads.0)
+        );
+        let receipt_witness = digest(
+            &json!({"tenant":platform.tenant.to_string(),"scope":scope,"key":completion.idempotency_key,"request_hash":receipt_rows[0].0,"resource":receipt_rows[0].1,"created_at":receipt_rows[0].2.to_string()}),
+        );
+        println!("applied_quota_receipt_sha256={receipt_witness}");
+        let desired_refusal:bool=sqlx::query_scalar("SELECT coalesce(r.stop_reason='FAILED' AND r.stop_code='RUN_DATA_LIMIT',false) AND f.output_digest IS NULL FROM runs r JOIN steps f ON f.tenant_id=r.tenant_id AND f.run_id=r.id AND f.step_id=$3 WHERE r.tenant_id=$1 AND r.id=$2")
+            .bind(platform.tenant.as_uuid()).bind(run.as_uuid()).bind(Uuid::parse_str(&forward.step_id).expect("forward step")).fetch_one(&platform.api.db.pool).await.expect("required current known-effect refusal");
+        let inspection_role: String = sqlx::query_scalar("SELECT current_user::text")
+            .fetch_one(&platform.api.db.pool)
+            .await
+            .expect("old inspection role");
+        assert!(
+            producer_api_role
+                == if crate::support::as_runtime_role() {
+                    crate::support::RUNTIME_ROLE
+                } else {
+                    inspection_role.as_str()
+                },
+            "actual old API/shared-store role"
+        );
+        println!(
+            "old_applied_quota_role api={} store={} database={}",
+            producer_api_role, producer_api_role, platform.api.db.name
+        );
+        println!("applied_quota_red_database={}", platform.api.db.name);
+        println!("observed_legacy_applied_quota_bypass=true");
+        assert!(
+            desired_refusal,
+            "known Applied effect must survive while its over-budget output is refused with RUN_DATA_LIMIT"
+        );
+        return; // A RED-mode run must never publish a compatibility handoff, even if its guard passes.
     }
     let receipt = json!({
         "format": "q10c-applied-handoff-v1", "source_commit": OLD_COMMIT,

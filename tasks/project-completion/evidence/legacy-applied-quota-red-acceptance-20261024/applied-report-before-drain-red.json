@@ -1,0 +1,16 @@
+{
+  "command": [
+    "gtimeout",
+    "--signal=TERM",
+    "--kill-after=5s",
+    "2500s",
+    "bash",
+    "scripts/test-legacy-collection-inflight-report-v1.sh",
+    "--case",
+    "applied-report-before-drain-red"
+  ],
+  "exit_code": 0,
+  "seconds": 145.9,
+  "started_utc": "2026-10-24T12:19:52.642872+00:00",
+  "log": "applied-report-before-drain-red.txt"
+}

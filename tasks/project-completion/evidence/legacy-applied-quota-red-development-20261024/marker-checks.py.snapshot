@@ -1,0 +1,21 @@
+from pathlib import Path
+import subprocess,os,json
+source=Path('scripts/test-legacy-collection-inflight-report-v1.sh').read_text()
+root=Path('/tmp/sagat-completion-20261023/applied-quota-red-markers');root.mkdir(mode=0o700,exist_ok=True)
+new=source.split("<<'APPLIED_RED_DATABASE'\n",1)[1].split('\nAPPLIED_RED_DATABASE\n',1)[0]
+old=source.split("<<'RED_DATABASE'\n",1)[1].split('\nRED_DATABASE\n',1)[0]
+a=source.index('    if [[ "${producer_status}" != 101 ]]');b=source.index('    if [[ "${case_name}" == applied-report-before-drain-red ]]; then\n      cleanup_receipt_database',a)
+guard=source[a:b]
+extra=source.find('    if [[ "${case_name}" == applied-report-before-drain-red ]] && ! grep -Fxq',source.index('  if [[ -n "${expected_red_marker}" ]]'))
+if extra!=-1:guard=source[extra:b]
+rows=[];db='t_'+'0'*32
+for label,program,text,ok in [('new-valid',new,'applied_quota_red_database='+db+'\n',True),('new-old-prefix',new,'live_frontier_red_database='+db+'\n',False),('new-unsafe',new,'applied_quota_red_database=t_X\n',False),('new-duplicate',new,('applied_quota_red_database='+db+'\n')*2,False),('new-missing',new,'no marker\n',False),('old-valid',old,'live_frontier_red_database='+db+'\n',True),('old-new-prefix',old,'applied_quota_red_database='+db+'\n',False)]:
+ log=root/(label+'.txt');log.write_text(text);r=subprocess.run(['python3','-',str(log)],input=program,text=True,capture_output=True);assert (r.returncode==0)==ok,label
+ if ok:assert r.stdout.strip()==db
+ rows.append({'case':label,'exit_code':r.returncode,'expected_accept':ok})
+marker='observed_legacy_applied_quota_bypass=true';summary='test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.01s'
+for label,status,proof,result,ok in [('guard-valid',101,marker,summary,True),('guard-native-zero',0,marker,summary,False),('guard-missing-proof',101,'no proof',summary,False),('guard-wrong-summary',101,marker,'test result: ok. 1 passed; 0 failed;',False),('guard-nonexact-proof',101,marker+'-suffix',summary,False)]:
+ log=root/(label+'.txt');log.write_text(proof+'\n'+result+'\n');env=dict(os.environ,producer_status=str(status),expected_red_marker=marker,producer_log=str(log),case_name='applied-report-before-drain-red');r=subprocess.run(['bash','-c',guard],env=env,text=True,capture_output=True)
+ if (r.returncode==0)!=ok:raise SystemExit('invalid proof accepted by actual coordinator guard: '+label)
+ rows.append({'case':label,'exit_code':r.returncode,'expected_accept':ok})
+(root/'checks.json').write_text(json.dumps(rows,indent=2)+'\n');print('Actual source marker/ownership guards:12 positive/negative checks pass; no SQL/drop or native process executed')

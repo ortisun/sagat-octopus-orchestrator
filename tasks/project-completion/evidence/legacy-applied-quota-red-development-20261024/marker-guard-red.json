@@ -1,0 +1,10 @@
+{
+  "command": [
+    "python3",
+    "/tmp/sagat-completion-20261023/check-applied-red-markers.py"
+  ],
+  "exit_code": 1,
+  "seconds": 0.19,
+  "started_utc": "2026-10-24T04:11:58.312203+00:00",
+  "log": "marker-guard-red.txt"
+}

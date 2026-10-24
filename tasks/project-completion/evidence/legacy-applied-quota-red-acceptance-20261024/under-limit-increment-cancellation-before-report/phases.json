@@ -1,0 +1,46 @@
+[
+  {
+    "case": "under-limit-increment-cancellation-before-report",
+    "role": "owner",
+    "phase": "producer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 6.66,
+    "artifact_run": "/tmp/sagat-completion-20261023/applied-quota-red-final/artifacts-under-limit-increment-cancellation-before-report/run.gHJy59"
+  },
+  {
+    "case": "under-limit-increment-cancellation-before-report",
+    "role": "owner",
+    "phase": "consumer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 3.22,
+    "artifact_run": "/tmp/sagat-completion-20261023/applied-quota-red-final/artifacts-under-limit-increment-cancellation-before-report/run.gHJy59"
+  },
+  {
+    "case": "under-limit-increment-cancellation-before-report",
+    "role": "runtime",
+    "phase": "producer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 7.4,
+    "artifact_run": "/tmp/sagat-completion-20261023/applied-quota-red-final/artifacts-under-limit-increment-cancellation-before-report/run.gHJy59"
+  },
+  {
+    "case": "under-limit-increment-cancellation-before-report",
+    "role": "runtime",
+    "phase": "consumer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 2.82,
+    "artifact_run": "/tmp/sagat-completion-20261023/applied-quota-red-final/artifacts-under-limit-increment-cancellation-before-report/run.gHJy59"
+  }
+]

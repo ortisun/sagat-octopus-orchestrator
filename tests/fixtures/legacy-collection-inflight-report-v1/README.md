@@ -1,6 +1,6 @@
 # Legacy collection in-flight report fixture v1
 
-This fixture covers nine closed compatibility selectors. Positive cases use separate immutable-old/current processes; the old-only Waiting control intentionally fails its guard. Ordinary success cases use the immutable
+This fixture covers ten closed compatibility selectors. Positive cases use separate immutable-old/current processes; the old-only Waiting and Applied quota controls intentionally fail their guards. Ordinary success cases use the immutable
 `6c44a0e49670cf19660792cd1518d241e6c99b3b` binary creates ten closed legacy
 collection aggregates, leases the compensable `c10/0/reserve` forward task, and
 exits without reporting it. A separately built current binary reopens the same
@@ -257,3 +257,38 @@ and live-work-frontier-red. Shared lifecycle changes require all selectors.
 Evidence:299f8b2e, `tasks/project-completion/evidence/legacy-applied-handoff-acceptance-20261024/README.md`.
 Actual Applied report/refusal/drain/compensation, other orders/bytes/recovery and
 output-dependent compensation remain separate; no Q10c/master/production closure.
+
+
+## Genuine old Applied quota guard RED
+
+`applied-report-before-drain-red` reuses the genuine old Applied-ready builder but
+submits its retained lookup completion BEFORE publishing any private handoff. The
+old public API authenticates the original subject and accepts SUCCEEDED/RUNNING;
+actual forward+lookup succeed, forward retains exactly `{"hold":7}` (10 bytes),
+lookup retains no wrapper, L2100010/V2100020/E4200030 and no RDL stop/audit. The
+original authority including exact expiry and closed source remain unchanged;
+lookup receipt scope/request fingerprint/canonical head/ACK are checked. No scheduler
+tick occurs after completion; the actual successor Return is still PENDING.
+
+Only after those observations, the producer emits exact safe DB/role/receipt-SHA
+and observed_legacy_applied_quota_bypass=true markers, then fails the required
+current behavior: retain the real effect while refusing its output with an RDL stop.
+Each old role must exit101 with exactly one failure. The coordinator accepts only
+that selector/native status/one-failure summary/exact proof line/unique safe owned
+DB, and removes that database without launching any current consumer. No handoff
+is published, even if the desired guard unexpectedly passes. B2 current acceptance
+must use a fresh successful Applied handoff, never these mutated old databases.
+
+```sh
+bash scripts/test-legacy-collection-inflight-report-v1.sh --case applied-report-before-drain-red
+```
+
+Coordinator exit0 means two validated expected old failures; it is not two current
+passes. A full runner still builds/registers current A for reproducibility but does
+not execute it in this old-only case. Distinct Applied marker parsing and exact
+proof matching leave the prior Waiting RED branch unchanged. Twelve source-extracted
+positive/negative marker checks cover malformed/duplicate/wrong-prefix DB markers,
+wrong native status/summary/missing/non-exact proof without SQL or DROP calls.
+The reviewed affected set is this selector plus A's four selectors above, unless
+shared lifecycle logic changes. No production/current consumer/schema/grant/SDK
+change, provider effect/undo claim or broader Applied/Q10c closure follows.

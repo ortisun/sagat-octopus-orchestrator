@@ -1,0 +1,24 @@
+[
+  {
+    "case": "applied-report-before-drain-red",
+    "role": "owner",
+    "phase": "producer",
+    "native_exit_code": 101,
+    "passed": 0,
+    "failed": 1,
+    "ignored": 0,
+    "test_harness_seconds": 18.68,
+    "artifact_run": "/tmp/sagat-completion-20261023/applied-quota-red-final/artifacts-applied-report-before-drain-red/run.OmrVdS"
+  },
+  {
+    "case": "applied-report-before-drain-red",
+    "role": "runtime",
+    "phase": "producer",
+    "native_exit_code": 101,
+    "passed": 0,
+    "failed": 1,
+    "ignored": 0,
+    "test_harness_seconds": 24.67,
+    "artifact_run": "/tmp/sagat-completion-20261023/applied-quota-red-final/artifacts-applied-report-before-drain-red/run.OmrVdS"
+  }
+]

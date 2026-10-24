@@ -1,0 +1,10 @@
+--- /tmp/sagat-completion-20261023/applied-quota-red-final/artifacts-under-limit-increment-cancellation-before-report/run.gHJy59/artifacts/old-main.original.rs	2026-10-24 09:26:38
++++ /tmp/sagat-completion-20261023/applied-quota-red-final/artifacts-under-limit-increment-cancellation-before-report/run.gHJy59/old-source/tests/integration/workflow-primitives/main.rs	2026-10-24 09:26:38
+@@ -26,6 +26,7 @@
+ mod chains_http;
+ mod collection_10k;
+ mod collection_budgets;
++mod legacy_collection_inflight_report_producer_v1;
+ mod collection_pipeline;
+ mod collection_restore;
+ mod collection_sources;

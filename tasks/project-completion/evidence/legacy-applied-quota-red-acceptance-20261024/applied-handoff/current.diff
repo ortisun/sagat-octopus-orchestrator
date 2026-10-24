@@ -1,0 +1,315 @@
+diff --git a/scripts/test-legacy-collection-inflight-report-v1.sh b/scripts/test-legacy-collection-inflight-report-v1.sh
+index 29d1b28e..8323e7aa 100755
+--- a/scripts/test-legacy-collection-inflight-report-v1.sh
++++ b/scripts/test-legacy-collection-inflight-report-v1.sh
+@@ -7,7 +7,7 @@ readonly old_commit="6c44a0e49670cf19660792cd1518d241e6c99b3b"
+ case_name="report-before-drain"
+ if (( $# != 0 )); then
+   if (( $# != 2 )) || [[ "$1" != "--case" ]]; then
+-    echo "usage: $0 [--case report-before-drain|drain-before-report|cancellation-before-report|under-limit-increment-before-drain|live-work-frontier|live-work-frontier-red|report-frontier-cas|under-limit-increment-cancellation-before-report|applied-handoff]" >&2
++    echo "usage: $0 [--case report-before-drain|drain-before-report|cancellation-before-report|under-limit-increment-before-drain|live-work-frontier|live-work-frontier-red|report-frontier-cas|under-limit-increment-cancellation-before-report|applied-handoff|applied-report-before-drain-red]" >&2
+     exit 2
+   fi
+   case_name="$2"
+@@ -46,6 +46,14 @@ case "${case_name}" in
+     log_label="under-limit-increment-cancellation-before-report"
+     phase_seconds=300
+     ;;
++  applied-report-before-drain-red)
++    old_test="legacy_collection_inflight_report_producer_v1::frozen_old_applied_output_quota_guard_red"
++    current_test="legacy_collection_inflight_applied_v1::old_applied_lookup_attaches_without_changing_original_authority"
++    artifact_namespace="sagat-q10c-applied-report-before-drain-red-v1"
++    log_label="applied-report-before-drain-red"
++    expected_red_marker='observed_legacy_applied_quota_bypass=true'
++    phase_seconds=300
++    ;;
+   applied-handoff)
+     old_test="legacy_collection_inflight_report_producer_v1::frozen_old_applied_handoff_producer"
+     current_test="legacy_collection_inflight_applied_v1::old_applied_lookup_attaches_without_changing_original_authority"
+@@ -78,7 +86,7 @@ case "${case_name}" in
+ esac
+ readonly case_name old_test current_test artifact_namespace log_label phase_seconds expected_red_marker
+ # Bound the entire new fixture, including builds and cleanup, in a separate process group.
+-if [[ "${case_name}" == live-work-frontier || "${case_name}" == live-work-frontier-red || "${case_name}" == report-frontier-cas || "${case_name}" == under-limit-increment-cancellation-before-report || "${case_name}" == applied-handoff ]] && [[ "${SAGAT_Q10C_SUPERVISED:-}" != 1 ]]; then
++if [[ "${case_name}" == live-work-frontier || "${case_name}" == live-work-frontier-red || "${case_name}" == report-frontier-cas || "${case_name}" == under-limit-increment-cancellation-before-report || "${case_name}" == applied-handoff || "${case_name}" == applied-report-before-drain-red ]] && [[ "${SAGAT_Q10C_SUPERVISED:-}" != 1 ]]; then
+   exec python3 - "$0" "$@" <<'SUPERVISOR'
+ import os,select,signal,subprocess,sys,time
+ child=None
+@@ -120,7 +128,7 @@ fi
+ repo_root="$(git rev-parse --show-toplevel)"
+ producer_overlay="${repo_root}/tests/fixtures/legacy-collection-inflight-report-v1/producer.rs"
+ consumer_source="${repo_root}/tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs"
+-if [[ "${case_name}" == applied-handoff ]]; then
++if [[ "${case_name}" == applied-handoff || "${case_name}" == applied-report-before-drain-red ]]; then
+   consumer_source="${repo_root}/tests/integration/workflow-primitives/legacy_collection_inflight_applied_v1.rs"
+ fi
+ coordinator_source="${repo_root}/scripts/test-legacy-collection-inflight-report-v1.sh"
+@@ -459,8 +467,8 @@ p=Path(sys.argv[1])
+ if stat.S_IMODE(p.stat().st_mode)!=0o600:raise SystemExit('receipt is not private')
+ v=json.loads(p.read_text())
+ fields='format source_commit database_name producer_api_role tenant_id other_tenant_id namespace_id namespace_slug worker_subject tenant_alias worker_id session_token run_id selected_owner scheduler_owner task_lease_b64 completion_request_b64 producer_projection_witness_sha256 closed_source_witness_sha256'.split()
+-formats={'applied-handoff':'q10c-applied-handoff-v1','under-limit-increment-cancellation-before-report':'q10c-ordinary-under-limit-increment-v1','report-frontier-cas':'q10c-ordinary-before-drain-v1','report-before-drain':'q10c-ordinary-before-drain-v1','drain-before-report':'q10c-ordinary-before-drain-v1','cancellation-before-report':'q10c-ordinary-before-drain-v1','under-limit-increment-before-drain':'q10c-ordinary-under-limit-increment-v1','live-work-frontier':'q10c-ordinary-before-drain-v1','live-work-frontier-red':'q10c-ordinary-before-drain-v1'}
+-if sys.argv[2]=='applied-handoff':fields+=['forward_task_lease_b64','producer_authority_witness_sha256']
++formats={'applied-report-before-drain-red':'q10c-applied-handoff-v1','applied-handoff':'q10c-applied-handoff-v1','under-limit-increment-cancellation-before-report':'q10c-ordinary-under-limit-increment-v1','report-frontier-cas':'q10c-ordinary-before-drain-v1','report-before-drain':'q10c-ordinary-before-drain-v1','drain-before-report':'q10c-ordinary-before-drain-v1','cancellation-before-report':'q10c-ordinary-before-drain-v1','under-limit-increment-before-drain':'q10c-ordinary-under-limit-increment-v1','live-work-frontier':'q10c-ordinary-before-drain-v1','live-work-frontier-red':'q10c-ordinary-before-drain-v1'}
++if sys.argv[2] in ('applied-handoff','applied-report-before-drain-red'):fields+=['forward_task_lease_b64','producer_authority_witness_sha256']
+ if sys.argv[2] not in formats or set(v)!=set(fields) or v['format']!=formats[sys.argv[2]] or v['source_commit']!='6c44a0e49670cf19660792cd1518d241e6c99b3b' or v['selected_owner']!='c10':raise SystemExit('invalid private in-flight envelope')
+ role=v['producer_api_role']
+ if not isinstance(role,str) or not role or (sys.argv[3]=='runtime' and role!='sagat_app') or (sys.argv[3]=='owner' and role=='sagat_app'):raise SystemExit('in-flight receipt role mismatch')
+@@ -621,9 +629,22 @@ for role in owner runtime; do
+     echo "old producer was not launched; cleanup remains disarmed" >&2; exit 1;
+   }
+   if [[ -n "${expected_red_marker}" ]]; then
++    if [[ "${case_name}" == applied-report-before-drain-red ]] && ! grep -Fxq "${expected_red_marker}" "${producer_log}"; then
++      cat "${producer_log}" >&2; echo "not the exact Applied quota RED proof" >&2; exit 1
++    fi
+     if [[ "${producer_status}" != 101 ]] || ! grep -Fq "${expected_red_marker}" "${producer_log}" || ! grep -Fq 'test result: FAILED. 0 passed; 1 failed; 0 ignored;' "${producer_log}"; then
+       cat "${producer_log}" >&2; echo "not the expected old Waiting RED" >&2; exit 1
+     fi
++    if [[ "${case_name}" == applied-report-before-drain-red ]]; then
++      cleanup_receipt_database="$(python3 - "${producer_log}" <<'APPLIED_RED_DATABASE'
++from pathlib import Path
++import re,sys
++matches=re.findall(r'^applied_quota_red_database=(t_[0-9a-f]{32})$',Path(sys.argv[1]).read_text(),re.M)
++if len(matches)!=1:raise SystemExit('one safe Applied RED database marker required')
++print(matches[0])
++APPLIED_RED_DATABASE
++)"
++    else
+     cleanup_receipt_database="$(python3 - "${producer_log}" <<'RED_DATABASE'
+ from pathlib import Path
+ import re,sys
+@@ -632,6 +653,7 @@ if len(matches)!=1:raise SystemExit('one safe RED database marker required')
+ print(matches[0])
+ RED_DATABASE
+ )"
++    fi
+     [[ ! -e "${receipt}" ]] || { echo "old RED unexpectedly published a private receipt" >&2; exit 1; }
+     remove_private_receipts
+     echo "${role}-expected-red-exit 101" >> "${manifest}"
+diff --git a/tests/fixtures/legacy-collection-inflight-report-v1/README.md b/tests/fixtures/legacy-collection-inflight-report-v1/README.md
+index c47626bd..aaa50dab 100644
+--- a/tests/fixtures/legacy-collection-inflight-report-v1/README.md
++++ b/tests/fixtures/legacy-collection-inflight-report-v1/README.md
+@@ -1,6 +1,6 @@
+ # Legacy collection in-flight report fixture v1
+ 
+-This fixture covers nine closed compatibility selectors. Positive cases use separate immutable-old/current processes; the old-only Waiting control intentionally fails its guard. Ordinary success cases use the immutable
++This fixture covers ten closed compatibility selectors. Positive cases use separate immutable-old/current processes; the old-only Waiting and Applied quota controls intentionally fail their guards. Ordinary success cases use the immutable
+ `6c44a0e49670cf19660792cd1518d241e6c99b3b` binary creates ten closed legacy
+ collection aggregates, leases the compensable `c10/0/reserve` forward task, and
+ exits without reporting it. A separately built current binary reopens the same
+@@ -257,3 +257,38 @@ and live-work-frontier-red. Shared lifecycle changes require all selectors.
+ Evidence:299f8b2e, `tasks/project-completion/evidence/legacy-applied-handoff-acceptance-20261024/README.md`.
+ Actual Applied report/refusal/drain/compensation, other orders/bytes/recovery and
+ output-dependent compensation remain separate; no Q10c/master/production closure.
++
++
++## Genuine old Applied quota guard RED
++
++`applied-report-before-drain-red` reuses the genuine old Applied-ready builder but
++submits its retained lookup completion BEFORE publishing any private handoff. The
++old public API authenticates the original subject and accepts SUCCEEDED/RUNNING;
++actual forward+lookup succeed, forward retains exactly `{"hold":7}` (10 bytes),
++lookup retains no wrapper, L2100010/V2100020/E4200030 and no RDL stop/audit. The
++original authority including exact expiry and closed source remain unchanged;
++lookup receipt scope/request fingerprint/canonical head/ACK are checked. No scheduler
++tick occurs after completion; the actual successor Return is still PENDING.
++
++Only after those observations, the producer emits exact safe DB/role/receipt-SHA
++and observed_legacy_applied_quota_bypass=true markers, then fails the required
++current behavior: retain the real effect while refusing its output with an RDL stop.
++Each old role must exit101 with exactly one failure. The coordinator accepts only
++that selector/native status/one-failure summary/exact proof line/unique safe owned
++DB, and removes that database without launching any current consumer. No handoff
++is published, even if the desired guard unexpectedly passes. B2 current acceptance
++must use a fresh successful Applied handoff, never these mutated old databases.
++
++```sh
++bash scripts/test-legacy-collection-inflight-report-v1.sh --case applied-report-before-drain-red
++```
++
++Coordinator exit0 means two validated expected old failures; it is not two current
++passes. A full runner still builds/registers current A for reproducibility but does
++not execute it in this old-only case. Distinct Applied marker parsing and exact
++proof matching leave the prior Waiting RED branch unchanged. Twelve source-extracted
++positive/negative marker checks cover malformed/duplicate/wrong-prefix DB markers,
++wrong native status/summary/missing/non-exact proof without SQL or DROP calls.
++The reviewed affected set is this selector plus A's four selectors above, unless
++shared lifecycle logic changes. No production/current consumer/schema/grant/SDK
++change, provider effect/undo claim or broader Applied/Q10c closure follows.
+diff --git a/tests/fixtures/legacy-collection-inflight-report-v1/producer.rs b/tests/fixtures/legacy-collection-inflight-report-v1/producer.rs
+index 74d05425..9e14c584 100644
+--- a/tests/fixtures/legacy-collection-inflight-report-v1/producer.rs
++++ b/tests/fixtures/legacy-collection-inflight-report-v1/producer.rs
+@@ -765,8 +765,22 @@ JOIN worker_sessions w ON w.tenant_id=r.tenant_id AND w.id::text=q.leased_by
+ WHERE r.tenant_id=$1 AND r.id=$2
+ "#;
+ 
++enum AppliedEnd {
++    Handoff,
++    QuotaRed,
++}
++
+ #[tokio::test]
+ async fn frozen_old_applied_handoff_producer() {
++    produce_applied_handoff(AppliedEnd::Handoff).await;
++}
++
++#[tokio::test]
++async fn frozen_old_applied_output_quota_guard_red() {
++    produce_applied_handoff(AppliedEnd::QuotaRed).await;
++}
++
++async fn produce_applied_handoff(end: AppliedEnd) {
+     let preset = FixturePreset::Ordinary;
+     let activities = ["line.work", "line.reserve", "line.release", "line.lookup"];
+     assert_eq!(env!("SAGAT_Q10C_SOURCE_COMMIT"), OLD_COMMIT);
+@@ -974,6 +988,148 @@ async fn frozen_old_applied_handoff_producer() {
+             "old Applied-ready invariant: {name}"
+         );
+     }
++    if matches!(end, AppliedEnd::QuotaRed) {
++        let authority_before = applied_authority_witness(&platform, &worker_id).await;
++        let source_before = source_witness(&platform, run).await;
++        let retained_request = completion.encode_to_vec();
++        assert_eq!(completion.output_json.len(), 40);
++        let lookups_before = platform.api.authentication_lookups();
++        let request = worker.req(completion.clone());
++        let ack = worker
++            .client
++            .complete_step(request)
++            .await
++            .expect("real immutable-old Applied report")
++            .into_inner();
++        assert!(
++            !ack.already_applied && ack.step_status == "SUCCEEDED" && ack.run_status == "RUNNING",
++            "actual old successful Applied ACK"
++        );
++        assert!(
++            platform.api.authentication_lookups() > lookups_before,
++            "old public report authenticates the original subject/tenant"
++        );
++        assert!(
++            completion.encode_to_vec() == retained_request,
++            "retained original request bytes"
++        );
++        assert!(
++            applied_authority_witness(&platform, &worker_id).await == authority_before,
++            "old completion does not rebind, grant or renew the original session"
++        );
++        assert!(
++            source_witness(&platform, run).await == source_before,
++            "closed legacy source unchanged by old Applied success"
++        );
++
++        let proof: Value = sqlx::query_scalar(r#"SELECT jsonb_build_object(
++          'run',r.status='RUNNING' AND r.stop_reason IS NULL AND r.stop_code IS NULL AND r.finished_at IS NULL AND r.result_digest IS NULL,
++          'forward',f.status='SUCCEEDED' AND f.attempt=$5 AND f.generation=$6 AND f.reported_lease_token_hash=$7 AND NOT f.cancel_requested AND p.content=convert_to('{"hold":7}','UTF8') AND octet_length(p.content)=10,
++          'lookup',q.status='SUCCEEDED' AND q.attempt=$8 AND q.generation=$9 AND q.reported_lease_token_hash=$10 AND q.output_digest IS NULL AND NOT q.cancel_requested,
++          'scope',s.lifecycle='OPEN' AND s.result_digest IS NULL AND s.drain_kind IS NULL AND s.drain_sequence IS NULL,
++          'return_pending',t.status='PENDING' AND t.output_digest IS NULL,
++          'actual_applied',(SELECT count(*)=1 AND bool_and(e.detail->>'verdict'='applied' AND e.detail->'result'->>'kind'='succeeded') FROM run_events e WHERE e.tenant_id=$1 AND e.run_id=$2 AND e.event_type='reconciliation.concluded' AND e.node='reserve' AND e.instance_path_nodes=ARRAY['c10']::text[] AND e.instance_path_indices=ARRAY[0]::integer[]),
++          'lookup_completed',(SELECT count(*)=1 AND bool_and((e.detail->>'attempt')::int=$8 AND (e.detail->>'generation')::bigint=$9) FROM run_events e WHERE e.tenant_id=$1 AND e.run_id=$2 AND e.event_type='step.completed' AND e.node='reserve~r' AND e.instance_path_nodes=ARRAY['c10']::text[] AND e.instance_path_indices=ARRAY[0]::integer[]),
++          'no_forward_completion',NOT EXISTS(SELECT 1 FROM run_events e WHERE e.tenant_id=$1 AND e.run_id=$2 AND e.event_type='step.completed' AND e.node='reserve' AND e.instance_path_nodes=ARRAY['c10']::text[] AND e.instance_path_indices=ARRAY[0]::integer[]),
++          'no_refusal',NOT EXISTS(SELECT 1 FROM audit_records a WHERE a.tenant_id=$1 AND a.resource_type='run' AND a.resource_id=$2::text AND a.action='run.data_limit_exceeded'),
++          'no_checkpoint',NOT EXISTS(SELECT 1 FROM iteration_checkpoints k WHERE k.tenant_id=$1 AND k.run_id=$2 AND k.scope_id=s.scope_id),
++          'no_saga',NOT EXISTS(SELECT 1 FROM scope_sagas z WHERE z.tenant_id=$1 AND z.run_id=$2),
++          'no_comp_or_done',NOT EXISTS(SELECT 1 FROM steps z WHERE z.tenant_id=$1 AND z.run_id=$2 AND z.node IN ('reserve~c','done')))
++          FROM runs r
++          JOIN iteration_scopes s ON s.tenant_id=r.tenant_id AND s.run_id=r.id AND s.owner_node='c10' AND s.owner_path_nodes='{}'::text[] AND s.owner_path_indices='{}'::integer[]
++          JOIN steps f ON f.tenant_id=r.tenant_id AND f.run_id=r.id AND f.step_id=$3
++          JOIN steps q ON q.tenant_id=r.tenant_id AND q.run_id=r.id AND q.step_id=$4
++          JOIN steps t ON t.tenant_id=r.tenant_id AND t.run_id=r.id AND t.node='returned' AND t.instance_path_nodes=ARRAY['c10']::text[] AND t.instance_path_indices=ARRAY[0]::integer[]
++          JOIN payloads p ON p.tenant_id=f.tenant_id AND p.digest=f.output_digest
++          WHERE r.tenant_id=$1 AND r.id=$2"#)
++            .bind(platform.tenant.as_uuid()).bind(run.as_uuid())
++            .bind(Uuid::parse_str(&forward.step_id).expect("original forward step"))
++            .bind(Uuid::parse_str(&lookup.step_id).expect("original lookup step"))
++            .bind(forward.attempt).bind(forward.generation).bind(Token::hash_of(&forward.lease_token))
++            .bind(lookup.attempt).bind(lookup.generation).bind(Token::hash_of(&lookup.lease_token))
++            .fetch_one(&platform.api.db.pool).await.expect("actual old Applied bypass proof");
++        for (name, valid) in proof.as_object().expect("old quota bypass proof flags") {
++            assert!(
++                valid.as_bool() == Some(true),
++                "actual old Applied bypass invariant: {name}"
++            );
++        }
++        let totals: (i64,i64,i64) = sqlx::query_as(r#"SELECT u.logical_output_bytes,
++          sum(octet_length(p.content)) FILTER (WHERE o.output_digest IS NULL)::bigint,
++          u.logical_output_bytes+sum(octet_length(p.content)) FILTER (WHERE o.output_digest IS NULL)::bigint
++          FROM run_instance_usage u JOIN iteration_scopes s ON s.tenant_id=u.tenant_id AND s.run_id=u.run_id
++          JOIN steps o ON o.tenant_id=s.tenant_id AND o.run_id=s.run_id AND o.node=s.owner_node AND o.instance_path_nodes='{}'::text[] AND o.instance_path_indices='{}'::integer[]
++          JOIN payloads p ON p.tenant_id=s.tenant_id AND p.digest=s.result_digest
++          WHERE u.tenant_id=$1 AND u.run_id=$2 AND s.lifecycle='SUCCEEDED' AND s.owner_path_nodes='{}'::text[] AND s.owner_path_indices='{}'::integer[] GROUP BY u.logical_output_bytes"#)
++            .bind(platform.tenant.as_uuid()).bind(run.as_uuid()).fetch_one(&platform.api.db.pool).await.expect("old real retained output totals");
++        assert_eq!(totals, (2_100_010, 2_100_020, 4_200_030));
++        let heads:(i64,i64,i64)=sqlx::query_as("SELECT r.run_version,(SELECT max(e.seq) FROM run_events e WHERE e.tenant_id=r.tenant_id AND e.run_id=r.id),t.head_seq FROM runs r JOIN telemetry_pending t ON t.tenant_id=r.tenant_id AND t.run_id=r.id WHERE r.tenant_id=$1 AND r.id=$2")
++            .bind(platform.tenant.as_uuid()).bind(run.as_uuid()).fetch_one(&platform.api.db.pool).await.expect("actual old committed heads");
++        assert!(
++            heads.0 == heads.1
++                && heads.0 == heads.2
++                && ack.command_id == format!("{run}:{}", heads.0)
++        );
++        let prefix = Token::hash_of(&lookup.lease_token)
++            .iter()
++            .take(8)
++            .map(|b| format!("{b:02x}"))
++            .collect::<String>();
++        let scope = format!("step:{run}:scoped:3:c10:0;9:reserve~r:{prefix}");
++        let mut fingerprint = Vec::new();
++        let attempt = u32::try_from(lookup.attempt)
++            .expect("original attempt")
++            .to_be_bytes();
++        let generation = u64::try_from(lookup.generation)
++            .expect("original generation")
++            .to_be_bytes();
++        for part in [
++            b"complete".as_slice(),
++            attempt.as_slice(),
++            generation.as_slice(),
++            completion.output_json.as_bytes(),
++        ] {
++            fingerprint.extend_from_slice(&(part.len() as u64).to_be_bytes());
++            fingerprint.extend_from_slice(part);
++        }
++        let receipt_rows:Vec<(Vec<u8>,String,time::OffsetDateTime)>=sqlx::query_as("SELECT request_hash,resource_id,created_at FROM command_dedupe WHERE tenant_id=$1 AND scope=$2 AND idempotency_key=$3")
++            .bind(platform.tenant.as_uuid()).bind(&scope).bind(&completion.idempotency_key).fetch_all(&platform.api.db.pool).await.expect("original actual Applied completion receipt");
++        assert!(
++            receipt_rows.len() == 1
++                && receipt_rows[0].0 == Sha256::digest(&fingerprint).to_vec()
++                && receipt_rows[0].1 == format!("SUCCEEDED|RUNNING|{}", heads.0)
++        );
++        let receipt_witness = digest(
++            &json!({"tenant":platform.tenant.to_string(),"scope":scope,"key":completion.idempotency_key,"request_hash":receipt_rows[0].0,"resource":receipt_rows[0].1,"created_at":receipt_rows[0].2.to_string()}),
++        );
++        println!("applied_quota_receipt_sha256={receipt_witness}");
++        let desired_refusal:bool=sqlx::query_scalar("SELECT coalesce(r.stop_reason='FAILED' AND r.stop_code='RUN_DATA_LIMIT',false) AND f.output_digest IS NULL FROM runs r JOIN steps f ON f.tenant_id=r.tenant_id AND f.run_id=r.id AND f.step_id=$3 WHERE r.tenant_id=$1 AND r.id=$2")
++            .bind(platform.tenant.as_uuid()).bind(run.as_uuid()).bind(Uuid::parse_str(&forward.step_id).expect("forward step")).fetch_one(&platform.api.db.pool).await.expect("required current known-effect refusal");
++        let inspection_role: String = sqlx::query_scalar("SELECT current_user::text")
++            .fetch_one(&platform.api.db.pool)
++            .await
++            .expect("old inspection role");
++        assert!(
++            producer_api_role
++                == if crate::support::as_runtime_role() {
++                    crate::support::RUNTIME_ROLE
++                } else {
++                    inspection_role.as_str()
++                },
++            "actual old API/shared-store role"
++        );
++        println!(
++            "old_applied_quota_role api={} store={} database={}",
++            producer_api_role, producer_api_role, platform.api.db.name
++        );
++        println!("applied_quota_red_database={}", platform.api.db.name);
++        println!("observed_legacy_applied_quota_bypass=true");
++        assert!(
++            desired_refusal,
++            "known Applied effect must survive while its over-budget output is refused with RUN_DATA_LIMIT"
++        );
++        return; // A RED-mode run must never publish a compatibility handoff, even if its guard passes.
++    }
+     let receipt = json!({
+         "format": "q10c-applied-handoff-v1", "source_commit": OLD_COMMIT,
+         "database_name": platform.api.db.name, "producer_api_role": producer_api_role,

@@ -1,0 +1,19 @@
+
+running 1 test
+applied_quota_receipt_sha256=7799a680bb88746c4ea7507686e51836dee8144c1505a3296e8aecc1346dd5a4
+old_applied_quota_role api=postgres store=postgres database=t_01a16c1df90775cd9405aab44a16b4b9
+applied_quota_red_database=t_01a16c1df90775cd9405aab44a16b4b9
+observed_legacy_applied_quota_bypass=true
+
+thread 'legacy_collection_inflight_report_producer_v1::frozen_old_applied_output_quota_guard_red' (247255776) panicked at tests/integration/workflow-primitives/legacy_collection_inflight_report_producer_v1.rs:1127:9:
+known Applied effect must survive while its over-budget output is refused with RUN_DATA_LIMIT
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test legacy_collection_inflight_report_producer_v1::frozen_old_applied_output_quota_guard_red ... FAILED
+
+failures:
+
+failures:
+    legacy_collection_inflight_report_producer_v1::frozen_old_applied_output_quota_guard_red
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 505 filtered out; finished in 5.15s
+

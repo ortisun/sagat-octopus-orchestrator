@@ -1,0 +1,46 @@
+[
+  {
+    "case": "applied-handoff",
+    "role": "owner",
+    "phase": "producer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 7.06,
+    "artifact_run": "/tmp/sagat-completion-20261023/applied-quota-red-final/artifacts-applied-handoff/run.ETJfBr"
+  },
+  {
+    "case": "applied-handoff",
+    "role": "owner",
+    "phase": "consumer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 0.88,
+    "artifact_run": "/tmp/sagat-completion-20261023/applied-quota-red-final/artifacts-applied-handoff/run.ETJfBr"
+  },
+  {
+    "case": "applied-handoff",
+    "role": "runtime",
+    "phase": "producer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 6.81,
+    "artifact_run": "/tmp/sagat-completion-20261023/applied-quota-red-final/artifacts-applied-handoff/run.ETJfBr"
+  },
+  {
+    "case": "applied-handoff",
+    "role": "runtime",
+    "phase": "consumer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 0.87,
+    "artifact_run": "/tmp/sagat-completion-20261023/applied-quota-red-final/artifacts-applied-handoff/run.ETJfBr"
+  }
+]
