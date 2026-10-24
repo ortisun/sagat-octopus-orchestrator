@@ -1,0 +1,128 @@
+{
+  "searched_existing_branches": [
+    {
+      "branch": "feature/014-approval-combos",
+      "matches": []
+    },
+    {
+      "branch": "feature/014-bounded-execution",
+      "matches": []
+    },
+    {
+      "branch": "feature/014-chain-wait",
+      "matches": []
+    },
+    {
+      "branch": "feature/014-chains",
+      "matches": []
+    },
+    {
+      "branch": "feature/014-collections-sources",
+      "matches": []
+    },
+    {
+      "branch": "feature/014-compat-perf",
+      "matches": []
+    },
+    {
+      "branch": "feature/014-loops-public",
+      "matches": []
+    },
+    {
+      "branch": "feature/014-operations-faults",
+      "matches": []
+    },
+    {
+      "branch": "feature/014-projection-limits",
+      "matches": []
+    },
+    {
+      "branch": "feature/014-runtime-privileges",
+      "matches": []
+    },
+    {
+      "branch": "feature/014-scale",
+      "matches": []
+    },
+    {
+      "branch": "feature/014-scoped-compensation",
+      "matches": []
+    },
+    {
+      "branch": "feature/014-sdk-scenarios",
+      "matches": []
+    },
+    {
+      "branch": "feature/016-authoring-completion",
+      "matches": []
+    },
+    {
+      "branch": "feature/016-classification-boundary-fixes",
+      "matches": []
+    },
+    {
+      "branch": "feature/016-classification-cache-concurrency",
+      "matches": []
+    },
+    {
+      "branch": "feature/016-classification-canary",
+      "matches": []
+    },
+    {
+      "branch": "feature/016-classification-contracts",
+      "matches": []
+    },
+    {
+      "branch": "feature/016-classification-disclosure",
+      "matches": []
+    },
+    {
+      "branch": "feature/016-classification-domain",
+      "matches": []
+    },
+    {
+      "branch": "feature/016-classification-grants",
+      "matches": []
+    },
+    {
+      "branch": "feature/016-classification-performance",
+      "matches": []
+    },
+    {
+      "branch": "feature/016-classification-rest-tests",
+      "matches": []
+    },
+    {
+      "branch": "feature/016-classification-sdk",
+      "matches": []
+    },
+    {
+      "branch": "feature/016-classification-step-outputs",
+      "matches": []
+    },
+    {
+      "branch": "feature/016-classification-ui",
+      "matches": []
+    },
+    {
+      "branch": "feature/016-cli",
+      "matches": []
+    },
+    {
+      "branch": "feature/016-event-payload-disclosure",
+      "matches": []
+    },
+    {
+      "branch": "feature/016-pinning-races",
+      "matches": []
+    },
+    {
+      "branch": "feature/016-prior-release-compat",
+      "matches": []
+    },
+    {
+      "branch": "feature/016-sdk-verification",
+      "matches": []
+    }
+  ]
+}

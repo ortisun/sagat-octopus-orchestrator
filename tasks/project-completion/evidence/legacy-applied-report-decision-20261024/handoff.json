@@ -1,0 +1,17 @@
+{
+  "designer": "gpt-6-astra",
+  "reasoning_effort": "xhigh",
+  "read_only_no_execution": true,
+  "authoritative_upstream": "299f8b2e",
+  "B1_commit_required_before_writes": true,
+  "writer_owned_path": "tests/integration/workflow-primitives/legacy_collection_inflight_applied_v1.rs",
+  "root_owned": [
+    "scripts/test-legacy-collection-inflight-report-v1.sh",
+    "tests/fixtures/legacy-collection-inflight-report-v1/README.md",
+    "tasks/project-completion/evidence"
+  ],
+  "no_uncommitted_B1_consumed": true,
+  "B1_accepted_source": "10b61669",
+  "B1_trace_cleanup": "2175cdc4",
+  "B1_final_evidence": "legacy-applied-quota-red-acceptance-20261024"
+}

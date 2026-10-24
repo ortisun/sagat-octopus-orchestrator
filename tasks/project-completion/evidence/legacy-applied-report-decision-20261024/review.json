@@ -1,0 +1,12 @@
+{
+  "reviewer": "gpt-6-astra",
+  "reasoning_effort": "xhigh",
+  "fresh_context": true,
+  "read_only_no_execution": true,
+  "cycle": 1,
+  "findings": null,
+  "bounded_scope": "one actual Applied report-first/compensation lifecycle; no broaderfault/OS/orders",
+  "sole_native_writer": "gpt-5.6-sol/high Appliedmodule only after rootGO",
+  "root_ownership": "coordinator/docs/evidence/all real gates/integration",
+  "optional_external_review": "previously declined"
+}

@@ -1,0 +1,96 @@
+# Current genuine-old Applied report-first and real compensation — B2
+
+Design only; authoritative upstreamA299f8b2e/currentAppliedmodule unchangedthrough
+b3cf3078; B1plan45b1f8eb, B1nativeRED2profiles alreadyobserved. B1finalmatrix must
+completeandcommit BEFORE B2codewrites. Useralltasks/splitdecisionsauthorization.
+No production/schema/grant/SDK/producer/registration/activation changes.
+
+Fourlogicalpaths: currentAppliedmodule/coordinator/fixtureREADME/evidenceREADME;
+tracking separately. SoleSolwriter owns ONLYcurrentAppliedmodule afterrootGO;
+root ownscoord/docs/evidence/integration/gates. Noagentbuilds/tests/SQL/containers/
+commits/spawning. Consequentialfreshreviews root/Astra; allactualgates root.
+Newignoredcurrent_thread test old_applied_success_before_drain_preserves_the_report_and_compensation.
+
+Refactor attach_and_verify(&Receipt)->Platform preservingEVERY Areadonlyassertion,
+parser/21fields/fixed40wire/mutationcontrols/role/migration/zeroRPC-authcounts/fresh
+frontier/verify/counters. Explicitdrop(signed),drop(worker) beforePlatformreturn.
+OriginalA wrapperbinds returnedPlatform; B ownsReceipt+Platform andconnects itsown
+borrowedWorker withORIGINALworkerid/session. No selfreferentialfixtureDTO orrebind/
+register/poll/heartbeat/SQLexpiry duringattachment/report. Currentmoduleonlyhelpers:
+identity_value exactoriginalSQL, fullidentityhashunchanged; immutableauthorityhash
+removes ONLY session.expires_at; head/receipt/retained/reservation/execution/fresh
+verify/freshscheduler helpers withsafeasserts (no Debugprotos/keys/identity values).
+
+AfterAunchangedattachmentcapture headv0/fullauthority/source/retainednonnulloutput/
+payloadinventory/blobinventory/tenantretainedusage/reservation/outbox/audit/metrics.
+Exactretainedcomplete_step beforeANYschedulercall: freshidentitylookupsincrease,
+!already_applied/SUCCEEDED/CANCELLING. Head/version/telemetryv1=v0+4 andexactnewordered
+events: rootrun.stop_requestedFAILED/RDL; lookupstep.completedoriginalfence;
+forwardreconciliation.concluded {verdict:applied,result:{kind:succeeded}};
+lookupstep.routedemptyactivated. Exactpathc10[0], payloadsNULL, tracesruntrace;
+NOforwardstep.completed/routing/release/Return/done/checkpoint/drain/saga/cert.
+RunCANCELLING/firstFAILED-RDLstop, c10OPEN/memberADMITTED/slotheld; originalforward+
+lookupSUCCEEDED/nooutputs, originalfences/reportedhashes retained. L2100000/V2100020/
+E4200020 unchanged; no outputref/neworphanpayload/blob/logicalcharge/reservation/
+outboxchange. Auditexactlyone newrun.data_limit_exceeded/reason successful scoped
+output refused by run data limit/actor system:engine/runtrace. Metricrefusal+1,
+reconciliationstageapplied+1; requested/primitiveRDL unchanged. No Apre-reportstate
+oracle reused AFTER actualreportchanges.
+
+CanonicalLOOKUPreceipt scope step:{run}:scoped:3:c10:0;9:reserve~r:{first8TokenSHAhex};
+fetchall exactlyone tenant/scope/key/requesthash/resource/created_at. Hashwhole
+length-prefixed complete/attemptu32BE/genu64BE/EXACT40wirebytes (not10substitute).
+ResourceSUCCEEDED|CANCELLING|v1; ACKcommandidrun:v1. Savewholeinitialreceipt. Replay
+nowandafterterminal: SAMEstoredcommand/SUCC/CANCELLING/alreadyApplied true, complete
+receipt/execution/authority/metrics footprintsunchanged (neverderiveACKfromterminalhead).
+Freshrolepool/cacheverify_run atreport/replay/drain/held/terminal withclosedpool and
+beforeafterfingerprints. Thisis canonicalreconstruction, notOSrestart.
+
+Freshscheduler usesoriginalowner/placement, separatefreshrolepool/cache; queryits
+actualcurrent_user, KeeperoneReplica/allSHARDS/runShardheld, renewsONLYscheduler
+lease. ReturnpoolalongsideScheduler for explicitdrop+close. NativefrontierOPEN/v1/
+FAILED-RDL/E4200020/oneactivemembertwosuccesses/noReturn. Publicadvance deterministic:
+DrainStarted; Drained{index0}; Compensated (sagaplanning/release,NOTterminal);
+publicpollONCE→soleactualreserve~c; heldadvanceWaiting/noeffect; publiccompcomplete;
+advanceCompensated(sagaDONE); advanceDrainFinished(nativecollection/runterminal).
+Ifactualdiffers preservefailure/investigatesource, doNOTreplacewithuntimedtick/pollloop.
+Drainchecks exactoneevent/referencedoutbox/audit stopped_for_run_data_limit and
+originalstop/trace unchanged, zero existing_outputs/aggregate, primitiveRDL+1 only.
+DoesNOTclaimzero fullRunState restore; fullRunTx.dataEguard rejectsbeforepayload
+hydration, compensationintentionallyrestoresstate; widerboundedreaderinstrumentation
+andfaultcoverage stayQ7b.
+
+Workerfullauthority EXACToiginalexpiryunchangedthroughreport/replay/schedulerops.
+ONLYsolepublicpoll callsuse_session. CaptureDBclockbeforepoll andafterclock+expiry
+usingtenant/workerid/tokenhash. ImmutablefullidentityminusONLYexpiry mustmatch;
+beforeDBtime+3600<=expiry<=afterDBtime+3600/live; DON'Trequiremonotonicold→newTTL.
+Thennewfullauthoritysnapshot heldthroughremainingcomplete/advance/verify/replay.
+CompTaskCOMPENSATION/line.release/c10[0]/reserve~c; targetoriginalFORWARDinstance+
+effectkey, distinctfromlookup/compkeys; inputincludesitem/index/no refusedoutput.
+Held: RunCOMPENSATING/scopeDRAINING/memberDRAINED/sagaCOMPENSATING/nooutcome,
+oneCOMPENSATEentryoriginalforward, existinglookups=ONE notzero, noterminalevent/
+outbox. Publiccompcomplete {released:true}; terminalRunCOMPENSATED/scope+owner
+FAILED/RDL/sagaDONECOMPENSATED, forward/lookup/compSUCCEEDED, exactonecompcomplete/
+collectionfinish/runfinish/correspondingoutboxes. No rootdone/c10result/runresult/
+compoutput/extraLookup. Retainednonnullrefs/source/originalstop/drain/receipt intact;
+heads/telemetry aligned, terminaloriginalACKreplay andfreshverify unchanged.
+
+Rootnewclosedselector applied-report-before-drain usesexistingAoldproducer,
+unchangedq10c-applied-handoff-v1/21fields, newcurrenttest, distinctartifacts,
+300s phases/2400s+5 supervisor/Appliedsourcepin/mapcase alias. No B1REDparserchange.
+Minimalfinal5selectors newAppliedreport +Appliedhandoff/ordinaryreport/underlimitcancel/
+oldWaitingRED:16positive+2expectedoldfailures. AddB1oldAppliedREDonlyifsharedREDparse/
+cleanupbehaviorchanges; fullestablishedmatrix forsharedlifecycle changes.
+Rootexistingregressions bothprofiles: byte_ceilings::an_applied_lookup_preserves_both_real_successes_without_the_substitute_output;
+scope_compensation_http::an_effect_of_unknown_outcome_is_looked_up_and_found_applied_before_anything_repeats;
+scope_compensation_http::an_effect_found_not_applied_is_tried_again_with_the_same_key;
+scope_compensation_http::a_lookup_that_cannot_say_waits_for_a_person_who_declares_what_happened;
+integration_sagas_compensations reconcile::an_answer_that_is_not_a_verdict_fails_the_lookup_for_good_and_a_human_decides.
+LastisROOTmalformedcoverage, notscoped; genuinescopedmalformedcontrol remainsseparate.
+ExistingSQLexpiryfixtures arefunctionalregressions, notnewoldproducerproof. No four
+newworkflowbuilders inB2. StaticClippy/fmt/arch/Bash/sourcefreeze/restoration/roles/
+exactcounts/ownedcleanup actualgates. Original22diagnosticDBs remain unlessowned
+proof permitscleanup. SelfcontainedCompose65118/absolutecoordinatedtarget/df/atmost2heavy.
+B1historicalRED alreadyreal; B2currentcorrectcoverage mustnotinventproductionfailure.
+OnlythisAppliedordering/lifecycle mayclose; otherbytes/orders/OS/COMMITfaults/
+outputdependentcomp/activation/master/canonical gates remainopen.
