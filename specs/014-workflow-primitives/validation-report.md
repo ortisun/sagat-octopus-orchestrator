@@ -3548,3 +3548,31 @@ verifies all six final DBs and removed probes/connections. Evidence/reproduction
 Three fresh bounded reviews None; first actual new fault passes, with no manufactured production RED
 or production/proxy/schema/grant change. Only local .5d closes. OS/post-ACK recovery, broader report
 shapes, genuine-old/frontier/rollout/nesting and canonical feature acceptance remain separate.
+
+
+### Genuine old pending nonfinal Return — 2026-10-23
+
+Source/evidence b8f44488 accepts only frontier case (b). Immutable6c44a0e4 publicly
+produces twenty105000-byte successes and ten210003-byte closed aggregates; c10[0]
+work succeeds with JSON1 while its Return is PENDING and item1 remains unadmitted.
+Actual L/V/E=2100001/2100030/4200031. Migration preserves complete projection and
+closed/target source. Current normal frontier advance records first FAILED/RDL and
+native DRAINING before Return checkpoint or admission, with exact journal envelopes,
+original trace, existing_outputs audit and public FAILED hint. Ordinary cancellation
+of Return, one real original-target/key compensation with output1 in its input, held
+compensation Waiting and native COMPENSATED/FAILED-RDL finish all pass. Slots and
+reservations settle to0; completed_count becomes1 on DRAINED (correcting the original
+design snapshot's terminal0); no c10 checkpoint/result/owner output/End/new payload
+or old-source repair. Fresh verify and terminal replay preserve the full projection.
+Final new coordinator132.05s: four separate1/1 processes, actual API/store postgres or
+sagat_app. Preserved default matrix186.24s: four separate1/1; its immutable old Flow
+always uses sagat_app, and owner/runtime continues to describe the current reader.
+Isolated old RED coordinator127.55s observes two separate0passed/1failed tests,
+exit101 and exact Checkpointed marker; neither DB is consumed by current. All six
+final coordinator DBs/private receipts/source directories are cleaned;1127 native
+and four fixture hashes stay identical. Strict Clippy15.56s/fmt4.84s/architecture0.49s,
+shell/source checks and deterministic helper-wait/credential-order probes pass.
+Evidence/reproduction: `tasks/project-completion/evidence/legacy-nonfinal-return-acceptance-20261023/README.md`.
+Only local Q7c.1 closes. Free-admission/live-only/boundary/competing-stop/CAS/rollout,
+Q7c/Q8/master quota correction, general nesting and canonical014 tasks remain open.
+No production/schema/grants/SDK or source/scoped-Finish activation changed.
