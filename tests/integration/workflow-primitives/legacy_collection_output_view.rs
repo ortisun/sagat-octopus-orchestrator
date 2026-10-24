@@ -1947,7 +1947,31 @@ async fn current_frontier_drains_frozen_old_nonfinal_return_before_checkpoint() 
     );
 }
 
-// A distinct closed handoff for an entered scope with no admitted work.
+// Closed scenario-specific handoffs; worker capabilities never cross these processes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AdmissionFixture {
+    OverLimit,
+    EqualLimit,
+    FailedMember,
+}
+
+impl AdmissionFixture {
+    fn format(self) -> &'static str {
+        match self {
+            Self::OverLimit => "legacy-free-admission-frontier-v1",
+            Self::EqualLimit => "legacy-free-admission-equal-limit-v1",
+            Self::FailedMember => "legacy-failed-member-frontier-v1",
+        }
+    }
+    fn case(self) -> &'static str {
+        match self {
+            Self::OverLimit => "free-admission",
+            Self::EqualLimit => "free-admission-equal-limit",
+            Self::FailedMember => "failed-member",
+        }
+    }
+}
+
 struct FreeAdmissionReceipt {
     database_name: String,
     database_url: String,
@@ -1966,17 +1990,14 @@ struct FreeAdmissionReceipt {
 }
 
 impl FreeAdmissionReceipt {
-    fn parse(bytes: &[u8], equal_limit: bool) -> Self {
+    fn parse(bytes: &[u8], scenario: AdmissionFixture) -> Self {
         let value: Value = serde_json::from_slice(bytes)
             .unwrap_or_else(|_| panic!("invalid private free-admission handoff JSON"));
         let mut fields = value
             .as_object()
             .expect("free-admission handoff object")
             .clone();
-        assert!(
-            fields.len() == 18,
-            "closed eighteen-field unadmitted handoff"
-        );
+        assert!(fields.len() == 18, "closed eighteen-field scenario handoff");
         let mut take = |name: &str| {
             fields
                 .remove(name)
@@ -1989,19 +2010,9 @@ impl FreeAdmissionReceipt {
                 .to_owned()
         };
         assert!(
-            text(take("format"))
-                == if equal_limit {
-                    "legacy-free-admission-equal-limit-v1"
-                } else {
-                    "legacy-free-admission-frontier-v1"
-                }
+            text(take("format")) == scenario.format()
                 && text(take("source_commit")) == PINNED_LEGACY_COMMIT
-                && text(take("case"))
-                    == if equal_limit {
-                        "free-admission-equal-limit"
-                    } else {
-                        "free-admission"
-                    },
+                && text(take("case")) == scenario.case(),
             "exact private free-admission format and immutable source"
         );
         let role = text(take("role"));
@@ -2049,7 +2060,13 @@ impl FreeAdmissionReceipt {
         assert!(
             fields.is_empty()
                 && receipt.owner == format!("free-admission-{role}")
-                && receipt.head == receipt.cutoff + 1
+                && receipt.head
+                    == receipt.cutoff
+                        + if scenario == AdmissionFixture::FailedMember {
+                            6
+                        } else {
+                            1
+                        }
                 && receipt.cutoff > 0,
             "complete settled-work identity"
         );
@@ -2072,6 +2089,16 @@ async fn free_admission_source(
     run: Uuid,
     cutoff: i64,
 ) -> String {
+    admission_source(pool, tenant, run, cutoff, false).await
+}
+
+async fn admission_source(
+    pool: &sqlx::PgPool,
+    tenant: Uuid,
+    run: Uuid,
+    cutoff: i64,
+    failed_member: bool,
+) -> String {
     let closed: Value = sqlx::query_scalar(NONFINAL_CLOSED_SOURCE_SQL)
         .bind(tenant)
         .bind(run)
@@ -2080,7 +2107,7 @@ async fn free_admission_source(
         .fetch_one(pool)
         .await
         .expect("immutable old closed source");
-    let target:Value=sqlx::query_scalar(r#"SELECT jsonb_build_object(
+    let mut target:Value=sqlx::query_scalar(r#"SELECT jsonb_build_object(
       'run',to_jsonb(r)-ARRAY['status','run_version','stop_reason','stop_code','updated_at','finished_at'],
       'version',to_jsonb(version_row),
       'scope',to_jsonb(s)-ARRAY['lifecycle','drain_kind','drain_iteration','drain_failure_code','drain_sequence','drain_outbox_id','finish_sequence','finish_outbox_id','updated_at'],
@@ -2113,22 +2140,104 @@ async fn free_admission_source(
             && target["entry_event"]["node"] == "c10",
         "nonvacuous pinned definition, captured source, payloads and original entry"
     );
+    if failed_member {
+        let scope = target["scope"]
+            .as_object_mut()
+            .expect("actual target scope");
+        scope.remove("active_count");
+        scope.remove("completed_count");
+        let failure: Value = sqlx::query_scalar(r#"SELECT jsonb_build_object(
+          'step',to_jsonb(w),
+          'member',(SELECT to_jsonb(m)-ARRAY['lifecycle','slot_held','remaining_reservations','drained_sequence','drain_outbox_id','updated_at'] FROM collection_iterations m WHERE m.tenant_id=w.tenant_id AND m.run_id=w.run_id AND m.entry_instance_id=w.step_id),
+          'events',(SELECT jsonb_agg(to_jsonb(e) ORDER BY e.seq) FROM run_events e WHERE e.tenant_id=w.tenant_id AND e.run_id=w.run_id AND e.seq BETWEEN $3+2 AND $3+6),
+          'receipts',(SELECT jsonb_agg(to_jsonb(c) ORDER BY c.scope,c.idempotency_key) FROM command_dedupe c WHERE c.tenant_id=w.tenant_id AND c.scope='step:'||w.run_id::text||':scoped:3:c10:0;10:legacyWork:'||substring(encode(w.reported_lease_token_hash,'hex') from 1 for 16)),
+          'reported',octet_length(w.reported_lease_token_hash)=32 AND w.lease_token_hash IS NULL AND w.leased_by IS NULL AND w.lease_expires_at IS NULL)
+          FROM steps w WHERE w.tenant_id=$1 AND w.run_id=$2 AND w.node='legacyWork' AND w.instance_path_nodes=ARRAY['c10']::text[] AND w.instance_path_indices=ARRAY[0]::integer[]"#)
+            .bind(tenant).bind(run).bind(cutoff).fetch_one(pool).await.expect("real failed-member source and original report receipt");
+        let receipts = failure["receipts"]
+            .as_array()
+            .expect("original failure receipt");
+        assert!(
+            failure["step"]["status"] == "FAILED"
+                && failure["step"]["routed"] == true
+                && failure["step"]["failure_code"] == "Q5_MEMBER_FAILURE"
+                && failure["step"]["output_digest"].is_null()
+                && failure["reported"] == true
+                && failure["member"]["entry_instance_id"] == failure["step"]["step_id"]
+                && failure["member"]["entry_path_nodes"] == json!(["c10"])
+                && failure["member"]["entry_path_indices"] == json!([0])
+                && failure["member"]["entry_node"] == "legacyWork"
+                && failure["member"]["admitted_sequence"] == cutoff + 2
+                && receipts.len() == 1
+                && receipts[0]["resource_id"] == format!("FAILED|WAITING|{}", cutoff + 6),
+            "actual terminal failed work and canonical original receipt, no active lease or output"
+        );
+        let events = failure["events"]
+            .as_array()
+            .expect("original old admission/claim/failure suffix");
+        assert!(
+            events.len() == 5,
+            "exact old five-event member suffix after entry"
+        );
+        for (i, kind) in [
+            "collection.iteration_admitted",
+            "step.released",
+            "step.leased",
+            "step.failed",
+            "step.routed",
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert!(
+                events[i]["seq"] == cutoff + 2 + i as i64
+                    && events[i]["event_type"] == *kind
+                    && events[i]["tenant_id"] == tenant.to_string()
+                    && events[i]["run_id"] == run.to_string()
+                    && events[i]["trace_id"] == target["run"]["trace_id"],
+                "exact ordered old failure source event identity"
+            );
+            if i > 0 {
+                assert!(
+                    events[i]["instance_id"] == failure["step"]["step_id"]
+                        && events[i]["node"] == "legacyWork"
+                        && events[i]["instance_path_nodes"] == json!(["c10"])
+                        && events[i]["instance_path_indices"] == json!([0]),
+                    "failure suffix retains exact original scoped entry"
+                );
+            }
+        }
+        assert!(
+            events[3]["detail"]["code"] == "Q5_MEMBER_FAILURE"
+                && events[4]["detail"]["activated"] == json!([]),
+            "known nonretryable failure routes no successor"
+        );
+        target["failed_member"] = failure;
+    }
     nonfinal_sha(&json!({"closed":closed,"target":target}))
 }
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires the separate immutable-old free-admission producer; see fixture README"]
 async fn current_frontier_drains_frozen_old_free_admission_before_first_member() {
-    free_admission_current(false).await;
+    free_admission_current(AdmissionFixture::OverLimit).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires separate immutable-old equal-limit producer; see fixture README"]
 async fn current_frontier_admits_frozen_old_free_admission_at_exact_limit() {
-    free_admission_current(true).await;
+    free_admission_current(AdmissionFixture::EqualLimit).await;
 }
 
-async fn free_admission_current(equal_limit: bool) {
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires separate immutable-old failed-member producer; see fixture README"]
+async fn current_frontier_preserves_frozen_old_member_failure_over_excess() {
+    free_admission_current(AdmissionFixture::FailedMember).await;
+}
+
+async fn free_admission_current(scenario: AdmissionFixture) {
+    let equal_limit = scenario == AdmissionFixture::EqualLimit;
+    let failed_member = scenario == AdmissionFixture::FailedMember;
     use crate::support::{
         api::{Options, start_on_db},
         attach_existing_db,
@@ -2159,7 +2268,7 @@ async fn free_admission_current(equal_limit: bool) {
     }
     let receipt = FreeAdmissionReceipt::parse(
         &std::fs::read(&path).expect("read private settled-work handoff"),
-        equal_limit,
+        scenario,
     );
     let admin = std::env::var("SAGAT_TEST_DATABASE_URL").expect("owned fixture admin URL");
     let db = attach_existing_db(&admin, &receipt.database_name).await;
@@ -2184,11 +2293,12 @@ async fn free_admission_current(equal_limit: bool) {
             "migration and handoff preserve every old projection byte"
         );
         assert!(
-            free_admission_source(
+            admission_source(
                 &db.pool,
                 receipt.tenant.as_uuid(),
                 receipt.run.as_uuid(),
-                receipt.cutoff
+                receipt.cutoff,
+                failed_member,
             )
             .await
                 == receipt.source,
@@ -2241,12 +2351,16 @@ async fn free_admission_current(equal_limit: bool) {
     );
     assert!(
         before["run"]["status"] == "WAITING"
-            && before["members"].is_null()
-            && before["scope"]["admitted_count"] == 0
-            && before["scope"]["active_count"] == 0
-            && before["usage"]["reserved_instances"] == 0
-            && before["iteration_usage"]["active_iterations"] == 0,
-        "genuine entered WAITING scope has no admitted work or reservations"
+            && (if failed_member {
+                before["members"].as_array().is_some_and(|m| m.len() == 1)
+            } else {
+                before["members"].is_null()
+            })
+            && before["scope"]["admitted_count"] == if failed_member { 1 } else { 0 }
+            && before["scope"]["active_count"] == if failed_member { 1 } else { 0 }
+            && before["usage"]["reserved_instances"] == if failed_member { 1 } else { 0 }
+            && before["iteration_usage"]["active_iterations"] == if failed_member { 1 } else { 0 },
+        "genuine WAITING scope has exact selected member and reservation counts"
     );
     assert!(
         nonfinal_bytes(&platform.api.db.pool, receipt.tenant, receipt.run).await
@@ -2301,19 +2415,33 @@ async fn free_admission_current(equal_limit: bool) {
             && frontier.run.stop_reason.is_none()
             && frontier.run.stop_code.is_none()
             && frontier.item_count == 2
-            && frontier.next_admission == 0
+            && frontier.next_admission == if failed_member { 1 } else { 0 }
             && frontier.completed == 0
             && frontier.max_concurrency == 1
-            && frontier.active.is_empty()
+            && if failed_member {
+                frontier.active.len() == 1
+                    && frontier.active[0].index == 0
+                    && frontier.active[0].steps.len() == 1
+                    && frontier.active[0]
+                        .first_failure()
+                        .is_some_and(|code| code.as_str() == "Q5_MEMBER_FAILURE")
+                    && frontier.active[0]
+                        .pending_return(&frontier.run.definition)
+                        .is_none()
+            } else {
+                frontier.active.is_empty()
+            }
             && !frontier.run.definition.scope_compensates(&target),
-        "genuine unadmitted free-capacity frontier before over-budget guard"
+        "genuine selected legacy frontier before its first current transition"
     );
     assert!(
         frontier.scope_id.as_uuid() == receipt.scope,
         "frontier identifies the exact original collection scope"
     );
     drop(frontier);
-    if equal_limit {
+    if failed_member {
+        assert_failed_member_flow(&platform, &receipt, &scheduler, &target, &before).await;
+    } else if equal_limit {
         let closed_before: Value = sqlx::query_scalar(NONFINAL_CLOSED_SOURCE_SQL)
             .bind(receipt.tenant.as_uuid())
             .bind(receipt.run.as_uuid())
@@ -2974,5 +3102,307 @@ async fn assert_equal_limit_admission(
     );
     println!(
         "current_equal_limit_admission L=2097137 V=2097167 E=4194304 admitted=0 ready=1 reserved=1 no_stop=true wire_key_observed=false"
+    );
+}
+
+async fn assert_failed_member_flow(
+    platform: &crate::support::worker::Platform,
+    receipt: &FreeAdmissionReceipt,
+    scheduler: &Scheduler<PgRunStore, JsonEvaluator, SystemEntropy>,
+    target: &ExecutionInstanceId,
+    before: &Value,
+) {
+    use sagat_scheduler::CollectionAdvance;
+    let failed_entry = nonfinal_step(before, "legacyWork").clone();
+    assert!(
+        failed_entry["status"] == "FAILED"
+            && failed_entry["routed"] == true
+            && failed_entry["failure_code"] == "Q5_MEMBER_FAILURE"
+            && failed_entry["output_digest"].is_null()
+            && failed_entry["lease_token_hash"].is_null()
+            && failed_entry["reported_lease_token_hash"].is_string()
+            && before["scope"]["completed_count"] == 0
+            && before["scope"]["next_admission_index"] == 1
+            && before["members"][0]["slot_held"] == true
+            && before["members"][0]["remaining_reservations"] == 1,
+        "genuine terminal failed member still holds its original drain obligations"
+    );
+    let old_owner = before["steps"]
+        .as_array()
+        .expect("steps")
+        .iter()
+        .find(|s| s["node"] == "c10" && s["instance_path_nodes"] == json!([]))
+        .expect("original collection owner")
+        .clone();
+    let mut previous = before.clone();
+    for phase in 1..=3 {
+        let result = scheduler
+            .advance_collection(receipt.tenant, receipt.run, target)
+            .await;
+        assert!(
+            matches!(
+                (phase, result),
+                (1, Ok(CollectionAdvance::DrainStarted))
+                    | (2, Ok(CollectionAdvance::Drained { index: 0 }))
+                    | (3, Ok(CollectionAdvance::DrainFinished))
+            ),
+            "exact normal failed-member drain transition"
+        );
+        let after = nonfinal_state(&platform.api.db.pool, receipt.tenant, receipt.run).await;
+        let old_events = previous["events"].as_array().expect("previous journal");
+        let events = after["events"].as_array().expect("new journal");
+        let added_count = if phase == 2 { 1 } else { 2 };
+        assert!(
+            events.len() == old_events.len() + added_count
+                && events.get(..old_events.len()) == Some(old_events.as_slice()),
+            "failed-member native suffix preserves complete historical journal"
+        );
+        let stamp = events[old_events.len()]["occurred_at"].clone();
+        assert!(stamp.is_string(), "native transition timestamp");
+        let envelope = |seq,
+                        node: Value,
+                        id: Value,
+                        nodes: Value,
+                        indices: Value,
+                        kind,
+                        detail: Value| {
+            json!({
+            "tenant_id":receipt.tenant.to_string(),"run_id":receipt.run.to_string(),"seq":seq,
+            "node":node,"instance_id":id,"instance_path_nodes":nodes,"instance_path_indices":indices,
+            "event_type":kind,"detail":detail,"actor":"system:engine","trace_id":before["run"]["trace_id"],
+            "attempt":null,"payload_digest":null,"occurred_at":stamp})
+        };
+        let owner_event = |seq, kind, detail: Value| {
+            envelope(
+                seq,
+                json!("c10"),
+                old_owner["step_id"].clone(),
+                json!([]),
+                json!([]),
+                kind,
+                detail,
+            )
+        };
+        let wanted = match phase {
+            1 => vec![
+                envelope(
+                    receipt.head + 1,
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
+                    "run.stop_requested",
+                    json!({"reason":"FAILED","code":"Q5_MEMBER_FAILURE"}),
+                ),
+                owner_event(
+                    receipt.head + 2,
+                    "collection.drain_started",
+                    json!({"reason":"failed","iteration":0,"code":"Q5_MEMBER_FAILURE"}),
+                ),
+            ],
+            2 => vec![owner_event(
+                receipt.head + 3,
+                "collection.iteration_drained",
+                json!({"index":0}),
+            )],
+            _ => vec![
+                owner_event(
+                    receipt.head + 4,
+                    "collection.finished",
+                    json!({"outcome":"failed","code":"Q5_MEMBER_FAILURE"}),
+                ),
+                envelope(
+                    receipt.head + 5,
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
+                    "run.finished",
+                    json!({"status":"FAILED"}),
+                ),
+            ],
+        };
+        assert!(
+            events[old_events.len()..] == wanted,
+            "exact failed-member root/owner event envelopes and atomic timestamps"
+        );
+        let old_hints = previous["outbox"].as_array().expect("old outbox");
+        let hints = after["outbox"].as_array().expect("new outbox");
+        let new_hints = hints
+            .iter()
+            .filter(|h| !old_hints.contains(h))
+            .collect::<Vec<_>>();
+        let hint_count = if phase == 3 { 2 } else { 1 };
+        assert!(
+            hints.len() == old_hints.len() + hint_count
+                && new_hints.len() == hint_count
+                && old_hints.iter().all(|h| hints.contains(h)),
+            "exact native hint count and unchanged complete old outbox rows"
+        );
+        for hint in &new_hints {
+            let (kind, routing, scope_hint) = if phase == 1 {
+                ("collection.drain.started", json!("c10"), true)
+            } else if phase == 2 {
+                ("collection.iteration.drained", json!("c10"), true)
+            } else if hint["event_type"] == "collection.finished" {
+                ("collection.finished", json!("c10"), true)
+            } else {
+                ("run.finished", Value::Null, false)
+            };
+            let mut payload = json!({"tenantId":receipt.tenant.to_string(),"namespaceId":receipt.namespace.to_string(),
+                "runId":receipt.run.to_string(),"traceId":before["run"]["trace_id"]});
+            if scope_hint {
+                payload["scopeId"] = json!(receipt.scope.to_string());
+            }
+            if phase == 1 {
+                payload["reason"] = json!("FAILED");
+            } else if phase == 2 {
+                payload["index"] = json!(0);
+            } else {
+                payload["status"] = json!("FAILED");
+            }
+            assert!(
+                hint["id"]
+                    .as_str()
+                    .is_some_and(|v| Uuid::parse_str(v).is_ok())
+                    && hint["created_at"].is_string()
+                    && hint["next_attempt_at"].is_string(),
+                "native hint UUID and timestamps"
+            );
+            let expected = json!({"id":hint["id"],"tenant_id":receipt.tenant.to_string(),"aggregate_id":receipt.run.to_string(),
+                "event_type":kind,"routing_key":routing,"payload":payload,"created_at":hint["created_at"],
+                "next_attempt_at":hint["next_attempt_at"],"attempt_count":0,"delivered_at":null,"last_error_code":null});
+            assert!(
+                **hint == expected,
+                "exact truthful failed-member outbox envelope and delivery state"
+            );
+        }
+        let mut expected = previous.clone();
+        let head = receipt.head
+            + match phase {
+                1 => 2,
+                2 => 3,
+                _ => 5,
+            };
+        expected["run"]["run_version"] = json!(head);
+        expected["run"]["updated_at"] = stamp.clone();
+        expected["scope"]["updated_at"] = stamp.clone();
+        expected["telemetry"]["head_seq"] = json!(head);
+        expected["events"] = after["events"].clone();
+        expected["outbox"] = after["outbox"].clone();
+        if phase == 1 {
+            expected["run"]["status"] = json!("CANCELLING");
+            expected["run"]["stop_reason"] = json!("FAILED");
+            expected["run"]["stop_code"] = json!("Q5_MEMBER_FAILURE");
+            expected["scope"]["lifecycle"] = json!("DRAINING");
+            expected["scope"]["drain_kind"] = json!("FAILED");
+            expected["scope"]["drain_iteration"] = json!(0);
+            expected["scope"]["drain_failure_code"] = json!("Q5_MEMBER_FAILURE");
+            expected["scope"]["drain_sequence"] = json!(receipt.head + 2);
+            expected["scope"]["drain_outbox_id"] = new_hints[0]["id"].clone();
+        } else if phase == 2 {
+            expected["scope"]["completed_count"] = json!(1);
+            expected["scope"]["active_count"] = json!(0);
+            expected["members"][0]["lifecycle"] = json!("DRAINED");
+            expected["members"][0]["slot_held"] = json!(false);
+            expected["members"][0]["remaining_reservations"] = json!(0);
+            expected["members"][0]["drained_sequence"] = json!(receipt.head + 3);
+            expected["members"][0]["drain_outbox_id"] = new_hints[0]["id"].clone();
+            expected["members"][0]["updated_at"] = stamp.clone();
+            expected["usage"]["reserved_instances"] = json!(0);
+            expected["usage"]["retired_reservations"] = json!(
+                previous["usage"]["retired_reservations"]
+                    .as_i64()
+                    .expect("retired reservation count")
+                    + 1
+            );
+            expected["iteration_usage"]["active_iterations"] = json!(0);
+        } else {
+            expected["run"]["status"] = json!("FAILED");
+            expected["run"]["finished_at"] = stamp.clone();
+            expected["scope"]["lifecycle"] = json!("FAILED");
+            expected["scope"]["finish_sequence"] = json!(receipt.head + 4);
+            let finished = new_hints
+                .iter()
+                .find(|h| h["event_type"] == "collection.finished")
+                .expect("actual scope finish hint");
+            assert!(
+                new_hints.iter().any(|h| h["event_type"] == "run.finished"),
+                "actual final Run hint"
+            );
+            expected["scope"]["finish_outbox_id"] = finished["id"].clone();
+            let owner = expected["steps"]
+                .as_array_mut()
+                .expect("steps")
+                .iter_mut()
+                .find(|s| s["step_id"] == old_owner["step_id"])
+                .expect("same original owner");
+            owner["status"] = json!("FAILED");
+            owner["waiting_kind"] = Value::Null;
+            owner["failure_code"] = json!("Q5_MEMBER_FAILURE");
+            owner["updated_at"] = stamp;
+        }
+        let changed = after
+            .as_object()
+            .expect("state fields")
+            .iter()
+            .filter(|(k, v)| expected[*k] != **v)
+            .map(|(k, _)| k.clone())
+            .collect::<Vec<_>>();
+        assert!(
+            after == expected,
+            "exact permitted failed-member delta; changed field names only: {changed:?}"
+        );
+        assert!(
+            nonfinal_step(&after, "legacyWork") == &failed_entry
+                && nonfinal_bytes(&platform.api.db.pool, receipt.tenant, receipt.run).await
+                    == (2_100_000, 2_100_030)
+                && admission_source(
+                    &platform.api.db.pool,
+                    receipt.tenant.as_uuid(),
+                    receipt.run.as_uuid(),
+                    receipt.cutoff,
+                    true
+                )
+                .await
+                    == receipt.source,
+            "original failure/report/closed source and effective bytes remain exact through drain"
+        );
+        let limit_audits:i64=sqlx::query_scalar("SELECT count(*) FROM audit_records WHERE tenant_id=$1 AND resource_id=$2 AND action='run.data_limit_exceeded'")
+            .bind(receipt.tenant.as_uuid()).bind(receipt.run.to_string()).fetch_one(&platform.api.db.pool).await.expect("actual limit audit count");
+        assert!(
+            limit_audits == 0,
+            "failed member wins without any data-limit audit"
+        );
+        previous = after;
+    }
+    let projection =
+        projection_witness(&platform.api.db.pool, receipt.tenant, &[receipt.run]).await;
+    let fresh = PgRunStore::new(
+        platform.api.api_pool.clone(),
+        DefinitionCache::new(Arc::new(JsonIrCodec), 8),
+    )
+    .with_scoped_worker_protocol();
+    assert!(
+        fresh.verify_run(receipt.tenant, receipt.run).await.is_ok(),
+        "fresh store verifies old real failure and native terminal drain"
+    );
+    assert!(
+        matches!(
+            scheduler
+                .advance_collection(receipt.tenant, receipt.run, target)
+                .await,
+            Ok(CollectionAdvance::AlreadyFinished)
+        ),
+        "terminal failed-member advance is already finished"
+    );
+    assert!(
+        nonfinal_state(&platform.api.db.pool, receipt.tenant, receipt.run).await == previous
+            && projection_witness(&platform.api.db.pool, receipt.tenant, &[receipt.run]).await
+                == projection,
+        "fresh verification and terminal replay preserve all durable projections"
+    );
+    println!(
+        "current_failed_member_precedence L=2100000 V=2100030 E=4200030 original_failure=Q5_MEMBER_FAILURE terminal=FAILED data_limit_audits=0"
     );
 }

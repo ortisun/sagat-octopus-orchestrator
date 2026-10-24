@@ -1,0 +1,8 @@
+
+running 1 test
+current_free_admission_role api=postgres store=postgres database=t_01a16bb3433a742a94b5e6e5c271831f
+current_failed_member_precedence L=2100000 V=2100030 E=4200030 original_failure=Q5_MEMBER_FAILURE terminal=FAILED data_limit_audits=0
+test legacy_collection_output_view::current_frontier_preserves_frozen_old_member_failure_over_excess ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 549 filtered out; finished in 0.86s
+

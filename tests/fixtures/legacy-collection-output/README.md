@@ -144,3 +144,40 @@ SAGAT_Q5_CASE=free-admission-equal-limit bash scripts/test-legacy-collection-out
 Run all six closed selectors after shared fixture edits. Actual outcomes belong
 in project-completion evidence. Parent quota/frontier/CAS/rollout/nesting and
 canonical task acceptance remain separate.
+
+## Actual failed-member precedence over excess
+
+`failed-member` adds one positive control. After the same genuine old20-success
+boundary, old public advancement admits c10[0]/legacyWork. The already registered
+worker polls that exact lease and submits nonretryable Q5_MEMBER_FAILURE through
+real FailStep, then replays the exact request. ACK is FAILED/WAITING. No additional
+old collection transition occurs. The six-event suffix after c9 routing is entry,
+admission, release, lease, failure and empty routing: head=cutoff+6. Run has no stop;
+c10 is OPEN with one terminal FAILED/routed/no-output entry, one ADMITTED member,
+one held slot/reservation and no Return. L2100000/V2100030/E4200030 remain exact.
+
+The dedicated legacy-failed-member-frontier-v1 receipt has the same closed18
+non-capability fields, case failed-member and observed head. Its stable source
+adds the original failed step/reported hash, exact attempt-scoped canonical receipt,
+original member identities and five admission/claim/failure events. Changing active/
+completed/drain fields are checked through exact projection deltas. Worker session,
+lease and request never cross the handoff or enter logs/evidence.
+
+Current must select DrainStarted for that actual member failure before the excess
+check, then Drained0, DrainFinished and AlreadyFinished after fresh verification.
+The first custom-code FAILED stop remains unchanged. Exact +2/+1/+2 journal and
+1/1/2 outbox writes preserve original trace/scope/identity; capacity settles and
+uncreated Return reservation retires. There is no data-limit audit, new step,
+checkpoint/output/item1/compensation or source repair. This proves real failed-member
+selection and first-stop preservation, without fabricating a prior FAILED Run over
+an empty OPEN scope. Existing Q10 cancellation-before-report covers literal prior
+CANCELLED stop precedence and is rerun separately. No artificial RED or production
+change is introduced; both implementations already prioritize actual failure.
+
+```sh
+SAGAT_Q5_CASE=failed-member bash scripts/test-legacy-collection-output-view.sh
+```
+
+Run all seven Q5 selectors plus the existing Q10 cancellation-before-report gate
+after this increment. Actual results belong in project-completion evidence. General
+CAS/restart/rollout/nesting and canonical task acceptance remain separate.

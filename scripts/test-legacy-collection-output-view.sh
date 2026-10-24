@@ -9,6 +9,7 @@ case "${SAGAT_Q5_CASE-output-view}" in
   free-admission) fixture_case=free-admission ;;
   free-admission-red) fixture_case=free-admission-red ;;
   free-admission-equal-limit) fixture_case=free-admission-equal-limit ;;
+  failed-member) fixture_case=failed-member ;;
   *) echo "unknown SAGAT_Q5_CASE" >&2; exit 2 ;;
 esac
 # Bound the entire new fixture, including builds and cleanup, in a separate process group.
@@ -66,6 +67,10 @@ case "${fixture_case}" in
       old_test="legacy_collection_output_producer::frozen_old_nonfinal_return_frontier_guard_red"
       expected_red_marker='observed_legacy_nonfinal_return_checkpointed=true'
     fi ;;
+  failed-member)
+    old_test="legacy_collection_output_producer::frozen_old_failed_member_frontier_producer"
+    current_test="legacy_collection_output_view::current_frontier_preserves_frozen_old_member_failure_over_excess"
+    phase_seconds=300 ;;
   free-admission-equal-limit)
     old_test="legacy_collection_output_producer::frozen_old_free_admission_equal_limit_producer"
     current_test="legacy_collection_output_view::current_frontier_admits_frozen_old_free_admission_at_exact_limit"
@@ -414,6 +419,8 @@ if case!='output-view':
         fmt='legacy-free-admission-frontier-v1';kind='free-admission'
     elif case=='free-admission-equal-limit':
         fmt='legacy-free-admission-equal-limit-v1';kind='free-admission-equal-limit'
+    elif case=='failed-member':
+        fmt='legacy-failed-member-frontier-v1';kind='failed-member'
     else:raise SystemExit('unknown private receipt case')
     if set(v)!=set(fields) or v['format']!=fmt or v['source_commit']!='6c44a0e49670cf19660792cd1518d241e6c99b3b' or v['case']!=kind or v['role']!=sys.argv[3]:raise SystemExit('invalid private frontier receipt envelope')
 name=v.get('database_name')

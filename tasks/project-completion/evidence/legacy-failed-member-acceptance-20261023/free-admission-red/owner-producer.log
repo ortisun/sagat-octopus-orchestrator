@@ -1,0 +1,18 @@
+
+running 1 test
+old_free_admission_role role=owner api=postgres store=postgres database=t_01a16bb6b421768382faa4a641ccb2c6
+old_free_admission_premise L=2100000 V=2100030 E=4200030 closed=10 checkpoints=20 members=0 free_capacity=true live_forward=0
+observed_legacy_free_admission_admitted_zero=true
+
+thread 'legacy_collection_output_producer::frozen_old_free_admission_frontier_guard_red' (241924894) panicked at tests/integration/workflow-primitives/legacy_collection_output_producer.rs:1448:9:
+old guard RED: expected DrainStarted before first admission
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test legacy_collection_output_producer::frozen_old_free_admission_frontier_guard_red ... FAILED
+
+failures:
+
+failures:
+    legacy_collection_output_producer::frozen_old_free_admission_frontier_guard_red
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 507 filtered out; finished in 7.22s
+

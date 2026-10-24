@@ -1,0 +1,24 @@
+[
+  {
+    "case": "free-admission-red",
+    "role": "owner",
+    "phase": "producer",
+    "native_exit_code": 101,
+    "passed": 0,
+    "failed": 1,
+    "ignored": 0,
+    "test_harness_seconds": 7.22,
+    "artifact_run": "/tmp/sagat-completion-20261023/failed-final/artifacts-free-admission-red/run.FefhXU"
+  },
+  {
+    "case": "free-admission-red",
+    "role": "runtime",
+    "phase": "producer",
+    "native_exit_code": 101,
+    "passed": 0,
+    "failed": 1,
+    "ignored": 0,
+    "test_harness_seconds": 7.1,
+    "artifact_run": "/tmp/sagat-completion-20261023/failed-final/artifacts-free-admission-red/run.FefhXU"
+  }
+]

@@ -1,0 +1,24 @@
+[
+  {
+    "case": "nonfinal-return-red",
+    "role": "owner",
+    "phase": "producer",
+    "native_exit_code": 101,
+    "passed": 0,
+    "failed": 1,
+    "ignored": 0,
+    "test_harness_seconds": 7.09,
+    "artifact_run": "/tmp/sagat-completion-20261023/failed-final/artifacts-nonfinal-return-red/run.3XUyUQ"
+  },
+  {
+    "case": "nonfinal-return-red",
+    "role": "runtime",
+    "phase": "producer",
+    "native_exit_code": 101,
+    "passed": 0,
+    "failed": 1,
+    "ignored": 0,
+    "test_harness_seconds": 7.03,
+    "artifact_run": "/tmp/sagat-completion-20261023/failed-final/artifacts-nonfinal-return-red/run.3XUyUQ"
+  }
+]

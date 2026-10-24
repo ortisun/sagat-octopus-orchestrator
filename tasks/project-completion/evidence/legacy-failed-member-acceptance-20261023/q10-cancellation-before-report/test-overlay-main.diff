@@ -1,0 +1,10 @@
+--- /tmp/sagat-completion-20261023/failed-final/artifacts-q10-cancellation-before-report/run.P0ZHhK/artifacts/old-main.original.rs	2026-10-23 23:30:14
++++ /tmp/sagat-completion-20261023/failed-final/artifacts-q10-cancellation-before-report/run.P0ZHhK/old-source/tests/integration/workflow-primitives/main.rs	2026-10-23 23:30:14
+@@ -26,6 +26,7 @@
+ mod chains_http;
+ mod collection_10k;
+ mod collection_budgets;
++mod legacy_collection_inflight_report_producer_v1;
+ mod collection_pipeline;
+ mod collection_restore;
+ mod collection_sources;

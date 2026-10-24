@@ -1,0 +1,6 @@
+{
+  "evidence_files_checked": 163,
+  "no_private_receipt_envelopes": true,
+  "final_native_phase_count": 28,
+  "private_worker_session_lease_request_not_logged_by_new_fixture": true
+}

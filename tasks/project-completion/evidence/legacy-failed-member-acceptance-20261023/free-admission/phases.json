@@ -1,0 +1,46 @@
+[
+  {
+    "case": "free-admission",
+    "role": "owner",
+    "phase": "producer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 7.2,
+    "artifact_run": "/tmp/sagat-completion-20261023/failed-final/artifacts-free-admission/run.QFu1ma"
+  },
+  {
+    "case": "free-admission",
+    "role": "owner",
+    "phase": "consumer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 0.75,
+    "artifact_run": "/tmp/sagat-completion-20261023/failed-final/artifacts-free-admission/run.QFu1ma"
+  },
+  {
+    "case": "free-admission",
+    "role": "runtime",
+    "phase": "producer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 7.17,
+    "artifact_run": "/tmp/sagat-completion-20261023/failed-final/artifacts-free-admission/run.QFu1ma"
+  },
+  {
+    "case": "free-admission",
+    "role": "runtime",
+    "phase": "consumer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 0.73,
+    "artifact_run": "/tmp/sagat-completion-20261023/failed-final/artifacts-free-admission/run.QFu1ma"
+  }
+]

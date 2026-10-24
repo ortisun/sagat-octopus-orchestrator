@@ -1,0 +1,21 @@
+{
+  "removed": [
+    {
+      "file": "old-source.tar",
+      "bytes": 59392000,
+      "sha256": "50e6c054052e2a1cad6c75eaafcec8e3e4bcafb5eb7b80caa81b6e5634776e2d"
+    },
+    {
+      "file": "integration-workflow-primitives-old",
+      "bytes": 176833504,
+      "sha256": "6e45dbd96d45c9fc38436704fd21a0dea400ea2e051b9cd6b73d2f6c2ad1189b"
+    },
+    {
+      "file": "integration-workflow-primitives-current",
+      "bytes": 183089776,
+      "sha256": "403b3f0fdb0433cf03c2beaff597721671636edd2084da19f08a73bb9acbc1b7"
+    }
+  ],
+  "source_and_private_handoffs_removed": true,
+  "ongoing_private_target_retained": true
+}

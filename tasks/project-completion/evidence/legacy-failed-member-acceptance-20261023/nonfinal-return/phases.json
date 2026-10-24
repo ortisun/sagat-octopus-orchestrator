@@ -1,0 +1,46 @@
+[
+  {
+    "case": "nonfinal-return",
+    "role": "owner",
+    "phase": "producer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 7.1,
+    "artifact_run": "/tmp/sagat-completion-20261023/failed-final/artifacts-nonfinal-return/run.ECNEP6"
+  },
+  {
+    "case": "nonfinal-return",
+    "role": "owner",
+    "phase": "consumer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 1.13,
+    "artifact_run": "/tmp/sagat-completion-20261023/failed-final/artifacts-nonfinal-return/run.ECNEP6"
+  },
+  {
+    "case": "nonfinal-return",
+    "role": "runtime",
+    "phase": "producer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 7.12,
+    "artifact_run": "/tmp/sagat-completion-20261023/failed-final/artifacts-nonfinal-return/run.ECNEP6"
+  },
+  {
+    "case": "nonfinal-return",
+    "role": "runtime",
+    "phase": "consumer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 0.99,
+    "artifact_run": "/tmp/sagat-completion-20261023/failed-final/artifacts-nonfinal-return/run.ECNEP6"
+  }
+]

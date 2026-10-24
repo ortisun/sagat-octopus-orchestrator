@@ -1,0 +1,12 @@
+{
+  "owner": {
+    "created_database": "t_01a16bb866dc70c2808dc0be51518b31",
+    "absent_from_after": true,
+    "private_receipts_removed": true
+  },
+  "runtime": {
+    "created_database": "t_01a16bb8896e7546bda788c19182ea6b",
+    "absent_from_after": true,
+    "private_receipts_removed": true
+  }
+}

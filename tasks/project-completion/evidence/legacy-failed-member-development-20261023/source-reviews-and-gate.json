@@ -1,0 +1,47 @@
+{
+  "producer_c1": "None",
+  "consumer_coordinator_c1": "None",
+  "model": "gpt-6-astra",
+  "reasoning_effort": "xhigh",
+  "phases": [
+    {
+      "role": "owner",
+      "phase": "producer",
+      "native_exit": 0,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "test_harness_seconds": 7.26
+    },
+    {
+      "role": "owner",
+      "phase": "consumer",
+      "native_exit": 0,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "test_harness_seconds": 0.84
+    },
+    {
+      "role": "runtime",
+      "phase": "producer",
+      "native_exit": 0,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "test_harness_seconds": 7.97
+    },
+    {
+      "role": "runtime",
+      "phase": "consumer",
+      "native_exit": 0,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "test_harness_seconds": 0.81
+    }
+  ],
+  "private_handoffs_removed": true,
+  "extracted_old_source_removed": true,
+  "later_source_delta": "three assertion messages made scenario-neutral; no behavioral changes"
+}

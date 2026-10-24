@@ -760,6 +760,30 @@ async fn nonfinal_produce(red: bool) {
     std::fs::rename(temporary, &path).expect("atomic settled-work handoff");
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AdmissionFixture {
+    OverLimit,
+    EqualLimit,
+    FailedMember,
+}
+
+impl AdmissionFixture {
+    fn format(self) -> &'static str {
+        match self {
+            Self::OverLimit => "legacy-free-admission-frontier-v1",
+            Self::EqualLimit => "legacy-free-admission-equal-limit-v1",
+            Self::FailedMember => "legacy-failed-member-frontier-v1",
+        }
+    }
+    fn case(self) -> &'static str {
+        match self {
+            Self::OverLimit => "free-admission",
+            Self::EqualLimit => "free-admission-equal-limit",
+            Self::FailedMember => "failed-member",
+        }
+    }
+}
+
 const FREE_WORKER: &str = "free-admission-worker";
 const FREE_NAME: &str = "q5-free-admission";
 
@@ -787,6 +811,16 @@ async fn free_admission_source(
     run: Uuid,
     cutoff: i64,
 ) -> String {
+    admission_source(pool, tenant, run, cutoff, false).await
+}
+
+async fn admission_source(
+    pool: &sqlx::PgPool,
+    tenant: Uuid,
+    run: Uuid,
+    cutoff: i64,
+    failed_member: bool,
+) -> String {
     let closed: Value = sqlx::query_scalar(NONFINAL_CLOSED_SOURCE_SQL)
         .bind(tenant)
         .bind(run)
@@ -795,7 +829,7 @@ async fn free_admission_source(
         .fetch_one(pool)
         .await
         .expect("immutable old closed source");
-    let target:Value=sqlx::query_scalar(r#"SELECT jsonb_build_object(
+    let mut target:Value=sqlx::query_scalar(r#"SELECT jsonb_build_object(
       'run',to_jsonb(r)-ARRAY['status','run_version','stop_reason','stop_code','updated_at','finished_at'],
       'version',to_jsonb(version_row),
       'scope',to_jsonb(s)-ARRAY['lifecycle','drain_kind','drain_iteration','drain_failure_code','drain_sequence','drain_outbox_id','finish_sequence','finish_outbox_id','updated_at'],
@@ -828,6 +862,80 @@ async fn free_admission_source(
             && target["entry_event"]["node"] == "c10",
         "nonvacuous pinned definition, captured source, payloads and original entry"
     );
+    if failed_member {
+        let scope = target["scope"]
+            .as_object_mut()
+            .expect("actual target scope");
+        scope.remove("active_count");
+        scope.remove("completed_count");
+        let failure: Value = sqlx::query_scalar(r#"SELECT jsonb_build_object(
+          'step',to_jsonb(w),
+          'member',(SELECT to_jsonb(m)-ARRAY['lifecycle','slot_held','remaining_reservations','drained_sequence','drain_outbox_id','updated_at'] FROM collection_iterations m WHERE m.tenant_id=w.tenant_id AND m.run_id=w.run_id AND m.entry_instance_id=w.step_id),
+          'events',(SELECT jsonb_agg(to_jsonb(e) ORDER BY e.seq) FROM run_events e WHERE e.tenant_id=w.tenant_id AND e.run_id=w.run_id AND e.seq BETWEEN $3+2 AND $3+6),
+          'receipts',(SELECT jsonb_agg(to_jsonb(c) ORDER BY c.scope,c.idempotency_key) FROM command_dedupe c WHERE c.tenant_id=w.tenant_id AND c.scope='step:'||w.run_id::text||':scoped:3:c10:0;10:legacyWork:'||substring(encode(w.reported_lease_token_hash,'hex') from 1 for 16)),
+          'reported',octet_length(w.reported_lease_token_hash)=32 AND w.lease_token_hash IS NULL AND w.leased_by IS NULL AND w.lease_expires_at IS NULL)
+          FROM steps w WHERE w.tenant_id=$1 AND w.run_id=$2 AND w.node='legacyWork' AND w.instance_path_nodes=ARRAY['c10']::text[] AND w.instance_path_indices=ARRAY[0]::integer[]"#)
+            .bind(tenant).bind(run).bind(cutoff).fetch_one(pool).await.expect("real failed-member source and original report receipt");
+        let receipts = failure["receipts"]
+            .as_array()
+            .expect("original failure receipt");
+        assert!(
+            failure["step"]["status"] == "FAILED"
+                && failure["step"]["routed"] == true
+                && failure["step"]["failure_code"] == "Q5_MEMBER_FAILURE"
+                && failure["step"]["output_digest"].is_null()
+                && failure["reported"] == true
+                && failure["member"]["entry_instance_id"] == failure["step"]["step_id"]
+                && failure["member"]["entry_path_nodes"] == json!(["c10"])
+                && failure["member"]["entry_path_indices"] == json!([0])
+                && failure["member"]["entry_node"] == "legacyWork"
+                && failure["member"]["admitted_sequence"] == cutoff + 2
+                && receipts.len() == 1
+                && receipts[0]["resource_id"] == format!("FAILED|WAITING|{}", cutoff + 6),
+            "actual terminal failed work and canonical original receipt, no active lease or output"
+        );
+        let events = failure["events"]
+            .as_array()
+            .expect("original old admission/claim/failure suffix");
+        assert!(
+            events.len() == 5,
+            "exact old five-event member suffix after entry"
+        );
+        for (i, kind) in [
+            "collection.iteration_admitted",
+            "step.released",
+            "step.leased",
+            "step.failed",
+            "step.routed",
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert!(
+                events[i]["seq"] == cutoff + 2 + i as i64
+                    && events[i]["event_type"] == *kind
+                    && events[i]["tenant_id"] == tenant.to_string()
+                    && events[i]["run_id"] == run.to_string()
+                    && events[i]["trace_id"] == target["run"]["trace_id"],
+                "exact ordered old failure source event identity"
+            );
+            if i > 0 {
+                assert!(
+                    events[i]["instance_id"] == failure["step"]["step_id"]
+                        && events[i]["node"] == "legacyWork"
+                        && events[i]["instance_path_nodes"] == json!(["c10"])
+                        && events[i]["instance_path_indices"] == json!([0]),
+                    "failure suffix retains exact original scoped entry"
+                );
+            }
+        }
+        assert!(
+            events[3]["detail"]["code"] == "Q5_MEMBER_FAILURE"
+                && events[4]["detail"]["activated"] == json!([]),
+            "known nonretryable failure routes no successor"
+        );
+        target["failed_member"] = failure;
+    }
     nonfinal_sha(&json!({"closed":closed,"target":target}))
 }
 
@@ -954,20 +1062,30 @@ async fn free_admission_shape(
 
 #[tokio::test(flavor = "current_thread")]
 async fn frozen_old_free_admission_frontier_producer() {
-    free_admission_produce(false, false).await;
+    free_admission_produce(false, AdmissionFixture::OverLimit).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn frozen_old_free_admission_frontier_guard_red() {
-    free_admission_produce(true, false).await;
+    free_admission_produce(true, AdmissionFixture::OverLimit).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn frozen_old_free_admission_equal_limit_producer() {
-    free_admission_produce(false, true).await;
+    free_admission_produce(false, AdmissionFixture::EqualLimit).await;
 }
 
-async fn free_admission_produce(red: bool, equal_limit: bool) {
+#[tokio::test(flavor = "current_thread")]
+async fn frozen_old_failed_member_frontier_producer() {
+    free_admission_produce(false, AdmissionFixture::FailedMember).await;
+}
+
+async fn free_admission_produce(red: bool, scenario: AdmissionFixture) {
+    let equal_limit = scenario == AdmissionFixture::EqualLimit;
+    assert!(
+        !red || scenario == AdmissionFixture::OverLimit,
+        "only genuine over-limit guard has a RED"
+    );
     assert!(
         !(red && equal_limit),
         "equality is a positive control, never a manufactured RED"
@@ -1144,7 +1262,7 @@ async fn free_admission_produce(red: bool, equal_limit: bool) {
         );
         assert!(exact, "exact checkpoint then finish then unadmitted entry");
     }
-    let state = free_admission_shape(
+    let mut state = free_admission_shape(
         &platform.api.db.pool,
         platform.tenant.as_uuid(),
         run.as_uuid(),
@@ -1194,13 +1312,116 @@ async fn free_admission_produce(red: bool, equal_limit: bool) {
         state["head"] == cutoff + 1,
         "actual old handoff is exactly c10 entry after c9 route"
     );
-    let source = free_admission_source(
-        &platform.api.db.pool,
-        platform.tenant.as_uuid(),
-        run.as_uuid(),
-        cutoff,
-    )
-    .await;
+    if scenario == AdmissionFixture::FailedMember {
+        ticks += 1;
+        assert!(ticks <= 256, "bounded old failed-member admission");
+        let owner = ExecutionInstanceId::root(NodeId::parse("c10").expect("target owner"));
+        assert!(
+            matches!(
+                scheduler
+                    .advance_collection(platform.tenant, run, &owner)
+                    .await,
+                Ok(CollectionAdvance::Admitted { index: 0 })
+            ),
+            "old normal admission before actual failure"
+        );
+        let mut tasks = worker.poll(1).await;
+        assert!(tasks.len() == 1, "one actual original failed-member task");
+        let task = tasks.pop().expect("actual member lease");
+        let identity = task.instance.as_ref().expect("actual scoped task identity");
+        assert!(
+            task.run_id == run_text
+                && task.activity_name == "line.reserve"
+                && task.attempt == 1
+                && task.generation > 0
+                && !task.lease_token.is_empty()
+                && identity.definition_node_id == "legacyWork"
+                && identity.instance_path.len() == 1
+                && identity.instance_path[0].scope_node_id == "c10"
+                && identity.instance_path[0].iteration_index == 0,
+            "actual exact c10 item0 forward lease, no replacement task"
+        );
+        let message = Worker::fail_message(&task, "Q5_MEMBER_FAILURE", false);
+        let request = worker.req(message.clone());
+        let ack = match worker.client.fail_step(request).await {
+            Ok(r) => r.into_inner(),
+            Err(_) => panic!("real old nonretryable member failure"),
+        };
+        assert!(
+            !ack.already_applied && ack.step_status == "FAILED" && ack.run_status == "WAITING",
+            "genuine failed-member ACK without a root stop"
+        );
+        let request = worker.req(message);
+        let replay = match worker.client.fail_step(request).await {
+            Ok(r) => r.into_inner(),
+            Err(_) => panic!("canonical old failure replay"),
+        };
+        assert!(
+            replay.already_applied
+                && replay.command_id == ack.command_id
+                && replay.step_status == ack.step_status
+                && replay.run_status == ack.run_status,
+            "original failure ACK replay before active lease check"
+        );
+        let failed:Value=sqlx::query_scalar(r#"SELECT jsonb_build_object(
+          'head',r.run_version,'waiting',r.status='WAITING' AND r.stop_reason IS NULL AND r.stop_code IS NULL,
+          'scope',to_jsonb(sc),'member',to_jsonb(m),'usage',to_jsonb(u),
+          'tenant_active',(SELECT active_iterations FROM tenant_iteration_usage WHERE tenant_id=r.tenant_id),
+          'target_steps',(SELECT count(*) FROM steps w WHERE w.tenant_id=r.tenant_id AND w.run_id=r.id AND w.instance_path_nodes=ARRAY['c10']::text[]),
+          'checkpoints',(SELECT count(*) FROM iteration_checkpoints k WHERE k.tenant_id=r.tenant_id AND k.run_id=r.id),
+          'next_member',(SELECT count(*) FROM collection_iterations other WHERE other.tenant_id=sc.tenant_id AND other.run_id=sc.run_id AND other.scope_id=sc.scope_id AND other.iteration_index=1))
+          FROM runs r JOIN iteration_scopes sc ON sc.tenant_id=r.tenant_id AND sc.run_id=r.id AND sc.owner_node='c10'
+          JOIN collection_iterations m ON m.tenant_id=sc.tenant_id AND m.run_id=sc.run_id AND m.scope_id=sc.scope_id AND m.iteration_index=0
+          JOIN run_instance_usage u ON u.tenant_id=r.tenant_id AND u.run_id=r.id WHERE r.tenant_id=$1 AND r.id=$2"#)
+            .bind(platform.tenant.as_uuid()).bind(run.as_uuid()).fetch_one(&platform.api.db.pool).await.expect("actual old failed-member handoff");
+        assert!(
+            failed["waiting"] == true
+                && failed["head"] == cutoff + 6
+                && failed["scope"]["scope_id"] == state["scope_id"]
+                && failed["scope"]["lifecycle"] == "OPEN"
+                && failed["scope"]["next_admission_index"] == 1
+                && failed["scope"]["admitted_count"] == 1
+                && failed["scope"]["completed_count"] == 0
+                && failed["scope"]["active_count"] == 1
+                && failed["member"]["lifecycle"] == "ADMITTED"
+                && failed["member"]["slot_held"] == true
+                && failed["member"]["reserved_instances"] == 1
+                && failed["member"]["remaining_reservations"] == 1
+                && failed["member"]["return_instance_id"].is_null()
+                && failed["member"]["result_digest"].is_null()
+                && failed["member"]["drained_sequence"].is_null()
+                && failed["member"]["drain_outbox_id"].is_null()
+                && failed["usage"]["logical_output_bytes"] == 2_100_000
+                && failed["usage"]["reserved_instances"] == 1
+                && failed["tenant_active"] == 1
+                && failed["target_steps"] == 1
+                && failed["checkpoints"] == 20
+                && failed["next_member"] == 0,
+            "exact real failed member with held capacity, no root stop/Return/checkpoint/next work"
+        );
+        state["head"] = failed["head"].clone();
+        println!(
+            "old_failed_member_premise L=2100000 V=2100030 E=4200030 original_failure=Q5_MEMBER_FAILURE root_stop=false active=1 reserved=1"
+        );
+    }
+    let source = if scenario == AdmissionFixture::FailedMember {
+        admission_source(
+            &platform.api.db.pool,
+            platform.tenant.as_uuid(),
+            run.as_uuid(),
+            cutoff,
+            true,
+        )
+        .await
+    } else {
+        free_admission_source(
+            &platform.api.db.pool,
+            platform.tenant.as_uuid(),
+            run.as_uuid(),
+            cutoff,
+        )
+        .await
+    };
     let projection: Value = sqlx::query_scalar(PROJECTION_WITNESS_SQL)
         .bind(platform.tenant.as_uuid())
         .bind(vec![run.as_uuid()])
@@ -1211,7 +1432,7 @@ async fn free_admission_produce(red: bool, equal_limit: bool) {
         println!(
             "old_equal_limit_premise L=2097137 V=2097167 E=4194304 closed=10 checkpoints=20 members=0 free_capacity=true live_forward=0"
         );
-    } else {
+    } else if scenario == AdmissionFixture::OverLimit {
         println!(
             "old_free_admission_premise L=2100000 V=2100030 E=4200030 closed=10 checkpoints=20 members=0 free_capacity=true live_forward=0"
         );
@@ -1230,16 +1451,8 @@ async fn free_admission_produce(red: bool, equal_limit: bool) {
         );
         return;
     }
-    let format = if equal_limit {
-        "legacy-free-admission-equal-limit-v1"
-    } else {
-        "legacy-free-admission-frontier-v1"
-    };
-    let case = if equal_limit {
-        "free-admission-equal-limit"
-    } else {
-        "free-admission"
-    };
+    let format = scenario.format();
+    let case = scenario.case();
     let receipt = json!({"format":format,"source_commit":OLD_COMMIT,
         "case":case,"role":role,"database_name":platform.api.db.name,"database_url":platform.api.db.url,
         "runtime_database_url":platform.api.db.url_for(crate::support::RUNTIME_ROLE,crate::support::RUNTIME_ROLE_PASSWORD),

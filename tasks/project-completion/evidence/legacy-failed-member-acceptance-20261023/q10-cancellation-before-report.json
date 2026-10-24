@@ -1,0 +1,16 @@
+{
+  "command": [
+    "gtimeout",
+    "--signal=TERM",
+    "--kill-after=5s",
+    "2500s",
+    "bash",
+    "scripts/test-legacy-collection-inflight-report-v1.sh",
+    "--case",
+    "cancellation-before-report"
+  ],
+  "exit_code": 0,
+  "seconds": 105.16,
+  "started_utc": "2026-10-24T02:30:13.156583+00:00",
+  "log": "q10-cancellation-before-report.txt"
+}
