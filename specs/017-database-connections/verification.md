@@ -631,3 +631,31 @@ classification, of the 014 follow-up runtime work or of `tasks/project-completio
 
 ### What was run on the merged tree
 
+Machine: shared, load average 18-30 during most runs; Docker is the `sagat-remaining` Colima VM;
+`RUST_TEST_THREADS=2`, private target directory, `CARGO_PROFILE_DEV_DEBUG=0`.
+
+| Command | Result |
+|---|---|
+| `cargo fmt --check`; `cargo clippy --workspace --all-targets --locked -- -D warnings` | clean |
+| `python3 scripts/check-architecture.py`; `python3 scripts/check-agent-config.py`; `python3 -m unittest discover -s scripts/tests` | pass (24 crates, no cycle); ok; 24 tests |
+| `cargo test --workspace --locked --no-fail-fast` (the CI command, final tree, runner binary built first) | **3132 passed, 1 failed, 57 ignored**. The failure is `cron::a_schedule_missed_while_nobody_was_looking_fires_once_and_not_for_every_time_it_missed`: the assertion allows a wait of `0.0..=60.5` s for an every-minute schedule and saw `-0.0345`, i.e. the minute boundary passed between the dispatch and the read under load. The events cron code is not touched by 017; `integration_events_webhooks_messaging` alone then passed 111/111 |
+| `integration_database_connections` (3) and `integration_database_runner` (1, the isolated process; the measurement test stays `--ignored`) | pass, also with `SAGAT_TEST_AS_RUNTIME_ROLE=1` |
+| runtime-role sweep: `integration_database_connections`, `integration_database_runner`, `integration_platform_foundation`, `integration_workflow_primitives`, `integration_durable_execution`, `integration_security_multitenancy` | all pass except two `integration_workflow_primitives` tests that hit `No space left on device` while migrating (the Colima VM, shared with other sessions); both pass alone as the runtime role (2/2) |
+| `sdk_conformance`, all 54 scenarios x 5 languages | first run: `database-connections` (the five workers reported 1.5; scenario now pinned to 1.4 like the other root-work scenarios) and `approval-chain` (TypeScript only, G602) failed; both pass on rerun; `protocol-negotiation` was blessed after reading the diff (offer 1.9 -> 1.6, and the merge had put the 017 accepted-version change on the wrong worker: `start-current` is 1.4) and passes unblessed |
+| `e2e_sdk_multilanguage` / `fault_sdk_multilanguage` (`--ignored`) | 6 / 9 passed (us04 expects 1.9 -> 1.6) |
+| `e2e_developer_experience -- --ignored us03:: order_processing:: saga:: scripts::` | 4 passed |
+| `e2e_workflow_studio -- --ignored journeys`; `e2e_database_connections -- --ignored` (real Chromium, OpenBao, PostgreSQL, the runner) | 1 passed; 1 passed |
+| Studio: `npm ci`, `lint`, `typecheck` (studio and e2e), `npm test`, `build`, `check:api`; `node --test e2e/compose-security.test.mjs` | pass: 83 files / 1141 tests; 3/3. `npm audit --audit-level=moderate` reports 7 findings (vitest, dompurify, undici advisories published after the lock file); the identical report comes from develop's lock file, which 017 changes only by adding `lossless-json` |
+| SDKs: Python `pytest` (260), `mypy`, `ruff check`; TypeScript `npm test` (130); Go `test -race`, `vet`, `gofmt -l`; .NET `dotnet test` (449), `dotnet format --verify-no-changes`; Java `./mvnw -q verify` | all pass (ruff needed the `__all__` order fixed after the merge) |
+| Contracts: `contract_developer_experience` (docs/reference blessed after reading the diff, rerun unblessed), redocly lint of `openapi.yaml`, `protoc` of `worker.proto`, AsyncAPI validate, ajv `--strict=false` of the payment example and of `tests/contract/database-connections/typed-parameters.workflow.json` | pass (redocly: 7 warnings that exist on develop) |
+| `helm lint infra/helm -f ha.yaml` and `-f ha.yaml -f database.yaml`; `contract_scalability_ha` (renders the chart) | pass |
+| `scripts/smoke-compose.sh` with `SAGAT_BIN` set (no `SAGAT_SMOKE_BROWSER`) | passed after one environmental workaround: the Colima VM has no host mounts (`mounts: null`), so the bind-mounted `postgres-init` directory was empty and the runtime role was never created; the script was copied into the VM path once |
+| `cargo audit --deny warnings` | 5 advisories published after the lock file (crypto-bigint, ctutils, rustls-webpki, webpki-roots, tokio); develop's lock file reports those plus the four rustls ones that 017's `fix(deps)` already clears |
+
+Not run: `tests/e2e/database-connections/compose.py`, `kubernetes.sh`, `recovery.py` and
+`e2e_developer_experience onboarding_browser::` (Compose with host bind mounts and a kind
+cluster; the Colima VM has no mounts), `perf_*` and `measure_managed_database_phase_latency`
+(`--ignored` measurements), the Compose overlay `compose.database.yaml` (needs the
+development directory those scripts prepare). The evidence of T017-023 and T017-024 for those
+paths is the 2026-10-17 record above; nothing in this integration changes them except the
+protocol minor, the migration numbers and D601.
