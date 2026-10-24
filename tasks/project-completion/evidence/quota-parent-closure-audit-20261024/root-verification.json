@@ -1,0 +1,80 @@
+{
+  "new_native_tests_run": false,
+  "verified_recorded_final_six_processes": [
+    {
+      "case": "aborted",
+      "invocation_profile": "default",
+      "test": "public_refusal_commit_loss::committed_loss::ordinary_public_scoped_refusal_aborted_commit_reply_loss_applies_after_api_reopen",
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "seconds": 10.9,
+      "recorded_actual_api_role": "sagat_app"
+    },
+    {
+      "case": "aborted",
+      "invocation_profile": "runtime",
+      "test": "public_refusal_commit_loss::committed_loss::ordinary_public_scoped_refusal_aborted_commit_reply_loss_applies_after_api_reopen",
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "seconds": 9.26,
+      "recorded_actual_api_role": "sagat_app"
+    },
+    {
+      "case": "committed",
+      "invocation_profile": "default",
+      "test": "public_refusal_commit_loss::committed_loss::ordinary_public_scoped_refusal_commit_reply_loss_replays_after_api_reopen",
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "seconds": 8.11,
+      "recorded_actual_api_role": "sagat_app"
+    },
+    {
+      "case": "committed",
+      "invocation_profile": "runtime",
+      "test": "public_refusal_commit_loss::committed_loss::ordinary_public_scoped_refusal_commit_reply_loss_replays_after_api_reopen",
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "seconds": 8.02,
+      "recorded_actual_api_role": "sagat_app"
+    },
+    {
+      "case": "baseline",
+      "invocation_profile": "default",
+      "test": "public_refusal_commit_loss::ordinary_public_scoped_refusal_reopens_on_supplied_runtime_pool",
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "seconds": 7.0,
+      "recorded_actual_api_role": "sagat_app"
+    },
+    {
+      "case": "baseline",
+      "invocation_profile": "runtime",
+      "test": "public_refusal_commit_loss::ordinary_public_scoped_refusal_reopens_on_supplied_runtime_pool",
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "seconds": 7.14,
+      "recorded_actual_api_role": "sagat_app"
+    }
+  ],
+  "production_and_public_recovery_test_sources_unchanged_since_426629d1": true,
+  "frontier_reader_root_inspected": "scope_frontier.rs:44-50,76-112 uses same read-only REPEATABLE READ connection for revision/stop/E",
+  "affected_cancellation_regression": {
+    "accepted_source": "e2c0237c",
+    "evidence": "legacy-underlimit-cancel-acceptance-20261024",
+    "separate_positive_native_processes": 8,
+    "failed": 0,
+    "ignored": 0
+  }
+}

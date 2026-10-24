@@ -737,3 +737,31 @@ review previously declined. Evidence and reproduction:
 `tasks/project-completion/evidence/legacy-underlimit-cancel-acceptance-20261024/README.md`.
 Only local Q10c.5 closes. Applied, output-dependent compensation, post-ACK/OS/
 uncertain-COMMIT compositions, Q10c/quota/rollout/nesting/canonical tasks stay open.
+
+### Bounded Q7c and ordinary-inline Q7b.5 parent reconciliation — 2026-10-24
+
+Fresh read-only GPT-6 Astra/xhigh audit maps Q7c directly to accepted b0a7ea5e and
+.1–.6: exact effective path/positive-write guard, one read-only REPEATABLE READ
+revision/stop/code/E snapshot, all three genuine-old frontiers, exact equality,
+selected real cancellation/custom failure, observed original-report/native CAS
+and fresh recovery. These bounded Q7c obligations close. Broader quota/report/
+rollout/nesting/canonical gates remain separate.
+
+Q7b.5 closes expressly CURRENT ORDINARY INLINE public refusal recovery: accepted
+.5a–d/final426629d1 six exact processes prove committed and deferred-aborted COMMIT
+reply loss plus unarmed full-reopen baseline in both invocation profiles, each
+1passed/0failed/0ignored. Both profiles actually sagat_app, not owner/runtime
+privilege evidence. Root rechecks saved exact results and verifies production/
+public recovery test sources unchanged since426629d1. This audit runs no new
+native tests; current affected cancellation regression separately passes eight
+processes in e2c0237c. Separate overlapping matrices are not summed.
+
+Bootstrap's proposed broader Applied P1 was explicitly context-only/unaccepted;
+subsequent accepted .5c/.5d isolate ordinary-inline. Applied response loss,
+post-ACK cold scheduler/OS recovery, remaining authority/fence/terminal controls,
+genuine-old Applied/output-dependent/recovery compositions stay under Q7b/Q10c.
+No public unknown-outcome enum, production source/scoped-Finish activation or
+canonical/master closure is inferred. Evidence with exact mapping/limitations:
+`tasks/project-completion/evidence/quota-parent-closure-audit-20261024/README.md`.
+Historical “parent open” notes describe their then-current state; this scoped audit
+supersedes them only for Q7c and current ordinary-inline Q7b.5.

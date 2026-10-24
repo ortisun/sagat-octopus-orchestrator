@@ -1,0 +1,15 @@
+{
+  "reviewer": "gpt-6-astra",
+  "reasoning_effort": "xhigh",
+  "read_only_no_execution": true,
+  "Q7c": "eligible bounded closure: explicit frontier/path/snapshot/CAS gates map to accepted.1-.6 plus cancellation",
+  "Q7b.5": "eligible only current ordinary-inline public committed/aborted recovery; six accepted exact processes426629d1",
+  "scope_nuance": "original public-pool-bootstrap decision proposed broader Applied P1, but review.md explicitly leaves it context-only/unaccepted; subsequent accepted .5c/.5d plans isolate ordinary-inline and leave Applied separate",
+  "remaining_under_Q7b_Q10": [
+    "Applied response-loss composition",
+    "post-ACK cold scheduler/OS recovery",
+    "remaining authority/fence/terminal controls",
+    "genuine-old Applied/output-dependent/recovery compositions"
+  ],
+  "no_activation_nesting_canonical_closure": true
+}

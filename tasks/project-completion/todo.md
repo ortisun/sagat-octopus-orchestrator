@@ -216,7 +216,7 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [x] B1b.2c.1d.0Q6a: Declare effective RunTx output-byte scalar with complete-data compatibility default; port compile/static gates; PG override source preparation now a7dc19b3, actual legacy acceptance/consumer activation remain pending.
 - [x] B1b.2c.1d.0Q5: Verified read-only legacy aggregate overlay/effective scalar/full writer guard, including actual frozen6c44a0e4 old producer and current owner/runtime five-case matrices; sourcece0cb786, evidence/legacy-output-view-20261018. Full process rollout and native drain producers remain separate.
 - [x] B1b.2c.1d.0Q6b: Use the authoritative effective scalar in existing full preflights after the PG override, preserving typed outcomes. Source012d746f; existing result gRPC5/5 each mode, legacy signal-specific acceptance separate.
-- [ ] B1b.2c.1d.0Q7c: Accept effective path/frontier accounting and same-snapshot stop/E behavior. Sourceb0a7ea5e; three genuine old shapes, equality, selected cancellation/failed-member priority and original-success/frontier held-lock CAS have bounded acceptance below. Parent closure still requires scope/evidence reconciliation; no broader activation inferred.
+- [x] B1b.2c.1d.0Q7c: Accept effective path/frontier accounting and same-snapshot stop/E behavior; b0a7ea5e plus accepted .1–.6 prove all three genuine-old frontiers, equality, selected real cancellation/failure and held-lock original-report/native CAS/fresh recovery. Bounded closure audit evidence/quota-parent-closure-audit-20261024; broader quota/recovery/rollout/nesting/canonical gates stay open.
 - [x] B1b.2c.1d.0Q7c.1: Prove genuine old pending NONFINAL Return is drained before checkpoint/admission, with exact old source/bytes and actual original-target compensation through terminal native publication; b8f44488, evidence/legacy-nonfinal-return-acceptance-20261023. Four new positive phases and four preserved output-view phases pass; two separate old guard tests fail as expected. No production activation or broader Q7c closure.
 - [x] B1b.2c.1d.0Q7c.2: Prove genuine old OPEN/free-capacity scope drains before first admission and finalizes FAILED without new obligations;528e10fd, evidence/legacy-free-admission-acceptance-20261023. Five selectors pass12positive processes and four separate expected old failures; current cold verification/source/roles/native finish and owned cleanup are exact. Parent Q7c and canonical tasks remain open.
 - [x] B1b.2c.1d.0Q7c.3: Prove isolated genuine-old Waiting RED and exact public current DrainStarted for the only-live-work frontier;59618184, evidence/legacy-live-frontier-acceptance-20261023. Six selectors pass20positive processes and two separate expected old failures; original lifecycle/source/roles/cleanup preserved. Parent Q7c and canonical tasks remain open.
@@ -230,7 +230,7 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [x] B1b.2c.1d.0Q7b.2: Prove native binding revocation at actual full restoration rejects NOT_BOUND with exact binding quota/audit delta and only the mandatory traced denial audit;3a9f8c4f, evidence/refusal-fresh-binding-20261018.
 - [x] B1b.2c.1d.0Q7b.3: Prove actual OpenBao public version rotation rejects the stale scanned vector without execution effects; original-key/lease retry and replay pass with exact provider catalog/audit/quota oracles;8d07b0d3, evidence/refusal-secret-versions-20261018.
 - [x] B1b.2c.1d.0Q7b.4: Prove actual native expiry of the original scanned inline lease while its activity stays bound; exact post-mutation execution and complete authority remain unchanged after STALE_ATTEMPT. Evidence/refusal-current-lease-20261018; generation/terminal/pre-begin controls remain separate.
-- [ ] B1b.2c.1d.0Q7b.5: Prove public scoped refusal recovery across actual committed/aborted COMMIT response loss, preserving original capability and current authority; no public unknown-outcome enum is invented.
+- [x] B1b.2c.1d.0Q7b.5: Prove CURRENT ORDINARY INLINE public scoped refusal recovery across actual committed/aborted COMMIT response loss, original capability/current authority and full API reconstruction; accepted .5a–d, final six-process426629d1 evidence. Both invocation profiles actually sagat_app. Bounded audit evidence/quota-parent-closure-audit-20261024; Applied/other exceptional-report/OS recovery remain Q7b/Q10c.
 - [x] B1b.2c.1d.0Q7b.5a: Prove supplied max1 runtime pool backs the full public API/Worker stack on the original owned DB with real250000-byte persistence and exact receipt replay; c7f62b4a, evidence/public-pool-bootstrap-20261018. Scoped rollback/full reopen has separate .5b evidence; fault injection remains pending.
 - [x] B1b.2c.1d.0Q7b.5b: Prove one genuine public scoped refusal after full API/store/pool reopen through a supplied max1 sagat_app pool, with active receipt-writer PID, complete authority/source/retained-output/iteration-ledger witness and exact canonical replay;98a1247a, evidence/public-scoped-reopen-baseline-20261018. Default1/1/runtime1/1 plus three regression cases pass; committed/aborted COMMIT reply loss remains pending.
 - [x] B1b.2c.1d.0Q7b.5c: Prove actual committed public scoped-refusal COMMIT response loss through exact receipt/COMMIT gates and PID continuity, invisible locked pre-state after typed UNAVAILABLE, independently frozen canonical receipt/ACK, full second API reopen and exact no-effect replay;ef12c32c, evidence/ordinary-public-committed-loss-20261023. Default1/1/runtime1/1 and preserved P0b1/1 pass; aborted outcome and full .5 remain pending.
@@ -731,3 +731,31 @@ review previously declined. Evidence and reproduction:
 `tasks/project-completion/evidence/legacy-underlimit-cancel-acceptance-20261024/README.md`.
 Only local Q10c.5 closes. Applied, output-dependent compensation, post-ACK/OS/
 uncertain-COMMIT compositions, Q10c/quota/rollout/nesting/canonical tasks stay open.
+
+### Bounded Q7c and ordinary-inline Q7b.5 parent reconciliation — 2026-10-24
+
+Fresh read-only GPT-6 Astra/xhigh audit maps Q7c directly to accepted b0a7ea5e and
+.1–.6: exact effective path/positive-write guard, one read-only REPEATABLE READ
+revision/stop/code/E snapshot, all three genuine-old frontiers, exact equality,
+selected real cancellation/custom failure, observed original-report/native CAS
+and fresh recovery. These bounded Q7c obligations close. Broader quota/report/
+rollout/nesting/canonical gates remain separate.
+
+Q7b.5 closes expressly CURRENT ORDINARY INLINE public refusal recovery: accepted
+.5a–d/final426629d1 six exact processes prove committed and deferred-aborted COMMIT
+reply loss plus unarmed full-reopen baseline in both invocation profiles, each
+1passed/0failed/0ignored. Both profiles actually sagat_app, not owner/runtime
+privilege evidence. Root rechecks saved exact results and verifies production/
+public recovery test sources unchanged since426629d1. This audit runs no new
+native tests; current affected cancellation regression separately passes eight
+processes in e2c0237c. Separate overlapping matrices are not summed.
+
+Bootstrap's proposed broader Applied P1 was explicitly context-only/unaccepted;
+subsequent accepted .5c/.5d isolate ordinary-inline. Applied response loss,
+post-ACK cold scheduler/OS recovery, remaining authority/fence/terminal controls,
+genuine-old Applied/output-dependent/recovery compositions stay under Q7b/Q10c.
+No public unknown-outcome enum, production source/scoped-Finish activation or
+canonical/master closure is inferred. Evidence with exact mapping/limitations:
+`tasks/project-completion/evidence/quota-parent-closure-audit-20261024/README.md`.
+Historical “parent open” notes describe their then-current state; this scoped audit
+supersedes them only for Q7c and current ordinary-inline Q7b.5.
