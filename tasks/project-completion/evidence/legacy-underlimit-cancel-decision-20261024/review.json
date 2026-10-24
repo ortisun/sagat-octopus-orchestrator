@@ -1,0 +1,17 @@
+{
+  "review": "None",
+  "model": "gpt-6-astra",
+  "reasoning_effort": "xhigh",
+  "read_only_no_tests": true,
+  "source_baseline": "59618184",
+  "production_baseline": "b5030e36",
+  "findings": [],
+  "verified": [
+    "existing cancellation precedence before native data-limit guard",
+    "refusal independently rechecks E+candidate and preserves prior stop",
+    "terminal use saved/stored receipt, not current-head verifier",
+    "closed UnderLimit selector format mapping required",
+    "eight-process affected regression scope valid if cancellation-only edits"
+  ],
+  "implementation_dependency": "current CAS unit must be committed first"
+}
