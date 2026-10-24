@@ -1,0 +1,8 @@
+{
+  "review": "fresh consequential read-only plan review",
+  "model": "gpt-6-astra",
+  "reasoning_effort": "xhigh",
+  "findings": "None",
+  "plan_sha256": "81eb9c5f9e0712e306ef8faf81679e82bbe0df421fa2103ef890c9b60a5122d9",
+  "new_scenario_executed": false
+}

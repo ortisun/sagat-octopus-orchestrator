@@ -1,0 +1,16 @@
+{
+  "read_only": true,
+  "model": "gpt-6-astra",
+  "reasoning_effort": "xhigh",
+  "inspected_current_pin": "8548352b",
+  "old_pin": "6c44a0e49670cf19660792cd1518d241e6c99b3b",
+  "executed_q10c2_snapshot": "tasks/project-completion/evidence/legacy-inflight-drain-first-20261018/root-c2-executed/legacy_collection_inflight_report_v1.rs.snapshot",
+  "root_independently_recomputed_sha256": "6de755b15e5ddee31081b36fb7ba345190f58b18bb5ab99b4b9f67bee184e509",
+  "actual_new_scenario_executed": false,
+  "remaining": [
+    "isolated old normal Waiting expected-RED in both roles",
+    "exact current public advance_collection DrainStarted before any tick",
+    "direct pre-frontier no-return/no-failure/no-free-slot checks"
+  ],
+  "existing_discovery_report_compensation_acceptance_preserved": true
+}

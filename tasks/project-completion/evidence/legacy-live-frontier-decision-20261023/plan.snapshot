@@ -1,0 +1,126 @@
+# Bounded genuine only-live-work frontier addendum
+
+Design only, local2026-10-23. No new live-frontier test executed. Current baseline
+8548352b (later free-admission code does not touch this separate family); old pin
+6c44a0e49670cf19660792cd1518d241e6c99b3b. Standing all-open-tasks and split-decisions
+authorization apply. No new product question, production/grant/schema/SDK change.
+
+Existing Q10c.2 discovery/report/compensation evidence remains accepted. Its exact
+executed snapshot SHA6de755b15e5ddee31081b36fb7ba345190f58b18bb5ab99b4b9f67bee184e509
+was independently recomputed by root (legacy-live-frontier-audit-20261023). Missing
+§11.4(c) is isolated old Waiting RED and directly observed current public advance
+DrainStarted before any tick/report, not another copy of the complete lifecycle.
+
+## Four existing owned paths
+
+tests/fixtures/legacy-collection-inflight-report-v1/producer.rs;
+tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs;
+scripts/test-legacy-collection-inflight-report-v1.sh;
+tests/fixtures/legacy-collection-inflight-report-v1/README.md.
+Root sole writer/executor. No Q5 fixture/source or main registration edits.
+
+## Genuine old-only Waiting RED
+
+Existing wrappers call produce(FixturePreset,false); new exact old test
+legacy_collection_inflight_report_producer_v1::frozen_old_live_work_frontier_guard_red
+calls Ordinary/true. Branch immediately after assert_old_shape (baseline598),
+before receipt construction/publication. Reuse genuine public original ten closed
+aggregates and c10 leased compensable reserve; actualL2100000,V2100020,E4200020.
+No new fixture preset/private format or SQL business-state fabrication.
+
+Read actual frontier via existing ScopeFrontierStore: OPEN, item_count=next=1,
+completed0,max_concurrency=active.len=1; member0 has only actual live entry,
+no first_failure or pending_return. Actual stop absent, lease uncancelled/live,
+no checkpoint or next capacity. Old ScopeRun lacks current stop_code/E fields:
+use existing real stored witnesses to prove those old values, not current APIs.
+
+Capture original execution/source witnesses, call public normal
+scheduler.advance_collection(tenant,run,root(c10)), then require both witnesses
+unchanged. Emit observed_legacy_live_work_waiting=true ONLY after actual Waiting
+and unchanged state. Then assert DrainStarted with fixed error message. A safe
+nonsecret live_frontier_red_database=t_hex marker may name the exact owned DB.
+No receipt/session/token/protobuf content is printed or handed to current.
+
+Each old role must exit101 with0passed/1failed/0ignored and exact Waiting marker;
+any setup failure/timeout/different transition is not RED. Never consume its DB.
+
+## Current explicit-frontier positive, same accepted receipt/lifecycle
+
+Keep old_ordinary_success_after_drain_preserves_the_report_and_compensation as an
+unchanged external wrapper, calling a local shared helper(false). New exact
+legacy_collection_inflight_report_v1::old_live_work_frontier_drains_before_waiting
+calls helper(true). Boolean controls only the first scheduling operation.
+
+Reuse existing ordinary producer/receipt q10c-ordinary-before-drain-v1,
+SAGAT_Q10C_ORDINARY_PHASE_RECEIPT, migration/URL derivation/actual API+store roles,
+original session/lease/protobuf/fingerprint/secret vectors and Keeper authority.
+Do not register a replacement worker or repoll original forward work.
+
+Immediately before existing first tick (baseline2862), new mode reads exact
+live-only frontier: original scope/head/E4200020, no stops, no failure/Return,
+no admission capacity, one original still-live leased member. Capture admission/
+member/step inventories and original source/authority/reservation/payload witnesses.
+First current execution operation MUSTpublic advance_collection, exact DrainStarted.
+No prior tick/report/native drain/fullRunTxdata/lease SQL edit.
+
+Reuse assert_first_drain, assert_live_target(cancel=true), identity_witness,
+reservation_usage_fingerprint, source_witness, output_reference_fingerprint and
+fresh_verify. Require unchanged next/admitted/completed/active/member identities,
+no checkpoint/Return/done/new execution identity or output. Only original lease
+cancellation is allowed: first FAILED/RDL, then ExistingOutputs drain, then live
+cancel event; exact original trace/system:engine/existing_outputs audit/FAILED hint.
+The existing wrapper keeps its discovery tick/assertions unchanged.
+
+Rejoin accepted body: live-member waiting tick, original known-success completion,
+canonical original ACK/duplicate replay, one real original-target/key line.release,
+held-compensation nonfinality, real completion, COMPENSATED and fresh verify.
+Do not copy or rewrite that lifecycle or relax any prior witness.
+
+## Additive selectors and bounded owned cleanup
+
+Keep existing default/report-before-drain, drain-before-report,
+cancellation-before-report, under-limit-increment-before-drain verbatim, including
+test names/ordinary+under-limit formats and original role meaning. Add
+--case live-work-frontier and --case live-work-frontier-red with exact tests above.
+Positive old phase remains frozen_old_ordinary_success_before_drain_producer.
+RED is old-only, separate fresh DB per role, no current consumer regardless of any
+stray receipt. Preserve exact one-test registration/count/exit/reaped evidence.
+
+Existing coordinator cleanup drops arbitrary new DB differences and suppresses
+errors; that is not valid for a receipt-free negative phase. Reuse genuinely common
+reviewed Q5 supervision/cleanup algorithms, with this family's names and formats:
+flag-only handlers, non-reaping wait observation, terminate/kill/reap before SQL,
+bounded admin connection/statement/lock/process deadlines; overall new invocation
+2400s+5grace and300s native phase deadline. Native tests/admin children share the
+outer owned group and spawn no OS children; validate this existing path assumption.
+Keep leader unreaped until final group KILL. Do not invent a different protocol.
+
+Require private0700 dirs/0600 receipt and checked safe receipt SHA/database cache;
+unknown/missing/cross-format fields fail closed. Current ordinary/under-limit
+receipt format remains unchanged. Its randomized private .receipt.UUID.tmp files
+must also be removed before DB admin/archive cleanup on success and failure.
+A receipt once established or failed caching cannot reenable pre-receipt fallback.
+Fresh strict one-NEW-DB difference after marker/before snapshot must match a valid
+cached receipt DB or the RED's checked safe DB marker. Ambiguity/cache/hash mismatch
+fails and retains DB; no arbitrary difference deletion or ignored cleanup failure.
+Remove credentials first, retain only safe hashes/identities, no plaintext prompt,
+log/artifact/commit of session or encoded lease/request. RED publishes no receipt.
+
+Root execution concretely uses repository Compose postgres service/project
+sagat-completion-20261023, healthy loopback65118, pinned declared postgres16-alpine,
+and exclusive target /Users/marcelo/.cache/sagat-project-completion-20261023-target
+outside all checkouts. df before heavy builds, sequential builds, max2heavy,
+archive immutable/restored source+migration hashes, safe current/old/compiler/lock/
+fixture/executable manifests. Ownership flags are invocation assertions, not proof
+of an external service; retain actual Compose/target evidence. Do not add Docker
+host attestation, new infra or approval flows without a concrete rule/reason.
+
+Write assertions first; execute live RED owner/runtime → live positive fourphases →
+all four prior case matrices after shared helper/coordinator changes. Capture real
+failures, no retry on mutated handoff. Focused strict Clippy/fmt/architecture/shell,
+privatefile cleanup/ownership branch probes and final source/fixture freezes must
+pass. Old RED marker/witness failures do not count as expected failures. Root reruns
+merged-tree checks. No fullworkspace/SDK/performance acceptance is inferred.
+
+Only local Q7c.3 may close; parent Q7c/Q8/master quota, equality/precedence/CAS,
+rollout/sourcecert/scopedFinish/nesting and canonical014 tasks remain open.
