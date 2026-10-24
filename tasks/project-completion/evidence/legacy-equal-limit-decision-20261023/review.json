@@ -1,0 +1,20 @@
+{
+  "review": "None",
+  "model": "gpt-6-astra",
+  "reasoning_effort": "xhigh",
+  "source_baseline": "a982058a",
+  "old_pin": "6c44a0e49670cf19660792cd1518d241e6c99b3b",
+  "arithmetic": {
+    "L": 2097137,
+    "V": 2097167,
+    "E": 4194304
+  },
+  "observations": [
+    "strict > already accepts equality; positive control only",
+    "exact old boundary and admission deltas feasible",
+    "full target source hash legitimately changes; compare exact permitted delta and closed source",
+    "forward key generated on claim; no observed wire key is claimed",
+    "six selectors:16 positive native processes and4 expected old failures"
+  ],
+  "read_only_no_tests": true
+}

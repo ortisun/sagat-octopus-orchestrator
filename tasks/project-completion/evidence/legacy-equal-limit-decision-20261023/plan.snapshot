@@ -1,0 +1,103 @@
+# Genuine legacy free-admission equality control
+
+Design only, local2026-10-23. No equality scenario has executed. Immutable old
+production6c44a0e49670cf19660792cd1518d241e6c99b3b; inspected currentQ5 source
+commita982058a. The separate live-frontier unit changes no Q5 paths. Standing
+all-open-tasks/split-decisions authorization applies; no product or activation change.
+Current strict > guard already accepts equality: do not manufacture a failing RED.
+Existing genuine E>limit controls remain regression evidence.
+
+## Four existing paths, root sole writer
+
+tests/fixtures/legacy-collection-output/producer.rs;
+tests/integration/workflow-primitives/legacy_collection_output_view.rs;
+scripts/test-legacy-collection-output-view.sh;
+tests/fixtures/legacy-collection-output/README.md.
+No production/schema/grants/SDK/main registration/infra changes. Add one closed
+selector free-admission-equal-limit with its own exact format/case and test names.
+Preserve existing output-view/default, nonfinal-return[-red], free-admission[-red]
+selectors, private formats, hardened supervision/cleanup and their exact tests.
+
+## Real old source at exact boundary
+
+Reuse accepted plain legacyLine c0...c10, two captured items, concurrency1 and
+20 public legacyWork completions. First19 JSON strings are105000bytes; last is
+102137bytes (104998/102135 ASCII x inside quotes). Thus L2097137; c0...c8 each
+retain210003-byte aggregate, c9 retains207140bytes; V2097167; E4194304exact.
+Nine equal digests are nine owner references. Every value fits256KiB. Inspect
+actual stored UTF8 bytes/content/SHA, not receipt arithmetic alone.
+
+Complete20 then NO tick. Same normal old calls: c9 Checkpointed1, c9 Finished,
+c10 Entered; stop. All setup transitions bounded256. Assert exact20 historical
+checkpoint/member/work/Return identities and ten finish/routing pairs, published
+version/source/namespace, actual closed aggregates and absence owner outputs.
+Run WAITING/no stop, c10OPEN, original scope id, captured[[0,1],[1,2]], itemcount2,
+maxconcurrency1, next/admitted/completed/active0; ownerWAITING/COLLECTION unrouted.
+No c10 member/step/checkpoint/Return/task/output/failure, done, reservations or
+active tenant slots. Head=c9 route cutoff+1. No SQL business-state edits.
+
+Use explicit owner and sagat_app platform roles, public worker-binding endpoint,
+quota/publish/start/register/complete and Keeper authority. Real API/store roles
+queried/asserted. Old producer exits before current consumes same owned DB.
+
+## Private handoff and migration
+
+Dedicated legacy-free-admission-equal-limit-v1 format, case
+free-admission-equal-limit; retain the existing exact18-field ownership/hash
+contract, including actual role, source pin, typed IDs, head/cutoff and both source
+hashes. Private0700 dirs/exclusive0600 temp+fsync+rename. Never log URL credentials.
+Current derives URLs only from owned admin env and checked t_hex DB name and
+checks receipt URLs against those derived URLs. Exact pre/post migration
+projection and full free-admission source hashes must match before advance.
+Existing free_admission_source includes c10 progress, so its full post-admission
+hash must legitimately change. Separately preserve/hash all immutable closed
+source bytes and compare the target against the exact permitted native delta.
+
+## One actual current admission
+
+Attach actual role, same DB/owner Keeper restart, no lease expiry sleeps/SQL edits.
+Before any current execution call independently measure L2097137/V2097167 and
+actual collection_frontier E4194304, original run/revision/scope, all counters0,
+no stops, free capacity. First public advance_collection MUST Admitted{index:0}.
+
+Assert native delta: Run RUNNING; owner remains WAITING/COLLECTION; c10 next/
+admitted/active1, completed0, max1. Exactly one item0 ADMITTED member with slot_held,
+reservation1/remaining1 and original item0 digest; one c10[0]/legacyWork READY
+instance with exact instance_step_id(workflow_version,run,path). Run admitted and
+tenant active counters +1, reservation1. Item1 absent, no Return/checkpoint/done.
+Head/telemetry +2, exactly collection.iteration_admitted then step.released full
+native envelopes, original actor/trace/paths/details and common transaction time;
+exactly one task.ready outbox with actual tenant/namespace/run/path/activity/trace.
+Read actual implementation for full envelope details; never invent constants.
+Historical journal/outbox prefixes, closed-source identities/bytes, payloads,
+outputs/audits/receipts/ledger L and effective E are unchanged. No stop/RDL audit,
+drain or compensation, no backfill, no extra work, capacity/certification calls.
+Fresh-store verify_run succeeds; fixed safe messages, no full RunState Debug.
+Reinspect all invariants after verification. No extra advance/poll/completion.
+
+The forward key is generated only by public claim, not persisted at admission.
+Prove exact durable identity/task coordinates and contractual key derivation
+{run}:{step_id}; do NOT claim an observed wire key or executed effect. This unit
+proves admission progress, not workflow completion. End at this valid READY state
+and dispose of owned DB through accepted coordinator; adding cancel would obscure
+the no-stop boundary. No broad lifecycle or performance guarantee follows.
+
+## Gates, supervision and closure
+
+Reuse existing strict18-field closed mappings, flag-only/non-reaping supervision,
+checked receipt SHA/cache-failure/credential-before-DB cleanup and fresh-single-DB
+ownership. No new process or cleanup protocol.300s phases/2400s whole+5grace;
+public old setup bound256; bounded SQL/pool closes; private receipts removed first.
+Same repository-owned Compose on65118/private target, sequential builds and df.
+
+Write full equality assertions first, then genuine old/current positive separately
+in actual owner/runtime roles. Run all existing output-view, nonfinal-return[-red]
+and free-admission[-red] selectors after changes:16positive native processes and
+four explicitly expected old failures across six selectors. Capture exact counts,
+commands/exits/roles/times, archive/restored migration/source/compiler/lock/binary/
+fixture hashes, cold verification and owned credential/DB cleanup. Freeze native
+and four fixture sources across final matrix. Strict focused Clippy/fmt/shell/
+architecture checks; no missing agent-config or fullworkspace/SDK gate invented.
+Fresh read-only decision/source reviews, root reruns actual gates. Actual failures
+are preserved, not repaired/retried in mutated DBs. Only new local Q7c.4 may close;
+parentQ7c/Q8/master quota, precedence/CAS/rollout/nesting/canonical014 remain open.
