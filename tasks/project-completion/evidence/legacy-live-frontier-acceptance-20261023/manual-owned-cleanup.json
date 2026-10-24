@@ -1,0 +1,21 @@
+{
+  "before_count": 26,
+  "after_count": 22,
+  "exact_owned_databases_removed": {
+    "t_01a16b7fe36e70488d847e8a36c031da": "owner-positive-c2",
+    "t_01a16b7ffbe2773fb9af00b9521fa436": "runtime-positive-c2",
+    "t_01a16b7fb2057485a8c216f7a1386d27": "owner-red-c2",
+    "t_01a16b7fca55732cbccf724e19bebc8f": "runtime-red-c2"
+  },
+  "private_receipt_hashes": [
+    {
+      "phase": "owner-positive-c2",
+      "sha256": "576aa5bfecd5c75a74bc24e850ed6e15aa04a920c43831f14541ffa3a14897d3"
+    },
+    {
+      "phase": "runtime-positive-c2",
+      "sha256": "96884d1432e0ccfd34e70979aac4b8c80af9edf6a05841b24007375c468c87ff"
+    }
+  ],
+  "private_files_removed_before_drop": true
+}

@@ -1,0 +1,9 @@
+{
+  "removed": [
+    "/tmp/sagat-completion-20261023/live-producer-gate/old-source",
+    "/tmp/sagat-completion-20261023/live-producer-gate/old-source.tar",
+    "/tmp/sagat-completion-20261023/live-producer-gate/old-c1-binary",
+    "/tmp/sagat-completion-20261023/live-producer-gate/old-c2-binary"
+  ],
+  "ongoing_private_target_retained": true
+}

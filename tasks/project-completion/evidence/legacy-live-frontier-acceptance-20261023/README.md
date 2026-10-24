@@ -84,3 +84,8 @@ session and encoded lease/request NEVER enter committed evidence. Parent Q7c/Q8/
 master quota, equality/precedence/CAS, actual OS restart, rollout, source/scoped-
 Finish activation, nesting and canonical014 remain open. No provider undo or
 performance guarantee is inferred from this observation.
+
+After sealing the frozen matrix, four independently owned exploratory DBs and
+private original-session handoffs were removed before DROP;26→22 harness DBs,
+other22 unchanged. Root-owned extracted old source/archive/copied binaries removed;
+ongoing private target retained for remaining tasks. See manual-owned-cleanup.json.
