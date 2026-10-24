@@ -635,3 +635,37 @@ reviews None. No production change or artificial equality RED; strict > already
 allows equality. Evidence: `tasks/project-completion/evidence/legacy-equal-limit-acceptance-20261023/README.md`.
 OnlyQ7c.4 closes. ParentQ7c/Q8/master quota, precedence/CAS/rollout/general nesting/
 canonical014 remain open; source/scoped-Finish activation closed.
+
+### Genuine old failed-member priority over excess — 2026-10-23
+
+Source/evidence21294435 accepts only localQ7c.5. Actual20old public105000B successes
+and ten210003B aggregate references retain L2100000/V2100030/E4200030. After exact
+c9checkpoint1→finish→c10entry, normaloldadmit0 and originalworkerpoll produce the
+real c10[0]/legacyWork lease. Nonretryable Q5_MEMBER_FAILURE FailStep plus canonical
+replay yields FAILED/WAITING, no root stop, OPEN/ADMITTED/heldslot/reserved1, no
+Return. Exact entry/admission/release/lease/failure/route suffix givesH=cutoff+6.
+Dedicated18-field handoff binds actual role, original failed row/reported hash/
+canonical lease-scoped receipt/member identities/source/events and owned DB.
+
+Current first public advance selects that actual member failure beforeE. Exact
+DrainStarted→Drained0→DrainFinished yields H+1first custom-code FAILED stop/H+2drain,
+H+3member settlement, H+4collection finish/H+5RunFAILED;1/1/2 native outboxes. Full
+per-phase deltas retain original trace/stop/drain/failed entry/receipt/closed source/
+payload/L/V/E while releasing slot/reservation and retiring the uncreated Return.
+No RDL audit, new work/checkpoint/output/item1/saga/compensation/backfill. Fresh
+verify plusAlreadyFinished have no durable effects. No fabricated preexisting
+FAILED Run over emptyOPEN scope; existing genuine priorCANCELLED coverage reused.
+
+Final frozen coordinator wall times, including sequential builds: failed-member 113.40s, free-admission-equal-limit 111.96s, free-admission-red 110.62s, free-admission 113.25s, nonfinal-return 110.73s, nonfinal-return-red 104.66s, output-view 169.60s, q10-cancellation-before-report 105.16s.
+SevenQ5 selectors:20positive native1passed/0failed/0ignored and four expected old
+0passed/1failed/0ignored exit101 controls. Q10cancel adds fourpositive phases;
+total24passing/4expectedfailures. Actual queried API/store profiles, exact count/
+marker/test/source/archive/restoredmigration/toolchain/lock/binary/receipt hashes
+retained. Sixteen final DBs/private receipts/source directories removed; original22
+owned harness DBs unchanged. All1127native/eight fixture pins identical. Strict
+Clippy26.43s/fmt4.67s/architecture0.44s, overlay rustfmt and shell/source checks pass.
+First exploratory122.66s has fourpassing phases, fresh producer andcurrent/source
+reviewsNone. No production change or manufactured RED. Evidence/reproduction:
+`tasks/project-completion/evidence/legacy-failed-member-acceptance-20261023/README.md`.
+OnlyQ7c.5 closes. ParentQ7c/Q8/Q10/quota, CAS/OS-restart/rollout/nesting/canonical014
+stayopen; source/scoped-Finish activation remainsclosed.
