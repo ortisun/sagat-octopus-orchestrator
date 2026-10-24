@@ -82,3 +82,8 @@ private target outside checkouts. Private handoffs never enter committed evidenc
 Only localQ7c.4 closes; parentQ7c/Q8/master quota, precedence/CAS/rollout/general
 nesting/canonical014 remain open. Source/scoped-Finish production activation closed.
 No provider undo, latency or production-capacity claim follows.
+
+After sealing, eighteen invocation-owned archive/binary copies were hash-checked
+against the retained manifests and removed. Logs/manifests/witnesses remain;
+ongoing private target stays for the remaining authorized work. No extra DB
+drop was necessary: all twelve final DBs were already removed by coordinators.

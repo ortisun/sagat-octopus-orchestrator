@@ -1,0 +1,115 @@
+{
+  "removed": [
+    {
+      "case": "free-admission",
+      "file": "old-source.tar",
+      "bytes": 59392000,
+      "sha256": "50e6c054052e2a1cad6c75eaafcec8e3e4bcafb5eb7b80caa81b6e5634776e2d"
+    },
+    {
+      "case": "free-admission",
+      "file": "integration-workflow-primitives-old",
+      "bytes": 176789824,
+      "sha256": "aaf88433f3e4cb91ff1f5054bf645bf53b2565e010ab53f19765ebe472a9920a"
+    },
+    {
+      "case": "free-admission",
+      "file": "integration-workflow-primitives-current",
+      "bytes": 182974512,
+      "sha256": "208457fce24b7573fe57dfbbdda4980d8b635d767c77202996c01e4171734fcb"
+    },
+    {
+      "case": "free-admission-equal-limit",
+      "file": "old-source.tar",
+      "bytes": 59392000,
+      "sha256": "50e6c054052e2a1cad6c75eaafcec8e3e4bcafb5eb7b80caa81b6e5634776e2d"
+    },
+    {
+      "case": "free-admission-equal-limit",
+      "file": "integration-workflow-primitives-old",
+      "bytes": 176789824,
+      "sha256": "c89615803763e31826d3e29b5477dce1264c103d2e88ba7dce510fd3b63d1b80"
+    },
+    {
+      "case": "free-admission-equal-limit",
+      "file": "integration-workflow-primitives-current",
+      "bytes": 182974512,
+      "sha256": "208457fce24b7573fe57dfbbdda4980d8b635d767c77202996c01e4171734fcb"
+    },
+    {
+      "case": "free-admission-red",
+      "file": "old-source.tar",
+      "bytes": 59392000,
+      "sha256": "50e6c054052e2a1cad6c75eaafcec8e3e4bcafb5eb7b80caa81b6e5634776e2d"
+    },
+    {
+      "case": "free-admission-red",
+      "file": "integration-workflow-primitives-old",
+      "bytes": 176789824,
+      "sha256": "54f27390d3e2bda175257a3a20c4cebee6b7779c3519cd0779ee8ee26298c8de"
+    },
+    {
+      "case": "free-admission-red",
+      "file": "integration-workflow-primitives-current",
+      "bytes": 182974512,
+      "sha256": "208457fce24b7573fe57dfbbdda4980d8b635d767c77202996c01e4171734fcb"
+    },
+    {
+      "case": "nonfinal-return",
+      "file": "old-source.tar",
+      "bytes": 59392000,
+      "sha256": "50e6c054052e2a1cad6c75eaafcec8e3e4bcafb5eb7b80caa81b6e5634776e2d"
+    },
+    {
+      "case": "nonfinal-return",
+      "file": "integration-workflow-primitives-old",
+      "bytes": 176789824,
+      "sha256": "63f342ddbd59e1c3fbd6a632b7bc02f8096cf4925f1ae02543bd1455677e7e22"
+    },
+    {
+      "case": "nonfinal-return",
+      "file": "integration-workflow-primitives-current",
+      "bytes": 182974512,
+      "sha256": "208457fce24b7573fe57dfbbdda4980d8b635d767c77202996c01e4171734fcb"
+    },
+    {
+      "case": "nonfinal-return-red",
+      "file": "old-source.tar",
+      "bytes": 59392000,
+      "sha256": "50e6c054052e2a1cad6c75eaafcec8e3e4bcafb5eb7b80caa81b6e5634776e2d"
+    },
+    {
+      "case": "nonfinal-return-red",
+      "file": "integration-workflow-primitives-old",
+      "bytes": 176789824,
+      "sha256": "bdb2eebf4809957121b5c57dea4b4602bd1ae733d9745a2558852ca1793e886e"
+    },
+    {
+      "case": "nonfinal-return-red",
+      "file": "integration-workflow-primitives-current",
+      "bytes": 182974512,
+      "sha256": "208457fce24b7573fe57dfbbdda4980d8b635d767c77202996c01e4171734fcb"
+    },
+    {
+      "case": "output-view",
+      "file": "old-source.tar",
+      "bytes": 59392000,
+      "sha256": "50e6c054052e2a1cad6c75eaafcec8e3e4bcafb5eb7b80caa81b6e5634776e2d"
+    },
+    {
+      "case": "output-view",
+      "file": "integration-workflow-primitives-old",
+      "bytes": 176789824,
+      "sha256": "e83259c2de9e659de3c3ce5f58a30ca96f577b268f03acae4969d16368e6f69d"
+    },
+    {
+      "case": "output-view",
+      "file": "integration-workflow-primitives-current",
+      "bytes": 182974512,
+      "sha256": "208457fce24b7573fe57dfbbdda4980d8b635d767c77202996c01e4171734fcb"
+    }
+  ],
+  "bytes_freed": 2514938016,
+  "safe_manifests_logs_and_witnesses_retained": true,
+  "ongoing_private_target_retained": true
+}
