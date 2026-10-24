@@ -1,0 +1,30 @@
+[
+  {
+    "role": "owner",
+    "phase": "producer",
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0
+  },
+  {
+    "role": "owner",
+    "phase": "consumer",
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0
+  },
+  {
+    "role": "runtime",
+    "phase": "producer",
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0
+  },
+  {
+    "role": "runtime",
+    "phase": "consumer",
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0
+  }
+]

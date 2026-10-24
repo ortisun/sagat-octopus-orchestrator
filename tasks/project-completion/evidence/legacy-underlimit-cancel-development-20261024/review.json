@@ -1,0 +1,17 @@
+{
+  "reviewer": "gpt-6-astra",
+  "reasoning_effort": "xhigh",
+  "fresh_context": true,
+  "read_only_no_execution": true,
+  "cycle": 1,
+  "findings": null,
+  "scope": "three cancellation-only files against eb5ca0a0; producer and shared non-cancellation helpers unchanged; final two selectors/eight positive processes",
+  "verified_by_source_review": [
+    "genuine under-limit boundary",
+    "original request/authority",
+    "cancellation order/audit counts",
+    "saved terminal ACK/read-only replay",
+    "closed selector/receipt map/bounds"
+  ],
+  "no_production_change_or_manufactured_RED": true
+}

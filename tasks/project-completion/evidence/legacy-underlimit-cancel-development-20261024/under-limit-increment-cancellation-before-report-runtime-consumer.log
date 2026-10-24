@@ -1,0 +1,7 @@
+
+running 1 test
+q10c cancellation-before-report API roles: producer=sagat_app, consumer=sagat_app, preset=q10c-ordinary-under-limit-increment-v1
+test legacy_collection_inflight_report_v1::old_under_limit_increment_after_cancellation_drain_preserves_the_original_stop ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 551 filtered out; finished in 2.26s
+

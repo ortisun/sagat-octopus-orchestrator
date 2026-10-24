@@ -1,7 +1,6 @@
-//! Four bounded old/current acceptance cases for genuine immutable-old ordinary successes:
-//! report before the current drain with either a pre-existing or candidate-triggered limit, report
-//! after the data-limit drain requests cancellation, or report after a public cancellation starts
-//! the normal collection drain.
+//! Bounded immutable-old/current ordinary-success controls: both retained-byte conditions,
+//! report/drain/cancellation order, live-work guard and original-report/frontier CAS.
+//! The old-only Waiting guard control is separate from positive upgrade handoffs.
 #![allow(clippy::expect_used, clippy::panic)]
 
 use std::os::unix::fs::PermissionsExt as _;
@@ -1270,7 +1269,7 @@ async fn assert_public_cancellation(
     assert_eq!(payloads(pool, receipt).await, payloads_before);
     assert_eq!(
         effective_totals(pool, receipt).await,
-        (2_100_000, 2_100_020, 4_200_020)
+        receipt.preset.expected_totals()
     );
     assert!(
         output_reference_fingerprint(pool, receipt).await == output_fingerprint,
@@ -1798,7 +1797,7 @@ async fn assert_cancellation_first_drain(
     assert_eq!(payloads(pool, receipt).await, payloads_before);
     assert_eq!(
         effective_totals(pool, receipt).await,
-        (2_100_000, 2_100_020, 4_200_020)
+        receipt.preset.expected_totals()
     );
     assert!(
         output_reference_fingerprint(pool, receipt).await == output_fingerprint,
@@ -3396,6 +3395,16 @@ async fn run_drain_before_report_case(explicit_live_frontier: bool) {
 #[tokio::test]
 #[ignore = "requires scripts/test-legacy-collection-inflight-report-v1.sh"]
 async fn old_ordinary_success_after_cancellation_drain_preserves_the_original_stop() {
+    run_cancellation_before_report_case(FixturePreset::Ordinary).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires separate immutable-old under-limit producer; see fixture README"]
+async fn old_under_limit_increment_after_cancellation_drain_preserves_the_original_stop() {
+    run_cancellation_before_report_case(FixturePreset::UnderLimitIncrement).await;
+}
+
+async fn run_cancellation_before_report_case(preset: FixturePreset) {
     let receipt_path = std::env::var_os("SAGAT_Q10C_ORDINARY_PHASE_RECEIPT")
         .map(std::path::PathBuf::from)
         .expect("phased runner receipt path");
@@ -3407,7 +3416,10 @@ async fn old_ordinary_success_after_cancellation_drain_preserves_the_original_st
             & 0o777,
         0o600
     );
-    let receipt = Receipt::parse(&std::fs::read(&receipt_path).expect("read private receipt"));
+    let receipt = Receipt::parse_for(
+        &std::fs::read(&receipt_path).expect("read private receipt"),
+        preset,
+    );
     assert_wire_identity(&receipt);
 
     let admin_url = std::env::var("SAGAT_TEST_DATABASE_URL")
@@ -3460,8 +3472,9 @@ async fn old_ordinary_success_after_cancellation_drain_preserves_the_original_st
         assert_ne!(current_api_role, RUNTIME_ROLE);
     }
     eprintln!(
-        "q10c ordinary-cancellation-before-report API roles: producer={}, consumer={current_api_role}",
-        receipt.producer_api_role
+        "q10c cancellation-before-report API roles: producer={}, consumer={current_api_role}, preset={}",
+        receipt.producer_api_role,
+        preset.format()
     );
     assert!(
         identity_witness(&platform.api.db.pool, &receipt).await == authority_before,
@@ -3470,7 +3483,7 @@ async fn old_ordinary_success_after_cancellation_drain_preserves_the_original_st
     assert_live_target(&platform.api.db.pool, &receipt, false).await;
     assert_eq!(
         effective_totals(&platform.api.db.pool, &receipt).await,
-        (2_100_000, 2_100_020, 4_200_020)
+        receipt.preset.expected_totals()
     );
 
     let mut worker = platform
@@ -3488,6 +3501,21 @@ async fn old_ordinary_success_after_cancellation_drain_preserves_the_original_st
     let output_fingerprint = output_reference_fingerprint(&platform.api.db.pool, &receipt).await;
     let reservations_before = reservation_usage_fingerprint(&platform.api.db.pool, &receipt).await;
     assert_initial_drain_first_state(&platform.api.db.pool, &receipt, &output_fingerprint).await;
+    let retained_before =
+        retained_output_reference_fingerprint(&platform.api.db.pool, &receipt).await;
+    if preset == FixturePreset::UnderLimitIncrement {
+        let (l, _, e) = effective_totals(&platform.api.db.pool, &receipt).await;
+        let candidate =
+            i64::try_from(receipt.completion.output_json.len()).expect("candidate byte length");
+        assert!(
+            candidate == 250_000
+                && e <= 4_194_304
+                && l + candidate <= 4_194_304
+                && e + candidate > 4_194_304,
+            "genuine retained total fits but exact original success increment exceeds effective budget"
+        );
+        assert_under_limit_full_overlay(&platform.api, &receipt).await;
+    }
 
     let stored_owner: (i64, i64, Option<String>, Option<String>) = sqlx::query_as(
         "SELECT count(*) FILTER (WHERE owner IS NOT NULL), \
@@ -4076,7 +4104,7 @@ async fn old_ordinary_success_after_cancellation_drain_preserves_the_original_st
     assert_eq!(final_state.get::<i64, _>("data_limit_drain_audits"), 0);
     assert_eq!(
         effective_totals(&platform.api.db.pool, &receipt).await,
-        (2_100_000, 2_100_020, 4_200_020)
+        receipt.preset.expected_totals()
     );
     assert!(
         source_witness(&platform.api.db.pool, receipt.tenant, receipt.run).await
@@ -4108,6 +4136,53 @@ async fn old_ordinary_success_after_cancellation_drain_preserves_the_original_st
     );
     assert_cancellation_data_limit_audits(&platform.api.db.pool, &receipt, 1).await;
     fresh_verify(&platform.api, &receipt).await;
+    if preset == FixturePreset::UnderLimitIncrement {
+        let no_comp_output: bool = sqlx::query_scalar("SELECT output_digest IS NULL FROM steps WHERE tenant_id=$1 AND run_id=$2 AND node='reserve~c' AND instance_path_nodes=ARRAY['c10']::text[] AND instance_path_indices=ARRAY[0]::integer[]")
+            .bind(receipt.tenant.as_uuid()).bind(receipt.run.as_uuid()).fetch_one(&platform.api.db.pool).await.expect("real cancelled compensation output");
+        assert!(
+            no_comp_output
+                && retained_output_reference_fingerprint(&platform.api.db.pool, &receipt).await
+                    == retained_before,
+            "cancelled success/refusal and real compensation retain no new output references"
+        );
+        let terminal = under_limit_execution_footprint(&platform.api.db.pool, &receipt).await;
+        let request = worker.req(receipt.completion.clone());
+        let replay = worker
+            .client
+            .complete_step(request)
+            .await
+            .expect("original report replay after terminal cancellation")
+            .into_inner();
+        assert!(
+            replay.already_applied
+                && replay.command_id == accepted.command_id
+                && replay.step_status == "SUCCEEDED"
+                && replay.run_status == "CANCELLING",
+            "terminal CANCELLED replay returns original stored successful-report ACK"
+        );
+        assert!(
+            under_limit_execution_footprint(&platform.api.db.pool, &receipt).await == terminal
+                && stored_report_receipt(&platform.api.db.pool, &receipt).await
+                    == original_report_receipt
+                && public_cancellation_fingerprint(&platform.api.db.pool, &receipt).await
+                    == frozen_public_cancel
+                && cancellation_drain_fingerprint(&platform.api.db.pool, &receipt).await
+                    == frozen_cancellation_drain
+                && source_witness(&platform.api.db.pool, receipt.tenant, receipt.run).await
+                    == receipt.source_witness
+                && identity_witness(&platform.api.db.pool, &receipt).await == authority_before,
+            "terminal report replay preserves complete execution, original stop/drain/receipt/source/authority"
+        );
+        assert_eq!(
+            effective_totals(&platform.api.db.pool, &receipt).await,
+            receipt.preset.expected_totals()
+        );
+        fresh_verify(&platform.api, &receipt).await;
+        assert!(
+            under_limit_execution_footprint(&platform.api.db.pool, &receipt).await == terminal,
+            "cold verification after terminal original-ACK replay remains read-only"
+        );
+    }
 }
 
 fn cas_counter(name: &str, labels: &[(&str, &str)]) -> f64 {

@@ -1,6 +1,6 @@
 # Legacy collection in-flight report fixture v1
 
-This fixture covers four separately produced compatibility cases. The immutable
+This fixture covers eight closed compatibility selectors. Positive cases use separate immutable-old/current processes; the old-only Waiting control intentionally fails its guard. The immutable
 `6c44a0e49670cf19660792cd1518d241e6c99b3b` binary creates ten closed legacy
 collection aggregates, leases the compensable `c10/0/reserve` forward task, and
 exits without reporting it. A separately built current binary reopens the same
@@ -187,3 +187,33 @@ This selector has300s native phases and the existing2400s whole supervisor with5
 termination grace. All seven selectors must be rerun after shared lifecycle edits.
 This establishes only original-success/frontier CAS and fresh recovery, with no
 production/producer/schema/grant/SDK change or broader recovery/nesting guarantee.
+
+
+## Fitting retained total and refused success after cancellation
+
+`under-limit-increment-cancellation-before-report` uses the unchanged under-limit
+producer,19-field format/session/lease/request and selected API role. Actual
+L2000000/V2000020/E4000020 fit4194304, but the exact original250000B success
+would reach4250020 (while L+candidate2250000 fits). Before public cancellation,
+the existing read-only full overlay proves effective bytes without changing state.
+
+The ordinary cancellation driver is shared by preset, preserving its old wrapper.
+Real public CANCEL and native cancelled drain precede the still-valid original
+success report. The report remains SUCCEEDED with no retained output and one
+successful-output-refusal audit; original CANCELLED/null stop and drain stay exact.
+Actual original-target/key line.release and held-compensation checks precede
+terminal Run/scope/owner CANCELLED. The under-limit case also proves no compensation
+output, unchanged retained references and terminal original-report replay returning
+its stored SUCCEEDED/CANCELLING ACK with no durable effects, followed by cold verify.
+Public-operation replay still returns the current projection.
+
+```sh
+bash scripts/test-legacy-collection-inflight-report-v1.sh --case under-limit-increment-cancellation-before-report
+```
+
+The selector uses300s phases/2400s whole supervision+5s grace and the existing
+credential/ownership cleanup contract. For cancellation-only driver/helper changes,
+the affected regression set is this new case plus cancellation-before-report,
+old/current separately in owner/runtime:8positive native processes. Broaden only
+when other shared helpers change. No production/producer/SDK/schema/grant change,
+fake RED, OS restart or broader metrics-reader/provider-undo claim.
