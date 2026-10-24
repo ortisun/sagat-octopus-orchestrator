@@ -1,6 +1,6 @@
 # Legacy collection in-flight report fixture v1
 
-This fixture covers eight closed compatibility selectors. Positive cases use separate immutable-old/current processes; the old-only Waiting control intentionally fails its guard. The immutable
+This fixture covers nine closed compatibility selectors. Positive cases use separate immutable-old/current processes; the old-only Waiting control intentionally fails its guard. Ordinary success cases use the immutable
 `6c44a0e49670cf19660792cd1518d241e6c99b3b` binary creates ten closed legacy
 collection aggregates, leases the compensable `c10/0/reserve` forward task, and
 exits without reporting it. A separately built current binary reopens the same
@@ -13,7 +13,7 @@ while the original lease remains live.
 The current phase uses the persisted worker membership, exact binding, worker ID,
 session token, lease, and completion request. It creates a fresh JWT through the
 current test identity provider. It does not provision, bind, or register the
-worker again. The acceptance assertions require `SUCCEEDED` with the applicable
+worker again. The ordinary-success acceptance assertions require `SUCCEEDED` with the applicable
 data-limit or cancellation stop, no retained refused output, no report outbox
 row, exact receipt replay, and the engine's real `line.release`
 compensation task with the original target identity and key.
@@ -184,7 +184,7 @@ bash scripts/test-legacy-collection-inflight-report-v1.sh --case report-frontier
 ```
 
 This selector has300s native phases and the existing2400s whole supervisor with5s
-termination grace. All seven selectors must be rerun after shared lifecycle edits.
+termination grace. All selectors must be rerun after shared lifecycle edits.
 This establishes only original-success/frontier CAS and fresh recovery, with no
 production/producer/schema/grant/SDK change or broader recovery/nesting guarantee.
 
@@ -217,3 +217,43 @@ the affected regression set is this new case plus cancellation-before-report,
 old/current separately in owner/runtime:8positive native processes. Broaden only
 when other shared helpers change. No production/producer/SDK/schema/grant change,
 fake RED, OS restart or broader metrics-reader/provider-undo claim.
+
+
+## Applied-ready lookup handoff prerequisite
+
+`applied-handoff` is a read-only upgrade attachment prerequisite. It uses the same
+ten actual old210000B source completions and E4200020, but its separate workflow
+adds `reconcileWith: line.lookup`. Old public OUTCOME_UNKNOWN on the real forward
+lease, normal scheduling and polling create the actual `c10[0]/reserve~r` lookup.
+The original forward task and its effect key remain the lookup target. The old
+process retains the lookup's exact `{"effect":"applied","output":{"hold":7}}`
+completion without submitting it.
+
+A distinct private21-field `q10c-applied-handoff-v1` adds original forward protobuf
+and full authority SHA; ordinary19-field formats remain unchanged. Strict parsing
+binds both task IDs to run/node/generation, canonical lookup/forward/request bytes,
+exact target/key and fixed inline answer. Actual handoff mutation controls and a
+separate synthetic-wire-only coherent mutation unit cover its rejection boundaries.
+
+With the owned Compose fixture and private target/admin URL environment above:
+
+```sh
+bash scripts/test-legacy-collection-inflight-report-v1.sh --case applied-handoff
+```
+
+Owner/runtime phases separately query postgres/sagat_app API roles. Before/after
+migration/startup/client construction/fresh role frontier and journal verification,
+complete projection/source/full binding/pool/session authority including exact
+expiry, audit/receipt/telemetry/usage/capacity/counter footprints remain unchanged.
+The client signs the retained request but sends no current RPC; authentication and
+actual Applied acceptance are not established by this prerequisite. No current
+poll/register/heartbeat/tick/report or replacement capability is used.
+
+The selector uses300s phases/2400s whole supervision and existing strict owned DB/
+private receipt cleanup. For its append-only producer/new isolated module/closed
+selector/independent21-field validation branch, the reviewed affected scope is
+applied-handoff, report-before-drain, under-limit-increment-cancellation-before-report
+and live-work-frontier-red. Shared lifecycle changes require all selectors.
+Evidence:299f8b2e, `tasks/project-completion/evidence/legacy-applied-handoff-acceptance-20261024/README.md`.
+Actual Applied report/refusal/drain/compensation, other orders/bytes/recovery and
+output-dependent compensation remain separate; no Q10c/master/production closure.

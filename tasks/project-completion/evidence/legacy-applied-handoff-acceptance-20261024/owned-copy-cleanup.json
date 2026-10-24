@@ -1,0 +1,129 @@
+{
+  "removed_after_sealing": [
+    {
+      "path": "/tmp/sagat-completion-20261023/applied-handoff-final/artifacts-applied-handoff/run.cDsNo7/artifacts/old-source.tar",
+      "bytes": 59392000,
+      "sha256": "50e6c054052e2a1cad6c75eaafcec8e3e4bcafb5eb7b80caa81b6e5634776e2d",
+      "verified_against_manifest": true
+    },
+    {
+      "path": "/tmp/sagat-completion-20261023/applied-handoff-final/artifacts-applied-handoff/run.cDsNo7/artifacts/integration-workflow-primitives-old",
+      "bytes": 176586224,
+      "sha256": "a0667f8e5c8ea9f03667380bf7bb44493ad141e5d7bea48efb017ce48bc0f3d7",
+      "verified_against_manifest": true
+    },
+    {
+      "path": "/tmp/sagat-completion-20261023/applied-handoff-final/artifacts-applied-handoff/run.cDsNo7/artifacts/integration-workflow-primitives-current",
+      "bytes": 184106832,
+      "sha256": "b88c7fafcddd07260cddd5214e82bf74ca2c2799d4d8763b3fea21e45d2d8b7e",
+      "verified_against_manifest": true
+    },
+    {
+      "path": "/tmp/sagat-completion-20261023/applied-handoff-final/artifacts-report-before-drain/run.mFFhFQ/artifacts/old-source.tar",
+      "bytes": 59392000,
+      "sha256": "50e6c054052e2a1cad6c75eaafcec8e3e4bcafb5eb7b80caa81b6e5634776e2d",
+      "verified_against_manifest": true
+    },
+    {
+      "path": "/tmp/sagat-completion-20261023/applied-handoff-final/artifacts-report-before-drain/run.mFFhFQ/artifacts/integration-workflow-primitives-old",
+      "bytes": 176586224,
+      "sha256": "202d4784c67bed5120867b086a5ba8865b11ca0bb955164d69be5bca86951ee7",
+      "verified_against_manifest": true
+    },
+    {
+      "path": "/tmp/sagat-completion-20261023/applied-handoff-final/artifacts-report-before-drain/run.mFFhFQ/artifacts/integration-workflow-primitives-current",
+      "bytes": 184106832,
+      "sha256": "b88c7fafcddd07260cddd5214e82bf74ca2c2799d4d8763b3fea21e45d2d8b7e",
+      "verified_against_manifest": true
+    },
+    {
+      "path": "/tmp/sagat-completion-20261023/applied-handoff-final/artifacts-under-limit-increment-cancellation-before-report/run.sF5voO/artifacts/old-source.tar",
+      "bytes": 59392000,
+      "sha256": "50e6c054052e2a1cad6c75eaafcec8e3e4bcafb5eb7b80caa81b6e5634776e2d",
+      "verified_against_manifest": true
+    },
+    {
+      "path": "/tmp/sagat-completion-20261023/applied-handoff-final/artifacts-under-limit-increment-cancellation-before-report/run.sF5voO/artifacts/integration-workflow-primitives-old",
+      "bytes": 176586224,
+      "sha256": "4eb21ec485b562f39671b94bfc862152f7163c37e61913a373afa4dc1cb311ee",
+      "verified_against_manifest": true
+    },
+    {
+      "path": "/tmp/sagat-completion-20261023/applied-handoff-final/artifacts-under-limit-increment-cancellation-before-report/run.sF5voO/artifacts/integration-workflow-primitives-current",
+      "bytes": 184106832,
+      "sha256": "b88c7fafcddd07260cddd5214e82bf74ca2c2799d4d8763b3fea21e45d2d8b7e",
+      "verified_against_manifest": true
+    },
+    {
+      "path": "/tmp/sagat-completion-20261023/applied-handoff-final/artifacts-live-work-frontier-red/run.dKiyEi/artifacts/old-source.tar",
+      "bytes": 59392000,
+      "sha256": "50e6c054052e2a1cad6c75eaafcec8e3e4bcafb5eb7b80caa81b6e5634776e2d",
+      "verified_against_manifest": true
+    },
+    {
+      "path": "/tmp/sagat-completion-20261023/applied-handoff-final/artifacts-live-work-frontier-red/run.dKiyEi/artifacts/integration-workflow-primitives-old",
+      "bytes": 176586224,
+      "sha256": "4fb50fda8b83935341457d98efbd0551c1fd206e83b968b7d3aaba72bc0335fa",
+      "verified_against_manifest": true
+    },
+    {
+      "path": "/tmp/sagat-completion-20261023/applied-handoff-final/artifacts-live-work-frontier-red/run.dKiyEi/artifacts/integration-workflow-primitives-current",
+      "bytes": 184106832,
+      "sha256": "b88c7fafcddd07260cddd5214e82bf74ca2c2799d4d8763b3fea21e45d2d8b7e",
+      "verified_against_manifest": true
+    },
+    {
+      "path": "/tmp/sagat-completion-20261023/applied-handoff-first/artifacts/run.yFiZXR/artifacts/old-source.tar",
+      "bytes": 59392000,
+      "sha256": "50e6c054052e2a1cad6c75eaafcec8e3e4bcafb5eb7b80caa81b6e5634776e2d",
+      "verified_against_manifest": true
+    },
+    {
+      "path": "/tmp/sagat-completion-20261023/applied-handoff-first/artifacts/run.yFiZXR/artifacts/integration-workflow-primitives-old",
+      "bytes": 176586224,
+      "sha256": "1d30c63bbd11f391efbc10dcb175063a78e517bdea37b30ad90de4f91e74283d",
+      "verified_against_manifest": true
+    },
+    {
+      "path": "/tmp/sagat-completion-20261023/applied-handoff-first/artifacts/run.yFiZXR/artifacts/integration-workflow-primitives-current",
+      "bytes": 184098480,
+      "sha256": "074fd5ec441b04e397d8cf8e60e2f251aed7608bef295098c4fcbecc649e8212",
+      "verified_against_manifest": true
+    },
+    {
+      "path": "/tmp/sagat-completion-20261023/applied-handoff-red/artifacts/run.uO7ERz/artifacts/old-source.tar",
+      "bytes": 59392000,
+      "sha256": "50e6c054052e2a1cad6c75eaafcec8e3e4bcafb5eb7b80caa81b6e5634776e2d",
+      "verified_against_manifest": true
+    },
+    {
+      "path": "/tmp/sagat-completion-20261023/applied-handoff-red/artifacts/run.uO7ERz/artifacts/integration-workflow-primitives-old",
+      "bytes": 176515520,
+      "sha256": "08847a2cb539a0883068b309e885f49e01051fd18a50aef068280e2ae236fc8b",
+      "verified_against_manifest": true
+    },
+    {
+      "path": "/tmp/sagat-completion-20261023/applied-handoff-red/artifacts/run.uO7ERz/artifacts/integration-workflow-primitives-current",
+      "bytes": 184007872,
+      "sha256": "a0191405dbc221723750bf3c3e2c284fad4b7cb3663620f0df28aba512d26028",
+      "verified_against_manifest": true
+    },
+    {
+      "path": "/tmp/sagat-completion-20261023/applied-handoff-red/artifacts-compile-initial/run.x6tm9i/artifacts/old-source.tar",
+      "bytes": 59392000,
+      "sha256": "50e6c054052e2a1cad6c75eaafcec8e3e4bcafb5eb7b80caa81b6e5634776e2d",
+      "verified_against_manifest": true,
+      "ownership": "private invocation created before preserved current compilation failure; no phase/database launched"
+    },
+    {
+      "path": "/tmp/sagat-completion-20261023/applied-handoff-red/artifacts-compile-initial/run.x6tm9i/artifacts/integration-workflow-primitives-old",
+      "bytes": 176515520,
+      "sha256": "dc95d193c47ccadc7d5825a662126a5a5215514b8c695ebe912d44a4922ebc3d",
+      "verified_against_manifest": false,
+      "ownership": "private invocation created before preserved current compilation failure; no phase/database launched"
+    }
+  ],
+  "bytes_removed": 2756239840,
+  "no_additional_database_drop": true,
+  "ongoing_private_target_retained": true
+}
