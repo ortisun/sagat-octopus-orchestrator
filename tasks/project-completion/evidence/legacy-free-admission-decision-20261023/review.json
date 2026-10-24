@@ -1,0 +1,10 @@
+{
+  "review": "fresh read-only consequential design review",
+  "model": "gpt-6-astra",
+  "reasoning_effort": "xhigh",
+  "findings": "None",
+  "scenario_executed": false,
+  "production_change": false,
+  "plan_sha256": "4d477e333df94fff024cd22b010902d15d4f4e2557249194853ee396818f2089",
+  "clarification": "Pinned old finish_version sets Run WAITING at this exact entered boundary; reviewer was supplied this source fact."
+}

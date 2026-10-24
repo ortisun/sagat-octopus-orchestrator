@@ -1,0 +1,132 @@
+# One genuine old free-admission frontier acceptance unit
+
+Design only, local date2026-10-23. No new scenario test/build/SQL or production
+change is claimed. Immutable old production6c44a0e49670cf19660792cd1518d241e6c99b3b;
+current code8b7450b90050faed5271530be218da932a06ded5 (later cleanup/evidence commits
+through60155e83 change no fixture/runtime code). Standing all-open-tasks and the
+owner's split-decisions authorization apply. No new product question or activation.
+
+## Scope and owned paths
+
+Accept only quota correction11.4(a): E>4MiB in a genuine old OPEN captured scope
+with free capacity, before its first admission. Source certification/scoped Finish,
+CAS, prior-stop/equality/live-only frontiers, rollout, provider undo and nesting
+remain outside this unit. Existing default and nonfinal Return evidence stays valid.
+
+At most four existing logical paths: tests/fixtures/legacy-collection-output/producer.rs;
+tests/integration/workflow-primitives/legacy_collection_output_view.rs;
+scripts/test-legacy-collection-output-view.sh; tests/fixtures/legacy-collection-output/README.md.
+No production/schema/grants/SDK/registration/infra changes. Root sole writer/executor.
+Reuse genuinely common projection/closed-source SQL, hash and current inspection
+helpers; do not broadly refactor accepted nonfinal/default implementations.
+
+## Genuine old setup and isolated boundary
+
+All eleven owners c0→…→c10→done use plain legacyLine (legacyWork line.reserve →
+legacyReturned Return steps.legacyWork.output), result bodyResult, two input items
+[1,2], maxItems2/maxConcurrency1. No compensation/irreversible/high-risk flags.
+Use explicit platform_with runtime_role selection in both profiles, membership
+bootstrap plus public exact worker-binding endpoint, public quota1/publish/start,
+normal Keeper authority and actual public worker registration/completion. Never
+use immutable old Flow for owner claims: its constructor always selects runtime.
+No SQL writes to manufacture successful business state or worker binding.
+
+Complete exactly20 genuine105000-byte JSON values (104998 ASCII characters plus
+quotes), exact c0…c9 index0/1 and node/path identities. After completion20, NO more
+tick. Count all setup transitions against256. Normal explicit old calls must be:
+advance(c9)=Checkpointed{index:1}, then Finished, advance(c10)=Entered, then halt.
+O scheduler/passes.rs1197–1238 and1495–1511 isolate these transitions.
+
+Verify actual aggregate content [large,large],210003bytes each, SHA of every
+payload,20 exact checkpoint/member/work/Return/journal coordinate relations and
+10 finish/routing pairs. L=2100000,V=2100030,E=4200030; each value<262144, L fits
+4194304. Repeated equal digests still count per owner reference. Admission must
+otherwise be feasible under actual run/tenant limits.
+
+At handoff Run WAITING/no stop (old primitives.rs436–465 finish_version),
+c10 OPEN, item_count2/max_concurrency1; next/admitted/completed/active
+all0, captured rows exactly0/1 with input1/2; root owner WAITING/COLLECTION,
+unrouted/no output/failure/live attempt. Zero c10 members/checkpoints/scoped steps/
+work receipts, no done/derived task/saga/chain/certificate source; reservations and
+tenant active iterations0. Inspect only real declared schema (old already has the
+capacity and leaf-certification migrations); do not treat missing query coverage
+as table absence. Pin actual published version, namespace and source identities.
+
+Positive handoff never makes another old call. Isolated fresh RED separately
+calls normal old advance(c10), emits a dedicated marker only when actual result
+is Admitted{index:0}, then asserts DrainStarted. Require exit101, exactly0passed/
+1failed/0ignored and marker=true. Never repair or consume that mutated DB.
+
+## Private18-field handoff and source witness
+
+Format legacy-free-admission-frontier-v1, case free-admission, exact keys:
+format,source_commit,case,role,database_name,database_url,runtime_database_url,
+tenant,other_tenant,namespace,run,workflow_version,scope_id,scheduler_owner,
+handoff_run_version,closed_source_cutoff,producer_witness_sha256,closed_source_sha256.
+Do not make inapplicable forward identity/key optional in the existing NF format.
+Typed IDs/role/format/pin/DB regex/hash validation; private0700 dirs, exclusive0600
+receipt.tmp, fsync+rename, no Debug/secret logs. Recorded owner free-admission-role.
+The actual h=cutoff+1 is c10 entry after c9 routing. Cold current attaches ONLY the
+owned admin env+validated DB name, checks receipt URLs equal derived owned URLs;
+never connect through an arbitrary receipt URL. No original worker secret handoff.
+Coordinator must observe old process exit before current starts; match existing
+legitimate same-owner Keeper restart semantics, no lease expiry sleep or SQL edit.
+
+PROJECTION_WITNESS_SQL unchanged proves complete pre/post migration equality.
+Use common closed-scope SQL plus a new immutable free target witness (not
+nonfinal_source, which requires c10 successful work/report). Bind published version,
+c10 stable scope/source identity/metadata, captured items, snapshot/item payloads,
+and actual original collection.entered envelope. Exclude only legitimately changing
+Run/owner/scope lifecycle/stop/drain/finish/update fields. Source hash must remain
+identical through native drain/finish/cold verification. Positive object/identity
+checks prevent vacuous NULL witness components. Preserve complete journal prefix.
+
+## Exact current native sequence and oracles
+
+Full API/store bootstrap on same DB with explicit actual postgres/postgres or
+sagat_app/sagat_app role proof; owner inspection is separate. Real Keeper round,
+one replica, Run shard owned. Actual current frontier original scope/head,
+E4200030, OPEN/no stops, next/completed0,maxConcurrency1, active empty, plain body
+scope_compensates=false. No root RunTx data hydration is needed.
+
+One advance=DrainStarted. At h+1 first root stop FAILED/RUN_DATA_LIMIT; h+2 native
+c10 collection.drain_started reason run_data_limit. Exact full envelopes, root vs
+owner path/id, original actor/trace, common transaction timestamp; run CANCELLING,
+scope DRAINING/RDL,null iteration, exact drainUUID/seq; telemetry h+2. Exactly one
+existing_outputs engine audit and one actual public FAILED drain hint with original
+scope/tenant/namespace/run/trace/UUID. Everything else including counters/member/
+step/checkpoint/receipt/payload/usage/closed source and old journal prefix unchanged.
+
+Next advance=DrainFinished, not a permissive loop. Exact h+3 collection.finished detail {outcome:failed,code:RUN_DATA_LIMIT}
+and h+4 run.finished detail {status:FAILED}. Scope/owner FAILED/RDL, Run FAILED,
+original stop/drain intact, no result/owner output, exact finish seq/UUID and two
+new collection-finished/run-finished FAILED outboxes, telemetry/journal/Run h+4.
+No owner routing, admission, iteration-drained/cancel event, scoped identity, task,
+saga, compensation or manual-review obligation. All four counters/reservations/
+active slots remain0; payload/L/V/E and immutable source exact.
+
+Fresh PgRunStore+DefinitionCache with scoped protocol verify_run succeeds; next
+normal advance=AlreadyFinished. Full terminal state/projection identical before/
+after both. Fixed safe errors (no full RunState Debug), normal Keeper leave and
+five-second bounded pool closes. Handle current inspection helper's actual empty
+member JSON representation explicitly. No full RunTx::data call.
+
+## Closed mappings and gates
+
+Add free-admission and free-admission-red exact selectors and test names/markers.
+Keep output-view default/unset-only, all old names/formats/role semantics. Replace
+three NF-specific non-output assumptions with explicit closed mappings for test
+selection, exact receipt envelope and RED marker. Keep existing hardened shared
+process supervision, receipt-established/cache-failed guards, checked hash cache,
+credential-before-DB ordering and strict fresh single-new-DB ownership unchanged.
+300s phases,2400s whole+5 grace; same source/binary/archive/restoration manifests.
+
+Write complete assertions first. Then free RED → fresh free positive → nonfinal
+positive → nonfinal RED → original output-view, each owner/runtime separately:
+12 separate positive1/1 processes, four explicitly expected old failures, none
+skipped. Record commands, exits, harness times, actual roles, witness hashes and
+owned DB/credential/source cleanup. Root reruns focused strict Clippy, fmt, shell
+syntax, architecture and verifies source freezes; absent agent-config check is
+not invented. No source mutation while a final gate runs. A real failure is kept,
+not retried against a mutated handoff or repaired by SQL. This closes only local
+Q7c.2; canonical014 and parent Q7c/Q8/quota/rollout/nesting stay open.
