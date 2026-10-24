@@ -1,0 +1,61 @@
+# Genuine-old Applied-ready handoff prerequisite A
+
+Local2026-10-24, source00f7f864. Owner all-open-tasks/split-decisions authorization.
+Implement prerequisite only; Applied report/refusal/drain/compensation B remains
+separate. Root solewriter/executor; no production/schema/grants/SDK activation.
+Immutableold6c44a0e49670cf19660792cd1518d241e6c99b3b.
+
+Five implementation paths: existing Q10producer.rs; new isolated current
+legacy_collection_inflight_applied_v1.rs; integration main registration; existing
+Q10coordinator; this evidence README. FixtureREADME/todo/validation updates separate.
+No ordinary preset/parser/oracle weakening. Producer reuse existing ten genuine
+210000B public completions/210002B aggregates, L2100000/V2100020/E4200020. Only new
+Applied producer adds line.lookup to exact binding/session and reconcileWith on
+finalreserve. Retain original forwardlease; public fail_with OUTCOME_UNKNOWN,false;
+normal old scheduler; poll real reserve~r/RECONCILIATION/line.lookup. Retain exact
+CompleteStepRequest {"effect":"applied","output":{"hold":7}}, do not submit.
+No SQL expiry, repair, state seeds or newcapabilities. Keep oldordinary codepaths.
+
+New private q10c-applied-handoff-v1 exact21fields = existing19 +
+forward_task_lease_b64 + producer_authority_witness_sha256. Existing task_lease and
+completion_request now lookup only. Strict format/pin/knownfields/ownedDB/types/
+canonical protobuf roundtrips/fixedanswer/emptyblobfields/address/attempt/generation/
+lease-token/request-key/forward-target/key identity. No protobuf Debug or receipts
+in logs/evidence. Existing19field envelopes unchanged. Cleanup newformat/21fields
+must be ready before producerpublish; credentialhash/cache/uniqueownedDB rules and
+bounded existing supervisor300/2400s unchanged.
+
+Old publication and current before/after migrations/startup assert RUNNING/noStop,
+c10OPEN/ADMITTED/slotheld, no checkpoint/result/drain/saga/comp/Return/done. Forward
+WAITING waiting_kindRECONCILIATION/failureOUTCOME_UNKNOWN/originalstep/fence. Exactly
+one addressed reconciliation.requested/originalfence; no conclusion/forwardcomplete.
+Lookup LEASED/uncancelled/exacthash/session/namespace/fence/live; targetinstance and
+node/key match ORIGINALforward, notlookup. No completionreceipt. Fullprojection/
+closedsource/exactauthority(binding/membership/session/capabilities/hash/EXACT persisted session expiry) witnesses
+unchanged; expirieslive separately. SQL E matches current productionfrontier scalar
+without full overbudget output hydration. Freshverify read-only source/authority/
+projection remains exact. Add bounded audit_records/command_dedupe/telemetry_pending/saga/counter/reservation footprints before/after; process counters reconciliation/refusal/collection RDL unchanged. No tick/poll/register/grant/heartbeat/currentcomplete.
+Connect client and retain oldworker/session; signing alone is not authenticated
+execution. Actual current authentication/Appliedacceptance deferred to B.
+
+Test-first: first build strict currentconsumer and intentionally point newselector
+to existing genuineordinary producer/ordinary19field cleanup. Before Appliedparser,
+probe decodedlease task_kind and emit exact observed_ordinary_forward_not_lookup=true
+then fail RECONCILIATION assertion. Capture real native consumer status in an isolated private new-case RED coordinator copy (source diff/hash saved); wrapper converts native101 into outer1. Require native101 and outer1 plus exact onefailure/marker. Final coordinator has no shared lifecycle rewrite. This is fixture-contract RED,
+NOT production quotaRED. Compile/setup/map/timeout failures are not validRED. Keep
+that source/logdiff; then addactualAppliedproducer, switch closedselector andformat
+map to21fieldApplied, runnewcasefourpositivephases owner/runtime. Parser negative
+controls reject format/extra/noncanonical/wrongbinding/forwardtarget withoutreport.
+Need parser negative controls as genuine contract tests, not mirrored trivial edits.
+
+Static focusedClippy/fmt/architecture/Bash, exacttestregistration/source/migration/
+archive/binary/receipt hashes and ownedcleanup. Final coordinatorregression scope
+requires review: no shared lifecycle/processcleanup change beyond closedselector
+and independent21field map branch; at least newApplied + oldordinary19field +
+underlimit19field + isolatedoldRED to prove both formatvariants/cleanupfailures.
+If any sharedlifecycle changed, existingREADME calls for entire8selectormatrix.
+No automatic fullmatrix if appendonlycase/exact independentformat branch is shown
+unaffected; reviewer must settle before source freezes. Private repositoryCompose
+65118/target outside repo, df/sequentialheavybuilds; allactualroles/logs honest.
+Only A handoffprerequisite mayclose; B/exactAppliedrefusal/events/comp/oldquotaRED,
+Appliedotherorders/bytes/recovery, Q10c/quota/nesting/canonical remainopen.

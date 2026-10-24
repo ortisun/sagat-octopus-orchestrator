@@ -1,0 +1,28 @@
+{
+  "reviewer": "gpt-6-astra",
+  "reasoning_effort": "xhigh",
+  "fresh_context_each_cycle": true,
+  "read_only_no_execution": true,
+  "C1": [
+    {
+      "finding": "outer coordinator1 hides native consumer exit",
+      "classification": "valid actionable",
+      "correction": "isolated private RED coordinator records actual native return101; outer1 expected; original19fieldcleanup retained"
+    },
+    {
+      "finding": "projection excludes audit/receipt/telemetry and counters",
+      "classification": "valid actionable",
+      "correction": "bounded full side-effect footprint and unchanged process counters before/after"
+    },
+    {
+      "finding": "live expiry check misses renewal",
+      "classification": "valid actionable",
+      "correction": "authority witness includes exact persisted session expiry plus separate DB-clock liveness"
+    }
+  ],
+  "C2_findings": null,
+  "root_reconciliation": "source inspection confirms each actionable; revised contract is authoritative",
+  "final_regression_scope": "four selectors if append-only dispatch/independent Applied21field branch; any shared lifecycle edit triggers existing fullmatrix requirement",
+  "implementation_agent": "root; Sol unavailable, no substitution",
+  "optional_external_review": "previously declined"
+}
