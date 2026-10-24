@@ -1,0 +1,8 @@
+
+running 1 test
+test legacy_collection_output_producer::frozen_old_nonfinal_return_frontier_producer ... old_nonfinal_role role=owner api=postgres store=postgres database=t_01a16b1dee2b739e96949eee447a60ad
+old_nonfinal_premise L=2100001 V=2100030 E=4200031 closed=10 checkpoints=20 pending_nonfinal_return=true live_forward=0
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 503 filtered out; finished in 7.76s
+

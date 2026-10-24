@@ -1,0 +1,12 @@
+{
+  "owner": {
+    "created_database": "t_01a16b353299768e8d863a445c5ff9cc",
+    "receipt_files_absent": true
+  },
+  "runtime": {
+    "created_database": "t_01a16b355b4774368642e33d7ebf90ad",
+    "receipt_files_absent": true
+  },
+  "archived_source_restored": true,
+  "old_source_directory_removed": true
+}

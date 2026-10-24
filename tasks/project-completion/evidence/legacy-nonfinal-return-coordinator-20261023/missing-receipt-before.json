@@ -1,0 +1,6 @@
+{
+  "probe_exit_code": 1,
+  "expected_drop_count": 0,
+  "observed_drop_count": 1,
+  "assertion": "missing post-producer receipt must not reenable pre-receipt fallback"
+}

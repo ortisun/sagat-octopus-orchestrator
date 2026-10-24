@@ -1,0 +1,21 @@
+{
+  "command": [
+    "gtimeout",
+    "--signal=TERM",
+    "--kill-after=5s",
+    "900s",
+    "cargo",
+    "test",
+    "--locked",
+    "--no-run",
+    "--message-format=json",
+    "--manifest-path",
+    "tests/Cargo.toml",
+    "--test",
+    "integration_workflow_primitives"
+  ],
+  "exit_code": 0,
+  "seconds": 35.01,
+  "started_utc": "2026-10-23T23:27:56.043643+00:00",
+  "log": "build-c2.txt"
+}

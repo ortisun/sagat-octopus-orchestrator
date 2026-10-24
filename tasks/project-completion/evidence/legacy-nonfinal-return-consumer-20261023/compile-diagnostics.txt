@@ -1,0 +1,8 @@
+error[E0609]: no field `kind` on type `sagat_api_grpc::pb::TaskLease`
+    --> tests/integration/workflow-primitives/legacy_collection_output_view.rs:1601:21
+     |
+1601 |             && comp.kind == "COMPENSATION"
+     |                     ^^^^ unknown field
+     |
+     = note: available fields are: `task_id`, `run_id`, `step_id`, `attempt`, `generation` ... and 13 others
+

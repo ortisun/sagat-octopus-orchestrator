@@ -1,0 +1,19 @@
+SELECT jsonb_build_object(
+ 'runs',(SELECT count(*) FROM runs),'run_status',r.status,'stop_reason',r.stop_reason,'stop_code',r.stop_code,
+ 'head',r.run_version,'journal_head',(SELECT max(seq) FROM run_events WHERE run_id=r.id),'telemetry_head',(SELECT head_seq FROM telemetry_pending WHERE run_id=r.id),
+ 'scope',s.lifecycle,'drain_kind',s.drain_kind,'failure',s.drain_failure_code,'next',s.next_admission_index,'admitted',s.admitted_count,'completed',s.completed_count,'active',s.active_count,
+ 'owner_output_absent',o.output_digest IS NULL,'owner_status',o.status,'owner_code',o.failure_code,
+ 'member',(SELECT jsonb_build_object('state',m.lifecycle,'slot',m.slot_held,'reservations',m.remaining_reservations) FROM collection_iterations m WHERE m.scope_id=s.scope_id),
+ 'c10_checkpoints',(SELECT count(*) FROM iteration_checkpoints c WHERE c.scope_id=s.scope_id),
+ 'c10_step_nodes',(SELECT jsonb_agg(node ORDER BY node) FROM steps WHERE run_id=r.id AND instance_path_nodes=ARRAY['c10']),
+ 'compensation_count',(SELECT count(*) FROM steps WHERE run_id=r.id AND kind='COMPENSATION'),
+ 'L',u.logical_output_bytes,'reserved_instances',u.reserved_instances,
+ 'V',(SELECT sum(octet_length(p.content)) FROM iteration_scopes x JOIN payloads p ON p.digest=x.result_digest AND p.tenant_id=x.tenant_id WHERE x.run_id=r.id AND x.owner_node<>'c10'),
+ 'saga',(SELECT jsonb_build_object('phase',phase,'outcome',outcome) FROM scope_sagas WHERE run_id=r.id),
+ 'drain_hint',(SELECT count(*) FROM event_outbox e WHERE e.id=s.drain_outbox_id AND e.event_type='collection.drain.started' AND e.payload->>'reason'='FAILED'),
+ 'finish_hint',(SELECT count(*) FROM event_outbox e WHERE e.id=s.finish_outbox_id AND e.event_type='collection.finished' AND e.payload->>'status'='FAILED'),
+ 'capacity_rows',(SELECT count(*) FROM capacity_groups)+(SELECT count(*) FROM capacity_group_members)+(SELECT count(*) FROM capacity_group_finish_receipts),
+ 'quota_deltas',(SELECT count(*) FROM quota_transaction_deltas)
+) FROM runs r JOIN iteration_scopes s ON s.run_id=r.id AND s.owner_node='c10'
+ JOIN steps o ON o.run_id=r.id AND o.node='c10' AND cardinality(o.instance_path_nodes)=0
+ JOIN run_instance_usage u ON u.run_id=r.id;

@@ -1,0 +1,63 @@
+--- C1
++++ C2
+@@ -426,6 +426,27 @@
+       'closed_scopes',(SELECT count(*) FROM iteration_scopes c WHERE c.tenant_id=r.tenant_id AND c.run_id=r.id AND c.lifecycle='SUCCEEDED' AND c.item_count=2 AND c.completed_count=2 AND c.active_count=0),
+       'closed_owners',(SELECT count(*) FROM steps o WHERE o.tenant_id=r.tenant_id AND o.run_id=r.id AND cardinality(o.instance_path_nodes)=0 AND o.status='SUCCEEDED' AND o.routed AND o.output_digest IS NULL),
+       'historical_work',(SELECT count(*) FROM steps w WHERE w.tenant_id=r.tenant_id AND w.run_id=r.id AND w.node='legacyWork' AND w.status='SUCCEEDED' AND w.routed AND w.output_digest IS NOT NULL),
++      'historical_members',(SELECT count(*) FROM collection_iterations m JOIN iteration_scopes c ON c.tenant_id=m.tenant_id AND c.run_id=m.run_id AND c.scope_id=m.scope_id WHERE c.tenant_id=r.tenant_id AND c.run_id=r.id AND c.lifecycle='SUCCEEDED'),
++      'checkpoint_coordinates',(SELECT jsonb_agg(jsonb_build_array(c.owner_node,m.iteration_index) ORDER BY c.owner_node,m.iteration_index)
++          FROM iteration_scopes c JOIN collection_iterations m ON m.tenant_id=c.tenant_id AND m.run_id=c.run_id AND m.scope_id=c.scope_id
++          JOIN iteration_checkpoints k ON k.tenant_id=m.tenant_id AND k.run_id=m.run_id AND k.scope_id=m.scope_id AND k.iteration_index=m.iteration_index
++          JOIN steps fw ON fw.tenant_id=m.tenant_id AND fw.run_id=m.run_id AND fw.step_id=m.entry_instance_id
++          JOIN steps ret ON ret.tenant_id=m.tenant_id AND ret.run_id=m.run_id AND ret.step_id=k.return_instance_id
++          JOIN run_events e ON e.tenant_id=k.tenant_id AND e.run_id=k.run_id AND e.seq=k.journal_sequence
++          WHERE c.tenant_id=r.tenant_id AND c.run_id=r.id AND c.lifecycle='SUCCEEDED'
++            AND m.lifecycle='CHECKPOINTED' AND NOT m.slot_held AND m.checkpoint_sequence=k.journal_sequence
++            AND m.return_instance_id=k.return_instance_id AND m.result_digest=k.result_digest
++            AND fw.status='SUCCEEDED' AND fw.routed AND fw.output_digest=k.result_digest AND ret.status='SUCCEEDED'
++            AND e.event_type='collection.iteration_checkpointed' AND e.node=c.owner_node
++            AND e.detail->>'index'=m.iteration_index::text AND e.detail->>'result_digest'=encode(k.result_digest,'hex')),
++      'finish_route_pairs',(SELECT count(*) FROM iteration_scopes c
++          JOIN run_events f ON f.tenant_id=c.tenant_id AND f.run_id=c.run_id AND f.seq=c.finish_sequence
++          JOIN run_events routed ON routed.tenant_id=c.tenant_id AND routed.run_id=c.run_id AND routed.seq=c.finish_sequence+1
++          WHERE c.tenant_id=r.tenant_id AND c.run_id=r.id AND c.lifecycle='SUCCEEDED'
++            AND f.event_type='collection.finished' AND f.node=c.owner_node AND f.detail->>'outcome'='succeeded'
++            AND f.detail->>'result_digest'=encode(c.result_digest,'hex')
++            AND routed.event_type='step.routed' AND routed.node=c.owner_node
++            AND cardinality(f.instance_path_nodes)=0 AND cardinality(routed.instance_path_nodes)=0),
+       'historical_returns',(SELECT count(*) FROM steps w WHERE w.tenant_id=r.tenant_id AND w.run_id=r.id AND w.node='legacyReturned' AND w.status='SUCCEEDED'),
+       'checkpoints',(SELECT count(*) FROM iteration_checkpoints c WHERE c.tenant_id=r.tenant_id AND c.run_id=r.id),
+       'open',s.lifecycle='OPEN' AND s.item_count=2 AND s.max_concurrency=1 AND s.next_admission_index=1 AND s.admitted_count=1 AND s.completed_count=0 AND s.active_count=1 AND s.result_digest IS NULL AND s.finish_sequence IS NULL,
+@@ -434,7 +455,7 @@
+       'unadmitted_steps',(SELECT count(*) FROM steps w WHERE w.tenant_id=r.tenant_id AND w.run_id=r.id AND w.instance_path_nodes[1]='c10' AND w.instance_path_indices[1]=1),
+       'captured',(SELECT jsonb_agg(convert_from(p.content,'UTF8')::jsonb ORDER BY i.iteration_index) FROM collection_scope_items i JOIN payloads p ON p.tenant_id=i.tenant_id AND p.digest=i.item_digest WHERE i.tenant_id=r.tenant_id AND i.run_id=r.id AND i.scope_id=s.scope_id),
+       'target_work',(SELECT count(*) FROM steps w JOIN payloads p ON p.tenant_id=w.tenant_id AND p.digest=w.output_digest WHERE w.tenant_id=r.tenant_id AND w.run_id=r.id AND w.instance_path_nodes=ARRAY['c10']::text[] AND w.instance_path_indices=ARRAY[0]::integer[] AND w.node='work' AND w.status='SUCCEEDED' AND w.routed AND p.content=decode('31','hex')),
+-      'pending_return',(SELECT count(*) FROM steps w WHERE w.tenant_id=r.tenant_id AND w.run_id=r.id AND w.instance_path_nodes=ARRAY['c10']::text[] AND w.instance_path_indices=ARRAY[0]::integer[] AND w.node='returned' AND w.status='PENDING' AND NOT w.routed AND w.attempt=0 AND w.generation=0 AND w.lease_token_hash IS NULL AND w.leased_by IS NULL AND w.output_digest IS NULL),
++      'pending_return',(SELECT count(*) FROM steps w WHERE w.tenant_id=r.tenant_id AND w.run_id=r.id AND w.instance_path_nodes=ARRAY['c10']::text[] AND w.instance_path_indices=ARRAY[0]::integer[] AND w.node='returned' AND w.status='PENDING' AND NOT w.routed AND w.attempt=0 AND w.generation=0 AND w.lease_token_hash IS NULL AND w.leased_by IS NULL AND w.lease_expires_at IS NULL AND w.output_digest IS NULL AND w.failure_code IS NULL),
+       'live',(SELECT count(*) FROM steps w WHERE w.tenant_id=r.tenant_id AND w.run_id=r.id AND w.status IN ('LEASED','RUNNING')),
+       'sagas',(SELECT count(*) FROM scope_sagas g WHERE g.tenant_id=r.tenant_id AND g.run_id=r.id),
+       'certificates',(SELECT count(*) FROM leaf_collection_success_certifications c WHERE c.tenant_id=r.tenant_id AND c.run_id=r.id),
+@@ -468,6 +489,11 @@
+     ] {
+         assert!(state[key] == expected, "old nonfinal Return premise: {key}");
+     }
++    assert!(state["historical_members"] == 20 && state["finish_route_pairs"] == 10,
++        "twenty historical members and ten exact finish/routing journal pairs");
++    let coordinates = (0..10).flat_map(|i| [json!([format!("c{i}"), 0]), json!([format!("c{i}"), 1])]).collect::<Vec<_>>();
++    assert!(state["checkpoint_coordinates"] == json!(coordinates),
++        "exact twenty CHECKPOINTED coordinates match work, Return, checkpoint and journal identities");
+     state
+ }
+ 
+@@ -649,6 +675,11 @@
+             "each old aggregate has the exact ordered two outputs"
+         );
+     }
++    let payloads: Vec<(Vec<u8>, Vec<u8>)> = sqlx::query_as("SELECT digest,content FROM payloads WHERE tenant_id=$1 ORDER BY encode(digest,'hex')")
++        .bind(platform.tenant.as_uuid()).fetch_all(&platform.api.db.pool).await.expect("actual old retained payload digests and bytes");
++    for (digest, content) in payloads {
++        assert!(digest == Sha256::digest(&content).to_vec(), "every old aggregate, checkpoint and retained work digest matches its actual bytes");
++    }
+     let cutoff = state["cutoff"].as_i64().expect("actual c9 routing cutoff");
+     let source = nonfinal_source(
+         &platform.api.db.pool,

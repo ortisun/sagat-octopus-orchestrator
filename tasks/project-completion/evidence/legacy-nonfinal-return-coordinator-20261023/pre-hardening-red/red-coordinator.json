@@ -1,0 +1,14 @@
+{
+  "command": [
+    "gtimeout",
+    "--signal=TERM",
+    "--kill-after=5s",
+    "2500s",
+    "bash",
+    "scripts/test-legacy-collection-output-view.sh"
+  ],
+  "exit_code": 0,
+  "seconds": 126.92,
+  "started_utc": "2026-10-24T00:01:11.658233+00:00",
+  "log": "red-coordinator.txt"
+}

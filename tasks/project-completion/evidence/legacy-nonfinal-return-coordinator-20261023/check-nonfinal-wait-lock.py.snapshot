@@ -1,0 +1,25 @@
+from pathlib import Path
+import subprocess,os,sys,re,signal,json
+root=Path('/tmp/sagat-completion-20261023/wait-lock');root.mkdir(mode=0o700,exist_ok=True)
+source=Path('scripts/test-legacy-collection-output-view.sh').read_text()
+phase=re.search("<<'PY' &\n(.*?)\nPY\n  active_phase_pid",source,re.S)[1]
+admin=re.search("<<'PSQL'\n(.*?)\nPSQL",source,re.S)[1]
+fake=root/'psql';fake.write_text('#!'+sys.executable+'\nimport signal;signal.pause()\n');fake.chmod(0o700)
+expected=sys.argv[1];results=[]
+for name,code in [('phase',phase),('admin',admin)]:
+ lines=code.splitlines();indices=[i for i,l in enumerate(lines) if l.startswith('child=') and 'subprocess.Popen' in l or l.startswith('child = subprocess.Popen')];assert len(indices)==1
+ i=indices[0];flag='pending_signal' if name=='phase' else 'pending'
+ lines[i+1:i+1]=['child._waitpid_lock.acquire()','os.kill(os.getpid(),signal.SIGTERM)',f'assert {flag}==signal.SIGTERM',"print('lock_held_signal_handler_returned=true',flush=True)",'child._waitpid_lock.release()']
+ path=root/(expected+'-'+name+'.py');path.write_text('\n'.join(lines)+'\n')
+ args=[sys.executable,str(path)]
+ if name=='phase':args+=['30','-',sys.executable,'-c','import signal;signal.pause()']
+ env=dict(os.environ,SAGAT_Q5_SUPERVISED='1',SAGAT_TEST_DATABASE_URL='postgres://fixture-only/unused',PATH=str(root)+os.pathsep+os.environ['PATH'])
+ p=subprocess.Popen(args,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=env,start_new_session=True)
+ try:
+  stdout,stderr=p.communicate(timeout=3);blocked=False
+ except subprocess.TimeoutExpired:
+  blocked=True;os.killpg(p.pid,signal.SIGKILL);stdout,stderr=p.communicate(timeout=2)
+ if expected=='before':assert blocked and 'lock_held_signal_handler_returned=true' not in stdout
+ else:assert not blocked and p.returncode==143 and 'lock_held_signal_handler_returned=true' in stdout,(name,p.returncode,stderr)
+ results.append({'helper':name,'expected':expected,'deadlock_observed':blocked,'exit_code':p.returncode,'handler_returned_under_held_wait_lock':'lock_held_signal_handler_returned=true' in stdout})
+(root/(expected+'-results.json')).write_text(json.dumps(results,indent=2)+'\n');print(json.dumps(results))

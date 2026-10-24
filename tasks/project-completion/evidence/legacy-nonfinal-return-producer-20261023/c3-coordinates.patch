@@ -1,0 +1,14 @@
+--- C2
++++ C3
+@@ -437,6 +437,11 @@
+             AND m.lifecycle='CHECKPOINTED' AND NOT m.slot_held AND m.checkpoint_sequence=k.journal_sequence
+             AND m.return_instance_id=k.return_instance_id AND m.result_digest=k.result_digest
+             AND fw.status='SUCCEEDED' AND fw.routed AND fw.output_digest=k.result_digest AND ret.status='SUCCEEDED'
++            AND cardinality(c.owner_path_nodes)=0 AND cardinality(c.owner_path_indices)=0
++            AND fw.node='legacyWork' AND fw.instance_path_nodes=ARRAY[c.owner_node]::text[] AND fw.instance_path_indices=ARRAY[m.iteration_index]::integer[]
++            AND ret.node='legacyReturned' AND ret.instance_path_nodes=ARRAY[c.owner_node]::text[] AND ret.instance_path_indices=ARRAY[m.iteration_index]::integer[]
++            AND m.entry_node=fw.node AND m.entry_path_nodes=fw.instance_path_nodes AND m.entry_path_indices=fw.instance_path_indices
++            AND m.return_node=ret.node AND m.return_path_nodes=ret.instance_path_nodes AND m.return_path_indices=ret.instance_path_indices
+             AND e.event_type='collection.iteration_checkpointed' AND e.node=c.owner_node
+             AND e.detail->>'index'=m.iteration_index::text AND e.detail->>'result_digest'=encode(k.result_digest,'hex')),
+       'finish_route_pairs',(SELECT count(*) FROM iteration_scopes c

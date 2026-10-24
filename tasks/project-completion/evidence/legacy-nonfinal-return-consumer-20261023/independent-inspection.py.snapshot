@@ -1,0 +1,15 @@
+# Sanitized equivalent: the executed SQL/results are unchanged; admin URL comes from the owned fixture environment.
+from pathlib import Path
+import json,os,subprocess
+root=Path('/tmp/sagat-completion-20261023/nonfinal-producer-gate');out=Path('/tmp/sagat-completion-20261023/nonfinal-current')
+query=Path('/tmp/sagat-completion-20261023/nonfinal-inspect.sql').read_text()
+for role in ['owner','runtime']:
+ for kind in ['positive','red']:
+  name=f'{role}-{kind}-c3';safe=json.loads((root/name/'safe-phase.json').read_text());db=safe['database'];env=dict(os.environ,PGCONNECT_TIMEOUT='5',PGOPTIONS='-c statement_timeout=5000')
+  args=['psql','-XAtq','-v','ON_ERROR_STOP=1',os.environ['SAGAT_TEST_DATABASE_URL'].rsplit('/',1)[0]+'/'+db,'-c']
+  current=query if kind=='positive' else '\n'.join(line for line in query.splitlines() if "'capacity_rows'" not in line)
+  raw=subprocess.check_output(args+[current],env=env,timeout=12)
+  value=json.loads(raw);assert value['runs']==1 and value['L']==2100001 and value['V']==2100030 and value['quota_deltas']==0
+  if kind=='positive':assert value['capacity_rows']==0 and value['run_status']=='COMPENSATED' and value['compensation_count']==1 and value['c10_checkpoints']==0 and value['member']=={'state':'DRAINED','slot':False,'reservations':0} and value['journal_head']==value['telemetry_head']==value['head']
+  else:assert value['run_status']=='WAITING' and value['c10_checkpoints']==1 and value['compensation_count']==0 and value['scope']=='OPEN'
+  (out/(name+'-independent-sql.json')).write_text(json.dumps(value,indent=2)+'\n');print(name,'independent SQL verified')

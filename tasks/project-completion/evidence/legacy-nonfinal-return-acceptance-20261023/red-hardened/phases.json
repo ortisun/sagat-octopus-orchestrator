@@ -1,0 +1,24 @@
+[
+  {
+    "role": "owner",
+    "actual_api_role": "postgres",
+    "actual_store_role": "postgres",
+    "native_exit_code": 101,
+    "passed": 0,
+    "failed": 1,
+    "ignored": 0,
+    "expected_checkpoint_observed": true,
+    "test_harness_seconds": 8.53
+  },
+  {
+    "role": "runtime",
+    "actual_api_role": "sagat_app",
+    "actual_store_role": "sagat_app",
+    "native_exit_code": 101,
+    "passed": 0,
+    "failed": 1,
+    "ignored": 0,
+    "expected_checkpoint_observed": true,
+    "test_harness_seconds": 8.62
+  }
+]

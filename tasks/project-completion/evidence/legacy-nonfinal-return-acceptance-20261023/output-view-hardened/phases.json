@@ -1,0 +1,42 @@
+[
+  {
+    "role_label": "owner",
+    "phase": "producer",
+    "exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 10.39,
+    "role_semantics": "old Flow always sagat_app; current consumer follows owner/runtime selection"
+  },
+  {
+    "role_label": "owner",
+    "phase": "consumer",
+    "exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 30.27,
+    "role_semantics": "old Flow always sagat_app; current consumer follows owner/runtime selection"
+  },
+  {
+    "role_label": "runtime",
+    "phase": "producer",
+    "exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 10.58,
+    "role_semantics": "old Flow always sagat_app; current consumer follows owner/runtime selection"
+  },
+  {
+    "role_label": "runtime",
+    "phase": "consumer",
+    "exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 30.34,
+    "role_semantics": "old Flow always sagat_app; current consumer follows owner/runtime selection"
+  }
+]

@@ -1,0 +1,42 @@
+{
+  "L": 2100001,
+  "V": 2100030,
+  "head": 188,
+  "next": 1,
+  "runs": 1,
+  "saga": {
+    "phase": "DONE",
+    "outcome": "COMPENSATED"
+  },
+  "scope": "FAILED",
+  "active": 0,
+  "member": {
+    "slot": false,
+    "state": "DRAINED",
+    "reservations": 0
+  },
+  "failure": "RUN_DATA_LIMIT",
+  "admitted": 1,
+  "completed": 1,
+  "stop_code": "RUN_DATA_LIMIT",
+  "drain_hint": 1,
+  "drain_kind": "RUN_DATA_LIMIT",
+  "owner_code": "RUN_DATA_LIMIT",
+  "run_status": "COMPENSATED",
+  "finish_hint": 1,
+  "stop_reason": "FAILED",
+  "journal_head": 188,
+  "owner_status": "FAILED",
+  "quota_deltas": 0,
+  "capacity_rows": 0,
+  "c10_step_nodes": [
+    "returned",
+    "work",
+    "work~c"
+  ],
+  "telemetry_head": 188,
+  "c10_checkpoints": 0,
+  "compensation_count": 1,
+  "reserved_instances": 0,
+  "owner_output_absent": true
+}

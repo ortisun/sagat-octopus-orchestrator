@@ -1,0 +1,17 @@
+{
+  "command": [
+    "gtimeout",
+    "--signal=TERM",
+    "--kill-after=5s",
+    "300s",
+    "/tmp/sagat-completion-20261023/nonfinal-producer-gate/old-c3-binary",
+    "--exact",
+    "legacy_collection_output_producer::frozen_old_nonfinal_return_frontier_producer",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 0,
+  "seconds": 7.75,
+  "started_utc": "2026-10-23T23:34:54.025436+00:00",
+  "log": "runtime-positive-c3.txt"
+}

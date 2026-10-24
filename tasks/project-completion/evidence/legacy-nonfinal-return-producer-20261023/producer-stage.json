@@ -1,0 +1,17 @@
+{
+  "old_pin": "6c44a0e49670cf19660792cd1518d241e6c99b3b",
+  "archive_sha256": "50e6c054052e2a1cad6c75eaafcec8e3e4bcafb5eb7b80caa81b6e5634776e2d",
+  "binary_sha256": "6f0d04e72f79840ecb4234f0c506f5216189d93d91f92f11822fa6e802f460ba",
+  "positive_tests": 2,
+  "expected_failed_tests": 2,
+  "positive_exit_codes": [
+    0,
+    0
+  ],
+  "expected_red_exit_codes": [
+    101,
+    101
+  ],
+  "red_databases_not_consumed": true,
+  "final_coordinator_acceptance_pending": true
+}

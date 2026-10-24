@@ -1,0 +1,38 @@
+[
+  {
+    "role": "owner",
+    "phase": "producer",
+    "exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 8.82
+  },
+  {
+    "role": "owner",
+    "phase": "consumer",
+    "exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 1.18
+  },
+  {
+    "role": "runtime",
+    "phase": "producer",
+    "exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 8.98
+  },
+  {
+    "role": "runtime",
+    "phase": "consumer",
+    "exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 1.14
+  }
+]

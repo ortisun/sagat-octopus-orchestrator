@@ -1,0 +1,1727 @@
+diff --git a/scripts/test-legacy-collection-output-view.sh b/scripts/test-legacy-collection-output-view.sh
+index de5c8a2a..946c4b01 100755
+--- a/scripts/test-legacy-collection-output-view.sh
++++ b/scripts/test-legacy-collection-output-view.sh
+@@ -1,10 +1,66 @@
+ #!/usr/bin/env bash
+ # Builds a test-only old writer from immutable 6c44a0e4, then runs the current Q5 reader twice.
+ set -euo pipefail
++umask 077
++case "${SAGAT_Q5_CASE-output-view}" in
++  output-view) fixture_case=output-view ;;
++  nonfinal-return) fixture_case=nonfinal-return ;;
++  nonfinal-return-red) fixture_case=nonfinal-return-red ;;
++  *) echo "unknown SAGAT_Q5_CASE" >&2; exit 2 ;;
++esac
++# Bound the entire new fixture, including builds and cleanup, in a separate process group.
++if [[ "${fixture_case}" != output-view && "${SAGAT_Q5_SUPERVISED:-}" != 1 ]]; then
++  exec python3 - "$0" "$@" <<'SUPERVISOR'
++import os,select,signal,subprocess,sys,time
++child=None
++pending=None
++def interrupted(signum,_frame):
++    global pending
++    pending=signum
++def stop(signum):
++    # The leader is still unreaped: retain ownership of its PGID through KILL.
++    try:os.killpg(child.pid,signal.SIGTERM)
++    except ProcessLookupError:pass
++    deadline=time.monotonic()+5
++    while time.monotonic()<deadline:
++        select.select([],[],[],max(0,deadline-time.monotonic()))
++    try:os.killpg(child.pid,signal.SIGKILL)
++    except ProcessLookupError:pass
++    child.wait()
++    raise SystemExit(128+signum)
++signal.signal(signal.SIGTERM,interrupted);signal.signal(signal.SIGINT,interrupted)
++env=dict(os.environ,SAGAT_Q5_SUPERVISED='1')
++child=subprocess.Popen(['bash',*sys.argv[1:]],env=env,start_new_session=True)
++deadline=time.monotonic()+2400
++while True:
++    if pending is not None:stop(pending)
++    if time.monotonic()>=deadline:
++        print('whole fixture exceeded 2400s; inspect retained owned artifacts',file=sys.stderr)
++        stop(signal.SIGTERM)
++    # WNOWAIT observes completion without releasing the owned group leader.
++    finished=os.waitid(os.P_PID,child.pid,os.WEXITED|os.WNOHANG|os.WNOWAIT)
++    if finished is not None:
++        if pending is not None:continue
++        result=child.wait()
++        break
++    select.select([],[],[],min(0.1,max(0,deadline-time.monotonic())))
++raise SystemExit(result)
++SUPERVISOR
++fi
+ 
+ readonly old_commit="6c44a0e49670cf19660792cd1518d241e6c99b3b"
+-readonly old_test="legacy_collection_output_producer::frozen_old_collection_output_producer"
+-readonly current_test="legacy_collection_output_view::a_current_full_run_transaction_reads_frozen_legacy_collection_outputs"
++old_test="legacy_collection_output_producer::frozen_old_collection_output_producer"
++current_test="legacy_collection_output_view::a_current_full_run_transaction_reads_frozen_legacy_collection_outputs"
++phase_seconds=1200
++if [[ "${fixture_case}" != output-view ]]; then
++  old_test="legacy_collection_output_producer::frozen_old_nonfinal_return_frontier_producer"
++  current_test="legacy_collection_output_view::current_frontier_drains_frozen_old_nonfinal_return_before_checkpoint"
++  phase_seconds=300
++fi
++if [[ "${fixture_case}" == nonfinal-return-red ]]; then
++  old_test="legacy_collection_output_producer::frozen_old_nonfinal_return_frontier_guard_red"
++fi
++readonly fixture_case old_test current_test phase_seconds
+ repo_root="$(git rev-parse --show-toplevel)"
+ producer_overlay="${repo_root}/tests/fixtures/legacy-collection-output/producer.rs"
+ consumer_source="${repo_root}/tests/integration/workflow-primitives/legacy_collection_output_view.rs"
+@@ -47,6 +103,7 @@ active_before=""
+ producer_started_marker=""
+ active_phase_pid=""
+ phase_launching=0
++cleanup_receipt_database=""
+ 
+ sha256() {
+   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}';
+@@ -64,16 +121,55 @@ for path in sorted(p for p in root.rglob('*') if p.is_file()):
+ PY
+ }
+ 
++bounded_psql() {
++  # The DSN stays in the environment and is never printed into evidence.
++  python3 - "$@" <<'PSQL'
++import os,signal,subprocess,sys
++child=None
++pending=None
++stopping=False
++shared=os.environ.get('SAGAT_Q5_SUPERVISED')=='1'
++def terminate_child():
++    global stopping
++    if child is None or stopping:return
++    stopping=True
++    try:
++        if shared:child.terminate()
++        else:os.killpg(child.pid,signal.SIGTERM)
++    except ProcessLookupError:pass
++    try:child.wait(timeout=1)
++    except subprocess.TimeoutExpired:
++        try:
++            if shared:child.kill()
++            else:os.killpg(child.pid,signal.SIGKILL)
++        except ProcessLookupError:pass
++        child.wait()
++def interrupted(signum,_frame):
++    global pending
++    if child is None:pending=signum;return
++    if stopping:return
++    terminate_child()
++    raise SystemExit(128+signum)
++signal.signal(signal.SIGTERM,interrupted);signal.signal(signal.SIGINT,interrupted)
++env=dict(os.environ,PGCONNECT_TIMEOUT='5',PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=4000')
++child=subprocess.Popen(['psql',os.environ['SAGAT_TEST_DATABASE_URL'],'-X','-v','ON_ERROR_STOP=1',*sys.argv[1:]],env=env,start_new_session=not shared)
++if pending is not None:interrupted(pending,None)
++try: result=child.wait(timeout=12)
++except subprocess.TimeoutExpired:
++    terminate_child()
++    raise SystemExit('bounded PostgreSQL administration timed out')
++raise SystemExit(result)
++PSQL
++}
++
+ list_test_databases() {
+-  psql "${SAGAT_TEST_DATABASE_URL}" -XAtq -v ON_ERROR_STOP=1 \
+-    -c "SELECT datname FROM pg_database WHERE datname ~ '^t_[0-9a-f]{32}$' ORDER BY datname"
++  bounded_psql -Atq -c "SELECT datname FROM pg_database WHERE datname ~ '^t_[0-9a-f]{32}$' ORDER BY datname"
+ }
+ 
+ drop_database() {
+   local name="$1"
+   [[ "${name}" =~ ^t_[0-9a-f]{32}$ ]] || { echo "refusing unsafe database name" >&2; return 1; }
+-  psql "${SAGAT_TEST_DATABASE_URL}" -Xq -v ON_ERROR_STOP=1 \
+-    -c "DROP DATABASE IF EXISTS \"${name}\" WITH (FORCE)" >/dev/null
++  bounded_psql -q -c "DROP DATABASE IF EXISTS \"${name}\" WITH (FORCE)" >/dev/null
+ }
+ 
+ terminate_active_phase() {
+@@ -94,10 +190,29 @@ cleanup_new_databases() {
+   [[ -n "${active_before}" && -f "${active_before}" ]] || return 0
+   [[ -n "${producer_started_marker}" && -f "${producer_started_marker}" ]] || return 0
+   local after="${run_root}/databases.after.cleanup"
+-  list_test_databases > "${after}" || return 0
+-  while IFS= read -r database; do
+-    [[ -n "${database}" ]] && drop_database "${database}" || true
+-  done < <(comm -13 "${active_before}" "${after}")
++  list_test_databases > "${after}" || return 1
++  validate_database_snapshot "${after}" || return 1
++  local additions="${run_root}/databases.cleanup-owned"
++  comm -13 "${active_before}" "${after}" > "${additions}"
++  local count
++  count="$(wc -l < "${additions}" | tr -d ' ')"
++  if [[ "${count}" != 1 ]]; then
++    echo "cleanup cannot prove one phase-owned database; retained for inspection" >&2
++    return 1
++  fi
++  local database
++  IFS= read -r database < "${additions}"
++  local receipt_database="${cleanup_receipt_database}"
++  if [[ -n "${receipt:-}" && -e "${receipt}" ]]; then
++    receipt_database="$(receipt_database_name "${receipt}")" || return 1
++  fi
++  if [[ -n "${receipt_database}" ]]; then
++    if [[ "${receipt_database}" != "${database}" ]]; then
++      echo "receipt disagrees with sole new database; refusing deletion" >&2
++      return 1
++    fi
++  fi
++  drop_database "${database}" || return 1
+   active_before=""
+   producer_started_marker=""
+ }
+@@ -106,16 +221,29 @@ cleanup() {
+   local status=$?
+   trap - INT TERM
+   terminate_active_phase
+-  cleanup_new_databases
+-  python3 - "${old_source}" "${run_root}" <<'PY'
++  local receipt_valid=1
++  if [[ -n "${receipt:-}" && -e "${receipt}" ]]; then
++    cleanup_receipt_database="$(receipt_database_name "${receipt}")" || receipt_valid=0
++  fi
++  # Remove all exact owned credential paths before database administration or
++  # archive removal: the outer termination deadline can interrupt either.
++  python3 - "${run_root}" <<'PRIVATE'
+ from pathlib import Path
+-import shutil, sys
+-source, run = map(Path, sys.argv[1:])
+-if source.exists():
+-    shutil.rmtree(source)
+-for receipt in run.glob('*/receipt.json*'):
+-    receipt.unlink(missing_ok=True)
+-PY
++import sys
++root=Path(sys.argv[1])
++for role in ('owner','runtime'):
++    for name in ('receipt.json','receipt.json.tmp','receipt.tmp'):
++        (root/role/name).unlink(missing_ok=True)
++PRIVATE
++  if [[ "${receipt_valid}" != 1 ]] || ! cleanup_new_databases; then
++    echo "owned database cleanup failed; inspect retained artifacts" >&2; status=1
++  fi
++  python3 - "${old_source}" <<'SOURCE'
++from pathlib import Path
++import shutil,sys
++source=Path(sys.argv[1])
++if source.exists():shutil.rmtree(source)
++SOURCE
+   exit "${status}"
+ }
+ 
+@@ -145,16 +273,25 @@ timeout = int(sys.argv[1])
+ marker = sys.argv[2]
+ child = None
+ pending_signal = None
++stopping = False
++# These native fixtures use embedded Tokio servers and external PostgreSQL;
++# they spawn no OS children. The outer supervisor owns their collective group.
++shared = os.environ.get('SAGAT_Q5_SUPERVISED') == '1'
+ 
+ def terminate_child():
+-    global child
+-    if child is None or child.poll() is not None:
+-        return
+-    os.killpg(child.pid, signal.SIGTERM)
++    global stopping
++    if child is None or stopping:return
++    stopping=True
+     try:
+-        child.wait(timeout=5)
++        if shared:child.terminate()
++        else:os.killpg(child.pid,signal.SIGTERM)
++    except ProcessLookupError:pass
++    try:child.wait(timeout=1 if shared else 5)
+     except subprocess.TimeoutExpired:
+-        os.killpg(child.pid, signal.SIGKILL)
++        try:
++            if shared:child.kill()
++            else:os.killpg(child.pid,signal.SIGKILL)
++        except ProcessLookupError:pass
+         child.wait()
+ 
+ def interrupted(signum, _frame):
+@@ -164,12 +301,13 @@ def interrupted(signum, _frame):
+     if child is None:
+         pending_signal = signum
+         return
++    if stopping:return
+     terminate_child()
+     raise SystemExit(128 + signum)
+ 
+ signal.signal(signal.SIGINT, interrupted)
+ signal.signal(signal.SIGTERM, interrupted)
+-child = subprocess.Popen(sys.argv[3:], start_new_session=True)
++child = subprocess.Popen(sys.argv[3:], start_new_session=not shared)
+ if pending_signal is not None:
+     terminate_child()
+     raise SystemExit(128 + pending_signal)
+@@ -211,6 +349,22 @@ if any(re.fullmatch(r't_[0-9a-f]{32}', line) is None for line in lines):
+ PY
+ }
+ 
++receipt_database_name() {
++  python3 - "$1" "${fixture_case}" "${role}" <<'RECEIPT'
++import json,re,stat,sys
++from pathlib import Path
++p=Path(sys.argv[1])
++if stat.S_IMODE(p.stat().st_mode)!=0o600:raise SystemExit('receipt is not private')
++v=json.loads(p.read_text())
++if sys.argv[2]!='output-view':
++    fields='format source_commit case role database_name database_url runtime_database_url tenant other_tenant namespace run workflow_version scope_id scheduler_owner handoff_run_version closed_source_cutoff forward_step_id forward_target_key producer_witness_sha256 closed_source_sha256'.split()
++    if set(v)!=set(fields) or v['format']!='legacy-nonfinal-return-frontier-v1' or v['source_commit']!='6c44a0e49670cf19660792cd1518d241e6c99b3b' or v['case']!='nonfinal-return' or v['role']!=sys.argv[3]:raise SystemExit('invalid nonfinal receipt envelope')
++name=v.get('database_name')
++if not isinstance(name,str) or re.fullmatch(r't_[0-9a-f]{32}',name) is None:raise SystemExit('unsafe receipt database')
++print(name)
++RECEIPT
++}
++
+ find_test_binary() {
+   python3 - "$1" "$2" <<'PY'
+ import json, sys
+@@ -298,6 +452,9 @@ git -C "${repo_root}" diff --binary HEAD > "${artifacts}/current.diff"
+ 
+ # The source hashes cover the two untracked test files that git diff HEAD cannot contain.
+ {
++  echo "fixture-case ${fixture_case}"
++  echo "old-exact-test ${old_test}"
++  echo "current-exact-test ${current_test}"
+   echo "old-commit ${old_commit}"
+   echo "current-commit $(git -C "${repo_root}" rev-parse HEAD)"
+   echo "current-diff-sha256 $(sha256 "${artifacts}/current.diff")"
+@@ -329,7 +486,7 @@ grep -Fxq "${current_test}: test" "${current_list}" || { echo "current consumer
+ 
+ for role in owner runtime; do
+   role_root="${run_root}/${role}"
+-  mkdir -p "${role_root}"
++  mkdir -m 0700 "${role_root}"
+   receipt="${role_root}/receipt.json"
+   snapshot_tmp="${role_root}/databases.before.tmp"
+   snapshot="${role_root}/databases.before"
+@@ -347,25 +504,27 @@ for role in owner runtime; do
+   export SAGAT_Q5_PHASE_RECEIPT="${receipt}"
+ 
+   producer_log="${logs}/${role}-producer.log"
+-  if ! run_bounded 1200 "${producer_started_marker}" \
+-    "${old_binary}" --exact "${old_test}" --nocapture > "${producer_log}" 2>&1; then
+-    cat "${producer_log}" >&2
+-    exit 1
+-  fi
++  producer_status=0
++  run_bounded "${phase_seconds}" "${producer_started_marker}" \
++    "${old_binary}" --exact "${old_test}" --nocapture > "${producer_log}" 2>&1 || producer_status=$?
+   [[ -f "${producer_started_marker}" ]] || {
+     echo "old producer was not launched; cleanup remains disarmed" >&2; exit 1;
+   }
+-  grep -Fq "test result: ok. 1 passed; 0 failed;" "${producer_log}" || {
+-    echo "old producer did not execute exactly one passing test" >&2; exit 1;
+-  }
++  if [[ "${fixture_case}" == nonfinal-return-red ]]; then
++    if [[ "${producer_status}" != 101 ]] || ! grep -Fq 'observed_legacy_nonfinal_return_checkpointed=true' "${producer_log}" || ! grep -Fq 'test result: FAILED. 0 passed; 1 failed; 0 ignored;' "${producer_log}"; then
++      cat "${producer_log}" >&2
++      echo "not the exact expected old nonfinal Return RED" >&2; exit 1
++    fi
++    echo "${role}-expected-red-exit 101" >> "${manifest}"
++    echo "${role}-expected-red-log-sha256 $(sha256 "${producer_log}")" >> "${manifest}"
++    cleanup_new_databases
++    continue
++  fi
++  if [[ "${producer_status}" != 0 ]] || ! grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "${producer_log}"; then
++    cat "${producer_log}" >&2; exit 1
++  fi
+   [[ -s "${receipt}" ]] || { echo "old producer wrote no receipt" >&2; exit 1; }
+-  database_name="$(python3 - "${receipt}" <<'PY'
+-import json, re, sys
+-value = json.load(open(sys.argv[1], encoding='utf-8'))['database_name']
+-if not re.fullmatch(r't_[0-9a-f]{32}', value): raise SystemExit('unsafe receipt database')
+-print(value)
+-PY
+-)"
++  database_name="$(receipt_database_name "${receipt}")"
+   after_producer="${role_root}/databases.after-producer"
+   list_test_databases > "${after_producer}"
+   validate_database_snapshot "${after_producer}"
+@@ -377,7 +536,7 @@ PY
+   }
+ 
+   consumer_log="${logs}/${role}-consumer.log"
+-  if ! run_bounded 1200 - \
++  if ! run_bounded "${phase_seconds}" - \
+     "${current_binary}" --ignored --exact "${current_test}" --nocapture \
+     > "${consumer_log}" 2>&1; then
+     cat "${consumer_log}" >&2
+@@ -400,4 +559,4 @@ PY
+ done
+ unset SAGAT_TEST_AS_RUNTIME_ROLE SAGAT_Q5_PHASE_RECEIPT || true
+ 
+-echo "Q5 legacy-output evidence: ${run_root}"
++echo "Q5 ${fixture_case} evidence: ${run_root}"
+diff --git a/tests/fixtures/legacy-collection-output/producer.rs b/tests/fixtures/legacy-collection-output/producer.rs
+index 947d0d20..98ae75bb 100644
+--- a/tests/fixtures/legacy-collection-output/producer.rs
++++ b/tests/fixtures/legacy-collection-output/producer.rs
+@@ -279,3 +279,483 @@ async fn frozen_old_collection_output_producer() {
+     file.sync_all().expect("fsync receipt");
+     std::fs::rename(temporary, receipt_path).expect("publish receipt atomically");
+ }
++
++const NONFINAL_CLOSED_SOURCE_SQL: &str = r#"WITH selected_scopes AS (
++  SELECT scope.* FROM iteration_scopes scope
++   WHERE scope.tenant_id=$1 AND scope.run_id=$2
++     AND scope.owner_path_nodes='{}'::text[]
++     AND scope.owner_path_indices='{}'::integer[]
++     AND scope.owner_node=ANY($3::text[])
++), selected_events AS (
++  SELECT event.* FROM run_events event
++   WHERE event.tenant_id=$1 AND event.run_id=$2 AND event.seq <= $4
++) SELECT jsonb_build_object(
++  'scopes',(SELECT jsonb_agg(to_jsonb(row_data) ORDER BY row_data.owner_node)
++    FROM selected_scopes row_data),
++  'steps',(SELECT jsonb_agg(to_jsonb(row_data)
++      ORDER BY row_data.instance_path_nodes,row_data.instance_path_indices,row_data.node)
++    FROM steps row_data WHERE row_data.tenant_id=$1 AND row_data.run_id=$2
++      AND ((cardinality(row_data.instance_path_nodes)=0 AND row_data.node=ANY($3::text[]))
++        OR row_data.instance_path_nodes[1]=ANY($3::text[]))),
++  'item_sources',(SELECT jsonb_agg(to_jsonb(row_data)
++      ORDER BY row_data.scope_id,row_data.iteration_index)
++    FROM collection_scope_items row_data JOIN selected_scopes scope
++      ON scope.tenant_id=row_data.tenant_id AND scope.run_id=row_data.run_id
++     AND scope.scope_id=row_data.scope_id),
++  'iterations',(SELECT jsonb_agg(to_jsonb(row_data)
++      ORDER BY row_data.scope_id,row_data.iteration_index)
++    FROM collection_iterations row_data JOIN selected_scopes scope
++      ON scope.tenant_id=row_data.tenant_id AND scope.run_id=row_data.run_id
++     AND scope.scope_id=row_data.scope_id),
++  'checkpoints',(SELECT jsonb_agg(to_jsonb(row_data)
++      ORDER BY row_data.scope_id,row_data.iteration_index)
++    FROM iteration_checkpoints row_data JOIN selected_scopes scope
++      ON scope.tenant_id=row_data.tenant_id AND scope.run_id=row_data.run_id
++     AND scope.scope_id=row_data.scope_id),
++  'events',(SELECT jsonb_agg(to_jsonb(row_data) ORDER BY row_data.seq)
++    FROM selected_events row_data),
++  'payloads',(SELECT jsonb_agg(to_jsonb(row_data) ORDER BY encode(row_data.digest,'hex'))
++    FROM payloads row_data WHERE row_data.tenant_id=$1 AND row_data.digest IN (
++      SELECT scope.snapshot_digest FROM selected_scopes scope
++      UNION SELECT scope.result_digest FROM selected_scopes scope
++      UNION SELECT step.output_digest FROM steps step
++        WHERE step.tenant_id=$1 AND step.run_id=$2
++          AND ((cardinality(step.instance_path_nodes)=0 AND step.node=ANY($3::text[]))
++            OR step.instance_path_nodes[1]=ANY($3::text[]))
++      UNION SELECT item.item_digest FROM collection_scope_items item JOIN selected_scopes scope
++        ON scope.tenant_id=item.tenant_id AND scope.run_id=item.run_id
++       AND scope.scope_id=item.scope_id
++      UNION SELECT member.result_digest FROM collection_iterations member JOIN selected_scopes scope
++        ON scope.tenant_id=member.tenant_id AND scope.run_id=member.run_id
++       AND scope.scope_id=member.scope_id
++      UNION SELECT checkpoint.result_digest FROM iteration_checkpoints checkpoint
++        JOIN selected_scopes scope ON scope.tenant_id=checkpoint.tenant_id
++         AND scope.run_id=checkpoint.run_id AND scope.scope_id=checkpoint.scope_id
++      UNION SELECT event.payload_digest FROM selected_events event)),
++  'certifications',(SELECT COALESCE(jsonb_agg(to_jsonb(row_data)
++      ORDER BY row_data.owner_node,row_data.iteration_index),'[]'::jsonb)
++    FROM leaf_collection_success_certifications row_data
++    WHERE row_data.tenant_id=$1 AND row_data.run_id=$2
++      AND row_data.owner_node=ANY($3::text[]))
++)"#;
++
++// Separate format and public fixture: unlike the original matrix, no old forward lease is live.
++const NONFINAL_WORKER: &str = "nonfinal-return-worker";
++const NONFINAL_NAME: &str = "q5-nonfinal-return";
++
++fn nonfinal_document() -> Value {
++    let roots = (0..11)
++        .map(|index| {
++            json!({
++                "id": format!("c{index}"), "type": "forEach", "items": "input.lines",
++                "body": if index == 10 { "targetLine" } else { "legacyLine" },
++                "result": "bodyResult", "maxItems": 2, "maxConcurrency": 1,
++                "next": if index == 10 { "done".to_owned() } else { format!("c{}", index + 1) }
++            })
++        })
++        .chain(std::iter::once(json!({"id":"done","type":"end"})))
++        .collect::<Vec<_>>();
++    json!({
++        "apiVersion":"sagat-octopus-orchestrator.io/v1", "kind":"Workflow",
++        "metadata":{"name":NONFINAL_NAME}, "entrypoint":"c0", "nodes":roots,
++        "bodies":{
++            "legacyLine":{"entrypoint":"legacyWork","nodes":[
++                {"id":"legacyWork","type":"activity","activity":"line.reserve","next":"legacyReturned"},
++                {"id":"legacyReturned","type":"return","result":"steps.legacyWork.output"}
++            ]},
++            "targetLine":{"entrypoint":"work","nodes":[
++                {"id":"work","type":"activity","activity":"line.reserve","compensateWith":"line.release",
++                 "compensationRetry":{"maxAttempts":2,"initialDelayMs":100,"maxDelayMs":100,"strategy":"fixed","jitter":false},
++                 "next":"returned"},
++                {"id":"returned","type":"return","result":"steps.work.output"}
++            ]}
++        }
++    })
++}
++
++fn nonfinal_sha(value: &Value) -> String {
++    Sha256::digest(serde_json::to_vec(value).expect("canonical private witness"))
++        .iter()
++        .map(|byte| format!("{byte:02x}"))
++        .collect()
++}
++
++async fn nonfinal_source(pool: &sqlx::PgPool, tenant: Uuid, run: Uuid, cutoff: i64) -> String {
++    let closed: Value = sqlx::query_scalar(NONFINAL_CLOSED_SOURCE_SQL)
++        .bind(tenant)
++        .bind(run)
++        .bind((0..10).map(|i| format!("c{i}")).collect::<Vec<_>>())
++        .bind(cutoff)
++        .fetch_one(pool)
++        .await
++        .expect("immutable closed old source");
++    let target: Value = sqlx::query_scalar(r#"SELECT jsonb_build_object(
++      'version',(SELECT to_jsonb(v) FROM workflow_versions v WHERE v.tenant_id=r.tenant_id AND v.id=r.workflow_version_id),
++      'captured',(SELECT jsonb_agg(to_jsonb(i) ORDER BY i.iteration_index) FROM collection_scope_items i
++          JOIN iteration_scopes s ON s.tenant_id=i.tenant_id AND s.run_id=i.run_id AND s.scope_id=i.scope_id
++          WHERE i.tenant_id=r.tenant_id AND i.run_id=r.id AND s.owner_node='c10'),
++      'work',(SELECT to_jsonb(w) FROM steps w WHERE w.tenant_id=r.tenant_id AND w.run_id=r.id
++          AND w.instance_path_nodes=ARRAY['c10']::text[] AND w.instance_path_indices=ARRAY[0]::integer[] AND w.node='work'),
++      'work_payload',(SELECT to_jsonb(p) FROM steps w JOIN payloads p ON p.tenant_id=w.tenant_id AND p.digest=w.output_digest
++          WHERE w.tenant_id=r.tenant_id AND w.run_id=r.id AND w.instance_path_nodes=ARRAY['c10']::text[]
++            AND w.instance_path_indices=ARRAY[0]::integer[] AND w.node='work'),
++      'work_events',(SELECT jsonb_agg(to_jsonb(e) ORDER BY e.seq) FROM run_events e
++          WHERE e.tenant_id=r.tenant_id AND e.run_id=r.id AND e.instance_path_nodes=ARRAY['c10']::text[]
++            AND e.instance_path_indices=ARRAY[0]::integer[] AND e.node='work'),
++      'work_receipt',(SELECT jsonb_agg(to_jsonb(c) ORDER BY c.scope,c.idempotency_key) FROM command_dedupe c
++          WHERE c.tenant_id=r.tenant_id AND c.scope LIKE $3)) FROM runs r WHERE r.tenant_id=$1 AND r.id=$2"#)
++        .bind(tenant).bind(run).bind(format!("step:{run}:scoped:3:c10:0;4:work:%"))
++        .fetch_one(pool).await.expect("old target source and actual report receipt");
++    assert!(
++        target["work_receipt"]
++            .as_array()
++            .is_some_and(|rows| rows.len() == 1),
++        "one actual old forward report receipt"
++    );
++    nonfinal_sha(&json!({"closed":closed,"target":target}))
++}
++
++async fn nonfinal_shape(pool: &sqlx::PgPool, tenant: Uuid, run: Uuid) -> Value {
++    let state: Value = sqlx::query_scalar(r#"SELECT jsonb_build_object(
++      'head',r.run_version,'workflow_version',r.workflow_version_id,'scope_id',s.scope_id,
++      'running',r.status='RUNNING' AND r.stop_reason IS NULL AND r.stop_code IS NULL AND r.parent_run_id IS NULL AND r.depth=0,
++      'L',u.logical_output_bytes,
++      'stored',(SELECT sum(octet_length(p.content)) FROM steps w JOIN payloads p ON p.tenant_id=w.tenant_id AND p.digest=w.output_digest WHERE w.tenant_id=r.tenant_id AND w.run_id=r.id),
++      'V',(SELECT sum(octet_length(p.content)) FROM iteration_scopes c JOIN steps o ON o.tenant_id=c.tenant_id AND o.run_id=c.run_id AND o.node=c.owner_node AND cardinality(o.instance_path_nodes)=0
++          JOIN payloads p ON p.tenant_id=c.tenant_id AND p.digest=c.result_digest WHERE c.tenant_id=r.tenant_id AND c.run_id=r.id AND c.lifecycle='SUCCEEDED' AND o.output_digest IS NULL),
++      'closed_scopes',(SELECT count(*) FROM iteration_scopes c WHERE c.tenant_id=r.tenant_id AND c.run_id=r.id AND c.lifecycle='SUCCEEDED' AND c.item_count=2 AND c.completed_count=2 AND c.active_count=0),
++      'closed_owners',(SELECT count(*) FROM steps o WHERE o.tenant_id=r.tenant_id AND o.run_id=r.id AND cardinality(o.instance_path_nodes)=0 AND o.status='SUCCEEDED' AND o.routed AND o.output_digest IS NULL),
++      'historical_work',(SELECT count(*) FROM steps w WHERE w.tenant_id=r.tenant_id AND w.run_id=r.id AND w.node='legacyWork' AND w.status='SUCCEEDED' AND w.routed AND w.output_digest IS NOT NULL),
++      'historical_members',(SELECT count(*) FROM collection_iterations m JOIN iteration_scopes c ON c.tenant_id=m.tenant_id AND c.run_id=m.run_id AND c.scope_id=m.scope_id WHERE c.tenant_id=r.tenant_id AND c.run_id=r.id AND c.lifecycle='SUCCEEDED'),
++      'checkpoint_coordinates',(SELECT jsonb_agg(jsonb_build_array(c.owner_node,m.iteration_index) ORDER BY c.owner_node,m.iteration_index)
++          FROM iteration_scopes c JOIN collection_iterations m ON m.tenant_id=c.tenant_id AND m.run_id=c.run_id AND m.scope_id=c.scope_id
++          JOIN iteration_checkpoints k ON k.tenant_id=m.tenant_id AND k.run_id=m.run_id AND k.scope_id=m.scope_id AND k.iteration_index=m.iteration_index
++          JOIN steps fw ON fw.tenant_id=m.tenant_id AND fw.run_id=m.run_id AND fw.step_id=m.entry_instance_id
++          JOIN steps ret ON ret.tenant_id=m.tenant_id AND ret.run_id=m.run_id AND ret.step_id=k.return_instance_id
++          JOIN run_events e ON e.tenant_id=k.tenant_id AND e.run_id=k.run_id AND e.seq=k.journal_sequence
++          WHERE c.tenant_id=r.tenant_id AND c.run_id=r.id AND c.lifecycle='SUCCEEDED'
++            AND m.lifecycle='CHECKPOINTED' AND NOT m.slot_held AND m.checkpoint_sequence=k.journal_sequence
++            AND m.return_instance_id=k.return_instance_id AND m.result_digest=k.result_digest
++            AND fw.status='SUCCEEDED' AND fw.routed AND fw.output_digest=k.result_digest AND ret.status='SUCCEEDED'
++            AND cardinality(c.owner_path_nodes)=0 AND cardinality(c.owner_path_indices)=0
++            AND fw.node='legacyWork' AND fw.instance_path_nodes=ARRAY[c.owner_node]::text[] AND fw.instance_path_indices=ARRAY[m.iteration_index]::integer[]
++            AND ret.node='legacyReturned' AND ret.instance_path_nodes=ARRAY[c.owner_node]::text[] AND ret.instance_path_indices=ARRAY[m.iteration_index]::integer[]
++            AND m.entry_node=fw.node AND m.entry_path_nodes=fw.instance_path_nodes AND m.entry_path_indices=fw.instance_path_indices
++            AND m.return_node=ret.node AND m.return_path_nodes=ret.instance_path_nodes AND m.return_path_indices=ret.instance_path_indices
++            AND e.event_type='collection.iteration_checkpointed' AND e.node=c.owner_node
++            AND e.detail->>'index'=m.iteration_index::text AND e.detail->>'result_digest'=encode(k.result_digest,'hex')),
++      'finish_route_pairs',(SELECT count(*) FROM iteration_scopes c
++          JOIN run_events f ON f.tenant_id=c.tenant_id AND f.run_id=c.run_id AND f.seq=c.finish_sequence
++          JOIN run_events routed ON routed.tenant_id=c.tenant_id AND routed.run_id=c.run_id AND routed.seq=c.finish_sequence+1
++          WHERE c.tenant_id=r.tenant_id AND c.run_id=r.id AND c.lifecycle='SUCCEEDED'
++            AND f.event_type='collection.finished' AND f.node=c.owner_node AND f.detail->>'outcome'='succeeded'
++            AND f.detail->>'result_digest'=encode(c.result_digest,'hex')
++            AND routed.event_type='step.routed' AND routed.node=c.owner_node
++            AND cardinality(f.instance_path_nodes)=0 AND cardinality(routed.instance_path_nodes)=0),
++      'historical_returns',(SELECT count(*) FROM steps w WHERE w.tenant_id=r.tenant_id AND w.run_id=r.id AND w.node='legacyReturned' AND w.status='SUCCEEDED'),
++      'checkpoints',(SELECT count(*) FROM iteration_checkpoints c WHERE c.tenant_id=r.tenant_id AND c.run_id=r.id),
++      'open',s.lifecycle='OPEN' AND s.item_count=2 AND s.max_concurrency=1 AND s.next_admission_index=1 AND s.admitted_count=1 AND s.completed_count=0 AND s.active_count=1 AND s.result_digest IS NULL AND s.finish_sequence IS NULL,
++      'held',(SELECT count(*) FROM collection_iterations m WHERE m.tenant_id=r.tenant_id AND m.run_id=r.id AND m.scope_id=s.scope_id AND m.iteration_index=0 AND m.lifecycle='ADMITTED' AND m.slot_held AND m.result_digest IS NULL),
++      'unadmitted',(SELECT count(*) FROM collection_iterations m WHERE m.tenant_id=r.tenant_id AND m.run_id=r.id AND m.scope_id=s.scope_id AND m.iteration_index=1),
++      'unadmitted_steps',(SELECT count(*) FROM steps w WHERE w.tenant_id=r.tenant_id AND w.run_id=r.id AND w.instance_path_nodes[1]='c10' AND w.instance_path_indices[1]=1),
++      'captured',(SELECT jsonb_agg(convert_from(p.content,'UTF8')::jsonb ORDER BY i.iteration_index) FROM collection_scope_items i JOIN payloads p ON p.tenant_id=i.tenant_id AND p.digest=i.item_digest WHERE i.tenant_id=r.tenant_id AND i.run_id=r.id AND i.scope_id=s.scope_id),
++      'target_work',(SELECT count(*) FROM steps w JOIN payloads p ON p.tenant_id=w.tenant_id AND p.digest=w.output_digest WHERE w.tenant_id=r.tenant_id AND w.run_id=r.id AND w.instance_path_nodes=ARRAY['c10']::text[] AND w.instance_path_indices=ARRAY[0]::integer[] AND w.node='work' AND w.status='SUCCEEDED' AND w.routed AND p.content=decode('31','hex')),
++      'pending_return',(SELECT count(*) FROM steps w WHERE w.tenant_id=r.tenant_id AND w.run_id=r.id AND w.instance_path_nodes=ARRAY['c10']::text[] AND w.instance_path_indices=ARRAY[0]::integer[] AND w.node='returned' AND w.status='PENDING' AND NOT w.routed AND w.attempt=0 AND w.generation=0 AND w.lease_token_hash IS NULL AND w.leased_by IS NULL AND w.lease_expires_at IS NULL AND w.output_digest IS NULL AND w.failure_code IS NULL),
++      'live',(SELECT count(*) FROM steps w WHERE w.tenant_id=r.tenant_id AND w.run_id=r.id AND w.status IN ('LEASED','RUNNING')),
++      'sagas',(SELECT count(*) FROM scope_sagas g WHERE g.tenant_id=r.tenant_id AND g.run_id=r.id),
++      'certificates',(SELECT count(*) FROM leaf_collection_success_certifications c WHERE c.tenant_id=r.tenant_id AND c.run_id=r.id),
++      'chains',(SELECT count(*) FROM chain_segments c WHERE c.tenant_id=r.tenant_id AND c.run_id=r.id),
++      'cutoff',(SELECT max(seq) FROM run_events e WHERE e.tenant_id=r.tenant_id AND e.run_id=r.id AND e.node='c9' AND cardinality(e.instance_path_nodes)=0 AND e.event_type='step.routed'))
++      FROM runs r JOIN run_instance_usage u ON u.tenant_id=r.tenant_id AND u.run_id=r.id
++      JOIN iteration_scopes s ON s.tenant_id=r.tenant_id AND s.run_id=r.id AND s.owner_node='c10'
++      WHERE r.tenant_id=$1 AND r.id=$2"#)
++        .bind(tenant).bind(run).fetch_one(pool).await.expect("genuine old nonfinal Return premise");
++    for (key, expected) in [
++        ("running", json!(true)),
++        ("L", json!(2_100_001)),
++        ("stored", json!(2_100_001)),
++        ("V", json!(2_100_030)),
++        ("closed_scopes", json!(10)),
++        ("closed_owners", json!(10)),
++        ("historical_work", json!(20)),
++        ("historical_returns", json!(20)),
++        ("checkpoints", json!(20)),
++        ("open", json!(true)),
++        ("held", json!(1)),
++        ("unadmitted", json!(0)),
++        ("unadmitted_steps", json!(0)),
++        ("captured", json!([1, 2])),
++        ("target_work", json!(1)),
++        ("pending_return", json!(1)),
++        ("live", json!(0)),
++        ("sagas", json!(0)),
++        ("certificates", json!(0)),
++        ("chains", json!(0)),
++    ] {
++        assert!(state[key] == expected, "old nonfinal Return premise: {key}");
++    }
++    assert!(
++        state["historical_members"] == 20 && state["finish_route_pairs"] == 10,
++        "twenty historical members and ten exact finish/routing journal pairs"
++    );
++    let coordinates = (0..10)
++        .flat_map(|i| [json!([format!("c{i}"), 0]), json!([format!("c{i}"), 1])])
++        .collect::<Vec<_>>();
++    assert!(
++        state["checkpoint_coordinates"] == json!(coordinates),
++        "exact twenty CHECKPOINTED coordinates match work, Return, checkpoint and journal identities"
++    );
++    state
++}
++
++#[tokio::test]
++async fn frozen_old_nonfinal_return_frontier_producer() {
++    nonfinal_produce(false).await;
++}
++
++#[tokio::test]
++async fn frozen_old_nonfinal_return_frontier_guard_red() {
++    nonfinal_produce(true).await;
++}
++
++async fn nonfinal_produce(red: bool) {
++    use crate::support::{
++        api::Options,
++        worker::{TENANT, Worker},
++    };
++    use sagat_application::{entropy::SystemEntropy, execution::Engine};
++    use sagat_domain::{execution::ExecutionInstanceId, identity::Role, workflow::NodeId};
++    use sagat_scheduler::{
++        CollectionAdvance, Keeper, KeeperSettings, Placement, Scheduler, SchedulerSettings,
++    };
++    assert!(
++        env!("SAGAT_Q5_SOURCE_COMMIT") == OLD_COMMIT,
++        "immutable old production pin"
++    );
++    let runtime = crate::support::as_runtime_role();
++    let role = if runtime { "runtime" } else { "owner" };
++    let platform = crate::support::worker::platform_with(Options {
++        runtime_role: runtime,
++        ..Options::default()
++    })
++    .await;
++    let namespace = platform.namespace_id().await;
++    let (status, _) = platform
++        .rest(
++            Method::PUT,
++            "/quotas/iteration_concurrency",
++            Some(&json!({"limit":1})),
++        )
++        .await;
++    assert!(status == 200, "explicit public iteration capacity");
++    platform
++        .grant(platform.tenant, NONFINAL_WORKER, Role::Worker)
++        .await;
++    let (status, _) = platform
++        .rest(
++            Method::PUT,
++            &format!("/namespaces/{namespace}/worker-bindings/{NONFINAL_WORKER}"),
++            Some(&json!({"activities":["line.reserve","line.release"]})),
++        )
++        .await;
++    assert!(status == 200, "public exact worker activity binding");
++    let workflow = platform.publish(NONFINAL_NAME, &nonfinal_document()).await;
++    let run_text = platform.start(&workflow, &json!({"lines":[1,2]})).await;
++    let run: RunId = run_text.parse().expect("old run id");
++    let api_role: (String, String) =
++        sqlx::query_as("SELECT current_user::text,current_database()::text")
++            .fetch_one(&platform.api.api_pool)
++            .await
++            .expect("actual old API/store shared pool identity");
++    let owner_role: String = sqlx::query_scalar("SELECT current_user::text")
++        .fetch_one(&platform.api.db.pool)
++        .await
++        .expect("old inspection role");
++    assert!(
++        api_role.1 == platform.api.db.name && owner_role != crate::support::RUNTIME_ROLE,
++        "owned old database identity"
++    );
++    assert!(
++        api_role.0
++            == if runtime {
++                crate::support::RUNTIME_ROLE
++            } else {
++                owner_role.as_str()
++            },
++        "actual selected old API and scheduler-store role"
++    );
++    println!(
++        "old_nonfinal_role role={role} api={} store={} database={}",
++        api_role.0, api_role.0, api_role.1
++    );
++    let scheduler_owner = format!("nonfinal-return-{role}");
++    let placement = Placement::new(scheduler_owner.clone());
++    let keeper = Keeper::new(
++        platform.api.executions.clone(),
++        placement.clone(),
++        KeeperSettings {
++            ttl: std::time::Duration::from_secs(3600),
++        },
++    );
++    assert!(
++        keeper.round().await.is_ok(),
++        "old scheduler owns its actual shards"
++    );
++    let scheduler = Scheduler::new(
++        platform.api.executions.clone(),
++        Engine::new(sagat_infra_ir::JsonEvaluator),
++        SystemEntropy,
++        SchedulerSettings {
++            discovery_rest: std::time::Duration::ZERO,
++            ..SchedulerSettings::default()
++        },
++    )
++    .with_placement(placement);
++    let mut worker = platform.connect(NONFINAL_WORKER, TENANT).await;
++    worker
++        .register_version(&["line.reserve", "line.release"], "1.5")
++        .await;
++    let large = Value::String("x".repeat(104_998));
++    let large_bytes = serde_json::to_vec(&large).expect("105000-byte public old output");
++    assert!(large_bytes.len() == 105_000, "old individual output width");
++    let mut ticks = 0usize;
++    let mut forward = None;
++    for index in 0..21 {
++        let task = loop {
++            ticks += 1;
++            assert!(ticks <= 256, "bounded old public scheduling transitions");
++            assert!(
++                scheduler.tick().await.failed == 0,
++                "old public scheduler setup succeeds"
++            );
++            let mut tasks = worker.poll(1).await;
++            if let Some(task) = tasks.pop() {
++                assert!(tasks.is_empty(), "one old task at a time");
++                break task;
++            }
++        };
++        let identity = task.instance.as_ref().expect("old scoped task identity");
++        assert!(
++            task.run_id == run_text
++                && task.activity_name == "line.reserve"
++                && identity.instance_path.len() == 1
++                && identity.instance_path[0].scope_node_id == format!("c{}", index / 2)
++                && identity.instance_path[0].iteration_index == index % 2
++                && identity.definition_node_id == if index < 20 { "legacyWork" } else { "work" },
++            "exact ordered old genuine scoped work"
++        );
++        let output = if index < 20 {
++            std::str::from_utf8(&large_bytes).expect("JSON UTF8")
++        } else {
++            "1"
++        };
++        let request = worker.req(Worker::complete_message(&task, output));
++        let ack = match worker.client.complete_step(request).await {
++            Ok(r) => r.into_inner(),
++            Err(_) => panic!("old genuine successful work completion"),
++        };
++        assert!(
++            !ack.already_applied && ack.step_status == "SUCCEEDED" && ack.run_status == "RUNNING",
++            "actual old success without a stop"
++        );
++        if index == 20 {
++            forward = Some((
++                Uuid::parse_str(&task.step_id).expect("old forward step id"),
++                task.idempotency_key.clone(),
++            ));
++        }
++    }
++    // NO old tick/advance follows the final successful work report in the positive producer.
++    let state = nonfinal_shape(
++        &platform.api.db.pool,
++        platform.tenant.as_uuid(),
++        run.as_uuid(),
++    )
++    .await;
++    let aggregates: Vec<(String,Vec<u8>)>=sqlx::query_as("SELECT s.owner_node,p.content FROM iteration_scopes s JOIN payloads p ON p.tenant_id=s.tenant_id AND p.digest=s.result_digest WHERE s.tenant_id=$1 AND s.run_id=$2 AND s.lifecycle='SUCCEEDED' ORDER BY s.owner_node")
++        .bind(platform.tenant.as_uuid()).bind(run.as_uuid()).fetch_all(&platform.api.db.pool).await.expect("all ten genuine old aggregate payloads");
++    let expected =
++        serde_json::to_vec(&json!([large.clone(), large])).expect("actual two-item aggregate");
++    assert!(
++        aggregates.len() == 10 && expected.len() == 210_003,
++        "ten actual 210003-byte aggregate references"
++    );
++    for (index, (owner, bytes)) in aggregates.iter().enumerate() {
++        assert!(
++            *owner == format!("c{index}") && *bytes == expected,
++            "each old aggregate has the exact ordered two outputs"
++        );
++    }
++    let payloads: Vec<(Vec<u8>, Vec<u8>)> = sqlx::query_as(
++        "SELECT digest,content FROM payloads WHERE tenant_id=$1 ORDER BY encode(digest,'hex')",
++    )
++    .bind(platform.tenant.as_uuid())
++    .fetch_all(&platform.api.db.pool)
++    .await
++    .expect("actual old retained payload digests and bytes");
++    for (digest, content) in payloads {
++        assert!(
++            digest == Sha256::digest(&content).to_vec(),
++            "every old aggregate, checkpoint and retained work digest matches its actual bytes"
++        );
++    }
++    let cutoff = state["cutoff"].as_i64().expect("actual c9 routing cutoff");
++    let source = nonfinal_source(
++        &platform.api.db.pool,
++        platform.tenant.as_uuid(),
++        run.as_uuid(),
++        cutoff,
++    )
++    .await;
++    let projection: Value = sqlx::query_scalar(PROJECTION_WITNESS_SQL)
++        .bind(platform.tenant.as_uuid())
++        .bind(vec![run.as_uuid()])
++        .fetch_one(&platform.api.db.pool)
++        .await
++        .expect("full genuine old projection");
++    println!(
++        "old_nonfinal_premise L=2100001 V=2100030 E=4200031 closed=10 checkpoints=20 pending_nonfinal_return=true live_forward=0"
++    );
++    if red {
++        let owner = ExecutionInstanceId::root(NodeId::parse("c10").expect("target owner"));
++        let result = scheduler
++            .advance_collection(platform.tenant, run, &owner)
++            .await
++            .expect("old normal nonfinal Return advance");
++        let checkpointed = matches!(result, CollectionAdvance::Checkpointed { index: 0 });
++        println!("observed_legacy_nonfinal_return_checkpointed={checkpointed}");
++        assert!(
++            matches!(result, CollectionAdvance::DrainStarted),
++            "old guard RED: expected DrainStarted instead of nonfinal checkpoint"
++        );
++        return;
++    }
++    let (forward_step_id, forward_target_key) = forward.expect("actual completed target work");
++    let receipt = json!({"format":"legacy-nonfinal-return-frontier-v1","source_commit":OLD_COMMIT,
++        "case":"nonfinal-return","role":role,"database_name":platform.api.db.name,"database_url":platform.api.db.url,
++        "runtime_database_url":platform.api.db.url_for(crate::support::RUNTIME_ROLE,crate::support::RUNTIME_ROLE_PASSWORD),
++        "tenant":platform.tenant.to_string(),"other_tenant":platform.other_tenant.to_string(),"namespace":namespace,
++        "run":run.to_string(),"workflow_version":state["workflow_version"],"scope_id":state["scope_id"],
++        "scheduler_owner":scheduler_owner,"handoff_run_version":state["head"],"closed_source_cutoff":cutoff,
++        "forward_step_id":forward_step_id.to_string(),"forward_target_key":forward_target_key,
++        "producer_witness_sha256":nonfinal_sha(&projection),"closed_source_sha256":source});
++    assert!(
++        receipt.as_object().is_some_and(|o| o.len() == 20),
++        "closed twenty-field settled-work format"
++    );
++    let path = std::path::PathBuf::from(
++        std::env::var_os("SAGAT_Q5_PHASE_RECEIPT").expect("private handoff path"),
++    );
++    let temporary = path.with_extension("tmp");
++    use std::os::unix::fs::OpenOptionsExt as _;
++    let mut file = std::fs::OpenOptions::new()
++        .write(true)
++        .create_new(true)
++        .mode(0o600)
++        .open(&temporary)
++        .expect("exclusive private handoff");
++    file.write_all(&serde_json::to_vec(&receipt).expect("private handoff JSON"))
++        .expect("write settled-work handoff");
++    file.sync_all().expect("fsync settled-work handoff");
++    std::fs::rename(temporary, &path).expect("atomic settled-work handoff");
++}
+diff --git a/tests/integration/workflow-primitives/legacy_collection_output_view.rs b/tests/integration/workflow-primitives/legacy_collection_output_view.rs
+index a9fe1e1e..a6764991 100644
+--- a/tests/integration/workflow-primitives/legacy_collection_output_view.rs
++++ b/tests/integration/workflow-primitives/legacy_collection_output_view.rs
+@@ -21,7 +21,7 @@ use sagat_domain::workflow::NodeId;
+ use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
+ use sagat_infra_postgres::{PgPool, PgRunStore, PoolConfig, connect, migrate};
+ use sagat_scheduler::{Keeper, KeeperSettings, Placement, Scheduler, SchedulerSettings};
+-use serde_json::Value;
++use serde_json::{Value, json};
+ use sha2::{Digest as _, Sha256};
+ use sqlx::{Acquire as _, Row as _};
+ use uuid::Uuid;
+@@ -1085,3 +1085,864 @@ async fn a_current_full_run_transaction_reads_frozen_legacy_collection_outputs()
+     metadata_corruption_case(&p).await;
+     payload_corruption_case(&p).await;
+ }
++
++const NONFINAL_CLOSED_SOURCE_SQL: &str = CLOSED_COLLECTION_SOURCE_SQL;
++fn nonfinal_sha(value: &Value) -> String {
++    Sha256::digest(serde_json::to_vec(value).expect("canonical private witness"))
++        .iter()
++        .map(|byte| format!("{byte:02x}"))
++        .collect()
++}
++
++async fn nonfinal_source(pool: &sqlx::PgPool, tenant: Uuid, run: Uuid, cutoff: i64) -> String {
++    let closed: Value = sqlx::query_scalar(NONFINAL_CLOSED_SOURCE_SQL)
++        .bind(tenant)
++        .bind(run)
++        .bind((0..10).map(|i| format!("c{i}")).collect::<Vec<_>>())
++        .bind(cutoff)
++        .fetch_one(pool)
++        .await
++        .expect("immutable closed old source");
++    let target: Value = sqlx::query_scalar(r#"SELECT jsonb_build_object(
++      'version',(SELECT to_jsonb(v) FROM workflow_versions v WHERE v.tenant_id=r.tenant_id AND v.id=r.workflow_version_id),
++      'captured',(SELECT jsonb_agg(to_jsonb(i) ORDER BY i.iteration_index) FROM collection_scope_items i
++          JOIN iteration_scopes s ON s.tenant_id=i.tenant_id AND s.run_id=i.run_id AND s.scope_id=i.scope_id
++          WHERE i.tenant_id=r.tenant_id AND i.run_id=r.id AND s.owner_node='c10'),
++      'work',(SELECT to_jsonb(w) FROM steps w WHERE w.tenant_id=r.tenant_id AND w.run_id=r.id
++          AND w.instance_path_nodes=ARRAY['c10']::text[] AND w.instance_path_indices=ARRAY[0]::integer[] AND w.node='work'),
++      'work_payload',(SELECT to_jsonb(p) FROM steps w JOIN payloads p ON p.tenant_id=w.tenant_id AND p.digest=w.output_digest
++          WHERE w.tenant_id=r.tenant_id AND w.run_id=r.id AND w.instance_path_nodes=ARRAY['c10']::text[]
++            AND w.instance_path_indices=ARRAY[0]::integer[] AND w.node='work'),
++      'work_events',(SELECT jsonb_agg(to_jsonb(e) ORDER BY e.seq) FROM run_events e
++          WHERE e.tenant_id=r.tenant_id AND e.run_id=r.id AND e.instance_path_nodes=ARRAY['c10']::text[]
++            AND e.instance_path_indices=ARRAY[0]::integer[] AND e.node='work'),
++      'work_receipt',(SELECT jsonb_agg(to_jsonb(c) ORDER BY c.scope,c.idempotency_key) FROM command_dedupe c
++          WHERE c.tenant_id=r.tenant_id AND c.scope LIKE $3)) FROM runs r WHERE r.tenant_id=$1 AND r.id=$2"#)
++        .bind(tenant).bind(run).bind(format!("step:{run}:scoped:3:c10:0;4:work:%"))
++        .fetch_one(pool).await.expect("old target source and actual report receipt");
++    assert!(
++        target["work_receipt"]
++            .as_array()
++            .is_some_and(|rows| rows.len() == 1),
++        "one actual old forward report receipt"
++    );
++    nonfinal_sha(&json!({"closed":closed,"target":target}))
++}
++
++// Separate private handoff: old forward work is settled; only its nonfinal Return is pending.
++struct NonfinalReceipt {
++    database_name: String,
++    database_url: String,
++    runtime_url: String,
++    tenant: TenantId,
++    other_tenant: TenantId,
++    namespace: Uuid,
++    run: RunId,
++    version: Uuid,
++    scope: Uuid,
++    owner: String,
++    head: i64,
++    cutoff: i64,
++    forward: Uuid,
++    target_key: String,
++    projection: String,
++    source: String,
++}
++
++impl NonfinalReceipt {
++    fn parse(bytes: &[u8]) -> Self {
++        let value: Value = serde_json::from_slice(bytes)
++            .unwrap_or_else(|_| panic!("invalid private nonfinal handoff JSON"));
++        let mut fields = value.as_object().expect("nonfinal handoff object").clone();
++        assert!(
++            fields.len() == 20,
++            "closed twenty-field settled-work handoff"
++        );
++        let mut take = |name: &str| {
++            fields
++                .remove(name)
++                .expect("required settled-work handoff field")
++        };
++        let text = |value: Value| {
++            value
++                .as_str()
++                .expect("settled-work string field")
++                .to_owned()
++        };
++        assert!(
++            text(take("format")) == "legacy-nonfinal-return-frontier-v1"
++                && text(take("source_commit")) == PINNED_LEGACY_COMMIT
++                && text(take("case")) == "nonfinal-return",
++            "exact private nonfinal format and immutable source"
++        );
++        let role = text(take("role"));
++        assert!(
++            role == if crate::support::as_runtime_role() {
++                "runtime"
++            } else {
++                "owner"
++            },
++            "handoff and consumer roles match"
++        );
++        let database_name = text(take("database_name"));
++        assert!(
++            database_name.starts_with("t_")
++                && database_name.len() == 34
++                && database_name[2..]
++                    .bytes()
++                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
++            "exact owned database name"
++        );
++        let receipt = Self {
++            database_name,
++            database_url: text(take("database_url")),
++            runtime_url: text(take("runtime_database_url")),
++            tenant: text(take("tenant")).parse().expect("old tenant id"),
++            other_tenant: text(take("other_tenant"))
++                .parse()
++                .expect("old other tenant id"),
++            namespace: text(take("namespace")).parse().expect("old namespace id"),
++            run: text(take("run")).parse().expect("old run id"),
++            version: text(take("workflow_version"))
++                .parse()
++                .expect("old pinned version"),
++            scope: text(take("scope_id")).parse().expect("old target scope"),
++            owner: text(take("scheduler_owner")),
++            head: take("handoff_run_version")
++                .as_i64()
++                .expect("old journal head"),
++            cutoff: take("closed_source_cutoff")
++                .as_i64()
++                .expect("old closed prefix cutoff"),
++            forward: text(take("forward_step_id"))
++                .parse()
++                .expect("old completed work id"),
++            target_key: text(take("forward_target_key")),
++            projection: text(take("producer_witness_sha256")),
++            source: text(take("closed_source_sha256")),
++        };
++        assert!(
++            fields.is_empty()
++                && receipt.owner == format!("nonfinal-return-{role}")
++                && receipt.head > receipt.cutoff
++                && receipt.cutoff > 0
++                && !receipt.target_key.is_empty()
++                && receipt.target_key.len() <= 1024,
++            "complete settled-work identity"
++        );
++        for hash in [&receipt.projection, &receipt.source] {
++            assert!(
++                hash.len() == 64
++                    && hash
++                        .bytes()
++                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
++                "canonical source SHA256"
++            );
++        }
++        receipt
++    }
++}
++
++async fn nonfinal_bytes(pool: &PgPool, tenant: TenantId, run: RunId) -> (i64, i64) {
++    sqlx::query_as("SELECT u.logical_output_bytes,(SELECT sum(octet_length(p.content))::bigint FROM iteration_scopes s JOIN steps o ON o.tenant_id=s.tenant_id AND o.run_id=s.run_id AND o.node=s.owner_node AND cardinality(o.instance_path_nodes)=0 JOIN payloads p ON p.tenant_id=s.tenant_id AND p.digest=s.result_digest WHERE s.tenant_id=$1 AND s.run_id=$2 AND s.lifecycle='SUCCEEDED' AND o.output_digest IS NULL) FROM run_instance_usage u WHERE u.tenant_id=$1 AND u.run_id=$2")
++        .bind(tenant.as_uuid()).bind(run.as_uuid()).fetch_one(pool).await.expect("actual logical and per-owner legacy bytes")
++}
++
++async fn nonfinal_state(pool: &PgPool, tenant: TenantId, run: RunId) -> Value {
++    sqlx::query_scalar(r#"SELECT jsonb_build_object(
++      'run',to_jsonb(r),'scope',to_jsonb(s),'usage',to_jsonb(u),
++      'members',(SELECT jsonb_agg(to_jsonb(m) ORDER BY m.iteration_index) FROM collection_iterations m WHERE m.tenant_id=r.tenant_id AND m.run_id=r.id AND m.scope_id=s.scope_id),
++      'checkpoints',(SELECT coalesce(jsonb_agg(to_jsonb(c) ORDER BY c.scope_id,c.iteration_index),'[]') FROM iteration_checkpoints c WHERE c.tenant_id=r.tenant_id AND c.run_id=r.id),
++      'items',(SELECT jsonb_agg(to_jsonb(i) ORDER BY i.iteration_index) FROM collection_scope_items i WHERE i.tenant_id=r.tenant_id AND i.run_id=r.id AND i.scope_id=s.scope_id),
++      'steps',(SELECT jsonb_agg(to_jsonb(w) ORDER BY w.instance_path_nodes,w.instance_path_indices,w.node) FROM steps w WHERE w.tenant_id=r.tenant_id AND w.run_id=r.id),
++      'events',(SELECT jsonb_agg(to_jsonb(e) ORDER BY e.seq) FROM run_events e WHERE e.tenant_id=r.tenant_id AND e.run_id=r.id),
++      'outbox',(SELECT coalesce(jsonb_agg(to_jsonb(o) ORDER BY o.id),'[]') FROM event_outbox o WHERE o.tenant_id=r.tenant_id AND o.aggregate_id=r.id),
++      'audits',(SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id),'[]') FROM audit_records a WHERE a.tenant_id=r.tenant_id AND a.resource_id=r.id::text),
++      'payloads',(SELECT jsonb_agg(to_jsonb(p) ORDER BY encode(p.digest,'hex')) FROM payloads p WHERE p.tenant_id=r.tenant_id),
++      'receipts',(SELECT jsonb_agg(to_jsonb(c) ORDER BY c.scope,c.idempotency_key) FROM command_dedupe c WHERE c.tenant_id=r.tenant_id),
++      'iteration_usage',(SELECT to_jsonb(t) FROM tenant_iteration_usage t WHERE t.tenant_id=r.tenant_id),
++      'telemetry',(SELECT to_jsonb(t) FROM telemetry_pending t WHERE t.tenant_id=r.tenant_id AND t.run_id=r.id),
++      'sagas',(SELECT coalesce(jsonb_agg(to_jsonb(g) ORDER BY g.owner_path_nodes,g.owner_path_indices,g.owner_node),'[]') FROM scope_sagas g WHERE g.tenant_id=r.tenant_id AND g.run_id=r.id),
++      'saga_entries',(SELECT coalesce(jsonb_agg(to_jsonb(g) ORDER BY g.owner_path_nodes,g.owner_path_indices,g.owner_node,g.iteration_index,g.node),'[]') FROM scope_saga_entries g WHERE g.tenant_id=r.tenant_id AND g.run_id=r.id))
++      FROM runs r JOIN run_instance_usage u ON u.tenant_id=r.tenant_id AND u.run_id=r.id
++      JOIN iteration_scopes s ON s.tenant_id=r.tenant_id AND s.run_id=r.id AND s.owner_node='c10'
++      WHERE r.tenant_id=$1 AND r.id=$2"#).bind(tenant.as_uuid()).bind(run.as_uuid()).fetch_one(pool).await.expect("bounded current nonfinal state")
++}
++
++fn nonfinal_step<'a>(state: &'a Value, node: &str) -> &'a Value {
++    state["steps"]
++        .as_array()
++        .expect("step rows")
++        .iter()
++        .find(|s| {
++            s["node"] == node
++                && s["instance_path_nodes"] == serde_json::json!(["c10"])
++                && s["instance_path_indices"] == serde_json::json!([0])
++        })
++        .expect("exact target scoped step")
++}
++
++#[tokio::test(flavor = "current_thread")]
++#[ignore = "requires the separate immutable-old nonfinal Return producer; see fixture README"]
++async fn current_frontier_drains_frozen_old_nonfinal_return_before_checkpoint() {
++    use crate::support::{
++        api::{Options, start_on_db},
++        attach_existing_db,
++        worker::{Platform, TENANT, Worker},
++    };
++    use sagat_application::scope_frontier::ScopeFrontierStore as _;
++    use sagat_domain::execution::CollectionPhase;
++    use sagat_scheduler::CollectionAdvance;
++    assert!(
++        std::env::var("SAGAT_Q5_OWNED_POSTGRES").as_deref() == Ok("1"),
++        "only the root-owned repository PostgreSQL fixture"
++    );
++    let path = std::path::PathBuf::from(
++        std::env::var_os("SAGAT_Q5_PHASE_RECEIPT").expect("private settled-work receipt"),
++    );
++    #[cfg(unix)]
++    {
++        use std::os::unix::fs::PermissionsExt as _;
++        assert!(
++            std::fs::metadata(&path)
++                .expect("private receipt metadata")
++                .permissions()
++                .mode()
++                & 0o777
++                == 0o600,
++            "private receipt permissions"
++        );
++    }
++    let receipt =
++        NonfinalReceipt::parse(&std::fs::read(&path).expect("read private settled-work handoff"));
++    let admin = std::env::var("SAGAT_TEST_DATABASE_URL").expect("owned fixture admin URL");
++    let db = attach_existing_db(&admin, &receipt.database_name).await;
++    assert!(
++        receipt.database_url == db.url
++            && receipt.runtime_url
++                == db.url_for(
++                    crate::support::RUNTIME_ROLE,
++                    crate::support::RUNTIME_ROLE_PASSWORD
++                ),
++        "receipt URLs are references to this exact owned fixture, never arbitrary targets"
++    );
++    for migrated in [false, true] {
++        if migrated {
++            migrate(&db.pool)
++                .await
++                .expect("current migration of genuine old data");
++        }
++        assert!(
++            projection_witness(&db.pool, receipt.tenant, &[receipt.run]).await
++                == receipt.projection,
++            "migration and handoff preserve every old projection byte"
++        );
++        assert!(
++            nonfinal_source(
++                &db.pool,
++                receipt.tenant.as_uuid(),
++                receipt.run.as_uuid(),
++                receipt.cutoff
++            )
++            .await
++                == receipt.source,
++            "validated old closed and target source stay exact"
++        );
++    }
++    let api = start_on_db(
++        db,
++        Options {
++            runtime_role: crate::support::as_runtime_role(),
++            ..Options::default()
++        },
++    )
++    .await;
++    let platform = Platform {
++        api,
++        tenant: receipt.tenant,
++        other_tenant: receipt.other_tenant,
++    };
++    let role: (String, String) =
++        sqlx::query_as("SELECT current_user::text,current_database()::text")
++            .fetch_one(&platform.api.api_pool)
++            .await
++            .expect("current API/store shared pool identity");
++    let owner_role: String = sqlx::query_scalar("SELECT current_user::text")
++        .fetch_one(&platform.api.db.pool)
++        .await
++        .expect("current inspection owner");
++    assert!(
++        role.1 == receipt.database_name
++            && role.0
++                == if crate::support::as_runtime_role() {
++                    crate::support::RUNTIME_ROLE
++                } else {
++                    owner_role.as_str()
++                },
++        "actual selected current API and execution-store role"
++    );
++    println!(
++        "current_nonfinal_role api={} store={} database={}",
++        role.0, role.0, role.1
++    );
++    let before = nonfinal_state(&platform.api.db.pool, receipt.tenant, receipt.run).await;
++    assert!(
++        before["run"]["workflow_version_id"] == receipt.version.to_string()
++            && before["run"]["namespace_id"] == receipt.namespace.to_string()
++            && before["scope"]["scope_id"] == receipt.scope.to_string()
++            && before["run"]["run_version"] == receipt.head,
++        "exact original published and scope identities"
++    );
++    assert!(
++        nonfinal_step(&before, "work")["step_id"] == receipt.forward.to_string(),
++        "completed original public work identity"
++    );
++    assert!(
++        nonfinal_bytes(&platform.api.db.pool, receipt.tenant, receipt.run).await
++            == (2_100_001, 2_100_030),
++        "actual per-reference L/V arithmetic"
++    );
++    let placement = Placement::new(receipt.owner.clone());
++    let keeper = Keeper::new(
++        platform.api.executions.clone(),
++        placement.clone(),
++        KeeperSettings {
++            ttl: Duration::from_secs(3600),
++        },
++    );
++    let round = keeper
++        .round()
++        .await
++        .expect("normal keeper resumes the recorded owner");
++    assert!(
++        round.replicas == 1 && placement.owned().contains(Shard::of(receipt.run.as_uuid())),
++        "real owned shard and generation"
++    );
++    let scheduler = Scheduler::new(
++        platform.api.executions.clone(),
++        Engine::new(JsonEvaluator),
++        SystemEntropy,
++        SchedulerSettings {
++            discovery_rest: Duration::ZERO,
++            ..SchedulerSettings::default()
++        },
++    )
++    .with_placement(placement);
++    let target = ExecutionInstanceId::root(NodeId::parse("c10").expect("target owner"));
++    let frontier = match platform
++        .api
++        .executions
++        .collection_frontier(receipt.tenant, receipt.run, &target)
++        .await
++    {
++        Ok(Some(f)) => f,
++        _ => panic!("actual current collection frontier"),
++    };
++    assert!(
++        frontier.phase == CollectionPhase::Open
++            && frontier.run.version == receipt.head as u64
++            && frontier.run.effective_output_bytes == 4_200_031
++            && frontier.run.stop_reason.is_none()
++            && frontier.run.stop_code.is_none()
++            && frontier.item_count == 2
++            && frontier.next_admission == 1
++            && frontier.completed == 0
++            && frontier.completed + 1 < frontier.item_count
++            && frontier.max_concurrency == 1
++            && frontier.active.len() == 1,
++        "genuine open NONFINAL Return frontier before over-budget guard"
++    );
++    assert!(
++        frontier.scope_id.as_uuid() == receipt.scope,
++        "frontier identifies the exact original collection scope"
++    );
++    let member = &frontier.active[0];
++    assert!(member.entry.node().as_str()=="work" && member.entry.path().segments().len()==1 && member.entry.path().segments()[0].scope_node().as_str()=="c10" && member.entry.path().segments()[0].iteration_index()==0 && member.steps.get(&member.entry).is_some_and(|step|step.status()==sagat_domain::execution::StepStatus::Succeeded),"frontier contains the exact successful original local work");
++    assert!(
++        member.index == 0
++            && member.first_failure().is_none()
++            && member
++                .pending_return(&frontier.run.definition)
++                .is_some_and(|r| r.node().as_str() == "returned")
++            && frontier.data.output(&member.entry) == Some(b"1".as_slice()),
++        "exact pending Return and actual original local output"
++    );
++    drop(frontier);
++    let first = scheduler
++        .advance_collection(receipt.tenant, receipt.run, &target)
++        .await;
++    assert!(
++        matches!(first, Ok(CollectionAdvance::DrainStarted)),
++        "normal current dispatcher drains before checkpoint/admission"
++    );
++    let after = nonfinal_state(&platform.api.db.pool, receipt.tenant, receipt.run).await;
++    assert!(
++        after["run"]["status"] == "CANCELLING"
++            && after["run"]["stop_reason"] == "FAILED"
++            && after["run"]["stop_code"] == "RUN_DATA_LIMIT"
++            && after["run"]["trace_id"] == before["run"]["trace_id"]
++            && after["run"]["run_version"] == receipt.head + 2
++            && after["telemetry"]["head_seq"] == receipt.head + 2
++            && after["scope"]["lifecycle"] == "DRAINING"
++            && after["scope"]["drain_kind"] == "RUN_DATA_LIMIT"
++            && after["scope"]["drain_failure_code"] == "RUN_DATA_LIMIT"
++            && after["scope"]["drain_iteration"].is_null()
++            && after["scope"]["drain_sequence"] == receipt.head + 2,
++        "one truthful atomic first stop and native drain"
++    );
++    for key in [
++        "members",
++        "steps",
++        "checkpoints",
++        "items",
++        "payloads",
++        "receipts",
++        "usage",
++        "iteration_usage",
++        "sagas",
++        "saga_entries",
++    ] {
++        assert!(
++            before[key] == after[key],
++            "first guard preserves source, active reservations, outputs and original receipts"
++        );
++    }
++    assert!(
++        nonfinal_step(&after, "returned") == nonfinal_step(&before, "returned")
++            && nonfinal_step(&after, "work") == nonfinal_step(&before, "work"),
++        "first drain leaves Return PENDING and known work untouched"
++    );
++    let suffix = after["events"]
++        .as_array()
++        .expect("journal rows")
++        .iter()
++        .filter(|e| e["seq"].as_i64().is_some_and(|seq| seq > receipt.head))
++        .collect::<Vec<_>>();
++    assert!(
++        suffix.len() == 2
++            && suffix[0]["event_type"] == "run.stop_requested"
++            && suffix[0]["detail"]["reason"] == "FAILED"
++            && suffix[0]["detail"]["code"] == "RUN_DATA_LIMIT"
++            && suffix[1]["event_type"] == "collection.drain_started"
++            && suffix[1]["node"] == "c10"
++            && suffix[1]["detail"]["reason"] == "run_data_limit",
++        "exact stop then drain journal suffix"
++    );
++    let owner_id = before["steps"]
++        .as_array()
++        .expect("original steps")
++        .iter()
++        .find(|step| step["node"] == "c10" && step["instance_path_nodes"] == json!([]))
++        .expect("original root collection owner")["step_id"]
++        .clone();
++    let stamp = suffix[0]["occurred_at"].clone();
++    assert!(stamp.is_string(), "native event timestamp is present");
++    let envelope = |seq: i64,
++                    node: Value,
++                    instance: Value,
++                    nodes: Value,
++                    indices: Value,
++                    kind: &str,
++                    detail: Value| json!({"seq":seq,"node":node,"actor":"system:engine","detail":detail,"run_id":receipt.run.to_string(),"attempt":null,"trace_id":before["run"]["trace_id"],"tenant_id":receipt.tenant.to_string(),"event_type":kind,"instance_id":instance,"occurred_at":stamp,"payload_digest":null,"instance_path_nodes":nodes,"instance_path_indices":indices});
++    assert!(
++        *suffix[0]
++            == envelope(
++                receipt.head + 1,
++                Value::Null,
++                Value::Null,
++                Value::Null,
++                Value::Null,
++                "run.stop_requested",
++                json!({"code":"RUN_DATA_LIMIT","reason":"FAILED"})
++            )
++            && *suffix[1]
++                == envelope(
++                    receipt.head + 2,
++                    json!("c10"),
++                    owner_id,
++                    json!([]),
++                    json!([]),
++                    "collection.drain_started",
++                    json!({"reason":"run_data_limit"})
++                ),
++        "exact ordered event envelopes retain root/owner identity, original actor/trace and atomic timestamp"
++    );
++    let mut original_scope = before["scope"].as_object().expect("original scope").clone();
++    let mut drained_scope = after["scope"].as_object().expect("draining scope").clone();
++    for key in [
++        "lifecycle",
++        "drain_kind",
++        "drain_iteration",
++        "drain_failure_code",
++        "drain_sequence",
++        "drain_outbox_id",
++        "updated_at",
++    ] {
++        original_scope.remove(key);
++        drained_scope.remove(key);
++    }
++    assert!(
++        original_scope == drained_scope,
++        "first guard preserves all scope counters and source metadata"
++    );
++    let old_events = before["events"].as_array().expect("original journal");
++    let events = after["events"].as_array().expect("first-drain journal");
++    assert!(
++        events.get(..old_events.len()) == Some(old_events.as_slice()),
++        "first guard preserves the full original journal prefix"
++    );
++    let old_outbox = before["outbox"].as_array().expect("original outbox rows");
++    let new_outbox = after["outbox"].as_array().expect("current outbox rows");
++    assert!(
++        old_outbox.iter().all(|o| new_outbox.contains(o))
++            && new_outbox.len() == old_outbox.len() + 1,
++        "one outbox append preserves the full original outbox"
++    );
++    let hint = new_outbox
++        .iter()
++        .find(|o| o["id"] == after["scope"]["drain_outbox_id"])
++        .expect("actual native drain outbox identity");
++    assert!(
++        hint["event_type"] == "collection.drain.started"
++            && hint["routing_key"] == "c10"
++            && hint["payload"]["reason"] == "FAILED"
++            && hint["payload"]["tenantId"] == receipt.tenant.to_string()
++            && hint["payload"]["namespaceId"] == receipt.namespace.to_string()
++            && hint["payload"]["runId"] == receipt.run.to_string()
++            && hint["payload"]["scopeId"] == receipt.scope.to_string()
++            && hint["payload"]["traceId"] == before["run"]["trace_id"],
++        "actual public FAILED hint has exact scope, tenant, namespace, run and trace"
++    );
++    let old_audits = before["audits"].as_array().expect("old audits");
++    let all_audits = after["audits"].as_array().expect("first-drain audits");
++    let appended = all_audits
++        .iter()
++        .filter(|a| !old_audits.contains(a))
++        .collect::<Vec<_>>();
++    assert!(
++        old_audits.iter().all(|a| all_audits.contains(a))
++            && all_audits.len() == old_audits.len() + 1
++            && appended.len() == 1,
++        "exactly one audit append preserves all old audits"
++    );
++    let audit = appended[0];
++    assert!(
++        audit["action"] == "run.data_limit_exceeded"
++            && audit["actor"] == "system:engine"
++            && audit["resource_type"] == "run"
++            && audit["tenant_id"] == receipt.tenant.to_string()
++            && audit["resource_id"] == receipt.run.to_string()
++            && audit["reason"] == "existing_outputs"
++            && audit["trace_id"] == before["run"]["trace_id"],
++        "exact truthful existing_outputs audit identity"
++    );
++    assert!(
++        nonfinal_source(
++            &platform.api.db.pool,
++            receipt.tenant.as_uuid(),
++            receipt.run.as_uuid(),
++            receipt.cutoff
++        )
++        .await
++            == receipt.source,
++        "first native guard preserves all old immutable source"
++    );
++    let mut worker = platform.connect("nonfinal-return-worker", TENANT).await;
++    worker
++        .register_version(&["line.reserve", "line.release"], "1.5")
++        .await;
++    let mut actions = 0usize;
++    let comp = loop {
++        actions += 1;
++        assert!(
++            actions <= 32,
++            "bounded current drain and compensation transitions"
++        );
++        assert!(
++            scheduler
++                .advance_collection(receipt.tenant, receipt.run, &target)
++                .await
++                .is_ok(),
++            "normal member drain or saga planning"
++        );
++        let mut tasks = worker.poll(1).await;
++        if let Some(task) = tasks.pop() {
++            assert!(tasks.is_empty(), "one compensation obligation");
++            break task;
++        }
++    };
++    let original = comp
++        .target_instance
++        .as_ref()
++        .expect("original compensation target");
++    let input: Value = serde_json::from_str(&comp.input_json)
++        .unwrap_or_else(|_| panic!("actual compensation input JSON"));
++    assert!(
++        comp.activity_name == "line.release"
++            && comp.task_kind == "COMPENSATION"
++            && comp.target_node == "work"
++            && original.definition_node_id == "work"
++            && original.instance_path.len() == 1
++            && original.instance_path[0].scope_node_id == "c10"
++            && original.instance_path[0].iteration_index == 0
++            && comp.target_idempotency_key == receipt.target_key
++            && input.pointer("/steps/work/output") == Some(&serde_json::json!(1)),
++        "real original target/key and sufficient old output in compensation input"
++    );
++    let waiting = scheduler
++        .advance_collection(receipt.tenant, receipt.run, &target)
++        .await;
++    assert!(
++        matches!(waiting, Ok(CollectionAdvance::Waiting)),
++        "unfinished real compensation prevents premature finalization"
++    );
++    let held = nonfinal_state(&platform.api.db.pool, receipt.tenant, receipt.run).await;
++    assert!(
++        held["scope"]["lifecycle"] == "DRAINING" && held["run"]["finished_at"].is_null(),
++        "scope and Run remain nonterminal with leased compensation"
++    );
++    let request = worker.req(Worker::complete_message(&comp, r#"{"released":true}"#));
++    let ack = match worker.client.complete_step(request).await {
++        Ok(r) => r.into_inner(),
++        Err(_) => panic!("real compensation completion succeeds"),
++    };
++    assert!(
++        ack.step_status == "SUCCEEDED" && !ack.already_applied,
++        "genuine compensation success"
++    );
++    loop {
++        actions += 1;
++        assert!(actions <= 32, "bounded normal finalization");
++        assert!(
++            scheduler
++                .advance_collection(receipt.tenant, receipt.run, &target)
++                .await
++                .is_ok(),
++            "normal saga and collection finalization"
++        );
++        let state = nonfinal_state(&platform.api.db.pool, receipt.tenant, receipt.run).await;
++        if state["run"]["status"] == "COMPENSATED" {
++            break;
++        }
++    }
++    let final_state = nonfinal_state(&platform.api.db.pool, receipt.tenant, receipt.run).await;
++    assert!(
++        final_state["run"]["status"] == "COMPENSATED"
++            && final_state["run"]["stop_reason"] == "FAILED"
++            && final_state["run"]["stop_code"] == "RUN_DATA_LIMIT"
++            && final_state["run"]["result_digest"].is_null()
++            && final_state["scope"]["lifecycle"] == "FAILED"
++            && final_state["scope"]["result_digest"].is_null()
++            && final_state["scope"]["next_admission_index"] == 1
++            && final_state["scope"]["admitted_count"] == 1
++            && final_state["scope"]["completed_count"] == 1
++            && final_state["scope"]["active_count"] == 0
++            && final_state["iteration_usage"]["active_iterations"] == 0,
++        "normal failed drain settles exactly the admitted member, without admitting item1"
++    );
++    assert!(
++        nonfinal_step(&final_state, "returned")["status"] == "CANCELLED"
++            && nonfinal_step(&final_state, "returned")["output_digest"].is_null()
++            && nonfinal_step(&final_state, "work") == nonfinal_step(&before, "work")
++            && nonfinal_step(&final_state, "work~c")["status"] == "SUCCEEDED"
++            && nonfinal_step(&final_state, "work~c")["output_digest"].is_null(),
++        "Return cancelled, old forward source intact and actual compensation settled without output"
++    );
++    let (checkpoints,item1,ends,saga_done):(i64,i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM iteration_checkpoints WHERE tenant_id=$1 AND run_id=$2 AND scope_id=$3),(SELECT count(*) FROM collection_iterations WHERE tenant_id=$1 AND run_id=$2 AND scope_id=$3 AND iteration_index=1),(SELECT count(*) FROM steps WHERE tenant_id=$1 AND run_id=$2 AND node='done'),(SELECT count(*) FROM scope_sagas WHERE tenant_id=$1 AND run_id=$2 AND owner_node='c10' AND phase='DONE' AND outcome='COMPENSATED')")
++        .bind(receipt.tenant.as_uuid()).bind(receipt.run.as_uuid()).bind(receipt.scope).fetch_one(&platform.api.db.pool).await.expect("honest nonfinal terminal identities");
++    assert!(
++        (checkpoints, item1, ends, saga_done) == (0, 0, 0, 1)
++            && before["payloads"] == final_state["payloads"]
++            && nonfinal_bytes(&platform.api.db.pool, receipt.tenant, receipt.run).await
++                == (2_100_001, 2_100_030)
++            && nonfinal_source(
++                &platform.api.db.pool,
++                receipt.tenant.as_uuid(),
++                receipt.run.as_uuid(),
++                receipt.cutoff
++            )
++            .await
++                == receipt.source,
++        "no backfill, new source, checkpoint, End or payload; exact old L/V/source retained"
++    );
++    let members = final_state["members"].as_array().expect("settled members");
++    assert!(
++        members.len() == 1
++            && members[0]["iteration_index"] == 0
++            && members[0]["lifecycle"] == "DRAINED"
++            && members[0]["slot_held"] == false
++            && members[0]["remaining_reservations"] == 0
++            && members[0]["checkpoint_sequence"].is_null()
++            && members[0]["result_digest"].is_null()
++            && final_state["usage"]["reserved_instances"] == 0,
++        "sole member drained without checkpoint and every reservation released"
++    );
++    let initial_steps = before["steps"].as_array().expect("original steps");
++    let final_steps = final_state["steps"].as_array().expect("terminal steps");
++    assert!(
++        initial_steps.iter().all(|old| final_steps
++            .iter()
++            .any(|new| new["step_id"] == old["step_id"]))
++            && final_steps.len() == initial_steps.len() + 1,
++        "exactly one derived step identity preserves all original identities"
++    );
++    let derived = final_steps
++        .iter()
++        .filter(|new| {
++            !initial_steps
++                .iter()
++                .any(|old| old["step_id"] == new["step_id"])
++        })
++        .collect::<Vec<_>>();
++    let own = comp
++        .instance
++        .as_ref()
++        .expect("actual compensation instance");
++    assert!(
++        derived.len() == 1
++            && *derived[0] == *nonfinal_step(&final_state, "work~c")
++            && derived[0]["step_id"] == comp.step_id
++            && derived[0]["kind"] == "COMPENSATION"
++            && comp.run_id == receipt.run.to_string()
++            && own.definition_node_id == "work~c"
++            && own.instance_path.len() == 1
++            && own.instance_path[0].scope_node_id == "c10"
++            && own.instance_path[0].iteration_index == 0,
++        "leased compensation is the only new execution identity"
++    );
++    let entries = final_state["saga_entries"]
++        .as_array()
++        .expect("native saga entries");
++    assert!(
++        entries.len() == 1
++            && entries[0]["owner_node"] == "c10"
++            && entries[0]["owner_path_nodes"] == json!([])
++            && entries[0]["owner_path_indices"] == json!([])
++            && entries[0]["iteration_index"] == 0
++            && entries[0]["node"] == "work"
++            && entries[0]["kind"] == "COMPENSATE",
++        "exactly one original work compensation obligation"
++    );
++    let owner = final_steps
++        .iter()
++        .find(|s| s["node"] == "c10" && s["instance_path_nodes"] == json!([]))
++        .expect("terminal root owner");
++    assert!(
++        owner["status"] == "FAILED"
++            && owner["failure_code"] == "RUN_DATA_LIMIT"
++            && owner["output_digest"].is_null(),
++        "failed root owner never materializes a legacy output"
++    );
++    let final_events = final_state["events"].as_array().expect("terminal journal");
++    assert!(
++        final_events.get(..old_events.len()) == Some(old_events.as_slice())
++            && final_state["checkpoints"] == before["checkpoints"],
++        "entire old journal and checkpoint inventories stay exact"
++    );
++    let finish_seq = final_state["scope"]["finish_sequence"]
++        .as_i64()
++        .expect("native collection finish sequence");
++    let finishes = final_events
++        .iter()
++        .filter(|e| e["event_type"] == "collection.finished" && e["node"] == "c10")
++        .collect::<Vec<_>>();
++    let run_finishes = final_events
++        .iter()
++        .filter(|e| e["event_type"] == "run.finished")
++        .collect::<Vec<_>>();
++    assert!(
++        finishes.len() == 1
++            && finishes[0]["seq"] == finish_seq
++            && finishes[0]["detail"] == json!({"outcome":"failed","code":"RUN_DATA_LIMIT"})
++            && run_finishes.len() == 1
++            && run_finishes[0]["seq"] == finish_seq + 1
++            && run_finishes[0]["detail"]["status"] == "COMPENSATED"
++            && final_state["run"]["run_version"] == finish_seq + 1
++            && final_events
++                .last()
++                .is_some_and(|e| e["seq"] == finish_seq + 1)
++            && final_state["telemetry"]["head_seq"] == finish_seq + 1,
++        "exact native finish pair and final telemetry head"
++    );
++    let terminal_outbox = final_state["outbox"].as_array().expect("terminal outbox");
++    let collection_hints = terminal_outbox
++        .iter()
++        .filter(|o| o["event_type"] == "collection.finished" && o["routing_key"] == "c10")
++        .collect::<Vec<_>>();
++    let run_hints = terminal_outbox
++        .iter()
++        .filter(|o| o["event_type"] == "run.finished")
++        .collect::<Vec<_>>();
++    assert!(
++        collection_hints.len() == 1
++            && collection_hints[0]["id"] == final_state["scope"]["finish_outbox_id"]
++            && run_hints.len() == 1,
++        "exact native finish outbox identities"
++    );
++    for (hint, status) in [
++        (collection_hints[0], "FAILED"),
++        (run_hints[0], "COMPENSATED"),
++    ] {
++        assert!(
++            hint["tenant_id"] == receipt.tenant.to_string()
++                && hint["aggregate_id"] == receipt.run.to_string()
++                && hint["payload"]["tenantId"] == receipt.tenant.to_string()
++                && hint["payload"]["namespaceId"] == receipt.namespace.to_string()
++                && hint["payload"]["runId"] == receipt.run.to_string()
++                && hint["payload"]["traceId"] == before["run"]["trace_id"]
++                && hint["payload"]["status"] == status,
++            "finish hints preserve exact original envelope and truthful terminal status"
++        );
++    }
++    assert!(
++        collection_hints[0]["payload"]["scopeId"] == receipt.scope.to_string(),
++        "failed collection hint matches original scope"
++    );
++    let terminal_projection =
++        projection_witness(&platform.api.db.pool, receipt.tenant, &[receipt.run]).await;
++    let fresh = PgRunStore::new(
++        platform.api.api_pool.clone(),
++        DefinitionCache::new(Arc::new(JsonIrCodec), 8),
++    )
++    .with_scoped_worker_protocol();
++    assert!(
++        fresh.verify_run(receipt.tenant, receipt.run).await.is_ok(),
++        "fresh store safely verifies mixed old/current compensated history"
++    );
++    let terminal = scheduler
++        .advance_collection(receipt.tenant, receipt.run, &target)
++        .await;
++    assert!(
++        matches!(terminal, Ok(CollectionAdvance::AlreadyFinished)),
++        "normal terminal advance is already finished"
++    );
++    assert!(
++        nonfinal_state(&platform.api.db.pool, receipt.tenant, receipt.run).await == final_state,
++        "terminal replay and fresh verification have zero durable effects"
++    );
++    assert!(
++        projection_witness(&platform.api.db.pool, receipt.tenant, &[receipt.run]).await
++            == terminal_projection,
++        "fresh verification and terminal advance preserve the full original projection and certifications"
++    );
++    drop(fresh);
++    drop(worker);
++    drop(scheduler);
++    keeper.leave().await;
++    drop(keeper);
++    let role_pool = platform.api.api_pool.clone();
++    let owner_pool = platform.api.db.pool.clone();
++    drop(platform);
++    assert!(
++        tokio::time::timeout(Duration::from_secs(5), role_pool.close())
++            .await
++            .is_ok(),
++        "current role pool closes"
++    );
++    assert!(
++        tokio::time::timeout(Duration::from_secs(5), owner_pool.close())
++            .await
++            .is_ok(),
++        "current owner pool closes"
++    );
++}

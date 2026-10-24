@@ -1,0 +1,46 @@
+[
+  {
+    "role": "owner",
+    "phase": "producer",
+    "actual_api_role": "postgres",
+    "actual_store_role": "postgres",
+    "exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 9.54
+  },
+  {
+    "role": "owner",
+    "phase": "consumer",
+    "actual_api_role": "postgres",
+    "actual_store_role": "postgres",
+    "exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 1.18
+  },
+  {
+    "role": "runtime",
+    "phase": "producer",
+    "actual_api_role": "sagat_app",
+    "actual_store_role": "sagat_app",
+    "exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 10.04
+  },
+  {
+    "role": "runtime",
+    "phase": "consumer",
+    "actual_api_role": "sagat_app",
+    "actual_store_role": "sagat_app",
+    "exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 1.17
+  }
+]

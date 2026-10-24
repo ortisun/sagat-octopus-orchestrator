@@ -1,0 +1,37 @@
+{
+  "L": 2100001,
+  "V": 2100030,
+  "head": 179,
+  "next": 1,
+  "runs": 1,
+  "saga": null,
+  "scope": "OPEN",
+  "active": 0,
+  "member": {
+    "slot": false,
+    "state": "CHECKPOINTED",
+    "reservations": 1
+  },
+  "failure": null,
+  "admitted": 1,
+  "completed": 1,
+  "stop_code": null,
+  "drain_hint": 0,
+  "drain_kind": null,
+  "owner_code": null,
+  "run_status": "WAITING",
+  "finish_hint": 0,
+  "stop_reason": null,
+  "journal_head": 179,
+  "owner_status": "WAITING",
+  "quota_deltas": 0,
+  "c10_step_nodes": [
+    "returned",
+    "work"
+  ],
+  "telemetry_head": 179,
+  "c10_checkpoints": 1,
+  "compensation_count": 0,
+  "reserved_instances": 1,
+  "owner_output_absent": true
+}
