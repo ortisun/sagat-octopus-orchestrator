@@ -1,0 +1,26 @@
+error[E0433]: cannot find module or crate `serde` in this scope
+  --> tests/integration/workflow-primitives/legacy_collection_inflight_applied_v1.rs:20:10
+   |
+20 | #[derive(serde::Deserialize)]
+   |          ^^^^^ use of unresolved module or unlinked crate `serde`
+
+
+error: cannot find attribute `serde` in this scope
+  --> tests/integration/workflow-primitives/legacy_collection_inflight_applied_v1.rs:21:3
+   |
+21 | #[serde(deny_unknown_fields)]
+   |   ^^^^^
+   |
+help: `serde` is an attribute that can be used by the derive macros `Deserialize`, `Deserialize_repr` and `Serialize`, you might be missing a `derive` attribute
+   |
+22 + #[derive(Deserialize, Deserialize_repr, Serialize)]
+23 | struct Handoff {
+   |
+
+
+error[E0405]: cannot find trait `Message` in this scope
+  --> tests/integration/workflow-primitives/legacy_collection_inflight_applied_v1.rs:57:24
+   |
+57 | fn decode_canonical<T: Message + Default>(encoded: &str) -> Result<T, &'static str> {
+   |                        ^^^^^^^ not found in this scope
+

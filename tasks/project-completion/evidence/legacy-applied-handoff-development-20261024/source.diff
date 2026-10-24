@@ -1,0 +1,309 @@
+diff --git a/scripts/test-legacy-collection-inflight-report-v1.sh b/scripts/test-legacy-collection-inflight-report-v1.sh
+index 270f43df..6d83dcbe 100755
+--- a/scripts/test-legacy-collection-inflight-report-v1.sh
++++ b/scripts/test-legacy-collection-inflight-report-v1.sh
+@@ -7,7 +7,7 @@ readonly old_commit="6c44a0e49670cf19660792cd1518d241e6c99b3b"
+ case_name="report-before-drain"
+ if (( $# != 0 )); then
+   if (( $# != 2 )) || [[ "$1" != "--case" ]]; then
+-    echo "usage: $0 [--case report-before-drain|drain-before-report|cancellation-before-report|under-limit-increment-before-drain|live-work-frontier|live-work-frontier-red|report-frontier-cas|under-limit-increment-cancellation-before-report]" >&2
++    echo "usage: $0 [--case report-before-drain|drain-before-report|cancellation-before-report|under-limit-increment-before-drain|live-work-frontier|live-work-frontier-red|report-frontier-cas|under-limit-increment-cancellation-before-report|applied-handoff]" >&2
+     exit 2
+   fi
+   case_name="$2"
+@@ -46,6 +46,13 @@ case "${case_name}" in
+     log_label="under-limit-increment-cancellation-before-report"
+     phase_seconds=300
+     ;;
++  applied-handoff)
++    old_test="legacy_collection_inflight_report_producer_v1::frozen_old_ordinary_success_before_drain_producer"
++    current_test="legacy_collection_inflight_applied_v1::old_applied_lookup_attaches_without_changing_original_authority"
++    artifact_namespace="sagat-q10c-applied-handoff-v1"
++    log_label="applied-handoff"
++    phase_seconds=300
++    ;;
+   report-frontier-cas)
+     old_test="legacy_collection_inflight_report_producer_v1::frozen_old_ordinary_success_before_drain_producer"
+     current_test="legacy_collection_inflight_report_v1::old_original_success_forces_frontier_cas_then_fresh_stopped_drain"
+@@ -71,7 +78,7 @@ case "${case_name}" in
+ esac
+ readonly case_name old_test current_test artifact_namespace log_label phase_seconds expected_red_marker
+ # Bound the entire new fixture, including builds and cleanup, in a separate process group.
+-if [[ "${case_name}" == live-work-frontier || "${case_name}" == live-work-frontier-red || "${case_name}" == report-frontier-cas || "${case_name}" == under-limit-increment-cancellation-before-report ]] && [[ "${SAGAT_Q10C_SUPERVISED:-}" != 1 ]]; then
++if [[ "${case_name}" == live-work-frontier || "${case_name}" == live-work-frontier-red || "${case_name}" == report-frontier-cas || "${case_name}" == under-limit-increment-cancellation-before-report || "${case_name}" == applied-handoff ]] && [[ "${SAGAT_Q10C_SUPERVISED:-}" != 1 ]]; then
+   exec python3 - "$0" "$@" <<'SUPERVISOR'
+ import os,select,signal,subprocess,sys,time
+ child=None
+@@ -113,6 +120,9 @@ fi
+ repo_root="$(git rev-parse --show-toplevel)"
+ producer_overlay="${repo_root}/tests/fixtures/legacy-collection-inflight-report-v1/producer.rs"
+ consumer_source="${repo_root}/tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs"
++if [[ "${case_name}" == applied-handoff ]]; then
++  consumer_source="${repo_root}/tests/integration/workflow-primitives/legacy_collection_inflight_applied_v1.rs"
++fi
+ coordinator_source="${repo_root}/scripts/test-legacy-collection-inflight-report-v1.sh"
+ fixture_readme="${repo_root}/tests/fixtures/legacy-collection-inflight-report-v1/README.md"
+ current_main="${repo_root}/tests/integration/workflow-primitives/main.rs"
+@@ -449,7 +459,7 @@ p=Path(sys.argv[1])
+ if stat.S_IMODE(p.stat().st_mode)!=0o600:raise SystemExit('receipt is not private')
+ v=json.loads(p.read_text())
+ fields='format source_commit database_name producer_api_role tenant_id other_tenant_id namespace_id namespace_slug worker_subject tenant_alias worker_id session_token run_id selected_owner scheduler_owner task_lease_b64 completion_request_b64 producer_projection_witness_sha256 closed_source_witness_sha256'.split()
+-formats={'under-limit-increment-cancellation-before-report':'q10c-ordinary-under-limit-increment-v1','report-frontier-cas':'q10c-ordinary-before-drain-v1','report-before-drain':'q10c-ordinary-before-drain-v1','drain-before-report':'q10c-ordinary-before-drain-v1','cancellation-before-report':'q10c-ordinary-before-drain-v1','under-limit-increment-before-drain':'q10c-ordinary-under-limit-increment-v1','live-work-frontier':'q10c-ordinary-before-drain-v1','live-work-frontier-red':'q10c-ordinary-before-drain-v1'}
++formats={'applied-handoff':'q10c-ordinary-before-drain-v1','under-limit-increment-cancellation-before-report':'q10c-ordinary-under-limit-increment-v1','report-frontier-cas':'q10c-ordinary-before-drain-v1','report-before-drain':'q10c-ordinary-before-drain-v1','drain-before-report':'q10c-ordinary-before-drain-v1','cancellation-before-report':'q10c-ordinary-before-drain-v1','under-limit-increment-before-drain':'q10c-ordinary-under-limit-increment-v1','live-work-frontier':'q10c-ordinary-before-drain-v1','live-work-frontier-red':'q10c-ordinary-before-drain-v1'}
+ if sys.argv[2] not in formats or set(v)!=set(fields) or v['format']!=formats[sys.argv[2]] or v['source_commit']!='6c44a0e49670cf19660792cd1518d241e6c99b3b' or v['selected_owner']!='c10':raise SystemExit('invalid private in-flight envelope')
+ role=v['producer_api_role']
+ if not isinstance(role,str) or not role or (sys.argv[3]=='runtime' and role!='sagat_app') or (sys.argv[3]=='owner' and role=='sagat_app'):raise SystemExit('in-flight receipt role mismatch')
+diff --git a/tests/integration/workflow-primitives/legacy_collection_inflight_applied_v1.rs b/tests/integration/workflow-primitives/legacy_collection_inflight_applied_v1.rs
+new file mode 100644
+index 00000000..038b9e5b
+--- /dev/null
++++ b/tests/integration/workflow-primitives/legacy_collection_inflight_applied_v1.rs
+@@ -0,0 +1,236 @@
++//! Genuine immutable-old reconciliation handoff. Attachment only; no current report is sent.
++#![allow(clippy::expect_used, clippy::panic)]
++
++use std::os::unix::fs::PermissionsExt as _;
++
++use base64::Engine as _;
++use prost::Message as _;
++use sagat_api_grpc::pb::{CompleteStepRequest, TaskLease};
++use sagat_domain::execution::RunId;
++use sagat_domain::identity::TenantId;
++use serde_json::Value;
++use uuid::Uuid;
++
++use crate::support::worker::Worker;
++
++const FORMAT: &str = "q10c-applied-handoff-v1";
++const OLD_COMMIT: &str = "6c44a0e49670cf19660792cd1518d241e6c99b3b";
++const ANSWER: &str = r#"{"effect":"applied","output":{"hold":7}}"#;
++
++struct Handoff {
++    format: String,
++    source_commit: String,
++    database_name: String,
++    producer_api_role: String,
++    tenant_id: String,
++    other_tenant_id: String,
++    namespace_id: String,
++    namespace_slug: String,
++    worker_subject: String,
++    tenant_alias: String,
++    worker_id: String,
++    session_token: String,
++    run_id: String,
++    selected_owner: String,
++    scheduler_owner: String,
++    task_lease_b64: String,
++    forward_task_lease_b64: String,
++    completion_request_b64: String,
++    producer_projection_witness_sha256: String,
++    closed_source_witness_sha256: String,
++    producer_authority_witness_sha256: String,
++}
++
++struct Receipt {
++    handoff: Handoff,
++    tenant: TenantId,
++    other_tenant: TenantId,
++    namespace: Uuid,
++    run: RunId,
++    forward: TaskLease,
++    lookup: TaskLease,
++    completion: CompleteStepRequest,
++}
++
++fn decode_canonical<T: prost::Message + Default>(encoded: &str) -> Result<T, &'static str> {
++    let bytes = base64::engine::general_purpose::STANDARD
++        .decode(encoded)
++        .map_err(|_| "invalid private protobuf encoding")?;
++    let value = T::decode(bytes.as_slice()).map_err(|_| "invalid private protobuf")?;
++    if value.encode_to_vec() != bytes {
++        return Err("noncanonical private protobuf");
++    }
++    Ok(value)
++}
++
++fn exact_instance(lease: &TaskLease, node: &str) -> bool {
++    lease.instance.as_ref().is_some_and(|instance| {
++        instance.definition_node_id == node
++            && instance.instance_path.len() == 1
++            && instance.instance_path[0].scope_node_id == "c10"
++            && instance.instance_path[0].iteration_index == 0
++    })
++}
++
++impl Receipt {
++    fn parse(bytes: &[u8]) -> Result<Self, &'static str> {
++        let mut value: Value =
++            serde_json::from_slice(bytes).map_err(|_| "invalid private handoff JSON")?;
++        let object = value
++            .as_object_mut()
++            .ok_or("invalid Applied handoff object")?;
++        if object.len() != 21 {
++            return Err("invalid exact Applied handoff fields");
++        }
++        let mut take = |name: &str| {
++            object
++                .remove(name)
++                .and_then(|v| v.as_str().map(str::to_owned))
++                .ok_or("invalid Applied handoff string field")
++        };
++        let handoff = Handoff {
++            format: take("format")?,
++            source_commit: take("source_commit")?,
++            database_name: take("database_name")?,
++            producer_api_role: take("producer_api_role")?,
++            tenant_id: take("tenant_id")?,
++            other_tenant_id: take("other_tenant_id")?,
++            namespace_id: take("namespace_id")?,
++            namespace_slug: take("namespace_slug")?,
++            worker_subject: take("worker_subject")?,
++            tenant_alias: take("tenant_alias")?,
++            worker_id: take("worker_id")?,
++            session_token: take("session_token")?,
++            run_id: take("run_id")?,
++            selected_owner: take("selected_owner")?,
++            scheduler_owner: take("scheduler_owner")?,
++            task_lease_b64: take("task_lease_b64")?,
++            forward_task_lease_b64: take("forward_task_lease_b64")?,
++            completion_request_b64: take("completion_request_b64")?,
++            producer_projection_witness_sha256: take("producer_projection_witness_sha256")?,
++            closed_source_witness_sha256: take("closed_source_witness_sha256")?,
++            producer_authority_witness_sha256: take("producer_authority_witness_sha256")?,
++        };
++        if !object.is_empty() {
++            return Err("unknown Applied handoff field");
++        }
++        let owned_name = handoff.database_name.strip_prefix("t_").is_some_and(|s| {
++            s.len() == 32
++                && s.bytes()
++                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
++        });
++        if handoff.format != FORMAT
++            || handoff.source_commit != OLD_COMMIT
++            || !owned_name
++            || handoff.producer_api_role.is_empty()
++            || handoff.namespace_slug != "payments"
++            || handoff.tenant_alias != "acme"
++            || handoff.selected_owner != "c10"
++            || handoff.worker_subject != "q10c-applied-handoff-worker"
++            || handoff.scheduler_owner != "scope-compensation-q10c-applied-handoff-v1"
++            || handoff.session_token.is_empty()
++        {
++            return Err("unexpected Applied handoff identity");
++        }
++        for digest in [
++            &handoff.producer_projection_witness_sha256,
++            &handoff.closed_source_witness_sha256,
++            &handoff.producer_authority_witness_sha256,
++        ] {
++            if digest.len() != 64
++                || !digest
++                    .bytes()
++                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
++            {
++                return Err("invalid Applied witness digest");
++            }
++        }
++        let tenant = handoff.tenant_id.parse().map_err(|_| "invalid tenant")?;
++        let other_tenant = handoff
++            .other_tenant_id
++            .parse()
++            .map_err(|_| "invalid other tenant")?;
++        let namespace = handoff
++            .namespace_id
++            .parse()
++            .map_err(|_| "invalid namespace")?;
++        let run = handoff.run_id.parse().map_err(|_| "invalid run")?;
++        Uuid::parse_str(&handoff.worker_id).map_err(|_| "invalid original worker")?;
++        let forward: TaskLease = decode_canonical(&handoff.forward_task_lease_b64)?;
++        let lookup: TaskLease = decode_canonical(&handoff.task_lease_b64)?;
++        let completion: CompleteStepRequest = decode_canonical(&handoff.completion_request_b64)?;
++        if tenant == other_tenant
++            || forward.run_id != handoff.run_id
++            || lookup.run_id != handoff.run_id
++            || forward.task_kind != "FORWARD"
++            || forward.activity_name != "line.reserve"
++            || !exact_instance(&forward, "reserve")
++            || !forward.tenant_alias.is_empty()
++            || forward.target_instance.is_some()
++            || !forward.target_node.is_empty()
++            || !forward.target_idempotency_key.is_empty()
++            || forward.idempotency_key.is_empty()
++            || forward.lease_token.is_empty()
++            || lookup.task_kind != "RECONCILIATION"
++            || lookup.activity_name != "line.lookup"
++            || !exact_instance(&lookup, "reserve~r")
++            || !lookup.tenant_alias.is_empty()
++            || lookup.target_instance != forward.instance
++            || lookup.target_node != "reserve"
++            || lookup.target_idempotency_key != forward.idempotency_key
++            || lookup.idempotency_key.is_empty()
++            || lookup.idempotency_key == forward.idempotency_key
++            || lookup.lease_token.is_empty()
++            || lookup.step_id == forward.step_id
++            || lookup.task_id == forward.task_id
++            || completion.output_json != ANSWER
++        {
++            return Err("Applied lookup does not bind its original forward effect");
++        }
++        let mut expected = Worker::complete_message(&lookup, ANSWER);
++        expected.idempotency_key = format!("q10c-applied-handoff-{}", lookup.task_id);
++        if expected.encode_to_vec() != completion.encode_to_vec() {
++            return Err("Applied completion differs from exact original lookup request");
++        }
++        Ok(Self {
++            handoff,
++            tenant,
++            other_tenant,
++            namespace,
++            run,
++            forward,
++            lookup,
++            completion,
++        })
++    }
++}
++
++#[tokio::test(flavor = "current_thread")]
++#[ignore = "requires separate immutable-old Applied producer; see decision evidence"]
++async fn old_applied_lookup_attaches_without_changing_original_authority() {
++    let path = std::env::var_os("SAGAT_Q10C_ORDINARY_PHASE_RECEIPT")
++        .map(std::path::PathBuf::from)
++        .expect("private phased receipt path");
++    assert_eq!(
++        std::fs::metadata(&path)
++            .expect("receipt metadata")
++            .permissions()
++            .mode()
++            & 0o777,
++        0o600
++    );
++    let bytes = std::fs::read(path).expect("private handoff");
++    // Fixture-contract RED: ordinary handoff cannot stand in for a genuine old lookup.
++    let probe: Value = serde_json::from_slice(&bytes).expect("handoff object");
++    let lookup: TaskLease =
++        decode_canonical(probe["task_lease_b64"].as_str().expect("original task"))
++            .expect("original task protobuf");
++    if lookup.task_kind == "FORWARD" {
++        eprintln!("observed_ordinary_forward_not_lookup=true");
++    }
++    assert!(
++        lookup.task_kind == "RECONCILIATION",
++        "genuine old lookup prerequisite, not ordinary FORWARD"
++    );
++    let _receipt = Receipt::parse(&bytes).expect("strict Applied handoff");
++}
+diff --git a/tests/integration/workflow-primitives/main.rs b/tests/integration/workflow-primitives/main.rs
+index 2b74c847..0714688c 100644
+--- a/tests/integration/workflow-primitives/main.rs
++++ b/tests/integration/workflow-primitives/main.rs
+@@ -43,6 +43,7 @@ mod identity_storage;
+ mod journal_identity;
+ mod leaf_certification;
+ mod leaf_certification_native;
++mod legacy_collection_inflight_applied_v1;
+ mod legacy_collection_inflight_report_v1;
+ mod legacy_collection_output_view;
+ mod limits;

@@ -1,0 +1,156 @@
+[
+  {
+    "case": "applied-handoff",
+    "role": "owner",
+    "phase": "producer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 5.18,
+    "artifact_run": "/tmp/sagat-completion-20261023/applied-handoff-final/artifacts-applied-handoff/run.cDsNo7"
+  },
+  {
+    "case": "applied-handoff",
+    "role": "owner",
+    "phase": "consumer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 0.87,
+    "artifact_run": "/tmp/sagat-completion-20261023/applied-handoff-final/artifacts-applied-handoff/run.cDsNo7"
+  },
+  {
+    "case": "applied-handoff",
+    "role": "runtime",
+    "phase": "producer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 5.12,
+    "artifact_run": "/tmp/sagat-completion-20261023/applied-handoff-final/artifacts-applied-handoff/run.cDsNo7"
+  },
+  {
+    "case": "applied-handoff",
+    "role": "runtime",
+    "phase": "consumer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 0.81,
+    "artifact_run": "/tmp/sagat-completion-20261023/applied-handoff-final/artifacts-applied-handoff/run.cDsNo7"
+  },
+  {
+    "case": "report-before-drain",
+    "role": "owner",
+    "phase": "producer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 5.01,
+    "artifact_run": "/tmp/sagat-completion-20261023/applied-handoff-final/artifacts-report-before-drain/run.mFFhFQ"
+  },
+  {
+    "case": "report-before-drain",
+    "role": "owner",
+    "phase": "consumer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 1.32,
+    "artifact_run": "/tmp/sagat-completion-20261023/applied-handoff-final/artifacts-report-before-drain/run.mFFhFQ"
+  },
+  {
+    "case": "report-before-drain",
+    "role": "runtime",
+    "phase": "producer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 4.99,
+    "artifact_run": "/tmp/sagat-completion-20261023/applied-handoff-final/artifacts-report-before-drain/run.mFFhFQ"
+  },
+  {
+    "case": "report-before-drain",
+    "role": "runtime",
+    "phase": "consumer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 1.28,
+    "artifact_run": "/tmp/sagat-completion-20261023/applied-handoff-final/artifacts-report-before-drain/run.mFFhFQ"
+  },
+  {
+    "case": "under-limit-increment-cancellation-before-report",
+    "role": "owner",
+    "phase": "producer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 4.92,
+    "artifact_run": "/tmp/sagat-completion-20261023/applied-handoff-final/artifacts-under-limit-increment-cancellation-before-report/run.sF5voO"
+  },
+  {
+    "case": "under-limit-increment-cancellation-before-report",
+    "role": "owner",
+    "phase": "consumer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 2.32,
+    "artifact_run": "/tmp/sagat-completion-20261023/applied-handoff-final/artifacts-under-limit-increment-cancellation-before-report/run.sF5voO"
+  },
+  {
+    "case": "under-limit-increment-cancellation-before-report",
+    "role": "runtime",
+    "phase": "producer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 4.88,
+    "artifact_run": "/tmp/sagat-completion-20261023/applied-handoff-final/artifacts-under-limit-increment-cancellation-before-report/run.sF5voO"
+  },
+  {
+    "case": "under-limit-increment-cancellation-before-report",
+    "role": "runtime",
+    "phase": "consumer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 2.3,
+    "artifact_run": "/tmp/sagat-completion-20261023/applied-handoff-final/artifacts-under-limit-increment-cancellation-before-report/run.sF5voO"
+  },
+  {
+    "case": "live-work-frontier-red",
+    "role": "owner",
+    "phase": "producer",
+    "native_exit_code": 101,
+    "passed": 0,
+    "failed": 1,
+    "ignored": 0,
+    "test_harness_seconds": 5.13,
+    "artifact_run": "/tmp/sagat-completion-20261023/applied-handoff-final/artifacts-live-work-frontier-red/run.dKiyEi"
+  },
+  {
+    "case": "live-work-frontier-red",
+    "role": "runtime",
+    "phase": "producer",
+    "native_exit_code": 101,
+    "passed": 0,
+    "failed": 1,
+    "ignored": 0,
+    "test_harness_seconds": 4.96,
+    "artifact_run": "/tmp/sagat-completion-20261023/applied-handoff-final/artifacts-live-work-frontier-red/run.dKiyEi"
+  }
+]

@@ -1,0 +1,21 @@
+--- scripts/test-legacy-collection-inflight-report-v1.sh
++++ /tmp/sagat-completion-20261023/applied-handoff-red/coordinator-red.sh
+@@ -123,7 +123,7 @@
+ if [[ "${case_name}" == applied-handoff ]]; then
+   consumer_source="${repo_root}/tests/integration/workflow-primitives/legacy_collection_inflight_applied_v1.rs"
+ fi
+-coordinator_source="${repo_root}/scripts/test-legacy-collection-inflight-report-v1.sh"
++coordinator_source="/tmp/sagat-completion-20261023/applied-handoff-red/coordinator-red.sh"
+ fixture_readme="${repo_root}/tests/fixtures/legacy-collection-inflight-report-v1/README.md"
+ current_main="${repo_root}/tests/integration/workflow-primitives/main.rs"
+ 
+@@ -426,6 +426,9 @@
+         if pending_signal is not None:continue
+         result=child.wait();break
+     select.select([],[],[],min(0.1,max(0,deadline-time.monotonic())))
++with open('/tmp/sagat-completion-20261023/applied-handoff-red/native-exits.jsonl','a') as phase_status:
++    import json
++    phase_status.write(json.dumps({'argv':sys.argv[3:],'exit_code':result,'runtime_role':os.environ.get('SAGAT_TEST_AS_RUNTIME_ROLE','0')})+'\n')
+ raise SystemExit(result)
+ PY
+   active_phase_pid=$!

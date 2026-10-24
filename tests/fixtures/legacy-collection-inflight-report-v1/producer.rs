@@ -718,3 +718,276 @@ async fn produce(preset: FixturePreset, live_frontier_red: bool) {
     });
     publish_receipt(&receipt_path, &receipt);
 }
+
+// Applied prerequisite is separate from ordinary presets and their oracles.
+async fn applied_authority_witness(platform: &Platform, worker_id: &str) -> String {
+    let value: Value = sqlx::query_scalar(
+        r#"SELECT jsonb_build_object(
+ 'tenants',(SELECT jsonb_agg(to_jsonb(t) ORDER BY t.id) FROM tenants t WHERE t.id=ANY($1::uuid[])),
+ 'memberships',(SELECT jsonb_agg(to_jsonb(m) ORDER BY m.subject) FROM memberships m WHERE m.tenant_id=$2 AND m.subject=$3),
+ 'bindings',(SELECT jsonb_agg(to_jsonb(b) ORDER BY b.pattern) FROM worker_bindings b WHERE b.tenant_id=$2 AND b.namespace_id=$4 AND b.subject=$3),
+ 'bindingPools',(SELECT jsonb_agg(to_jsonb(p) ORDER BY p.pool) FROM worker_binding_pools p WHERE p.tenant_id=$2 AND p.namespace_id=$4 AND p.subject=$3),
+ 'session',(SELECT to_jsonb(w) FROM worker_sessions w WHERE w.tenant_id=$2 AND w.id=$5))"#,
+    )
+    .bind(vec![platform.tenant.as_uuid(), platform.other_tenant.as_uuid()])
+    .bind(platform.tenant.as_uuid())
+    .bind("q10c-applied-handoff-worker")
+    .bind(Uuid::parse_str(&platform.namespace_id().await).expect("namespace"))
+    .bind(Uuid::parse_str(worker_id).expect("worker id"))
+    .fetch_one(&platform.api.db.pool)
+    .await
+    .expect("durable worker authority witness");
+    digest(&value)
+}
+
+const APPLIED_STATE_SQL: &str = r#"SELECT jsonb_build_object(
+ 'run', r.status='RUNNING' AND r.stop_reason IS NULL AND r.stop_code IS NULL AND r.result_digest IS NULL,
+ 'scope', s.lifecycle='OPEN' AND s.item_count=1 AND s.next_admission_index=1 AND s.admitted_count=1 AND s.completed_count=0 AND s.active_count=1 AND s.result_digest IS NULL AND s.drain_kind IS NULL AND s.drain_iteration IS NULL AND s.drain_sequence IS NULL,
+ 'member', m.lifecycle='ADMITTED' AND m.slot_held AND m.reserved_instances>=1 AND m.remaining_reservations>=1 AND m.result_digest IS NULL,
+ 'forward', f.step_id=$4 AND f.status='WAITING' AND f.waiting_kind='RECONCILIATION' AND f.failure_code='OUTCOME_UNKNOWN' AND f.attempt=$6 AND f.generation=$7 AND NOT f.cancel_requested AND f.output_digest IS NULL AND f.reported_lease_token_hash=$8,
+ 'lookup', q.step_id=$5 AND q.status='LEASED' AND q.attempt=$9 AND q.generation=$10 AND q.lease_token_hash=$11 AND q.leased_by=$12 AND q.lease_expires_at>clock_timestamp() AND NOT q.cancel_requested AND q.output_digest IS NULL AND q.reported_lease_token_hash IS NULL,
+ 'session', w.token_hash=$13 AND w.expires_at>clock_timestamp() AND w.namespace_id=$3 AND w.subject='q10c-applied-handoff-worker' AND w.accepted_protocol_minor=5,
+ 'only_forward_lookup', (SELECT count(*)=2 FROM steps x WHERE x.tenant_id=$1 AND x.run_id=$2 AND x.instance_path_nodes=ARRAY['c10']::text[] AND x.instance_path_indices=ARRAY[0]::integer[]),
+ 'no_done', NOT EXISTS(SELECT 1 FROM steps x WHERE x.tenant_id=$1 AND x.run_id=$2 AND x.node='done'),
+ 'request', (SELECT count(*)=1 AND bool_and(e.detail->>'cause'='OUTCOME_UNKNOWN' AND (e.detail->>'attempt')::int=$6 AND (e.detail->>'generation')::bigint=$7) FROM run_events e WHERE e.tenant_id=$1 AND e.run_id=$2 AND e.node='reserve' AND e.instance_path_nodes=ARRAY['c10']::text[] AND e.instance_path_indices=ARRAY[0]::integer[] AND e.event_type='reconciliation.requested'),
+ 'no_outcome', NOT EXISTS(SELECT 1 FROM run_events e WHERE e.tenant_id=$1 AND e.run_id=$2 AND e.instance_path_nodes=ARRAY['c10']::text[] AND e.instance_path_indices=ARRAY[0]::integer[] AND e.event_type IN ('reconciliation.concluded','step.completed','step.failed','step.cancelled')),
+ 'no_checkpoint', NOT EXISTS(SELECT 1 FROM iteration_checkpoints k WHERE k.tenant_id=$1 AND k.run_id=$2 AND k.scope_id=s.scope_id),
+ 'no_saga', NOT EXISTS(SELECT 1 FROM scope_sagas z WHERE z.tenant_id=$1 AND z.run_id=$2),
+ 'no_certificate', NOT EXISTS(SELECT 1 FROM leaf_collection_success_certifications z WHERE z.tenant_id=$1 AND z.run_id=$2),
+ 'no_lookup_receipt', NOT EXISTS(SELECT 1 FROM command_dedupe z WHERE z.tenant_id=$1 AND z.scope LIKE concat('step:',$2::text,':%') AND z.idempotency_key=$14)
+)
+FROM runs r
+JOIN iteration_scopes s ON s.tenant_id=r.tenant_id AND s.run_id=r.id AND s.owner_node='c10' AND s.owner_path_nodes='{}'::text[] AND s.owner_path_indices='{}'::integer[]
+JOIN collection_iterations m ON m.tenant_id=s.tenant_id AND m.run_id=s.run_id AND m.scope_id=s.scope_id AND m.iteration_index=0
+JOIN steps f ON f.tenant_id=r.tenant_id AND f.run_id=r.id AND f.namespace_id=$3 AND f.node='reserve' AND f.instance_path_nodes=ARRAY['c10']::text[] AND f.instance_path_indices=ARRAY[0]::integer[]
+JOIN steps q ON q.tenant_id=r.tenant_id AND q.run_id=r.id AND q.namespace_id=$3 AND q.node='reserve~r' AND q.instance_path_nodes=ARRAY['c10']::text[] AND q.instance_path_indices=ARRAY[0]::integer[]
+JOIN worker_sessions w ON w.tenant_id=r.tenant_id AND w.id::text=q.leased_by
+WHERE r.tenant_id=$1 AND r.id=$2
+"#;
+
+#[tokio::test]
+async fn frozen_old_applied_handoff_producer() {
+    let preset = FixturePreset::Ordinary;
+    let activities = ["line.work", "line.reserve", "line.release", "line.lookup"];
+    assert_eq!(env!("SAGAT_Q10C_SOURCE_COMMIT"), OLD_COMMIT);
+    assert!(std::env::var_os("SAGAT_TEST_DATABASE_URL").is_some());
+    let receipt_path = std::env::var_os("SAGAT_Q10C_ORDINARY_PHASE_RECEIPT")
+        .map(std::path::PathBuf::from)
+        .expect("phased runner receipt path");
+    assert!(!receipt_path.exists(), "private receipt must be create-new");
+
+    let platform = platform_with(Options {
+        runtime_role: crate::support::as_runtime_role(),
+        worker: WorkerSettings {
+            lease_ttl: Duration::from_secs(3_600),
+            session_ttl: Duration::from_secs(3_600),
+            ..WorkerSettings::default()
+        },
+        ..Options::default()
+    })
+    .await;
+    let producer_api_role: String = sqlx::query_scalar("SELECT current_user::text")
+        .fetch_one(&platform.api.api_pool)
+        .await
+        .expect("producer API database role");
+    let namespace_id = platform.namespace_id().await;
+
+    platform
+        .grant(platform.tenant, "q10c-applied-handoff-worker", Role::Worker)
+        .await;
+    let binding = platform
+        .api
+        .as_user(
+            Method::PUT,
+            &format!(
+                "/namespaces/{namespace_id}/worker-bindings/{}",
+                "q10c-applied-handoff-worker"
+            ),
+            "alice",
+            TENANT,
+        )
+        .json(&json!({"activities": activities}))
+        .send()
+        .await
+        .expect("create exact old worker binding");
+    assert_eq!(binding.status(), StatusCode::OK);
+
+    let quota = platform
+        .rest(
+            Method::PUT,
+            "/quotas/iteration_concurrency",
+            Some(&json!({"limit": 4})),
+        )
+        .await;
+    assert_eq!(quota.0, 200, "{}", quota.1);
+    let mut applied_document = document(preset);
+    assert!(applied_document["bodies"]["effect"]["nodes"][0]["activity"] == "line.reserve");
+    applied_document["metadata"]["name"] = json!("q10c-applied-handoff-v1");
+    applied_document["bodies"]["effect"]["nodes"][0]["reconcileWith"] = json!("line.lookup");
+    let workflow = platform
+        .publish("q10c-applied-handoff-v1", &applied_document)
+        .await;
+    let run: RunId = platform
+        .start(&workflow, &json!({"lines": [1]}))
+        .await
+        .parse()
+        .expect("run id");
+
+    let placement = Placement::new("scope-compensation-q10c-applied-handoff-v1".to_owned());
+    let round = Keeper::new(
+        platform.api.executions.clone(),
+        placement.clone(),
+        KeeperSettings {
+            ttl: Duration::from_secs(3_600),
+        },
+    )
+    .round()
+    .await
+    .expect("acquire old scheduler authority");
+    assert_eq!(round.replicas, 1);
+    let scheduler = Scheduler::new(
+        platform.api.executions.clone(),
+        Engine::new(JsonEvaluator),
+        SystemEntropy,
+        SchedulerSettings {
+            discovery_rest: Duration::ZERO,
+            ..SchedulerSettings::default()
+        },
+    )
+    .with_children(DefinitionCache::new(Arc::new(JsonIrCodec), 64))
+    .with_placement(placement);
+
+    let mut worker = platform
+        .connect("q10c-applied-handoff-worker", TENANT)
+        .await;
+    worker.register_version(&activities, "1.5").await;
+    let worker_id = worker.worker_id.clone();
+    let session_token = worker.session.clone();
+    let large = Value::String("x".repeat(preset.source_string_bytes()));
+    assert_eq!(
+        serde_json::to_vec(&large).expect("large JSON").len(),
+        preset.source_output_bytes()
+    );
+    assert!(preset.source_output_bytes() < 262_144);
+    assert_eq!(
+        serde_json::to_vec(&vec![large.clone()])
+            .expect("fixed single-member aggregate JSON")
+            .len(),
+        preset.source_aggregate_bytes()
+    );
+    assert!(preset.source_aggregate_bytes() < 262_144);
+
+    for index in 0..10 {
+        drive(&scheduler).await;
+        let lease = worker.one_task().await;
+        assert_lease(&lease, &format!("c{index}"), "work", "line.work");
+        let ack = worker
+            .complete(&lease, &large)
+            .await
+            .expect("complete old ordinary source member");
+        assert!(!ack.already_applied);
+        assert_eq!(ack.step_status, "SUCCEEDED");
+    }
+    drive(&scheduler).await;
+    let final_lease = worker.one_task().await;
+    assert_lease(&final_lease, "c10", "reserve", "line.reserve");
+    let completion_json = preset.completion_json();
+    assert!(completion_json.len() < 262_144);
+    let expected_totals = preset.expected_totals();
+    assert!(
+        expected_totals.0 + i64::try_from(completion_json.len()).expect("candidate length")
+            < 4 * 1024 * 1024
+    );
+    if matches!(preset, FixturePreset::UnderLimitIncrement) {
+        assert_eq!(completion_json.len(), 250_000);
+        assert_eq!(
+            expected_totals.0 + i64::try_from(completion_json.len()).expect("candidate length"),
+            2_250_000
+        );
+        assert_eq!(
+            expected_totals.2 + i64::try_from(completion_json.len()).expect("candidate length"),
+            4_250_020
+        );
+        assert!(
+            expected_totals.2 + i64::try_from(completion_json.len()).expect("candidate length")
+                > 4 * 1024 * 1024
+        );
+    }
+    assert_old_shape(
+        &platform,
+        run,
+        &final_lease,
+        &worker_id,
+        &session_token,
+        preset,
+    )
+    .await;
+
+    let forward = final_lease;
+    let ack = worker
+        .fail_with(&forward, "OUTCOME_UNKNOWN", false)
+        .await
+        .expect("real old ambiguous effect");
+    assert!(!ack.already_applied);
+    assert_eq!(ack.step_status, "WAITING");
+    drive(&scheduler).await;
+    let lookup = worker.one_task().await;
+    assert_eq!(lookup.task_kind, "RECONCILIATION");
+    assert_eq!(lookup.activity_name, "line.lookup");
+    let instance = lookup.instance.as_ref().expect("actual scoped lookup");
+    assert_eq!(instance.definition_node_id, "reserve~r");
+    assert_eq!(instance.instance_path.len(), 1);
+    assert_eq!(instance.instance_path[0].scope_node_id, "c10");
+    assert_eq!(instance.instance_path[0].iteration_index, 0);
+    assert!(
+        lookup.target_instance == forward.instance
+            && lookup.target_node == "reserve"
+            && lookup.target_idempotency_key == forward.idempotency_key
+    );
+    assert!(
+        !lookup.idempotency_key.is_empty() && lookup.idempotency_key != forward.idempotency_key
+    );
+    let mut completion =
+        Worker::complete_message(&lookup, r#"{"effect":"applied","output":{"hold":7}}"#);
+    completion.idempotency_key = format!("q10c-applied-handoff-{}", lookup.task_id);
+    let state: Value = sqlx::query_scalar(APPLIED_STATE_SQL)
+        .bind(platform.tenant.as_uuid())
+        .bind(run.as_uuid())
+        .bind(Uuid::parse_str(&namespace_id).expect("namespace"))
+        .bind(Uuid::parse_str(&forward.step_id).expect("forward step"))
+        .bind(Uuid::parse_str(&lookup.step_id).expect("lookup step"))
+        .bind(forward.attempt)
+        .bind(forward.generation)
+        .bind(Token::hash_of(&forward.lease_token))
+        .bind(lookup.attempt)
+        .bind(lookup.generation)
+        .bind(Token::hash_of(&lookup.lease_token))
+        .bind(&worker_id)
+        .bind(Token::hash_of(&session_token))
+        .bind(&completion.idempotency_key)
+        .fetch_one(&platform.api.db.pool)
+        .await
+        .expect("real old Applied-ready state");
+    for (name, valid) in state.as_object().expect("boolean state proofs") {
+        assert!(
+            valid.as_bool() == Some(true),
+            "old Applied-ready invariant: {name}"
+        );
+    }
+    let receipt = json!({
+        "format": "q10c-applied-handoff-v1", "source_commit": OLD_COMMIT,
+        "database_name": platform.api.db.name, "producer_api_role": producer_api_role,
+        "tenant_id": platform.tenant.to_string(), "other_tenant_id": platform.other_tenant.to_string(),
+        "namespace_id": namespace_id, "namespace_slug": NAMESPACE,
+        "worker_subject": "q10c-applied-handoff-worker", "tenant_alias": TENANT,
+        "worker_id": worker_id, "session_token": session_token, "run_id": run.to_string(),
+        "selected_owner": "c10", "scheduler_owner": "scope-compensation-q10c-applied-handoff-v1",
+        "task_lease_b64": base64::engine::general_purpose::STANDARD.encode(lookup.encode_to_vec()),
+        "forward_task_lease_b64": base64::engine::general_purpose::STANDARD.encode(forward.encode_to_vec()),
+        "completion_request_b64": base64::engine::general_purpose::STANDARD.encode(completion.encode_to_vec()),
+        "producer_projection_witness_sha256": projection_witness(&platform, run).await,
+        "closed_source_witness_sha256": source_witness(&platform, run).await,
+        "producer_authority_witness_sha256": applied_authority_witness(&platform, &worker_id).await,
+    });
+    publish_receipt(&receipt_path, &receipt);
+}

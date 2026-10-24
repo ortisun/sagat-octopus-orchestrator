@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "--locked",
+    "legacy_collection_inflight_applied_v1::parser_refuses_coherently_readdressed_lookup_task",
+    "--",
+    "--exact",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "seconds": 33.82,
+  "started_utc": "2026-10-24T03:46:58.790104+00:00",
+  "log": "parser-task-id-green.txt"
+}

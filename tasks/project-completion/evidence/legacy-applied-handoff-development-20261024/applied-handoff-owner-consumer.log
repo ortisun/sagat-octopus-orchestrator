@@ -1,0 +1,7 @@
+
+running 1 test
+q10c applied-handoff API roles: producer=postgres, consumer=postgres
+test legacy_collection_inflight_applied_v1::old_applied_lookup_attaches_without_changing_original_authority ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 552 filtered out; finished in 0.83s
+

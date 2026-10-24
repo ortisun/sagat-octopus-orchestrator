@@ -1,0 +1,16 @@
+{
+  "command": [
+    "gtimeout",
+    "--signal=TERM",
+    "--kill-after=5s",
+    "2500s",
+    "bash",
+    "/tmp/sagat-completion-20261023/applied-handoff-red/coordinator-red.sh",
+    "--case",
+    "applied-handoff"
+  ],
+  "exit_code": 101,
+  "seconds": 55.2,
+  "started_utc": "2026-10-24T03:35:34.765849+00:00",
+  "log": "fixture-contract-red.txt"
+}

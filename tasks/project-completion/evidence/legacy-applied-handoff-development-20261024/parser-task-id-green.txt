@@ -1,0 +1,9 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized] target(s) in 32.28s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/.cache/sagat-project-completion-20261023-target/debug/deps/integration_workflow_primitives-e4da7cb26c8c0369)
+
+running 1 test
+test legacy_collection_inflight_applied_v1::parser_refuses_coherently_readdressed_lookup_task ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 553 filtered out; finished in 0.00s
+

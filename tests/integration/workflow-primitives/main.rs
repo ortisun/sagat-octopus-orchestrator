@@ -43,6 +43,7 @@ mod identity_storage;
 mod journal_identity;
 mod leaf_certification;
 mod leaf_certification_native;
+mod legacy_collection_inflight_applied_v1;
 mod legacy_collection_inflight_report_v1;
 mod legacy_collection_output_view;
 mod limits;

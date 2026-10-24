@@ -1,0 +1,46 @@
+[
+  {
+    "case": "applied-handoff",
+    "role": "owner",
+    "phase": "producer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 5.18,
+    "artifact_run": "/tmp/sagat-completion-20261023/applied-handoff-final/artifacts-applied-handoff/run.cDsNo7"
+  },
+  {
+    "case": "applied-handoff",
+    "role": "owner",
+    "phase": "consumer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 0.87,
+    "artifact_run": "/tmp/sagat-completion-20261023/applied-handoff-final/artifacts-applied-handoff/run.cDsNo7"
+  },
+  {
+    "case": "applied-handoff",
+    "role": "runtime",
+    "phase": "producer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 5.12,
+    "artifact_run": "/tmp/sagat-completion-20261023/applied-handoff-final/artifacts-applied-handoff/run.cDsNo7"
+  },
+  {
+    "case": "applied-handoff",
+    "role": "runtime",
+    "phase": "consumer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 0.81,
+    "artifact_run": "/tmp/sagat-completion-20261023/applied-handoff-final/artifacts-applied-handoff/run.cDsNo7"
+  }
+]

@@ -1,0 +1,1 @@
+bash: /tmp/sagat-completion-20261023/applied-handoff-red/coordinator-red.sh: No such file or directory

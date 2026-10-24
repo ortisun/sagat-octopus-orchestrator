@@ -1,0 +1,36 @@
+{
+  "reviewer": "gpt-6-astra",
+  "reasoning_effort": "xhigh",
+  "fresh_context_each_review": true,
+  "read_only_no_execution": true,
+  "producer_C1": [
+    {
+      "finding": "reported_attempt/generation columns absent in old schema",
+      "classification": "valid actionable",
+      "fix": "actual row attempt/generation + requested event fence + reported hash"
+    }
+  ],
+  "parser_C1": [
+    {
+      "finding": "self-consistent wrong task IDs accepted",
+      "classification": "valid actionable",
+      "fix": "both task IDs bind run/node/generation; exact paired-mutation synthetic unit RED then GREEN"
+    }
+  ],
+  "attachment_C1": [
+    {
+      "finding": "capacity/active-run counters omitted",
+      "classification": "valid actionable",
+      "fix": "tenant_collection_policies/quota_ceilings/run_active_counts snapshots"
+    },
+    {
+      "finding": "full bindings/pool grants/timestamps/authority audits omitted",
+      "classification": "valid actionable",
+      "fix": "complete membership/binding/pool/session rows including exactexpiry plus all bounded fixture tenant audits"
+    }
+  ],
+  "C2_findings": null,
+  "C2_final_scope": "four selectors sufficient: pure closed case and independent21field branch; shared lifecycle unchanged",
+  "final_execution_pending": false,
+  "accepted_final_evidence": "legacy-applied-handoff-acceptance-20261024"
+}
