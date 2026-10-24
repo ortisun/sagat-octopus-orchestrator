@@ -576,3 +576,33 @@ Only Q7c.2 closes. Live-only exact entry/oldWaiting RED, equality/precedence/CAS
 rollout, general nesting, parent Q7c/Q8/quota and canonical014 remain open. Existing
 live-worker discovery/report/compensation evidence is preserved, not invalidated.
 No production/schema/grant/SDK or source/scoped-Finish activation change.
+
+### Genuine old only-live-work frontier — 2026-10-23
+
+Source/evidence59618184 accepts only §11.4(c), local Q7c.3. Immutable6c44a0e4
+publicly retains L2100000/V2100020/E4200020 with exactly one original uncancelled
+leased c10[0]/reserve and no admission capacity/stop/failure/Return/checkpoint.
+Separate old controls prove public Waiting with unchanged projection/source and
+fail the expected DrainStarted assertion. Untouched original19-field handoffs
+reach current, whose first execution call directly returns DrainStarted; exact
+scope/revision/leased entry and unchanged admission/member/identity inventories
+join the existing first-stop/drain/audit/trace/hint/authority/source/payload checks.
+Original success, canonical duplicate replay, real original-target/key compensation,
+held-compensation nonfinality and COMPENSATED/fresh verification remain accepted.
+Original discovery/report/cancel/under-limit wrappers retain their behavior.
+
+Final frozen six-selector matrix: live RED115.14s, live positive119.38s, original
+report-first115.76s, drain-first111.84s, cancel-first104.68s, under-limit104.39s,
+including sequential builds. Twenty separate1passed/0failed/0ignored processes and
+two independent old0passed/1failed/0ignored exit101 controls pass exact recognition;
+no RED DB is consumed by current. Actual API/shared store postgres or sagat_app is
+queried/asserted, with producer/current role binding. All twelve final DBs/private
+receipts/source directories are removed; original26 owned harness DBs unchanged.
+All1127 native/four fixture hashes identical. Strict Clippy27.59s/fmt4.68s/
+architecture0.39s, shell/source checks, credential-order/TERM-resistant/held-wait-lock
+probes pass. Root SQL separately checks both exploratory old Waiting and current
+COMPENSATED states. Safe source snapshots and actual-private-value scans pass.
+Evidence/reproduction: `tasks/project-completion/evidence/legacy-live-frontier-acceptance-20261023/README.md`.
+Only Q7c.3 closes. Parent Q7c/Q8/master quota, equality/precedence/CAS, rollout,
+general nesting and canonical014 tasks remain open. No production/schema/grant/SDK
+or source/scoped-Finish activation change; no provider-undo/performance claim.

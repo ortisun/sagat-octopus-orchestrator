@@ -219,7 +219,7 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [ ] B1b.2c.1d.0Q7c: Accept effective path/frontier accounting and same-snapshot stop/E behavior. Sourceb0a7ea5e; genuine old pending-nonfinal-Return acceptance is recorded in .1 below. Other frontier shapes, competing stops and held-lock/CAS controls remain pending.
 - [x] B1b.2c.1d.0Q7c.1: Prove genuine old pending NONFINAL Return is drained before checkpoint/admission, with exact old source/bytes and actual original-target compensation through terminal native publication; b8f44488, evidence/legacy-nonfinal-return-acceptance-20261023. Four new positive phases and four preserved output-view phases pass; two separate old guard tests fail as expected. No production activation or broader Q7c closure.
 - [x] B1b.2c.1d.0Q7c.2: Prove genuine old OPEN/free-capacity scope drains before first admission and finalizes FAILED without new obligations;528e10fd, evidence/legacy-free-admission-acceptance-20261023. Five selectors pass12positive processes and four separate expected old failures; current cold verification/source/roles/native finish and owned cleanup are exact. Parent Q7c and canonical tasks remain open.
-- [ ] B1b.2c.1d.0Q7c.3: Add isolated genuine-old Waiting RED and exact public current DrainStarted for the only-live-work frontier; reviewed plan evidence/legacy-live-frontier-decision-20261023. Reuse accepted Q10c.2 lifecycle; no new scenario executed yet.
+- [x] B1b.2c.1d.0Q7c.3: Prove isolated genuine-old Waiting RED and exact public current DrainStarted for the only-live-work frontier;59618184, evidence/legacy-live-frontier-acceptance-20261023. Six selectors pass20positive processes and two separate expected old failures; original lifecycle/source/roles/cleanup preserved. Parent Q7c and canonical tasks remain open.
 - [ ] B1b.2c.1d.0Q8: Accept guarded native new-reason writer. Source9fd9405f/109908be; four native behavioral cases pass, plus genuine empty/checkpointed guards and stopped-report compensation. ExistingOutputs live-worker discovery passes in ce6560c5; remaining evidence controls/upgrade gates stay open.
 - [x] B1b.2c.1d.0Q7bD: Correct unconditional report-outbox assumption to existing durable collection discovery, reviewed source/constitution/ADR mapping; scoped-output-refusal-discovery.md. Actual current report/discovery/compensation now has focused acceptance; post-ACK process recovery remains separate.
 - [ ] B1b.2c.1d.0Q7b: Complete exceptional report acceptance over the coupled implementation3710a5b7, preserving all current authority, exact receipt/fence/secret checks and one-transaction root/scoped phases; remaining fence/terminal/race/recovery controls are pending.
@@ -566,3 +566,33 @@ Only Q7c.2 closes. Live-only exact entry/oldWaiting RED, equality/precedence/CAS
 rollout, general nesting, parent Q7c/Q8/quota and canonical014 remain open. Existing
 live-worker discovery/report/compensation evidence is preserved, not invalidated.
 No production/schema/grant/SDK or source/scoped-Finish activation change.
+
+### Genuine old only-live-work frontier — 2026-10-23
+
+Source/evidence59618184 accepts only §11.4(c), local Q7c.3. Immutable6c44a0e4
+publicly retains L2100000/V2100020/E4200020 with exactly one original uncancelled
+leased c10[0]/reserve and no admission capacity/stop/failure/Return/checkpoint.
+Separate old controls prove public Waiting with unchanged projection/source and
+fail the expected DrainStarted assertion. Untouched original19-field handoffs
+reach current, whose first execution call directly returns DrainStarted; exact
+scope/revision/leased entry and unchanged admission/member/identity inventories
+join the existing first-stop/drain/audit/trace/hint/authority/source/payload checks.
+Original success, canonical duplicate replay, real original-target/key compensation,
+held-compensation nonfinality and COMPENSATED/fresh verification remain accepted.
+Original discovery/report/cancel/under-limit wrappers retain their behavior.
+
+Final frozen six-selector matrix: live RED115.14s, live positive119.38s, original
+report-first115.76s, drain-first111.84s, cancel-first104.68s, under-limit104.39s,
+including sequential builds. Twenty separate1passed/0failed/0ignored processes and
+two independent old0passed/1failed/0ignored exit101 controls pass exact recognition;
+no RED DB is consumed by current. Actual API/shared store postgres or sagat_app is
+queried/asserted, with producer/current role binding. All twelve final DBs/private
+receipts/source directories are removed; original26 owned harness DBs unchanged.
+All1127 native/four fixture hashes identical. Strict Clippy27.59s/fmt4.68s/
+architecture0.39s, shell/source checks, credential-order/TERM-resistant/held-wait-lock
+probes pass. Root SQL separately checks both exploratory old Waiting and current
+COMPENSATED states. Safe source snapshots and actual-private-value scans pass.
+Evidence/reproduction: `tasks/project-completion/evidence/legacy-live-frontier-acceptance-20261023/README.md`.
+Only Q7c.3 closes. Parent Q7c/Q8/master quota, equality/precedence/CAS, rollout,
+general nesting and canonical014 tasks remain open. No production/schema/grant/SDK
+or source/scoped-Finish activation change; no provider-undo/performance claim.
