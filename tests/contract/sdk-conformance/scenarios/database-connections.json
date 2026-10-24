@@ -496,6 +496,7 @@
   "workers": {
     "w1": {
       "workerName": "database-consumer",
+      "protocolVersion": "1.4",
       "maxInflight": 1,
       "autostart": false,
       "activities": {
