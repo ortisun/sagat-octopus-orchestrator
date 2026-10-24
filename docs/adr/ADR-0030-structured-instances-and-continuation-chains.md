@@ -150,13 +150,15 @@ state operations; accepting this ADR does not authorize a general payload viewer
     wait ends only at FINAL, and client timeout stops waiting rather than the workflow.
 18. For runs using continuation chains, lock chain before its current run; preserve applicable scheduler/drain/session/activity
     admission ordering. Take the tree-admission advisory lock for creation before ordered
-    subordinate resources. Handoff inserts its successor and does not lock two preexisting runs.
+    subordinate resources. Handoff inserts its successor and does not take two existing run mutation locks.
+    ADR-0037 permits only the stable immediate-parent identity KEY SHARE guard, before head/link,
+    under its immutable initial/head/link ancestry precondition.
     Direct-run mutations of a chain member follow the same chain-before-run order. Never impose
     arbitrary sorted run IDs on the old parent-first creation path.
 19. Persist a parent child-instance link with original parent instance, child chain, cancellation
     latch, final outcome and settlement marker. Parent transitions lock parent chain/run then link;
     child handoff/finalization lock child chain/run then link. Neither obtains the other existing
-    chain/run row. Parent cancellation writes the link latch; every handoff checks it under lock,
+    chain/run mutation lock; the child handoff retains only ADR-0037's parent identity guard. Parent cancellation writes the link latch; every handoff checks it under lock,
     and cancellation reconciliation follows the current child segment. Final chain outcome is
     applied once to the original parent instance under the parent's scheduler fence. Intermediate
     continued segments do not emit child completion. Keep legacy v1 parent/child behavior until
@@ -183,7 +185,8 @@ Graph back-edges and procedural replay would change the execution model. Flatten
 into `NodeId` hides independent identity and collides at module boundaries. A separate loop engine
 or compensation service duplicates durable ownership. Completion-order compensation violates
 dependency semantics. Sorted cross-run locking conflicts with existing parent-first writers;
-durable child links avoid requiring parent and child transactions to acquire each other's run.
+durable child links avoid requiring parent and child transactions to acquire each other's run
+mutation lock. ADR-0037 distinguishes the narrow stable parent identity guard from that authority.
 
 The cost is wider identity, additive tables/indexes, more events, explicit descendant admission and
 chain-link retention. The conservative derived-instance reserve can reject forward work before
@@ -202,3 +205,7 @@ Record failures/skips and operational recovery cost. None of these results is su
 Disable new publications/starts to roll back capability, but retain compatible readers and workers
 until affected runs drain. Changing scope identity, compensation dependencies, lock order, evaluator caps,
 value policy or in-flight compatibility requires a new decision with the constitution's evidence.
+
+ADR-0039 additionally advances the unrelated rerun source identity KEY SHARE guard before
+creation admission. This grants no source business-state authority and relies on its documented
+current rerun-root/child-writer separation. It does not change the child-link protocol above.

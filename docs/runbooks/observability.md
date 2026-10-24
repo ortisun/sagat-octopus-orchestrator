@@ -119,3 +119,17 @@ WHERE action = 'access.denied.cross_tenant' ORDER BY created_at DESC LIMIT 100;
 ## monitor-blind
 
 **`SagatMonitorBlind`.** The monitor cannot run the query for some kind of alert (`alert_checks_failed_total{kind}`); the alerts of that kind stay as they were, neither raised nor resolved. Look at the engine's log (`could not look for an alert condition`), the database's load and its statement timeout.
+
+## Dormant leaf source certification
+
+Use `workflow_collection_leaf_certification_attempts_total{outcome}` and its duration histogram to
+find returned native certification refusals, storage failures or Unknown responses. Locate one
+attempt by its qualified original source in `workflow.collection.leaf.certify`; no payload or raw
+error detail is exported. Refusal requires current source/CAS/authority inspection through trusted
+storage, not blind retry. For Unknown, retain the original qualified identity and reconcile under
+fresh current scheduler authority/revision; do not assume rollback from client cancellation.
+
+`workflow_collection_leaf_certified_total` counts acknowledged first commits only. Compare durable
+canonical records/audits when reconciling an incident; a lost reply followed by replay need not
+appear in this process counter. Do not enable runtime INSERT or a production caller based on
+telemetry: source producer/C0 and remaining release gates are independent.

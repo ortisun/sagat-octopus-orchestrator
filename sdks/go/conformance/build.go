@@ -125,6 +125,8 @@ func stepOptions(m object) []workflow.StepOption {
 			opts = append(opts, workflow.HighRisk(asBool(value)))
 		case "onError":
 			opts = append(opts, workflow.OnError(asString(value)))
+		case "outputSchema":
+			opts = append(opts, workflow.OutputSchema(asObject(value)))
 		default:
 			panic(fmt.Sprintf("unknown step option %q", key))
 		}
@@ -151,6 +153,31 @@ func apply(b *workflow.Builder, ops []any) {
 			b.Database(id, database)
 		case "step":
 			b.Step(id, asString(op["activity"]), stepOptions(options)...)
+		case "script":
+			var opts []workflow.ScriptOption
+			for _, key := range sortedKeys(options) {
+				switch key {
+				case "language":
+					opts = append(opts, workflow.ScriptLanguage(asString(options[key])))
+				case "retry":
+					opts = append(opts, workflow.ScriptRetry(retryOptions(asObject(options[key]))...))
+				case "compensateWith":
+					opts = append(opts, workflow.ScriptCompensateWith(asString(options[key])))
+				case "secrets":
+					var names []string
+					for _, value := range asList(options[key]) {
+						names = append(names, asString(value))
+					}
+					opts = append(opts, workflow.ScriptSecrets(names...))
+				case "onError":
+					opts = append(opts, workflow.ScriptOnError(asString(options[key])))
+				case "outputSchema":
+					opts = append(opts, workflow.ScriptOutputSchema(asObject(options[key])))
+				default:
+					panic(fmt.Sprintf("unknown script option %q", key))
+				}
+			}
+			b.Script(id, asString(op["artifactDigest"]), opts...)
 		case "sleep":
 			b.Sleep(id, asMillis(op["durationMs"]))
 		case "waitForEvent":
@@ -162,6 +189,8 @@ func apply(b *workflow.Builder, ops []any) {
 					opts = append(opts, workflow.OnTimeout(asString(options[key])))
 				case "lookbackMs":
 					opts = append(opts, workflow.Lookback(asMillis(options[key])))
+				case "outputSchema":
+					opts = append(opts, workflow.WaitOutputSchema(asObject(options[key])))
 				default:
 					panic(fmt.Sprintf("unknown waitForEvent option %q", key))
 				}
@@ -177,6 +206,8 @@ func apply(b *workflow.Builder, ops []any) {
 					opts = append(opts, workflow.ChildInput(asString(options[key])))
 				case "cancelPolicy":
 					opts = append(opts, workflow.ChildCancelPolicy(workflow.CancelPolicy(asString(options[key]))))
+				case "outputSchema":
+					opts = append(opts, workflow.ChildOutputSchema(asObject(options[key])))
 				default:
 					panic(fmt.Sprintf("unknown invokeChild option %q", key))
 				}
@@ -318,6 +349,16 @@ func builderOf(definition object) *workflow.Builder {
 	}
 	if schema := asObject(definition["outputSchema"]); schema != nil {
 		b.OutputSchema(schema)
+	}
+	if limits := asObject(definition["limits"]); limits != nil {
+		var opts []workflow.LimitOption
+		if value, present := limits["maxInstances"]; present {
+			opts = append(opts, workflow.MaxInstances(asInt(value)))
+		}
+		if value, present := limits["maxDepth"]; present {
+			opts = append(opts, workflow.MaxDepth(asInt(value)))
+		}
+		b.Limits(opts...)
 	}
 	if state := asObject(definition["state"]); state != nil {
 		queries := make(map[string]workflow.QueryDefinition)

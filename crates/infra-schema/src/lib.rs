@@ -3,6 +3,7 @@
 //! that was seen (`FR-005-006`), and the format of the artifact bundle.
 
 pub mod bundle;
+pub mod classification;
 
 use sagat_application::scripts::{SchemaChecker, SchemaProblem};
 use sagat_domain::scripts::MAX_SCHEMA_BYTES;

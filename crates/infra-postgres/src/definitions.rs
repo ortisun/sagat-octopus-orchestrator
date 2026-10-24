@@ -520,8 +520,8 @@ impl DefinitionStore for PgDefinitionStore {
                 sqlx::query(
                     "INSERT INTO workflow_versions \
                      (id, tenant_id, workflow_id, version_number, digest, document, release_notes, \
-                      published_by, published_at) \
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                      published_by, published_at, classification_rules) \
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1)",
                 )
                 .bind(version.id().as_uuid())
                 .bind(tenant.as_uuid())

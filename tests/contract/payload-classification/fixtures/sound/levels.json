@@ -1,0 +1,1 @@
+{"inputSchema":{"type":"object","x-sagat-classification":"public","properties":{"id":{"type":"string"},"staff":{"type":"string","x-sagat-classification":"internal"},"person":{"type":"string","x-sagat-classification":"pii"},"credential":{"type":"string","x-sagat-classification":"secret"}},"additionalProperties":false}}

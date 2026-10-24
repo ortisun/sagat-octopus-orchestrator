@@ -21,7 +21,7 @@ pub(crate) async fn run(common: &Common, env: &Env, io: &mut Io<'_>) -> Result<u
     let mut failed = 0usize;
     let docs = io.docs().map(str::to_owned);
     for item in &loaded {
-        let diagnostics = crate::diagnostics::of_document(&item.document);
+        let (diagnostics, classification) = crate::diagnostics::analyze_document(&item.document);
         let errors = diagnostics.iter().filter(|d| !d.warning).count();
         if errors == 0 {
             io.say(format!("ok    {}", item.entry.name));
@@ -31,6 +31,15 @@ pub(crate) async fn run(common: &Common, env: &Env, io: &mut Io<'_>) -> Result<u
         }
         for line in crate::diagnostics::render(&diagnostics, docs.as_deref()) {
             io.say(format!("        {line}"));
+        }
+        if let Some(analysis) = classification {
+            for line in crate::diagnostics::classification_report(
+                &item.entry.name,
+                &analysis.report,
+                analysis.report_truncated,
+            ) {
+                io.say(format!("        {line}"));
+            }
         }
     }
     if failed > 0 {
@@ -123,6 +132,8 @@ pub(crate) async fn check_on_platform(
         .into_iter()
         .flatten()
         .map(crate::diagnostics::of_server_problem)
+        // Classification is a pure document analysis already printed by the local codec above.
+        .filter(|warning| !warning.code.starts_with("CLASSIFICATION_"))
         .collect();
     for line in crate::diagnostics::render(&warnings, docs.as_deref()) {
         io.say(format!("        {line}"));

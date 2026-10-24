@@ -1,6 +1,6 @@
 {
   "name": "database-connections",
-  "description": "FR-017-010/016: five public builders produce equal canonical operations; all five SDK clients start real PostgreSQL/OpenBao managed runs and their ordinary workers consume exact typed results. DDL is rejected without retry.",
+  "description": "FR-017-010/016: five public builders produce equal canonical operations; all five SDK clients start real PostgreSQL/OpenBao managed runs and their ordinary 1.4 workers consume exact typed results while the isolated managed executor uses 1.6. DDL is rejected without retry.",
   "server": {
     "managedDatabase": true
   },

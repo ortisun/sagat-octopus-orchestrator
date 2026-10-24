@@ -794,6 +794,15 @@ async fn a_worker_of_another_tenant_is_refused_and_the_attempt_is_audited() {
         subject_of("worker-b"),
         Role::Worker,
     );
+    sagat_infra_postgres::PgIdentityStore::new(w.db.pool.clone())
+        .insert_membership(&sagat_domain::identity::Membership::restore(
+            foreign.tenant_id(),
+            foreign.subject().clone(),
+            Role::Worker,
+            crate::support::now(),
+        ))
+        .await
+        .expect("foreign tenant's current worker membership");
     let _theirs = w.session_as(&foreign, &["act.a"], 10).await;
     let heartbeat = w.workers.heartbeat(&foreign, &task_ref(&task)).await;
     assert_eq!(heartbeat.map(|_| ()), Err(AppError::StaleAttempt));

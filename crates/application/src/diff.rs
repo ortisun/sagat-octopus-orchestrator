@@ -86,8 +86,8 @@ pub struct DocumentDiff {
     pub changes_omitted: usize,
     /// What can make a caller or an emitter of the workflow's contract fail.
     pub breaking: Vec<DiffFinding>,
-    /// What somebody must prepare before the new version can run: a worker bound to a new
-    /// activity, a secret, a script.
+    /// What somebody must review or prepare before the new version can run: classification
+    /// changes, incomplete classification carriers, workers, secrets and scripts.
     pub attention: Vec<DiffFinding>,
 }
 

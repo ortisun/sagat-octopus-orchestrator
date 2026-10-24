@@ -210,8 +210,10 @@ async fn create_declared_run(
     let created = w
         .store
         .create(NewRun {
+            retained: None,
             limits: RunLimits::UNLIMITED,
             info: RunInfo {
+                origin: None,
                 run_id: run,
                 tenant_id: w.admin.tenant_id(),
                 namespace_id: w.namespace.id(),
@@ -227,12 +229,10 @@ async fn create_declared_run(
                 parent: None,
                 depth: 0,
                 root: run,
-                origin: None,
             },
             definition: std::sync::Arc::new(declared.parsed().definition.clone()),
             input,
             input_blob: None,
-            retained: None,
             audit: AuditRecord::by(
                 &w.admin,
                 AuditAction::RunStarted,

@@ -248,6 +248,175 @@
       ]
     },
     {
+      "table": "capacity_group_finish_receipts",
+      "column": "member_kind",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Database CHECK limits member_kind to CHILD_ROOT or SCOPED_PATH (at most 11 ASCII bytes); existing writers default to CHILD_ROOT. Dormant fixture-only metadata; no retained content/log delta."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20261212000000_scoped_finish_binding.up.sql"
+      ]
+    },
+    {
+      "table": "capacity_group_finish_receipts",
+      "column": "root_owner_node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Complete variant CHECK requires NULL for ChildRoot, or a 1..64-byte ASCII NodeId for fixed OrdinaryLeafV1 ScopedPath. Dormant retained binding metadata; no content/log delta."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20261212000000_scoped_finish_binding.up.sql"
+      ]
+    },
+    {
+      "table": "capacity_group_finish_receipts",
+      "column": "fingerprint",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Database CHECK requires exactly 32 bytes for the command fingerprint. Dormant fixture-only metadata; no retained content/log delta."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20261210000000_capacity_finish_storage.up.sql",
+        "crates/infra-postgres/src/capacity_finish.rs"
+      ]
+    },
+    {
+      "table": "capacity_group_finish_receipts",
+      "column": "resulting_possession",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Database CHECK limits resulting_possession to HELD, VACANT or RETIRED (at most 7 ASCII bytes). Dormant fixture-only metadata; no retained content/log delta."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20261210000000_capacity_finish_storage.up.sql",
+        "crates/infra-postgres/src/capacity_finish.rs"
+      ]
+    },
+    {
+      "table": "capacity_group_members",
+      "column": "root_owner_node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Complete variant CHECK requires NULL for ChildRoot, or a 1..64-byte ASCII NodeId for fixed OrdinaryLeafV1 ScopedPath. Dormant retained binding metadata; no content/log delta."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20261212000000_scoped_finish_binding.up.sql"
+      ]
+    },
+    {
+      "table": "capacity_group_members",
+      "column": "member_kind",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Database CHECK limits member_kind to CHILD_ROOT or SCOPED_PATH (at most 11 ASCII bytes). Dormant fixture-only metadata; no retained content/log delta."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20261210000000_capacity_finish_storage.up.sql",
+        "crates/infra-postgres/src/capacity_finish.rs",
+        "crates/infra-postgres/migrations/20261212000000_scoped_finish_binding.up.sql"
+      ]
+    },
+    {
+      "table": "capacity_group_members",
+      "column": "state",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Database CHECK limits state to ACTIVE or FINISHED (at most 8 ASCII bytes). Dormant fixture-only metadata; no retained content/log delta."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20261210000000_capacity_finish_storage.up.sql",
+        "crates/infra-postgres/src/capacity_finish.rs"
+      ]
+    },
+    {
+      "table": "capacity_groups",
+      "column": "holder_state",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Generated column is NULL or ACTIVE (6 ASCII bytes), never caller text. Dormant fixture-only metadata; no retained content/log delta."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20261210000000_capacity_finish_storage.up.sql",
+        "crates/infra-postgres/src/capacity_finish.rs"
+      ]
+    },
+    {
+      "table": "capacity_groups",
+      "column": "possession",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Database CHECK limits possession to HELD, VACANT or RETIRED (at most 7 ASCII bytes). Dormant fixture-only metadata; no retained content/log delta."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20261210000000_capacity_finish_storage.up.sql",
+        "crates/infra-postgres/src/capacity_finish.rs"
+      ]
+    },
+    {
       "table": "command_dedupe",
       "column": "idempotency_key",
       "sql_type": "text",
@@ -3671,6 +3840,60 @@
       ]
     },
     {
+      "table": "payload_reveal_grants",
+      "column": "granted_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Subject is bounded to 255 non-control characters by the domain value object. Grant writes serialize the namespace set and enforce at most 256 grants per namespace. Writer/source: `crates/infra-postgres/src/reveal_grants.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/reveal_grants.rs"
+      ]
+    },
+    {
+      "table": "payload_reveal_grants",
+      "column": "subject",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Subject is bounded to 255 non-control characters by the domain value object. Grant writes serialize the namespace set and enforce at most 256 grants per namespace. Writer/source: `crates/infra-postgres/src/reveal_grants.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/reveal_grants.rs"
+      ]
+    },
+    {
+      "table": "steps",
+      "column": "node_kind",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "The steps_node_kind_valid CHECK admits only the 16 fixed runtime discriminator strings (at most 14 bytes). Writer/source: `crates/infra-postgres/src/execution.rs`; migration `20261205000000_bounded_execution_discovery.up.sql`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
       "table": "secret_provider_operations",
       "column": "state",
       "sql_type": "text",
@@ -5998,6 +6221,114 @@
       },
       "owner_paths": [
         "crates/infra-postgres/src/primitives.rs"
+      ]
+    },
+    {
+      "table": "leaf_collection_success_certifications",
+      "column": "aggregate_result_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Dormant immutable certification metadata: exact32bytes, enforced by leaf_success_digests CHECK. No values or retained content/log delta; source proof is not supplied by schema fixtures."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20261211000000_leaf_success_certification.up.sql"
+      ]
+    },
+    {
+      "table": "leaf_collection_success_certifications",
+      "column": "body_node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Dormant immutable certification metadata: NodeId ASCII grammar and at most64bytes, enforced by leaf_success_body CHECK. No values or retained content/log delta; source proof is not supplied by schema fixtures."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20261211000000_leaf_success_certification.up.sql"
+      ]
+    },
+    {
+      "table": "leaf_collection_success_certifications",
+      "column": "checkpoint_result_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Dormant immutable certification metadata: exact32bytes, enforced by leaf_success_digests CHECK. No values or retained content/log delta; source proof is not supplied by schema fixtures."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20261211000000_leaf_success_certification.up.sql"
+      ]
+    },
+    {
+      "table": "leaf_collection_success_certifications",
+      "column": "owner_node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Dormant immutable certification metadata: NodeId ASCII grammar and at most64bytes, enforced by leaf_success_owner CHECK. No values or retained content/log delta; source proof is not supplied by schema fixtures."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20261211000000_leaf_success_certification.up.sql"
+      ]
+    },
+    {
+      "table": "leaf_collection_success_certifications",
+      "column": "profile",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Dormant immutable certification metadata: exact ORDINARY_LEAF_V1 constant, enforced by leaf_success_profile CHECK. No values or retained content/log delta; source proof is not supplied by schema fixtures."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20261211000000_leaf_success_certification.up.sql"
+      ]
+    },
+    {
+      "table": "leaf_collection_success_certifications",
+      "column": "return_node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Dormant immutable certification metadata: NodeId ASCII grammar and at most64bytes, enforced by leaf_success_return CHECK. No values or retained content/log delta; source proof is not supplied by schema fixtures."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20261211000000_leaf_success_certification.up.sql"
       ]
     },
     {

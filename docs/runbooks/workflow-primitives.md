@@ -2,8 +2,9 @@
 
 The public workflow document remains additive `sagat-octopus-orchestrator.io/v1`. Bounded
 `switch`, run-addressed declared Query/Update and a bounded root human approval are available
-with the existing basic root nodes. A public collection workflow is a chain of `forEach` nodes that
-ends at `end`; every referenced body contains exactly one activity followed by one `return`.
+with the existing basic root nodes. A public collection workflow may start with ordinary source
+activities followed by a chain of `forEach` nodes ending at `end`; each referenced body contains a
+chain of one to eight activities followed by one `return`.
 The restricted public loop shape uses an activity followed by a return in its body; a loop's
 `onError` edge may lead to an `end` or to recovery activities that end at an `end`. Nested
 collections, triggers, structured-primitive combinations and broader body graphs remain closed.
@@ -316,3 +317,250 @@ retained idempotency receipt references them. Revert only after validating old a
 worker minors and all five SDKs against the target build. The worker adapter advertises minor 1.5
 for scoped tasks. Workers using 1.4 or earlier receive only root tasks; preserve that capability
 gate and the 1.5 journal/lease recovery path during rollback.
+
+
+## Scoped inline reports and stale receipts
+
+Scoped claims, heartbeat and inline completion/failure use current exact-path transactions.
+Completion and reconciliation retain outputs and receipts atomically with their addressed journal;
+compensation outputs remain discarded. Whole-run replay remains the independent projection oracle.
+A secret output scan closes its database transaction before calling OpenBao, then checks current
+binding/membership, lease and secret versions again. An ordinary completion cannot acknowledge a
+cancelled capability; the explicit non-retryable `CANCELLED` failure can settle cancellation.
+
+A previously accepted receipt still requires current execution authority and the correct echoed
+step identity. Investigate `FORBIDDEN`, `NOT_BOUND` or `STALE_ATTEMPT` against current membership,
+bindings and the exact task identity; retaining an old receipt/token does not restore authority.
+Never copy tokens or secret values into logs. Relevant traces are `worker.scoped.report` and
+`secret.output.scan`; existing quota and secret-denial counters/audits remain authoritative.
+
+Reproduce the happy report/replay and failure barriers with Docker and the Rust toolchain:
+
+```sh
+SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test --locked -p sagat-tests \
+  --test integration_workflow_primitives -- \
+  bounded_reports:: bounded_report_provider:: --test-threads=1 --nocapture
+```
+
+The tests revoke unrelated iteration-history access, retain full journal replay as an oracle,
+withdraw current membership/binding, forge a step id and pause real OpenBao reads. The provider
+barriers additionally acquire the run lock independently while the scan is paused; no completion
+commits after authority withdrawal. These diagnostics do not enable scoped blob output, larger
+graph/nesting or the large resource acceptance gates.
+
+## Scoped secret and blob capabilities
+
+Scoped secret delivery and blob authorization use the current exact path. A paused OpenBao read
+holds neither the run lock nor worker authority locks. A role/binding withdrawal that commits
+during that read makes the resumed delivery fail; the resolved value is discarded. Publisher
+access, secret versions, worker pools and live lease are also checked before handoff. Secret and
+blob-read audits identify the logical scoped step UUID, so distinct iterations remain distinct
+while repeats within the same attempt collapse. Secret values and tokens never enter the audit.
+
+Blob upload for a step declaring secrets retains the existing content-scanning refusal, including
+a current cancelled attempt: this only returns a denial. Other scoped blob access requires a live,
+uncancelled attempt. An exact completion receipt may replay after lease expiry, after current authority and identity
+checks. A receipt miss and scoped report-target lookup require the exact live lease before catalog
+metadata access. Cancellation may still report a known produced result so scope drain can account
+for the effect; it does not authorize fresh uploads.
+
+Public gRPC `WriteBlob` skips the root-only managed database probe for a scoped instance. It still
+requires the current exact-path upload capability before object reservation. The real RPC fixture
+revokes SELECT on unrelated iteration checkpoints and verifies a successful upload plus a typed
+`STALE_ATTEMPT` refusal for a self-consistent forged generation, with no second object reserved.
+Upload permission is separate from completion; ordinary forward scoped completion follows the
+transactional rules below.
+
+Reproduce the bounded secret/blob checks and real-provider withdrawal barriers:
+
+```sh
+SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test --locked -p sagat-tests \
+  --test integration_workflow_primitives -- \
+  bounded_capabilities:: bounded_report_provider:: --test-threads=2 --nocapture
+```
+
+The capability-only checks do not transfer object bytes. `scoped_blob_completion` exercises the
+real public upload and completion path for300KB outputs. Blob service checks tenant/namespace,
+object/catalog state and digest; the exact-path writer additionally binds the stored descriptor
+ID/size/digest/content type to its catalog commit. Output, catalog state, journal, quota, outbox and receipt commit
+or roll back together. Derived tasks and activities declaring secrets cannot return blob outputs.
+A journal-insert fault leaves the blob UPLOADED and task leased; retrying the same request after
+removing the injected fault commits once, and later calls replay its receipt.
+
+```sh
+SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test --locked -p sagat-tests \
+  --test integration_workflow_primitives scoped_blob_completion:: -- --test-threads=3 --nocapture
+SAGAT_TEST_AS_RUNTIME_ROLE=1 SAGAT_SDK_SCENARIO=collection-blob-output \
+  cargo test --locked -p sagat-tests --test sdk_conformance \
+  every_sdk_conforms_to_every_scenario -- --exact --ignored --nocapture
+```
+
+### Child admission and handoff contention
+
+Child reservation serializes against parent cancellation with `FOR NO KEY UPDATE`, then takes
+the lifetime tree lock. Creation and evaluated handoff take active-run admission locks before
+retaining input/state payloads. This avoids an inversion with a successor's root foreign-key
+check or a competing novel payload's uniqueness check. A database deadlock remains a failed
+transaction, never an acknowledged transition; inspect existing scheduler action failures/logs
+and retry from persisted state. The journal, quota deltas, audit and outbox retain their atomic
+commit boundary. No payload bytes are needed in diagnostic logs.
+
+Reproduce the two lock barriers with the repository's disposable PostgreSQL fixture:
+
+```sh
+SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test --locked -p sagat-tests \
+  --test fault_workflow_primitives do_not_ -- --test-threads=1 --nocapture
+```
+
+The depth-two case includes aborted admission and a real scheduler retry; the quota/payload case
+commits a new root alongside continuation. Their focused results do not establish the complete
+child-link lock graph or nested collection capacity; see the
+[working lock inventory](../../tasks/project-completion/capacity-lock-inventory.md).
+
+A chained child's parent updates its link for cancellation/final notification; it does not update
+the first segment's legacy `parent_settled`/`parent_cancel` flags. Only children without a matching
+link use legacy flags, restricted to tenant and exact parent. The scheduler follows a cancelled
+link to its current child head. Diagnose failures through existing scheduler outcomes, cancellation
+audits and the `child.finished` journal event without logging payloads. Reproduce the three
+database trigger guards with:
+
+```sh
+SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test --locked -p sagat-tests \
+  --test fault_workflow_primitives chain_parent_ -- --test-threads=3 --nocapture
+```
+
+### Publication diagnostic checks
+
+Validate an editable draft before publishing. Canonical schema errors have precedence (`SCHEMA`);
+schema-valid cycle/escape/overlap/recursion failures use `INVALID_SCOPE`. Body escapes include the
+body and source node. An ordinary missing root target retains `GRAPH`. Correct unsupported
+object literals or expressions above 1024 UTF-8 bytes when the reason is `EXPRESSION`; the byte
+limit can be exceeded even when the character count passes the schema. Rejection creates no
+published version. Use the response trace ID for diagnosis; do not log expression contents.
+
+```sh
+SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test --locked -p sagat-tests \
+  --test integration_workflow_primitives publication_rejections -- --test-threads=3 --nocapture
+```
+
+The repository fixture starts its own PostgreSQL and exercises both draft validation and public
+publication with the application runtime role. See the exact failures and bounded review in
+`tasks/project-completion/evidence/publication-scope-20261018/`.
+
+
+### Stable parent identity guard
+
+ADR-0037 retains the early handoff parent KEY SHARE guard under immutable initial/head/link
+ancestry. Do not remove it or upgrade it to parent mutation authority. A reparenting or ancestry
+migration must re-establish that mapping before using the guard. The focused ordered race is:
+
+```sh
+SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test --locked -p sagat-tests --test fault_workflow_primitives \
+  chains::parent_cancellation_and_a_child_hand_off_commit_in_either_order_and_the_latch_never_gets_lost \
+  -- --exact --nocapture --test-threads=1
+```
+
+Use the repository disposable PostgreSQL fixture (unset SAGAT_TEST_DATABASE_URL). The retained
+negative control failed with public Unavailable; that error alone does not diagnose a database
+deadlock. Inspect database diagnostics when investigating failures. Evidence and restoration
+hashes: tasks/project-completion/evidence/parent-fk-guard-20261018/. General nesting stays closed.
+
+
+Exact-path mutation entry now uses the applicable chain-before-run prefix. For lock regressions,
+run `SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test --locked -p sagat-tests --test integration_workflow_primitives bounded_fences -- --test-threads=3`
+with the external database URL unset. The storage fixture combines scope and chain metadata only
+to test locking; it does not open general publication or establish chain finality for scoped work.
+
+
+A run-addressed declared Update remains pinned after continuation and acquires its membership
+chain before that run. Use the `operations_http` workflow integration filter to verify successor
+updates, RUN_CONTINUED, replay audits and rollback; an earlier run is never silently forwarded.
+Evidence: tasks/project-completion/evidence/direct-update-chain-prefix-20261018/.
+
+
+### Chain authority expiring behind a lock
+
+Handoff and finalization reject a scheduler lease that expires while waiting for its row lock,
+without durable chain/run/audit/outbox effects. The keeper supplies current authority on retry;
+do not treat the stale attempt as successful. Existing scheduler continuation counters classify
+SchedulerFenceLost as `scheduler_actions_total{kind="continuation",outcome="fenced"}` and
+`scheduler_fenced_total{kind="continuation"}`; the private port barriers do not assert telemetry.
+No payload or secret is added to those labels or diagnostics.
+
+```sh
+SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test --locked -p sagat-tests --test integration_workflow_primitives \
+  post_wait_fence_ -- --nocapture --test-threads=3
+```
+
+Unset SAGAT_TEST_DATABASE_URL to use repository disposable PostgreSQL. The barrier observes
+sagat_app when requested. Evidence includes setup failures separately from three reproduced
+expired-authority commits and the final passing controls. Other primitive fences remain pending.
+
+
+### Collection/loop authority expiry during lock wait (2026-10-18)
+
+Refs:T014-040, FR-014-014/015. The collection and loop adapters retain their scheduler SHARE
+guard in the owning transaction and validate expiry using a database clock sampled after
+acquiring it. Wrong-shard and generation-conversion errors keep their existing precedence.
+A rejected entry changes no projection, payload, quota, timer, journal, outbox or audit. A supplied
+collection entry audit is inserted once through finish_version, atomically with the transition.
+Private runtime-role entry barriers reproduce the stale commits and verify rejection, fresh
+authority and replay. This is not a continuous wall-clock-until-commit guarantee or acceptance
+of nested scopes. Approval's separate check and B0 ordering remain pending. Existing fenced
+metrics use kind=collection/loop without tenant/run labels; the port tests do not test counters.
+Evidence: tasks/project-completion/evidence/scope-post-wait-fence-20261018/.
+
+
+### Approval scheduler authority after lock waits (2026-10-18)
+
+Refs:T014-040, FR-014-008/014. Open/expire retain a scheduler SHARE guard in their owning
+transaction and validate authority against a database clock sampled after acquiring it. An
+expired authority returns the existing typed fence error before request/timer/projection, journal,
+outbox, audit or telemetry queue effects. Oversized-generation storage errors keep precedence;
+decide uses its current-user authorization. No business-deadline clock or opening replay contract
+changes. Real runtime-role barriers cover both opening and genuinely due expiry; the atomic
+checkpoint includes the telemetry queue and approval tables. Existing fenced metrics use
+approval_open/approval_expire kinds without tenant/run labels; these port tests do not assert
+counters. This does not enable nested scopes or complete B0.
+Evidence: tasks/project-completion/evidence/approval-post-wait-fence-20261018/.
+
+
+### Approval member-chain writer guard (2026-10-18)
+
+Refs:T014-040, FR-014-008/014. Approval open/expire/decide acquire a tenant/namespace-scoped
+applicable membership chain before the exact own run, retaining both guards through commit.
+The shared transaction helper is the existing declared Run Update guard; it never forwards or
+grants head authority. Initial membership commits with new-run creation and later identity is
+immutable; live reparent/migration requires its own protocol. Decision authorization, typed
+errors, terminal/replay and audit/outbox boundaries remain unchanged. Native wait/final-audit
+barriers verify ordering and guard lifetime; no new public composition or B0 completion is
+inferred. Existing outcome metrics and sensitive-data-free logs keep their current mapping.
+Evidence: tasks/project-completion/evidence/approval-chain-prefix-20261018/.
+
+
+### Collection/loop member-chain serialization (2026-10-18)
+
+Refs:T014-040, FR-014-004/006/014. Collection entry/drain and loop writer helpers retain an
+applicable scoped membership chain before own-run UPDATE in their owning transaction. Existing
+CAS, fences, quota/deadline/drain rules, typed errors, audit/outbox and telemetry mapping stay
+unchanged. Native app-role barriers prove chain wait precedes own-run acquisition; fresh/replay
+controls cover persisted writes. Shared guard lifetime is separately proven by the approval
+final-audit barrier. These trusted storage fixtures grant no new public composition, head
+authority or nested eligibility; complete B0/group and resource gates remain pending.
+Evidence: tasks/project-completion/evidence/scope-chain-prefix-20261018/.
+
+
+### Production incident lock prefix (ADR-0038,2026-10-18)
+
+Refs:T014-040, FR-009-004/005/008, FR-014-014. Production attribution now takes applicable
+member chain→exact own run→binding EXCLUSIVE→own step→audit deduplication, refining ADR-0022's
+reproduced opposite report/binding edge. Current tenant/namespace/fence/expiry/binding checks,
+redacted closed categories, deduplication and commit-before-ACK remain unchanged. No execution
+state/outbox or new capability is introduced; test-run attribution is unchanged. Native runtime
+barriers cover the actual report storage cycle (PostgreSQL deadlocks0→1 before correction) and
+a genuinely published/leased script chain. Completion/journal consistency are positive controls.
+Reproduce with runtime option and external DB unset:
+`cargo test --locked -p sagat-tests --test integration_security_multitenancy incident_lock_order_`.
+Existing script_incidents_total/log mappings remain after commit; port tests do not assert counters.
+Exact source, review and regression limits: tasks/project-completion/evidence/incident-lock-order-20261018/.
+Complete B0/group and release gates remain open.

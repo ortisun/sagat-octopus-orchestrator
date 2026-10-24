@@ -20,15 +20,62 @@ and signal-controlled `waitEvent` followed by input-only continuation. Direct an
 continuation may transfer the exact declared state snapshot. A continuation may also start with a
 `waitEvent` (followed by an input-only continuation, or one condition choosing it or an `end`): the successor
 is created already waiting, in the hand-off transaction.
-Collections have a restricted public path: one or more root `forEach` nodes ending at `end`, with
-each referenced body containing a chain of one to eight activities followed by one `return`; a body
+Collections have a restricted public path: an optional prefix of ordinary root source activities,
+then one or more root `forEach` nodes ending at `end`, with each referenced body containing a chain of one to eight activities followed by one `return`; a body
 activity may declare `compensateWith`, `reconcileWith`, `irreversible` and `highRisk`, and a failed or
-cancelled scope then compensates its completed iterations (FR-014-005, FR-014-006). Admission remains
+cancelled scope then compensates its completed iterations (FR-014-005, FR-014-006). A source prefix
+may supply an inline array or its own committed blob through `steps.fetch.output`; source-prefix
+error edges, compensation/reconciliation, effect policies and managed database operations remain
+closed. Producer failure enters no collection, and an uncommitted/foreign blob is not a source
+capability. Admission remains
 disabled until an administrator sets the tenant-wide iteration-concurrency quota. A restricted
 public loop with an activity/return body has focused PostgreSQL restart and rollback evidence.
+Scoped scheduler expiry/retry, worker discovery/claim, heartbeat and inline completion/failure
+now use exact-path transactions, including compensation/reconciliation and fenced provider output
+scans. Scoped secret delivery and blob capability checks also use current exact-path state;
+secret resolution closes its transaction around provider reads and rechecks current authority before
+auditing a handoff. Public scoped uploads skip the root-only managed database probe and obtain their
+current exact-path capability before reserving object bytes; a skipped probe grants no access.
+Ordinary forward scoped activities may complete with their own uploaded blob: current exact-path
+lease authority precedes catalog access after a receipt miss, while an exact receipt remains
+replayable after expiry under current role/binding checks. The exact descriptor, catalog commit,
+quota, journal, outbox and receipt share one transaction. Known produced results may be reported
+during cancellation to account for their effects. Derived/declared-secret blob outputs remain
+refused. Broader body planning and the large resource gates remain separate work; these focused
+bounded paths do not establish the production ceilings. A new child is
+admitted under its parent's shard lease only inside its uncommitted zero-event creation transaction;
+a reopened child requires its own shard lease for subsequent scheduler mutations.
+Child reservation uses a parent write lock compatible with foreign-key key-share checks; tree
+and active-run admission precede input/initial-state payload retention. This ordering applies
+to existing child creation and evaluated continuation, independently of nested collection capacity.
+Parent cancellation and final notification use a matching child-chain link alone; legacy child
+flag writes are restricted to children without a link and with the exact own-parent association.
+ADR-0037 retains the existing early parent key-share guard solely for identity protection under
+immutable initial/head/link ancestry. It grants no parent mutation authority; the remaining
+lock graph and nested-capacity transactions are still pending.
+Exact-path storage entry also retains an applicable chain lock before its own run, matching full
+run entry. This storage invariant alone does not enable chain+collection graphs or new finality.
+Declared Updates addressed by run also acquire an applicable membership chain before the exact
+run; they keep their original address and never forward across continuation.
+Approval open/expire/decide also take an applicable member chain before their exact run.
+This preserves current-user authorization and never forwards a request to another segment.
+Collection and loop own-run writer helpers also acquire the applicable chain first, including
+collection drain. This storage prefix grants no new publication or nested execution capability.
+Chain handoff/finalization validates scheduler expiry on the database clock after its SHARE
+lock wait, in the same transaction. Collection and loop ports use that same transaction-typed check and preserve their existing
+wrong-shard and oversized-generation errors. Approval open/expire use the same post-lock check;
+a human decision continues to use its separate current-user authorization. Collection entry
+writes a supplied audit once through its atomic version commit.
+
 Other collection and loop graphs and nested scopes remain closed for general publication. The
 remaining acceptance and release evidence is tracked
 in [the validation report](./validation-report.md).
+
+Publication diagnostics preserve schema-first rejection. Cyclic, escaping, overlapping or
+recursive graphs that pass the schema return `INVALID_SCOPE`; unsupported expression literals
+and effective expression byte-limit failures return `EXPRESSION`. An ordinary dangling root
+edge retains `GRAPH`. A rejected draft creates no published version. These diagnostics do not
+widen the accepted runtime shapes.
 [ADR-0030](../../docs/adr/ADR-0030-structured-instances-and-continuation-chains.md) accepts the
 execution design and [ADR-0031](../../docs/adr/ADR-0031-declared-operation-result-disclosure.md)
 accepts the declared-result disclosure policy. [ADR-0032](../../docs/adr/ADR-0032-additive-workflow-ir.md)
@@ -398,3 +445,177 @@ runs. Publication checks enabled capabilities; the API version alone does not se
 - Automatic migration to a new definition, arbitrary procedural replay, external exactly-once effects,
   distributed/multi-region execution and automatic history deletion are out of scope. Explicit
   cross-version continuation requires a later approved contract and migration design.
+
+
+Production script incident attribution follows the same applicable chain/own-run entry under
+ADR-0038, then retains its existing binding EXCLUSIVE and own-step guards through audit commit.
+This refines ADR-0022's reproduced opposite binding/run edge. Incident wire, current fenced
+validation and audit-only semantics remain the existing feature009 dependency; no nested
+execution capability or complete group lock graph is accepted.
+
+
+Existing009 worker renewal must sample expiry after acquiring its session row, retaining the
+guard through renewal commit. The public poll counterexample and correction are tracked in
+B0. Complete and exact-path claim-room checks also sample time after their own session lock,
+with zero capacity after expiry and the count/lease serialized through commit. Managed database
+ownership separately checks time after its session SHARE acquisition; the complete group lock
+graph remains pending.
+
+The existing017 managed owner session SHARE guard also samples expiry after acquisition.
+Its real managed-heartbeat counterexample/correction is tracked in B0 alongside renewal and
+claim-room evidence; completion of those checks does not accept the full group lock graph.
+
+Existing017 managed report receipt replay retains binding before catalog/current-role guards.
+It preserves durable ownership and current authorization after session clearance; its focused
+ordering barrier contributes to B0 and does not prove general nested/group ordering.
+
+ADR-0039 advances the unrelated rerun source identity guard before creation admission without
+authorizing source business state. Its runtime-role PostgreSQL/OpenBao race reproduces and fixes
+the source/catalog deadlock; nested groups and remaining B0/B1 work stay unaccepted.
+
+Capacity recovery has checked pure header restoration preserving revision/epoch and verifying
+count/possession/holder consistency. This does not establish database or own-member authority;
+SQL lifecycle, B1 completion and nested execution remain pending.
+
+The first dormant capacity storage proof is restricted to Finish of an existing ChildRoot member
+after exact current chain/head/segment FINAL under its own fence. Groups are fixture-seeded only;
+no production creator, caller, admission/accounting or execution capability is accepted. It leaves
+terminal run journals unchanged and requires an atomic group receipt/journal, truthful audit and
+reference hint. The scoped contract is tasks/project-completion/capacity-finish-storage.md.
+
+### Dormant capacity schema checkpoint — 2026-10-18
+
+The fixture-only capacity header/member/Finish-journal schema is present with protected bounded
+metadata, exact composite identity FKs, deferred active-holder consistency, immutable tombstones,
+append-only receipts and narrow runtime column privileges. Empty downgrade is reversible; any
+retained row prevents downgrade under table locks. This is no native Finish or nested execution
+capability. Permanent chain FKs currently pin chain/run history; C0 must resolve retention/replay
+compatibility before production activation. Evidence: tasks/project-completion/evidence/
+capacity-finish-schema-20261018. T014-014..017/040 and broader acceptance remain open.
+
+### Dormant native capacity Finish checkpoint — 2026-10-18
+
+An exact internal ChildRoot Finish adapter is implemented without a production call site. It
+proves current own child-chain/head/segment FINAL under current scheduler fencing, then atomically
+finishes one membership with receipt/audit/outbox. Replay returns the original receipt under renewed
+current authority. It never changes the terminal execution journal or other members' business
+state. Native contention/fault/unknown-COMMIT evidence and observations remain separate B2e/f work;
+no creation/admission/eligibility, retention rollout or nested runtime is enabled.
+
+
+### Dormant native capacity observations checkpoint — 2026-10-18
+
+Local B2e now has focused native contention, fresh fence, rollback, actual uncertain-COMMIT,
+handoff and namespace boundary evidence. B2f observes returned outcomes with closed finite
+metrics and a caller-traced workflow.capacity.finish span. Only an acknowledged first commit
+increments its transition counter; receipt replay and uncertain acknowledgement do not. Durable
+receipts remain authority and abandoned calls have no returned outcome. These are internal
+dormant observations, with no production caller or activation. Full B1/B2, scoped finality,
+retention/mixed writers, nested runtime and broader acceptance gates remain pending.
+
+
+The initial leaf-success source proof has a pure versioned definition-shape predicate: a selected
+ordinary activity-chain body with one to eight activities/return in a frozen root collection chain.
+This is definition metadata only, with owner/body-qualified IDs and no persisted version/run or
+settlement authority. Matching pinned source facts, immutable certification storage and actual
+producer race/restart evidence remain prerequisites before any scoped Finish.
+
+## Dormant scoped Finish metadata status — 2026-10-18
+
+The fixed OrdinaryLeafV1 capacity member and receipt schema now retains a qualified original Run,
+root owner and iteration index, with closed ChildRoot/ScopedPath variants. The extension preserves
+the existing native ChildRoot writer and denies the new scoped INSERT columns to sagat_app.
+Conditional downgrade is verified against retained scoped rows and actual native ChildRoot replay.
+This is dormant storage metadata only; native scoped source consumption, production intent/
+permissions and broader nested execution remain separately gated.
+
+
+## Dormant ordinary-child source characterization — 2026-10-18
+
+The next bounded evidence unit is the already reachable OrdinaryLeafV1 source in a genuine
+ordinary unchained child Run, with selected root path lines/0 closed while later child work
+continues. The existing source certifier has no parent/chain-context rejection; its current
+producer-preservation evidence remains limited until the new tests pass. No new source enum,
+schema, API, caller, grant or publication shape is introduced. Scoped Finish continues to refuse
+any parent/chain context, including a genuine child certificate.
+
+The reviewed contract is [leaf-child-source-preservation.md](../../tasks/project-completion/leaf-child-source-preservation.md).
+The first baseline requires genuine public creation/closure, metadata-only exact certification,
+missing-closure/current-fence/qualified-identity controls, cold original-record replay and a genuine
+certificate that still cannot authorize Scoped Finish. The baseline passes both focused tests in
+default and runtime-role modes; exact evidence is in ordinary-child-source-baseline-20261018. Actual parent flags
+(PROPAGATE/DETACH/REQUEST_CANCEL), own-child cancellation/drain and terminal fanout are separate
+subsequent proofs. Nonjournaled parent flag changes do not imply a stale child Run revision.
+General nesting, current-member authority, C0/mixed writers, resource ceilings and release gates
+remain unaccepted. This is a bounded evidence refinement under ADR-0030/0031/0032.
+
+
+The ordinary-child incoming parent flag family now has real PROPAGATE/DETACH/REQUEST_CANCEL
+queue-order and actual certifier-COMMIT guard evidence. The four-test child suite passes in
+default/runtime-role modes, with seven recorded three-PID observations per mode. No runtime
+implementation or activation changed. Own-child cancellation/compensation
+and terminal fanout remain pending. Evidence: tasks/project-completion/evidence/
+ordinary-child-parent-flags-20261018/manifest.json.
+
+
+The separate DETACH later-worker-progress characterization passes its focused test in default
+and runtime-role modes, including unchanged settled parent/source and cold original-CAS replay.
+No whole-child completion or terminal-result/fanout guarantee follows. The newly identified
+collection End/owner-result retention defect remains an explicit .1d.0 prerequisite requiring
+genuine RED and a reviewed correction. Evidence: tasks/project-completion/evidence/
+ordinary-child-detached-progress-20261018/manifest.json.
+
+## .1c acceptance checkpoint (2026-10-18)
+
+Two real PostgreSQL tests pass in default mode (42.77 s wall / 4.74 s harness) and explicit runtime-role mode (5.30 / 4.66); same two names in both, no aggregate four-test claim. Actual three-PID witnesses establish both original-child writer COMMIT orders. After real public PROPAGATE, cancellation, drain and known-effect refund, selected source/certificate/audit remain unchanged and the complete original record replays cold. The child remains unfinished; End/result/fanout remain separate. Strict Clippy passed 11.69 s, fmt 4.36 s, architecture 0.34 s / 24 crates. Final 1108 source inputs unchanged. See evidence/ordinary-child-own-cancel-20261018 manifest/review/reproduce and retained initial failures. B1b.2c.1c closes only; parent umbrella, .1d/.1d.0 and canonical 014 tasks stay open.
+
+Implementation/evidence commit: `de64eafc`. Prior child-suite, detached-progress and this two-test selection are separate source revisions and invocations, not a new combined suite. The independent collection End result and instance-limit RED regressions remain unresolved at `6ef22a85`; these successful cancellation tests stop before that path.
+
+## Shared End preparation checkpoint — 2026-10-18
+
+`da9201b2` closes local .1d.0b only: shared bounded End evaluator and optional closed answer on CollectionFinish, default None. Existing real result gRPC tests passed5/5 in each separate mode, final1108 inputs; strict application Clippy/fmt/architecture passed. See tasks/project-completion/evidence/collection-end-preparation-20261018/manifest.json. No native collection consumer activated; collection End/instance-limit RED and .0Q remain unresolved. No canonical task closure.
+
+## Data-limit vocabulary and domain checkpoint — 2026-10-18
+
+Q1 closed RunDataLimit vocabulary/domain/codec preparation and Q1a four new pure domain cases have bounded evidence in tasks/project-completion/evidence/collection-data-limit-vocabulary-20261018 and collection-data-limit-domain-20261018. Codec9/9; updated domain targets17/17,6/6,30/30 in one invocation. Strict relevant Clippy/fmt/architecture pass. Native reason production explicitly remains RuntimeNotIntegrated before transaction; full/path readers, additive schema, effective legacy accounting, real report/compensation/upgrade and native End correction are pending. No public capability/shape/grant or canonical task closure. Public empty-collection and End result/instance-limit regressions remain genuine RED.
+
+## Collection data-limit schema checkpoint — 2026-10-18
+
+`55ea9423` adds migration20261213000000 without changing applied migrations, grants or writer activation. Five behavioral PostgreSQL schema tests pass separately in default and runtime-role modes (49.04s/4.85s and5.14s/4.82s wall/harness), including total CHECK, old-form preservation, guarded down/up and observed down-before-writer rollback. Strict integration Clippy/fmt/architecture pass; final1112 inputs unchanged. See tasks/project-completion/evidence/collection-data-limit-schema-20261018/manifest.json, including the separately retained initial compilation failure. New-reason rows are explicit static fixtures, not native producer, replay or actual old/current upgrade evidence. Schema down eligibility never authorizes old execution binaries. Native producer, effective accounting, report preservation, scheduler lifecycle and End correction remain pending; no canonical task closes.
+
+## Collection reader and known-effect prerequisites — 2026-10-18
+
+`c620c2bd` and `7212a4b1` add strict new-reason full, owned-path and descendant-ancestor readers. Four focused SQL tests pass in each access mode, including ten static malformed projection cases and native finish no-write rejection; executed behavior pins and subsequent lint-only revision are separately recorded in collection-data-limit-readers-sql-20261018. The dormant path-owned nested shape is not exercised by these public depth1 fixtures, and native new-reason production/replay remains pending. Existing runtime byte_ceilings19/19 passes.
+
+`a7dc19b3` adds the metadata-only effective-byte helper, verified read-only legacy overlay and full positive-charge guard. Bounded reviews found no remaining issue, but actual frozen old-producer overlay/guard/upgrade acceptance is still pending. It is preparation, not a deployable bridge.
+
+`c04b786d` adds the root-only preparation command for refused known-success scoped outputs. Pure domain scoped_compensation34/34 passes, including four new ordinary/Applied identity, prior-stop, version and compensation-plan tests. PostgreSQL report atomicity/authorization and the matching scheduler consumer remain pending. `ffec26d5` adds typed audit/evidence with audit9/9 and constructor3/3, plus strict relevant Clippy/fmt/architecture. Final source pins are1114 for the domain command and1115 for audit/evidence. See their separate manifests under tasks/project-completion/evidence. No public shape, grant, production caller or canonical task closes.
+
+## Effective-byte/native preparation checkpoint — 2026-10-18
+
+`b0a7ea5e` shares verified E=L+V with exact-path scalar/positive guards and ScopeRun in its existing repeatable-read snapshot. Strict integration Clippy and existing runtime byte_ceilings19/19 pass, final1115 inputs unchanged. Actual old E>L snapshot/CAS/report acceptance remains pending. `012d746f` uses the effective scalar in four existing full preflights; existing real gRPC result5/5 passes separately per access mode and strict all-target application Clippy/fmt/architecture pass. These existing regressions do not establish new legacy signal/chain acceptance. See the effective-output-path-frontier-20261018 and effective-output-preflights-20261018 manifests.
+
+`9fd9405f` adds the guarded internal native drain writer. C1 owner/checkpoint gaps were corrected; fresh bounded C2 on e0928f4f found no required issue. Strict PostgreSQL library Clippy/fmt/architecture pass with1117 unchanged inputs; executed native behavior tests are zero. The old unconditional RuntimeNotIntegrated refusal has been replaced by checked audit/evidence plus locked source/budget/stop predicates; normal scheduler/report producers remain absent. Native positive/replay/corruption/fault/runtime acceptance and End correction remain pending. This intermediate source is not a deployable bridge.
+
+`46d3824f` corrects Q7b's unconditional report-outbox assumption to existing durable collection discovery. Report refusal creates no outgoing obligation or task release; its expected new outbox count is zero, with journal/projection/audit/receipt/telemetry atomic. The actual later drain retains its own outbox. Fresh bounded amendment review found no issue under Constitution I/VII and ADR-0002/0017. Cold normal-tick discovery without hints remains a required unexecuted gate. No public message, grant or shape, ADR divergence or canonical task closure follows.
+
+
+## Actual legacy-output compatibility acceptance — 2026-10-18
+
+Q5 is accepted with source `ce0cb786` and immutable old producer `6c44a0e4`: the complete
+old/current coordinator passed in133.91s. Each of the two independent role passes contains one
+real public old-producer test and one current matrix test with five ordered cases, not five tests.
+The old producer always uses the runtime role; only the current native store pool varies between
+owner and `sagat_app`. Read-only overlay/per-owner accounting, exact migration/read-only witnesses,
+isolated corruption refusals, unclamped E>L, fitting L-only charge, zero-delta access above the
+limit and positive-delta rollback passed. Stored `legacyControl` discovery metadata is allowed
+only with the unchanged pinned rootForEach/full source qualification; no old source/result is
+rewritten. Strict Clippy/fmt/architecture passed with1117 unchanged native inputs.
+
+Known-success report baseline tests in `03a0043a` independently reproduce actual FAILED acknowledgements
+for a real successful forward effect and a genuine Applied reconciliation; their correction and
+later compensation assertions remain pending. Q8 second-owner discovery compatibility and actual
+producer composition, native End/scheduler activation, full old-binary rollout, source/fanout,
+nested capacity and final release gates remain open. No canonical runtime task is closed by Q5.
+Evidence: `tasks/project-completion/evidence/legacy-output-view-20261018/reproduce.md` and
+`scoped-output-refusal-red-20261018/reproduce.md`.

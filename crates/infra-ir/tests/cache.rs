@@ -79,3 +79,71 @@ fn a_definition_heavier_than_the_whole_budget_still_works_and_is_the_only_one_ke
     assert!(cache.get(b).is_some());
     assert!(cache.get(a).is_none(), "and it displaced the other");
 }
+
+#[test]
+fn stored_legacy_schema_extensions_do_not_change_execution_restore() {
+    use sagat_application::definitions::{IrCodec, IrError};
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/contract/payload-classification/fixtures");
+    // Exact release v0.1.0 contract at 6ede1c7849c4ac5a209c08da8ad25294fbdd7795.
+    let old_schema_bytes =
+        std::fs::read(fixtures.join("v0.1.0-workflow.schema.json")).expect("frozen release schema");
+    use sha2::{Digest as _, Sha256};
+    assert_eq!(
+        sagat_domain::workflow::Digest::new(Sha256::digest(&old_schema_bytes).into()).to_hex(),
+        "5035e781a2a531da0317594cd8b082fb9291d8e3f0a7b0322625c2260d89bff4",
+        "the frozen release contract must not drift"
+    );
+    let old_schema: serde_json::Value =
+        serde_json::from_slice(&old_schema_bytes).expect("release schema JSON");
+    let bytes = std::fs::read(fixtures.join("legacy-annotation-extension.workflow.json"))
+        .expect("legacy document");
+    let doc: serde_json::Value = serde_json::from_slice(&bytes).expect("legacy JSON");
+    assert!(
+        jsonschema::validator_for(&old_schema)
+            .expect("release schema compiles")
+            .is_valid(&doc),
+        "the release contract accepted the extension as metadata"
+    );
+    assert!(
+        matches!(JsonIrCodec.parse(&bytes), Err(IrError::Classification(_))),
+        "new publications must still validate new classification annotations"
+    );
+    let cache = DefinitionCache::new(Arc::new(JsonIrCodec), 8);
+    cache
+        .get_or_parse(WorkflowVersionId::generate(), &bytes)
+        .expect(
+            "restoring a stored definition must not apply new authoring-only classification rules",
+        );
+}
+
+#[test]
+fn stored_parsing_keeps_structural_validation_and_current_canonical_bytes() {
+    use sagat_application::definitions::IrCodec;
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&chain("stored-current", 2)).expect("workflow");
+    value["inputSchema"] = json!({"type":"object","x-sagat-classification":"public","additionalProperties":false,"properties":{"reference":{"type":"string","maxLength":128}}});
+    let bytes = serde_json::to_vec(&value).expect("current bytes");
+    let publication = JsonIrCodec.parse(&bytes).expect("current publication");
+    let stored = JsonIrCodec.parse_stored(&bytes).expect("stored definition");
+    assert_eq!(stored.canonical, publication.canonical);
+    assert_eq!(stored.digest, publication.digest);
+    assert_eq!(
+        stored.definition.total_len(),
+        publication.definition.total_len()
+    );
+    value["nodes"][0]["next"] = json!("n0");
+    assert!(
+        JsonIrCodec
+            .parse_stored(&serde_json::to_vec(&value).expect("cycle bytes"))
+            .is_err(),
+        "restoration still rejects a business graph cycle"
+    );
+    value["nodes"][0]["type"] = json!("unknown-node-kind");
+    assert!(
+        JsonIrCodec
+            .parse_stored(&serde_json::to_vec(&value).expect("unknown bytes"))
+            .is_err(),
+        "restoration still rejects unsupported IR"
+    );
+}

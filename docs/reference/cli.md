@@ -28,7 +28,8 @@ ONE WORKFLOW:
     workflow publish <FILE> [--notes <TEXT>] [--dry-run] [--accept-breaking]
     workflow run <NAME> [--input <JSON|@FILE>] [--wait] [--timeout <SECONDS>] [--key <KEY>]
     workflow runs <NAME> [--limit <N>]   the latest runs of a workflow (the ones an event or a schedule started too)
-    workflow inspect <RUN>               the status, the journal and the attempts of a run
+    workflow inspect <RUN> [--values [--reveal-pii] [--sequence N]]
+                                          the status, journal and attempts; optionally disclosed values
     workflow cancel <RUN> --reason <TEXT>
     workflow rerun <RUN> --reason <TEXT>
                           start the same version again, with the same input, from a run that ended
@@ -44,6 +45,10 @@ ONE WORKFLOW:
     worker bind [--workflow <FILE>] [<ACTIVITY>...] [--allow-non-dev]
                           let the identity of the token serve those activities (and the ones the workflow
                           names), so that an SDK worker can; it replaces what the identity served there
+    namespace reveal-grants list
+    namespace reveal-grants grant <SUBJECT>
+    namespace reveal-grants revoke <SUBJECT>
+                          list or change the namespace's temporary PII reveal grants
 
 A MANIFEST KEPT IN GIT:
     validate              check the manifest and every document: locally, and against the server

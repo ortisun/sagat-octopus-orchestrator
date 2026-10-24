@@ -12,13 +12,14 @@
 use std::time::Duration;
 
 use sagat_application::error::StoreError;
+use sagat_application::execution::MAX_RUN_OUTPUT_BYTES;
 use sagat_application::maintenance::{
     EndedChild, LeaseLoss, LostLease, MaintenanceStore, OutboxDue, OutboxMessage, OutboxStore,
     PendingChild, PendingContinuation, RunRef, StepRef, Window,
 };
 use sagat_domain::execution::{Fence, InstancePath, RunId};
 use sagat_domain::identity::TenantId;
-use sagat_domain::workflow::NodeId;
+use sagat_domain::workflow::{MAX_NODES, NodeId};
 use sqlx::postgres::PgRow;
 use uuid::Uuid;
 
@@ -166,13 +167,20 @@ impl MaintenanceStore for PgRunStore {
         .collect()
     }
 
-    // Each query is the same shape: for every shard the replica owns, the oldest `limit` due items of
+    // The queue shape is: for every shard the replica owns, the oldest `limit` due items of
     // that shard (the first entries of an index whose leading column is the shard, so a shard with
     // nothing due costs one probe), then the oldest `limit` of all of them. The oldest `limit` of the
     // owned shards are among the oldest `limit` of each, so the answer is exactly what one query
-    // over all of them would give.
+    // over all of them would give. Collection discovery also filters semantic scope/history facts;
+    // its output limits do not bound the number of scanned rows or imply a shard-first index.
     async fn collection_candidates(&self, window: &Window) -> Result<Vec<StepRef>, StoreError> {
         let (limit, shards, exclude) = window_params(window);
+        let output_limit =
+            i64::try_from(MAX_RUN_OUTPUT_BYTES).map_err(|_| corrupt("run output byte limit"))?;
+        let root_limit = i64::try_from(MAX_NODES).map_err(|_| corrupt("root collection limit"))?;
+        // Lengths only nominate a dormant root owner. The frontier's repeatable-read inspection
+        // and the locked native command verify the legacy evidence and effective total again.
+        // Keep fitting legacy histories out of the limited queue; a missing join is not zero bytes.
         sqlx::query(
             "SELECT candidate.tenant_id,candidate.run_id,candidate.node, \
                     candidate.instance_path_nodes,candidate.instance_path_indices \
@@ -199,6 +207,8 @@ impl MaintenanceStore for PgRunStore {
                         scope.owner_path_nodes,scope.owner_path_indices,scope.updated_at \
                  FROM iteration_scopes scope JOIN runs run \
                    ON run.tenant_id=scope.tenant_id AND run.id=scope.run_id \
+                 LEFT JOIN run_instance_usage usage \
+                   ON usage.tenant_id=run.tenant_id AND usage.run_id=run.id \
                  WHERE run_shard(scope.run_id)=sh.s \
                    AND run.status IN ('RUNNING','WAITING','CANCELLING','COMPENSATING') \
                    AND scope.kind='COLLECTION' \
@@ -207,6 +217,47 @@ impl MaintenanceStore for PgRunStore {
                      scope.lifecycle='DRAINING' \
                      OR (scope.lifecycle='OPEN' AND ( \
                        run.status='CANCELLING' \
+                       OR (scope.owner_path_nodes='{}'::text[] \
+                         AND scope.owner_path_indices='{}'::integer[] \
+                         AND (usage.logical_output_bytes IS NULL \
+                           OR usage.logical_output_bytes < 0 \
+                           OR EXISTS ( \
+                             SELECT 1 FROM ( \
+                               SELECT prior.owner_node,prior.namespace_id,prior.result_digest \
+                               FROM iteration_scopes prior \
+                               WHERE prior.tenant_id=scope.tenant_id \
+                                 AND prior.run_id=scope.run_id \
+                                 AND prior.owner_path_nodes='{}'::text[] \
+                                 AND prior.owner_path_indices='{}'::integer[] \
+                                 AND prior.lifecycle='SUCCEEDED' \
+                               ORDER BY prior.owner_node LIMIT ($5 + 1) \
+                             ) completed \
+                             LEFT JOIN steps owner \
+                               ON owner.tenant_id=scope.tenant_id \
+                              AND owner.run_id=scope.run_id \
+                              AND owner.instance_path_nodes='{}'::text[] \
+                              AND owner.instance_path_indices='{}'::integer[] \
+                              AND owner.node=completed.owner_node \
+                             LEFT JOIN payloads payload \
+                               ON payload.tenant_id=scope.tenant_id \
+                              AND payload.digest=completed.result_digest \
+                             HAVING count(*) > $5 \
+                               OR bool_or( \
+                                 completed.namespace_id IS DISTINCT FROM run.namespace_id \
+                                 OR completed.result_digest IS NULL \
+                                 OR octet_length(completed.result_digest) <> 32 \
+                                 OR owner.step_id IS NULL \
+                                 OR owner.namespace_id IS DISTINCT FROM run.namespace_id \
+                                 OR owner.kind IS DISTINCT FROM 'FORWARD' \
+                                 OR owner.node_kind NOT IN ('forEach','legacyControl') \
+                                 OR owner.status IS DISTINCT FROM 'SUCCEEDED' \
+                                 OR owner.routed IS DISTINCT FROM true \
+                                 OR (owner.output_digest IS NOT NULL \
+                                   AND owner.output_digest IS DISTINCT FROM completed.result_digest) \
+                                 OR payload.digest IS NULL) \
+                               OR coalesce(sum(octet_length(payload.content)::bigint) \
+                                 FILTER (WHERE owner.output_digest IS NULL),0) \
+                                 > $4::numeric - usage.logical_output_bytes::numeric))) \
                        OR (scope.next_admission_index < scope.item_count \
                          AND scope.active_count < scope.max_concurrency) \
                        OR scope.completed_count = scope.item_count \
@@ -227,6 +278,8 @@ impl MaintenanceStore for PgRunStore {
         .bind(limit)
         .bind(shards)
         .bind(exclude)
+        .bind(output_limit)
+        .bind(root_limit)
         .fetch_all(self.pool())
         .await
         .map_err(store_error)?

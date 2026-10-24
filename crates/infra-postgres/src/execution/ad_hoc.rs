@@ -30,7 +30,7 @@ pub(super) async fn retain(
     sqlx::query("INSERT INTO workflows(id,tenant_id,namespace_id,name,draft,created_at,updated_at,draft_edited_by,internal) VALUES($1,$2,$3,$4,'{}'::jsonb,$5,$5,$6,true)")
         .bind(info.workflow_id.as_uuid()).bind(tenant.as_uuid()).bind(namespace.as_uuid()).bind(name)
         .bind(info.created_at).bind(&info.started_by).execute(&mut *conn).await.map_err(store_error)?;
-    sqlx::query("INSERT INTO workflow_versions(id,tenant_id,workflow_id,version_number,digest,document,published_by,published_at) VALUES($1,$2,$3,1,$4,$5,$6,$7)")
+    sqlx::query("INSERT INTO workflow_versions(id,tenant_id,workflow_id,version_number,digest,document,published_by,published_at,classification_rules) VALUES($1,$2,$3,1,$4,$5,$6,$7,1)")
         .bind(info.version_id.as_uuid()).bind(tenant.as_uuid()).bind(info.workflow_id.as_uuid())
         .bind(retained.digest().to_hex()).bind(retained.document()).bind(&info.started_by).bind(info.created_at)
         .execute(&mut *conn).await.map_err(store_error)?;
@@ -62,7 +62,7 @@ pub(super) async fn latest_probe(
     if !existing {
         return Err(StoreError::MissingReference);
     }
-    let row = sqlx::query("SELECT r.*,p.revision,s.failure_code FROM runs r JOIN run_database_connections p ON p.tenant_id=r.tenant_id AND p.namespace_id=r.namespace_id AND p.run_id=r.id JOIN database_connections c ON c.tenant_id=p.tenant_id AND c.namespace_id=p.namespace_id AND c.id=p.connection_id LEFT JOIN steps s ON s.tenant_id=r.tenant_id AND s.run_id=r.id AND s.node=p.node_id WHERE r.tenant_id=$1 AND r.namespace_id=$2 AND c.name=$3 AND c.status <> 'DELETED' AND r.origin='CONNECTION_PROBE' ORDER BY r.id DESC LIMIT 1")
+    let row = sqlx::query("SELECT r.*,p.revision,s.failure_code FROM runs r JOIN run_database_connections p ON p.tenant_id=r.tenant_id AND p.namespace_id=r.namespace_id AND p.run_id=r.id JOIN database_connections c ON c.tenant_id=p.tenant_id AND c.namespace_id=p.namespace_id AND c.id=p.connection_id LEFT JOIN steps s ON s.tenant_id=r.tenant_id AND s.run_id=r.id AND s.node=p.node_id AND cardinality(s.instance_path_nodes)=0 AND cardinality(s.instance_path_indices)=0 WHERE r.tenant_id=$1 AND r.namespace_id=$2 AND c.name=$3 AND c.status <> 'DELETED' AND r.origin='CONNECTION_PROBE' ORDER BY r.id DESC LIMIT 1")
         .bind(tenant.as_uuid()).bind(namespace.as_uuid()).bind(name.as_str()).fetch_optional(&store.pool).await.map_err(store_error)?;
     let Some(row) = row else {
         return Ok(None);

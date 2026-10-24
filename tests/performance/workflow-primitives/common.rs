@@ -45,8 +45,16 @@ pub async fn platform() -> Platform {
             .await
             .expect("drop the open-step indexes for the control run");
     }
-    let store =
-        PgRunStore::new(world.db.pool.clone(), world.cache.clone()).with_scoped_worker_protocol();
+    let runtime = world.db.runtime_pool_with(8).await;
+    let execution_role: String = sqlx::query_scalar("SELECT current_user")
+        .fetch_one(&runtime)
+        .await
+        .expect("execution database role");
+    assert_eq!(
+        execution_role, "sagat_app",
+        "measure the actual runtime role"
+    );
+    let store = PgRunStore::new(runtime, world.cache.clone()).with_scoped_worker_protocol();
     let workers = WorkerService::new(
         store.clone(),
         SystemClock,
@@ -95,6 +103,15 @@ impl Platform {
             subject_of(&format!("perf-worker-b-{}", Uuid::now_v7())),
             Role::Worker,
         );
+        sagat_infra_postgres::PgIdentityStore::new(self.world.db.pool.clone())
+            .insert_membership(&sagat_domain::identity::Membership::restore(
+                principal.tenant_id(),
+                principal.subject().clone(),
+                Role::Worker,
+                time::OffsetDateTime::now_utc(),
+            ))
+            .await
+            .expect("persist the second tenant's current worker membership");
         self.world.bind_everything(&principal).await;
         principal
     }
@@ -135,6 +152,39 @@ impl Platform {
             )
             .await
             .expect("poll")
+    }
+
+    /// Observe the persisted READY-to-LEASED interval before this driver completes any task.
+    /// Missing rows/timestamps are failed measurements, never fabricated zero-delay samples.
+    pub async fn ready_queue_delays(
+        &self,
+        session: &Session,
+        tasks: &[ClaimedTask],
+    ) -> Vec<Duration> {
+        if tasks.is_empty() {
+            return Vec::new();
+        }
+        let ids: Vec<_> = tasks.iter().map(|task| task.step_id).collect();
+        let seconds: Vec<f64> = sqlx::query_scalar(
+            "SELECT extract(epoch FROM (updated_at-ready_at))::float8 FROM steps \
+             WHERE tenant_id=$1 AND step_id=ANY($2) AND status='LEASED' AND ready_at IS NOT NULL",
+        )
+        .bind(session.principal.tenant_id().as_uuid())
+        .bind(ids)
+        .fetch_all(&self.world.db.pool)
+        .await
+        .expect("queue timestamps");
+        assert_eq!(
+            seconds.len(),
+            tasks.len(),
+            "every claimed task needs a real queue observation"
+        );
+        seconds
+            .into_iter()
+            .map(|seconds| {
+                Duration::try_from_secs_f64(seconds).expect("nonnegative finite queue delay")
+            })
+            .collect()
     }
 
     pub async fn complete(
@@ -213,9 +263,14 @@ pub async fn resources(world: &World) -> Resources {
     .fetch_one(&world.db.pool)
     .await
     .expect("connection counts");
+    let rss_bytes = super::process_rss_bytes();
+    assert!(
+        threads > 0 && rss_bytes > 0,
+        "thread/RSS measurements are unavailable"
+    );
     Resources {
         threads,
-        rss_bytes: super::process_rss_bytes(),
+        rss_bytes,
         pg_connections: row.0,
         pg_active: row.1,
         pg_idle_in_transaction: row.2,
@@ -242,7 +297,16 @@ pub async fn postgres_description(world: &World) -> String {
         .fetch_one(&world.db.pool)
         .await
         .expect("version");
-    let mut lines = vec![format!("- PostgreSQL: {version}")];
+    let observer: String = sqlx::query_scalar("SELECT current_user")
+        .fetch_one(&world.db.pool)
+        .await
+        .expect("observer database role");
+    let mut lines = vec![
+        format!("- PostgreSQL: {version}"),
+        format!(
+            "- Setup/observer role: {observer}; worker/scheduler role: sagat_app (verified by fixture)"
+        ),
+    ];
     for setting in [
         "shared_buffers",
         "max_connections",

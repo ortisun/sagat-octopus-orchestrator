@@ -2,7 +2,7 @@
 
 **Feature Branch**: `feature/016-payload-classification`
 **Created**: 2026-10-16
-**Status**: Specified; not built. The direction is accepted in [ADR-0033](../../docs/adr/ADR-0033-payload-values-are-classified-per-field.md); this set turns it into requirements, a plan and tasks. The four product choices were answered by the owner on 2026-10-17 ([research.md](./research.md#product-decisions-answered-2026-10-17)); nothing in this set is an open product question, and what is still undecided is listed there.
+**Status**: Implementation in progress; integrated release gates pending. The direction is accepted in [ADR-0033](../../docs/adr/ADR-0033-payload-values-are-classified-per-field.md); this set turns it into requirements, a plan and tasks. The four product choices were answered by the owner on 2026-10-17 ([research.md](./research.md#product-decisions-answered-2026-10-17)); nothing in this set is an open product question, and what is still undecided is listed there.
 **Input**: Deliver ADR-0033: the author classifies the values of a workflow as `public`, `internal`, `pii` or `secret` on the JSON Schemas of the workflow, and the platform discloses a value only to a principal the level allows.
 
 ## Context and delivery boundary
@@ -403,8 +403,9 @@ viewer, an operator, a developer without a grant and a developer with a grant, w
   (`NO_RETAINED_PAYLOAD`). This selector depends on the G21 change being merged (see Assumptions).
 - **FR-016-014**: `source: "journal"` MUST resolve only the payload of the named sequence, as ADR-0028
   does, and judge it by the `outputSchema` of the node of that event; it MUST NOT substitute another
-  event's or attempt's payload. Events that carry a payload are `step.completed`, `wait.satisfied` and
-  `reconciliation.concluded`.
+  event's or attempt's payload. Events that carry a payload are `step.completed`, `wait.satisfied`,
+  `reconciliation.concluded` and G21's `child.finished`. The latter uses only the exact parent's
+  `child` node output schema, never the child's workflow schema or another node kind.
 - **FR-016-015**: An external (blob) payload MUST NOT be read for disclosure; the answer is `external`
   with `EXTERNAL_CONTENT_NOT_INSPECTED` and the catalog size, as ADR-0028 does.
 - **FR-016-016**: The following MUST remain unchanged by this feature: `getRun`, `listRunJournalEvents`,
@@ -435,6 +436,9 @@ viewer, an operator, a developer without a grant and a developer with a grant, w
 - **FR-016-021**: Existing published versions MUST keep today's behaviour (no value disclosed), existing
   runs MUST keep running unchanged, the OpenAPI and IR changes MUST be additive, and a client or Studio
   built before this feature MUST keep working.
+  Restoration of immutable versions MUST NOT reapply newer classification authoring checks.
+  An extension accepted by an older publisher remains inert for business execution; rules `0`
+  stays opaque. Syntax, graph, expression and execution capability checks remain mandatory.
 - **FR-016-022**: Errors MUST reuse the closed `Error.code` set and add only `details.reason` values:
   `PII_REVEAL_NOT_GRANTED`, `CLASSIFICATION`, `UNKNOWN_SUBJECT`, `ROLE_CANNOT_REVEAL`, `GRANT_LIMIT`. Result states
   (`structure-only`, `unavailable`, `external` and their reasons) are not errors.

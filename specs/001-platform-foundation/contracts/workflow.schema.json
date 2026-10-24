@@ -233,6 +233,11 @@
             "activity": {
               "type": "string"
             },
+            "outputSchema": {
+              "type": "object",
+              "maxProperties": 64,
+              "description": "Classifies this activity's retained output for payload disclosure."
+            },
             "retry": {
               "$ref": "#/$defs/retry"
             },
@@ -338,6 +343,11 @@
               "minimum": 0,
               "maximum": 604800000,
               "description": "An event of this type and correlation that arrived up to this long before the wait started also wakes it (once). Zero or absent: only an event that arrives while it waits does. It reaches back only as far as the event is still remembered: the deduplication window of its source (24 hours for a connector and by default for an endpoint)."
+            },
+            "outputSchema": {
+              "type": "object",
+              "maxProperties": 64,
+              "description": "Classifies the retained event payload that satisfied this wait for payload disclosure."
             }
           }
         }
@@ -447,6 +457,11 @@
                 "request_cancel"
               ],
               "description": "What happens to the child when the parent is stopped. propagate (default): the child is cancelled and the parent does not wait for it. request_cancel: the child is cancelled and the parent waits until it has settled. detach: the child keeps running."
+            },
+            "outputSchema": {
+              "type": "object",
+              "maxProperties": 64,
+              "description": "Classifies the child result retained as this node's output for payload disclosure."
             }
           }
         }
@@ -549,6 +564,11 @@
                 "java"
               ],
               "description": "Informational: the runner takes the language from the artifact."
+            },
+            "outputSchema": {
+              "type": "object",
+              "maxProperties": 64,
+              "description": "Classifies this script's retained output for payload disclosure."
             },
             "retry": {
               "$ref": "#/$defs/retry"
@@ -1846,6 +1866,11 @@
         "activity": {
           "$ref": "#/$defs/name"
         },
+        "outputSchema": {
+          "type": "object",
+          "maxProperties": 64,
+          "description": "Classifies this activity's retained output for payload disclosure."
+        },
         "retry": {
           "$ref": "#/$defs/bodyRetry"
         },
@@ -1953,6 +1978,11 @@
           "minimum": 0,
           "maximum": 604800000,
           "description": "An event of this type and correlation that arrived up to this long before the wait started also wakes it (once). Zero or absent: only an event that arrives while it waits does. It reaches back only as far as the event is still remembered: the deduplication window of its source (24 hours for a connector and by default for an endpoint)."
+        },
+        "outputSchema": {
+          "type": "object",
+          "maxProperties": 64,
+          "description": "Classifies the retained event payload that satisfied this wait for payload disclosure."
         }
       },
       "required": [
@@ -2080,6 +2110,11 @@
             "request_cancel"
           ],
           "description": "What happens to the child when the parent is stopped. propagate (default): the child is cancelled and the parent does not wait for it. request_cancel: the child is cancelled and the parent waits until it has settled. detach: the child keeps running."
+        },
+        "outputSchema": {
+          "type": "object",
+          "maxProperties": 64,
+          "description": "Classifies the child result retained as this node's output for payload disclosure."
         }
       },
       "required": [
@@ -2165,6 +2200,11 @@
             "java"
           ],
           "description": "Informational: the runner takes the language from the artifact."
+        },
+        "outputSchema": {
+          "type": "object",
+          "maxProperties": 64,
+          "description": "Classifies this script's retained output for payload disclosure."
         },
         "retry": {
           "$ref": "#/$defs/bodyRetry"

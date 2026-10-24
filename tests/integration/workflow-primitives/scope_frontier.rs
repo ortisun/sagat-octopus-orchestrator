@@ -656,3 +656,191 @@ async fn the_loop_frontier_equals_the_restored_scope_at_every_step() {
     }
     assert!(checked >= 4, "only {checked} states were compared");
 }
+
+/// The planner's count is a projection of current logical instances, distinct from the lifetime
+/// admission/reservation budget. Scoped cancellation keeps its charge; root cancellation removes
+/// its contribution exactly as the full replay oracle does. Both changes roll back with the steps.
+#[tokio::test]
+async fn charge_projection_rolls_back_with_root_and_scoped_cancellation() {
+    let rig = rig().await;
+    let tenant = rig.world.admin.tenant_id().as_uuid();
+    let run = collection_run(&rig, "projected-instance-charge", 4, 2).await;
+    for _ in 0..3 {
+        rig.scheduler
+            .advance_collection(rig.world.admin.tenant_id(), run, &owner("items"))
+            .await
+            .expect("enter and admit two members");
+    }
+    let before: i64 = sqlx::query_scalar(
+        "SELECT charged_instances FROM run_instance_usage WHERE tenant_id=$1 AND run_id=$2",
+    )
+    .bind(tenant)
+    .bind(run.as_uuid())
+    .fetch_one(&rig.world.db.pool)
+    .await
+    .expect("projected charge");
+    let mut replay = rig
+        .store
+        .begin(rig.world.admin.tenant_id(), run, Lock::Wait)
+        .await
+        .expect("replay transaction")
+        .expect("run");
+    assert_eq!(
+        usize::try_from(before).expect("charge"),
+        replay.parts().1.charged_instances()
+    );
+    assert!(
+        before >= 3,
+        "the root and two admitted bodies must contribute"
+    );
+    drop(replay);
+
+    let runtime = rig.world.db.runtime_pool().await;
+    let mut tx = runtime.begin().await.expect("runtime transaction");
+    sqlx::query("SELECT id FROM runs WHERE tenant_id=$1 AND id=$2 FOR UPDATE")
+        .bind(tenant)
+        .bind(run.as_uuid())
+        .fetch_one(&mut *tx)
+        .await
+        .expect("preserve run-before-step lock order");
+    let changed = sqlx::query(
+        "UPDATE steps SET status='CANCELLED', waiting_kind=NULL, lease_token_hash=NULL \
+         WHERE tenant_id=$1 AND run_id=$2",
+    )
+    .bind(tenant)
+    .bind(run.as_uuid())
+    .execute(&mut *tx)
+    .await
+    .expect("cancel rows as the runtime role");
+    assert!(changed.rows_affected() >= 3);
+    for _ in 0..2 {
+        let charge: i64 = sqlx::query_scalar(
+            "SELECT charged_instances FROM run_instance_usage WHERE tenant_id=$1 AND run_id=$2",
+        )
+        .bind(tenant)
+        .bind(run.as_uuid())
+        .fetch_one(&mut *tx)
+        .await
+        .expect("transaction sees its projected charge");
+        assert_eq!(
+            charge,
+            before - 1,
+            "only the root loses its current contribution"
+        );
+        sqlx::query("UPDATE steps SET status=status WHERE tenant_id=$1 AND run_id=$2")
+            .bind(tenant)
+            .bind(run.as_uuid())
+            .execute(&mut *tx)
+            .await
+            .expect("idempotent status write");
+    }
+    tx.rollback()
+        .await
+        .expect("rollback step and projection changes");
+    let after: i64 = sqlx::query_scalar(
+        "SELECT charged_instances FROM run_instance_usage WHERE tenant_id=$1 AND run_id=$2",
+    )
+    .bind(tenant)
+    .bind(run.as_uuid())
+    .fetch_one(&runtime)
+    .await
+    .expect("charge after rollback");
+    assert_eq!(after, before);
+    let foreign: Option<i64> = sqlx::query_scalar(
+        "SELECT charged_instances FROM run_instance_usage WHERE tenant_id=$1 AND run_id=$2",
+    )
+    .bind(rig.world.other_admin.tenant_id().as_uuid())
+    .bind(run.as_uuid())
+    .fetch_optional(&runtime)
+    .await
+    .expect("foreign tenant coordinate");
+    assert_eq!(foreign, None);
+    rig.world.assert_consistent(run).await;
+}
+
+#[tokio::test]
+async fn charge_projection_backfills_nonempty_runs_without_rewriting_steps() {
+    let rig = rig().await;
+    let tenant = rig.world.admin.tenant_id().as_uuid();
+    let run = collection_run(&rig, "charge-backfill", 4, 2).await;
+    for _ in 0..3 {
+        rig.scheduler
+            .advance_collection(rig.world.admin.tenant_id(), run, &owner("items"))
+            .await
+            .expect("enter and admit");
+    }
+    let before: Vec<String> = sqlx::query_scalar(
+        "SELECT to_jsonb(s)::text FROM steps s WHERE tenant_id=$1 AND run_id=$2 ORDER BY step_id",
+    )
+    .bind(tenant)
+    .bind(run.as_uuid())
+    .fetch_all(&rig.world.db.pool)
+    .await
+    .expect("retained step bytes");
+    assert!(before.len() >= 3);
+    let expected: i64 = sqlx::query_scalar(
+        "SELECT charged_instances FROM run_instance_usage WHERE tenant_id=$1 AND run_id=$2",
+    )
+    .bind(tenant)
+    .bind(run.as_uuid())
+    .fetch_one(&rig.world.db.pool)
+    .await
+    .expect("existing projection");
+    const DOWN: &str = include_str!(
+        "../../../crates/infra-postgres/migrations/20261207000000_projected_instance_charge.down.sql"
+    );
+    const UP: &str = include_str!(
+        "../../../crates/infra-postgres/migrations/20261207000000_projected_instance_charge.up.sql"
+    );
+    let mut tx = rig
+        .world
+        .db
+        .pool
+        .begin()
+        .await
+        .expect("downgrade transaction");
+    sqlx::raw_sql(DOWN)
+        .execute(&mut *tx)
+        .await
+        .expect("previous schema");
+    tx.commit().await.expect("downgrade commit");
+    for commit in [false, true] {
+        let mut tx = rig
+            .world
+            .db
+            .pool
+            .begin()
+            .await
+            .expect("upgrade transaction");
+        sqlx::raw_sql(UP)
+            .execute(&mut *tx)
+            .await
+            .expect("backfill and install triggers");
+        let actual: i64 = sqlx::query_scalar(
+            "SELECT charged_instances FROM run_instance_usage WHERE tenant_id=$1 AND run_id=$2",
+        )
+        .bind(tenant)
+        .bind(run.as_uuid())
+        .fetch_one(&mut *tx)
+        .await
+        .expect("backfilled projection");
+        assert_eq!(actual, expected);
+        if commit {
+            tx.commit().await.expect("upgrade commit");
+        } else {
+            tx.rollback()
+                .await
+                .expect("failed upgrade leaves no partial schema");
+        }
+    }
+    let after: Vec<String> = sqlx::query_scalar(
+        "SELECT to_jsonb(s)::text FROM steps s WHERE tenant_id=$1 AND run_id=$2 ORDER BY step_id",
+    )
+    .bind(tenant)
+    .bind(run.as_uuid())
+    .fetch_all(&rig.world.db.pool)
+    .await
+    .expect("retained steps after upgrade");
+    assert_eq!(after, before);
+    rig.world.assert_consistent(run).await;
+}

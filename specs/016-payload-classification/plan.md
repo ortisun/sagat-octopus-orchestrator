@@ -12,7 +12,8 @@ disclose values through one new audited operation whose audience follows the lev
 inspection of ADR-0028, the declared operation results of ADR-0031 and every payload-free read stay as
 they are. The work is dependency-ordered: domain types and permissions, schema walker and publication
 check, storage, the use case and endpoint, the grant resource, then the CLI, the Studio, the SDK
-setters, the canary and fault suites and the benchmark. Nothing is implemented by this specification.
+setters, the canary and fault suites and the benchmark. Implementation is in progress; the combined
+branch evidence and remaining gates are recorded in `tasks/project-completion/integration-notes.md`.
 
 ## Technical Context
 
@@ -179,6 +180,13 @@ explicit down-migration, after which versions revert to disclosing nothing). No 
 event or payload is rewritten. Old Studios and clients keep working: they never call the new paths. The exception is the three event
 reads of US08, whose response changes for every client that read the values (G292); that change is
 announced in the release notes and has no switch.
+
+Immutable execution restoration uses the codec's `parse_stored` entry point, not publication
+validation. Both share structural and executable conversion checks; only new publications apply
+classification and carrier-schema authoring checks. Declared Query/Update snapshots use the same
+stored-version distinction. Stored document bytes and classification pins are unchanged; disclosure
+continues to fail closed independently. The frozen v0.1.0 IR contract accepts unknown schema
+extensions, including annotations whose values are invalid under the new authoring rules.
 
 ## Risks and mitigations
 

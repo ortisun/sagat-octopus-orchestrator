@@ -131,6 +131,55 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         w.age_lease(run, "a").await;
         w.scheduler.tick().await;
     }
+    // An authenticated Principal is only a snapshot. Demotion during the provider read must
+    // commit immediately and invalidate the final capability even while the lease is live.
+    w.workers = w.workers.with_secret_provider(provider.clone());
+    let demoted_run = w.start(workflow, &json!({})).await;
+    let demoted_task = w.one_task(&session).await;
+    let reference = task_ref(&demoted_task);
+    let gated = Arc::new(ReadBarrier {
+        inner: provider.clone(),
+        entered: tokio::sync::Barrier::new(2),
+        resume: tokio::sync::Barrier::new(2),
+    });
+    w.workers = w.workers.with_secret_provider(gated.clone());
+    let (result, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(
+            w.workers
+                .resolve_secrets(&session.principal, &reference, None),
+            async {
+                gated.entered.wait().await;
+                tokio::time::timeout(
+                    Duration::from_secs(1),
+                    sqlx::query(
+                        "UPDATE memberships SET role='viewer' WHERE tenant_id=$1 AND subject=$2",
+                    )
+                    .bind(session.principal.tenant_id().as_uuid())
+                    .bind(session.principal.subject().as_str())
+                    .execute(&w.db.pool),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                gated.resume.wait().await;
+            }
+        )
+    })
+    .await
+    .unwrap();
+    assert!(
+        matches!(result, Err(AppError::Forbidden { .. })),
+        "demotion invalidates secret delivery"
+    );
+    sqlx::query("UPDATE memberships SET role='worker' WHERE tenant_id=$1 AND subject=$2")
+        .bind(session.principal.tenant_id().as_uuid())
+        .bind(session.principal.subject().as_str())
+        .execute(&w.db.pool)
+        .await
+        .unwrap();
+    w.operate(demoted_run, RunOperation::Cancel).await.unwrap();
+    w.age_lease(demoted_run, "a").await;
+    w.scheduler.tick().await;
     for operation in ["complete", "fail"] {
         w.workers = w.workers.with_secret_provider(provider.clone());
         w.start(workflow, &json!({})).await;

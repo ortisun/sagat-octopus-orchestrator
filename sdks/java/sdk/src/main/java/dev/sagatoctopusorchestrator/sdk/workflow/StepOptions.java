@@ -1,5 +1,7 @@
 package dev.sagatoctopusorchestrator.sdk.workflow;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import dev.sagatoctopusorchestrator.sdk.Json;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -16,6 +18,7 @@ public final class StepOptions {
     Boolean irreversible;
     Boolean highRisk;
     String onError;
+    JsonNode outputSchema;
 
     public static StepOptions create() {
         return new StepOptions();
@@ -79,6 +82,16 @@ public final class StepOptions {
     /** The id of the node to go to when the step fails for good. */
     public StepOptions onError(String value) {
         this.onError = value;
+        return this;
+    }
+
+    /** The JSON Schema of the activity result carried by journal completion events. */
+    public StepOptions outputSchema(Object value) {
+        JsonNode node = Json.toTree(value);
+        if (!node.isObject()) {
+            throw dev.sagatoctopusorchestrator.sdk.SagatException.invalid("outputSchema is a JSON object");
+        }
+        this.outputSchema = node.deepCopy();
         return this;
     }
 }

@@ -18,6 +18,12 @@ use crate::support::engine::{
 };
 
 async fn leased_production() -> (World, crate::support::engine::Session, ClaimedTask) {
+    leased_production_with_chain(false).await
+}
+
+async fn leased_production_with_chain(
+    chained: bool,
+) -> (World, crate::support::engine::Session, ClaimedTask) {
     let w = world().await;
     let script = w
         .scripts
@@ -91,14 +97,25 @@ async fn leased_production() -> (World, crate::support::engine::Session, Claimed
         .await
         .expect("ready version");
     let activity = activity_of(version.artifact.as_ref().expect("artifact digest"));
-    let (workflow, _) = w
-        .publish(document(
-            "incident",
-            "script",
-            vec![json!({"id": "script", "type": "activity", "activity": activity})],
-        ))
-        .await;
-    w.start(workflow, &json!({})).await;
+    let mut workflow_document = document(
+        "incident",
+        "script",
+        vec![json!({"id": "script", "type": "activity", "activity": activity})],
+    );
+    let input = if chained {
+        workflow_document["nodes"] = json!([
+            {"id":"script","type":"activity","activity":activity,"next":"again"},
+            {"id":"again","type":"condition","expression":"input.continue","ifTrue":"rollover","ifFalse":"done"},
+            {"id":"rollover","type":"continueAsNew","input":"input.next"},
+            {"id":"done","type":"end"}
+        ]);
+        workflow_document["chainPolicy"] = json!({"maxSegments":2,"timeoutMs":3_600_000});
+        json!({"continue":false})
+    } else {
+        json!({})
+    };
+    let (workflow, _) = w.publish(workflow_document).await;
+    w.start(workflow, &input).await;
     let session = w
         .session_as(&w.runner_identity, &[activity.as_str()], 1)
         .await;
@@ -615,4 +632,154 @@ async fn a_test_run_incident_uses_the_current_test_lease() {
             .await,
         Err(AppError::StaleAttempt)
     );
+}
+
+/// Controlled concurrency uses the exact storage prefix of report/heartbeat; public completion
+/// is verified separately after attribution. PostgreSQL's own counter distinguishes a deadlock.
+#[tokio::test]
+async fn incident_lock_order_matches_the_report_run_then_binding_prefix() {
+    use sagat_application::execution::RunTx;
+    use sagat_application::runs::{Lock, RunStore};
+    let (w, session, task) = leased_production().await;
+    let before: i64 = sqlx::query_scalar(
+        "SELECT deadlocks FROM pg_stat_database WHERE datname=current_database()",
+    )
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("initial database deadlocks");
+    let mut report_tx = w
+        .store
+        .begin(w.admin.tenant_id(), task.run_id, Lock::Wait)
+        .await
+        .expect("open real report transaction")
+        .expect("leased run");
+    let holders: Vec<i32> = sqlx::query_scalar(
+        "SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND state='idle in transaction'",
+    ).fetch_all(&w.db.pool).await.expect("isolated report holder");
+    assert_eq!(
+        holders.len(),
+        1,
+        "only the native report transaction is idle in this fixture"
+    );
+    let report_pid = holders[0];
+    let target = production(&w, &task);
+    let request_context = ctx();
+    let mut incident = Box::pin(w.runner.record_incident(
+        &w.runner_identity,
+        &target,
+        IncidentCategory::NoAddress,
+        &request_context,
+    ));
+    tokio::select! {
+        result = &mut incident => panic!("incident must wait for existing report run guard: {result:?}"),
+        () = crate::support::eventually("actual incident waits on report's own run", || async {
+            sqlx::query_scalar::<_,bool>(
+                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() \
+                 AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE 'SELECT namespace_id FROM runs%' \
+                 AND (NOT $2 OR usename='sagat_app'))",
+            ).bind(report_pid).bind(crate::support::as_runtime_role()).fetch_one(&w.db.pool).await
+            .expect("actual incident run wait").then_some(())
+        }) => {}
+    }
+    let report_prefix = async {
+        let patterns = report_tx
+            .bound_patterns(session.principal.subject().as_str())
+            .await;
+        let committed = report_tx.commit().await;
+        (patterns, committed)
+    };
+    let (incident_result, (patterns, committed)) = tokio::join!(&mut incident, report_prefix);
+    if incident_result.is_err() || patterns.is_err() || committed.is_err() {
+        let observed = crate::support::eventually(
+            "PostgreSQL records the ordered deadlock counterexample",
+            || async {
+                let after: i64 = sqlx::query_scalar(
+                    "SELECT deadlocks FROM pg_stat_database WHERE datname=current_database()",
+                )
+                .fetch_one(&w.db.pool)
+                .await
+                .expect("database deadlock counter");
+                (after > before).then_some(after)
+            },
+        )
+        .await;
+        panic!(
+            "ordered incident/report failed; PostgreSQL deadlocks {before}->{observed}; incident={incident_result:?}, binding={patterns:?}, commit={committed:?}"
+        );
+    }
+    assert!(!patterns.expect("current binding").is_empty());
+    incident_result.expect("incident commits after report prefix");
+    committed.expect("report storage prefix commits");
+    let after: i64 = sqlx::query_scalar(
+        "SELECT deadlocks FROM pg_stat_database WHERE datname=current_database()",
+    )
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("no detected deadlock");
+    assert_eq!(after, before);
+    assert_eq!(incident_rows(&w).await.len(), 1);
+    w.complete(&session, &task, &json!({"ok":true}))
+        .await
+        .expect("public completion after attribution");
+    w.store
+        .verify_run(w.admin.tenant_id(), task.run_id)
+        .await
+        .expect("journal matches projection");
+}
+
+#[tokio::test]
+async fn incident_lock_order_takes_public_script_chain_before_its_run() {
+    let (w, session, task) = leased_production_with_chain(true).await;
+    let tenant = w.admin.tenant_id().as_uuid();
+    let run = task.run_id.as_uuid();
+    let mut guard = w.db.pool.begin().await.expect("real script chain guard");
+    let backend: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *guard)
+        .await
+        .expect("chain guard backend");
+    sqlx::query(
+        "SELECT chain_id FROM execution_chains WHERE tenant_id=$1 AND chain_id=$2 FOR UPDATE",
+    )
+    .bind(tenant)
+    .bind(run)
+    .fetch_one(&mut *guard)
+    .await
+    .expect("publicly initialized script chain");
+    let target = production(&w, &task);
+    let request_context = ctx();
+    let mut incident = Box::pin(w.runner.record_incident(
+        &w.runner_identity,
+        &target,
+        IncidentCategory::NoAddress,
+        &request_context,
+    ));
+    tokio::select! {
+        result = &mut incident => panic!("incident bypassed script chain: {result:?}"),
+        () = crate::support::eventually("incident waits on its public script chain", || async {
+            sqlx::query_scalar::<_,bool>(
+                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() \
+                 AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE '%execution_chains%' \
+                 AND (NOT $2 OR usename='sagat_app'))",
+            ).bind(backend).bind(crate::support::as_runtime_role()).fetch_one(&w.db.pool).await
+            .expect("actual incident chain wait").then_some(())
+        }) => {}
+    }
+    let mut probe = w.db.pool.acquire().await.expect("early incident run probe");
+    sqlx::query("SELECT id FROM runs WHERE tenant_id=$1 AND id=$2 FOR UPDATE NOWAIT")
+        .bind(tenant)
+        .bind(run)
+        .execute(&mut *probe)
+        .await
+        .expect("chain wait retains no own-run guard");
+    drop(probe);
+    guard.rollback().await.expect("release script chain");
+    incident.await.expect("incident after chain guard");
+    assert_eq!(incident_rows(&w).await.len(), 1);
+    w.complete(&session, &task, &json!({"ok":true}))
+        .await
+        .expect("public chained completion");
+    w.store
+        .verify_run(w.admin.tenant_id(), task.run_id)
+        .await
+        .expect("chained journal matches projection");
 }

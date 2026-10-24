@@ -214,6 +214,168 @@
       "required": []
     }
   },
+  "CapacityMemberFinished": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "chainId": {
+          "type": [
+            "string"
+          ]
+        },
+        "epoch": {
+          "type": [
+            "integer"
+          ]
+        },
+        "groupId": {
+          "type": [
+            "string"
+          ]
+        },
+        "headRunId": {
+          "type": [
+            "string"
+          ]
+        },
+        "memberId": {
+          "type": [
+            "string"
+          ]
+        },
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "resultingRevision": {
+          "type": [
+            "integer"
+          ]
+        },
+        "retired": {
+          "type": [
+            "boolean"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "chainId",
+        "epoch",
+        "groupId",
+        "headRunId",
+        "memberId",
+        "namespaceId",
+        "resultingRevision",
+        "retired",
+        "tenantId"
+      ]
+    }
+  },
+  "CapacityScopedMemberFinished": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "epoch": {
+          "type": [
+            "integer"
+          ]
+        },
+        "groupId": {
+          "type": [
+            "string"
+          ]
+        },
+        "iterationIndex": {
+          "type": [
+            "integer"
+          ]
+        },
+        "memberId": {
+          "type": [
+            "string"
+          ]
+        },
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "originalRunId": {
+          "type": [
+            "string"
+          ]
+        },
+        "resultingRevision": {
+          "type": [
+            "integer"
+          ]
+        },
+        "retired": {
+          "type": [
+            "boolean"
+          ]
+        },
+        "rootOwnerNode": {
+          "type": [
+            "string"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "epoch",
+        "groupId",
+        "iterationIndex",
+        "memberId",
+        "namespaceId",
+        "originalRunId",
+        "resultingRevision",
+        "retired",
+        "rootOwnerNode",
+        "tenantId"
+      ]
+    }
+  },
   "ChainFinished": {
     "headers": {
       "properties": {

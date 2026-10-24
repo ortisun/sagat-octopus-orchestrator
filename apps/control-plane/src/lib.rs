@@ -518,7 +518,15 @@ pub async fn serve_with_admin(
         QuotaService::new(executions.clone(), SystemClock),
         BindingService::new(executions.clone(), SystemClock),
         EgressService::new(executions.clone(), SystemClock),
+        sagat_application::reveal_grants::RevealGrantService::new(executions.clone(), SystemClock),
     )
+    .with_event_payloads(Arc::new(
+        sagat_application::event_payloads::EventPayloadService::new(
+            executions.clone(),
+            SystemClock,
+            sagat_infra_ir::JsonPayloadProjector,
+        ),
+    ))
     .with_operations(OperationsService::new(
         executions.clone(),
         SystemClock,
@@ -658,6 +666,14 @@ pub async fn serve_with_admin(
     .with_database_results(Arc::new(database_results))
     .with_stream_limits(serve.streams)
     .with_blob_transfer(serve.blob_transfer)
+    .with_payload_disclosures(Arc::new(
+        sagat_application::payload_disclosure::PayloadDisclosureService::new(
+            executions.clone(),
+            SystemClock,
+            sagat_infra_schema::classification::Classifier::default(),
+            sagat_infra_ir::JsonPayloadProjector,
+        ),
+    ))
     .with_payload_inspections(Arc::new(
         sagat_application::payloads::PayloadInspectionService::new(
             executions.clone(),

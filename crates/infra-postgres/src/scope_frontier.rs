@@ -14,7 +14,7 @@ use sagat_application::scope_frontier::{
 };
 use sagat_domain::blobs::BlobId;
 use sagat_domain::execution::{
-    CollectionPhase, ExecutionInstanceId, InstancePath, LoopPhase, RunId, StepState,
+    CollectionPhase, ExecutionInstanceId, FailureCode, InstancePath, LoopPhase, RunId, StepState,
 };
 use sagat_domain::identity::TenantId;
 use sagat_domain::workflow::NodeId;
@@ -23,6 +23,7 @@ use sqlx::{PgConnection, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::collection_outputs;
 use crate::execution::{
     PgRunStore, RUN_SNAPSHOT, instance_path, run_record, step_instance_path, step_state,
 };
@@ -73,13 +74,13 @@ async fn header(
     let record = run_record(&row)?;
     let now: OffsetDateTime = col(&row, "db_now")?;
     let input_digest: Vec<u8> = col(&row, "input_digest")?;
-    // What `RunState::charged_instances` counts: every scoped instance and each root instance that
-    // left PENDING other than by cancellation. `run_instance_usage.admitted_instances` is not that
-    // number (scoped instances are charged through reservations), and the budget proofs of the
-    // scheduler compare against this one (D522). One row comes back; only the index is walked.
-    let admitted: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM steps WHERE tenant_id = $1 AND run_id = $2 \
-           AND (cardinality(instance_path_nodes) > 0 OR status NOT IN ('PENDING', 'CANCELLED'))",
+    let stop_code = col::<Option<String>>(&row, "stop_code")?
+        .map(|code| FailureCode::parse(&code).map_err(|_| corrupt("stop code")))
+        .transpose()?;
+    // The current-instance projection matches RunState, independently of the lifetime admission
+    // and reservation budget. One keyed row is read, regardless of completed iteration count.
+    let charged_instances: i64 = sqlx::query_scalar(
+        "SELECT charged_instances FROM run_instance_usage WHERE tenant_id=$1 AND run_id=$2",
     )
     .bind(tenant.as_uuid())
     .bind(run.as_uuid())
@@ -89,14 +90,22 @@ async fn header(
     let definition = store
         .definition(&mut *conn, tenant, record.info.version_id)
         .await?;
+    // Keep E with the revision, stop and scope metadata from this repeatable-read snapshot. The
+    // helper validates only bounded metadata and lengths; active-member payloads are loaded later.
+    let effective_output_bytes = collection_outputs::inspect(&mut *conn, &record.info, &definition)
+        .await?
+        .total();
     Ok(Some(Header {
         run: ScopeRun {
             info: record.info,
             now,
             version: record.version,
             stop_reason: record.stop_reason,
+            stop_code,
+            effective_output_bytes,
             definition,
-            charged_instances: usize::try_from(admitted).map_err(|_| corrupt("instance count"))?,
+            charged_instances: usize::try_from(charged_instances)
+                .map_err(|_| corrupt("instance count"))?,
         },
         input_digest,
     }))
@@ -510,16 +519,10 @@ impl ScopeFrontierStore for PgRunStore {
         tenant_id: TenantId,
         run_id: RunId,
     ) -> Result<u64, StoreError> {
-        let total: i64 = sqlx::query_scalar(
-            "SELECT coalesce(sum(octet_length(p.content)), 0)::bigint FROM steps s \
-             JOIN payloads p ON p.tenant_id = s.tenant_id AND p.digest = s.output_digest \
-             WHERE s.tenant_id = $1 AND s.run_id = $2",
-        )
-        .bind(tenant_id.as_uuid())
-        .bind(run_id.as_uuid())
-        .fetch_one(&self.pool)
-        .await
-        .map_err(store_error)?;
-        u64::try_from(total).map_err(|_| corrupt("retained output bytes"))
+        let mut tx = snapshot(self).await?;
+        let header = header(self, &mut tx, tenant_id, run_id)
+            .await?
+            .ok_or(StoreError::MissingReference)?;
+        Ok(header.run.effective_output_bytes)
     }
 }

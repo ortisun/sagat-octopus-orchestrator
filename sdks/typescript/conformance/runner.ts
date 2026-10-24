@@ -31,6 +31,7 @@ function apply(target: Flow, ops: Obj[]): void {
     switch (op['op']) {
       case 'step': target.step(op['id'], op['activity'], op['options']); break;
       case 'database': target.database(op['id'], op['options']); break;
+      case 'script': target.script(op['id'], op['artifactDigest'], op['options']); break;
       case 'sleep': target.sleep(op['id'], op['durationMs']); break;
       case 'waitForEvent': target.waitForEvent(op['id'], op['options']); break;
       case 'invokeChild': target.invokeChild(op['id'], op['workflow'], op['options']); break;
@@ -71,6 +72,7 @@ function builderOf(definition: Obj): WorkflowBuilder {
   for (const trigger of definition['triggers'] ?? []) builder.trigger(trigger);
   if (definition['inputSchema']) builder.inputSchema(definition['inputSchema']);
   if (definition['outputSchema']) builder.outputSchema(definition['outputSchema']);
+  if (definition['limits']) builder.limits(definition['limits']);
   if (definition['state']) builder.state(definition['state'] as StateDefinition);
   if (definition['chainPolicy']) builder.chainPolicy(definition['chainPolicy']);
   for (const [name, bodyDefinition] of Object.entries<Obj>(definition['bodies'] ?? {})) {

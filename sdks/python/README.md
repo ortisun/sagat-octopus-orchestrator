@@ -70,6 +70,10 @@ with SyncSagatClient(config) as client:
         print(item.run_id)
 ```
 
+The blocking facade also exposes `update_chain`, `rerun_as_new` and
+`wait_for_chain_completion(namespace_id, chain_id)`. The chain wait follows `finalOutcome` across
+continuations; `wait_for_completion(run_id)` keeps waiting for that exact segment only.
+
 ## An activity: register it, serve it
 
 ```python

@@ -168,9 +168,8 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         sagat_domain::identity::Subject::parse("database-blobs").unwrap(),
         Role::DatabaseRunner,
     );
-    let instance = sagat_domain::execution::ExecutionInstanceId::root(
-        sagat_domain::workflow::NodeId::parse("database").unwrap(),
-    );
+    let node = sagat_domain::workflow::NodeId::parse("database").unwrap();
+    let instance = sagat_domain::execution::ExecutionInstanceId::root(node);
     let task = sagat_application::worker::TaskRef {
         run_id: lease.run_id.parse().unwrap(),
         instance: &instance,

@@ -21,6 +21,12 @@ pub const ANALYZE_EVERY: usize = 50;
 
 pub const ACTIVITY: &str = "perf.item";
 
+pub(super) fn probe_transition(sequence: usize, stride: usize) -> bool {
+    // Two consecutive transitions cover both alternating admission/checkpoint families even
+    // when the reporting interval is even. A stride of one probes every transition.
+    sequence >= 2 && sequence % stride < 2
+}
+
 pub fn collection_document(name: &str, items: usize, concurrency: usize) -> Value {
     json!({
         "apiVersion": "sagat-octopus-orchestrator.io/v1",
@@ -84,6 +90,7 @@ pub struct CollectionResult {
     pub after: String,
     pub peak_threads: u64,
     pub peak_connections: i64,
+    pub peak_rss_bytes: u64,
     pub journal_bytes_per_item: f64,
     pub step_rows: i64,
     pub checkpoints: i64,
@@ -110,6 +117,7 @@ pub async fn run_case(items: usize, concurrency: usize) -> CollectionResult {
     let before = resources(&p.world).await;
     let mut peak_threads = before.threads;
     let mut peak_connections = before.pg_connections;
+    let mut peak_rss_bytes = before.rss_bytes;
     let mut samples = Samples::default();
     let mut sequence: Vec<Duration> = Vec::new();
     let mut peak_active = 0_i32;
@@ -128,7 +136,7 @@ pub async fn run_case(items: usize, concurrency: usize) -> CollectionResult {
         if transitions % ANALYZE_EVERY == 1 {
             analyze(&p.world).await;
         }
-        let probing = transitions >= 2 && transitions.is_multiple_of(probe_every);
+        let probing = probe_transition(transitions, probe_every);
         let cost_before = if probing {
             statements(&p.world).await
         } else {
@@ -154,6 +162,7 @@ pub async fn run_case(items: usize, concurrency: usize) -> CollectionResult {
                 cost: cost_after - cost_before,
             });
         }
+        let admitted = matches!(&outcome, Ok(CollectionAdvance::Admitted { .. }));
         match outcome {
             Ok(CollectionAdvance::Waiting) => {
                 samples.record(
@@ -169,6 +178,9 @@ pub async fn run_case(items: usize, concurrency: usize) -> CollectionResult {
                         break;
                     }
                     samples.record("worker: poll that leased tasks", polled.elapsed());
+                    for delay in p.ready_queue_delays(&session, &tasks).await {
+                        samples.record("worker: ready-to-lease queue delay", delay);
+                    }
                     for task in tasks {
                         let index = task.instance.path().segments()[0].iteration_index();
                         let completed = Instant::now();
@@ -212,7 +224,7 @@ pub async fn run_case(items: usize, concurrency: usize) -> CollectionResult {
                 assert!(errors < 25, "too many scheduler errors, last: {error}");
             }
         }
-        if transitions.is_multiple_of(8) {
+        if admitted || transitions.is_multiple_of(8) {
             let (active, limit): (i32, i32) = sqlx::query_as(
                 "SELECT u.active_iterations, p.max_active_iterations \
                  FROM tenant_iteration_usage u JOIN tenant_collection_policies p USING (tenant_id) \
@@ -222,7 +234,6 @@ pub async fn run_case(items: usize, concurrency: usize) -> CollectionResult {
             .fetch_one(&p.world.db.pool)
             .await
             .expect("tenant usage");
-            peak_active = peak_active.max(active);
             assert!(active <= limit, "tenant slots exceeded: {active} > {limit}");
             let scope_active: i32 = sqlx::query_scalar(
                 "SELECT active_count FROM iteration_scopes WHERE tenant_id=$1 AND run_id=$2",
@@ -231,7 +242,8 @@ pub async fn run_case(items: usize, concurrency: usize) -> CollectionResult {
             .bind(run.as_uuid())
             .fetch_one(&p.world.db.pool)
             .await
-            .unwrap_or(0);
+            .expect("scope active count");
+            peak_active = peak_active.max(scope_active);
             assert!(
                 usize::try_from(scope_active).unwrap_or(usize::MAX) <= concurrency,
                 "maxConcurrency exceeded: {scope_active} > {concurrency}"
@@ -241,12 +253,14 @@ pub async fn run_case(items: usize, concurrency: usize) -> CollectionResult {
             let now = resources(&p.world).await;
             peak_threads = peak_threads.max(now.threads);
             peak_connections = peak_connections.max(now.pg_connections);
+            peak_rss_bytes = peak_rss_bytes.max(now.rss_bytes);
         }
     }
     let wall = started.elapsed();
     let after = resources(&p.world).await;
     peak_threads = peak_threads.max(after.threads);
     peak_connections = peak_connections.max(after.pg_connections);
+    peak_rss_bytes = peak_rss_bytes.max(after.rss_bytes);
     let status = p.world.run_status(run).await;
     if complete {
         assert_eq!(status, RunStatus::Succeeded);
@@ -294,6 +308,7 @@ pub async fn run_case(items: usize, concurrency: usize) -> CollectionResult {
         after: after.to_string(),
         peak_threads,
         peak_connections,
+        peak_rss_bytes,
         journal_bytes_per_item: journal_bytes as f64
             / if complete {
                 items as f64
@@ -331,16 +346,33 @@ pub fn deciles(sequence: &[Duration]) -> Vec<f64> {
 
 pub fn fragment(result: &CollectionResult) -> String {
     let wall = result.wall.as_secs_f64();
+    let work_summary = ["admit", "checkpoint"]
+        .map(|kind| {
+            let probes: Vec<_> = result
+                .probes
+                .iter()
+                .filter(|probe| probe.label == kind)
+                .cloned()
+                .collect();
+            match early_late_rows(&probes, 2) {
+                Some((early, late)) => {
+                    format!("- {kind}: first/last two-probe median rows {early}/{late}.")
+                }
+                None => format!("- {kind}: insufficient probes for an early/late row comparison."),
+            }
+        })
+        .join("\n");
     format!(
         "### {items} items, maxConcurrency {c}{partial}\n\n\
          - Outcome: run status {status:?}, {complete}; wall {wall:.1} s, {transitions} scheduler transitions, {tput:.1} items/s (items checkpointed per second), {tps:.1} transitions/s.\n\
-         - Peak active iterations observed (sampled every 8 transitions): {peak}; configured maxConcurrency {c}; tenant policy slots {slots}. Both bounds were asserted at every sample.\n\
+         - Peak active iterations observed (after every admission and every 8 transitions): {peak}; configured maxConcurrency {c}; tenant policy slots {slots}. Both bounds were asserted at every sample.\n\
          - Scheduler errors returned by a transition: {errors}. No client retries.\n\
          - Resources before: {before}.\n\
          - Resources after: {after}. Peak threads {threads}, peak PostgreSQL connections {conns} (sampled every 256 transitions).\n\
+         - Sampled peak RSS: {rss:.1} MiB (before/after and every 256 transitions; not the OS process peak).\n\
          - Durable size: {journal:.0} journal bytes per item (`pg_column_size`, no index/toast), {steps} step rows, {cps} checkpoints.\n\
          - p50 (ms) of admit/checkpoint transitions by tenth of the run, first to last: {deciles}\n\n\
-         {head}{rows}\nWhat the database did for single sampled transitions (load-independent):\n\n{probes}\n",
+         {head}{rows}\nWork by transition family (families are never mixed in these medians):\n\n{work_summary}\n\nWhat the database did for single sampled transitions:\n\n{probes}\n",
         items = result.items,
         c = result.concurrency,
         partial = if result.complete {
@@ -369,6 +401,7 @@ pub fn fragment(result: &CollectionResult) -> String {
         after = result.after,
         threads = result.peak_threads,
         conns = result.peak_connections,
+        rss = result.peak_rss_bytes as f64 / 1_048_576.0,
         journal = result.journal_bytes_per_item,
         steps = result.step_rows,
         cps = result.checkpoints,

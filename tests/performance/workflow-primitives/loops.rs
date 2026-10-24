@@ -136,6 +136,9 @@ pub async fn run_case(iterations: usize) -> LoopResult {
                         break;
                     }
                     samples.record("worker: poll that leased a task", polled.elapsed());
+                    for delay in p.ready_queue_delays(&session, &tasks).await {
+                        samples.record("worker: ready-to-lease queue delay", delay);
+                    }
                     for task in tasks {
                         let index = task.instance.path().segments()[0].iteration_index();
                         let completed = Instant::now();

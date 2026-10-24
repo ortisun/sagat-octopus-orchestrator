@@ -246,6 +246,7 @@ pub(crate) fn encode(event: &RunEvent) -> Encoded {
             CollectionDrainReason::Failed { iteration, code } => json!({
                 "reason": "failed", "iteration": iteration, "code": code.as_str(),
             }),
+            CollectionDrainReason::RunDataLimit => json!({"reason": "run_data_limit"}),
             CollectionDrainReason::StorageQuotaExceeded => {
                 json!({"reason": "storage_quota_exceeded"})
             }
@@ -648,6 +649,7 @@ pub(crate) fn decode(event_type: &str, node: Option<&str>, detail: &Value) -> Op
                     iteration: u32::try_from(number(d, "iteration")?).ok()?,
                     code: FailureCode::parse(text(d, "code")?).ok()?,
                 },
+                "run_data_limit" => CollectionDrainReason::RunDataLimit,
                 "storage_quota_exceeded" => CollectionDrainReason::StorageQuotaExceeded,
                 "cancelled" => CollectionDrainReason::Cancelled,
                 _ => return None,
@@ -938,6 +940,22 @@ mod tests {
     }
 
     #[test]
+    fn raw_collection_data_limit_drain_decodes_without_a_fictitious_member() {
+        let detail = json!({"reason":"run_data_limit"});
+        let event = decode("collection.drain_started", Some("items"), &detail)
+            .expect("an entered empty collection can exceed the run-data limit without a member");
+        let encoded = encode(&event);
+        assert_eq!(encoded.event_type, "collection.drain_started");
+        assert_eq!(encoded.node.as_deref(), Some("items"));
+        assert_eq!(encoded.detail, detail);
+        let cause = event.cause().expect("typed boundary failure");
+        assert_eq!(
+            (cause.kind, cause.code.as_str()),
+            ("failure", "RUN_DATA_LIMIT")
+        );
+    }
+
+    #[test]
     fn switch_case_and_default_are_exact_codec_inverses() {
         for (selection, detail) in [
             (
@@ -1064,6 +1082,28 @@ mod tests {
                 .is_none()
             );
         }
+    }
+
+    #[test]
+    fn collection_run_data_limit_drain_has_exact_codec_and_cause() {
+        let event = RunEvent::CollectionDrainStarted {
+            node: node("items"),
+            reason: CollectionDrainReason::RunDataLimit,
+        };
+
+        let encoded = encode(&event);
+        assert_eq!(encoded.event_type, "collection.drain_started");
+        assert_eq!(encoded.node.as_deref(), Some("items"));
+        assert_eq!(encoded.detail, json!({"reason": "run_data_limit"}));
+        assert_eq!(
+            decode(encoded.event_type, encoded.node.as_deref(), &encoded.detail),
+            Some(event.clone())
+        );
+        let cause = event.cause().expect("data-limit drain cause");
+        assert_eq!(
+            (cause.kind, cause.code.as_str()),
+            ("failure", "RUN_DATA_LIMIT")
+        );
     }
 
     #[test]

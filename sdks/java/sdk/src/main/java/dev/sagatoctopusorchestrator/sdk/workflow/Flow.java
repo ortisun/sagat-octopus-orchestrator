@@ -38,6 +38,7 @@ public final class Flow {
     }
 
     private static final Pattern SECRET = Pattern.compile("^[a-z][a-z0-9._-]{0,63}$");
+    private static final Pattern ARTIFACT_DIGEST = Pattern.compile("^sha256:[0-9a-f]{64}$");
     private static final JsonNodeFactory F = JsonNodeFactory.instance;
 
     private final List<ObjectNode> nodes = new ArrayList<>();
@@ -250,6 +251,9 @@ public final class Flow {
         if (o.onError != null) {
             node.put("onError", o.onError);
         }
+        if (o.outputSchema != null) {
+            node.set("outputSchema", o.outputSchema.deepCopy());
+        }
         return push(node);
     }
 
@@ -259,6 +263,29 @@ public final class Flow {
             throw SagatException.invalid("sleep " + id + " needs a whole number of milliseconds");
         }
         return sleepMs(id, duration.toMillis());
+    }
+
+    /** Runs one immutable script artifact in the platform's isolated runner. */
+    public Flow script(String id, String artifactDigest, ScriptOptions options) {
+        if (artifactDigest == null || !ARTIFACT_DIGEST.matcher(artifactDigest).matches()) {
+            throw SagatException.invalid("script " + id + " needs a sha256 artifact digest");
+        }
+        ScriptOptions o = options == null ? ScriptOptions.create() : options;
+        ObjectNode node = F.objectNode();
+        node.put("id", id); node.put("type", "script"); node.put("artifactDigest", artifactDigest);
+        if (o.language != null) node.put("language", o.language);
+        if (o.retry != null) node.set("retry", o.retry.toJson());
+        if (o.compensateWith != null) node.put("compensateWith", o.compensateWith);
+        if (o.secrets != null) {
+            ArrayNode values = node.putArray("secrets");
+            for (String secret : o.secrets) {
+                if (secret == null || !SECRET.matcher(secret).matches()) throw SagatException.invalid("script " + id + " names an invalid secret");
+                values.add(secret);
+            }
+        }
+        if (o.onError != null) node.put("onError", o.onError);
+        if (o.outputSchema != null) node.set("outputSchema", o.outputSchema.deepCopy());
+        return push(node);
     }
 
     /** Waits for {@code durationMs} milliseconds (at least 1). */
@@ -293,6 +320,9 @@ public final class Flow {
         if (options.lookbackMs != null) {
             node.put("lookbackMs", options.lookbackMs.longValue());
         }
+        if (options.outputSchema != null) {
+            node.set("outputSchema", options.outputSchema.deepCopy());
+        }
         return push(node);
     }
 
@@ -319,6 +349,9 @@ public final class Flow {
             }
             if (options.cancelPolicy != null) {
                 node.put("cancelPolicy", options.cancelPolicy.wire());
+            }
+            if (options.outputSchema != null) {
+                node.set("outputSchema", options.outputSchema.deepCopy());
             }
         }
         return push(node);

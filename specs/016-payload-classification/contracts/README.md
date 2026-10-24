@@ -1,6 +1,6 @@
 # Contract design for feature 016
 
-**Status: designed, not built.** Nothing below is deployed. The canonical contracts stay in
+**Status: implemented on the integration branch; release gates pending.** Nothing below is deployed. The canonical contracts stay in
 `specs/001-platform-foundation/contracts/` (`workflow.schema.json`, `openapi.yaml`); the changes listed
 here are made there by the tasks of `tasks.md` (T016-006, T016-008, T016-060), never by this document. `worker.proto`
 and `events.asyncapi.yaml` do not change.
@@ -27,7 +27,7 @@ four levels, case-sensitive.
 |---|---|---|---|
 | `inputSchema` | document root | yes (`type: object`, optional) | the run input (`source: "input"`) |
 | `outputSchema` | document root | yes (`type: object`, optional) | the run result (`source: "result"`) |
-| `outputSchema` | `activity`, `script`, `waitEvent`, `child` node | **new**, optional, `type: object` | the payload of that node's `step.completed`, `wait.satisfied` or `reconciliation.concluded` event (`source: "journal"`) |
+| `outputSchema` | `activity`, `script`, `waitEvent`, `child` node | **new**, optional, `type: object` | the payload of that node's `step.completed`, `wait.satisfied`, `reconciliation.concluded` or `child.finished` event (`source: "journal"`); `child.finished` requires the exact parent's `child` node |
 
 Not carriers, and an annotation there is refused (`CLASSIFICATION_NOT_APPLICABLE`): the declared state
 and the argument and result schemas of Query and Update (feature 014, ADR-0031), `humanApproval.formSchema`,

@@ -51,42 +51,6 @@ This node, or this combination of nodes, is in the schema but cannot be publishe
 
 Collections, loops, approvals, switches and Continue-As-New are built, each in the shapes the feature's quickstart lists. What is refused is the rest: an approval inside a body (it waits for scoped compensation, `dependency: SCOPED_COMPENSATION`), a branch, timer or nested scope inside a body, and a node kind the reading platform does not enable.
 
-### INVALID_SCOPE
-
-A forEach, while or repeatUntil body is not well formed (the reason says how): a body is a chain of one to eight activities ending in a return, it stays inside its own scope and nothing outside jumps into it.
-
-### DUPLICATE_BODY
-
-Two entries of `bodies` have the same name. Body names are unique in a document.
-
-### UNKNOWN_BODY
-
-A forEach, while or repeatUntil node names a body that `bodies` does not define. Add the body or fix the name.
-
-### UNREACHABLE_BODY
-
-A body is defined and no node uses it. Remove it, or reference it from a forEach, while or repeatUntil node.
-
-### RECURSIVE_BODY
-
-A body refers to itself, directly or through other bodies. Bodies nest but never form a cycle.
-
-### BODY_DEPTH_EXCEEDED
-
-Bodies nest deeper than the limit (8 levels). Flatten the nesting or move the inner part into a child workflow.
-
-### INVALID_WORKFLOW_LIMIT
-
-A top-level `limits` value is outside its range. A workflow may lower maxInstances and the depth below the platform and tenant ceilings and never raise them.
-
-### INVALID_CONTINUATION_POLICY
-
-The chainPolicy of a workflow that continues as new is not valid: maxSegments is 1 to 10000 and a timeout is required. Only a workflow with a continueAsNew node declares one.
-
-### INVALID_SWITCH
-
-A switch needs at least one case, a default route, and unique case ids; each case has a predicate and a target node (the reason says which one is missing).
-
 ### EXPRESSION
 
 An expression does not compile in the bounded expression language. Fix the syntax; there are no calls, no loops and no assignments.
@@ -278,3 +242,67 @@ compensateWith only runs inside a saga. Put the node in a saga, or remove the co
 ### RECURSIVE_CHILD
 
 This child node starts the workflow it belongs to. It is legal, and the depth limit ends it at the latest: make sure a condition stops it before.
+
+### INVALID_SCOPE
+
+A structured node has an invalid body, target or boundary. Keep each loop or approval inside its named body and follow the location named by the message.
+
+### DUPLICATE_BODY
+
+Two structured bodies have the same name. Body names are unique in a workflow.
+
+### UNKNOWN_BODY
+
+A structured node refers to a body that the workflow does not declare. Fix the body name or add that body.
+
+### UNREACHABLE_BODY
+
+The workflow declares a body that no structured node uses. Reference it from a node or remove it.
+
+### RECURSIVE_BODY
+
+Structured bodies cannot refer back to themselves through a chain of body references. Break the cycle into a finite structured flow.
+
+### BODY_DEPTH_EXCEEDED
+
+Body references exceed the workflow's maximum nesting depth. Flatten the structured flow or raise maxDepth within the supported limit.
+
+### INVALID_WORKFLOW_LIMIT
+
+Set maxInstances from 1 to 100000 and maxDepth from 1 to 8.
+
+### INVALID_CONTINUATION_POLICY
+
+Set maxSegments from 1 to 10000 and a timeout from 1 millisecond to 366 days; a chain policy also needs a continueAsNew node.
+
+### INVALID_SWITCH
+
+A switch has 1 to 32 uniquely named cases with bounded predicates, and it does not declare next, onError or timeout.
+
+### CLASSIFICATION_INVALID_LEVEL
+
+Use one of the four classification levels: public, internal, pii or secret.
+
+### CLASSIFICATION_LOOSENED
+
+A child cannot be less restrictive than its effective parent. Raise the child level or lower the parent only after reviewing every child.
+
+### CLASSIFICATION_UNSUPPORTED_KEYWORD
+
+Move the classification annotation to a supported schema location such as a carrier root, property, item or local reference target.
+
+### CLASSIFICATION_UNRESOLVED_REF
+
+Use a local JSON Pointer that resolves inside this carrier. Remote and cross-carrier references are not accepted.
+
+### CLASSIFICATION_NOT_APPLICABLE
+
+Classification annotations apply only to inputSchema, outputSchema and supported node outputSchema carriers. Remove the annotation from this location.
+
+### CLASSIFICATION_TOO_COMPLEX
+
+Keep the classification carrier within the fixed schema size, depth and reference-expansion limits.
+
+### CLASSIFICATION_INHERITED_OPEN
+
+A declared child inherits public or internal access. Declare a stricter level when that child should not stay open.

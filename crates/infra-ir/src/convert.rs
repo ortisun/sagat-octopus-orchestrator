@@ -62,10 +62,6 @@ fn node_id(value: &str, at: &str) -> Result<NodeId, IrError> {
     NodeId::parse(value).map_err(|e| issue(at.to_owned(), e.to_string()))
 }
 
-fn expression(value: &str, at: &str) -> Result<Expression, IrError> {
-    Expression::parse(value).map_err(|e| issue(at.to_owned(), e.to_string()))
-}
-
 fn reference(node: &Map<String, Value>, field: &str, at: &str) -> Result<Option<NodeId>, IrError> {
     optional_text(node, field, at)?
         .map(|v| node_id(v, &format!("{at}/{field}")))
@@ -222,7 +218,24 @@ fn secrets(node: &Map<String, Value>, at: &str) -> Result<Vec<SecretName>, IrErr
     Ok(names)
 }
 
-fn kind_of(node: &Map<String, Value>, kind: &str, at: &str) -> Result<NodeKind, IrError> {
+fn kind_of(
+    node: &Map<String, Value>,
+    kind: &str,
+    at: &str,
+    id: &NodeId,
+    structured: bool,
+) -> Result<NodeKind, IrError> {
+    let expression = |value: &str, path: &str| {
+        // Reject the effective bound before the legacy 2048-byte wrapper can erase the cause.
+        // Schema maxLength counts characters, so a schema-valid multibyte value can exceed both.
+        if (structured || kind == "switch") && value.len() > 1024 {
+            return Err(IrError::Invalid(WorkflowError::ExpressionByteLimit {
+                node: id.clone(),
+                limit: 1024,
+            }));
+        }
+        Expression::parse(value).map_err(|error| issue(path.to_owned(), error.to_string()))
+    };
     Ok(match kind {
         "activity" => NodeKind::Activity {
             activity: ActivityName::parse(text(node, "activity", at)?).map_err(IrError::Invalid)?,
@@ -510,7 +523,8 @@ fn nodes(raw_nodes: &[Value], at: &str, structured: bool) -> Result<Vec<Node>, I
         let mut built = if kind == "database" {
             Node::database(id, crate::database::operation(node, &at)?)
         } else {
-            Node::new(id, kind_of(node, kind, &at)?)
+            let kind = kind_of(node, kind, &at, &id, structured)?;
+            Node::new(id, kind)
         };
         if let Some(next) = reference(node, "next", &at)? {
             built = built.with_next(next);
@@ -703,19 +717,22 @@ pub(crate) fn published_collection_definition(
         return Err(pending);
     }
     let definition = structured_definition(document)?;
+    let source_activities = collection_source_activities(&definition)?;
     if !definition
         .node(definition.entrypoint())
-        .is_some_and(|node| matches!(node.kind(), NodeKind::ForEach { .. }))
+        .is_some_and(|node| {
+            matches!(node.kind(), NodeKind::ForEach { .. }) || source_activities.contains(node.id())
+        })
     {
         return Err(IrError::UnsupportedDeclaration {
             field: "entrypoint",
             reason: "a published collection workflow starts at its collection owner",
         });
     }
-    if let Some(node) = definition
-        .nodes()
-        .find(|node| !matches!(node.kind(), NodeKind::ForEach { .. } | NodeKind::End { .. }))
-    {
+    if let Some(node) = definition.nodes().find(|node| {
+        !matches!(node.kind(), NodeKind::ForEach { .. } | NodeKind::End { .. })
+            && !source_activities.contains(node.id())
+    }) {
         return Err(IrError::Unsupported {
             node: node.id().as_str().to_owned(),
             kind: node.kind().label().to_owned(),
@@ -773,6 +790,54 @@ pub(crate) fn published_collection_definition(
         }
     }
     Ok(definition)
+}
+
+/// Ordinary source activities may precede the existing root collection chain. Only the prefix is
+/// enabled: unrelated/successor activities and unproven error/effect-policy combinations stay closed.
+fn collection_source_activities(
+    definition: &WorkflowDefinition,
+) -> Result<std::collections::BTreeSet<NodeId>, IrError> {
+    let mut sources = std::collections::BTreeSet::new();
+    let mut current = definition.node(definition.entrypoint());
+    while let Some(node) = current {
+        let NodeKind::Activity {
+            compensate_with,
+            reconcile_with,
+            ..
+        } = node.kind()
+        else {
+            break;
+        };
+        if node.on_error().is_some()
+            || compensate_with.is_some()
+            || reconcile_with.is_some()
+            || node.effect().irreversible
+            || node.effect().high_risk
+            || node.database_operation().is_some()
+        {
+            return Err(IrError::Unsupported {
+                node: node.id().as_str().to_owned(),
+                kind: node.kind().label().to_owned(),
+                reason: "collection source activities have no onError edge, compensation, reconciliation, effect policy or managed database operation",
+            });
+        }
+        if !sources.insert(node.id().clone()) {
+            return Err(IrError::UnsupportedDeclaration {
+                field: "entrypoint",
+                reason: "collection source activities must lead to a collection owner",
+            });
+        }
+        current = node.next().and_then(|next| definition.node(next));
+    }
+    if !sources.is_empty()
+        && !current.is_some_and(|node| matches!(node.kind(), NodeKind::ForEach { .. }))
+    {
+        return Err(IrError::UnsupportedDeclaration {
+            field: "entrypoint",
+            reason: "collection source activities must lead to a collection owner",
+        });
+    }
+    Ok(sources)
 }
 
 /// The root activities a loop's `onError` edge recovers with (G340): the target of the edge and the
@@ -997,7 +1062,18 @@ fn structured_definition_with_policy(
                 .and_then(Value::as_array)
                 .ok_or_else(|| issue(format!("{at}/nodes"), "expected an array"))?;
             let nodes = nodes(raw_nodes, &format!("{at}/nodes"), true)?;
-            bodies.push(BodyDefinition::new(name, entrypoint, nodes).map_err(IrError::Invalid)?);
+            bodies.push(
+                BodyDefinition::new(name.clone(), entrypoint, nodes).map_err(
+                    |error| match error {
+                        WorkflowError::UnknownTarget { from, to } => IrError::EscapingBodyEdge {
+                            body: name,
+                            from,
+                            to,
+                        },
+                        other => IrError::Invalid(other),
+                    },
+                )?,
+            );
         }
     }
     let limits = document_limits(document)?;

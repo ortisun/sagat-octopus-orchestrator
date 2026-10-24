@@ -46,6 +46,16 @@ const CONTENT_USAGE: &str = "crates/infra-postgres/src/content_usage.rs";
 
 const ALLOWED: &[Allowed] = &[
     Allowed {
+        file: "crates/infra-postgres/src/leaf_certification.rs",
+        need: "INSERT leaf_collection_success_certifications(tenant_id, namespace_id, run_id, owner_node, iteration_index, profile, definition_version_id, scope_id, body_node, return_node, admitted_sequence, returned_sequence, checkpoint_sequence, checkpoint_result_digest, finished_sequence, aggregate_result_digest, owner_routed_sequence, certified_run_revision, certified_at, audit_id)",
+        reason: "B1b.2a.1d: dormant source certifier has no production caller; released INSERT is withheld until producer preservation, recovery and observations pass. Native tests grant INSERT explicitly in disposable databases; leaf_certification::dormant_runtime_cannot_create_or_rewrite_certifications proves the release restriction",
+    },
+    Allowed {
+        file: "crates/infra-postgres/src/scoped_leaf_finish.rs",
+        need: "INSERT capacity_group_finish_receipts(tenant_id, group_id, operation_key, fingerprint, namespace_id, member_id, member_kind, chain_id, head_run_id, original_run_id, root_owner_node, iteration_index, expected_group_revision, expected_group_epoch, accepted_chain_revision, accepted_run_revision, resulting_revision, resulting_epoch, resulting_active_members, resulting_possession, resulting_holder_member_id, finished_at, audit_id, outbox_id)",
+        reason: "T014 scoped finish binding (migration 20261212000000): the dormant scoped leaf finish has no production caller; the released INSERT stays the legacy 20-column ChildRoot list and withholds the discriminator and scoped columns until activation. Native tests grant the columns in disposable databases; capacity_scoped_binding::runtime_insert_columns_are_exactly_legacy_and_scoped_release_stays_closed proves the release restriction",
+    },
+    Allowed {
         file: IDENTITY,
         need: "INSERT tenants(id, slug, created_at)",
         reason: "provision-tenant runs as the owner role, never as the runtime role (control-plane runbook, section 1)",

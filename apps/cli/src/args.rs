@@ -26,7 +26,8 @@ ONE WORKFLOW:
     workflow publish <FILE> [--notes <TEXT>] [--dry-run] [--accept-breaking]
     workflow run <NAME> [--input <JSON|@FILE>] [--wait] [--timeout <SECONDS>] [--key <KEY>]
     workflow runs <NAME> [--limit <N>]   the latest runs of a workflow (the ones an event or a schedule started too)
-    workflow inspect <RUN>               the status, the journal and the attempts of a run
+    workflow inspect <RUN> [--values [--reveal-pii] [--sequence N]]
+                                          the status, journal and attempts; optionally disclosed values
     workflow cancel <RUN> --reason <TEXT>
     workflow rerun <RUN> --reason <TEXT>
                           start the same version again, with the same input, from a run that ended
@@ -42,6 +43,10 @@ ONE WORKFLOW:
     worker bind [--workflow <FILE>] [<ACTIVITY>...] [--allow-non-dev]
                           let the identity of the token serve those activities (and the ones the workflow
                           names), so that an SDK worker can; it replaces what the identity served there
+    namespace reveal-grants list
+    namespace reveal-grants grant <SUBJECT>
+    namespace reveal-grants revoke <SUBJECT>
+                          list or change the namespace's temporary PII reveal grants
 
 A MANIFEST KEPT IN GIT:
     validate              check the manifest and every document: locally, and against the server
@@ -149,6 +154,9 @@ pub enum Command {
     },
     WorkflowInspect {
         run: String,
+        values: bool,
+        reveal_pii: bool,
+        sequence: Option<u64>,
     },
     WorkflowCancel {
         run: String,
@@ -191,6 +199,13 @@ pub enum Command {
         tenant: String,
         ttl: Option<u64>,
         out: Option<PathBuf>,
+    },
+    RevealGrantsList,
+    RevealGrant {
+        subject: String,
+    },
+    RevealRevoke {
+        subject: String,
     },
 }
 
@@ -246,7 +261,7 @@ impl Flags {
 }
 
 /// Flags that take a value; every other `--flag` is a switch.
-const WITH_VALUE: [&str; 28] = [
+const WITH_VALUE: [&str; 29] = [
     "--server",
     "--token-file",
     "--namespace",
@@ -275,6 +290,7 @@ const WITH_VALUE: [&str; 28] = [
     "--subject",
     "--tenant",
     "--ttl",
+    "--sequence",
 ];
 
 fn split(args: &[String]) -> Result<(Vec<String>, Flags), UsageError> {
@@ -375,6 +391,24 @@ fn number(text: &str, name: &str) -> Result<u32, UsageError> {
         .ok()
         .filter(|n| *n >= 1)
         .ok_or_else(|| UsageError(format!("{name} is a number from 1")))
+}
+
+fn sequence(text: &str) -> Result<u64, UsageError> {
+    text.parse::<u64>()
+        .ok()
+        .filter(|n| (1..=i64::MAX as u64).contains(n))
+        .ok_or_else(|| {
+            UsageError(format!(
+                "--sequence is a positive sequence up to {}",
+                i64::MAX
+            ))
+        })
+}
+
+fn subject(text: &str) -> Result<String, UsageError> {
+    sagat_domain::identity::Subject::parse(text)
+        .map(|subject| subject.as_str().to_owned())
+        .map_err(|_| UsageError("the subject is not a valid caller identity".to_owned()))
 }
 
 /// Parses the arguments after the program name.
@@ -548,9 +582,26 @@ pub fn parse(args: &[String]) -> Result<Invocation, UsageError> {
                     .unwrap_or(10)
                     .min(200),
             },
-            Some((sub, tail)) if sub == "inspect" => Command::WorkflowInspect {
-                run: run_id(argument(tail, "the run (its id)")?)?,
-            },
+            Some((sub, tail)) if sub == "inspect" => {
+                let values = flags.take_switch("--values");
+                let reveal_pii = flags.take_switch("--reveal-pii");
+                let sequence = flags
+                    .take_value(&["--sequence"])
+                    .map(|value| sequence(&value))
+                    .transpose()?;
+                if reveal_pii && !values {
+                    return Err(UsageError("--reveal-pii needs --values".to_owned()));
+                }
+                if sequence.is_some() && !values {
+                    return Err(UsageError("--sequence needs --values".to_owned()));
+                }
+                Command::WorkflowInspect {
+                    run: run_id(argument(tail, "the run (its id)")?)?,
+                    values,
+                    reveal_pii,
+                    sequence,
+                }
+            }
             Some((sub, tail)) if sub == "cancel" => Command::WorkflowCancel {
                 run: run_id(argument(tail, "the run (its id)")?)?,
                 reason: flags.required("--reason")?,
@@ -659,6 +710,46 @@ pub fn parse(args: &[String]) -> Result<Invocation, UsageError> {
                 )));
             }
             None => return Err(UsageError("dev needs a command (token)".to_owned())),
+        },
+        Some("namespace") => match rest {
+            [group, command] if group == "reveal-grants" && command == "list" => {
+                Command::RevealGrantsList
+            }
+            [group, command, value] if group == "reveal-grants" && command == "grant" => {
+                Command::RevealGrant {
+                    subject: subject(value)?,
+                }
+            }
+            [group, command, value] if group == "reveal-grants" && command == "revoke" => {
+                Command::RevealRevoke {
+                    subject: subject(value)?,
+                }
+            }
+            [group, command]
+                if group == "reveal-grants" && matches!(command.as_str(), "grant" | "revoke") =>
+            {
+                return Err(UsageError("the subject is required".to_owned()));
+            }
+            [group, command, ..] if group == "reveal-grants" => {
+                return Err(UsageError(format!(
+                    "'namespace reveal-grants {command}' is not a command (list, grant, revoke)"
+                )));
+            }
+            [group] if group == "reveal-grants" => {
+                return Err(UsageError(
+                    "namespace reveal-grants needs a command (list, grant, revoke)".to_owned(),
+                ));
+            }
+            [other, ..] => {
+                return Err(UsageError(format!(
+                    "'namespace {other}' is not a command (reveal-grants)"
+                )));
+            }
+            [] => {
+                return Err(UsageError(
+                    "namespace needs a command (reveal-grants)".to_owned(),
+                ));
+            }
         },
         Some(other) => return Err(UsageError(format!("'{other}' is not a command"))),
     };

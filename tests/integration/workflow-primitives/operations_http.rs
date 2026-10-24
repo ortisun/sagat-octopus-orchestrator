@@ -1160,3 +1160,191 @@ async fn update_to_a_finished_run_is_not_mutable() {
     assert_eq!(finished["code"], "CONFLICT");
     assert_eq!(finished["details"]["reason"], "RUN_NOT_MUTABLE");
 }
+
+/// Direct addressing never forwards, but a chain member still uses chain-before-run mutation
+/// serialization. The successor differs from the chain ID, so a run-ID-as-chain lookup cannot pass.
+#[tokio::test]
+async fn a_run_addressed_update_locks_its_successors_chain_before_the_run_until_commit() {
+    let fixture = fixture("http-direct-update-chain-prefix").await;
+    attach_singleton_chain(&fixture).await;
+    let successor = seed_successor(&fixture, 50).await;
+    advance_chain(&fixture, successor).await;
+    assert_ne!(successor, fixture.run);
+    let predecessor_sql = "SELECT r.run_version,s.state_revision,s.state_digest FROM runs r \
+         JOIN workflow_operation_states s ON s.tenant_id=r.tenant_id AND s.run_id=r.id \
+         WHERE r.tenant_id=$1 AND r.id=$2";
+    let before: (i64, i64, Vec<u8>) = sqlx::query_as(predecessor_sql)
+        .bind(fixture.tenant.as_uuid())
+        .bind(fixture.run.as_uuid())
+        .fetch_one(&fixture.api.db.pool)
+        .await
+        .expect("predecessor before direct successor update");
+    // This database-only gate pauses the real HTTP transaction at its durable receipt, so the
+    // independent lock probes below observe the lifetime of its actual chain and run guards.
+    sqlx::raw_sql(
+        "CREATE FUNCTION test_hold_direct_update_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN PERFORM pg_advisory_xact_lock(37140037::bigint); RETURN NEW; END $$; \
+         CREATE TRIGGER test_hold_direct_update_receipt BEFORE INSERT ON operation_update_receipts \
+         FOR EACH ROW EXECUTE FUNCTION test_hold_direct_update_receipt()",
+    )
+    .execute(&fixture.api.db.pool)
+    .await
+    .expect("receipt barrier trigger");
+    let mut receipt_gate = fixture.api.db.pool.begin().await.expect("receipt gate");
+    let receipt_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *receipt_gate)
+        .await
+        .expect("receipt guard backend");
+    sqlx::query("SELECT pg_advisory_xact_lock(37140037::bigint)")
+        .execute(&mut *receipt_gate)
+        .await
+        .expect("hold receipt barrier");
+    let mut chain_gate = fixture.api.db.pool.begin().await.expect("chain gate");
+    let chain_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *chain_gate)
+        .await
+        .expect("chain guard backend");
+    sqlx::query(
+        "SELECT chain_id FROM execution_chains WHERE tenant_id=$1 AND chain_id=$2 FOR UPDATE",
+    )
+    .bind(fixture.tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .execute(&mut *chain_gate)
+    .await
+    .expect("hold original chain");
+    let path = format!("/runs/{successor}/updates/balance.replace");
+    let body = json!({
+        "updateKey": "direct-successor-27",
+        "args": {"allowed": true, "nextState": {"balance": 27}},
+        "expectedStateRevision": 0
+    });
+    let mut request = Box::pin(fixture.api.post_as(&path, "alice", "acme", &body));
+    tokio::select! {
+        response = &mut request => panic!("direct update bypassed its chain: {}", response.status()),
+        () = support::eventually("direct update blocks on the original chain", || async {
+            sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() \
+                 AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE '%execution_chains%' \
+                 AND (NOT $2 OR usename='sagat_app'))",
+            )
+            .bind(chain_pid)
+            .bind(support::as_runtime_role())
+            .fetch_one(&fixture.api.db.pool)
+            .await
+            .expect("chain wait barrier")
+            .then_some(())
+        }) => {}
+    }
+    let mut probe = fixture
+        .api
+        .db
+        .pool
+        .acquire()
+        .await
+        .expect("early run probe");
+    sqlx::query("SELECT id FROM runs WHERE tenant_id=$1 AND id=$2 FOR UPDATE NOWAIT")
+        .bind(fixture.tenant.as_uuid())
+        .bind(successor.as_uuid())
+        .execute(&mut *probe)
+        .await
+        .expect("the update waits for its chain without holding its run");
+    drop(probe);
+    chain_gate.rollback().await.expect("release chain gate");
+    tokio::select! {
+        response = &mut request => panic!("receipt gate must pause the update: {}", response.status()),
+        () = support::eventually("the update reaches its receipt in the same transaction", || async {
+            sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() \
+                 AND $1=ANY(pg_blocking_pids(pid)) AND (NOT $2 OR usename='sagat_app'))",
+            )
+            .bind(receipt_pid)
+            .bind(support::as_runtime_role())
+            .fetch_one(&fixture.api.db.pool)
+            .await
+            .expect("receipt wait barrier")
+            .then_some(())
+        }) => {}
+    }
+    let mut probe = fixture
+        .api
+        .db
+        .pool
+        .acquire()
+        .await
+        .expect("held guards probe");
+    for (statement, id) in [
+        (
+            "SELECT chain_id FROM execution_chains WHERE tenant_id=$1 AND chain_id=$2 FOR SHARE NOWAIT",
+            fixture.run,
+        ),
+        (
+            "SELECT id FROM runs WHERE tenant_id=$1 AND id=$2 FOR UPDATE NOWAIT",
+            successor,
+        ),
+    ] {
+        let blocked = sqlx::query(statement)
+            .bind(fixture.tenant.as_uuid())
+            .bind(id.as_uuid())
+            .execute(&mut *probe)
+            .await
+            .expect_err("both guards last until the HTTP update commits");
+        assert_eq!(
+            blocked
+                .as_database_error()
+                .and_then(|e| e.code())
+                .as_deref(),
+            Some("55P03")
+        );
+    }
+    drop(probe);
+    receipt_gate.rollback().await.expect("release receipt gate");
+    let response = request.await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    let applied = json_of(response).await;
+    assert_eq!(applied["runId"], successor.to_string());
+    assert_eq!(applied["result"], 27);
+    assert_eq!(applied["replayed"], false);
+    let replay = fixture.api.post_as(&path, "alice", "acme", &body).await;
+    assert_eq!(replay.status(), StatusCode::OK);
+    let replay = json_of(replay).await;
+    assert_eq!(replay["runId"], successor.to_string());
+    assert_eq!(replay["result"], 27);
+    assert_eq!(replay["replayed"], true);
+    let stored: (i64, Vec<u8>, i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT s.state_revision,p.content, \
+         (SELECT count(*) FROM operation_update_receipts x WHERE x.tenant_id=s.tenant_id AND x.address_scope='RUN' AND x.target_id=s.run_id AND x.resolved_run_id=s.run_id), \
+         (SELECT count(*) FROM run_events e WHERE e.tenant_id=s.tenant_id AND e.run_id=s.run_id AND e.event_type='state.updated'), \
+         (SELECT count(*) FROM event_outbox o WHERE o.tenant_id=s.tenant_id AND o.aggregate_id=s.run_id AND o.event_type='run.state_updated'), \
+         (SELECT count(*) FROM audit_records a WHERE a.tenant_id=s.tenant_id AND a.resource_id=s.run_id::text AND a.action='run.updated' AND a.trace_id ~ '^[0-9a-f]{32}$') \
+         FROM workflow_operation_states s JOIN payloads p ON p.tenant_id=s.tenant_id AND p.digest=s.state_digest \
+         WHERE s.tenant_id=$1 AND s.run_id=$2",
+    )
+    .bind(fixture.tenant.as_uuid())
+    .bind(successor.as_uuid())
+    .fetch_one(&fixture.api.db.pool)
+    .await
+    .expect("successor mutation and replay evidence");
+    assert_eq!(stored.0, 1);
+    assert_eq!(stored.1, br#"{"balance":27}"#);
+    assert_eq!((stored.2, stored.3, stored.4, stored.5), (1, 1, 1, 2));
+    let after: (i64, i64, Vec<u8>) = sqlx::query_as(predecessor_sql)
+        .bind(fixture.tenant.as_uuid())
+        .bind(fixture.run.as_uuid())
+        .fetch_one(&fixture.api.db.pool)
+        .await
+        .expect("predecessor after successor update");
+    assert_eq!(
+        after, before,
+        "direct update did not mutate the predecessor"
+    );
+    let foreign = fixture.api.post_as(&path, "bob", "globex", &body).await;
+    assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
+    let foreign = json_of(foreign).await;
+    assert_eq!(foreign["code"], "NOT_FOUND");
+    assert_eq!(
+        foreign["traceId"].as_str().expect("trace identity").len(),
+        32
+    );
+    assert!(!foreign.to_string().contains("balance"));
+}

@@ -185,6 +185,9 @@ async fn managed_secret_lifecycle() {
         .await
         .unwrap();
     assert_eq!(resolved[0].value.expose(), b"rotated-canary-017");
+    w.complete(&session, &task, &serde_json::json!({}))
+        .await
+        .unwrap();
     // A legacy writer cannot silently switch provider authority back to local ciphertext.
     assert!(
         w.secrets
@@ -250,6 +253,12 @@ async fn managed_secret_lifecycle() {
     Box::pin(output::run(provider.clone())).await;
     Box::pin(output_blobs::run(provider.clone())).await;
 
+    // The preceding independent scenarios can outlast a lease. Acquire a fresh one so this
+    // race exercises revocation during provider I/O rather than an already expired capability.
+    w.start(workflow, &serde_json::json!({})).await;
+    let session = w.session(&["act.a"]).await;
+    let task = w.one_task(&session).await;
+
     // An ACL/membership change during provider I/O must discard the value already read.
     let gated = Arc::new(ReadBarrier {
         inner: provider.clone(),
@@ -271,7 +280,11 @@ async fn managed_secret_lifecycle() {
             .unwrap();
         gated.resume.wait().await;
     };
-    let (result, ()) = tokio::join!(resolving, revoking);
+    let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(resolving, revoking)
+    })
+    .await
+    .expect("provider I/O revocation race must finish within the fresh lease");
     assert!(matches!(result, Err(AppError::SecretUnavailable { .. })));
     // Stale in-memory admin principals cannot replay a management receipt either.
     assert!(service.put(&w.admin, ns, write(), &ctx()).await.is_err());

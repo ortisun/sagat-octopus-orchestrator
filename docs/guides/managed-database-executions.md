@@ -85,7 +85,7 @@ using the existing namespace header and pagination. Ordinary published runs omit
 
 ## Operational evidence
 
-Migration `20261030000000_database_ad_hoc` guards private identity and origin, and refuses a
+Migration `20261125000000_database_ad_hoc` guards private identity and origin, and refuses a
 downgrade while private definitions/runs remain. Retention, run/pins, initial journal/tasks/outbox,
 audit and request receipt share one transaction. `database_executions_total` labels only the
 closed origin/outcome set; `database_execution_denials_total` counts safe refusals. Existing

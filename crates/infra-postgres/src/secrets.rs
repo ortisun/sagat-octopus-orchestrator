@@ -300,7 +300,7 @@ pub(crate) async fn inputs(
     .map_err(store_error)?
     .ok_or_else(|| corrupt("workflow version reference"))?;
     let role: Option<String> =
-        sqlx::query_scalar("SELECT role FROM memberships WHERE tenant_id = $1 AND subject = $2")
+        sqlx::query_scalar("SELECT role FROM public.sagat_lock_memberships($1, ARRAY[$2::text])")
             .bind(tenant.as_uuid())
             .bind(&publisher)
             .fetch_optional(&mut *conn)
@@ -326,8 +326,9 @@ pub(crate) async fn inputs(
         .map(stored_from)
         .collect::<Result<Vec<_>, _>>()?;
     let granted: Vec<String> = sqlx::query_scalar(
-        "SELECT s.name FROM secrets s JOIN secret_access a ON a.secret_id = s.id \
-         WHERE s.tenant_id = $1 AND s.namespace_id = $2 AND s.name = ANY($3) AND a.subject = $4",
+        "SELECT s.name FROM secrets s \
+         JOIN LATERAL public.sagat_lock_secret_access($1, s.id, ARRAY[$4::text]) a ON true \
+         WHERE s.tenant_id = $1 AND s.namespace_id = $2 AND s.name = ANY($3)",
     )
     .bind(tenant.as_uuid())
     .bind(namespace.as_uuid())

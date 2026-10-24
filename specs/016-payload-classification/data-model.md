@@ -1,7 +1,8 @@
 # Data model: per-field payload classification
 
-**Status**: designed, not built. No table, type or endpoint below exists yet. Fields and constraints are
-the implementation design; release needs the named evidence in `tasks.md`.
+**Status**: implemented on the integration branch; integrated release gates pending. The model below
+describes the implementation and its constraints. Focused test and process evidence is recorded in
+`tasks/project-completion/integration-notes.md`; release still needs the gates named in `tasks.md`.
 
 Domain rules use typed values; `serde_json` stays in adapter crates (AGENTS.md rule 5). The domain
 holds the level, its order, the audience decision and the permission names. The schema walk, the
@@ -131,12 +132,16 @@ contains, so the projection is computed before commit, from the bytes just read.
 the work is bounded (FR-016-024) and CPU-only, with no network call and no external blob read. A failed
 audit insert or commit returns `UNAVAILABLE` and no value.
 
-Locks: `runs ... FOR SHARE` (as ADR-0028) and a plain read of the grant row; no lock on `workflow_versions`
-(immutable). No scheduler lease, no outbox row, no timer or subscription is touched: the feature does not
-change a state transition (constitution I is satisfied by not participating in any).
+Locks: `runs ... FOR SHARE` (as ADR-0028), namespace and current membership authority locks,
+and a shared transaction advisory lock on the namespace's reveal-grant set. Grant revocation takes
+the corresponding exclusive advisory lock, so authorization remains current through the read/audit
+commit. No lock is needed on immutable `workflow_versions`. No scheduler lease, outbox row, timer
+or subscription is touched: the feature does not change a state transition.
 
-Granting: `PUT` takes the namespace row `FOR UPDATE`, counts grants, inserts, writes `payload.reveal_granted`,
-commits. `DELETE` deletes and writes `payload.reveal_revoked` in one transaction. Both under `begin_safely`.
+Granting: `PUT` checks current namespace/membership authority, exclusively locks the namespace's
+grant set, counts grants, inserts and writes `payload.reveal_granted` before commit. `DELETE`
+uses the same authority and grant-set locks, deletes and writes `payload.reveal_revoked` in one
+transaction. Both use `begin_safely`; runtime authority tables remain read-only.
 
 ## 5. Failure and race behaviour
 
@@ -182,15 +187,17 @@ so there is no walk and no validity gate: the decision is the pure `visibility(P
 
 | Step | Where | Notes |
 |---|---|---|
-| 1. authorize | `crates/application/src/events.rs` (`event`), `crates/application/src/connectors.rs` (`dead_letter`, `dead_letters`) | `event:read` as today; if `reveal=pii` is present also `payload:read-internal`, otherwise `403` with `PII_REVEAL_NOT_GRANTED`; the list ignores `reveal` |
+| 1. authorize | `crates/application/src/event_payloads.rs` (`EventPayloadService`) | `event:read`; if `reveal=pii` is present also `payload:read-internal`, otherwise `403` with `PII_REVEAL_NOT_GRANTED`; the list ignores `reveal` |
 | 2. resolve | stores | the event by `(tenant, namespace, source, event id)`, the connector and letter by tenant and connector; a foreign or missing one is the opaque `404` |
-| 3. read, project, audit, commit | `crates/infra-postgres/src/events.rs` (`event`), `crates/infra-postgres/src/connectors.rs` (`dead_letter`, `dead_letters`) | without reveal, the existing pool read followed by projection with `JsonPayloadProjector` (structure, size, `headerCount`), no audit. With reveal, one `begin_safely` transaction: read the grant row of the event's (connector's) namespace, read the payload, insert `payload.pii_revealed`, commit, then return the values; a missing grant rolls back to `403` and a best-effort `payload.reveal_denied` outside the transaction |
+| 3. read, project, audit, commit | `crates/infra-postgres/src/event_payloads.rs` | all reads use `begin_safely` and recheck current namespace, membership and effective reveal grant under their authority locks. Structure reads project without revealing values; reveals insert `payload.pii_revealed` and commit before returning values. A missing grant refuses disclosure with `403` and a best-effort `payload.reveal_denied` outside the transaction. Lists remain structural. |
 | 4. respond | `crates/api-http/src/routes/events.rs` (`get_event`), `crates/api-http/src/routes/connectors.rs` (`get_dead_letter`, `list_dead_letters`), `crates/api-http/src/dto_events.rs` (`EventBody`, `DeadLetterBody`) | `Cache-Control: private, no-store`; `data`, `body`, `headers` are `Option` and skipped when absent |
 
-The store trait methods gain an audience argument (`EventView::Structure | EventView::Reveal`), so an
-adapter cannot return values without being asked to; the type of a structure answer has no field that
-could carry a value (as `PayloadStructure` has none). `Debug` of the stored payload and of a dead-letter
-body prints sizes only.
+`EventPayloadStore` accepts the prepared tenant/namespace/subject/reveal request and an
+`EventPayloadEvaluator`; projection uses the current authority selected inside the transaction.
+The structural result carries no disclosed payload values. `Debug` of retained payload bytes and
+dead-letter bodies prints sizes only. Dead-letter contents are immutable to the runtime role, so
+their committed snapshot needs no `FOR SHARE` (which would require granting UPDATE merely to read).
+Namespace, membership and grant-set authority locks still last through the read/audit commit.
 
 Failure and race behaviour: a crash before commit of a reveal leaves no audit row and returns no value; a
 crash after commit and before the response leaves one audit row and no delivered value (a retry audits again);

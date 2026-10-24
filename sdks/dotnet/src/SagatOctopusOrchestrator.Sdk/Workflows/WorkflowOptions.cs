@@ -34,6 +34,9 @@ public sealed record StepRetry
 /// <summary>Options of <see cref="FlowBase{TSelf}.Step"/>. Absent options are left out of the document, never written as null.</summary>
 public sealed record StepOptions
 {
+    /// <summary>The JSON Schema of the activity result carried by journal completion events.</summary>
+    public JsonObject? OutputSchema { get; init; }
+
     /// <summary>The retry budget of the step.</summary>
     public StepRetry? Retry { get; init; }
 
@@ -68,6 +71,17 @@ public sealed record StepOptions
     public string? OnError { get; init; }
 }
 
+/// <summary>Options of a pinned script artifact node.</summary>
+public sealed record ScriptOptions
+{
+    public string? Language { get; init; }
+    public StepRetry? Retry { get; init; }
+    public string? CompensateWith { get; init; }
+    public IReadOnlyList<string>? Secrets { get; init; }
+    public string? OnError { get; init; }
+    public JsonObject? OutputSchema { get; init; }
+}
+
 /// <summary>Options of <see cref="FlowBase{TSelf}.WaitForEvent"/>.</summary>
 public sealed record WaitForEventOptions
 {
@@ -85,6 +99,9 @@ public sealed record WaitForEventOptions
 
     /// <summary>An event that arrived up to this long before the wait started also wakes it (once).</summary>
     public TimeSpan? Lookback { get; init; }
+
+    /// <summary>The JSON Schema of the event payload carried by the satisfied wait.</summary>
+    public JsonObject? OutputSchema { get; init; }
 }
 
 /// <summary>What happens to a child run when its parent is stopped.</summary>
@@ -111,6 +128,17 @@ public sealed record ChildOptions
 
     /// <summary>What happens to the child when the parent is stopped.</summary>
     public ChildCancelPolicy? CancelPolicy { get; init; }
+
+    /// <summary>The JSON Schema of the child result carried by the completed node.</summary>
+    public JsonObject? OutputSchema { get; init; }
+}
+
+/// <summary>Optional workflow-wide execution ceilings.</summary>
+public sealed record WorkflowLimitsOptions
+{
+    public int? MaxInstances { get; init; }
+
+    public int? MaxDepth { get; init; }
 }
 
 /// <summary>How a parallel node joins its branches.</summary>

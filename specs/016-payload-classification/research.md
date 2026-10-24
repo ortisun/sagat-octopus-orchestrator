@@ -257,6 +257,11 @@ is whatever the receiving carrier says. **Rationale**: tracking flow through the
 evaluator, child inputs and results is a research problem; ADR-0033 puts the decision with the author.
 **Mitigation**: the `validate` report, the diff attention findings and review (G276).
 
+G21 integration clarification: a parent receives a child's retained result in `child.finished`.
+That journal selector uses the exact parent `child` node's output schema and persisted scope;
+the child's own input/result selectors use its own pinned workflow version. Event names do not
+broaden the carrier set: `child.finished` on an activity, wait or database node is ineligible.
+
 ### D284 — SDK scope: setters and one golden, no helper
 
 **Decision**: add `outputSchema` to the TypeScript, Java and C# builders and a node-level

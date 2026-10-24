@@ -11,7 +11,7 @@
 use std::fmt::Write as _;
 
 use sagat_application::definitions::IrCodec;
-use sagat_application::diff::DocumentDiff;
+use sagat_application::diff::{DiffFinding, DocumentDiff};
 use sagat_infra_ir::JsonIrCodec;
 use serde_json::{Value, json};
 
@@ -184,13 +184,14 @@ fn show(io: &mut Io<'_>, items: &[Item<'_>]) {
                 ));
             }
             for finding in &diff.attention {
-                io.say(format!(
-                    "    prepare   {}: {}",
-                    finding.code, finding.message
-                ));
+                io.say(attention_line(finding));
             }
         }
     }
+}
+
+fn attention_line(finding: &DiffFinding) -> String {
+    format!("    prepare   {}: {}", finding.code, finding.message)
 }
 
 fn changes(items: &[Item<'_>]) -> usize {
@@ -501,4 +502,27 @@ async fn through_approval(
         request["requiredApprovals"].as_u64().unwrap_or(0)
     ));
     Ok(Applied::Pending)
+}
+
+#[cfg(test)]
+mod tests {
+    use sagat_application::diff::DiffFinding;
+
+    use super::attention_line;
+
+    #[test]
+    fn classification_changes_are_shown_as_prepare_findings() {
+        for code in ["CLASSIFICATION_RELAXED", "CLASSIFICATION_TIGHTENED"] {
+            let line = attention_line(&DiffFinding {
+                code,
+                message: "classification changed at /customer".to_owned(),
+                node: None,
+                path: Some("/customer".to_owned()),
+            });
+            assert_eq!(
+                line,
+                format!("    prepare   {code}: classification changed at /customer")
+            );
+        }
+    }
 }

@@ -75,6 +75,15 @@ internal static class BuildMode
             builder.OutputSchema(output);
         }
 
+        if (definition["limits"] is JsonObject limits)
+        {
+            builder.Limits(new WorkflowLimitsOptions
+            {
+                MaxInstances = (int?)limits["maxInstances"],
+                MaxDepth = (int?)limits["maxDepth"],
+            });
+        }
+
         if (definition["state"] is JsonObject state)
         {
             builder.State(StateOf(state));
@@ -155,6 +164,17 @@ internal static class BuildMode
                 case "database":
                     target.Database(id, DatabaseOptionsOf(options!));
                     break;
+                case "script":
+                    target.Script(id, (string)op["artifactDigest"]!, new ScriptOptions
+                    {
+                        Language = (string?)options?["language"],
+                        Retry = RetryOf(options?["retry"] as JsonObject),
+                        CompensateWith = (string?)options?["compensateWith"],
+                        Secrets = options?["secrets"] is JsonArray secrets ? [.. secrets.Select(secret => (string)secret!)] : null,
+                        OnError = (string?)options?["onError"],
+                        OutputSchema = options?["outputSchema"]?.DeepClone().AsObject(),
+                    });
+                    break;
                 case "sleep":
                     target.Sleep(id, Ms(op["durationMs"]));
                     break;
@@ -166,6 +186,7 @@ internal static class BuildMode
                         Timeout = Ms(options["timeoutMs"]),
                         OnTimeout = (string?)options["onTimeout"],
                         Lookback = options["lookbackMs"] is { } lookback ? Ms(lookback) : null,
+                        OutputSchema = options["outputSchema"]?.DeepClone().AsObject(),
                     });
                     break;
                 case "invokeChild":
@@ -181,6 +202,7 @@ internal static class BuildMode
                             "request_cancel" => ChildCancelPolicy.RequestCancel,
                             var other => throw new InvalidOperationException($"unknown child cancel policy {other}"),
                         },
+                        OutputSchema = options?["outputSchema"]?.DeepClone().AsObject(),
                     });
                     break;
                 case "condition":
@@ -336,6 +358,7 @@ internal static class BuildMode
             Irreversible = (bool?)options["irreversible"],
             HighRisk = (bool?)options["highRisk"],
             OnError = (string?)options["onError"],
+            OutputSchema = options["outputSchema"]?.DeepClone().AsObject(),
         };
 
     private static StepRetry? RetryOf(JsonObject? retry) => retry is null

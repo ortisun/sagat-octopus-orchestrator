@@ -58,9 +58,15 @@ class DatabaseLimits(TypedDict, total=False):
 
 _TYPES = {"null", "boolean", "integer", "decimal", "float", "text", "timestamp", "date", "binary", "json"}
 _CEILINGS = {
-    "maxStatementBytes": 65536, "maxParameters": 256, "maxParameterBytes": 262144,
-    "maxRows": 10000, "maxResultBytes": 4194304, "timeoutMs": 30000,
-    "connectTimeoutMs": 10000, "poolSize": 16, "idleTimeoutMs": 60000,
+    "maxStatementBytes": 65536,
+    "maxParameters": 256,
+    "maxParameterBytes": 262144,
+    "maxRows": 10000,
+    "maxResultBytes": 4194304,
+    "timeoutMs": 30000,
+    "connectTimeoutMs": 10000,
+    "poolSize": 16,
+    "idleTimeoutMs": 60000,
 }
 
 
@@ -73,8 +79,11 @@ def _parameter(p: Any) -> bool:
         return False
     if "literal" not in p:
         return (
-            p.keys() == {"type", "expression"} and isinstance(p["type"], str) and p["type"] in _TYPES
-            and isinstance(p["expression"], str) and bool(p["expression"])
+            p.keys() == {"type", "expression"}
+            and isinstance(p["type"], str)
+            and p["type"] in _TYPES
+            and isinstance(p["expression"], str)
+            and bool(p["expression"])
         )
     v = p["literal"]
     if p.keys() != {"literal"} or not isinstance(v, dict) or v.keys() != {"type", "value"}:
@@ -90,8 +99,7 @@ def _parameter(p: Any) -> bool:
         return isinstance(value, str) and len(value) <= 40 and re.fullmatch(r"-?[0-9]+", value) is not None
     if kind == "decimal":
         return (
-            isinstance(value, str) and len(value) <= 16384
-            and re.fullmatch(r"-?[0-9]+(?:\.[0-9]+)?", value) is not None
+            isinstance(value, str) and len(value) <= 16384 and re.fullmatch(r"-?[0-9]+(?:\.[0-9]+)?", value) is not None
         )
     if kind == "text":
         return isinstance(value, str) and "\0" not in value
@@ -105,16 +113,21 @@ def database_node(node_id: str, options: dict[str, Any]) -> dict[str, Any]:
     try:
         ref = options["connectionRef"]
         if (
-            not isinstance(ref, dict) or not ref.keys() <= {"name", "revision"}
+            not isinstance(ref, dict)
+            or not ref.keys() <= {"name", "revision"}
             or not isinstance(ref.get("name"), str)
-            or not re.fullmatch(r"[a-z][a-z0-9-]{1,61}[a-z0-9]", ref["name"]) or "--" in ref["name"]
+            or not re.fullmatch(r"[a-z][a-z0-9-]{1,61}[a-z0-9]", ref["name"])
+            or "--" in ref["name"]
             or ("revision" in ref and not _integer(ref["revision"], 2147483647))
         ):
             raise ValueError
         statement = options["statement"]
         if (
-            options["operation"] not in ("query", "execute") or not isinstance(statement, str)
-            or not statement.strip() or "\0" in statement or len(statement.encode("utf-8")) > 65536
+            options["operation"] not in ("query", "execute")
+            or not isinstance(statement, str)
+            or not statement.strip()
+            or "\0" in statement
+            or len(statement.encode("utf-8")) > 65536
         ):
             raise ValueError
         parameters = options.get("parameters", [])

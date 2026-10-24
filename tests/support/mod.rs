@@ -28,6 +28,17 @@ pub mod scripts;
 pub mod signed;
 pub mod worker;
 
+/// A sibling Cargo binary from the same target and profile as the running integration test.
+/// This also works with an external CARGO_TARGET_DIR or a target triple directory.
+pub fn built_binary(name: &str) -> std::path::PathBuf {
+    std::env::current_exe()
+        .expect("test executable")
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("Cargo test profile directory")
+        .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+}
+
 use std::sync::{Arc, LazyLock, Mutex, Weak};
 
 use sagat_domain::identity::{Membership, Principal, Slug, Subject, Tenant, TenantId};
@@ -99,6 +110,9 @@ async fn start_server() -> Server {
     // nothing until a database creates the extension.
     let container = Postgres::default()
         .with_tag("16-alpine")
+        // Docker's 64 MiB default cannot hold concurrent parallel-query shared memory. Keep the
+        // query settings intact and budget the test database explicitly, as the Compose profile does.
+        .with_shm_size(1024 * 1024 * 1024)
         .with_cmd([
             "-c",
             "shared_preload_libraries=pg_stat_statements",
@@ -193,6 +207,52 @@ pub async fn migrated_db() -> TestDb {
     let db = fresh_db().await;
     migrate(&db.pool).await.expect("migrate");
     db
+}
+
+/// Connects to an existing database previously created by this test harness.
+///
+/// This does not create or migrate a database, provision a role, or start a fallback server. The
+/// caller must keep the server that owns this database alive for the returned handle's lifetime.
+pub async fn attach_existing_db(admin_url: &str, database_name: &str) -> TestDb {
+    let owned_name = database_name.strip_prefix("t_").is_some_and(|suffix| {
+        suffix.len() == 32
+            && suffix
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    });
+    assert!(
+        owned_name,
+        "only a database identity owned by this test harness may be attached"
+    );
+
+    let base = admin_url
+        .rsplit_once('/')
+        .expect("admin URL with database")
+        .0;
+    let url = format!("{base}/{database_name}");
+    let pool = match PgPoolOptions::new().max_connections(8).connect(&url).await {
+        Ok(pool) => pool,
+        Err(_) => panic!("could not connect to the existing owned database"),
+    };
+    let actual: String = sqlx::query_scalar("SELECT current_database()::text")
+        .fetch_one(&pool)
+        .await
+        .expect("read existing database identity");
+    assert_eq!(
+        actual, database_name,
+        "connection must resolve to the exact requested database"
+    );
+
+    TestDb {
+        _server: Arc::new(Server {
+            _container: None,
+            admin_url: admin_url.to_owned(),
+        }),
+        pool,
+        url,
+        admin_url: admin_url.to_owned(),
+        name: database_name.to_owned(),
+    }
 }
 
 /// Current time truncated to microseconds, the precision PostgreSQL stores.
@@ -296,7 +356,9 @@ async fn ensure_runtime_role(admin_url: &str) {
         .await
         .expect("admin connection");
     sqlx::query(sqlx::AssertSqlSafe(format!(
-        "DO $$ BEGIN CREATE ROLE {RUNTIME_ROLE} LOGIN PASSWORD '{RUNTIME_ROLE_PASSWORD}' \
+        "DO $$ BEGIN \
+         PERFORM pg_advisory_xact_lock(hashtextextended('sagat:test:runtime-role',0)); \
+         CREATE ROLE {RUNTIME_ROLE} LOGIN PASSWORD '{RUNTIME_ROLE_PASSWORD}' \
          NOSUPERUSER NOCREATEDB NOCREATEROLE; EXCEPTION WHEN duplicate_object THEN NULL; END $$"
     )))
     .execute(&mut conn)

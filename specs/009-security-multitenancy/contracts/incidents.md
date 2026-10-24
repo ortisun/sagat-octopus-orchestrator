@@ -47,10 +47,18 @@ the trusted resource attribution.
 
 The control plane requires `script:execute` and takes locks in this order:
 
-1. the binding advisory lock for authenticated subject and requested namespace;
-2. the tenant-scoped run row;
-3. the step row identified by the stable `stepId`;
-4. the audit deduplication advisory lock used by `insert_audit`.
+1. the applicable tenant/namespace/run membership chain `FOR UPDATE`;
+2. the exact tenant-scoped run row `FOR UPDATE`, followed by namespace validation;
+3. the existing exclusive binding advisory lock for authenticated subject/requested namespace;
+4. the own-step row identified by the stable `stepId`;
+5. the audit deduplication advisory lock used by `insert_audit`.
+
+[ADR-0038](../../../docs/adr/ADR-0038-production-incidents-follow-execution-lock-entry.md)
+refines ADR-0022's earlier production order after a reproduced PostgreSQL deadlock with the
+report/heartbeat run-before-binding prefix. Membership lookup never forwards a run address or
+grants head authority. Initial membership commits with new-run creation; later identity is
+immutable. Binding registration/replacement never acquire runs/chains. No wire/ACK/category,
+lease/tenant validation, test-run branch, outbox or migration change is introduced.
 
 Before inserting the audit row it proves that the run and step belong to the authenticated tenant
 and requested namespace; the activity is a script activity with a ready artifact; attempt,

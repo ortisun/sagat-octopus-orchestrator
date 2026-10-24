@@ -1,0 +1,13 @@
+{
+  "activities": {
+    "classification.demo.charge": {
+      "output": {
+        "status": "accepted",
+        "ledgerRef": "canary-016-internal-value",
+        "receiptEmail": "canary-016-pii-value",
+        "authCode": "canary-016-secret-value",
+        "amount": 42
+      }
+    }
+  }
+}

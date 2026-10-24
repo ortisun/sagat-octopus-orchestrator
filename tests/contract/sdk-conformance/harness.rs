@@ -44,6 +44,19 @@ fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
 }
 
+/// Compatibility gates can run immutable released client sources against the current server.
+/// Scenarios, normalization and reviewed goldens continue to come from this checkout.
+fn sdk_source_root() -> PathBuf {
+    std::env::var_os("SAGAT_SDK_SOURCE_ROOT").map_or_else(
+        || repo().join("sdks"),
+        |root| {
+            let root = PathBuf::from(root);
+            assert!(root.is_absolute(), "SAGAT_SDK_SOURCE_ROOT must be absolute");
+            root
+        },
+    )
+}
+
 fn suite() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("contract")
@@ -66,7 +79,7 @@ fn languages(only: Option<&[&str]>) -> Vec<(&'static str, PathBuf)> {
                 .is_none_or(|list| list.iter().any(|l| l == name))
         })
         .filter(|(name, _)| only.is_none_or(|list| list.contains(name)))
-        .map(|(name, dir)| (*name, repo().join("sdks").join(dir).join("conformance")))
+        .map(|(name, dir)| (*name, sdk_source_root().join(dir).join("conformance")))
         .collect()
 }
 
@@ -426,6 +439,60 @@ async fn publish(run: &Run, name: &str, ir: &Value) -> Value {
         .unwrap_or_default()
         .to_owned();
     json!({"workflowId": id, "versionId": version, "name": name})
+}
+
+/// Publication is a shared server HTTP phase: SDKs expose builders, not a publisher.
+async fn rejected_publication(run: &Run, key: &str, ir: &Value, reason: &str) -> Value {
+    let name = ir["metadata"]["name"].as_str().expect("workflow name");
+    let (status, created) = run
+        .platform
+        .rest(
+            Method::POST,
+            "/workflows",
+            Some(&json!({"name": name, "ir": ir})),
+        )
+        .await;
+    assert_eq!(
+        status, 201,
+        "creating rejected-publication draft {key}: {created}"
+    );
+    let id = created["id"].as_str().expect("draft id");
+    let (status, refused) = run
+        .platform
+        .rest(
+            Method::POST,
+            &format!("/workflows/{id}/publish"),
+            Some(&json!({"draftRevision": 1})),
+        )
+        .await;
+    assert_eq!(status, 422, "expected publication refusal {key}: {refused}");
+    assert_eq!(refused["code"], "VALIDATION_FAILED", "{key}: {refused}");
+    assert_eq!(refused["retryable"], false, "{key}: {refused}");
+    assert_eq!(refused["details"]["reason"], reason, "{key}: {refused}");
+    let trace = refused["traceId"]
+        .as_str()
+        .expect("publication refusal trace");
+    assert_eq!(trace.len(), 32);
+    assert!(trace.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    let (active, versions): (Option<uuid::Uuid>, i64) = sqlx::query_as(
+        "SELECT active_version_id, (SELECT count(*) FROM workflow_versions \
+         WHERE tenant_id=$1 AND workflow_id=$2) FROM workflows WHERE tenant_id=$1 AND id=$2",
+    )
+    .bind(run.platform.tenant.as_uuid())
+    .bind(uuid::Uuid::parse_str(id).expect("draft UUID"))
+    .fetch_one(&run.platform.api.db.pool)
+    .await
+    .expect("independent rejected publication projection");
+    assert_eq!(
+        (active, versions),
+        (None, 0),
+        "{key}: rejected draft published"
+    );
+    json!({
+        "workflow": key, "status": status, "code": refused["code"],
+        "reason": refused["details"]["reason"], "retryable": refused["retryable"],
+        "activeVersion": active.map(|id| id.to_string()), "publishedVersions": versions,
+    })
 }
 
 /// What the platform holds of every run once a language has played, read over REST without the SDK: the
@@ -1000,7 +1067,24 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 /// A platform of its own for one scenario and one language, the workflows the scenario's builders wrote
 /// published in it, and the `config.json` the runner is given.
-async fn stage(scenario: &Value, built: &Value, lang: &str) -> (Run, Value, String) {
+async fn stage(scenario: &Value, built: &Value, lang: &str) -> (Run, Value, String, Vec<Value>) {
+    let rejections = scenario.get("publicationRejections").map(|value| {
+        let entries = value
+            .as_object()
+            .expect("publicationRejections must be an object");
+        for (key, reason) in entries {
+            assert!(
+                built["workflows"].get(key).is_some(),
+                "unknown rejected workflow {key}"
+            );
+            assert!(
+                reason.as_str().is_some_and(|reason| !reason.is_empty()),
+                "invalid publication reason for {key}"
+            );
+        }
+        entries
+    });
+    let mut publication_evidence = Vec::new();
     let run = boot(scenario).await;
     // The secrets a scenario's workflows declare must exist before they can be published.
     if let Some(secrets) = scenario["secrets"].as_object() {
@@ -1024,7 +1108,13 @@ async fn stage(scenario: &Value, built: &Value, lang: &str) -> (Run, Value, Stri
                 .as_str()
                 .expect("workflow name")
                 .to_owned();
-            workflows.insert(key.clone(), publish(&run, &workflow_name, ir).await);
+            if let Some(reason) = rejections.and_then(|entries| entries.get(key)) {
+                publication_evidence.push(
+                    rejected_publication(&run, key, ir, reason.as_str().expect("reason")).await,
+                );
+            } else {
+                workflows.insert(key.clone(), publish(&run, &workflow_name, ir).await);
+            }
         }
     }
     let unique = format!(
@@ -1041,7 +1131,7 @@ async fn stage(scenario: &Value, built: &Value, lang: &str) -> (Run, Value, Stri
         "runnerToken": run.runner_token, "revokedToken": run.revoked_token, "controlUrl": run.control, "unique": unique, "workflows": workflows,
         "leaseTtlSeconds": scenario["server"]["leaseTtlSeconds"].as_u64().unwrap_or(30),
     });
-    (run, config, unique)
+    (run, config, unique, publication_evidence)
 }
 
 /// One language's normalized result of one scenario.
@@ -1180,7 +1270,7 @@ async fn play(
     let expected_path = suite().join("expected").join(format!("{name}.json"));
     let mut results: Vec<(&str, Value)> = Vec::new();
     for (lang, root) in langs {
-        let (run, config, unique) = stage(&scenario, &first, lang).await;
+        let (run, config, unique, publication_evidence) = stage(&scenario, &first, lang).await;
         // The process id is in the names: two plays of the suite at once (two people, a CI job and a
         // developer) do not overwrite each other's configuration and output.
         let pid = std::process::id();
@@ -1210,6 +1300,9 @@ async fn play(
                 .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
             {
                 Some(mut out) => {
+                    if !publication_evidence.is_empty() {
+                        out["publicationEvidence"] = json!(publication_evidence);
+                    }
                     for leak in leaks(&out, &config, &scenario)
                         .into_iter()
                         .chain(instants_not_utc(&out))
@@ -1498,8 +1591,7 @@ pub async fn conform(selection: &Selection) -> Suite {
     let mut failures = Vec::new();
     if all_five {
         for (name, dir) in LANGUAGES {
-            let run = repo()
-                .join("sdks")
+            let run = sdk_source_root()
                 .join(dir)
                 .join("conformance")
                 .join("run.sh");
@@ -1737,7 +1829,7 @@ pub async fn measure(path: &Path, language: &'static str) -> Result<Measured, St
     .await?;
     let built: Value = serde_json::from_str(&text)
         .map_err(|e| format!("build printed something that is not JSON: {e}"))?;
-    let (run, config, _) = stage(&scenario, &built, language).await;
+    let (run, config, _, _) = stage(&scenario, &built, language).await;
     let config_path = dir.join(format!("{language}.config.json"));
     let out_path = dir.join(format!("{language}.out.json"));
     write_private(
@@ -1903,7 +1995,7 @@ pub async fn run_mode(path: &Path, language: &'static str, mode: &str) -> Result
     .await?;
     let built: Value = serde_json::from_str(&text)
         .map_err(|e| format!("build printed something that is not JSON: {e}"))?;
-    let (run, config, _) = stage(&scenario, &built, language).await;
+    let (run, config, _, _) = stage(&scenario, &built, language).await;
     let config_path = dir.join(format!("{language}.{mode}.config.json"));
     let out_path = dir.join(format!("{language}.{mode}.out.json"));
     write_private(

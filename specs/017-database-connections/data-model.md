@@ -40,7 +40,7 @@ includes origin, so submitting an identical operation as ad hoc cannot relabel a
 
 ## Attempt credential evidence
 
-Migration `20261029000000_database_executor` introduces `step_database_credentials`, keyed by
+Migration `20261124000000_database_executor` introduces `step_database_credentials`, keyed by
 `(tenant_id,run_id,node_id,attempt,generation)`. Its immutable row contains namespace, provider
 operation, logical secret name/version and timestamp. Scoped foreign keys tie it to the run,
 step and provider operation. There is deliberately no FK to the logical secret/version: logical

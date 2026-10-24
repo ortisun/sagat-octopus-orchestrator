@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 
 const SCHEMA: &str =
     include_str!("../../../specs/001-platform-foundation/contracts/workflow.schema.json");
+
 /// Most issues reported at once; a document with thousands of problems gets the first few.
 const MAX_ISSUES: usize = 20;
 const MAX_MESSAGE: usize = 200;
@@ -216,4 +217,18 @@ pub(crate) fn issues(document: &Value) -> Vec<IrIssue> {
     }
     found.truncate(MAX_ISSUES);
     found
+}
+
+#[cfg(test)]
+mod embedded_contract_tests {
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn embedded_workflow_schema_matches_the_canonical_contract_bytes() {
+        let canonical = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../specs/001-platform-foundation/contracts/workflow.schema.json"),
+        )
+        .expect("canonical workflow schema");
+        assert_eq!(super::SCHEMA.as_bytes(), canonical);
+    }
 }

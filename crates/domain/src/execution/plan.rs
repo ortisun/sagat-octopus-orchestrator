@@ -86,6 +86,10 @@ pub fn plan_addressed(
             "addressed planning requires a scoped path",
         ));
     }
+    if state.is_finished() {
+        return Ok(AddressedPlan::Idle);
+    }
+    let forward = !state.is_paused() && state.stop_reason().is_none();
     for (instance, step) in state
         .instances()
         .filter(|(instance, _)| instance.path() == path)
@@ -100,6 +104,11 @@ pub fn plan_addressed(
         let declared = def
             .node_for_instance(instance)
             .ok_or_else(|| ExecutionError::UnknownStep(instance.node().clone()))?;
+        // Derived completions always retain their empty routing event. This closes the recorded
+        // step without activating forward work when a pause, stop or draining owner fences it.
+        if !forward && declared.origin() == &NodeOrigin::Declared {
+            continue;
+        }
         let activated = if declared.origin() != &NodeOrigin::Declared {
             Vec::new()
         } else if step.status() == StepStatus::Failed {
@@ -114,6 +123,9 @@ pub fn plan_addressed(
                 activated,
             },
         );
+    }
+    if !forward {
+        return Ok(AddressedPlan::Idle);
     }
     for (instance, step) in state
         .instances()
@@ -144,6 +156,81 @@ pub fn plan_addressed(
                 )),
             };
         }
+    }
+    Ok(AddressedPlan::Idle)
+}
+
+/// Advances one complete local path without inspecting sibling paths or historical iterations.
+/// Global and ancestor fences are part of the snapshot, so a stale or draining owner cannot
+/// release new forward work.
+pub fn plan_path(
+    def: &WorkflowDefinition,
+    state: &super::PathExecutionState,
+) -> Result<AddressedPlan, ExecutionError> {
+    if state.global().status().is_terminal() {
+        return Ok(AddressedPlan::Idle);
+    }
+    let forward = state.allows_forward_progress();
+    let path = state.path();
+    for (node, step) in state.local_instances() {
+        if !matches!(
+            step.status(),
+            StepStatus::Succeeded | StepStatus::Failed | StepStatus::Skipped
+        ) || step.routed()
+        {
+            continue;
+        }
+        let instance = super::ExecutionInstanceId::in_path(path.clone(), node.clone());
+        let declared = def
+            .node_for_instance(&instance)
+            .ok_or_else(|| ExecutionError::UnknownStep(node.clone()))?;
+        // Derived completions always retain their empty routing event. This closes the recorded
+        // step without activating forward work when a pause, stop or draining owner fences it.
+        if !forward && declared.origin() == &NodeOrigin::Declared {
+            continue;
+        }
+        let activated = if declared.origin() != &NodeOrigin::Declared {
+            Vec::new()
+        } else if step.status() == StepStatus::Failed {
+            declared.on_error().cloned().into_iter().collect()
+        } else {
+            declared.next().cloned().into_iter().collect()
+        };
+        return addressed(
+            path,
+            RunEvent::StepRouted {
+                node: node.clone(),
+                activated,
+            },
+        );
+    }
+    if !forward {
+        return Ok(AddressedPlan::Idle);
+    }
+    for (node, step) in state.local_instances() {
+        if step.status() != StepStatus::Pending {
+            continue;
+        }
+        let instance = super::ExecutionInstanceId::in_path(path.clone(), node.clone());
+        let declared = def
+            .node_for_instance(&instance)
+            .ok_or_else(|| ExecutionError::UnknownStep(node.clone()))?;
+        if matches!(declared.origin(), NodeOrigin::Compensation(_)) {
+            continue;
+        }
+        return match declared.kind() {
+            NodeKind::Activity { .. } => {
+                addressed(path, RunEvent::StepReleased { node: node.clone() })
+            }
+            NodeKind::ForEach { .. }
+            | NodeKind::Approval { .. }
+            | NodeKind::While { .. }
+            | NodeKind::RepeatUntil { .. }
+            | NodeKind::Return { .. } => Ok(AddressedPlan::Idle),
+            _ => Err(ExecutionError::UnsupportedScopedEvent(
+                "scoped non-activity planning",
+            )),
+        };
     }
     Ok(AddressedPlan::Idle)
 }

@@ -10,6 +10,12 @@
 
 mod database;
 mod output;
+mod scoped;
+mod scoped_capabilities;
+mod scoped_claims;
+mod scoped_output_refusal;
+mod scoped_reports;
+mod secret_resolution;
 mod secrets;
 pub use output::BlobOutput;
 use secrets::SecretReport;
@@ -34,8 +40,8 @@ use crate::entropy::{Entropy, Token};
 use crate::error::{AppError, StoreError};
 use crate::execution::{
     Actor, Effects, Engine, EngineError, ExpressionEvaluator, LeaseGrant, LeaseRenewal,
-    MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, PoolCheck, ReportedLease, RunTx,
-    instance_compensation_key, instance_reconciliation_key, instance_step_id,
+    MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, PathExecutionStore, PathExecutionTx, PoolCheck,
+    ReportedLease, RunTx, instance_compensation_key, instance_reconciliation_key, instance_step_id,
 };
 use crate::quotas::QuotaLookup;
 use crate::runs::{Lock, RunStore, execution_error};
@@ -258,6 +264,8 @@ pub trait WorkerStore: QuotaLookup + Send + Sync {
     ) -> impl Future<Output = Result<Option<Uuid>, StoreError>> + Send;
 
     /// The live session `id` of `tenant` whose token hashes to `token_hash`, renewing its expiry.
+    /// Acquire the session guard before sampling the database clock; a session that expired while
+    /// waiting must return `None` without renewal. Keep the guard through renewal commit.
     fn use_session(
         &self,
         tenant: TenantId,
@@ -265,6 +273,20 @@ pub trait WorkerStore: QuotaLookup + Send + Sync {
         token_hash: &[u8],
         ttl: Duration,
     ) -> impl Future<Output = Result<Option<SessionRecord>, StoreError>> + Send;
+
+    /// The same bounded, quota/pool/protocol-aware discovery window as `claimable_runs`, retaining
+    /// exact path coordinates so scoped claims never need whole-run restoration to find work.
+    fn claimable_paths(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        activities: &[String],
+        limit: u32,
+        accepted_protocol_minor: u32,
+        subject: &str,
+    ) -> impl Future<
+        Output = Result<Vec<(RunId, sagat_domain::execution::InstancePath)>, StoreError>,
+    > + Send;
 
     /// Runs of one namespace that have a `READY` step for one of `activities`, oldest first. Steps
     /// that declare a secret restricted to worker pools the identity `subject` holds none of are
@@ -442,6 +464,14 @@ pub struct StepAck {
     pub already_applied: bool,
     pub step_status: StepStatus,
     pub run_status: RunStatus,
+}
+
+/// Result of authorizing one blob completion before catalog access.
+/// Receipt lookup and a fresh report's scoped lease/scope checks share one transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlobCompletionTarget {
+    Replayed(StepAck),
+    Ready(BlobScope),
 }
 
 /// Outcome of a heartbeat.
@@ -766,7 +796,10 @@ where
         session_token: &str,
         max_tasks: u32,
         trace_id: Option<&str>,
-    ) -> Result<Vec<ClaimedTask>, AppError> {
+    ) -> Result<Vec<ClaimedTask>, AppError>
+    where
+        S: PathExecutionStore,
+    {
         self.poll_bounded(
             principal,
             worker_id,
@@ -789,7 +822,10 @@ where
         max_tasks: u32,
         max_bytes: usize,
         trace_id: Option<&str>,
-    ) -> Result<Vec<ClaimedTask>, AppError> {
+    ) -> Result<Vec<ClaimedTask>, AppError>
+    where
+        S: PathExecutionStore,
+    {
         let session = self.session(principal, worker_id, session_token).await?;
         // A drained identity keeps its session (it renews it, it reports what it holds) and is given
         // nothing new: the operator waits for what is in flight to end, then stops the process.
@@ -804,7 +840,7 @@ where
         }
         let candidates = self
             .store
-            .claimable_runs(
+            .claimable_paths(
                 session.tenant_id,
                 session.namespace_id,
                 &session.activities,
@@ -842,16 +878,19 @@ where
         principal: &Principal,
         session: &SessionRecord,
         session_token_hash: &[u8],
-        candidates: Vec<RunId>,
+        candidates: Vec<(RunId, sagat_domain::execution::InstancePath)>,
         wanted: usize,
         byte_budget: usize,
         trace_id: Option<&str>,
         claimed: &mut Vec<ClaimedTask>,
-    ) -> Result<(), AppError> {
+    ) -> Result<(), AppError>
+    where
+        S: PathExecutionStore,
+    {
         let mut bytes = 0usize;
         let mut failures = 0u8;
         let mut first_error = None;
-        for run in candidates {
+        for (run, path) in candidates {
             let remaining = wanted - claimed.len();
             if remaining == 0 || bytes >= byte_budget {
                 break;
@@ -862,6 +901,7 @@ where
                     session,
                     session_token_hash,
                     run,
+                    path,
                     remaining,
                     byte_budget,
                     trace_id,
@@ -889,7 +929,7 @@ where
 
     /// Leases up to `remaining` ready steps of one run in one transaction and commits it.
     #[allow(clippy::too_many_arguments)] // one run receives the same bounded claim context
-    async fn claim_run(
+    async fn claim_root_run(
         &self,
         principal: &Principal,
         session: &SessionRecord,
@@ -899,7 +939,10 @@ where
         byte_budget: usize,
         trace_id: Option<&str>,
         bytes: &mut usize,
-    ) -> Result<Vec<ClaimedTask>, AppError> {
+    ) -> Result<Vec<ClaimedTask>, AppError>
+    where
+        S: PathExecutionStore,
+    {
         let mut tx = match self
             .store
             .begin(session.tenant_id, run, Lock::SkipLocked)
@@ -946,14 +989,13 @@ where
             state
                 .instances()
                 .filter(|(instance, step)| {
-                    step.status() == StepStatus::Ready
-                        && (instance.path().is_root()
-                            || session.accepted_protocol_minor >= SCOPED_PROTOCOL_MINOR)
+                    step.status() == StepStatus::Ready && instance.path().is_root()
                 })
                 .filter_map(|(instance, _)| {
                     let n = def.node_for_instance(instance)?;
                     if n.database_operation().is_some()
-                        && session.accepted_protocol_minor < DATABASE_PROTOCOL_MINOR
+                        && (!instance.path().is_root()
+                            || session.accepted_protocol_minor < DATABASE_PROTOCOL_MINOR)
                     {
                         return None;
                     }
@@ -1005,8 +1047,8 @@ where
                     .saturating_add(1);
                 let effects = self.pool_refusal_effects(
                     principal,
-                    &tx,
-                    instance.node(),
+                    tx.info(),
+                    &instance,
                     attempt,
                     &withheld,
                     "lease",
@@ -1018,23 +1060,17 @@ where
             }
             // Measure the actual serialized context before granting any lease. Raw output sizes
             // do not bound it: JSON number normalization can expand a compact stored document.
-            let managed = tx
-                .parts()
-                .0
-                .node_for_instance(&instance)
-                .is_some_and(|n| n.database_operation().is_some());
-            // Managed runners only need the fenced capability. ResolveDatabase evaluates typed
-            // parameters server-side, so unrelated run payloads never cross this boundary.
+            let managed = instance.path().is_root()
+                && tx
+                    .parts()
+                    .0
+                    .node_for_instance(&instance)
+                    .is_some_and(|n| n.database_operation().is_some());
             let input = if managed {
                 b"{}".to_vec()
             } else {
-                self.engine
-                    .evaluator()
-                    .task_input_instance(tx.data().await?, &instance)
-                    .map_err(|error| {
-                        tracing::error!(%error, instance = ?instance, "failed to materialize task input");
-                        AppError::Internal
-                    })?
+                self.engine.evaluator().task_input_instance(tx.data().await?, &instance)
+                    .map_err(|error| { tracing::error!(%error, instance = ?instance, "failed to materialize task input"); AppError::Internal })?
             };
             if input.len() > MAX_TASK_INPUT_BYTES {
                 match self
@@ -1216,7 +1252,7 @@ where
             .parts()
             .0
             .node_for_instance(instance)
-            .is_some_and(|node| node.database_operation().is_some());
+            .is_some_and(|node| instance.path().is_root() && node.database_operation().is_some());
         let mut effects = Effects::by(
             Actor::Worker(if managed {
                 session.subject.clone()
@@ -1268,37 +1304,79 @@ where
             .lease_expiry_instance(instance)
             .await?
             .unwrap_or_else(|| tx.now() + self.settings.lease_ttl);
-        let run_id = info.run_id;
-        let version = info.version_id;
-        // The forward step a compensation or a reconciliation belongs to, and that step's template.
-        let (forward, kind, template, templated_instance) = {
-            let (def, _) = tx.parts();
-            let origin = def.node_for_instance(instance).map(|n| n.origin().clone());
-            let forward = origin.as_ref().and_then(|o| o.forward().cloned());
-            let kind = match origin {
-                Some(sagat_domain::saga::NodeOrigin::Compensation(_)) => TaskKind::Compensation,
-                Some(sagat_domain::saga::NodeOrigin::Reconciliation(_)) => TaskKind::Reconciliation,
-                _ => TaskKind::Forward,
-            };
-            let templated_instance = ExecutionInstanceId::in_path(
-                instance.path().clone(),
-                forward.as_ref().unwrap_or(instance.node()).clone(),
-            );
-            let template = match def
-                .node_for_instance(&templated_instance)
-                .map(sagat_domain::workflow::Node::kind)
-            {
-                Some(NodeKind::Activity {
-                    idempotency_template,
-                    ..
-                }) => idempotency_template.clone(),
-                _ => None,
-            };
-            (forward, kind, template, templated_instance)
-        };
-        // Borrowed, not cloned: a run's data can be megabytes and a poll leases many steps of it.
+        let template = Self::task_template(tx.parts().0, instance);
         let data = tx.data().await?;
         let input_blob = if managed { None } else { data.input_blob };
+        let (kind, idempotency_key, target) =
+            self.task_identity(template, data, &info, instance)?;
+        let run_id = info.run_id;
+        let version = info.version_id;
+        Ok(ClaimedTask {
+            run_id,
+            step_id: instance_step_id(version, run_id, instance),
+            instance: instance.clone(),
+            fence,
+            lease_token: token,
+            expires_at,
+            activity,
+            input,
+            input_blob,
+            idempotency_key,
+            trace_id: info.trace_id,
+            kind,
+            target,
+        })
+    }
+
+    fn task_template(
+        def: &sagat_domain::workflow::WorkflowDefinition,
+        instance: &ExecutionInstanceId,
+    ) -> (
+        Option<sagat_domain::workflow::NodeId>,
+        TaskKind,
+        Option<sagat_domain::workflow::Expression>,
+        ExecutionInstanceId,
+    ) {
+        // The forward step a compensation or a reconciliation belongs to, and that step's template.
+        let origin = def.node_for_instance(instance).map(|n| n.origin().clone());
+        let forward = origin.as_ref().and_then(|o| o.forward().cloned());
+        let kind = match origin {
+            Some(sagat_domain::saga::NodeOrigin::Compensation(_)) => TaskKind::Compensation,
+            Some(sagat_domain::saga::NodeOrigin::Reconciliation(_)) => TaskKind::Reconciliation,
+            _ => TaskKind::Forward,
+        };
+        let templated_instance = ExecutionInstanceId::in_path(
+            instance.path().clone(),
+            forward.as_ref().unwrap_or(instance.node()).clone(),
+        );
+        let template = match def
+            .node_for_instance(&templated_instance)
+            .map(sagat_domain::workflow::Node::kind)
+        {
+            Some(NodeKind::Activity {
+                idempotency_template,
+                ..
+            }) => idempotency_template.clone(),
+            _ => None,
+        };
+        (forward, kind, template, templated_instance)
+    }
+
+    fn task_identity(
+        &self,
+        template: (
+            Option<sagat_domain::workflow::NodeId>,
+            TaskKind,
+            Option<sagat_domain::workflow::Expression>,
+            ExecutionInstanceId,
+        ),
+        data: &crate::execution::RunData,
+        info: &crate::execution::RunInfo,
+        instance: &ExecutionInstanceId,
+    ) -> Result<(TaskKind, String, Option<TaskTarget>), AppError> {
+        let run_id = info.run_id;
+        let version = info.version_id;
+        let (forward, kind, template, templated_instance) = template;
         // The key of the forward step: what identifies the effect at the provider.
         let forward_node = forward.as_ref().unwrap_or(instance.node());
         let forward_key = match template {
@@ -1348,21 +1426,7 @@ where
             }
             _ => (forward_key, None),
         };
-        Ok(ClaimedTask {
-            run_id,
-            step_id: instance_step_id(version, run_id, instance),
-            instance: instance.clone(),
-            fence,
-            lease_token: token,
-            expires_at,
-            activity,
-            input,
-            input_blob,
-            idempotency_key,
-            trace_id: info.trace_id,
-            kind,
-            target,
-        })
+        Ok((kind, idempotency_key, target))
     }
 
     /// Renews the lease and reports whether the run asked the worker to stop.
@@ -1373,14 +1437,18 @@ where
         &self,
         principal: &Principal,
         task: &TaskRef<'_>,
-    ) -> Result<HeartbeatAck, AppError> {
+    ) -> Result<HeartbeatAck, AppError>
+    where
+        S: PathExecutionStore,
+    {
         principal.authorize(Permission::WorkerExecute)?;
+        if !task.instance.path().is_root() {
+            return self.heartbeat_path(principal, task).await;
+        }
         let mut tx = self.open(principal, task, Lock::Wait).await?;
         if let Err(stale) = self.verify(&mut tx, task).await {
-            // A beat already on its way when this same lease reported (G141): not an error, and
-            // nothing to renew. Any other lease, lost or forged, stays a stale attempt.
+            // A beat already in flight when the same lease reported has nothing to renew.
             if matches!(stale, AppError::StaleAttempt) && self.reported_by(&mut tx, task).await? {
-                // The same binding rule as a live beat: a worker no longer bound is refused.
                 self.ensure_bound(principal, &mut tx, task).await?;
                 metrics::counter!("worker_heartbeats_after_report_total").increment(1);
                 return Ok(HeartbeatAck {
@@ -1396,47 +1464,32 @@ where
             instance: task.instance.clone(),
             ttl: self.settings.lease_ttl,
         });
-        let instance = task.instance.clone();
+        let node = task.instance.node().clone();
         let fence = task.fence;
-        let cancel_requested = if instance.path().is_root() {
-            let node = instance.node().clone();
-            self.engine
-                .run(&mut tx, effects, move |_, state, _| {
-                    let fence = if fence.attempt == 0 {
-                        Fence {
-                            attempt: state
-                                .step(&node)
-                                .map_or(0, sagat_domain::execution::StepState::attempt),
-                            ..fence
-                        }
-                    } else {
-                        fence
-                    };
-                    let beat = execution::heartbeat(state, &node, fence)?;
-                    Ok((
-                        beat.cancel_requested,
-                        Progress {
-                            events: beat.event.into_iter().collect(),
-                            pending: None,
-                        },
-                    ))
-                })
-                .await
-                .map_err(engine_error)?
-        } else {
-            self.engine
-                .run_addressed(&mut tx, Vec::new(), effects, move |_, state, _| {
-                    let beat = execution::heartbeat_instance(state, &instance, fence)?;
-                    Ok((
-                        beat.cancel_requested,
-                        sagat_domain::execution::AddressedProgress {
-                            events: beat.event.into_iter().collect(),
-                        },
-                    ))
-                })
-                .await
-                .map_err(engine_error)?
-        };
+        let cancel_requested = self
+            .engine
+            .run(&mut tx, effects, move |_, state, _| {
+                let fence = if fence.attempt == 0 {
+                    Fence {
+                        attempt: state
+                            .step(&node)
+                            .map_or(0, sagat_domain::execution::StepState::attempt),
+                        ..fence
+                    }
+                } else {
+                    fence
+                };
+                let beat = execution::heartbeat(state, &node, fence)?;
+                Ok((
+                    beat.cancel_requested,
+                    Progress {
+                        events: beat.event.into_iter().collect(),
+                        pending: None,
+                    },
+                ))
+            })
+            .await
+            .map_err(engine_error)?;
         let lease_expires_at = tx
             .lease_expiry_instance(task.instance)
             .await?
@@ -1448,19 +1501,41 @@ where
         })
     }
 
-    /// Replays a blob report using its stable request identity before accessing object storage.
+    /// Resolves an exact receipt or fresh report scope under the same current authority.
+    /// Scoped receipt misses require a live cancellation-tolerant fence before catalog access.
     ///
     /// # Errors
     /// Permission, binding and idempotency errors are identical to completion.
-    pub async fn replay_blob_completion(
+    pub async fn prepare_blob_completion(
         &self,
         principal: &Principal,
         task: &TaskRef<'_>,
         blob_id: sagat_domain::blobs::BlobId,
         expected_digest: &str,
         key: &str,
-    ) -> Result<Option<StepAck>, AppError> {
+    ) -> Result<BlobCompletionTarget, AppError>
+    where
+        S: PathExecutionStore,
+    {
         principal.authorize(Permission::WorkerExecute)?;
+        if !task.instance.path().is_root() {
+            let mut tx = self.open_worker_path(principal, task).await?;
+            let identity = blob_report_identity(blob_id, expected_digest);
+            let idempotency = completion_idempotency(task, key, &identity, true);
+            if let Some(stored) = tx.replay(&idempotency).await? {
+                return Ok(BlobCompletionTarget::Replayed(parse_ack(
+                    &stored,
+                    true,
+                    task.run_id,
+                )));
+            }
+            // A receipt is replayable after expiry; a new report must not reach the catalog
+            // without its exact live lease, even when cancellation is draining the scope.
+            Self::live_path_fence(&mut tx, task, true).await?;
+            let scope = Self::scope_from_info(&tx.snapshot().info, task);
+            tx.commit().await?;
+            return Ok(BlobCompletionTarget::Ready(scope));
+        }
         let mut tx = self.open(principal, task, Lock::Wait).await?;
         if task
             .step_id
@@ -1477,10 +1552,36 @@ where
             .replayed(principal, &mut tx, task, &idempotency)
             .await?
         {
-            return Ok(Some(ack));
+            return Ok(BlobCompletionTarget::Replayed(ack));
         }
         self.ensure_bound(principal, &mut tx, task).await?;
-        Ok(None)
+        Ok(BlobCompletionTarget::Ready(Self::scope_of(&tx, task)))
+    }
+
+    /// Replays a blob report's exact request identity, or authorizes a fresh preparation.
+    /// Prefer `prepare_blob_completion` when proceeding to catalog access, so a duplicate cannot
+    /// commit between separate receipt and report-scope lookups.
+    ///
+    /// # Errors
+    /// Permission, binding, live-fence and idempotency errors match preparation.
+    pub async fn replay_blob_completion(
+        &self,
+        principal: &Principal,
+        task: &TaskRef<'_>,
+        blob_id: sagat_domain::blobs::BlobId,
+        expected_digest: &str,
+        key: &str,
+    ) -> Result<Option<StepAck>, AppError>
+    where
+        S: PathExecutionStore,
+    {
+        match self
+            .prepare_blob_completion(principal, task, blob_id, expected_digest, key)
+            .await?
+        {
+            BlobCompletionTarget::Replayed(ack) => Ok(Some(ack)),
+            BlobCompletionTarget::Ready(_) => Ok(None),
+        }
     }
 
     /// Whether `task` is an attempt that may still act: its lease is current and unexpired and the
@@ -1494,7 +1595,10 @@ where
         &self,
         principal: &Principal,
         task: &TaskRef<'_>,
-    ) -> Result<BlobScope, AppError> {
+    ) -> Result<BlobScope, AppError>
+    where
+        S: PathExecutionStore,
+    {
         self.check_blob_access(principal, task, false, None).await
     }
 
@@ -1504,7 +1608,10 @@ where
         &self,
         principal: &Principal,
         task: &TaskRef<'_>,
-    ) -> Result<BlobScope, AppError> {
+    ) -> Result<BlobScope, AppError>
+    where
+        S: PathExecutionStore,
+    {
         self.check_blob_access(principal, task, true, None).await
     }
 
@@ -1516,7 +1623,10 @@ where
         task: &TaskRef<'_>,
         blob: BlobId,
         trace_id: Option<&str>,
-    ) -> Result<(), AppError> {
+    ) -> Result<(), AppError>
+    where
+        S: PathExecutionStore,
+    {
         self.check_blob_access(principal, task, false, Some((blob, trace_id)))
             .await
             .map(|_| ())
@@ -1528,8 +1638,16 @@ where
         task: &TaskRef<'_>,
         writing: bool,
         audit_read: Option<(BlobId, Option<&str>)>,
-    ) -> Result<BlobScope, AppError> {
+    ) -> Result<BlobScope, AppError>
+    where
+        S: PathExecutionStore,
+    {
         principal.authorize(Permission::WorkerExecute)?;
+        if !task.instance.path().is_root() {
+            return self
+                .check_path_blob_access(principal, task, writing, audit_read)
+                .await;
+        }
         let mut tx = self.open(principal, task, Lock::Wait).await?;
         self.verify(&mut tx, task).await?;
         self.ensure_bound(principal, &mut tx, task).await?;
@@ -1562,39 +1680,31 @@ where
         }
         let scope = Self::scope_of(&tx, task);
         if let Some((blob, trace_id)) = audit_read {
-            let mut effects =
-                Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
-            effects.audit = Some(
-                AuditRecord::by(
-                    principal,
-                    AuditAction::BlobRead,
-                    ResourceType::Blob,
-                    format!("{}/{}", scope.access.namespace_id, blob),
-                    trace_id.map(str::to_owned),
-                    self.clock.now(),
-                )
-                .with_reason(format!(
-                    "run {} node {} attempt {} generation {}",
-                    task.run_id,
-                    task.instance.node(),
-                    task.fence.attempt,
-                    task.fence.generation
-                )),
-            );
+            let effects = self.blob_read_effects(principal, task, scope, blob, trace_id);
             tx.persist(&[], effects).await?;
             tx.commit().await?;
         }
         Ok(scope)
     }
 
-    /// Resolves the tenant-scoped report target without requiring a still-live lease. This permits
-    /// an exact completion replay after its lease ended; a new report is still fenced by completion.
+    /// Resolves the report target. Scoped new reports require their exact live lease before
+    /// catalog access; exact receipt replay is handled separately before this lookup.
     pub async fn blob_report_scope(
         &self,
         principal: &Principal,
         task: &TaskRef<'_>,
-    ) -> Result<BlobScope, AppError> {
+    ) -> Result<BlobScope, AppError>
+    where
+        S: PathExecutionStore,
+    {
         principal.authorize(Permission::WorkerExecute)?;
+        if !task.instance.path().is_root() {
+            let mut tx = self.open_worker_path(principal, task).await?;
+            Self::live_path_fence(&mut tx, task, true).await?;
+            let scope = Self::scope_from_info(&tx.snapshot().info, task);
+            tx.commit().await?;
+            return Ok(scope);
+        }
         let mut tx = self.open(principal, task, Lock::Wait).await?;
         self.ensure_bound(principal, &mut tx, task).await?;
         let scope = Self::scope_of(&tx, task);
@@ -1605,7 +1715,10 @@ where
     }
 
     fn scope_of<Tx: RunTx>(tx: &Tx, task: &TaskRef<'_>) -> BlobScope {
-        let info = tx.info();
+        Self::scope_from_info(tx.info(), task)
+    }
+
+    fn scope_from_info(info: &crate::execution::RunInfo, task: &TaskRef<'_>) -> BlobScope {
         BlobScope {
             access: BlobAccess {
                 tenant_id: info.tenant_id,
@@ -1618,13 +1731,48 @@ where
         }
     }
 
+    fn blob_read_effects(
+        &self,
+        principal: &Principal,
+        task: &TaskRef<'_>,
+        scope: BlobScope,
+        blob: BlobId,
+        trace_id: Option<&str>,
+    ) -> Effects {
+        let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
+        effects.audit = Some(
+            AuditRecord::by(
+                principal,
+                AuditAction::BlobRead,
+                ResourceType::Blob,
+                format!("{}/{}", scope.access.namespace_id, blob),
+                trace_id.map(str::to_owned),
+                self.clock.now(),
+            )
+            .with_reason(format!(
+                "run {} node {} attempt {} generation {}{}",
+                task.run_id,
+                task.instance.node(),
+                task.fence.attempt,
+                task.fence.generation,
+                if task.instance.path().is_root() {
+                    String::new()
+                } else {
+                    format!(" step {}", scope.step_id)
+                }
+            )),
+        );
+        effects
+    }
+
     async fn apply_scoped_or_root_failure(
         &self,
         tx: &mut S::Tx,
         task: &TaskRef<'_>,
-        effects: Effects,
+        mut effects: Effects,
         failure: execution::Failure,
     ) -> Result<(), AppError> {
+        effects.reported = Some(reported_lease(task));
         if task.instance.path().is_root() {
             let node = task.instance.node().clone();
             self.engine
@@ -1654,6 +1802,7 @@ where
         mut effects: Effects,
         output: Option<Vec<u8>>,
     ) -> Result<(), AppError> {
+        effects.reported = Some(reported_lease(task));
         if task.instance.path().is_root() {
             if let Some(output) = output {
                 effects.outputs = vec![(task.instance.node().clone(), output)];
@@ -1683,7 +1832,6 @@ where
                 .map_err(engine_error)
         }
     }
-
     /// Records a failed attempt; the engine retries it, routes it, or fails the run.
     ///
     /// # Errors
@@ -1695,7 +1843,10 @@ where
         error_code: &str,
         retryable: bool,
         idempotency_key: &str,
-    ) -> Result<StepAck, AppError> {
+    ) -> Result<StepAck, AppError>
+    where
+        S: PathExecutionStore,
+    {
         principal.authorize(Permission::WorkerExecute)?;
         let mut code =
             FailureCode::parse(error_code).unwrap_or_else(|_| FailureCode::worker_error());
@@ -1710,6 +1861,20 @@ where
                 &[u8::from(retryable)],
             ]),
         };
+        if !task.instance.path().is_root() {
+            return self
+                .report_path(
+                    principal,
+                    task,
+                    scoped_reports::PathReport::Failure {
+                        raw_code: error_code,
+                        code,
+                        retryable,
+                    },
+                    idempotency,
+                )
+                .await;
+        }
         let mut tx = self.open(principal, task, Lock::Wait).await?;
         if let Some(ack) = self
             .replayed(principal, &mut tx, task, &idempotency)
@@ -1741,7 +1906,6 @@ where
                 tx,
                 &idempotency,
                 error_code.as_bytes(),
-                // Only the worker's acknowledgement of a cancellation may follow the request to stop.
                 error_code == "CANCELLED" && !retryable,
             )
             .await?
@@ -1754,7 +1918,8 @@ where
         };
         if let Some(name) = leaked {
             metrics::counter!("secret_output_detected_total").increment(1);
-            effects.audit = Some(self.leak_audit(principal, &tx, task, &name, "failure code"));
+            effects.audit =
+                Some(self.leak_audit(principal, tx.info(), task, &name, "failure code"));
             code = FailureCode::secret_in_output();
             retryable = false;
         }
@@ -1866,7 +2031,7 @@ where
     fn leak_audit(
         &self,
         principal: &Principal,
-        tx: &S::Tx,
+        info: &crate::execution::RunInfo,
         task: &TaskRef<'_>,
         name: &SecretName,
         what: &str,
@@ -1875,7 +2040,7 @@ where
             principal,
             AuditAction::SecretDenied,
             ResourceType::Secret,
-            format!("{}/{name}", tx.info().namespace_id),
+            format!("{}/{name}", info.namespace_id),
             None,
             self.clock.now(),
         )
@@ -1900,6 +2065,10 @@ where
         {
             return Ok(tx);
         }
+        Err(self.missing_task_error(principal, task).await)
+    }
+
+    async fn missing_task_error(&self, principal: &Principal, task: &TaskRef<'_>) -> AppError {
         // A run of another tenant is indistinguishable from a missing one: a stale attempt. It is
         // audited all the same, like every other path that reaches for a foreign run.
         if let Ok(true) = self
@@ -1920,7 +2089,7 @@ where
                 tracing::error!(%error, action = %record.action(), "failed to record audit entry");
             }
         }
-        Err(AppError::StaleAttempt)
+        AppError::StaleAttempt
     }
 
     /// The answer stored for a repeated report, if there is one.
@@ -1935,11 +2104,20 @@ where
         task: &TaskRef<'_>,
         idempotency: &Idempotency,
     ) -> Result<Option<StepAck>, AppError> {
+        if task.step_id.is_some_and(|claimed| {
+            claimed != instance_step_id(tx.info().version_id, task.run_id, task.instance)
+        }) {
+            return Err(AppError::StaleAttempt);
+        }
+        if !Self::managed_database(tx, task) {
+            self.ensure_bound(principal, tx, task).await?;
+        }
         let Some(stored) = tx.replay(idempotency).await? else {
             return Ok(None);
         };
         if Self::managed_database(tx, task) {
             principal.authorize(Permission::DatabaseExecute)?;
+            self.ensure_activity_bound(principal, tx, task).await?;
             if !tx
                 .database_report_owns(
                     task.instance.node(),
@@ -1950,24 +2128,27 @@ where
             {
                 return Err(AppError::NotBound);
             }
-            self.ensure_activity_bound(principal, tx, task).await?;
         }
         Ok(Some(parse_ack(&stored, true, task.run_id)))
     }
 
     fn managed_database<Tx: RunTx>(tx: &mut Tx, task: &TaskRef<'_>) -> bool {
-        tx.parts()
-            .0
-            .node_for_instance(task.instance)
-            .is_some_and(|n| n.database_operation().is_some())
+        task.instance.path().is_root()
+            && tx
+                .parts()
+                .0
+                .node_for_instance(task.instance)
+                .is_some_and(|n| n.database_operation().is_some())
     }
 
     fn database_write<Tx: RunTx>(tx: &mut Tx, task: &TaskRef<'_>) -> bool {
-        tx.parts()
-            .0
-            .node_for_instance(task.instance)
-            .and_then(sagat_domain::workflow::Node::database_operation)
-            .is_some_and(|op| op.kind == sagat_domain::database::OperationKind::Execute)
+        task.instance.path().is_root()
+            && tx
+                .parts()
+                .0
+                .node(task.instance.node())
+                .and_then(sagat_domain::workflow::Node::database_operation)
+                .is_some_and(|op| op.kind == sagat_domain::database::OperationKind::Execute)
     }
 
     /// The secrets the step declares, from its definition.
@@ -1985,23 +2166,18 @@ where
             .unwrap_or_default()
     }
 
-    /// The audit of a secret withheld from a worker outside its pools. It names the secret, the
-    /// node and the attempt and never a value or a pool. The audit table keeps the first of
-    /// identical events (same worker identity, run, node, attempt and stage), so a worker that
-    /// polls every half second leaves one row, not one per poll, and a retry (a new attempt) is a
-    /// new event; at most a hundred different ones per worker and run.
-    #[allow(clippy::too_many_arguments)] // one refusal is described by who, what, which and when
-    fn pool_refusal_effects<Tx: RunTx>(
+    // Keep actor, execution identity and refusal stage explicit in this security audit helper.
+    #[allow(clippy::too_many_arguments)]
+    fn pool_refusal_effects(
         &self,
         principal: &Principal,
-        tx: &Tx,
-        node: &sagat_domain::workflow::NodeId,
+        info: &crate::execution::RunInfo,
+        instance: &ExecutionInstanceId,
         attempt: u32,
         withheld: &SecretName,
         stage: &str,
         trace_id: Option<&str>,
     ) -> Effects {
-        let info = tx.info();
         let mut effects = Effects::by(
             Actor::Worker(principal.subject().as_str().to_owned()),
             trace_id.map(str::to_owned),
@@ -2015,13 +2191,18 @@ where
                 trace_id.map(str::to_owned),
                 self.clock.now(),
             )
-            .with_reason(format!(
-                "node {node} attempt {attempt}: {withheld} is not delivered outside its worker pools (at {stage})"
-            )),
+            .with_reason({
+                let node = instance.node();
+                let reason = format!("node {node} attempt {attempt}: {withheld} is not delivered outside its worker pools (at {stage})");
+                if instance.path().is_root() {
+                    reason
+                } else {
+                    format!("step {}: {reason}", instance_step_id(info.version_id, info.run_id, instance))
+                }
+            }),
         );
         effects
     }
-
     /// The caller must still be bound to the activity of the step it reports on. Evaluated at use,
     /// not only at registration: a binding that is removed stops a worker that already holds a
     /// lease from renewing it or reporting on it, with no session to wait for to expire.
@@ -2031,11 +2212,7 @@ where
         tx: &mut Tx,
         task: &TaskRef<'_>,
     ) -> Result<(), AppError> {
-        let managed = tx
-            .parts()
-            .0
-            .node_for_instance(task.instance)
-            .is_some_and(|n| n.database_operation().is_some());
+        let managed = Self::managed_database(tx, task);
         if managed
             && !tx
                 .database_executor_owns(task.instance.node(), principal.subject().as_str())
@@ -2043,7 +2220,17 @@ where
         {
             return Err(AppError::NotBound);
         }
-        self.ensure_activity_bound(principal, tx, task).await
+        self.ensure_activity_bound(principal, tx, task).await?;
+        if !managed
+            && !tx
+                .current_worker_authorized(principal.subject().as_str())
+                .await?
+        {
+            return Err(AppError::Forbidden {
+                permission: Permission::WorkerExecute,
+            });
+        }
+        Ok(())
     }
 
     async fn ensure_activity_bound<Tx: RunTx>(
@@ -2104,9 +2291,8 @@ where
             .await
     }
 
-    /// The fence of a report that scans the output for secrets. A failure report may acknowledge a
-    /// cancellation or a stop, so it is judged on the lease and the attempt, not on the request to
-    /// stop; a completion keeps the full fence.
+    /// Only an explicit cancellation acknowledgement may settle a cancelled lease. Other reports
+    /// retain the live-capability fence, including a cancellation during provider I/O.
     async fn report_authority_fence<Tx: RunTx>(
         &self,
         principal: &Principal,
@@ -2126,6 +2312,7 @@ where
         allow_cancellation_report: bool,
     ) -> Result<(), AppError> {
         self.verify(tx, task).await?;
+        // Binding authority precedes session/catalog/membership locks, matching revocation.
         self.ensure_bound(principal, tx, task).await?;
         let legacy_attempt = task.fence.attempt == 0 && !Self::managed_database(tx, task);
         let valid_step = tx.parts().1.instance(task.instance).is_some_and(|s| {
@@ -2328,6 +2515,24 @@ mod tests {
     };
 
     #[test]
+    fn managed_support_does_not_enable_scoped_protocol_for_ordinary_workers() {
+        use sagat_domain::identity::Role;
+        for role in [Role::Worker, Role::Runner, Role::Admin] {
+            assert_eq!(super::protocol_ceiling(role, false, true), 4);
+            assert_eq!(super::protocol_ceiling(role, true, false), 5);
+            assert_eq!(super::protocol_ceiling(role, true, true), 6);
+        }
+        assert_eq!(
+            super::protocol_ceiling(Role::DatabaseRunner, false, true),
+            6
+        );
+        assert_eq!(
+            super::protocol_ceiling(Role::DatabaseRunner, false, false),
+            4
+        );
+    }
+
+    #[test]
     fn blob_report_identity_normalizes_sha256_hex_case() {
         let id = BlobId::generate();
         let lowercase = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
@@ -2358,7 +2563,6 @@ mod tests {
     fn scoped_identity_negotiation_is_gated_by_storage_support() {
         assert_eq!(PROTOCOL_MINOR, 6);
         assert_eq!(ROOT_PROTOCOL_MINOR, 4);
-        assert_eq!(SCOPED_PROTOCOL_MINOR, 5);
         assert_eq!(negotiate_protocol("1.5").as_deref(), Some("1.5"));
         assert_eq!(
             negotiate_protocol_details("1.5", ROOT_PROTOCOL_MINOR),
@@ -2367,27 +2571,6 @@ mod tests {
         assert_eq!(
             negotiate_protocol_details("1.999", SCOPED_PROTOCOL_MINOR),
             Some(("1.5".to_owned(), SCOPED_PROTOCOL_MINOR))
-        );
-    }
-
-    #[test]
-    fn managed_support_does_not_enable_scoped_protocol_for_ordinary_workers() {
-        use sagat_domain::identity::Role;
-        for role in [Role::Worker, Role::Runner, Role::Admin] {
-            // A store that proves only the database path leaves ordinary workers at 1.4.
-            assert_eq!(super::protocol_ceiling(role, false, true), 4);
-            assert_eq!(super::protocol_ceiling(role, true, false), 5);
-            // 1.6 is a superset of 1.5, so it needs both proofs.
-            assert_eq!(super::protocol_ceiling(role, true, true), 6);
-        }
-        // The database runner only handles root work: it reaches 1.6 on the database proof alone.
-        assert_eq!(
-            super::protocol_ceiling(Role::DatabaseRunner, false, true),
-            6
-        );
-        assert_eq!(
-            super::protocol_ceiling(Role::DatabaseRunner, false, false),
-            4
         );
     }
 

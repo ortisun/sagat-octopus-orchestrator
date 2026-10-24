@@ -13,6 +13,7 @@ use sagat_application::definitions::IrError;
 use sagat_application::error::{AccessDenial, AppError, ConflictKind};
 use sagat_domain::execution::ApprovalError;
 use sagat_domain::scripts::ScriptError;
+use sagat_domain::workflow::WorkflowError;
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -80,6 +81,9 @@ impl ErrorCode {
             (Self::Forbidden, "NOT_THE_AUTHOR") => "Only the author of a request takes it back.",
             (Self::Conflict, "STATE_CONFLICT") => {
                 "Read the resource again: someone else may have already done this, or it is in a state that does not allow it."
+            }
+            (Self::ValidationFailed, "CLASSIFICATION") => {
+                "Use the reported schema paths to correct classification levels and keep annotations inside supported carriers."
             }
             (Self::ValidationFailed, "INVALID_SCOPE") => {
                 "Keep the referenced node inside its declared body and remove recursive or overlapping scope paths."
@@ -798,6 +802,13 @@ const fn script_reason(error: ScriptError) -> &'static str {
 /// beyond the clipped fragments the codec already limited.
 fn definition_details(error: &IrError) -> Value {
     match error {
+        IrError::Classification(findings) => json!({
+            "reason": "CLASSIFICATION",
+            "issues": findings.iter().take(20).map(|finding| json!({
+                "code": finding.code.as_str(), "path": finding.path.as_str(),
+                "message": finding.code.message(),
+            })).collect::<Vec<_>>(),
+        }),
         IrError::Schema(issues) => json!({
             "reason": "SCHEMA",
             "issues": issues
@@ -828,6 +839,24 @@ fn definition_details(error: &IrError) -> Value {
         }
         IrError::TooLarge => json!({ "reason": "TOO_LARGE" }),
         IrError::Malformed => json!({ "reason": "MALFORMED" }),
+        IrError::EscapingBodyEdge { body, from, .. } => {
+            json!({ "reason": "INVALID_SCOPE", "body": body.as_str(), "node": from.as_str() })
+        }
+        IrError::Invalid(WorkflowError::ExpressionByteLimit { node, limit }) => {
+            json!({ "reason": "EXPRESSION", "node": node.as_str(), "limit": limit })
+        }
+        IrError::Invalid(
+            WorkflowError::InvalidScope { .. }
+            | WorkflowError::RecursiveBody(_)
+            | WorkflowError::UnknownBody { .. }
+            | WorkflowError::Cycle(_)
+            | WorkflowError::BranchOverlap { .. }
+            | WorkflowError::BranchBoundary { .. }
+            | WorkflowError::SagaBoundary { .. }
+            | WorkflowError::EndInsideBranch { .. }
+            | WorkflowError::EndInsideSaga { .. }
+            | WorkflowError::BodyDepthExceeded(_),
+        ) => json!({ "reason": "INVALID_SCOPE" }),
         IrError::Invalid(_) => json!({ "reason": "GRAPH" }),
     }
 }

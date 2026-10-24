@@ -180,7 +180,9 @@ derived from the workflow version, the scope path and the forward node. A step w
 unknown inside an iteration is reconciled by the lookup of that iteration before it is repeated or
 compensated; the three verdicts conclude it as at the root. Compensation has the lease, fence, retry,
 timeout, breaker and audit of every activity, and a compensation whose budget is spent waits on
-`OPERATOR`.
+`OPERATOR`. A completed derived step retains its empty `step.routed` journal event during a stop,
+pause or owner drain. This records closure only; it must not activate a forward successor or release
+forward work beyond the global/ancestor fence.
 
 Loops may also specify `delayMs` in 1..31622400000, applied only between needed iterations. Absence
 means no delay. Shared run `maxInstances` and nesting limits are enforced even when individual node
@@ -211,6 +213,15 @@ snapshot payload and a restricted foreign key to the blob, so neither the blob s
 the source of a live membership. The engine's read is audited (`blob.read`, resource = the blob). A store
 outage, or a replica with no blob store, leaves the run waiting; it is never failed for that.
 The engine assembles the indexed aggregate separately from expression list concatenation.
+
+An ordinary root activity prefix may now produce the inline array or committed output blob the
+collection captures (`items: "steps.fetch.output"`). The producer completes before its collection
+can enter. Its existing root execution quotas and lease protocol apply; a minor 1.4 worker can
+produce root work while admitted body work still requires minor 1.5. Source-prefix `onError`,
+compensation/reconciliation, effect policies and managed database operations remain unsupported,
+as do activity successors of a collection. No new IR revision or wire field is introduced. The
+shared `collection-step-source` fixture pins the authored limits, canonical document, root/scoped
+identities, ordered captured members and local-only body task context across all five SDKs.
 
 Numeric limits, payload ceilings and uniqueness rules are specified in `data-model.md`. SDK builders
 perform useful local validation but the server owns all decisions and revalidates the document.
@@ -346,8 +357,12 @@ with the chain's final outcome; a continued segment tells it nothing. The chain 
 (the smaller of the parent's, the node's and the chain's required timeout) as its original one. Cancelling the
 parent (or settling its step under a cancelling policy) latches the link under the parent's lock only; the
 hand-off reads the latch under the chain, head-run and link locks and refuses, and the scheduler cancels
-the chain's current head. A hand-off locks the parent first (key share), then the chain and the head run, the
-order every writer of a child uses. The successors are runs of the parent's tree and spend its
+the chain's current head. Parent cancellation/settlement updates a matching child-chain link
+without writing the child's legacy run flags; only a child without that link uses the legacy
+flag path, restricted to its own parent and tenant. The existing handoff metadata guard actually
+takes chain, parent key-share, then head/link. ADR-0037 accepts this identity-only exception
+under immutable initial/head/link ancestry, without accepting the complete B0 graph or granting
+parent business-state authority. The successors are runs of the parent's tree and spend its
 1,024-run budget; a full tree ends the chain with the durable `CHAIN_LIMIT`, as the segment limit does.
 
 A continuation boundary that finds open work waits (D296): a running or ready step, a timer, a subscription,
@@ -363,6 +378,18 @@ capability addressing using worker minor 1.5 allocated by ADR-0030 after checkin
 scoped tasks are eligible only for a worker that negotiated support, with unchanged lease/generation
 checks. SDK retry logic does not implement the workflow loop; it handles transport safely and passes
 idempotency/instance identity. The server remains authoritative about scheduling and quota.
+
+Scoped `ResolveSecrets` and blob capability checks use the exact task path, step UUID, token,
+attempt and generation plus current worker membership/bindings. Secret delivery rechecks publisher
+ACLs, pools and versions after provider I/O; it commits its value-free audit before returning any
+value. Each logical step UUID has its own delivery audit even when two iterations use the same
+node and attempt. Root addressing and audit text remain compatible. Blob upload by a step that
+declares secrets still returns the existing content-scanning refusal. Scoped blob output completion
+remains a separate unsupported operation; authorizing a read is not approval of an output commit.
+Public scoped uploads bypass only the root-only managed-database bound probe; the current
+exact-path upload capability is mandatory before object reservation. A missing managed bound is
+never an authorization result.
+No wire field, worker minor, SDK builder or normalized expected output changes in this increment.
 
 Every SDK gains idiomatic declarative builders for the six node types/state operations plus the
 explicit approval, query/update and chain client operations. Shared names in this design indicate
@@ -411,6 +438,15 @@ error codes.
 `tests/contract/workflow-primitives/errors.rs` reads this table: every reason it introduces has a
 specific remediation row and is named in the OpenAPI `Error.details` description (D292).
 
+Publication validates the canonical schema first: a forbidden `end`/`continueAsNew` body node
+therefore returns `SCHEMA`, before graph-scope validation. A missing target in a named body
+returns `INVALID_SCOPE` with `details.body` and `details.node`; an ordinary missing root target
+keeps `GRAPH`. Dry-run validation keeps the body's existing `UNKNOWN_TARGET` problem code and
+adds its `/bodies/{body}` path. Effective expression length is measured in UTF-8 bytes, including
+switch predicates: exceeding 1024 bytes returns `EXPRESSION` with the node and byte limit, even
+when the string passes the schema's character limit. The byte-limit diagnostic contains no
+expression content.
+
 Workflow deadlines use existing TIMED_OUT behavior; request wait deadlines do not implicitly cancel
 runs/updates. T014-006 adds the new reasons and their remediation rows to the canonical OpenAPI
 and to `crates/api-http/src/error.rs` together, and checks each mapping against the existing ones.
@@ -456,3 +492,191 @@ application/rejection, continuation, cancel/manual decisions and quota/policy ch
 mutations and their audits are atomic; query/security-denial audits use the existing access/security
 audit path. A failed audit write fails the operation closed. Retain only subject ids, operation kind,
 resource refs, outcome/code, time and trace correlation under existing audit access policy.
+
+
+### Exact-path storage serialization
+
+For begin_current_path and begin_path, an existing chain membership requires its tenant-scoped
+chain guard before the own-run mutation lock. Both guards last through the same transaction.
+SkipLocked returns no transaction for a contended chain; Wait blocks before taking the run.
+This shares full-run entry's lock prefix while preserving snapshot CAS and exact-path event
+bounds. No public composition, chain finality transition, scheduler authority or wire contract
+is added by this storage alignment. Other primitive adapters remain separate B0 obligations.
+
+
+A declared Update addressed by Run takes any existing tenant/namespace-scoped membership chain
+mutation guard before the exact run, including receipt replay. It does not forward to the current
+head. A continued earlier segment retains RUN_CONTINUED; existing finished-run errors and update
+keys/CAS/receipts are unchanged. Apply and replay each audit access, while only the first accepted
+mutation emits its state event/outbox. Chain-addressed resolution retains its existing protocol.
+
+
+### Scheduler expiry after a lock wait
+
+Chain handoff (legacy/evaluated) and finalization lock their own scheduler authority in the
+mutation transaction, then sample the database clock to validate expiry. A predicate evaluated
+before an unchanged-row wait is insufficient. Wrong own-shard authority remains SchedulerFenceLost;
+an oversized generation retains the chain port's existing storage conversion error. Evaluated
+continuation still samples its deadline/wait time after the incoming link lock. A stale attempt
+commits no chain/run/event/audit/outbox/retained-usage effects; fresh authority may retry. This
+adds no new wire contract and does not establish the other primitive adapters' missing barriers.
+
+
+### Collection/loop authority expiry during lock wait (2026-10-18)
+
+Refs:T014-040, FR-014-014/015. The collection and loop adapters retain their scheduler SHARE
+guard in the owning transaction and validate expiry using a database clock sampled after
+acquiring it. Wrong-shard and generation-conversion errors keep their existing precedence.
+A rejected entry changes no projection, payload, quota, timer, journal, outbox or audit. A supplied
+collection entry audit is inserted once through finish_version, atomically with the transition.
+Private runtime-role entry barriers reproduce the stale commits and verify rejection, fresh
+authority and replay. This is not a continuous wall-clock-until-commit guarantee or acceptance
+of nested scopes. Approval's separate check and B0 ordering remain pending. Existing fenced
+metrics use kind=collection/loop without tenant/run labels; the port tests do not test counters.
+Evidence: tasks/project-completion/evidence/scope-post-wait-fence-20261018/.
+
+
+### Approval scheduler authority after lock waits (2026-10-18)
+
+Refs:T014-040, FR-014-008/014. Open/expire retain a scheduler SHARE guard in their owning
+transaction and validate authority against a database clock sampled after acquiring it. An
+expired authority returns the existing typed fence error before request/timer/projection, journal,
+outbox, audit or telemetry queue effects. Oversized-generation storage errors keep precedence;
+decide uses its current-user authorization. No business-deadline clock or opening replay contract
+changes. Real runtime-role barriers cover both opening and genuinely due expiry; the atomic
+checkpoint includes the telemetry queue and approval tables. Existing fenced metrics use
+approval_open/approval_expire kinds without tenant/run labels; these port tests do not assert
+counters. This does not enable nested scopes or complete B0.
+Evidence: tasks/project-completion/evidence/approval-post-wait-fence-20261018/.
+
+
+### Approval member-chain writer guard (2026-10-18)
+
+Refs:T014-040, FR-014-008/014. Approval open/expire/decide acquire a tenant/namespace-scoped
+applicable membership chain before the exact own run, retaining both guards through commit.
+The shared transaction helper is the existing declared Run Update guard; it never forwards or
+grants head authority. Initial membership commits with new-run creation and later identity is
+immutable; live reparent/migration requires its own protocol. Decision authorization, typed
+errors, terminal/replay and audit/outbox boundaries remain unchanged. Native wait/final-audit
+barriers verify ordering and guard lifetime; no new public composition or B0 completion is
+inferred. Existing outcome metrics and sensitive-data-free logs keep their current mapping.
+Evidence: tasks/project-completion/evidence/approval-chain-prefix-20261018/.
+
+
+### Collection/loop member-chain serialization (2026-10-18)
+
+Refs:T014-040, FR-014-004/006/014. Collection entry/drain and loop writer helpers retain an
+applicable scoped membership chain before own-run UPDATE in their owning transaction. Existing
+CAS, fences, quota/deadline/drain rules, typed errors, audit/outbox and telemetry mapping stay
+unchanged. Native app-role barriers prove chain wait precedes own-run acquisition; fresh/replay
+controls cover persisted writes. Shared guard lifetime is separately proven by the approval
+final-audit barrier. These trusted storage fixtures grant no new public composition, head
+authority or nested eligibility; complete B0/group and resource gates remain pending.
+Evidence: tasks/project-completion/evidence/scope-chain-prefix-20261018/.
+
+
+### Production incident lock prefix (ADR-0038,2026-10-18)
+
+Refs:T014-040, FR-009-004/005/008, FR-014-014. Production attribution now takes applicable
+member chain→exact own run→binding EXCLUSIVE→own step→audit deduplication, refining ADR-0022's
+reproduced opposite report/binding edge. Current tenant/namespace/fence/expiry/binding checks,
+redacted closed categories, deduplication and commit-before-ACK remain unchanged. No execution
+state/outbox or new capability is introduced; test-run attribution is unchanged. Native runtime
+barriers cover the actual report storage cycle (PostgreSQL deadlocks0→1 before correction) and
+a genuinely published/leased script chain. Completion/journal consistency are positive controls.
+Reproduce with runtime option and external DB unset:
+`cargo test --locked -p sagat-tests --test integration_security_multitenancy incident_lock_order_`.
+Existing script_incidents_total/log mappings remain after commit; port tests do not assert counters.
+Exact source, review and regression limits: tasks/project-completion/evidence/incident-lock-order-20261018/.
+Complete B0/group and release gates remain open.
+
+### Rerun source identity ordering (ADR-0039)
+
+New rerun creation checks existing receipt replay first, then retains exact tenant/source KEY SHARE
+before private-definition, managed catalog, active-run and payload admission. It selects identity
+only, keeps MissingReference for absence, and grants no source state/chain/group authority. Current
+rerun writers create unrelated roots; child writers have no rerun source. This is a writer invariant,
+not a database constraint. Terminal credential cleanup keeps FOR UPDATE SKIP LOCKED and skips the
+protected source. Existing journal/audit/outbox/quota rollback boundaries and replay authorization
+remain unchanged. Focused runtime-role real PostgreSQL/OpenBao barriers and positive retention
+controls are in evidence/rerun-source-identity-20261018 under tasks/project-completion.
+
+### Pure capacity recovery boundary
+
+Internal checked restoration preserves fencing counters and identities. Require nonzero revision/
+epoch, epoch<=revision, count<=revision, Retired count0, other states positive, exact Active holder
+fact for Held and no holder fact otherwise. Every malformed supplied header returns typed
+InconsistentSnapshot; exhausted but consistent headers restore without resetting. Facts must come
+from a future guarded adapter, not caller assertions. This is not a wire change, database proof,
+current-path authority or runtime eligibility; no nested capability is enabled.
+
+### Dormant ChildRoot Finish storage
+
+[Scoped native contract](../../../tasks/project-completion/capacity-finish-storage.md): one exact
+current own child-chain FINAL member, three metadata tables, current fence, whole-TX group Busy
+and same-command unknown-COMMIT reconciliation. No RLS claim, generic creator, usage projection,
+production caller or public runtime activation. New audit/hint vocabulary, schema constraints,
+actual runtime-role native port and recovery tests must precede any use. Full B1/B2 remain open.
+
+Capacity Finish vocabulary: engine audit action `capacity.member.finished`, resource `capacity_group`,
+without generic repeat collapse. Receipt replay/deduplication is a separate pending native-port
+proof. The new canonical AsyncAPI hint is a closed reference object with UUID identities, result
+revision2..i64::MAX, epoch1..i64::MAX, retired boolean and optional nullable traceId. It conveys the
+committed receipt result, never current execution authority. Synthetic shape tests do not prove
+an actual producer, broker delivery or receipt behavior; those remain B2d/e. Only its new message
+was added to the event baseline; existing messages and all SDK goldens were preserved.
+
+
+Dormant schema constraints/privileges/tombstones/downgrade are tested (B2c), with no native
+operation or production caller. Permanent member/receipt chain references currently pin history
+retention; C0 must define compatible replay/tombstone cleanup before activation. See
+capacity-finish-schema-20261018 evidence. Runtime finality/replay/fault observations remain B2d/e/f.
+
+
+Dormant exact native Finish is implemented, with application identity/expectation/receipt types,
+versioned fingerprint and typed Busy/refusal/storage/unknown outcomes. Actual current child FINAL,
+continuation-history rejection, renewed-fence replay and independent member survival have focused
+PG evidence. Ordinary chain/run entry can wait; only exact G NOWAIT55P03 is Busy. Native fault/
+contention/unknown-COMMIT and observations remain B2e/f; no production caller or wire API exists.
+
+
+### Dormant native ChildRoot Finish observations
+
+B2f uses workflow.capacity.finish under existing caller trace context. Its only span attributes
+are sagat.tenant.id, sagat.namespace.id, sagat.capacity.group_id, sagat.capacity.member_id,
+sagat.chain.id, sagat.run.id and sagat.outcome. Identifiers never label metrics. Only returned
+outcomes are counted: applied/replayed/busy/refused/storage_error/unknown on
+workflow_capacity_finish_attempts_total and workflow_capacity_finish_duration_seconds. The
+unlabeled workflow_capacity_member_finished_total increments after confirmed first commit only;
+replay and lost acknowledgement do not increment it. Durable receipt evidence remains authority
+when a committed unknown is absent from process counters. An abandoned call has no returned
+outcome; direct untraced calls emit metrics without an OTLP span. Future production callers must
+supply trace context and durable original-command reconciliation before using this dormant port.
+No public wire API, production invocation, execution eligibility or nested activation is added.
+
+### Prepared collection data-limit internal boundary
+
+The internal journal reason `run_data_limit` maps to `CollectionDrainReason::RunDataLimit`, SQL RUN_DATA_LIMIT with no failed-member index, and the existing public drain hint reason FAILED. No AsyncAPI enum or SDK wire shape is added. The checked Rust evidence distinguishes actual aggregate refusal, verified existing output total and an exact authoritative failed/RUN_DATA_LIMIT stop. Its required engine Run audit uses `run.data_limit_exceeded` and fixed reasons; candidate values/digests/sizes never become audit text or metric labels. The scoped known-success report uses the distinct fixed audit reason `successful scoped output refused by run data limit`. A first acknowledged native drain commit increments `workflow_primitive_rejections_total{kind="collection",code="RUN_DATA_LIMIT"}`; replay, rejected compare-and-set, rollback and lost acknowledgement do not increment it.
+
+Direct native writer preparation is guarded in9fd9405f and is not behavioral or rollout acceptance. The report transaction itself has no outgoing message: zero new outbox rows are expected; durable collection discovery schedules the subsequent native drain, whose existing hint/audit/journal/head commit atomically. Cold discovery, source/byte/fault/replay/runtime and actual old/current producer gates remain required. No source/history backfill or release permission is inferred.
+
+
+## Actual legacy-output compatibility acceptance — 2026-10-18
+
+Q5 is accepted with source `ce0cb786` and immutable old producer `6c44a0e4`: the complete
+old/current coordinator passed in133.91s. Each of the two independent role passes contains one
+real public old-producer test and one current matrix test with five ordered cases, not five tests.
+The old producer always uses the runtime role; only the current native store pool varies between
+owner and `sagat_app`. Read-only overlay/per-owner accounting, exact migration/read-only witnesses,
+isolated corruption refusals, unclamped E>L, fitting L-only charge, zero-delta access above the
+limit and positive-delta rollback passed. Stored `legacyControl` discovery metadata is allowed
+only with the unchanged pinned rootForEach/full source qualification; no old source/result is
+rewritten. Strict Clippy/fmt/architecture passed with1117 unchanged native inputs.
+
+Known-success report baseline tests in `03a0043a` independently reproduce actual FAILED acknowledgements
+for a real successful forward effect and a genuine Applied reconciliation; their correction and
+later compensation assertions remain pending. Q8 second-owner discovery compatibility and actual
+producer composition, native End/scheduler activation, full old-binary rollout, source/fanout,
+nested capacity and final release gates remain open. No canonical runtime task is closed by Q5.
+Evidence: `tasks/project-completion/evidence/legacy-output-view-20261018/reproduce.md` and
+`scoped-output-refusal-red-20261018/reproduce.md`.
