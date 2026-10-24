@@ -1,0 +1,43 @@
+{
+  "before_count": 26,
+  "after_count": 22,
+  "exact_owned_databases_removed": {
+    "t_01a16b5f545e72ab885a926ff3042d7e": "owner-positive-c3",
+    "t_01a16b5f773a7227ad2fce2f12b37fcf": "runtime-positive-c3",
+    "t_01a16b5f1058712e9c63da2169e4c017": "owner-red-c3",
+    "t_01a16b5f319c7132a74af7a4a49e8265": "runtime-red-c3"
+  },
+  "private_receipt_hashes": [
+    {
+      "phase": "owner-positive-c3",
+      "sha256": "95cba526c1573055ff8fadd4c9f9741dc9799a62174c495d338231b4f32cdb0a"
+    },
+    {
+      "phase": "runtime-positive-c3",
+      "sha256": "369f2572e447a3426c7ab528498a1ff2d9b061a96bde1131c2a533ca7fc89158"
+    }
+  ],
+  "private_files_removed_before_drop": true,
+  "owned_temporary_source_and_binary_paths_removed": [
+    "free-producer-gate/old-source.tar",
+    "free-producer-gate/old-c1-binary",
+    "free-producer-gate/old-c2-binary",
+    "free-producer-gate/old-c3-binary",
+    "free-producer-gate/old-source",
+    "free-final/artifacts-free-admission-red/run.toVB9A/artifacts/old-source.tar",
+    "free-final/artifacts-free-admission-red/run.toVB9A/artifacts/integration-workflow-primitives-old",
+    "free-final/artifacts-free-admission-red/run.toVB9A/artifacts/integration-workflow-primitives-current",
+    "free-final/artifacts-free-admission/run.mEAPwV/artifacts/old-source.tar",
+    "free-final/artifacts-free-admission/run.mEAPwV/artifacts/integration-workflow-primitives-old",
+    "free-final/artifacts-free-admission/run.mEAPwV/artifacts/integration-workflow-primitives-current",
+    "free-final/artifacts-nonfinal-return/run.xy4CnY/artifacts/old-source.tar",
+    "free-final/artifacts-nonfinal-return/run.xy4CnY/artifacts/integration-workflow-primitives-old",
+    "free-final/artifacts-nonfinal-return/run.xy4CnY/artifacts/integration-workflow-primitives-current",
+    "free-final/artifacts-nonfinal-return-red/run.Sjk104/artifacts/old-source.tar",
+    "free-final/artifacts-nonfinal-return-red/run.Sjk104/artifacts/integration-workflow-primitives-old",
+    "free-final/artifacts-nonfinal-return-red/run.Sjk104/artifacts/integration-workflow-primitives-current",
+    "free-final/artifacts-output-view/run.vwqJ5V/artifacts/old-source.tar",
+    "free-final/artifacts-output-view/run.vwqJ5V/artifacts/integration-workflow-primitives-old",
+    "free-final/artifacts-output-view/run.vwqJ5V/artifacts/integration-workflow-primitives-current"
+  ]
+}

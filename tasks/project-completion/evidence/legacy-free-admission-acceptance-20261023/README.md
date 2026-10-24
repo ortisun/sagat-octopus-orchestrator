@@ -84,3 +84,9 @@ repository-declared owned Compose PostgreSQL on exclusive loopback65118 and a
 private target outside every checkout. Parent Q7c/Q8/master quota correction,
 other frontiers/equality/competing-stop/CAS/rollout/nesting, and the eight canonical
 014 task checkboxes remain open. No provider-side undo or O(window) claim follows.
+
+After final inventories were sealed, root removed the four exact exploratory DBs
+and their private handoffs (26→22; all other DBs unchanged). Only this unit's
+archived source/binary copies were deleted; safe source/log/hash evidence remains.
+The private ongoing-task target is retained for subsequent authorized increments.
+See exploratory-owned-cleanup.json.
