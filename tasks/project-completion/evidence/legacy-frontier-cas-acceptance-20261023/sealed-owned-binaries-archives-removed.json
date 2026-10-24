@@ -1,0 +1,133 @@
+{
+  "removed": [
+    {
+      "case": "cancellation-before-report",
+      "file": "old-source.tar",
+      "bytes": 59392000,
+      "sha256": "50e6c054052e2a1cad6c75eaafcec8e3e4bcafb5eb7b80caa81b6e5634776e2d"
+    },
+    {
+      "case": "cancellation-before-report",
+      "file": "integration-workflow-primitives-old",
+      "bytes": 176515520,
+      "sha256": "b522e3a6d150bd7e5489593ad399e8485c161da390abaf13e277827e095e9f13"
+    },
+    {
+      "case": "cancellation-before-report",
+      "file": "integration-workflow-primitives-current",
+      "bytes": 183935520,
+      "sha256": "395247b621c0a10eb0e8aee0a372bcfee836e7673dc3cdef7273158b0e010ddf"
+    },
+    {
+      "case": "drain-before-report",
+      "file": "old-source.tar",
+      "bytes": 59392000,
+      "sha256": "50e6c054052e2a1cad6c75eaafcec8e3e4bcafb5eb7b80caa81b6e5634776e2d"
+    },
+    {
+      "case": "drain-before-report",
+      "file": "integration-workflow-primitives-old",
+      "bytes": 176515520,
+      "sha256": "4b709cf8922f796a75223bf21e3bc1f6fd07b8227942ffa384c8551c9685eb1b"
+    },
+    {
+      "case": "drain-before-report",
+      "file": "integration-workflow-primitives-current",
+      "bytes": 183935520,
+      "sha256": "395247b621c0a10eb0e8aee0a372bcfee836e7673dc3cdef7273158b0e010ddf"
+    },
+    {
+      "case": "live-work-frontier",
+      "file": "old-source.tar",
+      "bytes": 59392000,
+      "sha256": "50e6c054052e2a1cad6c75eaafcec8e3e4bcafb5eb7b80caa81b6e5634776e2d"
+    },
+    {
+      "case": "live-work-frontier",
+      "file": "integration-workflow-primitives-old",
+      "bytes": 176515520,
+      "sha256": "9619d746514bd8a88f1379648608000b24629ec20c461d94384a8d30475cde44"
+    },
+    {
+      "case": "live-work-frontier",
+      "file": "integration-workflow-primitives-current",
+      "bytes": 183935520,
+      "sha256": "395247b621c0a10eb0e8aee0a372bcfee836e7673dc3cdef7273158b0e010ddf"
+    },
+    {
+      "case": "live-work-frontier-red",
+      "file": "old-source.tar",
+      "bytes": 59392000,
+      "sha256": "50e6c054052e2a1cad6c75eaafcec8e3e4bcafb5eb7b80caa81b6e5634776e2d"
+    },
+    {
+      "case": "live-work-frontier-red",
+      "file": "integration-workflow-primitives-old",
+      "bytes": 176515520,
+      "sha256": "4cf679959b060a49e7fb7cea5466e79ace9d434a6743cb92a9801b1379c7e231"
+    },
+    {
+      "case": "live-work-frontier-red",
+      "file": "integration-workflow-primitives-current",
+      "bytes": 183935520,
+      "sha256": "395247b621c0a10eb0e8aee0a372bcfee836e7673dc3cdef7273158b0e010ddf"
+    },
+    {
+      "case": "report-before-drain",
+      "file": "old-source.tar",
+      "bytes": 59392000,
+      "sha256": "50e6c054052e2a1cad6c75eaafcec8e3e4bcafb5eb7b80caa81b6e5634776e2d"
+    },
+    {
+      "case": "report-before-drain",
+      "file": "integration-workflow-primitives-old",
+      "bytes": 176515520,
+      "sha256": "be08f4931f1d9f5e4d2b541d94b7be7464ab3c9a52d24fea99d796acca5d5fff"
+    },
+    {
+      "case": "report-before-drain",
+      "file": "integration-workflow-primitives-current",
+      "bytes": 183935520,
+      "sha256": "395247b621c0a10eb0e8aee0a372bcfee836e7673dc3cdef7273158b0e010ddf"
+    },
+    {
+      "case": "report-frontier-cas",
+      "file": "old-source.tar",
+      "bytes": 59392000,
+      "sha256": "50e6c054052e2a1cad6c75eaafcec8e3e4bcafb5eb7b80caa81b6e5634776e2d"
+    },
+    {
+      "case": "report-frontier-cas",
+      "file": "integration-workflow-primitives-old",
+      "bytes": 176515520,
+      "sha256": "7217c8d42a270f064b26e429af7fa5ee5db6cb4b459ffaf204deaa38e11ca95c"
+    },
+    {
+      "case": "report-frontier-cas",
+      "file": "integration-workflow-primitives-current",
+      "bytes": 183935520,
+      "sha256": "395247b621c0a10eb0e8aee0a372bcfee836e7673dc3cdef7273158b0e010ddf"
+    },
+    {
+      "case": "under-limit-increment-before-drain",
+      "file": "old-source.tar",
+      "bytes": 59392000,
+      "sha256": "50e6c054052e2a1cad6c75eaafcec8e3e4bcafb5eb7b80caa81b6e5634776e2d"
+    },
+    {
+      "case": "under-limit-increment-before-drain",
+      "file": "integration-workflow-primitives-old",
+      "bytes": 176515520,
+      "sha256": "9bfaefc3c2c35baa4baec14528ba1cdf8e5f1723f6a220c3fc6734c18260c59f"
+    },
+    {
+      "case": "under-limit-increment-before-drain",
+      "file": "integration-workflow-primitives-current",
+      "bytes": 183935520,
+      "sha256": "395247b621c0a10eb0e8aee0a372bcfee836e7673dc3cdef7273158b0e010ddf"
+    }
+  ],
+  "bytes_freed": 2938901280,
+  "safe_logs_manifests_witnesses_retained": true,
+  "ongoing_private_target_retained": true
+}

@@ -101,3 +101,8 @@ Reproduce via fixture README on repository-owned Compose65118/private outside ta
 Private session/lease/request never enter committed evidence. Source/scoped-Finish
 activation staysclosed. ParentQ7c/Q8/Q10/quota/otherrecovery/Applied/rollout/nesting/
 canonical014 remainopen; no provider undo or production-capacity claim follows.
+
+After sealing, twenty-one invocation-owned archive/binary copies were checked
+against retained hashes and removed. Safe logs/manifests/witnesses remain;
+ongoing private target stays for remaining work. All fourteen final DBs/private
+handoffs were already removed by coordinators; no further database drop occurred.
