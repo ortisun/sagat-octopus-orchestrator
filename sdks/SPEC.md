@@ -401,6 +401,7 @@ code unit; the rule is the UTF-16 one.)
 workflow(name).description(text).label(key, value)
   .step(id, activity, {retry, timeoutMs, compensateWith, reconcileWith, idempotencyTemplate, secrets,
                        compensationRetry, compensationTimeoutMs, irreversible, highRisk, onError})
+  .database(id, {connectionRef, operation, statement, parameters?, limits?, timeoutMs?, onError?})
   .sleep(id, durationMs)
   .waitForEvent(id, {eventType, correlationExpr, timeoutMs, onTimeout?, lookbackMs?})
   .invokeChild(id, workflow, {version?, input?, cancelPolicy?})
@@ -432,6 +433,34 @@ Linking (the whole algorithm — it is why the output is the same everywhere):
   or an `irreversible` step with `compensateWith` is raised when the node is added (`VALIDATION_FAILED`),
   not when the server refuses the document.
 - Options that are absent are omitted from the document (never `null`).
+
+### 7.1 Managed database operations (feature 017)
+
+All five SDKs emit the same canonical `type: database` node. `connectionRef` is
+`{name, revision?}` within the workflow namespace, never a DSN, password or provider
+path. `operation` is `query` or `execute`. Parameters are either
+`{literal: {type, value}}` or `{type, expression}`. Tags are `null`, `boolean`,
+`integer`, `decimal`, `float`, `text`, `timestamp`, `date`, `binary` and `json`;
+integer/decimal values use exact strings, binary uses base64, timestamp/date use
+RFC3339/ISO text. JSON literals obey the same canonical fidelity rules as other IR.
+
+The builder snapshots a database node's supplied values when it is added, validates
+basic shapes and finite contract ceilings, and raises `VALIDATION_FAILED` with a
+fixed message that contains no SQL or values. It adds neither retry policy nor
+secret references. SQL parsing, permission checks, connection/credential pinning,
+execution and unknown-write handling are server responsibilities. Writes have no
+automatic retry. Ordinary SDK workers continue negotiating 1.4; only the dedicated
+managed executor uses 1.5. The server rejects unsupported IR before execution.
+
+Inline results retain `{columns, rows, affectedRows, truncated}` with ordered tagged cells,
+exact numeric strings and explicit nulls. They use the ordinary retained steps map
+for downstream execution. The expression environment wraps each output, so a
+binding may read `steps.query.output.rows[0][0].value`. Results over 256 KiB use the
+existing `$blob` descriptor and explicit lease-bound blob reading; contexts do not
+auto-expand them, and database expressions cannot read blob contents. Interactive result reading
+requires the dedicated result permission. See
+[the five-language guide](../docs/guides/managed-database-sdk.md) and the shared
+`database-connections` conformance scenario.
 
 ## 8. Serialization
 

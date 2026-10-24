@@ -39,6 +39,7 @@ pub enum ApiOperation {
     RunQuery,
     RunUpdate,
     PayloadInspect,
+    DatabaseResultRead,
     RunOperate,
     RunRerun,
     RunSignal,
@@ -49,6 +50,8 @@ pub enum ApiOperation {
     QuotaManage,
     SecretRead,
     SecretManage,
+    DatabaseManage,
+    DatabaseAdHoc,
     EgressManage,
     WorkerBind,
     EventPublish,
@@ -85,6 +88,7 @@ impl ApiOperation {
             Self::RunQuery => &[RunRead, RunQuery],
             Self::RunUpdate => &[RunUpdate],
             Self::PayloadInspect => &[RunRead, RunPayloadInspect],
+            Self::DatabaseResultRead => &[RunRead, Permission::DatabaseResultRead],
             Self::RunOperate => &[RunOperate],
             Self::RunRerun => &[RunOperate, RunStart],
             Self::RunSignal => &[RunSignal],
@@ -95,6 +99,8 @@ impl ApiOperation {
             Self::QuotaManage => &[QuotaManage],
             Self::SecretRead => &[SecretRead],
             Self::SecretManage => &[SecretManage],
+            Self::DatabaseAdHoc => &[RunStart, Permission::DatabaseAdHoc, Permission::DatabaseUse],
+            Self::DatabaseManage => &[Permission::DatabaseManage],
             Self::EgressManage => &[EgressManage],
             Self::WorkerBind => &[WorkerBind],
             Self::EventPublish => &[EventPublish],
@@ -234,7 +240,21 @@ where
         }
 
         for permission in operation.permissions() {
-            principal.authorize(*permission)?;
+            if let Err(error) = principal.authorize(*permission) {
+                if operation == ApiOperation::DatabaseAdHoc
+                    && let ApiTarget::Namespace(namespace) = &target
+                {
+                    crate::runs::audit_database_execution_denied(
+                        &self.store,
+                        &self.clock,
+                        principal,
+                        *namespace,
+                        ctx,
+                    )
+                    .await;
+                }
+                return Err(error.into());
+            }
         }
 
         let tenant = principal.tenant_id();
@@ -275,7 +295,8 @@ where
 
     /// Consumes one token for a namespace already authorized and canonically resolved by another
     /// application use case. This narrow entry point exists for payload inspection, whose prepare
-    /// phase must resolve the run without reading its payload before admission.
+    /// phase resolves the run before admission. Database result disclosure uses the same entry
+    /// point after validating the retained scope; external content is read only after admission.
     pub async fn admit_resolved_namespace(
         &self,
         tenant: TenantId,

@@ -1009,7 +1009,7 @@ where
                 self.clock.now(),
             )
             .with_reason("resource not accessible from this tenant");
-            if let Err(error) = self.store.record_denial(&audit).await {
+            if let Err(error) = RunStore::record_denial(&self.store, &audit).await {
                 tracing::error!(%error, action = %audit.action(), "failed to record chain denial");
             }
         }

@@ -3,6 +3,7 @@
 #   docker build -f infra/docker/Dockerfile --target control-plane   -t sagat-octopus-orchestrator/control-plane:dev .
 #   docker build -f infra/docker/Dockerfile --target execution-engine -t sagat-octopus-orchestrator/execution-engine:dev .
 #   docker build -f infra/docker/Dockerfile --target sandbox-runner   -t sagat-octopus-orchestrator/sandbox-runner:dev .
+#   docker build -f infra/docker/Dockerfile --target database-runner  -t sagat-octopus-orchestrator/database-runner:dev .
 #   docker build -f infra/docker/Dockerfile --target dev-idp          -t sagat-octopus-orchestrator/dev-idp:dev .
 # Without --target the last stage (the control plane) is built.
 
@@ -31,8 +32,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
         -p sagat-control-plane --bin control-plane \
         -p sagat-execution-engine --bin execution-engine \
         -p sagat-sandbox-runner --bin sandbox-runner \
+        -p sagat-database-runner --bin database-runner \
         -p sagat-dev-idp --bin dev-idp \
-    && cp target/release/control-plane target/release/execution-engine target/release/sandbox-runner target/release/dev-idp /
+    && cp target/release/control-plane target/release/execution-engine target/release/sandbox-runner target/release/database-runner target/release/dev-idp /
 
 # The Studio, built once and shipped as files: the control plane serves them only when told where
 # they are (SAGAT_STUDIO_DIR), so an image that is not given the variable serves none.
@@ -95,6 +97,15 @@ HEALTHCHECK --interval=10s --timeout=4s --start-period=10s --retries=3 \
     CMD ["/usr/local/bin/sandbox-runner", "healthcheck"]
 ENTRYPOINT ["/usr/local/bin/sandbox-runner"]
 CMD ["serve"]
+
+# Managed customer SQL has its own image and never mounts the container engine's socket.
+FROM runtime AS database-runner
+COPY --from=builder /database-runner /usr/local/bin/database-runner
+USER 10001
+ENV SAGAT_DATABASE_RUNNER_CONFIG=/etc/sagat/database-runner.json
+ENV SAGAT_DATABASE_RUNNER_METRICS_ADDR=0.0.0.0:9092
+EXPOSE 9092
+ENTRYPOINT ["/usr/local/bin/database-runner"]
 
 # The control plane (the default target: it is the last stage).
 FROM runtime AS control-plane

@@ -13,6 +13,7 @@ autotests = false
 workspace = true
 
 [dev-dependencies]
+tempfile = "3"
 tokio-stream.workspace = true
 bytes.workspace = true
 sagat-infra-blobstore.workspace = true
@@ -345,3 +346,15 @@ path = "fault/scalability-ha/main.rs"
 [[test]]
 name = "e2e_scalability_ha"
 path = "e2e/scalability-ha/main.rs"
+
+[[test]]
+name = "integration_database_connections"
+path = "integration/database-connections/main.rs"
+
+[[test]]
+name = "integration_database_runner"
+path = "integration/database-runner/main.rs"
+
+[[test]]
+name = "e2e_database_connections"
+path = "e2e/database-connections/main.rs"

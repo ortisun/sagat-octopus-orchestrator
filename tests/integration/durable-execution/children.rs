@@ -605,8 +605,10 @@ async fn a_child_cannot_be_created_for_a_step_that_stopped_waiting_after_the_can
     );
     let child = candidate.child;
     let new = NewRun {
+        retained: None,
         limits: sagat_application::quotas::RunLimits::UNLIMITED,
         info: RunInfo {
+            origin: None,
             run_id: child,
             tenant_id: w.admin.tenant_id(),
             namespace_id: record.info.namespace_id,

@@ -464,6 +464,96 @@
       ]
     },
     {
+      "table": "database_connection_revisions",
+      "column": "actor",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Identity subject, CHECK limits to 255 characters and excludes control characters."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/database.rs"
+      ]
+    },
+    {
+      "table": "database_connection_revisions",
+      "column": "config",
+      "sql_type": "jsonb",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "canonical_json_utf8",
+        "expression": null,
+        "evidence": "Immutable nonsecret settings, bounded to 128 KiB by CHECK; charged by the ALWAYS quota triggers."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/database.rs"
+      ]
+    },
+    {
+      "table": "database_connection_revisions",
+      "column": "status",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only ACTIVE, PAUSED or DELETED."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/database.rs"
+      ]
+    },
+    {
+      "table": "database_connections",
+      "column": "name",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": null,
+        "evidence": "Connection logical name is retained namespace content; charged by the ALWAYS quota triggers."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/database.rs"
+      ]
+    },
+    {
+      "table": "database_connections",
+      "column": "status",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only ACTIVE, PAUSED or DELETED."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/database.rs"
+      ]
+    },
+    {
       "table": "egress_policies",
       "column": "ports",
       "sql_type": "_int4",
@@ -1380,6 +1470,42 @@
       ]
     },
     {
+      "table": "private_execution_definitions",
+      "column": "actor",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject bounded to 255 non-control characters. ALWAYS insertion guard requires equality with the retained version publisher. One retained identity per immutable private workflow, counted by namespace workflow quota."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/ad_hoc.rs"
+      ]
+    },
+    {
+      "table": "private_execution_definitions",
+      "column": "digest",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Canonical IR SHA-256 digest constrained to 64 lowercase hexadecimal characters; one retained identity per quota-counted private workflow."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/ad_hoc.rs"
+      ]
+    },
+    {
       "table": "publication_decisions",
       "column": "approver",
       "sql_type": "text",
@@ -1683,6 +1809,24 @@
       },
       "owner_paths": [
         "crates/infra-postgres/src/quotas.rs"
+      ]
+    },
+    {
+      "table": "run_database_connections",
+      "column": "node_id",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Workflow node identifier, CHECK bounds UTF-8 length to 64 bytes; one binding per retained run/node."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/database.rs"
       ]
     },
     {
@@ -2133,6 +2277,24 @@
       },
       "owner_paths": [
         "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "runs",
+      "column": "origin",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed CHECK enumeration AD_HOC_STEP, AD_HOC_WORKFLOW, CONNECTION_PROBE or NULL; immutable execution provenance per retained run."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/ad_hoc.rs"
       ]
     },
     {
@@ -3433,6 +3595,101 @@
       ]
     },
     {
+      "table": "secret_provider_operations",
+      "column": "actor",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Subject identity is at most 255 characters, no controls, enforced by CHECK; at most 1024 receipts per namespace."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/managed_secrets.rs",
+        "crates/infra-postgres/migrations/20261122000100_openbao_secrets.up.sql"
+      ]
+    },
+    {
+      "table": "secret_provider_operations",
+      "column": "binding",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "HMAC-SHA256 receipt content binding, exactly 32 bytes enforced by CHECK; never raw credential content."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/managed_secrets.rs",
+        "crates/infra-postgres/migrations/20261122000100_openbao_secrets.up.sql"
+      ]
+    },
+    {
+      "table": "secret_provider_operations",
+      "column": "name",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "SecretName grammar, at most 64 ASCII bytes enforced by CHECK; at most 1024 receipts per namespace."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/managed_secrets.rs",
+        "crates/infra-postgres/migrations/20261122000100_openbao_secrets.up.sql"
+      ]
+    },
+    {
+      "table": "secret_provider_operations",
+      "column": "pools",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "At most 16 worker pool names (CHECK on cardinality), each parsed to the 64-byte closed alphabet by the domain pool grammar before the intent is written; part of the HMAC-bound intent; at most 1024 receipts per namespace."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/managed_secrets.rs",
+        "crates/infra-postgres/migrations/20261122000100_openbao_secrets.up.sql"
+      ]
+    },
+    {
+      "table": "secret_provider_operations",
+      "column": "state",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed pending/active/abandoned lifecycle enum enforced by CHECK; at most 1024 receipts per namespace."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/managed_secrets.rs",
+        "crates/infra-postgres/migrations/20261122000100_openbao_secrets.up.sql"
+      ]
+    },
+    {
       "table": "secret_versions",
       "column": "ciphertext",
       "sql_type": "bytea",
@@ -3538,6 +3795,61 @@
       },
       "owner_paths": [
         "crates/infra-postgres/src/secrets.rs"
+      ]
+    },
+    {
+      "table": "secrets",
+      "column": "authority",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed local/openbao authority enum enforced by CHECK; writer: managed_secrets.rs."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/managed_secrets.rs",
+        "crates/infra-postgres/migrations/20261122000100_openbao_secrets.up.sql"
+      ]
+    },
+    {
+      "table": "step_database_credentials",
+      "column": "node_id",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Workflow node identifier bounded to 64 UTF-8 bytes by CHECK; one immutable credential pin per retained attempt."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/database.rs"
+      ]
+    },
+    {
+      "table": "step_database_credentials",
+      "column": "secret_name",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated secret name bounded to 64 ASCII characters by CHECK; one immutable credential pin per retained attempt. Provider value bytes remain accounted by the referenced provider operation."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/database.rs"
       ]
     },
     {
@@ -6641,6 +6953,14 @@
       "owner_paths": [
         "crates/infra-postgres/src/declared_operations.rs"
       ]
+    }
+  ],
+  "external_content": [
+    {
+      "table": "secret_provider_operations",
+      "measurement_column": "value_bytes",
+      "class": "content",
+      "evidence": "1..16384 bytes reserved at intent admission until provider cleanup deletes the receipt; ALWAYS delta/flush triggers account for these off-platform bytes."
     }
   ]
 }

@@ -35,7 +35,75 @@ use crate::quotas::QuotaLookup;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredSecret {
     pub meta: SecretMeta,
-    pub sealed: SealedSecret,
+    pub value: StoredValue,
+}
+
+/// The authoritative representation of a retained version. No remote reference is a ciphertext.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoredValue {
+    Local(SealedSecret),
+    OpenBao(crate::secret_provider::ProviderReference),
+}
+
+/// Async resolution shared by workers, webhook signing and broker credentials. This does not
+/// grant access: callers must authorize the scope/lease first and audit the use.
+#[derive(Clone, Default)]
+pub struct SecretReader {
+    cipher: Option<Arc<dyn SecretCipher>>,
+    provider: Option<Arc<dyn crate::secret_provider::SecretProvider>>,
+}
+
+impl SecretReader {
+    pub fn local(cipher: Arc<dyn SecretCipher>) -> Self {
+        Self {
+            cipher: Some(cipher),
+            provider: None,
+        }
+    }
+    pub fn with_cipher(mut self, cipher: Arc<dyn SecretCipher>) -> Self {
+        self.cipher = Some(cipher);
+        self
+    }
+    pub fn with_provider(
+        mut self,
+        provider: Arc<dyn crate::secret_provider::SecretProvider>,
+    ) -> Self {
+        self.provider = Some(provider);
+        self
+    }
+    pub async fn resolve(&self, stored: &StoredSecret) -> Result<SecretValue, AppError> {
+        match &stored.value {
+            StoredValue::Local(sealed) => {
+                let cipher = self.cipher.as_ref().ok_or(AppError::Unavailable)?;
+                let meta = &stored.meta;
+                let aad = associated_data(
+                    meta.tenant_id,
+                    meta.namespace_id,
+                    &meta.name,
+                    meta.id,
+                    &sealed.key_id,
+                );
+                cipher.open(sealed, &aad).map_err(|_| AppError::Internal)
+            }
+            StoredValue::OpenBao(reference) => {
+                if reference.tenant != stored.meta.tenant_id
+                    || reference.namespace != stored.meta.namespace_id
+                    || reference.operation != stored.meta.id
+                {
+                    return Err(AppError::Internal);
+                }
+                self.provider
+                    .as_ref()
+                    .ok_or(AppError::Unavailable)?
+                    .read(reference)
+                    .await
+                    .map_err(crate::managed_secrets::provider_error)?
+                    .ok_or_else(|| AppError::SecretUnavailable {
+                        name: stored.meta.name.to_string(),
+                    })
+            }
+        }
+    }
 }
 
 /// What a secret looks like from outside: never the value, never the ciphertext.
@@ -43,7 +111,8 @@ pub struct StoredSecret {
 pub struct SecretView {
     pub name: String,
     pub version: u32,
-    pub key_id: String,
+    pub key_id: Option<String>,
+    pub provider: &'static str,
     pub created_by: String,
     pub updated_at: OffsetDateTime,
     /// The worker pools allowed to receive the secret (empty: every worker bound to the activity,
@@ -58,6 +127,11 @@ impl From<&SecretMeta> for SecretView {
             name: meta.name.to_string(),
             version: meta.version,
             key_id: meta.key_id.clone(),
+            provider: if meta.key_id.is_some() {
+                "local"
+            } else {
+                "openbao"
+            },
             created_by: meta.created_by.clone(),
             updated_at: meta.created_at,
             pools: None,
@@ -114,7 +188,7 @@ pub fn check_usable(
 }
 
 /// One secret a step declares, as the store found it for the publisher of the workflow.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecretInput {
     pub name: SecretName,
     /// `None` when the secret does not exist (any more).
@@ -124,7 +198,7 @@ pub struct SecretInput {
 }
 
 /// What a step's declared secrets resolve to, read in the step's own transaction.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecretInputs {
     /// Who published the version of the workflow the run is pinned to.
     pub publisher: String,
@@ -278,7 +352,7 @@ pub struct ResealBatch {
 pub struct SecretService<S, C> {
     store: S,
     clock: C,
-    cipher: Arc<dyn SecretCipher>,
+    cipher: Option<Arc<dyn SecretCipher>>,
 }
 
 impl<S, C> SecretService<S, C>
@@ -291,7 +365,15 @@ where
         Self {
             store,
             clock,
-            cipher,
+            cipher: Some(cipher),
+        }
+    }
+
+    pub fn metadata_only(store: S, clock: C) -> Self {
+        Self {
+            store,
+            clock,
+            cipher: None,
         }
     }
 
@@ -339,12 +421,13 @@ where
 
         let tenant = principal.tenant_id();
         let row_id = Uuid::now_v7();
-        let key_id = self.cipher.active_key_id().to_owned();
-        let aad = associated_data(tenant, namespace, &name, row_id, &key_id);
-        let sealed = self
+        let cipher = self
             .cipher
-            .seal(&value, &aad)
-            .map_err(|_| AppError::Internal)?;
+            .as_ref()
+            .ok_or(AppError::NotAllowed("local secret writes are disabled"))?;
+        let key_id = cipher.active_key_id().to_owned();
+        let aad = associated_data(tenant, namespace, &name, row_id, &key_id);
+        let sealed = cipher.seal(&value, &aad).map_err(|_| AppError::Internal)?;
         if sealed.key_id != key_id {
             // The key the associated data names is not the one that sealed: it would never open.
             return Err(AppError::Internal);
@@ -653,7 +736,11 @@ where
     /// [`AppError::Unavailable`] and [`AppError::Internal`] when the store fails; what was moved
     /// before stays moved.
     pub async fn reseal(&self, after: Option<Uuid>, limit: u32) -> Result<ResealBatch, AppError> {
-        let active = self.cipher.active_key_id().to_owned();
+        let cipher = self
+            .cipher
+            .as_ref()
+            .ok_or(AppError::NotAllowed("local secret re-sealing is disabled"))?;
+        let active = cipher.active_key_id().to_owned();
         let stale = self
             .store
             .versions_not_sealed_under(&active, after, limit)
@@ -666,16 +753,19 @@ where
         let (mut moved, mut failed) = (0, 0);
         for old in stale {
             let meta = &old.meta;
+            let StoredValue::Local(old_sealed) = &old.value else {
+                return Err(AppError::Internal);
+            };
             let aad = associated_data(
                 meta.tenant_id,
                 meta.namespace_id,
                 &meta.name,
                 meta.id,
-                &old.sealed.key_id,
+                &old_sealed.key_id,
             );
-            let Ok(value) = self.cipher.open(&old.sealed, &aad) else {
+            let Ok(value) = cipher.open(old_sealed, &aad) else {
                 tracing::error!(
-                    key = %old.sealed.key_id,
+                    key = %old_sealed.key_id,
                     version = %meta.id,
                     "a stored secret cannot be opened with the key ring; it is left as it is"
                 );
@@ -689,8 +779,7 @@ where
                 meta.id,
                 &active,
             );
-            let sealed = self
-                .cipher
+            let sealed = cipher
                 .seal(&value, &new_aad)
                 .map_err(|_| AppError::Internal)?;
             let audit = AuditRecord::engine(
@@ -704,7 +793,7 @@ where
             );
             if self
                 .store
-                .replace_sealed(meta.id, &old.sealed.key_id, &sealed, &audit)
+                .replace_sealed(meta.id, &old_sealed.key_id, &sealed, &audit)
                 .await?
             {
                 moved += 1;
@@ -742,7 +831,7 @@ where
 }
 
 /// Validated, sorted and without repeats, as the canonical texts that are stored.
-fn parse_pool_texts(pools: &[String]) -> Result<Vec<String>, AppError> {
+pub(crate) fn parse_pool_texts(pools: &[String]) -> Result<Vec<String>, AppError> {
     sagat_domain::binding::parse_pools(pools)
         .map(|parsed| parsed.iter().map(ToString::to_string).collect())
         .map_err(|error| {

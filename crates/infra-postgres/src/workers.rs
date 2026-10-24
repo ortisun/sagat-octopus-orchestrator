@@ -152,6 +152,10 @@ fn micros(duration: Duration) -> i64 {
 }
 
 impl WorkerStore for PgRunStore {
+    fn supports_database_worker_protocol(&self) -> bool {
+        true
+    }
+
     fn supports_scoped_worker_protocol(&self) -> bool {
         self.scoped_worker_protocol
     }
@@ -213,6 +217,35 @@ impl WorkerStore for PgRunStore {
                 detail: "a stored binding pattern does not parse".into(),
             })?;
         if first_uncovered(&patterns, &session.activities).is_some() {
+            return Ok(None);
+        }
+        // A cached principal or wildcard binding is not authority for managed execution.
+        let current_role: Option<String> = sqlx::query_scalar(
+            "SELECT role FROM public.sagat_lock_memberships($1, ARRAY[$2::text])",
+        )
+        .bind(session.tenant_id.as_uuid())
+        .bind(&session.subject)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let role = current_role
+            .as_deref()
+            .map(str::parse::<sagat_domain::identity::Role>)
+            .transpose()
+            .map_err(|_| corrupt("worker membership role"))?;
+        let managed = session
+            .activities
+            .iter()
+            .any(|a| a.starts_with(sagat_domain::database::MANAGED_DATABASE_PREFIX));
+        if (managed && role != Some(sagat_domain::identity::Role::DatabaseRunner))
+            || role.is_some_and(|role| {
+                !sagat_application::worker::managed_capabilities_allowed(
+                    role,
+                    &session.activities,
+                    session.accepted_protocol_minor,
+                )
+            })
+        {
             return Ok(None);
         }
         // A worker that reconnects replaces its own session and is never "one more"; a new name has

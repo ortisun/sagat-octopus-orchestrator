@@ -31,6 +31,8 @@ jobs:
       # The workspace also verifies worker/event compatibility baselines and that applying
       # platform migrations twice is a no-op (T001-030/031).
       # Every failing test is reported, not only the first binary's: a first run on a new platform is the time to see them all.
+      - name: build isolated database executor for process tests
+        run: cargo build -p sagat-database-runner --bin database-runner --locked
       - run: cargo test --workspace --locked --no-fail-fast
 
   native-runners:
@@ -122,6 +124,8 @@ jobs:
       # These three targets play every SDK against a real platform (PostgreSQL through Testcontainers, the
       # engine and the API in the test process). They are #[ignore] in the workspace run above because they
       # need the five toolchains.
+      - name: build isolated database executor for SDK conformance
+        run: cargo build -p sagat-database-runner --bin database-runner --locked
       - name: conformance suite, user stories and faults, five languages
         run: cargo test -p sagat-tests --test sdk_conformance --test e2e_sdk_multilanguage --test fault_sdk_multilanguage --locked -- --ignored
       # The hello-world and order-processing examples of each SDK run against a real platform: all five
@@ -172,6 +176,10 @@ jobs:
       # #[ignore] in the workspace run because they need Node and Chromium. The benchmark runs only with STUDIO_PERF=1.
       - name: browser journeys
         run: cargo test -p sagat-tests --test e2e_workflow_studio --locked -- --ignored journeys
+      - name: managed PostgreSQL and OpenBao browser journeys
+        run: |
+          cargo build -p sagat-database-runner --bin database-runner --locked
+          cargo test -p sagat-tests --test e2e_database_connections --locked -- --ignored
       - name: onboarding browser failure redaction
         working-directory: frontend
         run: node --test e2e/compose-security.test.mjs
@@ -233,6 +241,10 @@ jobs:
       # engine, checks health, runs the seed twice, gets a token from the provider, publishes and runs a
       # workflow with the CLI and tears everything down (see scripts/smoke-compose.sh).
       - run: SAGAT_BIN=target/debug/sagat SAGAT_SMOKE_BROWSER=1 scripts/smoke-compose.sh
+      - name: managed database containers and coordinated restore
+        run: |
+          docker build -f infra/docker/Dockerfile --target database-runner -t sagat-octopus-orchestrator/database-runner:dev .
+          python3 tests/e2e/database-connections/compose.py
 
   observability:
     name: observability files (Prometheus rules and configuration, Collector configuration, dashboards)

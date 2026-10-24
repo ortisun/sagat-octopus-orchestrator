@@ -64,7 +64,7 @@ pub(crate) fn optional_idempotency_key(headers: &HeaderMap) -> Result<Option<&st
 
 /// `Idempotency-Key` is mandatory on every operation that creates or changes something, so a client
 /// that retries after an ambiguous failure can never apply it twice.
-fn idempotency_key(headers: &HeaderMap) -> Result<&str, ApiError> {
+pub(crate) fn idempotency_key(headers: &HeaderMap) -> Result<&str, ApiError> {
     let key = headers
         .get(IDEMPOTENCY_HEADER)
         .and_then(|v| v.to_str().ok())
@@ -102,6 +102,7 @@ pub struct ListQuery {
     #[serde(rename = "workflowId")]
     pub workflow_id: Option<String>,
     pub status: Option<String>,
+    pub origin: Option<String>,
 }
 
 fn page_request(query: &ListQuery) -> PageRequest {
@@ -457,6 +458,14 @@ pub async fn list_runs<B: Exec>(
     Query(query): Query<ListQuery>,
 ) -> Result<Json<PageBody<RunBody>>, ApiError> {
     let filter = RunFilter {
+        origin: query
+            .origin
+            .as_deref()
+            .map(|s| {
+                s.parse()
+                    .map_err(|()| ApiError::validation("unknown run origin"))
+            })
+            .transpose()?,
         workflow: query
             .workflow_id
             .as_deref()

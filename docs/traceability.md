@@ -20,6 +20,8 @@
 
 ## Evidence protocol
 
+Feature [017 database-connections](../specs/017-database-connections/spec.md) is approved and implementing (2026-10-16). FR-017-001..022 and SC-017-001..011 are tracked in its [tasks](../specs/017-database-connections/tasks.md). Runtime evidence is pending; approval does not close any runtime criterion.
+
 1. Link the PR to the FR and SC satisfied; reference the exact test (name and CI execution).
 2. For durability invariants: failure scenario, journal evidence and absence of a double transition.
 3. For security: tenant, secrets, sandbox and permissions tests with results.

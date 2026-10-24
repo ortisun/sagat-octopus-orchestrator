@@ -402,7 +402,7 @@ test('the heartbeat starts before the handler ends, carries the step identity an
   let deadlines: number[] = [];
   h.registerActivity('slow', async (_input, ctx) => {
     deadlines.push(ctx.deadline.getTime());
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await until(() => fake.of('heartbeat').length >= 3 && ctx.deadline.getTime() > deadlines[0]!, 'three heartbeats and the extended lease while the handler is active');
     deadlines.push(ctx.deadline.getTime());
     return { ok: true };
   });

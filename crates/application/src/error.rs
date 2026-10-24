@@ -57,6 +57,12 @@ pub enum Refusal {
 /// API clients.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StoreError {
+    #[error("database connection is unavailable or may not be used")]
+    DatabaseUnavailable,
+    #[error("database operation exceeds connection limits")]
+    DatabaseLimit,
+    #[error("conflict with the current state: {0}")]
+    StateConflict(&'static str),
     #[error("uniqueness conflict")]
     Conflict(ConflictKind),
     #[error("referenced row does not exist")]
@@ -214,6 +220,11 @@ impl From<IdentityError> for AppError {
 impl From<StoreError> for AppError {
     fn from(err: StoreError) -> Self {
         match err {
+            StoreError::DatabaseUnavailable => Self::NotFound,
+            StoreError::DatabaseLimit => {
+                Self::NotAllowed("database operation exceeds connection limits")
+            }
+            StoreError::StateConflict(reason) => Self::StateConflict(reason),
             StoreError::Conflict(kind) => Self::Conflict(kind),
             StoreError::MissingReference => Self::NotFound,
             StoreError::RevisionConflict { current } => Self::RevisionConflict { current },

@@ -8,6 +8,12 @@
 //! [`AppError::StaleAttempt`] and changes nothing, although the external effect it describes may
 //! have happened (hence idempotency keys).
 
+mod database;
+mod output;
+mod secrets;
+pub use output::BlobOutput;
+use secrets::SecretReport;
+
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,12 +22,12 @@ use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::execution::{
     self, ExecutionInstanceId, FailureCode, Fence, Progress, RunEvent, RunId, RunStatus, StepStatus,
 };
-use sagat_domain::identity::{NamespaceId, Permission, Principal, Slug, TenantId};
+use sagat_domain::identity::{NamespaceId, Permission, Principal, Role, Slug, TenantId};
 use sagat_domain::workflow::{ActivityName, NodeKind};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::blobs::{BlobAccess, BlobCommit, BlobScope, descriptor_json};
+use crate::blobs::{BlobAccess, BlobScope};
 use crate::clock::Clock;
 use crate::definitions::{DefinitionStore, Idempotency};
 use crate::entropy::{Entropy, Token};
@@ -35,23 +41,56 @@ use crate::quotas::QuotaLookup;
 use crate::runs::{Lock, RunStore, execution_error};
 use crate::secrets::{SecretProblem, SecretState, check_usable};
 use sagat_domain::binding::ActivityPattern;
-use sagat_domain::blobs::{BlobDescriptor, BlobId};
+use sagat_domain::blobs::BlobId;
 use sagat_domain::quota::QuotaResource;
-use sagat_domain::secrets::{SecretCipher, SecretName, SecretValue, associated_data};
+use sagat_domain::secrets::{SecretCipher, SecretName, SecretValue};
 
 /// The newest minor version of worker protocol 1 this server speaks. Every minor version adds fields
 /// and calls and removes none, so a worker of any minor version of protocol 1 can be served
-/// (`negotiate_protocol`).
-pub const PROTOCOL_MINOR: u32 = 5;
+/// (`negotiate_protocol`). 1.1 added the step identity to `Heartbeat`, 1.2 `task_kind` and
+/// `ResolveSecrets`; 1.3 streaming blobs; 1.4 bounded task streams; 1.5 scoped execution identity;
+/// 1.6 managed database capabilities (the combined protocol: a 1.6 session also speaks 1.5).
+pub const PROTOCOL_MINOR: u32 = 6;
 /// The newest minor a storage adapter may negotiate before it proves scoped claim and report.
 pub const ROOT_PROTOCOL_MINOR: u32 = 4;
 /// Scoped execution identity is allocated to worker protocol 1.5. A store must explicitly declare
 /// that its claim and report transactions address scoped instances before this minor is negotiated.
-pub const SCOPED_PROTOCOL_MINOR: u32 = PROTOCOL_MINOR;
+pub const SCOPED_PROTOCOL_MINOR: u32 = 5;
+/// Managed database capabilities first became available in protocol 1.6 (decision D600).
+pub const DATABASE_PROTOCOL_MINOR: u32 = 6;
+
+/// The newest minor this session may negotiate. Scoped identity (1.5) needs a store that proves the
+/// scoped claim and report path; the managed database minor (1.6) is a superset of 1.5 for ordinary
+/// workers, so it needs both proofs. The dedicated database runner only ever handles root work, so
+/// it reaches 1.6 on a store that proves the database path alone.
+fn protocol_ceiling(role: Role, scoped: bool, database: bool) -> u32 {
+    if database && (scoped || role == Role::DatabaseRunner) {
+        DATABASE_PROTOCOL_MINOR
+    } else if scoped {
+        SCOPED_PROTOCOL_MINOR
+    } else {
+        ROOT_PROTOCOL_MINOR
+    }
+}
 /// Streaming blob references first became safe to hand to workers in protocol 1.3.
 pub const BLOB_PROTOCOL_MINOR: u32 = 3;
 /// Server-streaming task receive first became available in protocol 1.4.
 pub const STREAM_PROTOCOL_MINOR: u32 = 4;
+
+/// Reserved managed activities require the dedicated machine identity and capability protocol.
+#[must_use]
+pub fn managed_capabilities_allowed(role: Role, activities: &[String], minor: u32) -> bool {
+    use sagat_domain::database::{MANAGED_DATABASE_ACTIVITY, MANAGED_DATABASE_PREFIX};
+    if role == Role::DatabaseRunner {
+        minor >= DATABASE_PROTOCOL_MINOR
+            && !activities.is_empty()
+            && activities.iter().all(|a| a == MANAGED_DATABASE_ACTIVITY)
+    } else {
+        activities
+            .iter()
+            .all(|a| !a.starts_with(MANAGED_DATABASE_PREFIX))
+    }
+}
 
 /// What registration says when it refuses the protocol version (a stable reason for SDKs).
 pub const UNSUPPORTED_PROTOCOL: &str = "unsupported protocol version";
@@ -180,6 +219,11 @@ pub trait WorkerStore: QuotaLookup + Send + Sync {
     /// Whether this adapter can claim and mutate a scoped execution instance transactionally.
     /// The default keeps scoped work unavailable until an adapter proves the full storage path.
     fn supports_scoped_worker_protocol(&self) -> bool {
+        false
+    }
+
+    /// Managed capabilities require an independently proven adapter boundary.
+    fn supports_database_worker_protocol(&self) -> bool {
         false
     }
 
@@ -427,7 +471,9 @@ pub struct WorkerService<S, C, E, R> {
     entropy: R,
     settings: WorkerSettings,
     /// Opens secrets for workers; `None` when the instance has no key ring (secrets are off).
-    vault: Option<Arc<dyn SecretCipher>>,
+    vault: Option<crate::secrets::SecretReader>,
+    database_credentials: Option<Arc<dyn crate::database::DatabaseCredentialsCodec>>,
+    database_results: Option<Arc<dyn crate::database::DatabaseResultValidator>>,
 }
 
 impl<S, C, E, R> std::fmt::Debug for WorkerService<S, C, E, R> {
@@ -457,13 +503,40 @@ where
             entropy,
             settings,
             vault: None,
+            database_credentials: None,
+            database_results: None,
         }
+    }
+
+    /// Both codecs are required before managed results can enter retention.
+    #[must_use]
+    pub fn with_database_content(
+        mut self,
+        credentials: Arc<dyn crate::database::DatabaseCredentialsCodec>,
+        results: Arc<dyn crate::database::DatabaseResultValidator>,
+    ) -> Self {
+        self.database_credentials = Some(credentials);
+        self.database_results = Some(results);
+        self
+    }
+
+    pub fn with_secret_provider(
+        mut self,
+        provider: Arc<dyn crate::secret_provider::SecretProvider>,
+    ) -> Self {
+        self.vault = Some(
+            self.vault
+                .take()
+                .unwrap_or_default()
+                .with_provider(provider),
+        );
+        self
     }
 
     /// Lets workers resolve the secrets their steps declare, opened with `cipher`.
     #[must_use]
     pub fn with_vault(mut self, cipher: Arc<dyn SecretCipher>) -> Self {
-        self.vault = Some(cipher);
+        self.vault = Some(self.vault.take().unwrap_or_default().with_cipher(cipher));
         self
     }
 
@@ -491,11 +564,11 @@ where
         capabilities: &Capabilities,
     ) -> Result<Registered, AppError> {
         principal.authorize(Permission::WorkerExecute)?;
-        let server_minor = if self.store.supports_scoped_worker_protocol() {
-            PROTOCOL_MINOR
-        } else {
-            ROOT_PROTOCOL_MINOR
-        };
+        let server_minor = protocol_ceiling(
+            principal.role(),
+            self.store.supports_scoped_worker_protocol(),
+            self.store.supports_database_worker_protocol(),
+        );
         let Some((accepted_protocol_version, accepted_protocol_minor)) =
             negotiate_protocol_details(&capabilities.protocol_version, server_minor)
         else {
@@ -514,6 +587,13 @@ where
             return Err(AppError::NotAllowed(
                 "an advertised activity name is invalid",
             ));
+        }
+        if !managed_capabilities_allowed(
+            principal.role(),
+            &capabilities.activities,
+            accepted_protocol_minor,
+        ) {
+            return Err(AppError::NotBound);
         }
         if !(1..=1000).contains(&capabilities.max_inflight) {
             return Err(AppError::NotAllowed(
@@ -872,6 +952,11 @@ where
                 })
                 .filter_map(|(instance, _)| {
                     let n = def.node_for_instance(instance)?;
+                    if n.database_operation().is_some()
+                        && session.accepted_protocol_minor < DATABASE_PROTOCOL_MINOR
+                    {
+                        return None;
+                    }
                     match n.kind() {
                         NodeKind::Activity { activity, .. }
                             if session.activities.iter().any(|a| a == activity.as_str()) =>
@@ -933,14 +1018,24 @@ where
             }
             // Measure the actual serialized context before granting any lease. Raw output sizes
             // do not bound it: JSON number normalization can expand a compact stored document.
-            let input = self
-                .engine
-                .evaluator()
-                .task_input_instance(tx.data().await?, &instance)
-                .map_err(|error| {
-                    tracing::error!(%error, instance = ?instance, "failed to materialize task input");
-                    AppError::Internal
-                })?;
+            let managed = tx
+                .parts()
+                .0
+                .node(instance.node())
+                .is_some_and(|n| n.database_operation().is_some());
+            // Managed runners only need the fenced capability. ResolveDatabase evaluates typed
+            // parameters server-side, so unrelated run payloads never cross this boundary.
+            let input = if managed {
+                b"{}".to_vec()
+            } else {
+                self.engine
+                    .evaluator()
+                    .task_input_instance(tx.data().await?, &instance)
+                    .map_err(|error| {
+                        tracing::error!(%error, instance = ?instance, "failed to materialize task input");
+                        AppError::Internal
+                    })?
+            };
             if input.len() > MAX_TASK_INPUT_BYTES {
                 match self
                     .reject_large_input(&mut tx, session, &instance, trace_id)
@@ -954,6 +1049,41 @@ where
                 // This task fits a fresh response. Leave it READY, without consuming an attempt,
                 // and return every lease already made in this transaction.
                 break;
+            }
+            if managed {
+                let admitted = tx.database_claim(instance.node(), &session.subject).await;
+                let denied = match admitted {
+                    Ok(true) => false,
+                    Ok(false)
+                    | Err(StoreError::DatabaseUnavailable | StoreError::DatabaseLimit) => true,
+                    Err(error) => return Err(error.into()),
+                };
+                if denied {
+                    metrics::counter!("database_claims_total", "outcome" => "refused").increment(1);
+                    let actor = Principal::new(
+                        session.tenant_id,
+                        sagat_domain::identity::Subject::parse(&session.subject)
+                            .map_err(|_| AppError::Internal)?,
+                        Role::DatabaseRunner,
+                    );
+                    let mut effects = Effects::by(
+                        Actor::Worker(session.subject.clone()),
+                        trace_id.map(str::to_owned),
+                    );
+                    effects.audit = Some(
+                        AuditRecord::by(
+                            &actor,
+                            AuditAction::DatabaseDenied,
+                            ResourceType::Run,
+                            run.to_string(),
+                            trace_id.map(str::to_owned),
+                            self.clock.now(),
+                        )
+                        .with_reason("managed database claim refused"),
+                    );
+                    tx.persist(&[], effects).await?;
+                    continue;
+                }
             }
             // The quota decision and READY -> LEASED transition share this run transaction. Its
             // activity-scoped lock makes concurrent pollers exact; a full activity stays ready so
@@ -1082,8 +1212,17 @@ where
         trace_id: Option<&str>,
     ) -> Result<ClaimedTask, AppError> {
         let token = Token::from_bytes(self.entropy.token()).ok_or(AppError::Internal)?;
+        let managed = tx
+            .parts()
+            .0
+            .node(instance.node())
+            .is_some_and(|node| node.database_operation().is_some());
         let mut effects = Effects::by(
-            Actor::Worker(session.id.to_string()),
+            Actor::Worker(if managed {
+                session.subject.clone()
+            } else {
+                session.id.to_string()
+            }),
             trace_id.map(str::to_owned),
         );
         effects.lease = Some(LeaseGrant {
@@ -1159,7 +1298,7 @@ where
         };
         // Borrowed, not cloned: a run's data can be megabytes and a poll leases many steps of it.
         let data = tx.data().await?;
-        let input_blob = data.input_blob;
+        let input_blob = if managed { None } else { data.input_blob };
         // The key of the forward step: what identifies the effect at the provider.
         let forward_node = forward.as_ref().unwrap_or(instance.node());
         let forward_key = match template {
@@ -1309,54 +1448,6 @@ where
         })
     }
 
-    /// Records a successful attempt. A repeat with the same `idempotency_key` returns the original
-    /// outcome with `already_applied` set, even if the run has moved on.
-    ///
-    /// # Errors
-    /// [`AppError::StaleAttempt`] when the caller no longer holds the lease;
-    /// [`AppError::NotAllowed`] for an invalid output;
-    /// [`AppError::IdempotencyKeyReused`] when the key was used for a different report.
-    pub async fn complete(
-        &self,
-        principal: &Principal,
-        task: &TaskRef<'_>,
-        output: &[u8],
-        idempotency_key: &str,
-    ) -> Result<StepAck, AppError> {
-        self.complete_inner(principal, task, output, None, None, idempotency_key)
-            .await
-    }
-
-    /// Records a successful attempt whose output is too large to travel: the worker uploaded it as a
-    /// blob, and what the run keeps as the step's output is the small descriptor of that blob
-    /// (FR-002-008). The blob is committed in the same transaction as the step, so it is used exactly
-    /// once and cannot be swept from under the record that refers to it.
-    ///
-    /// # Errors
-    /// As [`Self::complete`]; [`AppError::NotFound`] when the blob is not an uploaded, unused blob of
-    /// this tenant with exactly the size and digest of `blob`.
-    pub async fn complete_with_blob(
-        &self,
-        principal: &Principal,
-        task: &TaskRef<'_>,
-        blob: &BlobDescriptor,
-        expected_digest: &str,
-        idempotency_key: &str,
-    ) -> Result<StepAck, AppError> {
-        self.complete_inner(
-            principal,
-            task,
-            &descriptor_json(blob),
-            Some(BlobCommit::new(
-                self.blob_report_scope(principal, task).await?,
-                blob,
-            )),
-            Some(blob_report_identity(blob.id(), expected_digest)),
-            idempotency_key,
-        )
-        .await
-    }
-
     /// Replays a blob report using its stable request identity before accessing object storage.
     ///
     /// # Errors
@@ -1371,16 +1462,25 @@ where
     ) -> Result<Option<StepAck>, AppError> {
         principal.authorize(Permission::WorkerExecute)?;
         let mut tx = self.open(principal, task, Lock::Wait).await?;
-        self.ensure_bound(principal, &mut tx, task).await?;
         if task
             .step_id
             .is_some_and(|claimed| claimed != Self::scope_of(&tx, task).step_id)
         {
             return Err(AppError::StaleAttempt);
         }
+        if !Self::managed_database(&mut tx, task) {
+            self.ensure_bound(principal, &mut tx, task).await?;
+        }
         let identity = blob_report_identity(blob_id, expected_digest);
         let idempotency = completion_idempotency(task, key, &identity, true);
-        self.replayed(&mut tx, task, &idempotency).await
+        if let Some(ack) = self
+            .replayed(principal, &mut tx, task, &idempotency)
+            .await?
+        {
+            return Ok(Some(ack));
+        }
+        self.ensure_bound(principal, &mut tx, task).await?;
+        Ok(None)
     }
 
     /// Whether `task` is an attempt that may still act: its lease is current and unexpired and the
@@ -1447,6 +1547,13 @@ where
             if step.attempt() != task.fence.attempt || step.generation() != task.fence.generation {
                 return Err(AppError::StaleAttempt);
             }
+        }
+        if Self::managed_database(&mut tx, task) {
+            return Err(AppError::NotAllowed(if writing {
+                "managed database results require content scanning"
+            } else {
+                "managed database inputs are resolved through the capability"
+            }));
         }
         if writing && !Self::declared_secrets(&mut tx, task).is_empty() {
             return Err(AppError::NotAllowed(
@@ -1577,317 +1684,6 @@ where
         }
     }
 
-    async fn complete_inner(
-        &self,
-        principal: &Principal,
-        task: &TaskRef<'_>,
-        output: &[u8],
-        blob: Option<BlobCommit>,
-        blob_identity: Option<Vec<u8>>,
-        idempotency_key: &str,
-    ) -> Result<StepAck, AppError> {
-        principal.authorize(Permission::WorkerExecute)?;
-        if output.len() > MAX_PAYLOAD_BYTES || !self.engine.evaluator().is_json(output) {
-            return Err(AppError::NotAllowed(
-                "a step output must be JSON of at most 256 KiB",
-            ));
-        }
-        let idempotency = completion_idempotency(
-            task,
-            idempotency_key,
-            blob_identity.as_deref().unwrap_or(output),
-            blob.is_some(),
-        );
-        let mut tx = self.open(principal, task, Lock::Wait).await?;
-        if let Some(ack) = self.replayed(&mut tx, task, &idempotency).await? {
-            return Ok(ack);
-        }
-        self.verify(&mut tx, task).await?;
-        self.ensure_bound(principal, &mut tx, task).await?;
-        if blob.is_some() {
-            if !task.instance.path().is_root() {
-                return Err(AppError::NotAllowed(
-                    "blob output for a scoped task is not enabled",
-                ));
-            }
-            if task.instance.node().is_reconciliation() || task.instance.node().is_compensation() {
-                return Err(AppError::NotAllowed(
-                    "blob output requires a forward activity",
-                ));
-            }
-            if !Self::declared_secrets(&mut tx, task).is_empty() {
-                return Err(AppError::NotAllowed(
-                    "blob outputs with declared secrets require content scanning",
-                ));
-            }
-            if !tx
-                .lease_unexpired_instance(task.instance, &Token::hash_of(task.lease_token))
-                .await?
-            {
-                return Err(AppError::StaleAttempt);
-            }
-        }
-        let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
-        effects.reported = Some(reported_lease(task));
-        // A secret the step was given must not come back in its output, where it would be stored in
-        // the journal and handed to every later step: the step fails for good instead.
-        if let Some(name) = self.secret_in_output(&mut tx, task, output).await? {
-            // A detection, counted when found: should the commit below fail the retry finds it again.
-            metrics::counter!("secret_output_detected_total").increment(1);
-            effects.audit = Some(self.leak_audit(principal, &tx, task, &name, "output"));
-            let fallback_audit = effects.audit.clone();
-            let completed = self
-                .apply_scoped_or_root_failure(
-                    &mut tx,
-                    task,
-                    effects,
-                    execution::Failure {
-                        fence: task.fence,
-                        code: FailureCode::secret_in_output(),
-                        retryable: false,
-                        jitter_sample: 0.0,
-                    },
-                )
-                .await;
-            let result = match completed {
-                Ok(()) => self.finish(tx, task, idempotency.clone()).await,
-                Err(error) => {
-                    drop(tx);
-                    Err(error)
-                }
-            };
-            return self
-                .recover_success_storage_quota(principal, task, idempotency, fallback_audit, result)
-                .await;
-        }
-        // A reconciliation does not produce the output of a step, it says whether the step happened.
-        if task.instance.node().is_reconciliation() {
-            let result = self
-                .complete_reconciliation(tx, task, output, effects, idempotency.clone())
-                .await;
-            return self
-                .recover_success_storage_quota(principal, task, idempotency, None, result)
-                .await;
-        }
-        // What a compensation answers is not kept: nothing reads it (a later step reads the output
-        // of the step it follows, not of the one that undid it), so it must not count against the
-        // run's budget either, or an undo that worked would be recorded as a failure because the
-        // forward steps had filled it.
-        if task.instance.node().is_compensation() {
-            let node = task.instance.node().clone();
-            let fence = task.fence;
-            let completed = if task.instance.path().is_root() {
-                self.engine
-                    .run(&mut tx, effects, move |def, state, now| {
-                        let progress = execution::complete_step(def, state, &node, fence, now)?;
-                        Ok(((), progress))
-                    })
-                    .await
-                    .map_err(engine_error)
-            } else {
-                self.apply_scoped_or_root_completion(&mut tx, task, effects, None)
-                    .await
-            };
-            let result = match completed {
-                Ok(()) => self.finish(tx, task, idempotency.clone()).await,
-                Err(error) => {
-                    drop(tx);
-                    Err(error)
-                }
-            };
-            return self
-                .recover_success_storage_quota(principal, task, idempotency, None, result)
-                .await;
-        }
-        // Every lease receives the outputs of the steps before it, so what a run retains is bounded:
-        // a completion that would exceed it fails the step (a retry would only exceed it again).
-        let retained: usize = tx.data().await?.outputs.values().map(Vec::len).sum();
-        if retained + output.len() > MAX_RUN_OUTPUT_BYTES {
-            let completed = self
-                .apply_scoped_or_root_failure(
-                    &mut tx,
-                    task,
-                    effects,
-                    execution::Failure {
-                        fence: task.fence,
-                        code: FailureCode::run_data_limit(),
-                        retryable: false,
-                        jitter_sample: 0.0,
-                    },
-                )
-                .await;
-            let result = match completed {
-                Ok(()) => self.finish(tx, task, idempotency.clone()).await,
-                Err(error) => {
-                    drop(tx);
-                    Err(error)
-                }
-            };
-            return self
-                .recover_success_storage_quota(principal, task, idempotency, None, result)
-                .await;
-        }
-        effects.blobs = blob.into_iter().collect();
-        let completed = self
-            .apply_scoped_or_root_completion(&mut tx, task, effects, Some(output.to_vec()))
-            .await;
-        let result = match completed {
-            Ok(()) => self.finish(tx, task, idempotency.clone()).await,
-            Err(error) => {
-                drop(tx);
-                Err(error)
-            }
-        };
-        self.recover_success_storage_quota(principal, task, idempotency, None, result)
-            .await
-    }
-
-    async fn recover_success_storage_quota(
-        &self,
-        principal: &Principal,
-        task: &TaskRef<'_>,
-        idempotency: Idempotency,
-        audit: Option<AuditRecord>,
-        result: Result<StepAck, AppError>,
-    ) -> Result<StepAck, AppError> {
-        match result {
-            Err(AppError::QuotaExceeded(what))
-                if what == QuotaResource::TenantContentBytes.limit_name() =>
-            {
-                metrics::counter!("quota_exceeded_total", "limit" => what).increment(1);
-                self.fail_success_for_storage_quota(principal, task, idempotency, audit)
-                    .await
-            }
-            other => other,
-        }
-    }
-
-    /// The success transaction was rolled back in full because its retained data did not fit.
-    /// Reopen the same fenced attempt, replay the original completion identity first, and commit a
-    /// terminal storage failure under that identity. Stopping before settling the step prevents an
-    /// `onError` route from allocating more retained data while preserving saga drain semantics.
-    async fn fail_success_for_storage_quota(
-        &self,
-        principal: &Principal,
-        task: &TaskRef<'_>,
-        idempotency: Idempotency,
-        audit: Option<AuditRecord>,
-    ) -> Result<StepAck, AppError> {
-        let mut tx = self.open(principal, task, Lock::Wait).await?;
-        if let Some(ack) = self.replayed(&mut tx, task, &idempotency).await? {
-            return Ok(ack);
-        }
-        self.verify(&mut tx, task).await?;
-        self.ensure_bound(principal, &mut tx, task).await?;
-        let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
-        effects.reported = Some(reported_lease(task));
-        effects.audit = audit;
-        if task.instance.path().is_root() {
-            let node = task.instance.node().clone();
-            let fence = task.fence;
-            self.engine
-                .run(&mut tx, effects, move |def, state, now| {
-                    let progress =
-                        execution::fail_step_for_storage_quota(def, state, &node, fence, now)?;
-                    Ok(((), progress))
-                })
-                .await
-                .map_err(engine_error)?;
-        } else {
-            self.apply_scoped_or_root_failure(
-                &mut tx,
-                task,
-                effects,
-                execution::Failure {
-                    fence: task.fence,
-                    code: FailureCode::storage_quota_exceeded(),
-                    retryable: false,
-                    jitter_sample: 0.0,
-                },
-            )
-            .await?;
-        }
-        self.finish(tx, task, idempotency).await
-    }
-
-    /// The answer of a reconciliation (`x~r`) to the question whether step `x` happened. An answer
-    /// that is not one, or that would make the run retain too much, fails the reconciliation for
-    /// good: asking the same lookup again would get the same answer.
-    async fn complete_reconciliation(
-        &self,
-        mut tx: S::Tx,
-        task: &TaskRef<'_>,
-        output: &[u8],
-        mut effects: Effects,
-        idempotency: Idempotency,
-    ) -> Result<StepAck, AppError> {
-        let forward = task.instance.node().forward().ok_or(AppError::Internal)?;
-        let rejected = match self.engine.evaluator().reconcile_answer(output) {
-            Err(failure) => {
-                tracing::warn!(error = %failure, node = %task.instance.node(), "a reconciliation answered nonsense");
-                Some(FailureCode::reconciliation_answer_invalid())
-            }
-            Ok(answer) => {
-                let substitute = (answer.verdict == sagat_domain::saga::ReconcileVerdict::Applied)
-                    .then(|| answer.output.clone().unwrap_or_else(|| b"{}".to_vec()));
-                let retained: usize = tx.data().await?.outputs.values().map(Vec::len).sum();
-                if substitute
-                    .as_ref()
-                    .is_some_and(|bytes| retained + bytes.len() > MAX_RUN_OUTPUT_BYTES)
-                {
-                    Some(FailureCode::run_data_limit())
-                } else {
-                    let (node, fence, verdict) =
-                        (task.instance.node().clone(), task.fence, answer.verdict);
-                    let jitter = self.entropy.unit();
-                    if task.instance.path().is_root() {
-                        // The forward step succeeded after all: later steps read the output it
-                        // would have had.
-                        if let Some(bytes) = substitute {
-                            effects.outputs = vec![(forward.clone(), bytes)];
-                        }
-                        self.engine
-                            .run(&mut tx, effects, move |def, state, now| {
-                                let progress = execution::complete_reconciliation(
-                                    def, state, &node, fence, verdict, jitter, now,
-                                )?;
-                                Ok(((), progress))
-                            })
-                            .await
-                            .map_err(engine_error)?;
-                    } else {
-                        let instance = task.instance.clone();
-                        let forward_instance =
-                            ExecutionInstanceId::in_path(instance.path().clone(), forward.clone());
-                        let outputs = substitute
-                            .map(|bytes| vec![(forward_instance, bytes)])
-                            .unwrap_or_default();
-                        self.engine
-                            .run_addressed(&mut tx, outputs, effects, move |def, state, now| {
-                                let progress = execution::complete_reconciliation_instance(
-                                    def, state, &instance, fence, verdict, jitter, now,
-                                )?;
-                                Ok(((), progress))
-                            })
-                            .await
-                            .map_err(engine_error)?;
-                    }
-                    return self.finish(tx, task, idempotency).await;
-                }
-            }
-        };
-        let code = rejected.ok_or(AppError::Internal)?;
-        let failure = execution::Failure {
-            fence: task.fence,
-            code,
-            retryable: false,
-            jitter_sample: 0.0,
-        };
-        self.apply_scoped_or_root_failure(&mut tx, task, effects, failure)
-            .await?;
-        self.finish(tx, task, idempotency).await
-    }
-
     /// Records a failed attempt; the engine retries it, routes it, or fails the run.
     ///
     /// # Errors
@@ -1915,21 +1711,40 @@ where
             ]),
         };
         let mut tx = self.open(principal, task, Lock::Wait).await?;
-        if let Some(ack) = self.replayed(&mut tx, task, &idempotency).await? {
+        if let Some(ack) = self
+            .replayed(principal, &mut tx, task, &idempotency)
+            .await?
+        {
             return Ok(ack);
         }
         self.verify(&mut tx, task).await?;
         self.ensure_bound(principal, &mut tx, task).await?;
+        // Only closed managed failures may enter the payload-free journal.
+        // safe_message is discarded by the transport; an arbitrary error_code is content too.
+        if Self::managed_database(&mut tx, task)
+            && sagat_domain::database::DatabaseFailure::parse(error_code).is_none()
+        {
+            return Err(AppError::NotAllowed(
+                "managed database failures require a fixed code",
+            ));
+        }
         let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
         effects.reported = Some(reported_lease(task));
         // The code is stored in the journal and shown to everyone who reads the run, and a
         // credential fits the characters and the length it may have (`[A-Za-z0-9_.:-]`, 64): a
         // worker that reports its own secret as the reason it failed fails for good instead.
         let mut retryable = retryable;
-        if let Some(name) = self
-            .secret_in_output(&mut tx, task, error_code.as_bytes())
+        let leaked = match self
+            .checked_secret_report(principal, task, tx, &idempotency, error_code.as_bytes())
             .await?
         {
+            SecretReport::Ready(current, leaked) => {
+                tx = current;
+                leaked
+            }
+            SecretReport::Replayed(ack) => return Ok(ack),
+        };
+        if let Some(name) = leaked {
             metrics::counter!("secret_output_detected_total").increment(1);
             effects.audit = Some(self.leak_audit(principal, &tx, task, &name, "failure code"));
             code = FailureCode::secret_in_output();
@@ -1999,7 +1814,10 @@ where
         audit: Option<AuditRecord>,
     ) -> Result<StepAck, AppError> {
         let mut tx = self.open(principal, task, Lock::Wait).await?;
-        if let Some(ack) = self.replayed(&mut tx, task, &idempotency).await? {
+        if let Some(ack) = self
+            .replayed(principal, &mut tx, task, &idempotency)
+            .await?
+        {
             return Ok(ack);
         }
         self.verify(&mut tx, task).await?;
@@ -2104,14 +1922,44 @@ where
     /// worker that merely knows a run id, a node and a guessable key.
     async fn replayed(
         &self,
+        principal: &Principal,
         tx: &mut S::Tx,
         task: &TaskRef<'_>,
         idempotency: &Idempotency,
     ) -> Result<Option<StepAck>, AppError> {
-        Ok(tx
-            .replay(idempotency)
-            .await?
-            .map(|stored| parse_ack(&stored, true, task.run_id)))
+        let Some(stored) = tx.replay(idempotency).await? else {
+            return Ok(None);
+        };
+        if Self::managed_database(tx, task) {
+            principal.authorize(Permission::DatabaseExecute)?;
+            if !tx
+                .database_report_owns(
+                    task.instance.node(),
+                    task.fence,
+                    principal.subject().as_str(),
+                )
+                .await?
+            {
+                return Err(AppError::NotBound);
+            }
+            self.ensure_activity_bound(principal, tx, task).await?;
+        }
+        Ok(Some(parse_ack(&stored, true, task.run_id)))
+    }
+
+    fn managed_database<Tx: RunTx>(tx: &mut Tx, task: &TaskRef<'_>) -> bool {
+        tx.parts()
+            .0
+            .node(task.instance.node())
+            .is_some_and(|n| n.database_operation().is_some())
+    }
+
+    fn database_write<Tx: RunTx>(tx: &mut Tx, task: &TaskRef<'_>) -> bool {
+        tx.parts()
+            .0
+            .node(task.instance.node())
+            .and_then(sagat_domain::workflow::Node::database_operation)
+            .is_some_and(|op| op.kind == sagat_domain::database::OperationKind::Execute)
     }
 
     /// The secrets the step declares, from its definition.
@@ -2166,223 +2014,31 @@ where
         effects
     }
 
-    /// Hands a worker the values of the secrets its step declares, for the length of the attempt it
-    /// holds the lease of (FR-009-002, US02).
-    ///
-    /// The lease is the temporary capability: it must be current, the identity still bound to the
-    /// activity, and the *publisher* of the workflow version must still be allowed to use every
-    /// secret, now and not only when they published (an access list that changed is honoured by the
-    /// next resolution). All or nothing: one unusable secret and the worker gets none. The
-    /// resolution is audited in the same transaction that read the values, with names and never
-    /// values, so a value cannot be handed out without a record.
-    ///
-    /// # Errors
-    /// [`AppError::StaleAttempt`], [`AppError::NotBound`], [`AppError::SecretUnavailable`] (a secret
-    /// is gone or its publisher may no longer use it; audited), [`AppError::NotAllowed`] when this
-    /// instance has no key ring.
-    pub async fn resolve_secrets(
-        &self,
-        principal: &Principal,
-        task: &TaskRef<'_>,
-        trace_id: Option<&str>,
-    ) -> Result<Vec<ResolvedSecret>, AppError> {
-        principal.authorize(Permission::WorkerExecute)?;
-        let Some(cipher) = &self.vault else {
-            return Err(AppError::NotAllowed(
-                "secrets are not configured on this instance",
-            ));
-        };
-        let mut tx = self.open(principal, task, Lock::Wait).await?;
-        self.verify(&mut tx, task).await?;
-        self.ensure_bound(principal, &mut tx, task).await?;
-        // The capability ends when the lease does, not when the scheduler gets round to reclaiming
-        // the attempt: a worker that stopped renewing no longer gets to read secrets.
-        if !tx
-            .lease_unexpired_instance(task.instance, &Token::hash_of(task.lease_token))
-            .await?
-        {
-            return Err(AppError::StaleAttempt);
-        }
-        let names = Self::declared_secrets(&mut tx, task);
-        if names.is_empty() {
-            return Ok(Vec::new());
-        }
-        // The pools are judged again here, on the grants of this moment: a lease handed out before a
-        // secret was restricted, or before the worker's grant was taken away, does not carry the
-        // value (G48).
-        if let Some(withheld) = tx
-            .secret_pool_refusal(&names, principal.subject().as_str(), PoolCheck::Delivery)
-            .await?
-        {
-            let effects = self.pool_refusal_effects(
-                principal,
-                &tx,
-                task.instance.node(),
-                task.fence.attempt,
-                &withheld,
-                "resolve",
-                trace_id,
-            );
-            tx.persist(&[], effects).await?;
-            tx.commit().await?;
-            metrics::counter!("secret_delivery_refused_total", "stage" => "resolve").increment(1);
-            return Err(AppError::SecretUnavailable {
-                name: withheld.to_string(),
-            });
-        }
-        let info = tx.info().clone();
-        let inputs = tx.secret_inputs(&names).await?;
-        let states: Vec<_> = inputs
-            .items
-            .iter()
-            .map(|item| {
-                let state = if item.stored.is_some() {
-                    SecretState::Present {
-                        granted: item.granted,
-                    }
-                } else {
-                    SecretState::Missing
-                };
-                (item.name.clone(), state)
-            })
-            .collect();
-        let audit = |action, reason: String| {
-            let mut effects = Effects::by(
-                Actor::Worker(principal.subject().as_str().to_owned()),
-                trace_id.map(str::to_owned),
-            );
-            effects.audit = Some(
-                AuditRecord::by(
-                    principal,
-                    action,
-                    ResourceType::Secret,
-                    format!("{}/run {}", info.namespace_id, info.run_id),
-                    trace_id.map(str::to_owned),
-                    self.clock.now(),
-                )
-                .with_reason(reason),
-            );
-            effects
-        };
-        if let Err(SecretProblem(name)) = check_usable(inputs.publisher_role, &states) {
-            // The denial is written and committed: it is the trail of why a worker got nothing.
-            let effects = audit(
-                AuditAction::SecretDenied,
-                format!(
-                    "node {} attempt {}: {name} not usable by its publisher",
-                    task.instance.node(),
-                    task.fence.attempt
-                ),
-            );
-            tx.persist(&[], effects).await?;
-            tx.commit().await?;
-            metrics::counter!("secret_resolution_denied_total").increment(1);
-            return Err(AppError::SecretUnavailable {
-                name: name.to_string(),
-            });
-        }
-        let mut resolved = Vec::with_capacity(names.len());
-        for name in &names {
-            let stored = inputs
-                .items
-                .iter()
-                .find(|item| &item.name == name)
-                .and_then(|item| item.stored.as_ref())
-                .ok_or(AppError::Internal)?;
-            let aad = associated_data(
-                info.tenant_id,
-                info.namespace_id,
-                name,
-                stored.meta.id,
-                &stored.sealed.key_id,
-            );
-            let value = cipher.open(&stored.sealed, &aad).map_err(|_| {
-                tracing::error!(secret = %name, key = %stored.sealed.key_id, "a stored secret cannot be opened");
-                AppError::Internal
-            })?;
-            resolved.push(ResolvedSecret {
-                name: name.clone(),
-                version: stored.meta.version,
-                value,
-            });
-        }
-        let listed = resolved
-            .iter()
-            .map(|r| format!("{} v{}", r.name, r.version))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let effects = audit(
-            AuditAction::SecretResolved,
-            format!(
-                "node {} attempt {}: {listed}",
-                task.instance.node(),
-                task.fence.attempt
-            ),
-        );
-        tx.persist(&[], effects).await?;
-        tx.commit().await?;
-        metrics::counter!("secrets_handed_out_total").increment(resolved.len() as u64);
-        Ok(resolved)
-    }
-
-    /// The name of a secret the step declares whose value appears in `output`, if one does. Only
-    /// steps that declare secrets pay for the check, and only values of at least eight bytes are
-    /// looked for (a shorter one would match ordinary text); a value that is not UTF-8 is not
-    /// looked for either. Both the value and its JSON-escaped form are searched, for every version
-    /// of the secret that is still stored: a value handed out earlier in the attempt may have been
-    /// replaced since.
-    async fn secret_in_output<Tx: RunTx>(
-        &self,
-        tx: &mut Tx,
-        task: &TaskRef<'_>,
-        output: &[u8],
-    ) -> Result<Option<SecretName>, AppError> {
-        let Some(cipher) = &self.vault else {
-            return Ok(None);
-        };
-        let names = Self::declared_secrets(tx, task);
-        if names.is_empty() {
-            return Ok(None);
-        }
-        let (tenant, namespace) = {
-            let info = tx.info();
-            (info.tenant_id, info.namespace_id)
-        };
-        let versions = tx.secret_versions(&names).await?;
-        let Ok(text) = std::str::from_utf8(output) else {
-            return Ok(None);
-        };
-        for stored in &versions {
-            let aad = associated_data(
-                tenant,
-                namespace,
-                &stored.meta.name,
-                stored.meta.id,
-                &stored.sealed.key_id,
-            );
-            let Ok(value) = cipher.open(&stored.sealed, &aad) else {
-                continue;
-            };
-            if value.len() < MIN_SCANNED_SECRET_BYTES {
-                continue;
-            }
-            let Ok(plain) = std::str::from_utf8(value.expose()) else {
-                continue;
-            };
-            if text.contains(plain)
-                || text.contains(&json_escaped(plain, false))
-                || text.contains(&json_escaped(plain, true))
-            {
-                return Ok(Some(stored.meta.name.clone()));
-            }
-        }
-        Ok(None)
-    }
-
     /// The caller must still be bound to the activity of the step it reports on. Evaluated at use,
     /// not only at registration: a binding that is removed stops a worker that already holds a
     /// lease from renewing it or reporting on it, with no session to wait for to expire.
     async fn ensure_bound<Tx: RunTx>(
+        &self,
+        principal: &Principal,
+        tx: &mut Tx,
+        task: &TaskRef<'_>,
+    ) -> Result<(), AppError> {
+        let managed = tx
+            .parts()
+            .0
+            .node(task.instance.node())
+            .is_some_and(|n| n.database_operation().is_some());
+        if managed
+            && !tx
+                .database_executor_owns(task.instance.node(), principal.subject().as_str())
+                .await?
+        {
+            return Err(AppError::NotBound);
+        }
+        self.ensure_activity_bound(principal, tx, task).await
+    }
+
+    async fn ensure_activity_bound<Tx: RunTx>(
         &self,
         principal: &Principal,
         tx: &mut Tx,
@@ -2430,6 +2086,32 @@ where
     }
 
     /// The presented token must be the one hashed into the step's current lease.
+    async fn live_capability_fence<Tx: RunTx>(
+        &self,
+        principal: &Principal,
+        tx: &mut Tx,
+        task: &TaskRef<'_>,
+    ) -> Result<(), AppError> {
+        self.verify(tx, task).await?;
+        self.ensure_bound(principal, tx, task).await?;
+        let legacy_attempt = task.fence.attempt == 0 && !Self::managed_database(tx, task);
+        let valid_step = tx.parts().1.instance(task.instance).is_some_and(|s| {
+            (legacy_attempt || s.attempt() == task.fence.attempt)
+                && s.generation() == task.fence.generation
+                && !s.cancel_requested()
+        }) && (tx.parts().1.stop_reason().is_none()
+            || task.instance.node().is_derived())
+            && !tx.parts().1.is_finished();
+        if !valid_step
+            || !tx
+                .lease_unexpired_instance(task.instance, &Token::hash_of(task.lease_token))
+                .await?
+        {
+            return Err(AppError::StaleAttempt);
+        }
+        Ok(())
+    }
+
     async fn verify<Tx: RunTx>(&self, tx: &mut Tx, task: &TaskRef<'_>) -> Result<(), AppError> {
         // A step id that does not belong to this run and node is a misdirected report.
         if let Some(claimed) = task.step_id {

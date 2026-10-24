@@ -461,6 +461,7 @@ paths:
         - {$ref: '#/components/parameters/Cursor'}
         - {$ref: '#/components/parameters/Limit'}
         - {name: workflowId, in: query, schema: {type: string}}
+        - {name: origin, in: query, schema: {$ref: '#/components/schemas/DatabaseExecutionOrigin'}}
         - {name: status, in: query, schema: {type: string, enum: [RUNNING, WAITING, PAUSED, CANCELLING, COMPENSATING, MANUAL_REVIEW, SUCCEEDED, FAILED, CANCELLED, TIMED_OUT, COMPENSATED, PARTIAL, COMPENSATION_FAILED]}}
       responses:
         '200': {description: 'Page of runs', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RunPage'}}}}
@@ -596,6 +597,41 @@ paths:
         '409': {$ref: '#/components/responses/Conflict'}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
         '422': {$ref: '#/components/responses/ValidationError'}
+  /namespaces/{namespaceId}/runs/{runId}/database-results/{nodeId}:
+    get:
+      operationId: readDatabaseResult
+      summary: Read one retained database step result after authorization and audit
+      tags: [Connections]
+      x-implemented: '017'
+      description: |
+        Requires `run:read` and `database:result:read` (Admin by default). The namespace,
+        run and node must identify a succeeded managed database step. Ordinary run inspection
+        remains structural. No digest, blob ID, query override or bulk selector is accepted.
+        Returns the validated complete typed result, limited to 4 MiB and 10000 rows.
+        Current membership is checked before object I/O and again in the audit transaction.
+        The audit commits before response bytes; failed audit, lost/corrupt content and
+        revoked access disclose no result. Reads work independently of OpenBao availability.
+        Namespace admission is charged once after scope/permission checks. The read and
+        response delivery deadline is the minimum of 30s, configured transfer duration and
+        the bearer lifetime. Responses have Cache-Control: private, no-store and nosniff.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/RunId'}
+        - {name: nodeId, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 64}}
+      responses:
+        '200':
+          description: One complete audited database result
+          headers:
+            X-Trace-Id: {$ref: '#/components/headers/TraceId'}
+            X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}
+            Cache-Control: {schema: {type: string, const: 'private, no-store'}}
+            X-Content-Type-Options: {schema: {type: string, const: nosniff}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DatabaseResult'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
@@ -1337,6 +1373,187 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/database-executions:
+    post:
+      operationId: startDatabaseExecution
+      summary: Retain and execute an ad hoc database step or workflow
+      description: Requires current run:start, database:adhoc, database:use, secret ACL and database:write for writes. Definition, pins and run admission commit together. Identical requests replay with current authorization. SQL executes in the managed runner. Private definitions consume workflow and retained-content quotas.
+      tags: [Runs]
+      x-implemented: '017'
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/StartDatabaseExecutionRequest'}}}
+      responses:
+        '201': {description: 'Durable managed execution', headers: {Cache-Control: {schema: {type: string, const: 'private, no-store'}}, X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/connections/{connectionName}/probe:
+    parameters:
+      - {$ref: '#/components/parameters/NamespaceId'}
+      - {name: connectionName, in: path, required: true, schema: {type: string, minLength: 3, maxLength: 63, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}}
+    post:
+      operationId: probeDatabaseConnection
+      summary: Admit a fixed SELECT 1 probe in the managed runner
+      description: Uses current ad hoc permissions and secret ACL. A paused connection is refused. Only durable SUCCEEDED is evidence of connectivity, for the run's pinned revision. SQL and parameters cannot be supplied.
+      tags: [Runs]
+      x-implemented: '017'
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/ProbeDatabaseConnectionRequest'}}}
+      responses:
+        '201': {description: 'Durable fixed probe', headers: {Cache-Control: {schema: {type: string, const: 'private, no-store'}}, X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    get:
+      operationId: latestDatabaseConnectionProbe
+      summary: Read the latest durable connection probe metadata
+      description: Requires namespace:read and run:read. Includes the tested revision, timestamps, durable run status and a closed failure code. Returns null when none exists. Never returns SQL, results or credentials.
+      tags: [Runs]
+      x-implemented: '017'
+      responses:
+        '200': {description: 'Latest probe or null', headers: {Cache-Control: {schema: {type: string, const: 'private, no-store'}}, X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {oneOf: [{$ref: '#/components/schemas/DatabaseConnectionProbe'}, {type: 'null'}]}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/database-drivers:
+    parameters:
+      - $ref: '#/components/parameters/NamespaceId'
+    get:
+      operationId: listDatabaseDrivers
+      tags: [Governance]
+      x-implemented: '017'
+      summary: List implemented database drivers and supported operation types
+      description: |
+        Requires namespace:read. Advertises server capabilities, not target connectivity or
+        available runner capacity. PostgreSQL is the only implemented driver. Current namespace
+        and operator quotas can narrow the advertised hard maxima; a saved connection needs a probe.
+      responses:
+        '200':
+          description: Implemented drivers
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DatabaseDriverList'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /namespaces/{namespaceId}/connections:
+    get:
+      operationId: listDatabaseConnections
+      summary: List current connection metadata in the namespace
+      tags: [Governance]
+      x-implemented: '017'
+      description: Requires namespace:read. Values and provider routing are never returned. Deleted connections are omitted. Saving does not prove connectivity.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      responses:
+        '200': {description: 'Connection metadata', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/DatabaseConnectionList'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/connections/{connectionName}:
+    get:
+      operationId: getDatabaseConnection
+      summary: Read connection settings at a revision
+      tags: [Governance]
+      x-implemented: '017'
+      description: Requires namespace:read. The status always reflects current authority, including when selecting an older immutable revision.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {name: connectionName, in: path, required: true, schema: {type: string, minLength: 3, maxLength: 63, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}}
+        - {name: revision, in: query, schema: {type: integer, minimum: 1, maximum: 2147483646}}
+      responses:
+        '200': {description: 'Connection metadata', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/DatabaseConnection'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    put:
+      operationId: putDatabaseConnection
+      summary: Create or revise a PostgreSQL connection
+      tags: [Governance]
+      x-implemented: '017'
+      description: Requires current database:manage and a namespace OpenBao secret. expectedRevision zero creates. Retries retain requestId; changed content conflicts. Every update or pause creates an immutable revision. Current settings and audit commit together. A legacy secret requires explicit migration. Saving performs no SQL or probe.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {name: connectionName, in: path, required: true, schema: {type: string, minLength: 3, maxLength: 63, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PutDatabaseConnectionRequest'}
+      responses:
+        '200': {description: 'Connection metadata', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/DatabaseConnection'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: deleteDatabaseConnection
+      summary: Tombstone a connection and retain its revisions
+      tags: [Governance]
+      x-implemented: '017'
+      description: Requires current database:manage and optimistic revision. Subsequent execution must reject the tombstone. Retained revisions remain for run history. Repetition after deletion returns not found.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {name: connectionName, in: path, required: true, schema: {type: string, minLength: 3, maxLength: 63, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DeleteDatabaseConnectionRequest'}
+      responses:
+        '200': {description: 'Connection metadata', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/DatabaseConnection'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /namespaces/{namespaceId}/secrets:
     get:
       operationId: listSecrets
@@ -1344,7 +1561,7 @@ paths:
       tags: [Governance]
       x-implemented: '009'
       description: |
-        Needs `secret:read`. These operations exist only on instances configured with a key ring (`SAGAT_SECRETS_KEYS`); elsewhere they answer 404. A value is accepted here and nowhere else, and is never returned by any operation: workers receive it through `ResolveSecrets` of the worker protocol while they hold the lease of a step whose definition declares it.
+        Needs `secret:read`. These operations exist on instances configured with a local key ring or OpenBao; elsewhere they answer 404. A value is accepted here and nowhere else, and is never returned by any operation: workers receive it through `ResolveSecrets` of the worker protocol while they hold the lease of a step whose definition declares it.
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
       responses:
@@ -1362,7 +1579,7 @@ paths:
       tags: [Governance]
       x-implemented: '009'
       description: |
-        Needs `secret:manage`. Stores the value sealed under the active key and keeps the last five versions. Counts against the namespace's `secrets` quota when the secret is new. Audited (the name and the actor, never the value). These operations exist only on instances configured with a key ring (`SAGAT_SECRETS_KEYS`); elsewhere they answer 404. A value is accepted here and nowhere else, and is never returned by any operation: workers receive it through `ResolveSecrets` of the worker protocol while they hold the lease of a step whose definition declares it.
+        Needs `secret:manage`. With OpenBao enabled, requires requestId and expectedVersion, persists a recoverable intent and activates only a verified provider receipt. Same-key/same-body replay returns the original version; changed content or revision conflicts. Legacy instances seal under the local key ring. Keeps the last five logical versions. Counts against the namespace's `secrets` quota when the secret is new. Audited (the name and the actor, never the value). These operations exist on instances configured with a local key ring or OpenBao; elsewhere they answer 404. A value is accepted here and nowhere else, and is never returned by any operation: workers receive it through `ResolveSecrets` of the worker protocol while they hold the lease of a step whose definition declares it.
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/SecretName'}
@@ -1374,6 +1591,7 @@ paths:
       responses:
         '200': {description: 'What is now stored: the name and the version, never the value', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Secret'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
+        '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/ValidationError'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1395,6 +1613,52 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/secrets/{secretName}/migrate:
+    post:
+      operationId: migrateSecretToOpenBao
+      summary: Explicitly migrate one local secret while preserving its logical name and ACL
+      tags: [Governance]
+      x-implemented: '017'
+      description: Needs current secret:manage. Provider receipt is verified before authority changes. No local fallback after cutover. Requires configured OpenBao and the legacy key ring.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/SecretName'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MigrateSecretRequest'}
+      responses:
+        '200': {description: 'Activated secret metadata, never the value', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Secret'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/secret-operations/{requestId}/reconcile:
+    post:
+      operationId: reconcileSecretWrite
+      summary: Recover the caller's pending provider receipt without resubmitting the secret
+      tags: [Governance]
+      x-implemented: '017'
+      description: Needs current secret:manage. The UUID is the client request identity, never an OpenBao path. Missing receipt requires secure value resubmission with the same request identity; changed content conflicts. Does not reactivate deleted secrets.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {name: requestId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: 'Activated secret metadata, never the value', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Secret'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
@@ -3374,7 +3638,7 @@ components:
       name: resource
       in: path
       required: true
-      schema: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, iteration_concurrency, secrets, event_endpoints, webhook_subscriptions, broker_subscriptions, event_connectors, scripts, script_jobs, tenant_content_bytes, tenant_log_bytes, api_requests_per_second, events_per_second, event_retention_seconds, script_retention_days]}
+      schema: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, iteration_concurrency, secrets, event_endpoints, webhook_subscriptions, broker_subscriptions, event_connectors, scripts, script_jobs, tenant_content_bytes, tenant_log_bytes, api_requests_per_second, events_per_second, event_retention_seconds, script_retention_days, database_statement_bytes, database_parameters, database_parameter_bytes, database_rows, database_result_bytes, database_timeout_ms, database_connect_timeout_ms, database_pool_size, database_idle_timeout_ms, database_connections, database_concurrency, tenant_database_concurrency, secret_provider_operations]}
     ActivityName:
       name: activity
       in: path
@@ -3580,7 +3844,7 @@ components:
       properties:
         tenant: {type: string, description: Slug of the caller's tenant.}
         subject: {type: string}
-        role: {type: string, enum: [admin, developer, operator, viewer]}
+        role: {type: string, enum: [admin, developer, operator, viewer, worker, runner, database-runner]}
         permissions:
           type: array
           items: {type: string, example: 'workspace:read'}
@@ -3721,10 +3985,36 @@ components:
         size: {type: integer, format: int64, minimum: 0}
         sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
         contentType: {type: string, maxLength: 127}
+    DatabaseExecutionOrigin:
+      type: string
+      enum: [AD_HOC_STEP, AD_HOC_WORKFLOW, CONNECTION_PROBE]
+    StartDatabaseExecutionRequest:
+      type: object
+      required: [mode, definition]
+      additionalProperties: false
+      properties:
+        mode: {type: string, enum: [step, workflow]}
+        definition: {$ref: '#/components/schemas/JsonObject', description: 'Canonical IR. Step: one database node. Workflow: at most 64 database/timer/condition/parallel/end nodes, at least one database node, no triggers.'}
+        input: {$ref: '#/components/schemas/JsonObject', default: {}}
+        timeoutMs: {type: integer, minimum: 1, maximum: 3600000, default: 300000}
+    ProbeDatabaseConnectionRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        revision: {type: integer, minimum: 1, maximum: 2147483646}
+    DatabaseConnectionProbe:
+      type: object
+      required: [run, revision, failureCode]
+      additionalProperties: false
+      properties:
+        run: {$ref: '#/components/schemas/Run'}
+        revision: {type: integer, minimum: 1, maximum: 2147483646}
+        failureCode: {type: [string, 'null']}
     Run:
       type: object
       required: [runId, workflowId, versionId, status, version, createdAt]
       properties:
+        origin: {$ref: '#/components/schemas/DatabaseExecutionOrigin', description: 'Present only for retained private managed executions.'}
         runId: {type: string, format: uuid}
         workflowId: {type: string, format: uuid}
         versionId: {type: string, format: uuid}
@@ -3942,7 +4232,7 @@ components:
             properties:
               scopeNodeId: {type: string}
               iterationIndex: {type: integer, minimum: 0, maximum: 9999}
-        type: {type: string}
+        type: {type: string, description: 'Authored node kind. Managed PostgreSQL operations use database; their internal activity name, SQL and values are not disclosed.'}
         status: {type: string, enum: [NOT_STARTED, PENDING, READY, LEASED, RUNNING, WAITING, RETRY_WAIT, SUCCEEDED, FAILED, CANCELLED, SKIPPED]}
         attempt: {type: integer}
         generation: {type: integer}
@@ -4211,7 +4501,8 @@ components:
       properties:
         name: {type: string}
         version: {type: integer, minimum: 1}
-        keyId: {type: string, description: 'The key of the ring the current version is sealed under.'}
+        keyId: {type: [string, 'null'], description: 'Local encryption key identifier; null for OpenBao.'}
+        provider: {type: string, enum: [local, openbao], description: 'Authority for the current secret version.'}
         createdBy: {type: string}
         updatedAt: {type: string, format: date-time}
         pools: {type: array, items: {type: string}, description: 'The worker pools allowed to receive the secret; empty means every worker bound to the activity (see `setSecretPools`). Present only for callers who hold `secret:manage`: whoever may merely use the secret is not told which fleets are trusted with it.'}
@@ -4238,6 +4529,341 @@ components:
       properties:
         value: {type: string, minLength: 1, maxLength: 16384, writeOnly: true, description: 'The secret, UTF-8 text of 1 to 16384 bytes. Never returned.'}
         pools: {type: array, maxItems: 16, items: {type: string, minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9._:+-]+$'}, description: 'Replaces the worker pools allowed to receive the secret in the same call (see `setSecretPools`). Absent leaves them as they are, and a new secret then has none; an empty list lifts the restriction. Deleting a secret deletes its restriction, so recreate one that must stay restricted with its pools, which makes it restricted from the first instant.'}
+        requestId: {type: string, format: uuid, description: 'Required with OpenBao. Stable identity for retries of this exact write.'}
+        expectedVersion: {type: integer, minimum: 0, maximum: 2147483646, description: 'Required with OpenBao. Zero creates; otherwise matches the current logical version.'}
+        requiredProvider: {type: string, enum: [openbao], description: 'Refuse with 503 when this authority is not configured. Database connection forms must send this field.'}
+    DatabaseResult:
+      {
+        "title": "Bounded managed database result",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "columns",
+          "rows",
+          "affectedRows",
+          "truncated"
+        ],
+        "properties": {
+          "columns": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "name",
+                "type"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "maxLength": 63
+                },
+                "type": {
+                  "enum": [
+                    "null",
+                    "boolean",
+                    "integer",
+                    "decimal",
+                    "float",
+                    "text",
+                    "timestamp",
+                    "date",
+                    "binary",
+                    "json"
+                  ]
+                }
+              }
+            }
+          },
+          "rows": {
+            "type": "array",
+            "maxItems": 10000,
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/DatabaseResultCell"
+              }
+            }
+          },
+          "affectedRows": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]{0,19})$"
+          },
+          "truncated": {
+            "const": false
+          }
+        }
+      }
+    DatabaseResultCell:
+      {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "value"
+            ],
+            "properties": {
+              "type": {
+                "const": "null"
+              },
+              "value": {
+                "type": "null"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "value"
+            ],
+            "properties": {
+              "type": {
+                "const": "boolean"
+              },
+              "value": {
+                "type": "boolean"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "value"
+            ],
+            "properties": {
+              "type": {
+                "const": "integer"
+              },
+              "value": {
+                "type": "string",
+                "pattern": "^-?[0-9]+$",
+                "maxLength": 40
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "value"
+            ],
+            "properties": {
+              "type": {
+                "const": "decimal"
+              },
+              "value": {
+                "type": "string",
+                "pattern": "^-?[0-9]+(?:\\.[0-9]+)?$",
+                "maxLength": 16384
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "value"
+            ],
+            "properties": {
+              "type": {
+                "const": "float"
+              },
+              "value": {
+                "type": "number"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "value"
+            ],
+            "properties": {
+              "type": {
+                "const": "text"
+              },
+              "value": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "value"
+            ],
+            "properties": {
+              "type": {
+                "const": "timestamp"
+              },
+              "value": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "value"
+            ],
+            "properties": {
+              "type": {
+                "const": "date"
+              },
+              "value": {
+                "type": "string",
+                "format": "date"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "value"
+            ],
+            "properties": {
+              "type": {
+                "const": "binary"
+              },
+              "value": {
+                "type": "string",
+                "contentEncoding": "base64"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "value"
+            ],
+            "properties": {
+              "type": {
+                "const": "json"
+              },
+              "value": {}
+            }
+          }
+        ]
+      }
+    DatabaseLimits:
+      type: object
+      additionalProperties: false
+      description: Positive finite limits. Effective execution uses the minimum of operation, connection, namespace and deployment limits. Zero never means unlimited.
+      properties:
+        maxStatementBytes: {type: integer, minimum: 1, maximum: 65536, default: 16384}
+        maxParameters: {type: integer, minimum: 1, maximum: 256, default: 64}
+        maxParameterBytes: {type: integer, minimum: 1, maximum: 262144, default: 65536}
+        maxRows: {type: integer, minimum: 1, maximum: 10000, default: 1000}
+        maxResultBytes: {type: integer, minimum: 1, maximum: 4194304, default: 1048576}
+        timeoutMs: {type: integer, minimum: 1, maximum: 30000, default: 10000}
+        connectTimeoutMs: {type: integer, minimum: 1, maximum: 10000, default: 5000}
+        poolSize: {type: integer, minimum: 1, maximum: 16, default: 4}
+        idleTimeoutMs: {type: integer, minimum: 1, maximum: 60000, default: 30000}
+    DatabaseTls:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [mode]
+          properties:
+            mode: {type: string, const: verify-full}
+            caPem: {type: string, maxLength: 65536, description: 'Optional public CA certificates, never a private key'}
+        - type: object
+          additionalProperties: false
+          required: [mode]
+          properties:
+            mode: {type: string, const: development-plaintext}
+          description: Requires a development namespace and an explicitly permissive development runner deployment.
+    PostgresConnectionConfig:
+      type: object
+      additionalProperties: false
+      required: [driver, host, port, database, tls, secretName]
+      properties:
+        driver: {type: string, const: postgresql}
+        host: {type: string, minLength: 1, maxLength: 253, description: 'Bare DNS hostname or IP, never a URL or credentials'}
+        port: {type: integer, minimum: 1, maximum: 65535}
+        database: {type: string, minLength: 1, maxLength: 63}
+        tls: {$ref: '#/components/schemas/DatabaseTls'}
+        secretName: {type: string, pattern: '^[a-z][a-z0-9_.-]{0,63}$'}
+        limits: {$ref: '#/components/schemas/DatabaseLimits'}
+    DatabaseConnection:
+      type: object
+      additionalProperties: false
+      required: [id, namespaceId, name, revision, status, config, createdAt, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        namespaceId: {type: string, format: uuid}
+        name: {type: string}
+        revision: {type: integer, minimum: 1}
+        status: {type: string, enum: [ACTIVE, PAUSED, DELETED]}
+        config: {$ref: '#/components/schemas/PostgresConnectionConfig'}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    DatabaseDriverList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 1
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, operations, parameterTypes, defaultLimits, maximumLimits]
+            properties:
+              id: {type: string, enum: [postgresql]}
+              operations: {type: array, items: {type: string, enum: [query, execute]}}
+              parameterTypes: {type: array, items: {type: string, enum: ["null", boolean, integer, decimal, float, text, timestamp, date, binary, json]}}
+              defaultLimits: {$ref: '#/components/schemas/DatabaseLimits'}
+              maximumLimits: {$ref: '#/components/schemas/DatabaseLimits'}
+    DatabaseConnectionList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: {type: array, maxItems: 1000, items: {$ref: '#/components/schemas/DatabaseConnection'}}
+    PutDatabaseConnectionRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, expectedRevision, config, status]
+      properties:
+        requestId: {type: string, format: uuid}
+        expectedRevision: {type: integer, minimum: 0, maximum: 2147483646}
+        config: {$ref: '#/components/schemas/PostgresConnectionConfig'}
+        status: {type: string, enum: [ACTIVE, PAUSED]}
+    DeleteDatabaseConnectionRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, expectedRevision]
+      properties:
+        requestId: {type: string, format: uuid}
+        expectedRevision: {type: integer, minimum: 1, maximum: 2147483646}
+    MigrateSecretRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, expectedVersion]
+      properties:
+        requestId: {type: string, format: uuid}
+        expectedVersion: {type: integer, minimum: 1, maximum: 2147483646}
     EgressPolicy:
       type: object
       required: [rules, ports, allowHttp]
@@ -4263,15 +4889,25 @@ components:
         value is 1..1,000,000,000, its default operator ceiling is 1,024 and, while absent or
         cleared, structured iteration admission is disabled. Zero disables new admission for
         resources that accept it.
+        Database operation ceilings are positive:
+        database_statement_bytes <= 65536, database_parameters <= 256,
+        database_parameter_bytes <= 262144, database_rows <= 10000,
+        database_result_bytes <= 4194304, database_timeout_ms <= 30000,
+        database_connect_timeout_ms <= 10000, database_pool_size <= 16,
+        database_idle_timeout_ms <= 60000. These governance ceilings default to the hard maximum;
+        operation and connection defaults remain smaller. Count ceilings default/max are
+        database_connections 100/1000 (including paused), database_concurrency 16/64,
+        tenant_database_concurrency 64/256, secret_provider_operations 32/128.
+        Zero disables new admission for count/rate/retention resources, never means unlimited.
         Lowering a limit does not erase retained content or rewrite existing expiry.
       type: object
       required: [resource, limit, source, ceiling]
       properties:
-        resource: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, iteration_concurrency, secrets, event_endpoints, webhook_subscriptions, broker_subscriptions, event_connectors, scripts, script_jobs, tenant_content_bytes, tenant_log_bytes, api_requests_per_second, events_per_second, event_retention_seconds, script_retention_days]}
+        resource: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, iteration_concurrency, secrets, event_endpoints, webhook_subscriptions, broker_subscriptions, event_connectors, scripts, script_jobs, tenant_content_bytes, tenant_log_bytes, api_requests_per_second, events_per_second, event_retention_seconds, script_retention_days, database_statement_bytes, database_parameters, database_parameter_bytes, database_rows, database_result_bytes, database_timeout_ms, database_connect_timeout_ms, database_pool_size, database_idle_timeout_ms, database_connections, database_concurrency, tenant_database_concurrency, secret_provider_operations]}
         limit: {type: integer, format: int64, minimum: 0, maximum: 1125899906842624}
         source: {type: string, enum: [default, tenant, namespace], description: 'Where the limit in force comes from. default means the tenant set nothing; iteration_concurrency then remains disabled, while other resources use their platform default up to the ceiling.'}
         ceiling: {type: integer, format: int64, minimum: 0, maximum: 1125899906842624, description: 'The most the tenant may set for this resource, and the most that can be in force. The platform default unless an operator granted the tenant more. No API call raises it.'}
-        used: {type: integer, format: int64, minimum: 0, description: 'Exact charged items or bytes, including outstanding content reservations. Absent for rate/retention policies and for a per-namespace resource in the tenant-wide view.'}
+        used: {type: integer, format: int64, minimum: 0, description: 'Exact charged items or bytes, including outstanding content reservations. Absent for per-operation database and rate/retention policies and for a per-namespace resource in the tenant-wide view.'}
     QuotaList:
       type: object
       required: [items]
