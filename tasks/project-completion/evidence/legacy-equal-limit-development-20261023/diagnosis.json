@@ -1,0 +1,15 @@
+{
+  "observed_changed_field_names": [
+    "members"
+  ],
+  "cause": "expected whole member omitted nullable drained_sequence and drain_outbox_id introduced by20261103000000_collection_drain.up.sql:31-37",
+  "correction": "assert both null in exact complete member; no production/schema change or weakened comparison",
+  "first_native_admission_and_identity_event_outbox_assertions_passed": true,
+  "failed_coordinator_exit_codes": [
+    1,
+    1
+  ],
+  "failed_current_native_test_counts": "0passed/1failed/0ignored",
+  "old_producers": "both pass; runtime not reached in failed coordinators",
+  "fresh_fixture_required_for_corrected_gate": true
+}

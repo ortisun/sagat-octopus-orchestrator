@@ -1,0 +1,10 @@
+--- /tmp/sagat-completion-20261023/equal-final/artifacts-free-admission-red/run.NT4qqH/artifacts/old-main.original.rs	2026-10-23 22:55:18
++++ /tmp/sagat-completion-20261023/equal-final/artifacts-free-admission-red/run.NT4qqH/old-source/tests/integration/workflow-primitives/main.rs	2026-10-23 22:55:18
+@@ -26,6 +26,7 @@
+ mod chains_http;
+ mod collection_10k;
+ mod collection_budgets;
++mod legacy_collection_output_producer;
+ mod collection_pipeline;
+ mod collection_restore;
+ mod collection_sources;

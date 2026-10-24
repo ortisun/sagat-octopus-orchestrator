@@ -114,3 +114,33 @@ are not passing results.
 SAGAT_Q5_CASE=free-admission-red bash scripts/test-legacy-collection-output-view.sh
 SAGAT_Q5_CASE=free-admission bash scripts/test-legacy-collection-output-view.sh
 ```
+
+## Exact4MiB positive admission control
+
+`free-admission-equal-limit` uses the same genuine old public20-completion and
+c9checkpoint/finish→c10entry boundary, without another old call. First19 JSON
+values retain105000 bytes; the last retains102137. Nine aggregate references are
+210003bytes and the last207140: L2097137,V2097167,E4194304 exactly. Actual payload
+contents/digests and every checkpoint/owner identity are verified. The separate
+private18-field format is legacy-free-admission-equal-limit-v1, with matching case;
+it inherits the same role/ownership/hash/private-file/cleanup contract.
+
+Current first public advance must be Admitted{index:0}. It creates exactly one
+original item0 READY instance/member, one held slot/reservation, the two native
+admission/release events and one task.ready outbox. Charged/admitted counters
+advance once. Exact historical source/output/payload/audit/receipt inventories
+remain unchanged; no stop, drain, item1 or Return is created. Fresh verification
+has no durable effects. The full free-target source hash legitimately changes
+with admission counters; closed source and the exact permitted target delta are
+checked separately. This control stops after valid admission and owned DB cleanup;
+it proves admission progress, not workflow completion. No worker poll/effect occurs,
+and no observed wire idempotency key is claimed. Current strict > already permits
+equality; no artificial failing RED or production change is introduced.
+
+```sh
+SAGAT_Q5_CASE=free-admission-equal-limit bash scripts/test-legacy-collection-output-view.sh
+```
+
+Run all six closed selectors after shared fixture edits. Actual outcomes belong
+in project-completion evidence. Parent quota/frontier/CAS/rollout/nesting and
+canonical task acceptance remain separate.

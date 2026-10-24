@@ -1,0 +1,9 @@
+{
+  "producer": "None",
+  "consumer_and_coordinator": "None",
+  "model": "gpt-6-astra",
+  "reasoning_effort": "xhigh",
+  "read_only_no_tests": true,
+  "runtime_result": "owner old producer passed; current reached admission then exact whole-state oracle failed; diagnostic follow-up pending",
+  "failed_database_removed_by_ownership_checked_coordinator": true
+}

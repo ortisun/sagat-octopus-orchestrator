@@ -1,0 +1,8 @@
+
+running 1 test
+current_free_admission_role api=sagat_app store=sagat_app database=t_01a16b9bdac673b1813fea1e842a0b54
+current_equal_limit_admission L=2097137 V=2097167 E=4194304 admitted=0 ready=1 reserved=1 no_stop=true wire_key_observed=false
+test legacy_collection_output_view::current_frontier_admits_frozen_old_free_admission_at_exact_limit ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 548 filtered out; finished in 0.82s
+

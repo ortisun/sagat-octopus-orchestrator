@@ -1,0 +1,14 @@
+{
+  "command": [
+    "gtimeout",
+    "--signal=TERM",
+    "--kill-after=5s",
+    "2500s",
+    "bash",
+    "scripts/test-legacy-collection-output-view.sh"
+  ],
+  "exit_code": 0,
+  "seconds": 107.4,
+  "started_utc": "2026-10-24T01:57:06.138336+00:00",
+  "log": "free-admission.txt"
+}

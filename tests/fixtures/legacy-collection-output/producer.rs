@@ -831,7 +831,12 @@ async fn free_admission_source(
     nonfinal_sha(&json!({"closed":closed,"target":target}))
 }
 
-async fn free_admission_shape(pool: &sqlx::PgPool, tenant: Uuid, run: Uuid) -> Value {
+async fn free_admission_shape(
+    pool: &sqlx::PgPool,
+    tenant: Uuid,
+    run: Uuid,
+    equal_limit: bool,
+) -> Value {
     let state: Value = sqlx::query_scalar(r#"SELECT jsonb_build_object(
       'head',r.run_version,'workflow_version',r.workflow_version_id,'scope_id',s.scope_id,
       'waiting',r.status='WAITING' AND r.stop_reason IS NULL AND r.stop_code IS NULL AND r.parent_run_id IS NULL AND r.depth=0,
@@ -901,9 +906,12 @@ async fn free_admission_shape(pool: &sqlx::PgPool, tenant: Uuid, run: Uuid) -> V
         .bind(tenant).bind(run).fetch_one(pool).await.expect("genuine old free-admission premise");
     for (key, expected) in [
         ("waiting", json!(true)),
-        ("L", json!(2_100_000)),
-        ("stored", json!(2_100_000)),
-        ("V", json!(2_100_030)),
+        ("L", json!(if equal_limit { 2_097_137 } else { 2_100_000 })),
+        (
+            "stored",
+            json!(if equal_limit { 2_097_137 } else { 2_100_000 }),
+        ),
+        ("V", json!(if equal_limit { 2_097_167 } else { 2_100_030 })),
         ("closed_scopes", json!(10)),
         ("closed_owners", json!(10)),
         ("historical_work", json!(20)),
@@ -946,15 +954,24 @@ async fn free_admission_shape(pool: &sqlx::PgPool, tenant: Uuid, run: Uuid) -> V
 
 #[tokio::test(flavor = "current_thread")]
 async fn frozen_old_free_admission_frontier_producer() {
-    free_admission_produce(false).await;
+    free_admission_produce(false, false).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn frozen_old_free_admission_frontier_guard_red() {
-    free_admission_produce(true).await;
+    free_admission_produce(true, false).await;
 }
 
-async fn free_admission_produce(red: bool) {
+#[tokio::test(flavor = "current_thread")]
+async fn frozen_old_free_admission_equal_limit_producer() {
+    free_admission_produce(false, true).await;
+}
+
+async fn free_admission_produce(red: bool, equal_limit: bool) {
+    assert!(
+        !(red && equal_limit),
+        "equality is a positive control, never a manufactured RED"
+    );
     use crate::support::{
         api::Options,
         worker::{TENANT, Worker},
@@ -1054,6 +1071,12 @@ async fn free_admission_produce(red: bool) {
     let large = Value::String("x".repeat(104_998));
     let large_bytes = serde_json::to_vec(&large).expect("105000-byte public old output");
     assert!(large_bytes.len() == 105_000, "old individual output width");
+    let short = Value::String("x".repeat(102_135));
+    let short_bytes = serde_json::to_vec(&short).expect("102137-byte public old output");
+    assert!(
+        short_bytes.len() == 102_137,
+        "exact final equality output width"
+    );
     let mut ticks = 0usize;
     for index in 0..20 {
         let task = loop {
@@ -1079,7 +1102,12 @@ async fn free_admission_produce(red: bool) {
                 && identity.definition_node_id == "legacyWork",
             "exact ordered old genuine scoped work"
         );
-        let output = std::str::from_utf8(&large_bytes).expect("JSON UTF8");
+        let output = std::str::from_utf8(if equal_limit && index == 19 {
+            &short_bytes
+        } else {
+            &large_bytes
+        })
+        .expect("JSON UTF8");
         let request = worker.req(Worker::complete_message(&task, output));
         let ack = match worker.client.complete_step(request).await {
             Ok(r) => r.into_inner(),
@@ -1120,19 +1148,31 @@ async fn free_admission_produce(red: bool) {
         &platform.api.db.pool,
         platform.tenant.as_uuid(),
         run.as_uuid(),
+        equal_limit,
     )
     .await;
     let aggregates: Vec<(String,Vec<u8>)>=sqlx::query_as("SELECT s.owner_node,p.content FROM iteration_scopes s JOIN payloads p ON p.tenant_id=s.tenant_id AND p.digest=s.result_digest WHERE s.tenant_id=$1 AND s.run_id=$2 AND s.lifecycle='SUCCEEDED' ORDER BY s.owner_node")
         .bind(platform.tenant.as_uuid()).bind(run.as_uuid()).fetch_all(&platform.api.db.pool).await.expect("all ten genuine old aggregate payloads");
-    let expected =
-        serde_json::to_vec(&json!([large.clone(), large])).expect("actual two-item aggregate");
+    let expected = serde_json::to_vec(&json!([large.clone(), large.clone()]))
+        .expect("actual two-item aggregate");
     assert!(
         aggregates.len() == 10 && expected.len() == 210_003,
         "ten actual 210003-byte aggregate references"
     );
+    let final_expected =
+        serde_json::to_vec(&json!([large, short])).expect("actual short final aggregate");
+    assert!(
+        final_expected.len() == 207_140,
+        "exact final equality aggregate width"
+    );
     for (index, (owner, bytes)) in aggregates.iter().enumerate() {
+        let wanted = if equal_limit && index == 9 {
+            &final_expected
+        } else {
+            &expected
+        };
         assert!(
-            *owner == format!("c{index}") && *bytes == expected,
+            *owner == format!("c{index}") && bytes == wanted,
             "each old aggregate has the exact ordered two outputs"
         );
     }
@@ -1167,9 +1207,15 @@ async fn free_admission_produce(red: bool) {
         .fetch_one(&platform.api.db.pool)
         .await
         .expect("full genuine old projection");
-    println!(
-        "old_free_admission_premise L=2100000 V=2100030 E=4200030 closed=10 checkpoints=20 members=0 free_capacity=true live_forward=0"
-    );
+    if equal_limit {
+        println!(
+            "old_equal_limit_premise L=2097137 V=2097167 E=4194304 closed=10 checkpoints=20 members=0 free_capacity=true live_forward=0"
+        );
+    } else {
+        println!(
+            "old_free_admission_premise L=2100000 V=2100030 E=4200030 closed=10 checkpoints=20 members=0 free_capacity=true live_forward=0"
+        );
+    }
     if red {
         let owner = ExecutionInstanceId::root(NodeId::parse("c10").expect("target owner"));
         let result = scheduler
@@ -1184,8 +1230,18 @@ async fn free_admission_produce(red: bool) {
         );
         return;
     }
-    let receipt = json!({"format":"legacy-free-admission-frontier-v1","source_commit":OLD_COMMIT,
-        "case":"free-admission","role":role,"database_name":platform.api.db.name,"database_url":platform.api.db.url,
+    let format = if equal_limit {
+        "legacy-free-admission-equal-limit-v1"
+    } else {
+        "legacy-free-admission-frontier-v1"
+    };
+    let case = if equal_limit {
+        "free-admission-equal-limit"
+    } else {
+        "free-admission"
+    };
+    let receipt = json!({"format":format,"source_commit":OLD_COMMIT,
+        "case":case,"role":role,"database_name":platform.api.db.name,"database_url":platform.api.db.url,
         "runtime_database_url":platform.api.db.url_for(crate::support::RUNTIME_ROLE,crate::support::RUNTIME_ROLE_PASSWORD),
         "tenant":platform.tenant.to_string(),"other_tenant":platform.other_tenant.to_string(),"namespace":namespace,
         "run":run.to_string(),"workflow_version":state["workflow_version"],"scope_id":state["scope_id"],

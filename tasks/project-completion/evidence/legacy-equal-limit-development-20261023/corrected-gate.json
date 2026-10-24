@@ -1,0 +1,41 @@
+{
+  "phases": [
+    {
+      "role": "owner",
+      "phase": "producer",
+      "native_exit": 0,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "role": "owner",
+      "phase": "consumer",
+      "native_exit": 0,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "role": "runtime",
+      "phase": "producer",
+      "native_exit": 0,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "role": "runtime",
+      "phase": "consumer",
+      "native_exit": 0,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    }
+  ],
+  "consumer_c2_fresh_review": "None",
+  "model": "gpt-6-astra",
+  "reasoning_effort": "xhigh",
+  "extracted_old_source_removed": true,
+  "private_receipts_removed": true
+}

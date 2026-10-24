@@ -1,0 +1,6 @@
+{
+  "tests/fixtures/legacy-collection-output/producer.rs": "d96ed76afe3063fcb53daf5671e3fc7862f7dc8c40d72a5c7887243e814d86a5",
+  "tests/integration/workflow-primitives/legacy_collection_output_view.rs": "61e834e72459f4b6c5ca017b282c741ffcd41f4cafe236438d8ea6ae72a7f438",
+  "scripts/test-legacy-collection-output-view.sh": "9eb296947cbeee2df8455e4bf1b2482d2516044fef3f9194a9deca54c69e4dc1",
+  "tests/fixtures/legacy-collection-output/README.md": "9369c4fcf02c1cafa0c5a7e7ef9014ae3211dda812dd9706b3bcb91d3c16e014"
+}

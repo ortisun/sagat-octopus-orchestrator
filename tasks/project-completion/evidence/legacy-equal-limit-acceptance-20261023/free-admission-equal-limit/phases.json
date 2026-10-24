@@ -1,0 +1,46 @@
+[
+  {
+    "case": "free-admission-equal-limit",
+    "role": "owner",
+    "phase": "producer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 7.24,
+    "artifact_run": "/tmp/sagat-completion-20261023/equal-final/artifacts-free-admission-equal-limit/run.KCF4fQ"
+  },
+  {
+    "case": "free-admission-equal-limit",
+    "role": "owner",
+    "phase": "consumer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 0.84,
+    "artifact_run": "/tmp/sagat-completion-20261023/equal-final/artifacts-free-admission-equal-limit/run.KCF4fQ"
+  },
+  {
+    "case": "free-admission-equal-limit",
+    "role": "runtime",
+    "phase": "producer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 7.07,
+    "artifact_run": "/tmp/sagat-completion-20261023/equal-final/artifacts-free-admission-equal-limit/run.KCF4fQ"
+  },
+  {
+    "case": "free-admission-equal-limit",
+    "role": "runtime",
+    "phase": "consumer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 0.8,
+    "artifact_run": "/tmp/sagat-completion-20261023/equal-final/artifacts-free-admission-equal-limit/run.KCF4fQ"
+  }
+]

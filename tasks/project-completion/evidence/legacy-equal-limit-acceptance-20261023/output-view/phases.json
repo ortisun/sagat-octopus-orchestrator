@@ -1,0 +1,46 @@
+[
+  {
+    "case": "output-view",
+    "role": "owner",
+    "phase": "producer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 9.2,
+    "artifact_run": "/tmp/sagat-completion-20261023/equal-final/artifacts-output-view/run.lVXLht"
+  },
+  {
+    "case": "output-view",
+    "role": "owner",
+    "phase": "consumer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 30.28,
+    "artifact_run": "/tmp/sagat-completion-20261023/equal-final/artifacts-output-view/run.lVXLht"
+  },
+  {
+    "case": "output-view",
+    "role": "runtime",
+    "phase": "producer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 8.9,
+    "artifact_run": "/tmp/sagat-completion-20261023/equal-final/artifacts-output-view/run.lVXLht"
+  },
+  {
+    "case": "output-view",
+    "role": "runtime",
+    "phase": "consumer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 30.29,
+    "artifact_run": "/tmp/sagat-completion-20261023/equal-final/artifacts-output-view/run.lVXLht"
+  }
+]

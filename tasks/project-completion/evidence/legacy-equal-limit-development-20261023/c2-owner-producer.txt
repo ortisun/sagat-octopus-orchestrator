@@ -1,0 +1,8 @@
+
+running 1 test
+old_free_admission_role role=owner api=postgres store=postgres database=t_01a16b9bba8b70c682630238cc6a691d
+old_equal_limit_premise L=2097137 V=2097167 E=4194304 closed=10 checkpoints=20 members=0 free_capacity=true live_forward=0
+test legacy_collection_output_producer::frozen_old_free_admission_equal_limit_producer ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 506 filtered out; finished in 6.54s
+

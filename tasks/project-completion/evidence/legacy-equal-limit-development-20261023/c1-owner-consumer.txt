@@ -1,0 +1,16 @@
+
+running 1 test
+current_free_admission_role api=postgres store=postgres database=t_01a16b97811e722d8e0547198ff6d514
+
+thread 'legacy_collection_output_view::current_frontier_admits_frozen_old_free_admission_at_exact_limit' (240047281) panicked at tests/integration/workflow-primitives/legacy_collection_output_view.rs:2923:5:
+exact permitted admission delta; original source, outputs, audits, receipts and all other fields unchanged
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test legacy_collection_output_view::current_frontier_admits_frozen_old_free_admission_at_exact_limit ... FAILED
+
+failures:
+
+failures:
+    legacy_collection_output_view::current_frontier_admits_frozen_old_free_admission_at_exact_limit
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 548 filtered out; finished in 0.59s
+
