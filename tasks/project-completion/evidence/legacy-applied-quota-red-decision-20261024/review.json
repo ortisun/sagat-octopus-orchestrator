@@ -1,0 +1,13 @@
+{
+  "reviewer": "gpt-6-astra",
+  "reasoning_effort": "xhigh",
+  "fresh_context": true,
+  "read_only_no_execution": true,
+  "cycle": 1,
+  "findings": null,
+  "upstream_reconciled_to": "299f8b2e accepted A; b3cf3078 current docs",
+  "bounded_scope": "B1 genuineoldAppliedquotaRED only; no currentconsumer/prod/SDK/schema/grant changes",
+  "final_scope": "newisolatedRED plus Afourselectors if onlyclosedbranches; sharedlifecycle rewrite requiresallselectors",
+  "optional_external_review": "previously declined",
+  "implementation": "root; Sol unavailable/no substitution"
+}

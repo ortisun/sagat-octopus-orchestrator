@@ -1,0 +1,71 @@
+# Genuine old Applied quota RED — B1 only
+
+Source b3cf3078, accepted A299f8b2e/trace347922bc. User all-open-tasks andsplit
+boundeddecisions authorization. Root solewriter/executor. Immutableold6c44a0e4.
+A final fourselectors12positive+2expectedoldRED/native1128+11pins; originalordinary
+producerprefix/currentconsumer byteunchanged. No production/schema/grant/SDK change.
+B2 current Appliedreport/refusal/drain/compensation stays separate andmustusefreshA DB.
+
+Fourlogicalpaths: producer.rs (Applied-only readiness builder/refactor + REDentry);
+existing Q10coordinator (closednewselector + independently guarded AppliedRED DBmarker
+parsing); fixtureREADME; thisunit evidenceREADME/manifest. Tasktracking separately.
+No currentconsumermodule/registration, ordinarypresets/oracles or shared lifecycle/
+supervision/ownership/credentials logic changes. Ifreview uncovers sharedlife mutation,
+runallselectors; append-only closedbranches only→A fourselectorregression + newRED.
+
+Keep A producer wrapper selects Handoff end; extract its Appliedbody toprivate
+produce_applied_handoff(end:Handoff|QuotaRed) and add separatelynamed old-only
+frozen_old_applied_output_quota_guard_red. Preserve A21fieldcontract andhandoffstate.
+No actualreport or newhandop fields for Handoff. REDmode reachesexactsamegenuine
+lookup/state/authority/source through oldpublicAPI, retains40-byte literalApplied
+request {"effect":"applied","output":{"hold":7}} andsubstitute10B. Afterreadiness
+and BEFORE receiptpublication, submit EXACT completion througholdworker.req and
+gRPC complete_step. Oldauthenticate_bearer invokesCore.authenticate→Identity each
+request (tenant/membershipqueries), soidentitylookup countermustincrease; no need
+JWT uniqueness/cacheclearing/newhook. Existing tokenbuilder supports.claim but is
+unneeded: keyverification cachingdoesnotcachetheseDBidentitylookups. No secretslogs.
+
+Observe !already_applied, SUCCEEDED/RUNNING ACK and matchingpersistedstatus/head.
+Actualforward+lookup SUCCEEDED/no cancellation; forwardpayload EXACT {"hold":7}
+10B, lookupoutputNULL/no retainedwrapper; originals/fences/reportedhashes intact.
+L2100010/V2100020/E4200030. No stop/code/RDL audit/refusal; oldreporttrueApplied
+concluded(applied/succeeded), lookupcompletion withactualfence; no fakeforward
+step.completed. Forward routesreturnedPENDING, no checkpoint/result/drain/saga/
+comp or runfinish. No tick afterreport. RUNNING is source-supported byoldpending
+Return countingactive (plan175–205,225–229/path827–850/state400–440). Verifycomplete
+originalauthorityhash includingexactexpiry, andclosedsourcewitness unchanged over
+completion; completiondoesnotcalluse_session. Capture exactnewreceipt forlookup
+scope (dynamicpath/fence), requestfingerprintwhole40wire, canonicalACKresource,
+originalcommandkey/currenthead. No replay requirement B1 (B2 owns exactreplay).
+
+Only after allactualoldobservations pass, emit safe distinctline
+applied_quota_red_database=t_<32lowerhex> plus queriedactual API/store roles and
+observed_legacy_applied_quota_bypass=true. Thenassert REQUIREDcurrentbehavior
+FAILED/RUN_DATA_LIMIT stop and noforwardoutput; oldnative mustfail101 exactlyone
+test. An earlierauth/query/setup/timeout/parser failure is INVALIDRED. Do notpublish
+receipt in REDmode, even afterdeliberatefailure; no currentconsumer/no reusedDB.
+
+New closed --case applied-report-before-drain-red selects exactoldREDtest and
+currentA testonlyforbuild/registration (notexecuted); distinctartifactnamespace/logs,
+300s phases/2400s supervisor+5s. Setexpectedredmarkeronlythatcase. ExistingoldWaiting
+markerregex remainsbyteunchanged in ELSE; newguardedbranch parses exactone Applied
+prefix. Useexistingnative101+onefailure+exactmarker gate, safeuniqueDB/newinventory/
+role/start/reaping/privatecleanup. Do not weaken ownership/drop authority oraccept
+outerfailure asnativeRED. Coordinator0 onlymeans validatedexpectedoldfailure in
+bothroles (2native101 processes), notcurrentAppliedGREEN. Record bothstatuses.
+
+Test-first: desiredrefusalassertion is genuinehistoricalquotaRED; existingcurrent
+refusal alreadyimplemented. Do notcreatefake prodRED orstate. Parser/markercontrols
+exercise correctprefix/safeDB/duplicates/wrongprefix/missingproof andexistingoldRED
+helper withoutlaunchinguntrustedDBdrops. Build actualold/currentbefore liveleases,
+strictClippy/fmt/architecture/Bash/fixtureformat/source-restoration/registration/
+binary/compiler/lock/receipt hashes, sourcefreeze1128 andfixturepins final.
+
+FinalnewRED plus A fourselectors applied-handoff/report-before-drain/
+under-limit-increment-cancellation-before-report/live-work-frontier-red:12positive
+nativeprocesses plus4expectedoldnativefailures total16, allold/currentrolebinds.
+Knownoldgenuinepositiveproof consumesindependentDB; final10createdDB/privatehandoffs
+removed, prior22ownedDBinventoryunchanged. Rawgates/diagnostics exact, no invented
+agent-config/workspace/SDK/perfpasses. SameownCompose65118/privatetarget/df/sequential
+heavybuilds. OnlyB1/localQ10c.6b closes; B2/laterAppliedorders/bytes/fault/OSrecovery/
+outputdependentcompensation/quota/Q10c/nesting/activation/canonical remainopen.
