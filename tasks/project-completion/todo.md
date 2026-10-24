@@ -220,7 +220,7 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [x] B1b.2c.1d.0Q7c.1: Prove genuine old pending NONFINAL Return is drained before checkpoint/admission, with exact old source/bytes and actual original-target compensation through terminal native publication; b8f44488, evidence/legacy-nonfinal-return-acceptance-20261023. Four new positive phases and four preserved output-view phases pass; two separate old guard tests fail as expected. No production activation or broader Q7c closure.
 - [x] B1b.2c.1d.0Q7c.2: Prove genuine old OPEN/free-capacity scope drains before first admission and finalizes FAILED without new obligations;528e10fd, evidence/legacy-free-admission-acceptance-20261023. Five selectors pass12positive processes and four separate expected old failures; current cold verification/source/roles/native finish and owned cleanup are exact. Parent Q7c and canonical tasks remain open.
 - [x] B1b.2c.1d.0Q7c.3: Prove isolated genuine-old Waiting RED and exact public current DrainStarted for the only-live-work frontier;59618184, evidence/legacy-live-frontier-acceptance-20261023. Six selectors pass20positive processes and two separate expected old failures; original lifecycle/source/roles/cleanup preserved. Parent Q7c and canonical tasks remain open.
-- [ ] B1b.2c.1d.0Q7c.4: Prove genuine old E==4194304 free-admission control via actual current Admitted0, exact native write set and cold verification; reviewed plan evidence/legacy-equal-limit-decision-20261023. No equality scenario executed yet; no production change or wire-key observation claimed.
+- [x] B1b.2c.1d.0Q7c.4: Prove genuine old E==4194304 free-admission via exact current Admitted0, complete native delta and cold verification;52c827c7, evidence/legacy-equal-limit-acceptance-20261023. Six selectors pass16positive processes and four expected old failures; no production change or observed wire key. Parent Q7c/canonical tasks remain open.
 - [ ] B1b.2c.1d.0Q8: Accept guarded native new-reason writer. Source9fd9405f/109908be; four native behavioral cases pass, plus genuine empty/checkpointed guards and stopped-report compensation. ExistingOutputs live-worker discovery passes in ce6560c5; remaining evidence controls/upgrade gates stay open.
 - [x] B1b.2c.1d.0Q7bD: Correct unconditional report-outbox assumption to existing durable collection discovery, reviewed source/constitution/ADR mapping; scoped-output-refusal-discovery.md. Actual current report/discovery/compensation now has focused acceptance; post-ACK process recovery remains separate.
 - [ ] B1b.2c.1d.0Q7b: Complete exceptional report acceptance over the coupled implementation3710a5b7, preserving all current authority, exact receipt/fence/secret checks and one-transaction root/scoped phases; remaining fence/terminal/race/recovery controls are pending.
@@ -597,3 +597,32 @@ Evidence/reproduction: `tasks/project-completion/evidence/legacy-live-frontier-a
 Only Q7c.3 closes. Parent Q7c/Q8/master quota, equality/precedence/CAS, rollout,
 general nesting and canonical014 tasks remain open. No production/schema/grant/SDK
 or source/scoped-Finish activation change; no provider-undo/performance claim.
+
+### Genuine old exact4MiB admission — 2026-10-23
+
+Source/evidence52c827c7 accepts only §11.4 equality, localQ7c.4. Same public old
+20-completion boundary uses19values105000B/final102137B, nine210003B aggregate
+references/final207140B: actual L2097137/V2097167/E4194304exact. No tick after
+completion20; exact c9checkpoint1→finish→c10entry leaves WAITING/OPEN and no members.
+Dedicated18-field equality handoff preserves real source/projection across migration.
+Current actual frontier reports exactE; first public advance admits0. Complete
+native delta proves one stable READY instance/member/slot/reservation, admitted/
+charged/active counters+1, two exact journal envelopes and one task.ready outbox.
+Original history/source/output/payload/audit/receipt/ledger inventories remain exact;
+no stop/drain/Return/checkpoint/item1/backfill. Fresh verify has no durable effects.
+Ends at legitimate admission, not workflow completion; no poll or observed wire key.
+
+Final frozen coordinator wall times (including sequential builds): free-admission-equal-limit 112.06s, free-admission-red 108.91s, free-admission 107.40s, nonfinal-return 108.78s, nonfinal-return-red 105.62s, output-view 170.54s.
+Six selectors:16separate1passed/0failed/0ignored positives and four independent
+expected old0passed/1failed/0ignored exit101 controls; exact roles/counts/markers,
+archive/migration/toolchain/lock/executable/fixture/receipt hashes retained. Twelve
+new final DBs/private receipts/source directories removed; original22 owned harness
+DBs unchanged. All1127native/four fixture hashes identical. Clippy26.10s/fmt4.65s/
+architecture0.37s, overlay rustfmt and shell/source checks pass. Initial owner tests
+reached real admission but failed an incomplete expected member (two omitted null
+drain columns); safe diagnostic and schema-grounded correction retained separately.
+Corrected exploratory113.41s has four passing phases; fresh producer C1/current C2
+reviews None. No production change or artificial equality RED; strict > already
+allows equality. Evidence: `tasks/project-completion/evidence/legacy-equal-limit-acceptance-20261023/README.md`.
+OnlyQ7c.4 closes. ParentQ7c/Q8/master quota, precedence/CAS/rollout/general nesting/
+canonical014 remain open; source/scoped-Finish activation closed.

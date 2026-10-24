@@ -606,3 +606,32 @@ Evidence/reproduction: `tasks/project-completion/evidence/legacy-live-frontier-a
 Only Q7c.3 closes. Parent Q7c/Q8/master quota, equality/precedence/CAS, rollout,
 general nesting and canonical014 tasks remain open. No production/schema/grant/SDK
 or source/scoped-Finish activation change; no provider-undo/performance claim.
+
+### Genuine old exact4MiB admission — 2026-10-23
+
+Source/evidence52c827c7 accepts only §11.4 equality, localQ7c.4. Same public old
+20-completion boundary uses19values105000B/final102137B, nine210003B aggregate
+references/final207140B: actual L2097137/V2097167/E4194304exact. No tick after
+completion20; exact c9checkpoint1→finish→c10entry leaves WAITING/OPEN and no members.
+Dedicated18-field equality handoff preserves real source/projection across migration.
+Current actual frontier reports exactE; first public advance admits0. Complete
+native delta proves one stable READY instance/member/slot/reservation, admitted/
+charged/active counters+1, two exact journal envelopes and one task.ready outbox.
+Original history/source/output/payload/audit/receipt/ledger inventories remain exact;
+no stop/drain/Return/checkpoint/item1/backfill. Fresh verify has no durable effects.
+Ends at legitimate admission, not workflow completion; no poll or observed wire key.
+
+Final frozen coordinator wall times (including sequential builds): free-admission-equal-limit 112.06s, free-admission-red 108.91s, free-admission 107.40s, nonfinal-return 108.78s, nonfinal-return-red 105.62s, output-view 170.54s.
+Six selectors:16separate1passed/0failed/0ignored positives and four independent
+expected old0passed/1failed/0ignored exit101 controls; exact roles/counts/markers,
+archive/migration/toolchain/lock/executable/fixture/receipt hashes retained. Twelve
+new final DBs/private receipts/source directories removed; original22 owned harness
+DBs unchanged. All1127native/four fixture hashes identical. Clippy26.10s/fmt4.65s/
+architecture0.37s, overlay rustfmt and shell/source checks pass. Initial owner tests
+reached real admission but failed an incomplete expected member (two omitted null
+drain columns); safe diagnostic and schema-grounded correction retained separately.
+Corrected exploratory113.41s has four passing phases; fresh producer C1/current C2
+reviews None. No production change or artificial equality RED; strict > already
+allows equality. Evidence: `tasks/project-completion/evidence/legacy-equal-limit-acceptance-20261023/README.md`.
+OnlyQ7c.4 closes. ParentQ7c/Q8/master quota, precedence/CAS/rollout/general nesting/
+canonical014 remain open; source/scoped-Finish activation closed.
