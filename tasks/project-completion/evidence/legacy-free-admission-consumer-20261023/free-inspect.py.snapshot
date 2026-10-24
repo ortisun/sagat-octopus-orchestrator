@@ -1,0 +1,10 @@
+from pathlib import Path
+import json,os,subprocess
+root=Path('/tmp/sagat-completion-20261023/free-producer-gate');out=Path('/tmp/sagat-completion-20261023/free-current');admin=os.environ['SAGAT_TEST_DATABASE_URL'];q=Path('/tmp/sagat-completion-20261023/free-inspect.sql').read_text()
+for role in ['owner','runtime']:
+ for kind in ['red','positive']:
+  name=f'{role}-{kind}-c3';db=json.loads((root/name/'safe-phase.json').read_text())['database'];raw=subprocess.check_output(['psql',admin.rsplit('/',1)[0]+'/'+db,'-XAtq','-v','ON_ERROR_STOP=1','-c',q],env=dict(os.environ,PGCONNECT_TIMEOUT='5',PGOPTIONS='-c statement_timeout=5000'),timeout=12);v=json.loads(raw)
+  assert v['L']==2100000 and v['V']==2100030 and v['head']==v['journal_head']==v['telemetry_head'] and v['owner_output_absent'] and not v['owner_routed'] and v['sagas']==v['certificates']==v['capacity_rows']==v['quota_deltas']==0
+  if kind=='red':assert v['status']=='RUNNING' and v['scope']=='OPEN' and v['next']==v['admitted']==v['active']==v['members']==1 and v['rdl_audits']==v['drain_hint']==v['finish_hint']==0 and v['target_steps']==[{'node':'legacyWork','status':'READY','attempt':0}]
+  else:assert v['status']=='FAILED' and v['scope']=='FAILED' and v['stop_reason']=='FAILED' and v['stop_code']=='RUN_DATA_LIMIT' and v['owner_code']=='RUN_DATA_LIMIT' and v['next']==v['admitted']==v['active']==v['members']==v['reserved']==0 and v['rdl_audits']==v['drain_hint']==v['finish_hint']==1 and v['target_steps']==[]
+  (out/(name+'-independent-sql.json')).write_text(json.dumps(v,indent=2)+'\n');print(name,'independent native state verified')

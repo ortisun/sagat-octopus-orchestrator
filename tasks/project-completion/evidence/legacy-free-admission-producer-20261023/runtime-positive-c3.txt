@@ -1,0 +1,8 @@
+
+running 1 test
+test legacy_collection_output_producer::frozen_old_free_admission_frontier_producer ... old_free_admission_role role=runtime api=sagat_app store=sagat_app database=t_01a16b5f773a7227ad2fce2f12b37fcf
+old_free_admission_premise L=2100000 V=2100030 E=4200030 closed=10 checkpoints=20 members=0 free_capacity=true live_forward=0
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 505 filtered out; finished in 9.58s
+

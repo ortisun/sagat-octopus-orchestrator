@@ -1,0 +1,17 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "--no-run",
+    "--message-format=json",
+    "--manifest-path",
+    "tests/Cargo.toml",
+    "--test",
+    "integration_workflow_primitives"
+  ],
+  "exit_code": 0,
+  "seconds": 43.45,
+  "started_utc": "2026-10-24T00:39:05.821149+00:00",
+  "log": "build-c2.txt"
+}

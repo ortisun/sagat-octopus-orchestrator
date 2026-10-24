@@ -1,0 +1,7 @@
+{
+  "unit": "closed-selector/receipt/test/marker extension only",
+  "review_model": "gpt-6-astra",
+  "reasoning_effort": "xhigh",
+  "fresh_findings": "None",
+  "supervision_cleanup_unchanged": true
+}

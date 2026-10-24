@@ -1,0 +1,37 @@
+from pathlib import Path
+import os,json,subprocess,sys,hashlib,re,time
+root=Path('/tmp/sagat-completion-20261023/free-final');root.mkdir(mode=0o700,exist_ok=True)
+files=['tests/fixtures/legacy-collection-output/producer.rs','tests/integration/workflow-primitives/legacy_collection_output_view.rs','scripts/test-legacy-collection-output-view.sh','tests/fixtures/legacy-collection-output/README.md']
+def inputs():return {p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in files}
+before=inputs();(root/'fixture-inputs-before.json').write_text(json.dumps(before,indent=2)+'\n')
+base=dict(os.environ,SAGAT_Q5_OWNED_POSTGRES='1',RUST_MIN_STACK='16777216')
+subprocess.run([sys.executable,'/tmp/sagat-completion-20261023/freeze.py',str(root),'before'],check=True)
+subprocess.run([sys.executable,'/tmp/sagat-completion-20261023/database_snapshot.py',str(root/'databases-before.json')],env=base,check=True)
+rows=[]
+for case in ['free-admission-red','free-admission','nonfinal-return','nonfinal-return-red','output-view']:
+ artifact=root/('artifacts-'+case);env=dict(base,SAGAT_Q5_CASE=case,SAGAT_Q5_ARTIFACT_ROOT=str(artifact))
+ status=subprocess.run([sys.executable,'/tmp/sagat-completion-20261023/gate.py',str(root),case,'gtimeout','--signal=TERM','--kill-after=5s','1800s' if case=='output-view' else '2500s','bash','scripts/test-legacy-collection-output-view.sh'],env=env).returncode
+ if status:raise SystemExit(status)
+ assert inputs()==before
+ runs=list(artifact.glob('run.*'));assert len(runs)==1;r=runs[0]
+ assert(r/'artifacts/source.before').read_bytes()==(r/'artifacts/source.after').read_bytes()
+ assert(r/'artifacts/old-migrations.before').read_bytes()==(r/'artifacts/old-migrations.after').read_bytes()
+ assert not(r/'old-source').exists() and not list(r.glob('*/receipt*'))
+ for role in ['owner','runtime']:
+  for phase in (['producer'] if case.endswith('-red') else ['producer','consumer']):
+   log=(r/'logs'/f'{role}-{phase}.log').read_text()
+   if case.endswith('-red'):
+    marker='observed_legacy_free_admission_admitted_zero=true' if case.startswith('free-') else 'observed_legacy_nonfinal_return_checkpointed=true'
+    assert marker in log and 'test result: FAILED. 0 passed; 1 failed; 0 ignored;' in log;exit_code=101
+   else:assert 'test result: ok. 1 passed; 0 failed; 0 ignored;' in log;exit_code=0
+   if case!='output-view':
+    expected='sagat_app' if role=='runtime' else 'postgres';assert f'api={expected} store={expected}' in log
+   rows.append({'case':case,'role':role,'phase':phase,'native_exit_code':exit_code,'passed':int(exit_code==0),'failed':int(exit_code==101),'ignored':0,'test_harness_seconds':float(re.search(r'finished in ([0-9.]+)s',log)[1]),'artifact_run':str(r)})
+ subprocess.run([sys.executable,'/tmp/sagat-completion-20261023/database_snapshot.py',str(root/('databases-after-'+case+'.json'))],env=base,check=True)
+ assert json.loads((root/'databases-before.json').read_text())==json.loads((root/('databases-after-'+case+'.json')).read_text())
+ (root/'phases.json').write_text(json.dumps(rows,indent=2)+'\n')
+ subprocess.run([sys.executable,'/tmp/sagat-completion-20261023/freeze.py',str(root),'after'],check=True)
+ print('accepted selector',case,flush=True)
+assert len(rows)==16 and sum(p['passed'] for p in rows)==12 and sum(p['failed'] for p in rows)==4
+(root/'fixture-inputs-after.json').write_text(json.dumps(inputs(),indent=2)+'\n')
+print('final five-selector matrix:12 passing processes and4 separate expected old failures; no residual DBs',flush=True)

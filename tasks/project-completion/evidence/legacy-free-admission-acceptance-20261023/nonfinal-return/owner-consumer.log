@@ -1,0 +1,7 @@
+
+running 1 test
+current_nonfinal_role api=postgres store=postgres database=t_01a16b6983717671baf2144215ab852b
+test legacy_collection_output_view::current_frontier_drains_frozen_old_nonfinal_return_before_checkpoint ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 546 filtered out; finished in 1.30s
+

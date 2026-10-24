@@ -79,3 +79,38 @@ provider-side undo or general nested capacity. Source certification and scoped
 Finish production activation remain closed. Canonical project tasks stay open
 until their complete gates pass. Captured outcomes belong in project-completion
 evidence; a command listed here alone is not a passing result.
+
+
+## Free-admission frontier
+
+`free-admission` and `free-admission-red` are separate closed selectors. All eleven
+owners use plain legacyLine, without compensation/effect declarations. Exactly20
+old public successes retain105000 bytes each; ten aggregate references retain
+210003 bytes each. L=2100000,V=2100030,E=4200030>4194304.
+
+After success20, the old producer stops generic ticking. Exact normal calls
+checkpoint c9 index1, finish c9, then enter c10. Handoff has Run WAITING, c10 OPEN,
+two captured indices/values [[0,1],[1,2]], zero progress/members/reservations/tasks.
+Its separate RED calls old normal advance once more: actual Admitted{index:0}
+emits observed_legacy_free_admission_admitted_zero=true and intentionally fails
+the expected DrainStarted assertion. Each such Rust process must exit101 with
+one failure; its database never becomes a current-consumer input.
+
+Current must return exactly DrainStarted, DrainFinished (Run/scope/owner FAILED
+with original RUN_DATA_LIMIT), then AlreadyFinished after fresh verification.
+No admission, task, Return, checkpoint, compensation, new payload or source repair
+is allowed. Exact stop/drain/finish journals, native outboxes, original trace,
+existing_outputs audit and immutable Run/source/byte inventories are asserted.
+This adds only free-admission acceptance; other frontiers/CAS/rollout remain open.
+
+The private legacy-free-admission-frontier-v1 receipt contains exactly18 fields:
+the nonfinal format's20 minus forward_step_id and forward_target_key. Its case is
+free-admission, owner free-admission-role and head exactly closed_source_cutoff+1.
+It uses the same private file, ownership, deadline and credential-first cleanup
+rules. Actual results are retained in project-completion evidence; commands alone
+are not passing results.
+
+```sh
+SAGAT_Q5_CASE=free-admission-red bash scripts/test-legacy-collection-output-view.sh
+SAGAT_Q5_CASE=free-admission bash scripts/test-legacy-collection-output-view.sh
+```

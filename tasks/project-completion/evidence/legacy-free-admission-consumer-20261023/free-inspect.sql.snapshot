@@ -1,0 +1,17 @@
+SELECT jsonb_build_object('database',current_database(),'status',r.status,'stop_reason',r.stop_reason,'stop_code',r.stop_code,'head',r.run_version,
+ 'journal_head',(SELECT max(seq) FROM run_events WHERE run_id=r.id),'telemetry_head',(SELECT head_seq FROM telemetry_pending WHERE run_id=r.id),
+ 'scope',s.lifecycle,'next',s.next_admission_index,'admitted',s.admitted_count,'completed',s.completed_count,'active',s.active_count,
+ 'L',u.logical_output_bytes,'reserved',u.reserved_instances,'owner_status',o.status,'owner_code',o.failure_code,'owner_output_absent',o.output_digest IS NULL,'owner_routed',o.routed,
+ 'V',(SELECT sum(octet_length(p.content)) FROM iteration_scopes x JOIN payloads p ON p.tenant_id=x.tenant_id AND p.digest=x.result_digest WHERE x.run_id=r.id AND x.lifecycle='SUCCEEDED'),
+ 'members',(SELECT count(*) FROM collection_iterations WHERE scope_id=s.scope_id),
+ 'target_steps',(SELECT coalesce(jsonb_agg(jsonb_build_object('node',node,'status',status,'attempt',attempt) ORDER BY node),'[]') FROM steps WHERE run_id=r.id AND instance_path_nodes[1]='c10'),
+ 'target_checkpoints',(SELECT count(*) FROM iteration_checkpoints WHERE scope_id=s.scope_id),
+ 'sagas',(SELECT count(*) FROM scope_sagas WHERE run_id=r.id),'certificates',(SELECT count(*) FROM leaf_collection_success_certifications WHERE run_id=r.id),
+ 'capacity_rows',(SELECT count(*) FROM capacity_groups)+(SELECT count(*) FROM capacity_group_members)+(SELECT count(*) FROM capacity_group_finish_receipts),
+ 'quota_deltas',(SELECT count(*) FROM quota_transaction_deltas),
+ 'rdl_audits',(SELECT count(*) FROM audit_records WHERE resource_id=r.id::text AND action='run.data_limit_exceeded' AND reason='existing_outputs'),
+ 'drain_hint',(SELECT count(*) FROM event_outbox WHERE id=s.drain_outbox_id AND payload->>'reason'='FAILED'),
+ 'finish_hint',(SELECT count(*) FROM event_outbox WHERE id=s.finish_outbox_id AND payload->>'status'='FAILED'))
+FROM runs r JOIN iteration_scopes s ON s.run_id=r.id AND s.owner_node='c10'
+ JOIN run_instance_usage u ON u.run_id=r.id
+ JOIN steps o ON o.run_id=r.id AND o.node='c10' AND cardinality(o.instance_path_nodes)=0;

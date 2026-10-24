@@ -6,6 +6,8 @@ case "${SAGAT_Q5_CASE-output-view}" in
   output-view) fixture_case=output-view ;;
   nonfinal-return) fixture_case=nonfinal-return ;;
   nonfinal-return-red) fixture_case=nonfinal-return-red ;;
+  free-admission) fixture_case=free-admission ;;
+  free-admission-red) fixture_case=free-admission-red ;;
   *) echo "unknown SAGAT_Q5_CASE" >&2; exit 2 ;;
 esac
 # Bound the entire new fixture, including builds and cleanup, in a separate process group.
@@ -52,15 +54,27 @@ readonly old_commit="6c44a0e49670cf19660792cd1518d241e6c99b3b"
 old_test="legacy_collection_output_producer::frozen_old_collection_output_producer"
 current_test="legacy_collection_output_view::a_current_full_run_transaction_reads_frozen_legacy_collection_outputs"
 phase_seconds=1200
-if [[ "${fixture_case}" != output-view ]]; then
-  old_test="legacy_collection_output_producer::frozen_old_nonfinal_return_frontier_producer"
-  current_test="legacy_collection_output_view::current_frontier_drains_frozen_old_nonfinal_return_before_checkpoint"
-  phase_seconds=300
-fi
-if [[ "${fixture_case}" == nonfinal-return-red ]]; then
-  old_test="legacy_collection_output_producer::frozen_old_nonfinal_return_frontier_guard_red"
-fi
-readonly fixture_case old_test current_test phase_seconds
+expected_red_marker=""
+case "${fixture_case}" in
+  output-view) ;;
+  nonfinal-return|nonfinal-return-red)
+    old_test="legacy_collection_output_producer::frozen_old_nonfinal_return_frontier_producer"
+    current_test="legacy_collection_output_view::current_frontier_drains_frozen_old_nonfinal_return_before_checkpoint"
+    phase_seconds=300
+    if [[ "${fixture_case}" == nonfinal-return-red ]]; then
+      old_test="legacy_collection_output_producer::frozen_old_nonfinal_return_frontier_guard_red"
+      expected_red_marker='observed_legacy_nonfinal_return_checkpointed=true'
+    fi ;;
+  free-admission|free-admission-red)
+    old_test="legacy_collection_output_producer::frozen_old_free_admission_frontier_producer"
+    current_test="legacy_collection_output_view::current_frontier_drains_frozen_old_free_admission_before_first_member"
+    phase_seconds=300
+    if [[ "${fixture_case}" == free-admission-red ]]; then
+      old_test="legacy_collection_output_producer::frozen_old_free_admission_frontier_guard_red"
+      expected_red_marker='observed_legacy_free_admission_admitted_zero=true'
+    fi ;;
+esac
+readonly fixture_case old_test current_test phase_seconds expected_red_marker
 repo_root="$(git rev-parse --show-toplevel)"
 producer_overlay="${repo_root}/tests/fixtures/legacy-collection-output/producer.rs"
 consumer_source="${repo_root}/tests/integration/workflow-primitives/legacy_collection_output_view.rs"
@@ -386,9 +400,15 @@ from pathlib import Path
 p=Path(sys.argv[1])
 if stat.S_IMODE(p.stat().st_mode)!=0o600:raise SystemExit('receipt is not private')
 v=json.loads(p.read_text())
-if sys.argv[2]!='output-view':
-    fields='format source_commit case role database_name database_url runtime_database_url tenant other_tenant namespace run workflow_version scope_id scheduler_owner handoff_run_version closed_source_cutoff forward_step_id forward_target_key producer_witness_sha256 closed_source_sha256'.split()
-    if set(v)!=set(fields) or v['format']!='legacy-nonfinal-return-frontier-v1' or v['source_commit']!='6c44a0e49670cf19660792cd1518d241e6c99b3b' or v['case']!='nonfinal-return' or v['role']!=sys.argv[3]:raise SystemExit('invalid nonfinal receipt envelope')
+case=sys.argv[2]
+if case!='output-view':
+    fields='format source_commit case role database_name database_url runtime_database_url tenant other_tenant namespace run workflow_version scope_id scheduler_owner handoff_run_version closed_source_cutoff producer_witness_sha256 closed_source_sha256'.split()
+    if case in ('nonfinal-return','nonfinal-return-red'):
+        fields+=['forward_step_id','forward_target_key'];fmt='legacy-nonfinal-return-frontier-v1';kind='nonfinal-return'
+    elif case in ('free-admission','free-admission-red'):
+        fmt='legacy-free-admission-frontier-v1';kind='free-admission'
+    else:raise SystemExit('unknown private receipt case')
+    if set(v)!=set(fields) or v['format']!=fmt or v['source_commit']!='6c44a0e49670cf19660792cd1518d241e6c99b3b' or v['case']!=kind or v['role']!=sys.argv[3]:raise SystemExit('invalid private frontier receipt envelope')
 name=v.get('database_name')
 if not isinstance(name,str) or re.fullmatch(r't_[0-9a-f]{32}',name) is None:raise SystemExit('unsafe receipt database')
 print(name)
@@ -542,10 +562,10 @@ for role in owner runtime; do
   [[ -f "${producer_started_marker}" ]] || {
     echo "old producer was not launched; cleanup remains disarmed" >&2; exit 1;
   }
-  if [[ "${fixture_case}" == nonfinal-return-red ]]; then
-    if [[ "${producer_status}" != 101 ]] || ! grep -Fq 'observed_legacy_nonfinal_return_checkpointed=true' "${producer_log}" || ! grep -Fq 'test result: FAILED. 0 passed; 1 failed; 0 ignored;' "${producer_log}"; then
+  if [[ -n "${expected_red_marker}" ]]; then
+    if [[ "${producer_status}" != 101 ]] || ! grep -Fq "${expected_red_marker}" "${producer_log}" || ! grep -Fq 'test result: FAILED. 0 passed; 1 failed; 0 ignored;' "${producer_log}"; then
       cat "${producer_log}" >&2
-      echo "not the exact expected old nonfinal Return RED" >&2; exit 1
+      echo "not the exact expected old frontier RED" >&2; exit 1
     fi
     echo "${role}-expected-red-exit 101" >> "${manifest}"
     echo "${role}-expected-red-log-sha256 $(sha256 "${producer_log}")" >> "${manifest}"

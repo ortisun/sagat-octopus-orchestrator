@@ -1,0 +1,17 @@
+{
+  "command": [
+    "gtimeout",
+    "--signal=TERM",
+    "--kill-after=5s",
+    "300s",
+    "/tmp/sagat-completion-20261023/free-producer-gate/old-c3-binary",
+    "--exact",
+    "legacy_collection_output_producer::frozen_old_free_admission_frontier_guard_red",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 101,
+  "seconds": 8.65,
+  "started_utc": "2026-10-24T00:46:03.133320+00:00",
+  "log": "runtime-red-c3.txt"
+}

@@ -1,0 +1,17 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "--locked",
+    "--no-run",
+    "--message-format=json"
+  ],
+  "exit_code": 0,
+  "seconds": 50.68,
+  "started_utc": "2026-10-24T00:46:22.635165+00:00",
+  "log": "compile-c1.txt"
+}

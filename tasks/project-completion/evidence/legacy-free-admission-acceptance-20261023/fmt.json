@@ -1,0 +1,12 @@
+{
+  "command": [
+    "cargo",
+    "fmt",
+    "--all",
+    "--check"
+  ],
+  "exit_code": 0,
+  "seconds": 4.72,
+  "started_utc": "2026-10-24T00:50:17.576909+00:00",
+  "log": "fmt.txt"
+}
