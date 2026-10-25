@@ -185,6 +185,9 @@ pub struct VersionSummary {
     pub published_by: String,
     #[serde(with = "time::serde::rfc3339")]
     pub published_at: OffsetDateTime,
+    /// The payload classification rules pinned to the version: `0` for a version published before
+    /// the feature (no value of its runs is disclosed), `1` since.
+    pub classification_rules: u8,
 }
 
 impl From<&WorkflowVersion> for VersionSummary {
@@ -196,6 +199,7 @@ impl From<&WorkflowVersion> for VersionSummary {
             digest: v.digest().to_hex(),
             published_by: v.published_by().to_string(),
             published_at: v.published_at(),
+            classification_rules: v.classification_rules().as_u8(),
         }
     }
 }

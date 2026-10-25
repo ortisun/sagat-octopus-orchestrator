@@ -15,6 +15,7 @@ use sagat_application::dispatch::TriggerRegistration;
 use sagat_application::error::StoreError;
 use sagat_application::execution::compensation_id;
 use sagat_domain::audit::AuditRecord;
+use sagat_domain::classification::ClassificationRules;
 use sagat_domain::definition::{Workflow, WorkflowId, WorkflowVersion, WorkflowVersionId};
 use sagat_domain::identity::{Namespace, NamespaceId, Principal, Slug, Subject, TenantId};
 use sagat_domain::saga::SagaPlan;
@@ -59,7 +60,8 @@ macro_rules! select_workflow {
             "SELECT w.id, w.tenant_id, w.namespace_id, w.name, w.draft_revision, w.draft, ",
             "w.active_version_id, w.created_at, w.updated_at, ",
             "v.id AS v_id, v.version_number AS v_number, v.digest AS v_digest, ",
-            "v.published_by AS v_published_by, v.published_at AS v_published_at ",
+            "v.published_by AS v_published_by, v.published_at AS v_published_at, ",
+            "v.classification_rules AS v_classification_rules ",
             "FROM (SELECT * FROM workflows WHERE NOT internal) w ",
             "LEFT JOIN workflow_versions v ON v.tenant_id = w.tenant_id AND v.id = w.active_version_id ",
             $tail
@@ -492,7 +494,8 @@ impl DefinitionStore for PgDefinitionStore {
                 });
             }
             let existing = sqlx::query(
-                "SELECT id, version_number, published_by, published_at FROM workflow_versions \
+                "SELECT id, version_number, published_by, published_at, classification_rules \
+                 FROM workflow_versions \
                  WHERE tenant_id = $1 AND workflow_id = $2 AND digest = $3",
             )
             .bind(tenant.as_uuid())
@@ -702,7 +705,7 @@ impl DefinitionStore for PgDefinitionStore {
     ) -> Result<Option<VersionRecord>, StoreError> {
         sqlx::query(
             "SELECT id, tenant_id, workflow_id, version_number, digest, document, release_notes, \
-                    published_by, published_at \
+                    published_by, published_at, classification_rules \
              FROM workflow_versions WHERE tenant_id = $1 AND id = $2 AND workflow_id IN (SELECT id FROM workflows WHERE tenant_id=$1 AND NOT internal)",
         )
         .bind(tenant.as_uuid())
@@ -723,7 +726,7 @@ impl DefinitionStore for PgDefinitionStore {
     ) -> Result<Vec<VersionRecord>, StoreError> {
         sqlx::query(
             "SELECT id, tenant_id, workflow_id, version_number, digest, document, release_notes, \
-                    published_by, published_at \
+                    published_by, published_at, classification_rules \
              FROM workflow_versions \
              WHERE tenant_id = $1 AND workflow_id = $2 AND workflow_id IN (SELECT id FROM workflows WHERE tenant_id=$1 AND NOT internal) AND version_number > $3 \
              ORDER BY version_number LIMIT $4",
@@ -762,7 +765,7 @@ impl DefinitionStore for PgDefinitionStore {
 }
 
 const VERSION_SELECT_ONE: &str = "SELECT id, tenant_id, workflow_id, version_number, digest, \
-     document, release_notes, published_by, published_at \
+     document, release_notes, published_by, published_at, classification_rules \
      FROM workflow_versions WHERE tenant_id = $1 AND workflow_id = $2 AND workflow_id IN (SELECT id FROM workflows WHERE tenant_id=$1 AND NOT internal) AND version_number = $3";
 
 // ----------------------------------------------------------------------------- idempotency
@@ -890,6 +893,7 @@ fn workflow_from_row(row: &PgRow) -> Result<WorkflowRecord, StoreError> {
                 Digest::from_hex(&digest).ok_or_else(|| corrupt("digest"))?,
                 Subject::parse(&published_by).map_err(|_| corrupt("subject"))?,
                 col::<OffsetDateTime>(row, "v_published_at")?,
+                rules_from(col::<i16>(row, "v_classification_rules")?)?,
             ))
         }
     };
@@ -916,7 +920,16 @@ fn version_from_parts(
         digest,
         Subject::parse(&published_by).map_err(|_| corrupt("subject"))?,
         col::<OffsetDateTime>(row, "published_at")?,
+        rules_from(col::<i16>(row, "classification_rules")?)?,
     ))
+}
+
+/// The classification rules a version was published under, as stored.
+fn rules_from(stored: i16) -> Result<ClassificationRules, StoreError> {
+    u8::try_from(stored)
+        .ok()
+        .and_then(|rules| ClassificationRules::try_from(rules).ok())
+        .ok_or_else(|| corrupt("classification rules"))
 }
 
 fn version_record(row: &PgRow) -> Result<VersionRecord, StoreError> {

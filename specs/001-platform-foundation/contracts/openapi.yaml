@@ -4214,7 +4214,7 @@ components:
         releaseNotes: {type: string, maxLength: 2048}
     VersionSummary:
       type: object
-      required: [workflowId, versionId, versionNumber, digest]
+      required: [workflowId, versionId, versionNumber, digest, classificationRules]
       properties:
         workflowId: {type: string, format: uuid}
         versionId: {type: string, format: uuid}
@@ -4222,6 +4222,10 @@ components:
         digest: {type: string, pattern: '^[0-9a-f]{64}$'}
         publishedBy: {type: string}
         publishedAt: {type: string, format: date-time}
+        classificationRules:
+          type: integer
+          enum: [0, 1]
+          description: 'The payload classification rules pinned to the version when it was published (feature 016). `0` is a version published before payload classification: no value of its runs is disclosed, whatever its schemas say. `1` reads `x-sagat-classification`. Publishing a document identical to an existing version returns that version (`created: false`) with its own rules, so an unchanged legacy document stays at `0`; publish a changed document to adopt the rules.'
     WorkflowDraft:
       type: object
       required: [id, name, draftRevision, ir]
