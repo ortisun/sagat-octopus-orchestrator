@@ -430,3 +430,141 @@ fn supported_all_of_refs_remain_valid_controls() {
             .any(|finding| finding.code == Code::UnsupportedKeyword)
     );
 }
+
+fn open_inheritance_paths(document: &serde_json::Value) -> Vec<String> {
+    classification_check::check(document)
+        .findings
+        .iter()
+        .filter(|finding| finding.code == Code::InheritedOpen)
+        .map(|finding| finding.path.as_str().to_owned())
+        .collect()
+}
+
+/// FR-016-004: a declared child that inherits an open level from an annotated container warns,
+/// whichever keyword declares the child: `properties`, `prefixItems`, `items` or
+/// `additionalProperties`.
+#[test]
+fn inherited_open_is_raised_for_items_and_additional_properties_children() {
+    for (level, expected) in [("public", true), ("internal", true), ("pii", false)] {
+        let items = open_inheritance_paths(&json!({"inputSchema": {
+            "type": "array", "x-sagat-classification": level,
+            "items": {"type": "string"}
+        }}));
+        let additional = open_inheritance_paths(&json!({"inputSchema": {
+            "type": "object", "x-sagat-classification": level,
+            "additionalProperties": {"type": "string"}
+        }}));
+        assert_eq!(
+            items,
+            if expected {
+                vec!["/inputSchema/items".to_owned()]
+            } else {
+                vec![]
+            },
+            "items under {level}"
+        );
+        assert_eq!(
+            additional,
+            if expected {
+                vec!["/inputSchema/additionalProperties".to_owned()]
+            } else {
+                vec![]
+            },
+            "additionalProperties under {level}"
+        );
+    }
+    // A child that declares its own level, an unmarked root and a pattern floor stay quiet.
+    for quiet in [
+        json!({"type":"array","x-sagat-classification":"public",
+               "items":{"x-sagat-classification":"public"}}),
+        json!({"type":"object","x-sagat-classification":"public",
+               "additionalProperties":{"x-sagat-classification":"internal"}}),
+        json!({"type":"array","items":{"type":"string"}}),
+        json!({"type":"object","x-sagat-classification":"public",
+               "patternProperties":{"^a":{"type":"string"}},
+               "additionalProperties":{"type":"string"}}),
+    ] {
+        assert!(
+            open_inheritance_paths(&json!({"inputSchema": quiet})).is_empty(),
+            "{quiet}"
+        );
+    }
+}
+
+/// FR-016-004 / US01.4: an annotation under any key the walker does not read is refused, not
+/// silently ignored (it would otherwise leave the field `pii` with no feedback to the author).
+#[test]
+fn an_annotation_under_any_unwalked_key_is_refused() {
+    for key in [
+        "contentSchema",
+        "additionalItems",
+        "dependencies",
+        "definitions",
+        "x-vendor",
+        "dependentSchemas",
+        "unevaluatedItems",
+        "patternProperties",
+    ] {
+        let mut schema = json!({"type": "object", "x-sagat-classification": "public"});
+        schema[key] = json!({"anything": {"x-sagat-classification": "secret"}});
+        let result = classification_check::check(&json!({"inputSchema": schema}));
+        let expected = format!("/inputSchema/{key}");
+        assert!(
+            result.findings.iter().any(|finding| {
+                finding.code == Code::UnsupportedKeyword && finding.path.as_str() == expected
+            }),
+            "{key}: {:?}",
+            result.findings
+        );
+        assert!(!result.is_publishable(), "{key}");
+    }
+    // A schema array under `items` is not read either.
+    let result = classification_check::check(&json!({"inputSchema": {
+        "type": "array", "x-sagat-classification": "public",
+        "items": [{"x-sagat-classification": "secret"}]
+    }}));
+    assert!(result.findings.iter().any(|finding| {
+        finding.code == Code::UnsupportedKeyword && finding.path.as_str() == "/inputSchema/items"
+    }));
+}
+
+/// The controls of the rule above: names of properties are not keywords, and a `$ref` target is
+/// walked wherever it lives.
+#[test]
+fn walked_places_stay_accepted_whatever_their_names() {
+    let result = classification_check::check(&json!({"inputSchema": {
+        "type": "object", "x-sagat-classification": "public",
+        "properties": {
+            "contentSchema": {"x-sagat-classification": "public", "type": "string"},
+            "x-vendor": {"x-sagat-classification": "internal", "type": "string"},
+            "dependencies": {"$ref": "#/definitions/shared"},
+            "viaVendor": {"$ref": "#/x-vendor-defs/shared"}
+        },
+        "$defs": {"unused": {"x-sagat-classification": "secret"}},
+        "definitions": {"shared": {"x-sagat-classification": "secret", "type": "string"}},
+        "x-vendor-defs": {"shared": {"x-sagat-classification": "pii", "type": "string"}}
+    }}));
+    assert!(
+        !result
+            .findings
+            .iter()
+            .any(|finding| finding.code == Code::UnsupportedKeyword),
+        "{:?}",
+        result.findings
+    );
+    assert!(result.is_publishable(), "{:?}", result.findings);
+}
+
+/// A `$ref` target is read, but an unread key inside the target is still unread.
+#[test]
+fn an_unwalked_key_inside_a_ref_target_is_still_refused() {
+    let result = classification_check::check(&json!({"inputSchema": {
+        "type": "object", "x-sagat-classification": "public",
+        "properties": {"a": {"$ref": "#/$defs/a"}},
+        "$defs": {"a": {"contentSchema": {"x-sagat-classification": "secret"}}}
+    }}));
+    assert!(result.findings.iter().any(|finding| {
+        finding.code == Code::UnsupportedKeyword
+            && finding.path.as_str() == "/inputSchema/$defs/a/contentSchema"
+    }));
+}

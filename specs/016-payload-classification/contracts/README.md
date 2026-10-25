@@ -280,7 +280,11 @@ be the caller (D306); the audit record shows actor and subject.
   `classification` array of `{carrier, nodeId?, path, level, declared}` (the effective level of each
   declared location, `declared` false when inherited), at most 500 entries, and `classificationTruncated`.
 - `DiffFinding.code` description gains `CLASSIFICATION_RELAXED` and `CLASSIFICATION_TIGHTENED`
-  (attention, not breaking).
+  (attention, not breaking; a side with no schema for the location, or under rules `0`, counts as
+  `undisclosed`), the carrier codes `CLASSIFICATION_TOO_COMPLEX`, `_UNRESOLVED_REF` and
+  `_UNSUPPORTED_KEYWORD` (attention: the carrier was not compared) and `MORE_FINDINGS`.
+- `VersionSummary` gains the required `classificationRules` (`0` or `1`), the rules pinned to the
+  version when it was published (D661).
 - `Error.details.reason` description gains the five reasons above.
 
 ### 2.4 Event inbox and dead letters (US08, `x-implemented` stays `'004'`, marked `x-extended: '016'`)
@@ -306,7 +310,7 @@ type InboxEvent = {
   dataDisclosure: "revealed" | "structure-only";   // required (new)
   dataSizeBytes: number;                           // required (new): bytes of the stored payload
   data?: object;                                   // present only when dataDisclosure is "revealed"; was required
-  dataStructure?: PayloadStructure;                // present only when "structure-only"; the ADR-0028 type
+  dataStructure?: PayloadStructure | { kind: "opaque" };  // present only when "structure-only"; opaque when the data cannot be shaped
 };
 
 type DeadLetter = {

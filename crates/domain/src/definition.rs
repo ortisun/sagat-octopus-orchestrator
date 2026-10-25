@@ -8,6 +8,7 @@
 
 use time::OffsetDateTime;
 
+use crate::classification::ClassificationRules;
 use crate::identity::{
     IdentityError, Namespace, NamespaceId, Permission, Principal, Slug, Subject, TenantId,
 };
@@ -141,6 +142,7 @@ pub struct WorkflowVersion {
     digest: Digest,
     published_by: Subject,
     published_at: OffsetDateTime,
+    classification_rules: ClassificationRules,
 }
 
 impl WorkflowVersion {
@@ -170,11 +172,13 @@ impl WorkflowVersion {
             digest,
             published_by: principal.subject().clone(),
             published_at: now,
+            classification_rules: ClassificationRules::CURRENT,
         })
     }
 
     /// Rebuilds a version from trusted storage. Performs no authorization.
     #[must_use]
+    #[allow(clippy::too_many_arguments)] // one argument per stored column
     pub const fn restore(
         id: WorkflowVersionId,
         tenant_id: TenantId,
@@ -183,6 +187,7 @@ impl WorkflowVersion {
         digest: Digest,
         published_by: Subject,
         published_at: OffsetDateTime,
+        classification_rules: ClassificationRules,
     ) -> Self {
         Self {
             id,
@@ -192,6 +197,7 @@ impl WorkflowVersion {
             digest,
             published_by,
             published_at,
+            classification_rules,
         }
     }
 
@@ -228,5 +234,13 @@ impl WorkflowVersion {
     #[must_use]
     pub const fn published_at(&self) -> OffsetDateTime {
         self.published_at
+    }
+
+    /// The classification rules in force when the version was published; stored with it and never
+    /// changed (FR-016-005). `NONE` for a version published before payload classification, which
+    /// stays so when its identical document is published again (the version is found by digest).
+    #[must_use]
+    pub const fn classification_rules(&self) -> ClassificationRules {
+        self.classification_rules
     }
 }

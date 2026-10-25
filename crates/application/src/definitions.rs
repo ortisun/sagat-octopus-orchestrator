@@ -9,6 +9,7 @@
 use std::future::Future;
 
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
+use sagat_domain::classification::ClassificationRules;
 use sagat_domain::definition::{Workflow, WorkflowId, WorkflowVersion, WorkflowVersionId};
 use sagat_domain::identity::{Namespace, NamespaceId, Permission, Principal, Slug, TenantId};
 use sagat_domain::saga::{SagaPlan, compensation_plans};
@@ -418,12 +419,28 @@ pub trait IrCodec: Send + Sync {
     }
 
     /// What differs between two documents, compared as written (so a draft that does not
-    /// validate can be compared with the version it came from).
+    /// validate can be compared with the version it came from), both sides under the current
+    /// classification rules.
     ///
     /// # Errors
     /// [`IrError::TooLarge`] or [`IrError::Malformed`] when a side is not a JSON object within
     /// [`MAX_IR_BYTES`].
     fn diff(&self, from: &[u8], to: &[u8]) -> Result<crate::diff::DocumentDiff, IrError>;
+
+    /// [`IrCodec::diff`] told which classification rules each side was published under, so that a
+    /// side under rules `0` (which discloses no value) is compared as such. An adapter that does
+    /// not read classification annotations keeps the default, which ignores `rules`.
+    ///
+    /// # Errors
+    /// As [`IrCodec::diff`].
+    fn diff_with_rules(
+        &self,
+        from: &[u8],
+        to: &[u8],
+        _rules: crate::diff::DiffRules,
+    ) -> Result<crate::diff::DocumentDiff, IrError> {
+        self.diff(from, to)
+    }
 }
 
 /// How an idempotent write is recognised: the key the client chose and the bytes that identify the
@@ -1141,12 +1158,21 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
             .map(|version| DiffRef::Version(version.number()));
         let from = side(from, default_from);
         let to = side(to, Some(DiffRef::Draft));
-        let resolve = async |reference: Option<DiffRef>| -> Result<(DiffSide, Vec<u8>), AppError> {
+        // A draft is published under the current rules; a version under the ones it pinned.
+        let resolve = async |reference: Option<DiffRef>| -> Result<
+            (DiffSide, Vec<u8>, ClassificationRules),
+            AppError,
+        > {
             match reference {
-                None => Ok((DiffSide::Empty, b"{}".to_vec())),
+                None => Ok((
+                    DiffSide::Empty,
+                    b"{}".to_vec(),
+                    ClassificationRules::CURRENT,
+                )),
                 Some(DiffRef::Draft) => Ok((
                     DiffSide::Draft(record.workflow.draft_revision()),
                     record.draft.clone(),
+                    ClassificationRules::CURRENT,
                 )),
                 Some(DiffRef::Version(number)) => {
                     let version = self
@@ -1154,15 +1180,26 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                         .get_version(principal.tenant_id(), id, number)
                         .await?
                         .ok_or(AppError::NotFound)?;
-                    Ok((DiffSide::Version(number), version.document))
+                    Ok((
+                        DiffSide::Version(number),
+                        version.document,
+                        version.version.classification_rules(),
+                    ))
                 }
             }
         };
-        let (from_side, from_bytes) = resolve(from).await?;
-        let (to_side, to_bytes) = resolve(to).await?;
+        let (from_side, from_bytes, from_rules) = resolve(from).await?;
+        let (to_side, to_bytes, to_rules) = resolve(to).await?;
         let diff = self
             .codec
-            .diff(&from_bytes, &to_bytes)
+            .diff_with_rules(
+                &from_bytes,
+                &to_bytes,
+                crate::diff::DiffRules {
+                    from: from_rules,
+                    to: to_rules,
+                },
+            )
             .map_err(|e| AppError::InvalidDefinition(Box::new(e)))?;
         Ok(DefinitionDiff {
             from: from_side,

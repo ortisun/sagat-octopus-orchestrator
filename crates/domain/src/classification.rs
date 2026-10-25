@@ -89,8 +89,10 @@ impl fmt::Display for Level {
 /// Effective disclosure capabilities for one request.
 ///
 /// `pii` is true only when `internal` is true and the caller both holds a namespace reveal grant
-/// and explicitly requested a reveal. The application establishes that invariant when it builds
-/// this value from authorization facts.
+/// and explicitly requested a reveal. The application establishes the grant and the request when
+/// it builds this value from authorization facts; [`Audience::new`] enforces the order of the
+/// levels (no principal sees a stricter level than a looser one), so `pii` without `internal`
+/// cannot be constructed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Audience {
     pub internal: bool,
@@ -103,7 +105,7 @@ impl Audience {
     pub const fn new(internal: bool, pii: bool, structure: bool) -> Self {
         Self {
             internal,
-            pii,
+            pii: internal && pii,
             structure,
         }
     }

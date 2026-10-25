@@ -199,7 +199,7 @@ extensions, including annotations whose values are invalid under the new authori
 | Restricting event values breaks clients that read `data`, `body` or `headers` (G292) | Owner decision D302; OpenAPI descriptions, API reference, runbook and release notes; the repository's own readers (contract and e2e suites) updated in T016-064; Studio, CLI and SDKs read none of them (checked) |
 | Cost of compiling and validating per response | Bounds, cache, one admission charge; measured (T016-053); a request cannot exceed 256 KiB of payload and 64 KiB of schema |
 | Reveal audit records grow without bound | They are bounded by the namespace API bucket (ADR-0027) and the number of holders; the audit retention of feature 009 applies |
-| A grant outlives a demotion or a removed member | The grant row cascades with the membership; the effective check also requires `payload:read-internal` at read time |
+| A grant outlives a demotion or a removed member | The grant row cascades with the membership, a trigger removes the subject's grants when the role changes (D663), and the effective check also requires `payload:read-internal` at read time |
 | A published document is read differently by a later release | `classification_rules` pins the interpreter; version 1 is never reinterpreted |
 | Studio or CLI echo a revealed value into a store, log or clipboard history | No persistence, abort and clear on change, the CLI prints to stdout only, control characters neutralised; Studio storage assertions in the Chromium journey |
 | Dependency on unmerged branches (run result; 014) | Recorded in the spec; `source: "result"` is its own task gated on G21; nothing links to files absent from this branch |

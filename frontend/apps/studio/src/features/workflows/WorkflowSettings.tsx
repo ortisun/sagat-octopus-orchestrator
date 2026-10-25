@@ -27,6 +27,9 @@ type Validation = components['schemas']['Validation'];
 type DefinitionDiff = components['schemas']['DefinitionDiff'];
 type ClassificationEntry = components['schemas']['ClassificationReportEntry'] & { bodyName?: string };
 
+/** The attention codes of a carrier the version comparison could not walk completely. */
+const UNCOMPARED_CODES = new Set(['CLASSIFICATION_TOO_COMPLEX', 'CLASSIFICATION_UNRESOLVED_REF', 'CLASSIFICATION_UNSUPPORTED_KEYWORD']);
+
 const LEVEL_SHAPES = { public: '○', internal: '□', pii: '△', secret: '◇' } as const;
 
 function level(levelName: ClassificationEntry['level']) {
@@ -93,6 +96,9 @@ function ClassificationReport({ doc }: { doc: IrDocument }) {
   const entries = current.validation?.classification ?? [];
   const inheritedWarnings = (current.validation?.warnings ?? []).filter((warning) => warning.code === 'CLASSIFICATION_INHERITED_OPEN');
   const classificationChanges = (current.diff?.attention ?? []).filter((finding) => finding.code === 'CLASSIFICATION_RELAXED' || finding.code === 'CLASSIFICATION_TIGHTENED');
+  // A carrier the comparison could not walk completely is compared in no part: say so, because
+  // a relaxation inside it is not in the list above.
+  const uncomparedCarriers = (current.diff?.attention ?? []).filter((finding) => UNCOMPARED_CODES.has(finding.code));
 
   return (
     <section aria-label="Classification report">
@@ -101,7 +107,7 @@ function ClassificationReport({ doc }: { doc: IrDocument }) {
       <Button onClick={load} disabled={current.phase === 'loading'}>{current.phase === 'loading' ? 'Reviewing classification…' : 'Review effective classification'}</Button>
       {current.phase === 'loading' ? <p role="status">Checking effective classification…</p> : null}
       {(current.failures ?? 0) > 0 ? <Banner tone="warn">The platform could not complete {current.failures} of the classification checks. Try the review again.</Banner> : null}
-      {current.phase === 'loaded' && (current.failures ?? 0) === 0 && entries.length === 0 && inheritedWarnings.length === 0 && classificationChanges.length === 0 ? <p>No classified schema locations or classification changes were reported.</p> : null}
+      {current.phase === 'loaded' && (current.failures ?? 0) === 0 && entries.length === 0 && inheritedWarnings.length === 0 && classificationChanges.length === 0 && uncomparedCarriers.length === 0 ? <p>No classified schema locations or classification changes were reported.</p> : null}
       {entries.length > 0 ? (
         <table className="data">
           <caption>Effective classification of declared schema locations</caption>
@@ -126,6 +132,14 @@ function ClassificationReport({ doc }: { doc: IrDocument }) {
           <strong>Inherited open levels ({inheritedWarnings.length}).</strong>
           <ul>
             {inheritedWarnings.map((warning, index) => <li key={`${warning.path ?? ''}-${index}`}><code>{warning.path ?? '/ (root)'}</code> {warning.message}</li>)}
+          </ul>
+        </div>
+      ) : null}
+      {uncomparedCarriers.length > 0 ? (
+        <div className="banner warn" role="status">
+          <strong>Some schemas could not be compared ({uncomparedCarriers.length}).</strong> Their levels were not compared, so a change inside them is not listed. Fix the schema and review again.
+          <ul>
+            {uncomparedCarriers.map((finding, index) => <li key={`${finding.code}-${finding.path ?? ''}-${index}`}><code>{finding.path ?? '/ (root)'}</code> {finding.message} <span className="hint">({finding.code})</span></li>)}
           </ul>
         </div>
       ) : null}

@@ -142,3 +142,92 @@ async fn denied_audit_is_best_effort_but_success_audit_is_mandatory() {
         "values cannot cross a failed required audit"
     );
 }
+
+/// Constitution V: probing the event reads with a namespace of another tenant is the opaque 404 and
+/// leaves a `CrossTenantAccessDenied` record against the tenant that probed, for the three
+/// operations (`getInboxEvent`, `getConnectorDeadLetter`, `listConnectorDeadLetters`).
+#[tokio::test]
+async fn cross_tenant_probes_of_the_event_reads_are_audited_against_the_prober() {
+    use sagat_domain::audit::AuditAction;
+    use sagat_domain::connectors::ConnectorId;
+    use uuid::Uuid;
+
+    let w = world().await;
+    let service = EventPayloadService::new(w.store.clone(), SystemClock, JsonPayloadProjector);
+    let key = EventKey {
+        source: Slug::parse("source-a").unwrap(),
+        event_id: EventId::parse("event-probe").unwrap(),
+    };
+    let audited = || async {
+        sqlx::query_scalar::<_, String>(
+            "SELECT resource_id FROM audit_records WHERE tenant_id = $1 AND action = $2",
+        )
+        .bind(w.other_admin.tenant_id().as_uuid())
+        .bind(AuditAction::CrossTenantAccessDenied.as_str())
+        .fetch_all(&w.db.pool)
+        .await
+        .unwrap()
+    };
+    assert!(audited().await.is_empty(), "nothing probed yet");
+    // The probes are written off the response path; each one is awaited before the next so that a
+    // collapsed repeat cannot hide a missing one.
+    let probes: [(&str, Result<(), AppError>); 3] = [
+        (
+            "event",
+            service
+                .prepare_event(
+                    &w.other_admin,
+                    w.namespace.id(),
+                    key,
+                    EventReveal::Structure,
+                    &ctx(),
+                )
+                .await
+                .map(|_| ()),
+        ),
+        (
+            "dead letter",
+            service
+                .prepare_dead_letter(
+                    &w.other_admin,
+                    w.namespace.id(),
+                    ConnectorId::new(Uuid::new_v4()),
+                    Some(Uuid::new_v4()),
+                    EventReveal::Pii,
+                    &ctx(),
+                )
+                .await
+                .map(|_| ()),
+        ),
+        (
+            "dead letter list",
+            service
+                .prepare_dead_letter(
+                    &w.other_admin,
+                    w.namespace.id(),
+                    ConnectorId::new(Uuid::new_v4()),
+                    None,
+                    EventReveal::Structure,
+                    &ctx(),
+                )
+                .await
+                .map(|_| ()),
+        ),
+    ];
+    for (what, outcome) in probes {
+        assert_eq!(outcome, Err(AppError::NotFound), "{what}");
+    }
+    let rows = super::support::eventually("the probes are audited", || async {
+        let rows = audited().await;
+        (!rows.is_empty()).then_some(rows)
+    })
+    .await;
+    assert!(
+        rows.iter().all(|r| *r == w.namespace.id().to_string()),
+        "naming the namespace they asked for, and no value"
+    );
+    assert!(
+        !rows.is_empty(),
+        "at least the first probe (identical repeats collapse)"
+    );
+}

@@ -384,3 +384,74 @@ async fn http_repeated_delete_returns_not_found_and_responses_are_not_cached() {
         assert_eq!(response.status(), expected);
     }
 }
+
+async fn effective(w: &World, subject: &sagat_domain::identity::Principal) -> bool {
+    let mut tx = w.db.pool.begin().await.expect("transaction");
+    let granted = has_effective_payload_reveal_grant(
+        &mut tx,
+        w.admin.tenant_id(),
+        w.namespace.id(),
+        subject.subject(),
+    )
+    .await
+    .expect("effective grant");
+    tx.rollback().await.expect("rollback");
+    granted
+}
+
+/// D275: the grant is revoked with the membership, and a change of role revokes it too, so a
+/// demotion that is undone later does not bring a grant back that nobody renewed.
+#[tokio::test]
+async fn a_change_of_role_revokes_the_grants_and_a_re_promotion_does_not_revive_them() {
+    let w = world().await;
+    let service = grants(&w);
+    let namespace = w.namespace.id();
+    let member = w.member("revived-grant", Role::Developer).await;
+    let scope = service
+        .prepare(&w.admin, namespace, &ctx())
+        .await
+        .expect("scope");
+    service
+        .grant(&scope, member.subject().as_str(), &ctx())
+        .await
+        .expect("grant");
+    assert!(effective(&w, &member).await, "granted, a developer");
+
+    let set_role = async |role: &str| {
+        sqlx::query("UPDATE memberships SET role=$3 WHERE tenant_id=$1 AND subject=$2")
+            .bind(w.admin.tenant_id().as_uuid())
+            .bind(member.subject().as_str())
+            .bind(role)
+            .execute(&w.db.pool)
+            .await
+            .expect("change role");
+    };
+    set_role("viewer").await;
+    assert!(
+        !effective(&w, &member).await,
+        "a viewer reads no internal value"
+    );
+    set_role("developer").await;
+    assert!(
+        !effective(&w, &member).await,
+        "the developer of today is not the developer who was granted"
+    );
+    assert_eq!(grant_count(&w, namespace).await, 0);
+
+    // Granting again works, and a change of something else on the membership keeps the grant.
+    service
+        .grant(&scope, member.subject().as_str(), &ctx())
+        .await
+        .expect("grant again");
+    assert!(effective(&w, &member).await);
+    sqlx::query("UPDATE memberships SET role=role WHERE tenant_id=$1 AND subject=$2")
+        .bind(w.admin.tenant_id().as_uuid())
+        .bind(member.subject().as_str())
+        .execute(&w.db.pool)
+        .await
+        .expect("update without a change of role");
+    assert!(
+        effective(&w, &member).await,
+        "the same role keeps the grant"
+    );
+}

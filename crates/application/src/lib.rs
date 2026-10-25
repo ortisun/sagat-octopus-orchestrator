@@ -11,6 +11,7 @@ pub mod bindings;
 pub mod capacity_finish;
 pub mod chain_progress;
 pub mod classification;
+pub mod classification_index;
 pub mod clock;
 pub mod collection_source;
 pub mod connectors;

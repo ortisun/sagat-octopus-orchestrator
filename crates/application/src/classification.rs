@@ -505,6 +505,10 @@ pub enum ClassificationCarrierStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ClassificationWalkStatus {
     pub carriers: Vec<ClassificationCarrierStatus>,
+    /// Schema locations and schema expansions the walks visited, dry passes included. A cost
+    /// measure for budgets and tests, not a limit: it grows with the size of the carriers, once
+    /// per pass, and never with the number of questions asked of the result.
+    pub steps: u64,
 }
 
 impl ClassificationWalkStatus {

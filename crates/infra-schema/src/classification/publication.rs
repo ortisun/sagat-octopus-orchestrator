@@ -10,23 +10,23 @@ use sagat_application::classification::{
     MAX_CARRIER_BYTES, MAX_CLASSIFICATION_FINDINGS, MAX_CLASSIFICATION_REPORT_ENTRIES,
     MAX_REF_EXPANSIONS, MAX_SCHEMA_DEPTH,
 };
+use sagat_application::classification_index::ClassificationLocationIndex;
 use sagat_domain::classification::Level;
 use sagat_domain::workflow::NodeId;
 use serde_json::Value;
 
 const ANNOTATION: &str = "x-sagat-classification";
-const UNSUPPORTED_APPLICATORS: [&str; 11] = [
-    "patternProperties",
-    "if",
-    "then",
-    "else",
-    "dependentSchemas",
-    "contains",
-    "propertyNames",
-    "not",
-    "unevaluatedProperties",
-    "unevaluatedItems",
-    "$dynamicRef",
+/// Keywords the walker reads (FR-016-003). An annotation under any other key of a schema is never
+/// read, so it is refused instead of left inert. A `$ref` target is walked wherever it lives.
+const WALKED_KEYWORDS: [&str; 8] = [
+    "properties",
+    "items",
+    "prefixItems",
+    "additionalProperties",
+    "allOf",
+    "anyOf",
+    "oneOf",
+    "$defs",
 ];
 
 #[must_use]
@@ -55,143 +55,17 @@ pub fn visit_classification_locations(
 }
 
 /// Resolves one semantic location using the same walk and fallback rules as publication analysis.
+///
+/// One call walks the whole document; a caller that resolves many locations of one document builds a
+/// [`ClassificationLocationIndex`] from [`visit_classification_locations`] once instead.
 #[must_use]
 pub fn resolve_classification_location(
     document: &Value,
     carrier: &CarrierPointer,
     location: &[ClassificationSegment],
 ) -> ClassificationResolution {
-    let (status, root) = location_at(document, carrier, &[]);
-    if let Some(failure) = status.failure(carrier) {
-        return ClassificationResolution::Incomplete(failure.clone());
-    }
-    let Some(mut current) = root else {
-        return ClassificationResolution::AbsentCarrier;
-    };
-    let mut selected = Vec::with_capacity(location.len());
-    let mut location_present = true;
-    for requested in location {
-        let mut exact = selected.clone();
-        exact.push(requested.clone());
-        if let (_, Some(found)) = location_at(document, carrier, &exact) {
-            selected = exact;
-            current = found;
-            continue;
-        }
-
-        let fallback = match requested {
-            ClassificationSegment::Property(_) => ClassificationSegment::AdditionalProperty,
-            ClassificationSegment::Index(_) => ClassificationSegment::RemainingItem,
-            ClassificationSegment::AdditionalProperty | ClassificationSegment::RemainingItem => {
-                return ClassificationResolution::Resolved {
-                    level: current.level.stricter(Level::UNMARKED),
-                    source_path: current.source_path,
-                    location_present: false,
-                };
-            }
-        };
-        let mut fallback_path = selected.clone();
-        fallback_path.push(fallback);
-        if let (_, Some(found)) = location_at(document, carrier, &fallback_path) {
-            selected = fallback_path;
-            current = found;
-            location_present = false;
-        } else {
-            return ClassificationResolution::Resolved {
-                level: current.level.stricter(Level::UNMARKED),
-                source_path: current.source_path,
-                location_present: false,
-            };
-        }
-    }
-    ClassificationResolution::Resolved {
-        level: current.level,
-        source_path: current.source_path,
-        location_present,
-    }
-}
-
-fn location_at(
-    document: &Value,
-    carrier: &CarrierPointer,
-    location: &[ClassificationSegment],
-) -> (ClassificationWalkStatus, Option<ClassificationLocation>) {
-    let mut found = None;
-    let mut take = |candidate: &ClassificationLocation| {
-        if candidate.location == location {
-            found = Some(candidate.clone());
-        }
-    };
-    let status = visit_one_carrier(document, carrier, &mut take);
-    (status, found)
-}
-
-fn visit_one_carrier(
-    document: &Value,
-    wanted: &CarrierPointer,
-    visitor: &mut dyn FnMut(&ClassificationLocation),
-) -> ClassificationWalkStatus {
-    let selected = match wanted {
-        CarrierPointer::Input => document
-            .get("inputSchema")
-            .map(|schema| (schema, "/inputSchema".to_owned(), false)),
-        CarrierPointer::Result => document
-            .get("outputSchema")
-            .map(|schema| (schema, "/outputSchema".to_owned(), false)),
-        CarrierPointer::NodeOutput(wanted_node) => document
-            .get("nodes")
-            .and_then(Value::as_array)
-            .and_then(|nodes| select_node_carrier(nodes, "/nodes", wanted_node)),
-        CarrierPointer::BodyNodeOutput { body, node } => document
-            .get("bodies")
-            .and_then(Value::as_object)
-            .and_then(|bodies| bodies.get(body.as_str()))
-            .and_then(|body| body.get("nodes"))
-            .and_then(Value::as_array)
-            .and_then(|nodes| {
-                select_node_carrier(
-                    nodes,
-                    &format!("/bodies/{}/nodes", escape(body.as_str())),
-                    node,
-                )
-            }),
-    };
-    let Some((schema, path, always_check)) = selected else {
-        return ClassificationWalkStatus::default();
-    };
-    let mut analysis = Analysis::default();
-    let mut status = ClassificationWalkStatus::default();
-    let mut visitor = Some(visitor);
-    process_carrier(
-        schema,
-        wanted.clone(),
-        &path,
-        always_check,
-        false,
-        &mut analysis,
-        &mut status,
-        &mut visitor,
-    );
-    status
-}
-
-fn select_node_carrier<'a>(
-    nodes: &'a [Value],
-    nodes_path: &str,
-    wanted: &NodeId,
-) -> Option<(&'a Value, String, bool)> {
-    nodes.iter().enumerate().find_map(|(index, candidate)| {
-        if !matches!(
-            candidate.get("type").and_then(Value::as_str),
-            Some("activity" | "script" | "waitEvent" | "child")
-        ) || candidate.get("id").and_then(Value::as_str) != Some(wanted.as_str())
-        {
-            return None;
-        }
-        candidate
-            .get("outputSchema")
-            .map(|schema| (schema, format!("{nodes_path}/{index}/outputSchema"), true))
-    })
+    ClassificationLocationIndex::build(|visitor| visit_classification_locations(document, visitor))
+        .resolve(carrier, location)
 }
 
 type Visitor<'a> = Option<&'a mut dyn FnMut(&ClassificationLocation)>;
@@ -351,7 +225,8 @@ fn process_carrier(
         false,
         visitor,
     );
-    let _ = dry.scan_schema(schema, document_path, &mut HashSet::new());
+    dry.ref_targets = ref_targets(schema, document_path);
+    let _ = dry.scan_schema(schema, document_path, &mut HashSet::new(), None);
     dry.expansions = 0;
     dry.walk_location(
         vec![SchemaNode::root(schema, document_path)],
@@ -360,6 +235,7 @@ fn process_carrier(
         true,
         0,
     );
+    status.steps += dry.steps;
     if let Some(failure) = dry.failure.take() {
         status
             .carriers
@@ -385,6 +261,7 @@ fn process_carrier(
         0,
     );
     debug_assert!(emit.failure.is_none());
+    status.steps += emit.steps;
     status
         .carriers
         .push(ClassificationCarrierStatus::Complete(carrier));
@@ -502,7 +379,11 @@ struct CarrierWalk<'a, 'b, 'v> {
     capture_report: bool,
     visitor: &'b mut Visitor<'v>,
     expansions: usize,
+    /// Locations and schema nodes visited (see `ClassificationWalkStatus::steps`).
+    steps: u64,
     failure: Option<ClassificationCarrierFailure>,
+    /// Document paths that a local `$ref` of the carrier points at (the scan reads them).
+    ref_targets: Vec<String>,
 }
 
 impl<'a, 'b, 'v> CarrierWalk<'a, 'b, 'v> {
@@ -527,7 +408,9 @@ impl<'a, 'b, 'v> CarrierWalk<'a, 'b, 'v> {
             capture_report,
             visitor,
             expansions: 0,
+            steps: 0,
             failure: None,
+            ref_targets: Vec::new(),
         }
     }
 
@@ -583,6 +466,7 @@ impl<'a, 'b, 'v> CarrierWalk<'a, 'b, 'v> {
         root: bool,
         depth: usize,
     ) {
+        self.steps += 1;
         if depth > MAX_SCHEMA_DEPTH {
             self.fail(
                 ClassificationFindingCode::TooComplex,
@@ -759,6 +643,7 @@ impl<'a, 'b, 'v> CarrierWalk<'a, 'b, 'v> {
             } else {
                 effective
             };
+            self.warn_if_open(&additional, inherited);
             segments.push(ClassificationSegment::AdditionalProperty);
             self.walk_location(additional, segments, Some(inherited), false, depth + 1);
             segments.pop();
@@ -782,9 +667,22 @@ impl<'a, 'b, 'v> CarrierWalk<'a, 'b, 'v> {
             })
             .collect();
         if !items.is_empty() {
+            self.warn_if_open(&items, effective);
             segments.push(ClassificationSegment::RemainingItem);
             self.walk_location(items, segments, Some(effective), false, depth + 1);
             segments.pop();
+        }
+    }
+
+    /// The warning of FR-016-004 for a child declared by `additionalProperties` or `items`: no
+    /// schema that governs it declares a level and the level it inherits is open.
+    fn warn_if_open(&mut self, children: &[SchemaNode<'a>], inherited: Level) {
+        let declared = children
+            .iter()
+            .any(|schema| annotation(schema.value).is_some());
+        if !declared && matches!(inherited, Level::Public | Level::Internal) {
+            let source = children[0].document_path.clone();
+            self.fail(ClassificationFindingCode::InheritedOpen, &source);
         }
     }
 
@@ -795,6 +693,7 @@ impl<'a, 'b, 'v> CarrierWalk<'a, 'b, 'v> {
     ) -> Vec<SchemaNode<'a>> {
         let mut expanded = Vec::new();
         for schema in schemas {
+            self.steps += 1;
             expanded.push(schema.clone());
             let Some(object) = schema.value.as_object() else {
                 continue;
@@ -848,11 +747,24 @@ impl<'a, 'b, 'v> CarrierWalk<'a, 'b, 'v> {
         expanded
     }
 
-    fn scan_schema(&mut self, schema: &Value, path: &str, active: &mut HashSet<String>) -> bool {
+    /// Whether an annotation is reachable from `schema`, recording the defects of the scan.
+    ///
+    /// `unwalked` is `Some(length of the path of the unwalked key)` while scanning the value of a
+    /// key the walker does not read: an annotation there counts unless a `$ref` target at or above
+    /// that key contains it (the walker reads the target, wherever it lives).
+    fn scan_schema(
+        &mut self,
+        schema: &Value,
+        path: &str,
+        active: &mut HashSet<String>,
+        unwalked: Option<usize>,
+    ) -> bool {
+        self.steps += 1;
         let Some(object) = schema.as_object() else {
             return false;
         };
-        let mut annotation_reachable = object.contains_key(ANNOTATION);
+        let mut annotation_reachable =
+            object.contains_key(ANNOTATION) && !self.is_exempt(path, unwalked);
         if let Some(annotation) = object.get(ANNOTATION)
             && annotation
                 .as_str()
@@ -877,7 +789,8 @@ impl<'a, 'b, 'v> CarrierWalk<'a, 'b, 'v> {
                 self.fail(ClassificationFindingCode::TooComplex, path);
             } else if let Some(target) = self.root.pointer(&reference[1..]) {
                 let target_path = format!("{}{}", self.root_path, &reference[1..]);
-                annotation_reachable |= self.scan_schema(target, &target_path, active);
+                // What a reference reaches is read through the reference, so it counts in full.
+                annotation_reachable |= self.scan_schema(target, &target_path, active, None);
                 active.remove(reference);
             } else {
                 self.fail(
@@ -891,33 +804,122 @@ impl<'a, 'b, 'v> CarrierWalk<'a, 'b, 'v> {
             if keyword == "$ref" || keyword == ANNOTATION {
                 continue;
             }
-            let child_reachable = match value {
-                Value::Object(_) => {
-                    self.scan_schema(value, &format!("{path}/{}", escape(keyword)), active)
-                }
-                Value::Array(values) => {
-                    let mut reachable = false;
-                    for (index, value) in values.iter().enumerate() {
-                        reachable |= self.scan_schema(
-                            value,
-                            &format!("{path}/{}/{index}", escape(keyword)),
-                            active,
-                        );
-                    }
-                    reachable
-                }
-                _ => false,
+            let child_path = format!("{path}/{}", escape(keyword));
+            let walked = unwalked.is_none() && WALKED_KEYWORDS.contains(&keyword.as_str());
+            let child_unwalked = if walked {
+                None
+            } else {
+                Some(unwalked.unwrap_or(child_path.len()))
             };
-            if UNSUPPORTED_APPLICATORS.contains(&keyword.as_str()) && child_reachable {
-                self.fail(
-                    ClassificationFindingCode::UnsupportedKeyword,
-                    &format!("{path}/{keyword}"),
-                );
+            let child_reachable = if walked {
+                self.scan_walked(keyword, value, &child_path, active)
+            } else {
+                self.scan_generic(value, &child_path, active, child_unwalked)
+            };
+            if child_reachable && unwalked.is_none() && !walked {
+                self.fail(ClassificationFindingCode::UnsupportedKeyword, &child_path);
             }
             annotation_reachable |= child_reachable;
         }
         annotation_reachable
     }
+
+    /// The value of a walked keyword, in the shape the walker reads it. A value of another shape
+    /// (`items` as an array, for one) is not read, so an annotation inside it is refused.
+    fn scan_walked(
+        &mut self,
+        keyword: &str,
+        value: &Value,
+        path: &str,
+        active: &mut HashSet<String>,
+    ) -> bool {
+        let mut reachable = false;
+        match (keyword, value) {
+            ("properties" | "$defs", Value::Object(entries)) => {
+                for (name, entry) in entries {
+                    reachable |=
+                        self.scan_schema(entry, &format!("{path}/{}", escape(name)), active, None);
+                }
+            }
+            ("items" | "additionalProperties", Value::Object(_)) => {
+                reachable |= self.scan_schema(value, path, active, None);
+            }
+            ("prefixItems" | "allOf" | "anyOf" | "oneOf", Value::Array(branches)) => {
+                for (index, branch) in branches.iter().enumerate() {
+                    reachable |= self.scan_schema(branch, &format!("{path}/{index}"), active, None);
+                }
+            }
+            (_, Value::Object(_) | Value::Array(_)) => {
+                let unread = self.scan_generic(value, path, active, Some(path.len()));
+                if unread {
+                    self.fail(ClassificationFindingCode::UnsupportedKeyword, path);
+                }
+                reachable |= unread;
+            }
+            _ => {}
+        }
+        reachable
+    }
+
+    /// A value the walker does not read: every object inside is scanned as a schema, every array
+    /// member too, so an annotation or a `$ref` anywhere in it is found.
+    fn scan_generic(
+        &mut self,
+        value: &Value,
+        path: &str,
+        active: &mut HashSet<String>,
+        unwalked: Option<usize>,
+    ) -> bool {
+        match value {
+            Value::Object(_) => self.scan_schema(value, path, active, unwalked),
+            Value::Array(values) => {
+                let mut reachable = false;
+                for (index, value) in values.iter().enumerate() {
+                    reachable |=
+                        self.scan_generic(value, &format!("{path}/{index}"), active, unwalked);
+                }
+                reachable
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether the annotation at `path`, found under an unwalked key whose path has `key_length`
+    /// bytes, sits inside a `$ref` target that is that key's value or lives below it (a target
+    /// above the key would make the key itself an unread place inside a read schema).
+    fn is_exempt(&self, path: &str, unwalked: Option<usize>) -> bool {
+        let Some(key_length) = unwalked else {
+            return false;
+        };
+        self.ref_targets.iter().any(|target| {
+            target.len() >= key_length
+                && (path == target
+                    || path
+                        .strip_prefix(target.as_str())
+                        .is_some_and(|rest| rest.starts_with('/')))
+        })
+    }
+}
+
+/// The document paths of the local `$ref` targets of a carrier.
+fn ref_targets(schema: &Value, root_path: &str) -> Vec<String> {
+    let mut targets = Vec::new();
+    let mut pending = vec![schema];
+    while let Some(value) = pending.pop() {
+        match value {
+            Value::Object(object) => {
+                if let Some(reference) = object.get("$ref").and_then(Value::as_str)
+                    && reference.starts_with("#/")
+                {
+                    targets.push(format!("{root_path}{}", &reference[1..]));
+                }
+                pending.extend(object.values());
+            }
+            Value::Array(values) => pending.extend(values.iter()),
+            _ => {}
+        }
+    }
+    targets
 }
 
 fn scan_outside_carriers(

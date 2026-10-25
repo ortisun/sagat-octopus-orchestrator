@@ -43,6 +43,7 @@ describe('workflow classification report', () => {
         attention: [
           { code: 'CLASSIFICATION_RELAXED', message: 'Customer email changes from pii to internal.', path: '/inputSchema/properties/customer' },
           { code: 'CLASSIFICATION_TIGHTENED', message: 'Order id changes from public to internal.', path: '/inputSchema/properties/orderId' },
+          { code: 'CLASSIFICATION_UNRESOLVED_REF', message: 'A reference leaves the schema.', path: '/outputSchema/$ref' },
         ],
       }),
     });
@@ -73,5 +74,9 @@ describe('workflow classification report', () => {
     expect(within(report).getByRole('heading', { name: /Classification changes need attention \(2\)/ })).toBeInTheDocument();
     expect(report).toHaveTextContent('CLASSIFICATION_RELAXED');
     expect(report).toHaveTextContent('CLASSIFICATION_TIGHTENED');
+    // A carrier the comparison could not walk is announced, not dropped, and is not counted as a level change.
+    expect(within(report).getByText(/Some schemas could not be compared \(1\)/)).toBeInTheDocument();
+    expect(report).toHaveTextContent('/outputSchema/$ref');
+    expect(report).toHaveTextContent('CLASSIFICATION_UNRESOLVED_REF');
   });
 });

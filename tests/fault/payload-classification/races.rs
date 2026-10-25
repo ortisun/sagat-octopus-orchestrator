@@ -9,6 +9,7 @@ use sagat_application::classification::{
     ClassifiedPayload, ProjectionFailure, ProjectionRequest, ScalarValue,
 };
 use sagat_application::clock::SystemClock;
+use sagat_application::error::AppError;
 use sagat_application::payload_disclosure::{
     DisclosureSelector, PayloadDisclosure, PayloadDisclosureError, PayloadDisclosureResult,
     PayloadDisclosureService, PayloadDisclosureUseCase,
@@ -16,7 +17,7 @@ use sagat_application::payload_disclosure::{
 use sagat_application::reveal_grants::RevealGrantService;
 use sagat_domain::classification::ClassificationRules;
 use sagat_domain::execution::RunId;
-use sagat_domain::identity::{Principal, Role};
+use sagat_domain::identity::{Permission, Principal, Role};
 use sagat_infra_ir::JsonPayloadProjector;
 use sagat_infra_postgres::{PgRunStore, has_effective_payload_reveal_grant};
 use sagat_infra_schema::classification::{CacheStats, Classifier};
@@ -642,6 +643,18 @@ async fn a_projection_in_progress_does_not_occupy_the_only_runtime_worker() {
     let (entered, inside) = tokio::sync::oneshot::channel();
     let (resume, released) = std::sync::mpsc::channel();
     let service = Arc::new(PayloadDisclosureService::new(
+
+/// A reveal through the production path, paused inside its read transaction by the interpreter
+/// (which runs after the authority checks and before the audit insert).
+struct PausedReveal {
+    reading: tokio::task::JoinHandle<Result<PayloadDisclosure, PayloadDisclosureError>>,
+    resume: std::sync::mpsc::Sender<()>,
+}
+
+async fn pause_a_reveal(world: &World, reader: &Principal, run: RunId) -> PausedReveal {
+    let (entered, pinned) = tokio::sync::oneshot::channel();
+    let (resume, released) = std::sync::mpsc::channel();
+    let service = PayloadDisclosureService::new(
         world.store.clone(),
         SystemClock,
         PausingClassifier {
@@ -678,4 +691,159 @@ async fn a_projection_in_progress_does_not_occupy_the_only_runtime_worker() {
         served,
         "a projection kept the only runtime worker, so no other task could run"
     );
+
+    );
+    let prepared = service
+        .prepare(reader, run, DisclosureSelector::Input, true, &ctx())
+        .await
+        .expect("prepared reveal");
+    // The barrier is synchronous: it must not hold a Tokio worker that the database waits need.
+    let runtime = tokio::runtime::Handle::current();
+    let reading = tokio::task::spawn_blocking(move || runtime.block_on(service.disclose(prepared)));
+    tokio::time::timeout(Duration::from_secs(10), pinned)
+        .await
+        .expect("read barrier timeout")
+        .expect("the read is inside its transaction");
+    PausedReveal { reading, resume }
+}
+
+impl PausedReveal {
+    async fn finish(self) -> Result<PayloadDisclosure, PayloadDisclosureError> {
+        self.resume.send(()).expect("resume the paused reveal");
+        self.reading.await.expect("read task")
+    }
+}
+
+/// T016-050: a grant revoked and a membership deleted *while a reveal runs*, through the production
+/// disclose path (not the helper alone). The change waits for the reveal that already passed its
+/// authority check, the reveal completes with its audit record, and the next reveal is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn revoke_and_membership_delete_wait_for_an_in_flight_production_reveal() {
+    let world = world().await;
+    let namespace = world.namespace.id();
+    let (workflow, _) = world.publish(classified_document("in-flight-revoke")).await;
+    let run = world
+        .start(workflow, &json!({"personal":"concurrent-pii-canary"}))
+        .await;
+    let reader = world.member("in-flight-reader", Role::Developer).await;
+    let grants = RevealGrantService::new(world.store.clone(), SystemClock);
+    let scope = grants
+        .prepare(&world.admin, namespace, &ctx())
+        .await
+        .expect("grant scope");
+    let grant_rows = || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM payload_reveal_grants \
+             WHERE tenant_id=$1 AND namespace_id=$2 AND subject=$3",
+        )
+        .bind(world.admin.tenant_id().as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(reader.subject().as_str())
+        .fetch_one(&world.db.pool)
+        .await
+        .expect("grant rows")
+    };
+    let next_reveal = || async {
+        reveal(
+            &disclosure(&world, Arc::new(Classifier::default())),
+            &reader,
+            run,
+        )
+        .await
+    };
+
+    // The grant is revoked while the reveal is paused inside its transaction.
+    grants
+        .grant(&scope, reader.subject().as_str(), &ctx())
+        .await
+        .expect("grant");
+    let paused = pause_a_reveal(&world, &reader, run).await;
+    let revoke_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&world.db.url)
+        .await
+        .expect("dedicated revoke pool");
+    let revoke_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&revoke_pool)
+        .await
+        .expect("revoke backend pid");
+    let revoke_service = RevealGrantService::new(
+        PgRunStore::new(revoke_pool.clone(), world.cache.clone()),
+        SystemClock,
+    );
+    let revoke_scope = revoke_service
+        .prepare(&world.admin, namespace, &ctx())
+        .await
+        .expect("revoke scope");
+    let subject = reader.subject().as_str().to_owned();
+    let revoke =
+        tokio::spawn(async move { revoke_service.revoke(&revoke_scope, &subject, &ctx()).await });
+    wait_for_database_lock(&world, revoke_pid, "revoke waits for the paused reveal").await;
+    assert_eq!(
+        grant_rows().await,
+        1,
+        "the grant stands while the reveal runs"
+    );
+    assert_eq!(reveal_audit_count(&world, &reader, run).await, 0);
+    assert_revealed(paused.finish().await.expect("the paused reveal completes"));
+    assert_eq!(reveal_audit_count(&world, &reader, run).await, 1);
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), revoke)
+            .await
+            .expect("revoke released after the reveal committed")
+            .expect("revoke task")
+            .expect("revoke result"),
+        "the grant was removed"
+    );
+    drop(revoke_pool);
+    assert_eq!(
+        next_reveal().await.map(|_| ()),
+        Err(PayloadDisclosureError::PiiRevealNotGranted)
+    );
+    assert_eq!(reveal_audit_count(&world, &reader, run).await, 1);
+
+    // The membership is deleted while the next reveal is paused.
+    grants
+        .grant(&scope, reader.subject().as_str(), &ctx())
+        .await
+        .expect("grant again");
+    let paused = pause_a_reveal(&world, &reader, run).await;
+    let mut delete_connection = world.db.pool.acquire().await.expect("delete connection");
+    let delete_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *delete_connection)
+        .await
+        .expect("delete backend pid");
+    let tenant = world.admin.tenant_id();
+    let subject = reader.subject().as_str().to_owned();
+    let delete = tokio::spawn(async move {
+        sqlx::query("DELETE FROM memberships WHERE tenant_id=$1 AND subject=$2")
+            .bind(tenant.as_uuid())
+            .bind(subject)
+            .execute(&mut *delete_connection)
+            .await
+    });
+    wait_for_database_lock(
+        &world,
+        delete_pid,
+        "membership delete waits for the paused reveal",
+    )
+    .await;
+    assert_eq!(grant_rows().await, 1);
+    assert_revealed(paused.finish().await.expect("the paused reveal completes"));
+    assert_eq!(reveal_audit_count(&world, &reader, run).await, 2);
+    let deleted = tokio::time::timeout(Duration::from_secs(5), delete)
+        .await
+        .expect("membership delete released after the reveal committed")
+        .expect("delete task")
+        .expect("delete result");
+    assert_eq!(deleted.rows_affected(), 1);
+    assert_eq!(grant_rows().await, 0, "the grant went with the membership");
+    // Without a membership the caller holds no permission at all, not even to read the run.
+    assert_eq!(
+        next_reveal().await.map(|_| ()),
+        Err(PayloadDisclosureError::Application(AppError::Forbidden {
+            permission: Permission::RunRead
+        }))
+    );
+    assert_eq!(reveal_audit_count(&world, &reader, run).await, 2);
 }

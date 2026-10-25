@@ -6,6 +6,27 @@
 //! The comparison is of the documents as written, by an adapter ([`crate::definitions::IrCodec`]),
 //! so a draft that does not validate can still be compared with the version it came from.
 
+use sagat_domain::classification::ClassificationRules;
+
+/// The payload classification rules each side of a comparison was (or will be) published under.
+///
+/// A document read under rules `0` discloses no value, whatever its schemas say, so a comparison
+/// treats every location of that side as undisclosed (FR-016-025).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiffRules {
+    pub from: ClassificationRules,
+    pub to: ClassificationRules,
+}
+
+impl DiffRules {
+    /// Both sides are read under the current rules: a draft, or two versions published since the
+    /// feature.
+    pub const CURRENT: Self = Self {
+        from: ClassificationRules::CURRENT,
+        to: ClassificationRules::CURRENT,
+    };
+}
+
 /// What one side of a comparison is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffSide {

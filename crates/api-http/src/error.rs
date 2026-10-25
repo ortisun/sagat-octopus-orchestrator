@@ -9,6 +9,7 @@ use axum::body::Body;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use sagat_application::approval_progress::ApprovalProgressError;
+use sagat_application::classification::FindingSeverity;
 use sagat_application::definitions::IrError;
 use sagat_application::error::{AccessDenial, AppError, ConflictKind};
 use sagat_domain::execution::ApprovalError;
@@ -802,13 +803,28 @@ const fn script_reason(error: ScriptError) -> &'static str {
 /// beyond the clipped fragments the codec already limited.
 fn definition_details(error: &IrError) -> Value {
     match error {
-        IrError::Classification(findings) => json!({
-            "reason": "CLASSIFICATION",
-            "issues": findings.iter().take(20).map(|finding| json!({
-                "code": finding.code.as_str(), "path": finding.path.as_str(),
-                "message": finding.code.message(),
-            })).collect::<Vec<_>>(),
-        }),
+        IrError::Classification(findings) => {
+            // Only the errors that refused the document: warnings belong to the validate report.
+            let mut issues: Vec<Value> = findings
+                .iter()
+                .filter(|finding| finding.code.severity() == FindingSeverity::Error)
+                .take(20)
+                .map(|finding| {
+                    json!({
+                        "code": finding.code.as_str(), "path": finding.path.as_str(),
+                        "message": finding.code.message(),
+                    })
+                })
+                .collect();
+            if issues.is_empty() {
+                // The findings were capped before any error fit: say what `problems_of` says.
+                issues.push(json!({
+                    "code": "CLASSIFICATION_TOO_COMPLEX",
+                    "message": "classification carrier exceeds a fixed complexity bound",
+                }));
+            }
+            json!({ "reason": "CLASSIFICATION", "issues": issues })
+        }
         IrError::Schema(issues) => json!({
             "reason": "SCHEMA",
             "issues": issues

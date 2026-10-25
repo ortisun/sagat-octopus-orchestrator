@@ -121,6 +121,7 @@ Pass when the audience matrix table test has no failing cell.
 sagat namespace reveal-grants grant developer-canary --namespace "$SAGAT_NAMESPACE"      # as admin
 curl -s -X POST "$SAGAT_SERVER/runs/$RUN/payload-disclosures" -H "Authorization: Bearer $DEVELOPER" \
   -H 'Content-Type: application/json' -d '{"source":"input","reveal":["pii"]}'
+sagat workflow inspect "$RUN" --values --reveal-pii                                     # as the granted developer
 sagat namespace reveal-grants revoke developer-canary --namespace "$SAGAT_NAMESPACE"
 ```
 

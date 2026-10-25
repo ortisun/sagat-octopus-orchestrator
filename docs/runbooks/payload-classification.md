@@ -34,8 +34,32 @@ new classification policy. References must resolve inside their own carrier.
 
 Published versions are immutable. New publications pin interpretation rules 1. Existing versions
 migrated with rules 0 remain undisclosable; publishing a new version does not change a run pinned
-to the old version. Digest deduplication does not reinterpret an existing version. A rerun or a
-child is evaluated against its own pinned version.
+to the old version. Digest deduplication does not reinterpret an existing version: publishing the
+document of a legacy version again returns that version (`created: false`) with
+`classificationRules: 0`, and its runs stay undisclosable. To adopt the rules, publish a changed
+document (a changed `metadata.description` is enough). Every version in the API carries
+`classificationRules`, so a client can tell. A rerun or a child is evaluated against its own pinned
+version.
+
+## Compare versions
+
+The version comparison (`diffWorkflow`, the Studio comparison, `sagat sync`) lists
+attention findings, never breaking ones, for the classification:
+
+- `CLASSIFICATION_RELAXED` and `CLASSIFICATION_TIGHTENED`, one per path whose effective level
+  changed. A side with no schema for a location, or published under rules 0, discloses nothing and
+  counts as `undisclosed`, as strict as `secret`. Adding an `outputSchema` that makes a field
+  `public` is therefore a relaxation, and so is the first version under the current rules for a
+  legacy workflow (every location its annotations make readable is listed, up to 100 per kind and
+  then `MORE_FINDINGS` with the exact remainder). The first draft of a workflow is not compared.
+- `CLASSIFICATION_TOO_COMPLEX`, `CLASSIFICATION_UNRESOLVED_REF` and
+  `CLASSIFICATION_UNSUPPORTED_KEYWORD`, once per carrier, when a carrier of either side could not be
+  walked completely. None of its levels was compared, so a relaxation inside it is not reported:
+  fix the carrier and compare again.
+
+`sagat sync` prints each as a `prepare` line. The Studio comparison lists them all under "Needs
+preparation"; the classification panel of the workflow settings shows the level changes and a
+notice for the carriers that could not be compared.
 
 ## Read permitted values
 

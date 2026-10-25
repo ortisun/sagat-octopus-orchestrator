@@ -25,7 +25,8 @@ side of their shared worker/store modules would lose security or durable executi
    including `20261122000000_steps_open_index` (PR #37). Allocate the unreleased 017 migrations
    after it: `20261122000100_openbao_secrets` and `20261123000000` through `20261128000000`
    (feature 017 decisions D602 and D603). New classification and grant migrations use
-   20261201000000 and 20261202000000, and the 014 completion migrations keep 20261203000000
+   20261201000000 and 20261202000000 (a later one, 20261220000000, removes a subject's reveal grants when
+   the role of its membership changes), and the 014 completion migrations keep 20261203000000
    through 20261213000000 (there is no 20261206000000 in this profile). The combined profile is
    tested from the released baseline. It does not silently rewrite a standalone 017 SQLx
    history, and no applied migration is renamed. A standalone database that applied the

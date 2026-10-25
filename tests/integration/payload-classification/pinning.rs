@@ -1,7 +1,7 @@
 //! Immutable interpreter rules belong to the published version, never the current server.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use super::support::engine::{activity, document, world};
+use super::support::engine::{activity, ctx, document, world};
 use serde_json::json;
 
 const UP: &str = include_str!(
@@ -112,4 +112,135 @@ async fn new_publications_pin_rules_without_reinterpreting_previous_versions() {
         .is_err(),
         "published rules stay immutable"
     );
+}
+
+/// US01.6: republishing an identical legacy document stays at rules `0` (the version is found by
+/// workflow and digest, not rewritten), and the answer says so, as every version read does.
+#[tokio::test]
+async fn republishing_an_identical_legacy_document_answers_rules_zero() {
+    use sagat_domain::classification::ClassificationRules;
+
+    let w = world().await;
+    let source = document("legacy-republish", "a", vec![activity("a")]);
+    let (workflow, version) = w.publish(source.clone()).await;
+    sqlx::raw_sql(DOWN).execute(&w.db.pool).await.unwrap();
+    sqlx::raw_sql(UP).execute(&w.db.pool).await.unwrap();
+
+    let draft = w
+        .defs
+        .get_workflow(&w.admin, workflow, &ctx())
+        .await
+        .unwrap();
+    let again = w
+        .defs
+        .publish(
+            &w.admin,
+            workflow,
+            draft.workflow.draft_revision(),
+            None,
+            &format!("publish-{}", uuid::Uuid::now_v7()),
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    assert!(!again.created, "the identical document is the same version");
+    assert_eq!(again.version.id(), version);
+    assert_eq!(
+        again.version.classification_rules(),
+        ClassificationRules::NONE
+    );
+
+    let read = w
+        .defs
+        .get_version(&w.admin, workflow, 1, &ctx())
+        .await
+        .unwrap();
+    assert_eq!(
+        read.version.classification_rules(),
+        ClassificationRules::NONE
+    );
+    let active = w
+        .defs
+        .get_workflow(&w.admin, workflow, &ctx())
+        .await
+        .unwrap();
+    assert_eq!(
+        active.active.expect("active").classification_rules(),
+        ClassificationRules::NONE
+    );
+
+    let mut changed = source;
+    changed["inputSchema"] = json!({"type":"object","x-sagat-classification":"public"});
+    let next = w.publish_new_version(workflow, changed).await;
+    let record = w
+        .defs
+        .get_version(&w.admin, workflow, 2, &ctx())
+        .await
+        .unwrap();
+    assert_eq!(record.version.id(), next);
+    assert_eq!(
+        record.version.classification_rules(),
+        ClassificationRules::CURRENT
+    );
+}
+
+/// FR-016-025: the service tells the comparison which rules each version pinned. A legacy version
+/// discloses nothing, so the same document as a draft relaxes what its annotations make readable.
+#[tokio::test]
+async fn a_diff_reads_the_rules_each_version_pinned() {
+    use sagat_application::definitions::DiffRef;
+
+    let w = world().await;
+    let mut source = document("legacy-diff", "a", vec![activity("a")]);
+    source["inputSchema"] = json!({"type":"object","x-sagat-classification":"public"});
+    let (workflow, _) = w.publish(source).await;
+    let current = w
+        .defs
+        .diff(
+            &w.admin,
+            workflow,
+            Some(DiffRef::Version(1)),
+            Some(DiffRef::Draft),
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    assert!(current.diff.identical);
+    assert!(
+        current
+            .diff
+            .attention
+            .iter()
+            .all(|row| !row.code.starts_with("CLASSIFICATION_")),
+        "a version under the current rules and its own draft do not differ"
+    );
+
+    sqlx::raw_sql(DOWN).execute(&w.db.pool).await.unwrap();
+    sqlx::raw_sql(UP).execute(&w.db.pool).await.unwrap();
+    let legacy = w
+        .defs
+        .diff(
+            &w.admin,
+            workflow,
+            Some(DiffRef::Version(1)),
+            Some(DiffRef::Draft),
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    let relaxed: Vec<_> = legacy
+        .diff
+        .attention
+        .iter()
+        .filter(|row| row.code == "CLASSIFICATION_RELAXED")
+        .map(|row| (row.path.as_deref(), row.message.as_str()))
+        .collect();
+    assert_eq!(
+        relaxed,
+        vec![(
+            Some("/inputSchema"),
+            "classification changed from undisclosed to public"
+        )]
+    );
+    assert!(legacy.diff.breaking.is_empty(), "attention, not breaking");
 }

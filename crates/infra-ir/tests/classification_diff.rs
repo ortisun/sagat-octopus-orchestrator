@@ -1,6 +1,8 @@
 //! Classification changes need attention without changing the workflow compatibility verdict.
 #![allow(clippy::expect_used)]
 use sagat_application::definitions::IrCodec;
+use sagat_application::diff::DiffRules;
+use sagat_domain::classification::ClassificationRules;
 use sagat_infra_ir::JsonIrCodec;
 use serde_json::json;
 
@@ -286,20 +288,132 @@ fn incomplete_carrier_is_reported_once_and_its_prefix_is_not_compared() {
     );
 }
 
-#[test]
-fn absent_carrier_is_not_treated_as_an_implicit_pii_carrier() {
-    let before = json!({});
-    let after = json!({"inputSchema":{"x-sagat-classification":"public"}});
-    let diff = JsonIrCodec
-        .diff(
-            &serde_json::to_vec(&before).expect("JSON"),
-            &serde_json::to_vec(&after).expect("JSON"),
+fn codes_at(diff: &sagat_application::diff::DocumentDiff) -> Vec<(&'static str, String, String)> {
+    diff.attention
+        .iter()
+        .filter(|row| {
+            matches!(
+                row.code,
+                "CLASSIFICATION_RELAXED" | "CLASSIFICATION_TIGHTENED"
+            )
+        })
+        .map(|row| {
+            (
+                row.code,
+                row.path.clone().unwrap_or_default(),
+                row.message.clone(),
+            )
+        })
+        .collect()
+}
+
+fn compare(
+    before: &serde_json::Value,
+    after: &serde_json::Value,
+    rules: DiffRules,
+) -> sagat_application::diff::DocumentDiff {
+    JsonIrCodec
+        .diff_with_rules(
+            &serde_json::to_vec(before).expect("JSON"),
+            &serde_json::to_vec(after).expect("JSON"),
+            rules,
         )
-        .expect("diff");
-    assert!(!diff.attention.iter().any(|row| matches!(
-        row.code,
-        "CLASSIFICATION_RELAXED" | "CLASSIFICATION_TIGHTENED"
-    )));
+        .expect("diff")
+}
+
+/// A workflow that was never published has nobody to inform: its first draft lists no level change.
+#[test]
+fn the_first_draft_of_a_workflow_is_not_compared_level_by_level() {
+    let diff = compare(
+        &json!({}),
+        &json!({"inputSchema":{"x-sagat-classification":"public"}}),
+        DiffRules::CURRENT,
+    );
+    assert!(codes_at(&diff).is_empty());
+}
+
+/// FR-016-025: a carrier a version did not have discloses nothing (no schema is structure only for
+/// everyone), so adding one that makes a field readable relaxes it, and dropping one tightens it.
+#[test]
+fn adding_or_dropping_a_carrier_relaxes_or_tightens_what_it_governs() {
+    let without = json!({"inputSchema":{"x-sagat-classification":"internal"}});
+    let with = json!({"inputSchema":{"x-sagat-classification":"internal"},
+        "outputSchema":{"type":"object","x-sagat-classification":"public",
+            "properties":{"receipt":{"type":"string","x-sagat-classification":"public"},
+                          "card":{"type":"string","x-sagat-classification":"secret"}}}});
+    let added = codes_at(&compare(&without, &with, DiffRules::CURRENT));
+    assert_eq!(
+        added,
+        vec![
+            (
+                "CLASSIFICATION_RELAXED",
+                "/outputSchema".to_owned(),
+                "classification changed from undisclosed to public".to_owned()
+            ),
+            (
+                "CLASSIFICATION_RELAXED",
+                "/outputSchema/properties/receipt".to_owned(),
+                "classification changed from undisclosed to public".to_owned()
+            ),
+        ],
+        "a field added as secret reveals nothing and is not a change"
+    );
+    let dropped = codes_at(&compare(&with, &without, DiffRules::CURRENT));
+    assert_eq!(
+        dropped
+            .iter()
+            .map(|(code, path, _)| (*code, path.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("CLASSIFICATION_TIGHTENED", "/outputSchema"),
+            (
+                "CLASSIFICATION_TIGHTENED",
+                "/outputSchema/properties/receipt"
+            ),
+        ]
+    );
+}
+
+/// A version published before the feature (rules 0) discloses nothing whatever its schemas say, so
+/// the first version under the current rules relaxes every location it makes readable.
+#[test]
+fn moving_from_rules_zero_to_the_current_rules_relaxes_the_readable_locations() {
+    let document = json!({"inputSchema":{"type":"object","x-sagat-classification":"internal",
+        "properties":{"id":{"type":"string"},
+                      "card":{"type":"string","x-sagat-classification":"secret"}}}});
+    let legacy = DiffRules {
+        from: ClassificationRules::NONE,
+        to: ClassificationRules::CURRENT,
+    };
+    let upgrade = codes_at(&compare(&document, &document, legacy));
+    assert_eq!(
+        upgrade
+            .iter()
+            .map(|(code, path, _)| (*code, path.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("CLASSIFICATION_RELAXED", "/inputSchema"),
+            ("CLASSIFICATION_RELAXED", "/inputSchema/properties/id"),
+        ],
+        "the secret field was unreadable before and still is"
+    );
+    let rollback = DiffRules {
+        from: ClassificationRules::CURRENT,
+        to: ClassificationRules::NONE,
+    };
+    assert_eq!(
+        codes_at(&compare(&document, &document, rollback))
+            .iter()
+            .filter(|(code, ..)| *code == "CLASSIFICATION_TIGHTENED")
+            .count(),
+        2
+    );
+    // Both sides legacy: nothing is read on either, so nothing changed.
+    let both = DiffRules {
+        from: ClassificationRules::NONE,
+        to: ClassificationRules::NONE,
+    };
+    assert!(codes_at(&compare(&document, &document, both)).is_empty());
 }
 
 #[test]

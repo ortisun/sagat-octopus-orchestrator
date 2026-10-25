@@ -21,7 +21,6 @@ use std::time::Duration;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::events::{
     EndpointId, EndpointLimits, EndpointStatus, EventEnvelope, EventError, EventId, EventKey,
-    InboxStatus,
 };
 use sagat_domain::execution::{CorrelationKey, RunId};
 use sagat_domain::identity::{Namespace, NamespaceId, Permission, Principal, Slug, TenantId};
@@ -214,24 +213,6 @@ impl WebhookAdmissionAudits {
     }
 }
 
-/// An event as the API shows it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StoredEvent {
-    pub tenant_id: TenantId,
-    pub namespace_id: NamespaceId,
-    pub envelope: EventEnvelope,
-    pub occurred_at: Option<OffsetDateTime>,
-    pub payload: Vec<u8>,
-    pub received_at: OffsetDateTime,
-    pub expires_at: OffsetDateTime,
-    pub status: InboxStatus,
-    pub attempts: u32,
-    pub last_error: Option<String>,
-    pub dispatched_at: Option<OffsetDateTime>,
-    /// What the event woke or started.
-    pub deliveries: Vec<Delivery>,
-}
-
 /// One consumer an event reached: the evidence that it was delivered, once.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Delivery {
@@ -327,13 +308,6 @@ pub trait EventStore: NamespaceDirectory + QuotaLookup + SecretAccessLookup {
         backlog_limit: u64,
         audits: &WebhookAdmissionAudits,
     ) -> impl Future<Output = Result<WebhookAdmission, StoreError>> + Send;
-
-    fn event(
-        &self,
-        tenant: TenantId,
-        namespace: NamespaceId,
-        key: &EventKey,
-    ) -> impl Future<Output = Result<Option<StoredEvent>, StoreError>> + Send;
 }
 
 /// A request to a webhook endpoint, as the HTTP adapter read it. Nothing here is trusted.
@@ -852,25 +826,6 @@ where
                 })
             }
         }
-    }
-
-    /// An event of the inbox, with what it reached.
-    ///
-    /// # Errors
-    /// [`AppError::Forbidden`] without `event:read`; [`AppError::NotFound`].
-    pub async fn event(
-        &self,
-        principal: &Principal,
-        namespace: NamespaceId,
-        key: &EventKey,
-        ctx: &RequestContext,
-    ) -> Result<StoredEvent, AppError> {
-        principal.authorize(Permission::EventRead)?;
-        require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
-        self.store
-            .event(principal.tenant_id(), namespace, key)
-            .await?
-            .ok_or(AppError::NotFound)
     }
 
     /// Receives a request on the public URL of an endpoint.

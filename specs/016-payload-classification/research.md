@@ -215,7 +215,8 @@ namespace API bucket of ADR-0027 and by the number of holders. **Alternative**: 
 
 **Decision**: callers without `run:payload:inspect` get nodes omitted and a `childCount` of what they
 received; holders get typed `withheld` nodes (type and level, no value) and the true count. A `secret` is
-withheld for everyone and never a value. **Rationale**: ADR-0028 treats structure as sensitive metadata
+omitted for a caller without that permission, withheld (reason `SECRET`) for one who holds it, and its
+value is shown to nobody (D662). **Rationale**: ADR-0028 treats structure as sensitive metadata
 behind its own permission; the new operation must not hand it to a viewer by another route.
 
 ### D279 — Names: a declared property name is schema text; an undeclared key is data
@@ -539,3 +540,97 @@ legacy run (one row for two reads, none for a developer or a viewer).
 |---|---|---|---|
 | O640 | Should the key of a map governed only by `additionalProperties` follow its value's level (D279 today) or be at least `pii`, shown only to a caller revealing PII? | (a) keep D279 and warn authors at publication; (b) name such keys only when the audience includes `pii`, so a viewer sees values without keys; (c) let authors classify keys (a new annotation under `propertyNames`). | (b): maps keyed by an identifier are common, and (b) needs no new schema syntax; it changes what a viewer sees for every such map, hence the question. |
 | O641 | Confirm the cache budget (64 MiB of estimated compiled bytes, 256 entries, 32 patterns per carrier, 64 KiB per regular expression) or choose other numbers. | The estimate is an upper bound measured on one machine (D643). | Keep; revisit with production telemetry (`classification_cache_total`). |
+
+## Surface fixes after the two independent reviews (2026-10-25)
+
+Two independent reviews of the integrated branch (a security review and a correctness review, both
+read-only) found defects in the publication, diff, event, grant and evidence surface. This section
+records what was decided while fixing them. The numbers D660+, G660+ and O660+ are this branch's;
+D640+, G640+ and O640+ belong to the engine-side fixes made at the same time (walker, validator cache,
+disclosure store, decimals, budgets). Findings are cited as S for the security review and C for the
+correctness review.
+
+### D660 — An annotation under any key the walker does not read is refused (S6, C7)
+
+**Decision**: publication refuses `x-sagat-classification` under every key of a schema except
+`properties`, `items`, `prefixItems`, `additionalProperties`, `allOf`, `anyOf`, `oneOf`, `$defs` and a
+local `$ref` target (`CLASSIFICATION_UNSUPPORTED_KEYWORD`, at the path of the key). Property names and
+`$defs` names are not keywords. An array under `items` is refused too. `CLASSIFICATION_INHERITED_OPEN` is
+raised for the children declared by `items` and `additionalProperties` as it was for `properties` and
+`prefixItems`. A 422 lists errors only in `details.issues`. **Rationale**: the list of 11 refused
+applicators let `contentSchema`, `additionalItems`, `dependencies` or a vendor key hold an annotation
+that nothing reads, which left the field `pii` with no feedback (US01.4). **Alternative** rejected: grow the
+list (every new keyword of a JSON Schema draft would reopen the hole).
+
+### D661 — Every version says which rules it was published under (C9)
+
+**Decision**: `VersionSummary` (publish, version read and list, the active version of a workflow) returns
+`classificationRules`. Publishing the document of an existing version still returns that version found by
+workflow and digest (`created: false`), so a legacy document stays at rules `0`; the answer now says so.
+**Alternative** rejected: re-pin the old version (versions are immutable) or publish a new version for an
+identical document (it would break the digest identity that rollback and promotion rely on).
+
+### D662 — A `secret` node: omitted, withheld, never shown (spec alignment)
+
+**Decision**: FR-016-009 and D278 now say what the contract matrix and the code do: a `secret` node is
+omitted for a caller without `run:payload:inspect`, withheld with the reason `SECRET` for one who holds it,
+and its value is shown to nobody. The earlier text ("withheld for everyone") disagreed with the matrix.
+
+### D663 — A change of role removes the subject's reveal grants (S10)
+
+**Decision**: a trigger on `memberships` deletes the subject's `payload_reveal_grants` in every namespace
+when `role` changes (migration `20261220000000`). A grant belongs to the role held when it was granted; an
+administrator grants again after the change. **Rationale**: D274 made a demoted grant inert but kept the
+row, so promoting the member again revived a right nobody renewed. Storing the role and comparing for
+equality would still revive a developer who was demoted and promoted back. Any change of role (also a
+promotion) removes the grants: simpler than ranking roles, and no role table is copied into SQL.
+**Alternative** rejected: store the role at grant time and require it to be at least the same.
+
+### D664 — The version diff compares what is disclosed, walks each side once (C8)
+
+**Decision**: a side with no schema for a location (a carrier added or dropped), or published under rules
+`0`, counts as `undisclosed`, as strict as `secret`; adding an `outputSchema` that makes a field `public`
+is `CLASSIFICATION_RELAXED`, dropping one is `CLASSIFICATION_TIGHTENED`, and a legacy version compared
+with the same document under the current rules relaxes every location its annotations make readable. The
+first draft of a workflow (nothing to compare with) is not compared. The application passes the rules of
+each side (`IrCodec::diff_with_rules`). Each document is walked once into an index
+(`ClassificationLocationIndex`) and each location is looked up in the other one's; before, every location
+started three walks of the whole carrier (130 s in a debug build for a 52 KB carrier of 2,000 properties,
+inside the async handler). The cost is asserted in walk steps (`ClassificationWalkStatus.steps`, five per
+location and side), not in time. The attention codes `CLASSIFICATION_TOO_COMPLEX`, `_UNRESOLVED_REF`,
+`_UNSUPPORTED_KEYWORD` and `MORE_FINDINGS` are described in the OpenAPI `DiffFinding`, the runbook and the
+Studio (the settings panel shows a notice for carriers that were not compared).
+
+### D665 — Event data the projector cannot shape is `opaque`, not a 403 (C, lower)
+
+**Decision**: `getInboxEvent` returns `dataStructure: {"kind": "opaque"}` when the stored data is not
+bounded JSON the projector accepts, as a dead letter already did. The earlier code answered
+`EventReadNotGranted` (a 403 for a server-side limit, which told the caller they lacked `event:read`).
+
+### D666 — Event and dead-letter reads audit cross-tenant probes; the unredacted readers are gone (S3, S8, S9, S11)
+
+**Decision**: the prepare step of the three event reads calls the shared `require_namespace`, so a probe of
+a namespace of another tenant is the opaque `404` and leaves a `CrossTenantAccessDenied` record against
+the prober (the old `EventService::event` did; the value-safe service had lost it). Dead letters were not
+audited before and are now. `EventService::event`, `ConnectorService::dead_letters` and `::dead_letter`
+(unredacted readers no route calls since D302) and the store read of a whole inbox event are deleted; the
+store keeps what redrive needs. The response types that hold revealed values (`EventBody`,
+`DeadLetterBody`) print state and sizes only in `Debug`. `Audience::new` keeps `pii` only when `internal`
+is set, so an audience that reads `pii` and not `internal` cannot be built.
+
+### Gaps
+
+| # | Gap | Treatment | Status |
+|---|---|---|---|
+| G660 | The removal of grants by a change of role (D663) and by the cascade of a deleted membership leaves no `payload.reveal_revoked` record: there is no membership management surface to audit (G290), and the trigger runs inside whatever statement changed the role. | The change of the membership itself is the audited act once that surface exists; until then the database owner who changes a role knows the effect. Revisit with G290. | Open |
+| G661 | The first version of a legacy workflow under the current rules lists a `CLASSIFICATION_RELAXED` finding per readable location (100, then `MORE_FINDINGS`): accurate, and noisy for a large carrier. | O660. | Open |
+| G662 | `T016-053` (benchmark) and `T016-054` (workspace gates) are not closed: the benchmark report states that the registered target and the cache tests must pass first and that the cache does not bound compiled-validator memory (414 MiB at the 16 MiB limit); the workspace gates were never run as one set on the integrated tree. | Unticked in `tasks.md`; the cache weight is an engine-side fix (D640+). Close both with the commands of the task on the merged tree. | Open |
+| G663 | `tasks/project-completion/` (about 1.7 million lines of command output) is not in git; 56 evidence lines and about 288 lines of specs and docs cite it. | The evidence lines say so; a tick stands only on a test that is in the repository and can be rerun. The output is kept outside git (local ref `handoff/016-project-completion-20261024`). | Accepted |
+| G664 | `npm audit --audit-level=moderate` in `frontend/` fails on this branch (2026-10-25): vitest and `@vitest/mocker` <= 4.1.11 (moderate), `dompurify` <= 3.4.16 (critical; the root `package.json` overrides it to 3.4.16) and `undici` 8.0.0 to 8.12.1 (high). No package or lockfile changed here. | Not fixed in this change (a dependency bump is its own change); it belongs to the advisory part of T016-054 and to whoever owns the Studio dependencies. | Open |
+
+### Owner questions
+
+| # | Question | Default taken |
+|---|---|---|
+| O660 | Should the first version of a legacy workflow under the current rules list a relaxation per location (D664), or one finding per carrier that says how many locations became readable? | Per location, bounded at 100 with the exact remainder; it follows US01.7 ("an attention finding for each"). |
+| O661 | Should a promotion (for example `operator` to `admin`) keep the member's reveal grants, and only a demotion remove them (D663)? | Any change of role removes them; the administrator grants again. Simpler, and it needs no ranking of roles. |
