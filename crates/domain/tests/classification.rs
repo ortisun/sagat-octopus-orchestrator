@@ -132,3 +132,22 @@ proptest! {
         }
     }
 }
+
+/// No principal sees a stricter level than a looser one: an audience that could read `pii` but not
+/// `internal` cannot be built, whatever the arguments.
+#[test]
+fn an_audience_cannot_reveal_pii_without_reading_internal() {
+    for structure in [false, true] {
+        let audience = Audience::new(false, true, structure);
+        assert!(!audience.pii, "pii needs internal");
+        assert_eq!(
+            visibility(Level::Pii, audience),
+            if structure {
+                Visibility::Withhold(WithheldReason::LevelNotPermitted)
+            } else {
+                Visibility::Omit
+            }
+        );
+    }
+    assert!(Audience::new(true, true, false).pii);
+}
