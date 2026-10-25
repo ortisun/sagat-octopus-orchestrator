@@ -8,7 +8,14 @@ use sagat_domain::workflow::NodeId;
 
 pub const MAX_CARRIER_BYTES: usize = 64 * 1024;
 pub const MAX_SCHEMA_DEPTH: usize = 32;
+/// `$ref` hops one schema location may expand. The limit is per location, never per instance.
 pub const MAX_REF_EXPANSIONS: usize = 1_000;
+/// Steps one projection may spend: every expanded subschema is charged once for each instance
+/// node it applies to, which is also what the validator spends. Exhaustion fails closed.
+pub const MAX_WALK_STEPS: usize = 4_000_000;
+/// Wall-clock backstop for one projection while a read transaction is open. The step budget is
+/// the deterministic bound; this catches a starved or stalled worker.
+pub const MAX_PROJECTION_DURATION: std::time::Duration = std::time::Duration::from_secs(5);
 pub const MAX_PAYLOAD_BYTES: usize = 256 * 1024;
 pub const MAX_PROJECTION_DEPTH: usize = 16;
 pub const MAX_PROJECTION_NODES: usize = 1_024;
