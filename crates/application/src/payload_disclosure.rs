@@ -45,18 +45,25 @@ impl DisclosureSelector {
         }
     }
 
-    fn audit_reason(self, reveal: bool) -> String {
+    fn audit_reason(self, kind: ReasonSuffix) -> String {
         let selected = match self {
             Self::Input => "input".to_owned(),
             Self::Result => "result".to_owned(),
             Self::Journal { sequence } => format!("journal:{sequence}"),
         };
-        if reveal {
-            format!("{PAYLOAD_DISCLOSURE_POLICY}:{selected}:reveal=pii")
-        } else {
-            format!("{PAYLOAD_DISCLOSURE_POLICY}:{selected}")
+        match kind {
+            ReasonSuffix::Plain => format!("{PAYLOAD_DISCLOSURE_POLICY}:{selected}"),
+            ReasonSuffix::Reveal => format!("{PAYLOAD_DISCLOSURE_POLICY}:{selected}:reveal=pii"),
+            ReasonSuffix::Structure => format!("{PAYLOAD_DISCLOSURE_POLICY}:{selected}:structure"),
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum ReasonSuffix {
+    Plain,
+    Reveal,
+    Structure,
 }
 
 /// The run scope resolved before canonical namespace admission is charged.
@@ -202,7 +209,9 @@ pub enum UnavailableDisclosureReason {
 pub enum PayloadDisclosureResult {
     Disclosed {
         schema: DisclosureSchema,
-        size_bytes: u64,
+        /// Size of the whole stored payload, secret and personal fields included, so it is given
+        /// only to a caller who may inspect structure (D278).
+        size_bytes: Option<u64>,
         projection: ClassifiedPayload,
     },
     StructureOnly {
@@ -244,6 +253,8 @@ pub enum DisclosureRead {
 pub enum DisclosureAuditKind {
     Internal,
     Pii,
+    /// A structure-only answer to a caller with `run:payload:inspect`, audited as in ADR-0028.
+    Inspected,
 }
 
 /// Server-built records available to the transactional adapter.
@@ -251,6 +262,7 @@ pub enum DisclosureAuditKind {
 pub struct DisclosureAudits {
     pub internal: AuditRecord,
     pub pii: AuditRecord,
+    pub inspected: AuditRecord,
     pub reveal_denied: AuditRecord,
 }
 
@@ -260,6 +272,7 @@ impl DisclosureAudits {
         match kind {
             DisclosureAuditKind::Internal => &self.internal,
             DisclosureAuditKind::Pii => &self.pii,
+            DisclosureAuditKind::Inspected => &self.inspected,
         }
     }
 }
@@ -508,6 +521,64 @@ struct ServiceEvaluator<'a, I, P> {
     structure_projector: &'a P,
 }
 
+impl<I, P> ServiceEvaluator<'_, I, P>
+where
+    P: PayloadProjector,
+{
+    /// The structure-only answer for a caller who may inspect, or `None` when they may not or the
+    /// payload has no structural projection.
+    fn structure_answer(
+        &self,
+        inspect: bool,
+        bytes: &[u8],
+        size_bytes: u64,
+        schema: Option<DisclosureSchema>,
+        reason: StructureOnlyReason,
+    ) -> Option<PayloadDisclosureResult> {
+        if !inspect {
+            return None;
+        }
+        self.structure_projector
+            .project(bytes)
+            .ok()
+            .map(|projection| PayloadDisclosureResult::StructureOnly {
+                schema,
+                size_bytes,
+                reason,
+                projection,
+            })
+    }
+
+    fn decision(
+        &self,
+        run_version: u64,
+        node_id: Option<String>,
+        attempt: Option<u32>,
+        caller: DisclosureCaller,
+        result: PayloadDisclosureResult,
+        audit: Option<DisclosureAuditKind>,
+    ) -> DisclosureDecision {
+        DisclosureDecision {
+            disclosure: PayloadDisclosure {
+                run_id: self.prepared.run_id,
+                run_version,
+                selection: self.prepared.selector,
+                node_id,
+                attempt,
+                caller,
+                result,
+            },
+            audit,
+        }
+    }
+}
+
+/// Structure is what ADR-0028 audits as `payload.inspected`, whichever route produced it.
+fn structure_audit(result: &PayloadDisclosureResult) -> Option<DisclosureAuditKind> {
+    matches!(result, PayloadDisclosureResult::StructureOnly { .. })
+        .then_some(DisclosureAuditKind::Inspected)
+}
+
 impl<I, P> DisclosureEvaluator for ServiceEvaluator<'_, I, P>
 where
     I: ClassificationInterpreter,
@@ -562,38 +633,29 @@ where
         let (result, audit) = match selected.payload {
             StoredPayload::Inline(bytes) => {
                 let size_bytes = u64::try_from(bytes.as_slice().len()).unwrap_or(u64::MAX);
+                // The size of what is stored, and every reason a payload is not shown, are
+                // structure-level facts: only a caller who may inspect receives them (D278).
+                let size_if_inspector = inspect.then_some(size_bytes);
                 let Some(carrier) = selected.carrier else {
-                    let result = if inspect {
-                        match self.structure_projector.project(bytes.as_slice()) {
-                            Ok(projection) => PayloadDisclosureResult::StructureOnly {
-                                schema: None,
-                                size_bytes,
-                                reason: StructureOnlyReason::NoSchema,
-                                projection,
+                    let result = match self.structure_answer(
+                        inspect,
+                        bytes.as_slice(),
+                        size_bytes,
+                        None,
+                        StructureOnlyReason::NoSchema,
+                    ) {
+                        Some(answer) => answer,
+                        None => PayloadDisclosureResult::Unavailable {
+                            reason: if inspect {
+                                UnavailableDisclosureReason::UnsupportedFormat
+                            } else {
+                                UnavailableDisclosureReason::NotDisclosable
                             },
-                            Err(_) => PayloadDisclosureResult::Unavailable {
-                                reason: UnavailableDisclosureReason::UnsupportedFormat,
-                                size_bytes: Some(size_bytes),
-                            },
-                        }
-                    } else {
-                        PayloadDisclosureResult::Unavailable {
-                            reason: UnavailableDisclosureReason::NotDisclosable,
-                            size_bytes: Some(size_bytes),
-                        }
-                    };
-                    return Ok(DisclosureDecision {
-                        disclosure: PayloadDisclosure {
-                            run_id: self.prepared.run_id,
-                            run_version,
-                            selection: self.prepared.selector,
-                            node_id,
-                            attempt,
-                            caller,
-                            result,
+                            size_bytes: size_if_inspector,
                         },
-                        audit: None,
-                    });
+                    };
+                    let audit = structure_audit(&result);
+                    return Ok(self.decision(run_version, node_id, attempt, caller, result, audit));
                 };
                 let schema = DisclosureSchema {
                     carrier: (&carrier).into(),
@@ -620,7 +682,7 @@ where
                         (
                             PayloadDisclosureResult::Disclosed {
                                 schema,
-                                size_bytes,
+                                size_bytes: size_if_inspector,
                                 projection,
                             },
                             audit,
@@ -633,38 +695,30 @@ where
                         | ProjectionFailure::SchemaMismatch),
                     ) if inspect => {
                         let (reason, schema) = structure_reason(failure, schema);
-                        match self.structure_projector.project(bytes.as_slice()) {
-                            Ok(projection) => (
-                                PayloadDisclosureResult::StructureOnly {
-                                    schema,
-                                    size_bytes,
-                                    reason,
-                                    projection,
-                                },
-                                None,
-                            ),
-                            Err(_) => (
-                                PayloadDisclosureResult::Unavailable {
-                                    reason: UnavailableDisclosureReason::UnsupportedFormat,
-                                    size_bytes: Some(size_bytes),
-                                },
-                                None,
-                            ),
-                        }
+                        let result = self
+                            .structure_answer(inspect, bytes.as_slice(), size_bytes, schema, reason)
+                            .unwrap_or(PayloadDisclosureResult::Unavailable {
+                                reason: UnavailableDisclosureReason::UnsupportedFormat,
+                                size_bytes: size_if_inspector,
+                            });
+                        let audit = structure_audit(&result);
+                        (result, audit)
                     }
                     Err(
                         ProjectionFailure::UnsupportedPayload | ProjectionFailure::PayloadTooLarge,
-                    ) => (
+                    ) if inspect => (
                         PayloadDisclosureResult::Unavailable {
                             reason: UnavailableDisclosureReason::UnsupportedFormat,
-                            size_bytes: Some(size_bytes),
+                            size_bytes: size_if_inspector,
                         },
                         None,
                     ),
+                    // Whatever else went wrong, a caller who may not inspect gets the one answer
+                    // that is the same for invalid, unsupported, schema-less and legacy payloads.
                     Err(_) => (
                         PayloadDisclosureResult::Unavailable {
                             reason: UnavailableDisclosureReason::NotDisclosable,
-                            size_bytes: Some(size_bytes),
+                            size_bytes: size_if_inspector,
                         },
                         None,
                     ),
@@ -741,11 +795,15 @@ fn disclosure_audits<C: Clock>(prepared: &PreparedDisclosure, clock: &C) -> Disc
     DisclosureAudits {
         internal: record(
             AuditAction::PayloadDisclosed,
-            prepared.selector.audit_reason(false),
+            prepared.selector.audit_reason(ReasonSuffix::Plain),
         ),
         pii: record(
             AuditAction::PayloadPiiRevealed,
-            prepared.selector.audit_reason(true),
+            prepared.selector.audit_reason(ReasonSuffix::Reveal),
+        ),
+        inspected: record(
+            AuditAction::PayloadInspected,
+            prepared.selector.audit_reason(ReasonSuffix::Structure),
         ),
         reveal_denied: record(AuditAction::PayloadRevealDenied, "permission".to_owned()),
     }

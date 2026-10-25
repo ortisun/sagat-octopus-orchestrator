@@ -4039,11 +4039,15 @@ components:
             caller: {$ref: '#/components/schemas/PayloadDisclosureCaller'}
         - oneOf:
             - type: object
-              required: [kind, schema, sizeBytes, truncated, tree]
+              required: [kind, schema, truncated, tree]
               properties:
                 kind: {type: string, const: disclosed}
                 schema: {$ref: '#/components/schemas/PayloadClassificationSchema'}
-                sizeBytes: {type: integer, minimum: 0}
+                sizeBytes:
+                  type: integer
+                  minimum: 0
+                  description: Size of the whole stored payload. Present only for a caller with `run:payload:inspect`, because it includes personal and secret fields (D278).
+
                 truncated: {type: boolean}
                 tree: {$ref: '#/components/schemas/PayloadDisclosureNode'}
             - type: object

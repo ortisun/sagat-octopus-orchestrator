@@ -181,14 +181,14 @@ type Node =
 type Child = { ordinal: number; name?: string; node: Node };   // name: a declared property, or a disclosed value's key
 
 type Disclosure = Provenance & (
-  | { kind: "disclosed"; schema: Schema; sizeBytes: number; truncated: boolean; tree: Node }
+  | { kind: "disclosed"; schema: Schema; sizeBytes?: number; truncated: boolean; tree: Node }   // sizeBytes: run:payload:inspect only
   | { kind: "structure-only"; schema?: Schema; sizeBytes: number; truncated: boolean;
       reason: "NO_SCHEMA" | "SCHEMA_MISMATCH" | "LEGACY_VERSION" | "SCHEMA_UNUSABLE";
       tree: PayloadStructure }                                       // the ADR-0028 type; run:payload:inspect only
   | { kind: "external"; sizeBytes: number; contentKind: "json" | "text" | "binary" | "other";
       reason: "EXTERNAL_CONTENT_NOT_INSPECTED" }
   | { kind: "unavailable"; reason: "NO_RETAINED_PAYLOAD" | "UNSUPPORTED_FORMAT" | "NOT_DISCLOSABLE";
-      sizeBytes?: number }
+      sizeBytes?: number }   // UNSUPPORTED_FORMAT and sizeBytes: run:payload:inspect only
 );
 ```
 
@@ -196,7 +196,11 @@ Rules of the answer:
 
 - `structure-only` appears only for a caller that holds `run:payload:inspect`; every other caller gets
   `unavailable` with `NOT_DISCLOSABLE` for the same situations, so that the state of a payload (valid,
-  invalid, schema-less, legacy) is not an oracle for them.
+  invalid, schema-less, legacy, unsupported or too large) is not an oracle for them. `UNSUPPORTED_FORMAT`
+  and `sizeBytes` (the size of the whole stored payload, personal and secret fields included) are
+  facts about the payload's structure and go to the same holders only (D644).
+- A `structure-only` answer is audited as `payload.inspected` in the same transaction, with the
+  300 s collapse of ADR-0028 and the reason `classified-v1:<selector>:structure` (D645).
 - For a caller without `run:payload:inspect`, withheld nodes are omitted and `childCount` counts the
   children returned; for a holder, `childCount` is the true count and withheld children appear.
 - `name` is present for a child declared in `properties`, and for an undeclared key only when its value
