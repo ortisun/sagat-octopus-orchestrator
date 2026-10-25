@@ -147,26 +147,50 @@ test('SEC the token lives in the page\'s memory only, the page allows nothing bu
 
 test('SEC what belongs to another tenant is not found, from the API and from the Studio, and what is said about it holds nothing of it', async ({ page }) => {
   test.setTimeout(180_000);
+  const foreignFixture = {
+    workflowName: 'acme-only-foreign-workflow-sentinel',
+    description: 'visible only to the acme foreign tenant sentinel',
+    activity: 'acme.secret.step.foreign-tenant-sentinel',
+    cardNumber: '4111111111111111',
+    correlationId: 'acme-foreign-correlation-sentinel-7',
+  } as const;
+  const foreignSentinels = Object.values(foreignFixture);
   const admin = new Api('admin');
   const wf = await admin.call<{ id: string }>('POST', '/workflows', {
-    name: 'acme-only',
-    ir: { ...IR_BASE, metadata: { name: 'acme-only', description: 'visible to acme only' }, entrypoint: 'a', nodes: [{ id: 'a', type: 'activity', activity: 'acme.secret.step', timeoutMs: 1000 }] },
+    name: foreignFixture.workflowName,
+    ir: {
+      ...IR_BASE,
+      metadata: { name: foreignFixture.workflowName, description: foreignFixture.description },
+      entrypoint: 'a',
+      nodes: [{ id: 'a', type: 'activity', activity: foreignFixture.activity, timeoutMs: 1000 }],
+    },
   }, 201);
   await admin.call('POST', `/workflows/${wf.body.id}/publish`, { draftRevision: 1 }, 201);
-  const run = await admin.start(wf.body.id, { cardNumber: '4111111111111111' }, { correlationId: 'acme-correlation-7' });
+  const run = await admin.start(wf.body.id, { cardNumber: foreignFixture.cardNumber }, { correlationId: foreignFixture.correlationId });
 
   // The API: the other tenant's administrator gets nothing, and the same answer as for an id that does not exist.
   const bob = new Api('foreign');
+  // Keep this journey independent of another spec creating the foreign tenant's first namespace.
+  // The valid foreign namespace makes both the API comparison and the Studio error exercise the
+  // cross-tenant resource boundary rather than the namespace gate.
+  const foreignNamespaces = await bob.call<{ items: Array<{ slug: string }> }>('GET', '/namespaces', undefined, 200);
+  if (!foreignNamespaces.body.items.some((namespace) => namespace.slug === env.namespace)) {
+    const workspace = await bob.call<{ id: string }>('POST', '/workspaces', { slug: `security-${Date.now()}` }, 201);
+    await bob.call('POST', `/workspaces/${workspace.body.id}/namespaces`, { slug: env.namespace, environment: 'dev' }, 201);
+  }
   const real = await bob.call('GET', `/runs/${run}`);
   const missing = await bob.call('GET', '/runs/00000000-0000-7000-8000-000000000000');
   expect(real.status).toBe(missing.status);
   expect([403, 404]).toContain(real.status);
-  expect(JSON.stringify(real.body)).not.toMatch(/acme|4111|correlation/);
+  const realBody = JSON.stringify(real.body);
+  for (const sentinel of foreignSentinels) expect(realBody).not.toContain(sentinel);
+  expect(realBody).not.toMatch(/acme|correlation/);
   const listed = await bob.call<{ items?: Array<{ name: string }> }>('GET', '/workflows');
-  expect(JSON.stringify(listed.body)).not.toContain('acme-only');
+  const listedBody = JSON.stringify(listed.body);
+  for (const sentinel of foreignSentinels) expect(listedBody).not.toContain(sentinel);
 
   // The Studio: signed in as that administrator, nothing of acme is on any page, and the errors say so in words.
-  await signIn(page, env.tokens.foreign);
+  await signIn(page, env.tokens.foreign, { namespace: env.namespace });
   await goTo(page, `/runs/${run}`);
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
   // SC-007-004: what is said carries the code and the trace id to quote, and a way on; none of what it is about.
@@ -175,5 +199,5 @@ test('SEC what belongs to another tenant is not found, from the API and from the
   await goTo(page, `/workflows/${wf.body.id}`);
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
   const text = await page.locator('body').innerText();
-  for (const secret of ['acme-only', 'acme.secret.step', 'acme-correlation-7', '4111111111111111', 'visible to acme only']) expect(text).not.toContain(secret);
+  for (const sentinel of foreignSentinels) expect(text).not.toContain(sentinel);
 });

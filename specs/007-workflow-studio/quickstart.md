@@ -456,3 +456,16 @@ follows Workflows**) within the new namespace hierarchy. The updated Shell regre
 2/10 before restoration, then passed 10/10. Production build passed. The two exact Chromium
 shell/menu scenarios passed (2/2, 9.66 s including harness), using the already-built real-platform
 journey binary; Rust application/test sources were unchanged by this menu-only correction.
+
+Linux CI follow-up (PR 50 run `40234003795`): Studio had two fixture failures. The all-font
+fallback count included Monaco's healthy `codicon.ttf`; a four-digit PAN prefix matched an
+unrelated random request id in an otherwise opaque foreign-resource refusal. The font fixture
+now targets the closed Geist/Geist Mono asset/family set, requires actual registered and blocked
+faces, and asserts zero loaded bundled text faces while preserving strict console and geometry
+checks. The tenant test scans complete, unmodified responses for all full fixture sentinels,
+retains the nonhex `acme|correlation` checks, and creates/selects its own valid foreign namespace.
+No production authorization changes. The font failure was reproduced locally; focused Chromium
+passed 3/3 and isolated foreign access passed 1/1. Root then reran the full real-platform browser
+suite: **35 passed, zero failed, two opt-in performance skips**, 96.98 s including harness, with
+local US02 explicitly excluded. E2E types passed; fresh review found no C1/C2 issue. This final
+rerun used the already-built journey binary because Rust application/test sources were unchanged.
