@@ -659,3 +659,18 @@ cluster; the Colima VM has no mounts), `perf_*` and `measure_managed_database_ph
 development directory those scripts prepare). The evidence of T017-023 and T017-024 for those
 paths is the 2026-10-17 record above; nothing in this integration changes them except the
 protocol minor, the migration numbers and D601.
+
+
+## Classified-tree secret fixture correction — 2026-10-25
+
+PR 47 CI run `40163480113` failed
+`durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotation` before the
+provider-read barrier: this integrated fixture reused a task it had already completed. The
+production `StaleAttempt` refusal is correct. Preserve that completion, assert its stale
+resolution, then admit another run of the same secret-bearing workflow and lease its active
+task for the membership-revocation race. No authority, lease duration or provider barrier is
+weakened. On this branch, the focused real PostgreSQL/OpenBao test was observed failing
+(0 passed, 1 failed, 60.52 s), then passed after the fixture correction (1 passed, 0 failed,
+74.78 s). Command: `cargo test -p sagat-tests --test integration_database_connections --locked
+durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotation -- --exact --nocapture`.
+This focused result does not replace the full integrated CI gate.
