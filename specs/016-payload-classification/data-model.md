@@ -70,7 +70,7 @@ Caches (process-local, bounded, no cross-tenant sharing issue because the key is
 
 | Cache | Key | Value | Bound |
 |---|---|---|---|
-| compiled carrier | `(workflow_version_id, carrier)` | `jsonschema::Validator` plus the parsed annotation index | 256 entries and 16 MiB of schema bytes, least recently used |
+| compiled carrier | `(workflow_version_id, carrier)` | `jsonschema::Validator` plus the parsed annotation index | 256 entries and 64 MiB of estimated compiled bytes (D643; was 16 MiB of schema bytes), least recently used; carriers that cannot be compiled are remembered in a separate table of 1,024 (D642) |
 
 A restart empties it; nothing depends on it for correctness.
 

@@ -65,6 +65,20 @@ checks the rest (section 1.4). `docs/reference/workflow-document.md` is regenera
 7. A declared child never lowers the level. Inline or through `$ref`, a lower declaration is a
    publication error; the evaluator still clamps (`max`) as defence in depth.
 8. A node with an annotation but no `type` governs every type at that location.
+9. Numbers are validated on the spelling the author sent, not on the machine value (D640). When a
+   carrier has a numeric keyword (`minimum`, `maximum`, `exclusive*`, `multipleOf`, `uniqueItems`,
+   a `const` or `enum` holding a number) a payload number is validated only if the validator will
+   compare the value that was sent: an integer fits 64 bits (and stays within 2^53 when the
+   carrier has a decimal constant), and any other spelling is the shortest spelling of the
+   `f64` it parses to and is below 2^53. `9.99`, `12.5` and `1.5e2` are; a 30-digit fraction and
+   `1e400` are not. A payload that fails the rule is not validated: callers without
+   `run:payload:inspect` get `NOT_DISCLOSABLE`; inspectors get `UNSUPPORTED_FORMAT`. A carrier with
+   an integer type refuses only a fraction that rounds to a whole number.
+10. Cost is bounded (D641): one walk spends at most 4,000,000 steps, each expanded subschema
+    being charged once for every instance node it applies to, and at most five seconds. A walk that
+    runs out ends as an unusable carrier (`SCHEMA_UNUSABLE` for inspectors). The 1,000 `$ref`
+    limit applies to one schema location. A carrier may hold at most 32 `pattern` keywords and
+    `patternProperties` keys, each regular expression limited to 64 KiB of program.
 
 Worked example (the corpus of `tests/contract/payload-classification/fixtures/`):
 
@@ -340,12 +354,15 @@ Audience for events and dead letters ("grant" means `payload:reveal-pii` in the 
 | Action | Resource | Written when | Reason (server-built) | Repeats |
 |---|---|---|---|---|
 | `payload.disclosed` | run | a disclosure returned at least one `internal` value | `classified-v1:input`, `classified-v1:result`, `classified-v1:journal:<sequence>` | collapse 300 s |
+| `payload.inspected` | run | a `structure-only` answer was returned (legacy version, no carrier, mismatch, unusable carrier), as ADR-0028 audits a structure read | `classified-v1:input:structure`, `classified-v1:result:structure`, `classified-v1:journal:<sequence>:structure` | collapse 300 s |
 | `payload.pii_revealed` | run; for events `ResourceType::Event` (id `source/event id`, reason `event-data:reveal=pii`); for a dead letter `ResourceType::Connector` (reason `dead-letter:<letter id>:reveal=pii`) | a reveal returned at least one `pii` value, or an event or letter value | run: the same with `:reveal=pii` | never collapse |
 | `payload.reveal_denied` | run, event or connector, as above | `reveal` without a grant | `permission` | collapse 300 s, best effort |
 | `payload.reveal_granted` | payload reveal grant (`ResourceType::PayloadRevealGrant`, id `namespace-id/subject`, as `Worker`) | a grant is created | `granted` | none |
 | `payload.reveal_revoked` | payload reveal grant | a grant is removed | `revoked` | none |
 
-A `public`-only disclosure is not audited per request (volume); it is counted by metric. No record
+A `public`-only disclosure is not audited per request (volume); it is counted by metric. An
+inspector's `disclosed` answer that returns no `internal` or `pii` value but shows the shape of
+withheld nodes is in the same class and is not audited either (G641). No record
 holds a value, key, digest, schema, free text or secret. `payload.pii_revealed` and the grant actions
 are visible to `audit:read`; `CrossTenantAccessDenied` stays withheld from the tenant as today.
 
