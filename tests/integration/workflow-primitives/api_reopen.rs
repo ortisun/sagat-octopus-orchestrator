@@ -1,20 +1,116 @@
 //! A current API instance can reopen its owned database and honor durable public worker authority.
 use std::time::Duration;
 
+use sagat_api_grpc::pb::StepCommandResponse;
 use sagat_application::entropy::Token;
 use sagat_application::worker::WorkerSettings;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
-use tokio::time::timeout;
+use tokio::{
+    task::{JoinError, JoinHandle},
+    time::{Instant, MissedTickBehavior, interval, sleep_until, timeout},
+};
 
 use crate::capacity_finish::commit_proxy::{CommitAckLossProxy, CommitResolution};
 use crate::support::api::{Options, start_on_db, start_on_db_with_pool};
 use crate::support::worker::{HUMAN, Platform, TENANT, Worker, single_ir};
-use crate::support::{RUNTIME_ROLE, attach_existing_db, eventually, hold_server};
+use crate::support::{RUNTIME_ROLE, attach_existing_db, hold_server};
 
 const WORKER: &str = "retained-db-public-worker";
 const PROXY_APPLICATION: &str = "sagat-test-capacity-commit-loss";
+
+type PublicReport = Result<tonic::Response<StepCommandResponse>, tonic::Status>;
+
+struct PendingReport(Option<JoinHandle<PublicReport>>);
+
+impl PendingReport {
+    fn new(task: JoinHandle<PublicReport>) -> Self {
+        Self(Some(task))
+    }
+
+    async fn join(&mut self) -> Result<PublicReport, JoinError> {
+        let joined = self.0.as_mut().expect("pending public report").await;
+        self.0 = None;
+        joined
+    }
+}
+
+impl Drop for PendingReport {
+    fn drop(&mut self) {
+        if let Some(task) = self.0.take() {
+            task.abort();
+        }
+    }
+}
+
+fn early_rpc_outcome(joined: Result<PublicReport, JoinError>) -> String {
+    match joined {
+        Ok(Ok(response)) => format!(
+            "rpc_succeeded=true already_applied={}",
+            response.get_ref().already_applied
+        ),
+        Ok(Err(status)) => format!("rpc_succeeded=false tonic_code={:?}", status.code()),
+        Err(error) => format!(
+            "rpc_succeeded=false join_cancelled={} join_panic={}",
+            error.is_cancelled(),
+            error.is_panic()
+        ),
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct PublicWriterObservation {
+    writer_present: bool,
+    database_matches: bool,
+    user_matches: bool,
+    application_matches: bool,
+    active: bool,
+    lock_wait: bool,
+    blocked_by_exact_gate: bool,
+    receipt_insert_marker: bool,
+    blocker_lock_marker: bool,
+    state: Option<String>,
+    wait_event_type: Option<String>,
+    wait_event: Option<String>,
+    query_age_ms: i64,
+    transaction_age_ms: i64,
+}
+
+impl std::fmt::Debug for PublicWriterObservation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PublicWriterObservation")
+            .field("writer_present", &self.writer_present)
+            .field("database_matches", &self.database_matches)
+            .field("user_matches", &self.user_matches)
+            .field("application_matches", &self.application_matches)
+            .field("active", &self.active)
+            .field("lock_wait", &self.lock_wait)
+            .field("blocked_by_exact_gate", &self.blocked_by_exact_gate)
+            .field("receipt_insert_marker", &self.receipt_insert_marker)
+            .field("blocker_lock_marker", &self.blocker_lock_marker)
+            .field("state", &self.state)
+            .field("wait_event_type", &self.wait_event_type)
+            .field("wait_event", &self.wait_event)
+            .field("query_age_ms", &self.query_age_ms)
+            .field("transaction_age_ms", &self.transaction_age_ms)
+            .finish()
+    }
+}
+
+impl PublicWriterObservation {
+    fn is_exact_gate_wait(&self) -> bool {
+        self.writer_present
+            && self.database_matches
+            && self.user_matches
+            && self.application_matches
+            && self.active
+            && self.lock_wait
+            && self.blocked_by_exact_gate
+            && self.receipt_insert_marker
+            && self.blocker_lock_marker
+    }
+}
 
 #[derive(Debug, PartialEq, Eq, sqlx::FromRow)]
 struct MembershipIdentity {
@@ -270,30 +366,76 @@ async fn wait_for_exact_public_writer(
     backend_pid: i32,
     gate_pid: i32,
     database_name: &str,
+    reporting: &mut PendingReport,
+    proxy: &mut CommitAckLossProxy,
 ) -> i32 {
-    eventually(
-        "captured supplied-pool backend executes the exact public receipt insert",
-        || async {
-            sqlx::query_scalar::<_, i32>(
-                "SELECT writer.pid FROM pg_stat_activity writer \
-                 JOIN pg_stat_activity blocker ON blocker.pid=$2 \
-                 WHERE writer.pid=$1 AND writer.datname=$3 AND blocker.datname=writer.datname \
-                   AND writer.usename='sagat_app' AND writer.application_name=$4 \
-                   AND writer.state='active' AND writer.wait_event_type='Lock' \
-                   AND $2=ANY(pg_blocking_pids(writer.pid)) \
-                   AND position('INSERT INTO command_dedupe' in writer.query)>0 \
-                   AND position('pg_advisory_xact_lock' in blocker.query)>0",
-            )
-            .bind(backend_pid)
-            .bind(gate_pid)
-            .bind(database_name)
-            .bind(PROXY_APPLICATION)
-            .fetch_optional(pool)
-            .await
-            .expect("observe exact public receipt writer")
-        },
-    )
-    .await
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(5);
+    let mut poll = interval(Duration::from_millis(50));
+    poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut last = None;
+    loop {
+        tokio::select! {
+            joined = reporting.join() => panic!(
+                "public RPC ended before the exact receipt gate: {:?}",
+                early_rpc_outcome(joined)
+            ),
+            termination = proxy.wait_termination() => panic!(
+                "relay ended before the exact receipt gate: termination={termination:?} progress={:?}",
+                proxy.progress()
+            ),
+            _ = sleep_until(deadline) => panic!(
+                "timed out waiting for: captured supplied-pool backend executes the exact public receipt insert; observer_elapsed_ms={} writer={last:?} relay={:?}",
+                started.elapsed().as_millis().min(5_000),
+                proxy.progress()
+            ),
+            _ = poll.tick() => {}
+        }
+
+        let observation = sqlx::query_as::<_, PublicWriterObservation>(
+            "SELECT writer.pid IS NOT NULL AS writer_present, \
+                    coalesce(writer.datname=$3 AND blocker.datname=writer.datname,false) AS database_matches, \
+                    coalesce(writer.usename='sagat_app',false) AS user_matches, \
+                    coalesce(writer.application_name=$4,false) AS application_matches, \
+                    coalesce(writer.state='active',false) AS active, \
+                    coalesce(writer.wait_event_type='Lock',false) AS lock_wait, \
+                    coalesce($2=ANY(pg_blocking_pids(writer.pid)),false) AS blocked_by_exact_gate, \
+                    coalesce(position('INSERT INTO command_dedupe' in writer.query)>0,false) AS receipt_insert_marker, \
+                    coalesce(position('pg_advisory_xact_lock' in blocker.query)>0,false) AS blocker_lock_marker, \
+                    writer.state,writer.wait_event_type,writer.wait_event, \
+                    LEAST(30000,GREATEST(0,coalesce((extract(epoch FROM clock_timestamp()-writer.query_start)*1000)::bigint,0))) AS query_age_ms, \
+                    LEAST(30000,GREATEST(0,coalesce((extract(epoch FROM clock_timestamp()-writer.xact_start)*1000)::bigint,0))) AS transaction_age_ms \
+             FROM (SELECT 1) seed \
+             LEFT JOIN pg_stat_activity writer ON writer.pid=$1 \
+             LEFT JOIN pg_stat_activity blocker ON blocker.pid=$2",
+        )
+        .bind(backend_pid)
+        .bind(gate_pid)
+        .bind(database_name)
+        .bind(PROXY_APPLICATION)
+        .fetch_one(pool);
+        tokio::pin!(observation);
+        let observed = tokio::select! {
+            joined = reporting.join() => panic!(
+                "public RPC ended before the exact receipt gate: {:?}",
+                early_rpc_outcome(joined)
+            ),
+            termination = proxy.wait_termination() => panic!(
+                "relay ended before the exact receipt gate: termination={termination:?} progress={:?}",
+                proxy.progress()
+            ),
+            _ = sleep_until(deadline) => panic!(
+                "timed out waiting for: captured supplied-pool backend executes the exact public receipt insert; observer_elapsed_ms={} writer={last:?} relay={:?}",
+                started.elapsed().as_millis().min(5_000),
+                proxy.progress()
+            ),
+            observed = &mut observation => observed.expect("observe exact public receipt writer"),
+        };
+        if observed.is_exact_gate_wait() {
+            return backend_pid;
+        }
+        last = Some(observed);
+    }
 }
 
 async fn receipt_witness(
@@ -541,7 +683,7 @@ async fn supplied_single_connection_pool_scenario() {
     drop(original);
 
     let db = attach_existing_db(&admin_url, &database_name).await;
-    let proxy = CommitAckLossProxy::start(&db, CommitResolution::Committed).await;
+    let mut proxy = CommitAckLossProxy::start(&db, CommitResolution::Committed).await;
     assert_eq!(
         proxy.pool.options().get_max_connections(),
         1,
@@ -642,18 +784,26 @@ async fn supplied_single_connection_pool_scenario() {
     let replay_completion = completion.clone();
     let mut report_client = resumed.client.clone();
     let report_request = resumed.req(completion);
-    let reporting = tokio::spawn(async move { report_client.complete_step(report_request).await });
+    let mut reporting = PendingReport::new(tokio::spawn(async move {
+        report_client.complete_step(report_request).await
+    }));
 
-    let observed_pid =
-        wait_for_exact_public_writer(&reopened.api.db.pool, backend_pid, gate_pid, &database_name)
-            .await;
+    let observed_pid = wait_for_exact_public_writer(
+        &reopened.api.db.pool,
+        backend_pid,
+        gate_pid,
+        &database_name,
+        &mut reporting,
+        &mut proxy,
+    )
+    .await;
     assert_eq!(
         observed_pid, backend_pid,
         "the captured supplied backend must execute the public completion"
     );
     gate.rollback().await.expect("release exact receipt gate");
 
-    let completed = timeout(Duration::from_secs(5), reporting)
+    let completed = timeout(Duration::from_secs(5), reporting.join())
         .await
         .expect("public completion deadline")
         .expect("public completion task")
