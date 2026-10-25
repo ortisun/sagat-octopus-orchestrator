@@ -1,17 +1,7 @@
 //! Actual committed scoped-refusal COMMIT whose reply is lost before a fresh API replays it.
 
 use super::*;
-use sagat_api_grpc::pb::StepCommandResponse;
-use tokio::task::JoinHandle;
-
-// A timeout or assertion failure must cancel the original public reporting task.
-struct PendingReport(JoinHandle<Result<tonic::Response<StepCommandResponse>, tonic::Status>>);
-
-impl Drop for PendingReport {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
+use crate::support::eventually;
 
 async fn install_commit_gate(
     pool: &PgPool,
@@ -310,12 +300,20 @@ async fn reply_loss_scenario(resolution: CommitResolution) {
     worker.session = session.clone();
     let request = worker.req(completion.clone());
     let mut client = worker.client.clone();
-    let mut reporting = PendingReport(tokio::spawn(
-        async move { client.complete_step(request).await },
-    ));
+    let mut reporting =
+        PendingReport::new(tokio::spawn(
+            async move { client.complete_step(request).await },
+        ));
 
-    let receipt_writer =
-        wait_for_exact_public_writer(&reopened.api.db.pool, backend_pid, pid_a, &database).await;
+    let receipt_writer = wait_for_exact_public_writer(
+        &reopened.api.db.pool,
+        backend_pid,
+        pid_a,
+        &database,
+        &mut reporting,
+        &mut proxy,
+    )
+    .await;
     assert!(
         receipt_writer == backend_pid,
         "gate A identifies the exact original refusal receipt writer"
@@ -336,7 +334,7 @@ async fn reply_loss_scenario(resolution: CommitResolution) {
     assert_unresolved(&reopened, run_uuid, &before).await;
 
     proxy.lose_reply().await;
-    let error = match timeout(Duration::from_secs(5), &mut reporting.0).await {
+    let error = match timeout(Duration::from_secs(5), reporting.join()).await {
         Ok(Ok(Err(error))) => error,
         _ => panic!("lost COMMIT reply must return a bounded public error, never an ACK"),
     };

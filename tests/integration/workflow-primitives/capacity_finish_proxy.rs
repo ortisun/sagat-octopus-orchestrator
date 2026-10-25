@@ -10,7 +10,7 @@ use std::{
     io,
     sync::{
         Arc,
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicU8, AtomicU64, Ordering},
     },
 };
 use tokio::{
@@ -25,11 +25,62 @@ const FORWARDING: u8 = 0;
 const ARMED: u8 = 1;
 const COMMIT_SENT: u8 = 2;
 const MAX_FRAME: usize = 1024 * 1024;
+const RELAY_RUNNING: u8 = 0;
+const RELAY_COMPLETED: u8 = 1;
+const RELAY_IO_ERROR: u8 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CommitResolution {
     Committed,
     Aborted23514,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RelayProgress {
+    pub frontend_frames: u64,
+    pub backend_frames: u64,
+    pub frontend_last_tag: Option<char>,
+    pub backend_last_tag: Option<char>,
+    pub terminal: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RelayTermination {
+    pub completed_ok: bool,
+    pub io_error_kind: Option<io::ErrorKind>,
+    pub join_cancelled: bool,
+    pub join_panic: bool,
+}
+
+#[derive(Default)]
+struct RelayDiagnostics {
+    frontend_frames: AtomicU64,
+    backend_frames: AtomicU64,
+    frontend_last_tag: AtomicU8,
+    backend_last_tag: AtomicU8,
+    terminal: AtomicU8,
+}
+
+impl RelayDiagnostics {
+    fn snapshot(&self) -> RelayProgress {
+        let tag = |value| match value {
+            0 => None,
+            value => Some(char::from(value)),
+        };
+        let terminal = match self.terminal.load(Ordering::Acquire) {
+            RELAY_RUNNING => "running",
+            RELAY_COMPLETED => "completed",
+            RELAY_IO_ERROR => "io_error",
+            _ => "invalid",
+        };
+        RelayProgress {
+            frontend_frames: self.frontend_frames.load(Ordering::Acquire),
+            backend_frames: self.backend_frames.load(Ordering::Acquire),
+            frontend_last_tag: tag(self.frontend_last_tag.load(Ordering::Acquire)),
+            backend_last_tag: tag(self.backend_last_tag.load(Ordering::Acquire)),
+            terminal,
+        }
+    }
 }
 
 pub(crate) struct CommitAckLossProxy {
@@ -39,6 +90,7 @@ pub(crate) struct CommitAckLossProxy {
     lose_ack: Option<oneshot::Sender<()>>,
     disconnected: Option<oneshot::Receiver<()>>,
     resolved: Option<oneshot::Receiver<CommitResolution>>,
+    diagnostics: Arc<RelayDiagnostics>,
     task: Option<JoinHandle<io::Result<()>>>,
 }
 impl CommitAckLossProxy {
@@ -65,19 +117,35 @@ impl CommitAckLossProxy {
         let (lose_ack, lose_rx) = oneshot::channel();
         let (closed_tx, disconnected) = oneshot::channel();
         let (resolved_tx, resolved) = oneshot::channel();
-        let task = tokio::spawn(relay(
-            listener,
-            host,
-            port,
-            expected,
-            Arc::clone(&state),
-            Controls {
-                sent: sent_tx,
-                lose: lose_rx,
-                closed: closed_tx,
-                resolved: resolved_tx,
-            },
-        ));
+        let diagnostics = Arc::new(RelayDiagnostics::default());
+        let task_state = Arc::clone(&state);
+        let task_diagnostics = Arc::clone(&diagnostics);
+        let task = tokio::spawn(async move {
+            let result = relay(
+                listener,
+                host,
+                port,
+                expected,
+                task_state,
+                Controls {
+                    sent: sent_tx,
+                    lose: lose_rx,
+                    closed: closed_tx,
+                    resolved: resolved_tx,
+                },
+                Arc::clone(&task_diagnostics),
+            )
+            .await;
+            task_diagnostics.terminal.store(
+                if result.is_ok() {
+                    RELAY_COMPLETED
+                } else {
+                    RELAY_IO_ERROR
+                },
+                Ordering::Release,
+            );
+            result
+        });
         let options = upstream
             .host("127.0.0.1")
             .port(proxy_port)
@@ -97,6 +165,7 @@ impl CommitAckLossProxy {
             lose_ack: Some(lose_ack),
             disconnected: Some(disconnected),
             resolved: Some(resolved),
+            diagnostics,
             task: Some(task),
         };
         match timeout(Duration::from_secs(5), proxy.pool.acquire()).await {
@@ -145,19 +214,50 @@ impl CommitAckLossProxy {
         .expect("server resolution deadline")
         .expect("observed backend idle after result")
     }
+    pub fn progress(&self) -> RelayProgress {
+        self.diagnostics.snapshot()
+    }
+    pub async fn wait_termination(&mut self) -> RelayTermination {
+        let joined = self.task.as_mut().expect("relay task").await;
+        self.task = None;
+        match joined {
+            Ok(Ok(())) => RelayTermination {
+                completed_ok: true,
+                io_error_kind: None,
+                join_cancelled: false,
+                join_panic: false,
+            },
+            Ok(Err(error)) => RelayTermination {
+                completed_ok: false,
+                io_error_kind: Some(error.kind()),
+                join_cancelled: false,
+                join_panic: false,
+            },
+            Err(error) => RelayTermination {
+                completed_ok: false,
+                io_error_kind: None,
+                join_cancelled: error.is_cancelled(),
+                join_panic: error.is_panic(),
+            },
+        }
+    }
     pub async fn close(mut self) {
         timeout(Duration::from_secs(5), self.pool.close())
             .await
             .expect("proxy pool closes");
-        timeout(
-            Duration::from_secs(5),
-            self.task.as_mut().expect("relay task"),
-        )
-        .await
-        .expect("relay ends")
-        .expect("relay task joins")
-        .expect("valid protocol resolution");
-        self.task = None; // Only clear ownership after the task has actually joined.
+        let termination = timeout(Duration::from_secs(5), self.wait_termination())
+            .await
+            .expect("relay ends");
+        assert_eq!(
+            termination,
+            RelayTermination {
+                completed_ok: true,
+                io_error_kind: None,
+                join_cancelled: false,
+                join_panic: false,
+            },
+            "valid protocol resolution"
+        );
     }
 }
 impl Drop for CommitAckLossProxy {
@@ -239,6 +339,7 @@ async fn relay(
     expected: CommitResolution,
     state: Arc<AtomicU8>,
     control: Controls,
+    diagnostics: Arc<RelayDiagnostics>,
 ) -> io::Result<()> {
     let (mut client, _) = listener.accept().await?;
     let mut upstream = TcpStream::connect((host.as_str(), port)).await?;
@@ -252,9 +353,16 @@ async fn relay(
         closed,
         resolved,
     } = control;
+    let frontend_diagnostics = Arc::clone(&diagnostics);
     let frontend = async move {
         loop {
             let request = frame(&mut client_read).await?;
+            frontend_diagnostics
+                .frontend_frames
+                .fetch_add(1, Ordering::AcqRel);
+            frontend_diagnostics
+                .frontend_last_tag
+                .store(request.tag, Ordering::Release);
             if request.tag == b'Q'
                 && request.body() == b"COMMIT\0"
                 && client_state
@@ -294,6 +402,10 @@ async fn relay(
                     }
                 }
             };
+            diagnostics.backend_frames.fetch_add(1, Ordering::AcqRel);
+            diagnostics
+                .backend_last_tag
+                .store(response.tag, Ordering::Release);
             if state.load(Ordering::Acquire) != COMMIT_SENT {
                 client_write.write_all(&response.wire).await?;
                 continue;

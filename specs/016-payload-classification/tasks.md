@@ -5,6 +5,7 @@
 2026-10-17, the restriction of event values (US08). Implementation is in progress on the approved
 integration branch. Focused evidence and remaining gaps are recorded in
 `tasks/project-completion/integration-notes.md`; unchecked tasks still require their complete gates.
+Current release integration checks are recorded in [release-gates-2026-10-25.md](release-gates-2026-10-25.md); full Linux CI remains required.
 T016-001 closes when this specification is merged. A task is ticked only with
 the evidence that closes it (a named test that passed, a command and its result). Tests precede
 implementation within each phase. IDs are feature-scoped per the constitution. `[P]` marks tasks that
