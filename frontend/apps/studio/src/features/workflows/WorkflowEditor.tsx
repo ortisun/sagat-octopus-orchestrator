@@ -507,61 +507,65 @@ export function WorkflowEditor({ workflow }: { workflow: Workflow }) {
       ) : null}
 
       <div className="wf-toolbar" role="group" aria-label="Editor tools">
-        <div role="group" aria-label="View" className="wf-toggle">
-          <Button aria-pressed={!showList} onClick={() => chooseView('canvas')}>
-            Canvas
-          </Button>
-          <Button aria-pressed={showList} onClick={() => chooseView('list')}>
-            List
-          </Button>
+        <div className="wf-tools">
+          <div role="group" aria-label="View" className="wf-toggle">
+            <Button aria-pressed={!showList} onClick={() => chooseView('canvas')}>
+              Canvas
+            </Button>
+            <Button aria-pressed={showList} onClick={() => chooseView('list')}>
+              List
+            </Button>
+          </div>
+          {canWrite ? (
+            <>
+              <Button onClick={() => setAddOpen(true)}>Add node</Button>
+              <Button onClick={undo} disabled={!canUndo} aria-keyshortcuts="Control+Z Meta+Z">
+                Undo
+              </Button>
+              <Button onClick={redo} disabled={!canRedo} aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z Control+Y">
+                Redo
+              </Button>
+            </>
+          ) : null}
+          {!showList ? (
+            <>
+              <Button
+                onClick={() => chooseDirection(direction === 'LR' ? 'TB' : 'LR')}
+                aria-label={`Layout direction: ${direction === 'LR' ? 'left to right' : 'top to bottom'}. Switch to ${direction === 'LR' ? 'top to bottom' : 'left to right'}.`}
+              >
+                {direction === 'LR' ? 'Left to right' : 'Top to bottom'}
+              </Button>
+              <Button onClick={relayout}>Re-layout</Button>
+            </>
+          ) : null}
         </div>
-        {canWrite ? (
-          <>
-            <Button onClick={() => setAddOpen(true)}>Add node</Button>
-            <Button onClick={undo} disabled={!canUndo} aria-keyshortcuts="Control+Z Meta+Z">
-              Undo
-            </Button>
-            <Button onClick={redo} disabled={!canRedo} aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z Control+Y">
-              Redo
-            </Button>
-          </>
-        ) : null}
-        {!showList ? (
-          <>
-            <Button
-              onClick={() => chooseDirection(direction === 'LR' ? 'TB' : 'LR')}
-              aria-label={`Layout direction: ${direction === 'LR' ? 'left to right' : 'top to bottom'}. Switch to ${direction === 'LR' ? 'top to bottom' : 'left to right'}.`}
-            >
-              {direction === 'LR' ? 'Left to right' : 'Top to bottom'}
-            </Button>
-            <Button onClick={relayout}>Re-layout</Button>
-          </>
-        ) : null}
-        <span className="spacer" />
-        <span role="status" className="wf-summary" data-testid="validation-summary">
-          {validation.view ? summary : ''}
-        </span>
-        <span className="wf-save" data-state={saveLabel.state}>
-          <span aria-hidden="true">{saveLabel.shape}</span> <span data-testid="save-state">{saveLabel.text}</span>
-        </span>
-        {canWrite ? <Button onClick={() => void saveNow()}>Save now</Button> : null}
-        {save.phase === 'conflict' && dismissedTheirs === theirs ? <Button onClick={() => setDismissedTheirs(undefined)}>Resolve conflict…</Button> : null}
-        <Button onClick={() => setHelpOpen(true)} aria-keyshortcuts="?">
-          Keyboard help
-        </Button>
-        {canPublish ? (
-          <>
-            <Button
-              variant="primary"
-              onClick={onPublishClick}
-              aria-disabled={blockedReason !== undefined ? true : undefined}
-              aria-describedby={blockedReason !== undefined ? 'wf-publish-reason' : undefined}
-              title={blockedReason}
-            >
-              Publish…
-            </Button>
-          </>
-        ) : null}
+        {/* A second group, so that when the bar needs two rows the save and publish controls move together. */}
+        <div className="wf-tools wf-tools-save">
+          <span role="status" className="wf-summary" data-testid="validation-summary">
+            {validation.view ? summary : ''}
+          </span>
+          <span className="wf-save" data-state={saveLabel.state}>
+            <span aria-hidden="true">{saveLabel.shape}</span> <span data-testid="save-state">{saveLabel.text}</span>
+          </span>
+          {canWrite ? <Button onClick={() => void saveNow()}>Save now</Button> : null}
+          {save.phase === 'conflict' && dismissedTheirs === theirs ? <Button onClick={() => setDismissedTheirs(undefined)}>Resolve conflict…</Button> : null}
+          <Button onClick={() => setHelpOpen(true)} aria-keyshortcuts="?">
+            Keyboard help
+          </Button>
+          {canPublish ? (
+            <>
+              <Button
+                variant="primary"
+                onClick={onPublishClick}
+                aria-disabled={blockedReason !== undefined ? true : undefined}
+                aria-describedby={blockedReason !== undefined ? 'wf-publish-reason' : undefined}
+                title={blockedReason}
+              >
+                Publish…
+              </Button>
+            </>
+          ) : null}
+        </div>
       </div>
       {canPublish && blockedReason !== undefined ? (
         <p id="wf-publish-reason" className="wf-publish-reason">

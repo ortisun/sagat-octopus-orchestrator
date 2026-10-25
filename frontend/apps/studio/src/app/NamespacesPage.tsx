@@ -20,7 +20,7 @@ export function NamespacesPage() {
       <h1 id="namespaces-title">Namespaces</h1>
       {canCreate ? <Button variant="primary" onClick={() => setCreating(true)}>New namespace</Button> : null}
     </div>
-    <p>Organize workflows, runs and scripts by namespace. Select one to work in it.</p>
+    <p>Workflows, runs, operations, scripts and integrations belong to a namespace. Use one to open its menu.</p>
     {list.isPending ? <p role="status">Loading namespaces…</p> : null}
     {list.error ? <ErrorState error={list.error} what="Loading namespaces" onRetry={() => { void list.refetch(); }} /> : null}
     {list.isSuccess && list.data.items.length === 0 ? <p className="empty">No namespaces yet.{canCreate ? ' Create one with New namespace.' : ''}</p> : null}

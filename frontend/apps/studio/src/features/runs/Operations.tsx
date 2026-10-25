@@ -9,32 +9,43 @@ import type { Operation } from './ops';
  */
 export function OperationList({ operations, onChoose, label }: { operations: readonly Operation[]; onChoose: (operation: Operation, opener: HTMLElement | null) => void; label: string }) {
   const base = useId();
+  // When nothing can be asked and the reason is one and the same, it is said once under the list, not under every button.
+  const reasons = new Set(operations.map((operation) => (operation.enabled ? undefined : operation.reason)));
+  const shared = operations.length > 1 && reasons.size === 1 ? [...reasons][0] : undefined;
+  const sharedId = `${base}-reason`;
   return (
-    <ul className="rn-operations" aria-label={label}>
-      {operations.map((operation) => {
-        const reasonId = `${base}-${operation.action}`;
-        return (
-          <li key={operation.action} data-action={operation.action}>
-            <button
-              type="button"
-              className="btn"
-              aria-disabled={operation.enabled ? undefined : true}
-              aria-describedby={operation.enabled ? undefined : reasonId}
-              onClick={(event) => {
-                if (operation.enabled) onChoose(operation, event.currentTarget);
-              }}
-            >
-              {operation.label}
-            </button>
-            {operation.enabled ? null : (
-              <span id={reasonId} className="rn-reason">
-                {operation.reason}
-              </span>
-            )}
-          </li>
-        );
-      })}
-    </ul>
+    <>
+      <ul className="rn-operations" aria-label={label}>
+        {operations.map((operation) => {
+          const reasonId = shared === undefined ? `${base}-${operation.action}` : sharedId;
+          return (
+            <li key={operation.action} data-action={operation.action}>
+              <button
+                type="button"
+                className="btn"
+                aria-disabled={operation.enabled ? undefined : true}
+                aria-describedby={operation.enabled ? undefined : reasonId}
+                onClick={(event) => {
+                  if (operation.enabled) onChoose(operation, event.currentTarget);
+                }}
+              >
+                {operation.label}
+              </button>
+              {operation.enabled || shared !== undefined ? null : (
+                <span id={reasonId} className="rn-reason">
+                  {operation.reason}
+                </span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {shared === undefined ? null : (
+        <p id={sharedId} className="rn-reason">
+          {shared}
+        </p>
+      )}
+    </>
   );
 }
 

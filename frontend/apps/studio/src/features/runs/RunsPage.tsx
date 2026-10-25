@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { Link } from 'react-router';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router';
 import { path } from '../../api/client';
 import { isTerminal } from '../../api/follow';
 import type { Run } from '../../api/types';
@@ -7,6 +7,7 @@ import { useApp, useCan, useNamespace } from '../../app/context';
 import { runStatus } from '../../model/status';
 import '../../styles/runs.css';
 import { useAnnounce } from '../../ui/Announcer';
+import { useMediaQuery } from '../../ui/useMediaQuery';
 import { Banner } from '../../ui/Banner';
 import { Button } from '../../ui/Button';
 import { ErrorState } from '../../ui/ErrorState';
@@ -18,6 +19,7 @@ import { NotAllowed } from './NotAllowed';
 import { originLabel, useVersions, useWorkflowIndex, versionLabel } from './queries';
 import type { WorkflowIndex } from './queries';
 import { RunListStore } from './runList';
+import { StartRun } from './StartRun';
 import { ScrollRegion } from './ScrollRegion';
 import { clip } from './time';
 import { useWindowedRows } from './useWindow';
@@ -25,6 +27,22 @@ import { useWindowedRows } from './useWindow';
 const PAGE_SIZE = 50;
 const ROW_ESTIMATE = 56;
 const COLUMNS = 6;
+/** Below this width the table of six columns does not fit beside the navigation: the runs are shown as cards. */
+const CARD_LIST = '(max-width: 74rem)';
+const RUN_ID = /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+
+/** What the address says of the filters: only values the page could have put there count. */
+export function readFilters(params: URLSearchParams): { status: string; workflowId: string } {
+  const status = params.get('status') ?? '';
+  const workflowId = params.get('workflow') ?? '';
+  return { status: (RUN_STATUSES as readonly string[]).includes(status) ? status : '', workflowId: RUN_ID.test(workflowId) ? workflowId : '' };
+}
+
+/** Takes a run id the way people paste it (spaces around it, a path in front of it) and tells whether it is one. */
+export function parseRunId(text: string): string | undefined {
+  const last = text.trim().split('/').filter(Boolean).at(-1) ?? '';
+  return RUN_ID.test(last) ? last.toLowerCase() : undefined;
+}
 
 export interface RunsPageProps {
   /** The compact list shown beside `/runs/:id` on a wide viewport. */
@@ -36,8 +54,16 @@ export interface RunsPageProps {
 export function RunsPage({ variant = 'page', selectedRunId }: RunsPageProps = {}) {
   const allowed = useCan('run:read');
   const namespace = useNamespace();
-  const [status, setStatus] = useState('');
-  const [workflowId, setWorkflowId] = useState('');
+  // The filters are the address's: a link carries them, the back button and a reload keep them.
+  const [params, setParams] = useSearchParams();
+  const { status, workflowId } = readFilters(params);
+  const setFilter = (key: 'status' | 'workflow', value: string) =>
+    setParams((current) => {
+      const next = new URLSearchParams(current);
+      if (value === '') next.delete(key);
+      else next.set(key, value);
+      return next;
+    });
   const [origin, setOrigin] = useState('');
   const workflows = useWorkflowIndex();
   if (!allowed) return <NotAllowed what="Runs" permission="run:read" />;
@@ -46,7 +72,7 @@ export function RunsPage({ variant = 'page', selectedRunId }: RunsPageProps = {}
       {variant === 'master' ? <h2>Runs</h2> : <h1>Runs</h1>}
       <div className="toolbar rn-filters">
         <Field label="Status">
-          <select value={status} onChange={(event) => setStatus(event.target.value)}>
+          <select value={status} onChange={(event) => setFilter('status', event.target.value)}>
             <option value="">All statuses</option>
             {RUN_STATUSES.map((value) => (
               <option key={value} value={value}>
@@ -57,7 +83,7 @@ export function RunsPage({ variant = 'page', selectedRunId }: RunsPageProps = {}
         </Field>
         <Field label="Origin"><select value={origin} onChange={e => setOrigin(e.target.value)}><option value="">All origins</option><option value="AD_HOC_STEP">Ad hoc database step</option><option value="AD_HOC_WORKFLOW">Ad hoc database workflow</option><option value="CONNECTION_PROBE">Connection probe</option></select></Field>
         <Field label="Workflow" hint={workflows.isError ? 'The workflows could not be listed; runs show their ids.' : workflows.data?.truncated ? 'Only the first workflows are listed.' : undefined}>
-          <select value={workflowId} onChange={(event) => setWorkflowId(event.target.value)} disabled={workflows.data === undefined}>
+          <select value={workflowId} onChange={(event) => setFilter('workflow', event.target.value)} disabled={workflows.data === undefined}>
             <option value="">All workflows</option>
             {(workflows.data?.list ?? []).map((workflow) => (
               <option key={workflow.id} value={workflow.id}>
@@ -66,6 +92,11 @@ export function RunsPage({ variant = 'page', selectedRunId }: RunsPageProps = {}
             ))}
           </select>
         </Field>
+        {status !== '' || workflowId !== '' || origin !== '' ? (
+          <Button onClick={() => { setOrigin(''); setParams((current) => { const next = new URLSearchParams(current); next.delete('status'); next.delete('workflow'); return next; }); }}>Clear filters</Button>
+        ) : null}
+        {variant === 'page' ? <OpenRun /> : null}
+        {variant === 'page' ? <StartRun choices={(workflows.data?.list ?? []).filter((workflow) => workflow.activeVersion)} /> : null}
       </div>
       {namespace === undefined ? (
         <p role="status">Waiting for a namespace…</p>
@@ -124,6 +155,8 @@ function RunList({
   const { items: windowItems, padTop, padBottom, measure } = useWindowedRows({ count: snapshot.items.length, estimate: ROW_ESTIMATE, scroller });
   const running = useMemo(() => snapshot.items.some((run) => !isTerminal(run.status)), [snapshot.items]);
   const filtered = status !== '' || workflowId !== '' || origin !== '';
+  const cards = useMediaQuery(CARD_LIST);
+  const asCards = compact || cards;
 
   return (
     <NowProvider intervalMs={1000} enabled={running}>
@@ -144,7 +177,7 @@ function RunList({
 
       {snapshot.items.length > 0 ? (
         <ScrollRegion label="Runs" scroller={scroller}>
-          {compact ? (
+          {asCards ? (
             <ul className="rn-master-list" aria-label="Runs, newest first">
               {padTop > 0 ? <li aria-hidden="true" className="rn-pad" style={{ height: padTop }} /> : null}
               {windowItems.map((item) => {
@@ -217,10 +250,14 @@ function RunMasterRow({
   selected: boolean;
 }) {
   const finished = isTerminal(run.status);
+  // Opening a run keeps the filters, so the list beside it stays the list that was chosen.
+  const { search } = useLocation();
   return (
     <li ref={measure} data-index={index} data-status={run.status} className="rn-master-row">
-      <Link to={path`/runs/${run.runId}`} aria-current={selected ? 'page' : undefined}>
-        <span className="rn-master-name">{originLabel(run.origin) ?? (workflow ? clip(workflow.name, 80) : `workflow ${run.workflowId.slice(0, 8)}`)}</span>
+      <Link to={{ pathname: path`/runs/${run.runId}`, search }} aria-current={selected ? 'page' : undefined}>
+        <span className="rn-master-name" title={workflow?.name}>
+          {originLabel(run.origin) ?? (workflow ? clip(workflow.name, 80) : `workflow ${run.workflowId.slice(0, 8)}`)}
+        </span>
         <StatusBadge view={runStatus(run.status)} />
         <code title={run.runId}>{run.runId.slice(-8)}</code>
         <span className="rn-master-duration">
@@ -238,10 +275,11 @@ function RunRow({ run, index, measure, workflows }: { run: Run; index: number; m
   const workflow = workflows?.byId.get(run.workflowId);
   const versions = useVersions(run.origin ? undefined : run.workflowId);
   const finished = isTerminal(run.status);
+  const { search } = useLocation();
   return (
     <tr ref={measure} data-index={index} aria-rowindex={index + 2} data-status={run.status}>
       <td>
-        <Link className="rn-id" to={path`/runs/${run.runId}`}>
+        <Link className="rn-id" to={{ pathname: path`/runs/${run.runId}`, search }}>
           {run.runId}
         </Link>
         {run.status === 'MANUAL_REVIEW' ? (
@@ -282,5 +320,34 @@ function RunRow({ run, index, measure, workflows }: { run: Run; index: number; m
       </td>
       <td>{run.startedBy ? clip(run.startedBy, 60) : '—'}</td>
     </tr>
+  );
+}
+
+/** Opens a run from its id, wherever the person got it (a log, a ticket, a message). */
+function OpenRun() {
+  const navigate = useNavigate();
+  const [text, setText] = useState('');
+  const [invalid, setInvalid] = useState(false);
+  return (
+    <form
+      className="rn-open-run"
+      role="search"
+      aria-label="Open a run"
+      onSubmit={(event) => {
+        event.preventDefault();
+        const id = parseRunId(text);
+        if (id === undefined) {
+          setInvalid(true);
+          return;
+        }
+        setInvalid(false);
+        void navigate(path`/runs/${id}`);
+      }}
+    >
+      <Field label="Open a run by id" {...(invalid ? { error: 'That is not a run id. It looks like 01a13037-a113-7388-932b-5659bdd2aa84.' } : {})}>
+        <input type="search" className="input" value={text} autoComplete="off" spellCheck={false} onChange={(event) => { setText(event.target.value); setInvalid(false); }} />
+      </Field>
+      <Button type="submit">Open</Button>
+    </form>
   );
 }

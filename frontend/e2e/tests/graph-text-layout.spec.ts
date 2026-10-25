@@ -157,7 +157,14 @@ async function blockBundledFonts(page: Page): Promise<() => Promise<void>> {
     await route.abort();
   });
   return async () => {
-    await page.evaluate(() => document.fonts.ready.then(() => undefined));
+    // Force every declared weight to finish its intentional failure before strict console checks.
+    // fonts.ready alone does not request weights that only a later selected panel will use.
+    await page.evaluate(async () => {
+      const pending: Promise<FontFace>[] = [];
+      document.fonts.forEach((font) => pending.push(font.load()));
+      await Promise.allSettled(pending);
+      await document.fonts.ready;
+    });
     expect(blocked, 'the bundled Geist fonts were requested and blocked').toBeGreaterThan(0);
     expect(
       await page.evaluate(() => {

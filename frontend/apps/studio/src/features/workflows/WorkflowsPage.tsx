@@ -1,6 +1,6 @@
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useId, useState } from 'react';
-import { Link, useNavigate } from 'react-router';
+import { Link, useNavigate, useSearchParams } from 'react-router';
 import { path } from '../../api/client';
 import { isApiError } from '../../api/errors';
 import { useApp, useCan, useNamespace } from '../../app/context';
@@ -11,6 +11,8 @@ import { Button } from '../../ui/Button';
 import { ErrorState } from '../../ui/ErrorState';
 import { Field } from '../../ui/Field';
 import { clip } from './canvasModel';
+import { Moment } from '../runs/Now';
+import { StartRun } from '../runs/StartRun';
 import { Modal } from './Modal';
 import '../../styles/workflows.css';
 
@@ -78,18 +80,13 @@ function CreateForm({ onClose }: { onClose: () => void }) {
   );
 }
 
-function when(iso: string | undefined): string {
-  if (!iso) return '—';
-  const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString();
-}
-
 /** The workflows of the namespace the user works in. */
 export function WorkflowsPage() {
   const { ep } = useApp();
   const namespace = useNamespace();
   const canRead = useCan('definition:read');
   const canWrite = useCan('definition:write');
+  const canStart = useCan('run:start');
   const [creating, setCreating] = useState(false);
   const reasonId = useId();
 
@@ -102,6 +99,11 @@ export function WorkflowsPage() {
     getNextPageParam: (last) => last.nextCursor ?? undefined,
   });
   const workflows = list.data?.pages.flatMap((p) => p.items) ?? [];
+  // The search is the address's too (`?q=`), so a link to "the payment workflows" can be sent.
+  const [params, setParams] = useSearchParams();
+  const search = (params.get('q') ?? '').slice(0, 64);
+  const needle = search.trim().toLowerCase();
+  const shown = needle === '' ? workflows : workflows.filter((w) => w.name.toLowerCase().includes(needle));
 
   return (
     <section>
@@ -134,7 +136,33 @@ export function WorkflowsPage() {
       ) : null}
 
       {workflows.length > 0 ? (
-        <table className="data">
+        <div className="toolbar wf-find">
+          <Field label="Find a workflow" hint={list.hasNextPage && needle !== '' ? `Searching the ${workflows.length} workflows loaded so far; load more to search further.` : undefined}>
+            <input
+              type="search"
+              className="input"
+              value={search}
+              maxLength={64}
+              autoComplete="off"
+              spellCheck={false}
+              onChange={(event) =>
+                setParams((current) => {
+                  const next = new URLSearchParams(current);
+                  if (event.target.value === '') next.delete('q');
+                  else next.set('q', event.target.value);
+                  return next;
+                }, { replace: true })
+              }
+            />
+          </Field>
+          <span className="hint" role="status">
+            {needle === '' ? `${workflows.length} workflows` : `${shown.length} of ${workflows.length} workflows`}
+          </span>
+        </div>
+      ) : null}
+      {workflows.length > 0 && shown.length === 0 ? <p className="empty">No loaded workflow has "{clip(search.trim(), 40)}" in its name.</p> : null}
+      {shown.length > 0 ? (
+        <table className="data wf-list">
           <caption className="visually-hidden">Workflows of the namespace {namespace}</caption>
           <thead>
             <tr>
@@ -142,17 +170,25 @@ export function WorkflowsPage() {
               <th scope="col">Active version</th>
               <th scope="col">Draft revision</th>
               <th scope="col">Last updated</th>
+              {canStart ? (
+                <th scope="col">
+                  <span className="visually-hidden">Actions</span>
+                </th>
+              ) : null}
             </tr>
           </thead>
           <tbody>
-            {workflows.map((w) => (
+            {shown.map((w) => (
               <tr key={w.id}>
                 <th scope="row">
                   <Link to={path`/workflows/${w.id}`}>{clip(w.name, 64)}</Link>
                 </th>
                 <td>{w.activeVersion ? `Version ${w.activeVersion.versionNumber}` : 'None (not published)'}</td>
                 <td>{w.draftRevision}</td>
-                <td>{when(w.updatedAt)}</td>
+                <td>
+                  <Moment at={w.updatedAt} empty="—" />
+                </td>
+                {canStart ? <td>{w.activeVersion ? <StartRun choices={[{ id: w.id, name: w.name }]} initialId={w.id} /> : null}</td> : null}
               </tr>
             ))}
           </tbody>

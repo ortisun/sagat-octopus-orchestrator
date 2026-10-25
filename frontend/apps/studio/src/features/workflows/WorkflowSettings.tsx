@@ -209,7 +209,7 @@ function Triggers({ doc, disabled, change }: { doc: IrDocument; disabled: boolea
         );
       })}
       {disabled ? null : (
-        <div className="wf-duration-row">
+        <div className="wf-duration-row wf-add-trigger">
           <Field label="New trigger">
             <select value={kind} onChange={(event) => setKind(event.target.value as TriggerKind)}>
               {TRIGGER_KINDS.map((k) => (
@@ -241,7 +241,7 @@ export const WorkflowSettings = forwardRef(function WorkflowSettings(
         Name: <code>{doc.metadata.name}</code>
       </p>
       <Field label="Description">
-        <textarea value={description} rows={2} disabled={disabled} onChange={(event) => change((d) => setDescription(d, event.target.value), 'description')} />
+        <textarea className="wf-prose" value={description} rows={3} disabled={disabled} onChange={(event) => change((d) => setDescription(d, event.target.value), 'description')} />
       </Field>
       <Field label="First step" hint="The node a run starts at.">
         <select value={doc.entrypoint} disabled={disabled || doc.nodes.length === 0} onChange={(event) => change((d) => setEntrypoint(d, event.target.value), 'entrypoint')}>

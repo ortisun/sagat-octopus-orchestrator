@@ -3,6 +3,7 @@ import { useId, useState } from 'react';
 import { useApp, useNamespace } from '../../app/context';
 import { Button } from '../../ui/Button';
 import { ErrorState } from '../../ui/ErrorState';
+import { Moment } from '../runs/Now';
 import { clip } from './canvasModel';
 import { DiffView } from './DiffView';
 import { openDraft } from './documentIO';
@@ -13,12 +14,6 @@ const noop = () => undefined;
 
 function shortDigest(digest: string): string {
   return clip(digest.replace(/^sha256:/, ''), 12);
-}
-
-function when(iso: string | undefined): string {
-  if (!iso) return '—';
-  const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString();
 }
 
 function VersionView({ workflowId, number, onClose }: { workflowId: string; number: number; onClose: () => void }) {
@@ -135,7 +130,9 @@ export function VersionsPanel({
                   <code>{shortDigest(v.digest)}</code>
                 </td>
                 <td>{v.publishedBy ? clip(v.publishedBy, 60) : '—'}</td>
-                <td>{when(v.publishedAt)}</td>
+                <td>
+                  <Moment at={v.publishedAt} empty="—" />
+                </td>
                 <td>
                   <Button aria-label={`View version ${v.versionNumber}`} onClick={() => setViewing(v.versionNumber)}>
                     View
