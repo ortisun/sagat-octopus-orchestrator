@@ -4,6 +4,10 @@
 
 **Input**: `specs/014-workflow-primitives/spec.md`
 
+Release 0.2.0 follows [ADR-0040](../../docs/adr/ADR-0040-release-checkpoints-preserve-incomplete-feature-boundaries.md) for the
+implemented-subset checkpoint. General nesting and the eight open feature-014 tasks remain
+pending; publication capabilities, authority checks and required technical gates are unchanged.
+
 ## Summary
 
 Deliver current-API order examples for all five SDKs (US01), then implement bounded dynamic
