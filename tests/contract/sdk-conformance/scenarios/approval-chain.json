@@ -301,6 +301,21 @@
       "timeoutMs": 60000
     },
     {
+      "id": "segments",
+      "op": "listChainRuns",
+      "namespaceId": "{{namespaceId}}",
+      "chainId": "{{chainId:start}}",
+      "limit": 10
+    },
+    {
+      "id": "second-opened",
+      "op": "listApprovals",
+      "page": "segments",
+      "index": 1,
+      "limit": 1,
+      "waitForItem": true
+    },
+    {
       "id": "transferred",
       "op": "queryChain",
       "namespaceId": "{{namespaceId}}",
@@ -320,21 +335,6 @@
         }
       },
       "updateKey": "chain-approval-old-{{unique}}"
-    },
-    {
-      "id": "segments",
-      "op": "listChainRuns",
-      "namespaceId": "{{namespaceId}}",
-      "chainId": "{{chainId:start}}",
-      "limit": 10
-    },
-    {
-      "id": "second-opened",
-      "op": "listApprovals",
-      "page": "segments",
-      "index": 1,
-      "limit": 1,
-      "waitForItem": true
     },
     {
       "id": "second-update",

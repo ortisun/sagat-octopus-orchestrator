@@ -184,6 +184,8 @@ async fn task_stream_byte_credit_is_cumulative_across_frames() {
         .expect("hold the second wave");
     let mut w = p.worker("wendy").await;
     register_stream_worker(&mut w, 64).await;
+    // Match all five SDKs: the 8 MiB task window can produce a frame above tonic's 4 MiB default.
+    w.client = w.client.clone().max_decoding_message_size(16 * 1024 * 1024);
     let mut stream = w
         .client
         .stream_tasks(w.req(w.poll_message(64)))
@@ -361,6 +363,19 @@ async fn task_stream_lifetime_admission_survives_headers_and_is_released_on_drop
         p.start(&wf, &json!({"index": index, "large": "x".repeat(180_000)}))
             .await;
     }
+    // Prepare delayed work before any response window. A real run lock prevents its claim
+    // until the old watchdog's deadline passes, without spending the remaining window on REST.
+    let last_run = p
+        .start(&wf, &json!({"index": 4, "large": "x".repeat(180_000)}))
+        .await;
+    let mut last_guard = p.api.db.pool.begin().await.expect("survivor work barrier");
+    sqlx::query("SELECT id FROM runs WHERE tenant_id=$1 AND id=$2 FOR UPDATE")
+        .bind(p.tenant.as_uuid())
+        .bind(uuid::Uuid::parse_str(&last_run).expect("run id"))
+        .fetch_one(&mut *last_guard)
+        .await
+        .expect("hold survivor work");
+
     let mut w = p.worker("wendy").await;
     register_stream_worker(&mut w, 4).await;
     let mut first_client = p.connect("wendy", TENANT).await;

@@ -620,10 +620,9 @@ classification, of the 014 follow-up runtime work or of `tasks/project-completio
   ownership.
 - **G601** — the five SDK builders do not pre-check D601; the server refuses it at publication
   with `INVALID_DATABASE_NODE`.
-- **G602** — `approval-chain` (014 scenario) failed once in the first full `sdk_conformance` run with
-  TypeScript at `runVersion` 4 against 3 in the other four languages (a `queryChain` read right after
-  the head change) while the machine load average was above 20; it passed on rerun. The race
-  belongs to the scenario, not to 017, and is not explained here.
+- **G602** — `approval-chain` originally observed an unstable successor `runVersion` directly
+  after the head change. The 2026-10-25 release-gate correction below explains and removes that
+  scenario race; it does not change server query or continuation semantics.
 - **G603** — the `database_policies` fix changes the content of a migration other open branches
   carry unchanged; they must take the same two lines (up and down).
 - **O600** — does the owner want managed database operations inside loop and collection bodies
@@ -659,6 +658,42 @@ cluster; the Colima VM has no mounts), `perf_*` and `measure_managed_database_ph
 development directory those scripts prepare). The evidence of T017-023 and T017-024 for those
 paths is the 2026-10-17 record above; nothing in this integration changes them except the
 protocol minor, the migration numbers and D601.
+
+
+## Release-gate corrections — 2026-10-25
+
+PR 45 CI run `40163200010` failed the streaming byte-credit test and the shared
+`approval-chain` scenario. These failures block integration until the corrected head passes CI.
+
+- Streaming preparation previously made thirty REST admissions during a finite five-second
+  stream window while its body was unread. Admit both waves first and hold the second wave
+  behind real run-row locks. Keep cumulative byte credit, untouched-task and terminal-hint
+  assertions. The local original test passed once (1/1); this does not invalidate the CI failure.
+- The lock-staged test exposed a second fixture mismatch: tonic's default 4 MiB receive limit
+  rejected a 6,172,012-byte frame. Set this test client to the existing 16 MiB limit required by
+  `specs/006-sdk-multilanguage/stream-completion.md` and configured in all five SDKs. No server
+  frame/window limit changed. With this correction the three `protocol::task_stream` tests
+  passed (3/3, 16.84 s). Independent review also moved survivor admission and its run lock
+  before every stream window, preserving the watchdog-disarm test's observation boundary.
+- The approval scenario queried the successor before its worker opened the pending approval,
+  allowing legitimate versions 3 or 4. Wait for that persisted approval before querying. Its
+  visibility and version 7 commit atomically; no worker action remains until the explicit next
+  update/decision. All five normalized documents matched. The reviewed golden changes only
+  observation order and that exact version. The initial unblessed run failed against the old
+  golden in all five languages; after accepting that reviewed diff, the unblessed command
+  `SAGAT_SDK_SCENARIO=approval-chain SAGAT_SDK_REUSE=1 cargo test -p sagat-tests --test
+  sdk_conformance --locked -- --ignored --nocapture` passed (1/1, 85.62 s). SDK reuse refers to
+  the five SDK builds prepared by the immediately preceding run on this same source tree.
+
+Environment: macOS arm64, repository Testcontainers on the `sagat-remaining` Colima daemon,
+private Cargo target, two build jobs, dev debug info/incremental disabled, two Rust test threads.
+`cargo clippy --workspace --all-targets --locked -- -D warnings` passed in 2m25s before the
+review's setup-only relocation. Architecture check passed (24 crates, no cycles); agent
+configuration check passed. Final focused checks and complete CI results are recorded below
+when available; no full-workspace success is claimed by these focused results.
+
+Final reviewed stream setup: `cargo test -p sagat-tests --test contract_grpc_durable_execution --locked protocol::task_stream -- --nocapture` passed **3/3**, zero failed, in **18.86 s** (51.01 s including compilation). Fresh review closed with no C1/C2 findings remaining.
+Final `cargo fmt --all -- --check` passed; final workspace/all-targets strict clippy passed (3.40 s), after the reviewed setup relocation.
 
 
 ## Classified-tree secret fixture correction — 2026-10-25
