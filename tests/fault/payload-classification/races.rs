@@ -643,18 +643,6 @@ async fn a_projection_in_progress_does_not_occupy_the_only_runtime_worker() {
     let (entered, inside) = tokio::sync::oneshot::channel();
     let (resume, released) = std::sync::mpsc::channel();
     let service = Arc::new(PayloadDisclosureService::new(
-
-/// A reveal through the production path, paused inside its read transaction by the interpreter
-/// (which runs after the authority checks and before the audit insert).
-struct PausedReveal {
-    reading: tokio::task::JoinHandle<Result<PayloadDisclosure, PayloadDisclosureError>>,
-    resume: std::sync::mpsc::Sender<()>,
-}
-
-async fn pause_a_reveal(world: &World, reader: &Principal, run: RunId) -> PausedReveal {
-    let (entered, pinned) = tokio::sync::oneshot::channel();
-    let (resume, released) = std::sync::mpsc::channel();
-    let service = PayloadDisclosureService::new(
         world.store.clone(),
         SystemClock,
         PausingClassifier {
@@ -691,7 +679,26 @@ async fn pause_a_reveal(world: &World, reader: &Principal, run: RunId) -> Paused
         served,
         "a projection kept the only runtime worker, so no other task could run"
     );
+}
+/// A reveal through the production path, paused inside its read transaction by the interpreter
+/// (which runs after the authority checks and before the audit insert).
+struct PausedReveal {
+    reading: tokio::task::JoinHandle<Result<PayloadDisclosure, PayloadDisclosureError>>,
+    resume: std::sync::mpsc::Sender<()>,
+}
 
+async fn pause_a_reveal(world: &World, reader: &Principal, run: RunId) -> PausedReveal {
+    let (entered, pinned) = tokio::sync::oneshot::channel();
+    let (resume, released) = std::sync::mpsc::channel();
+    let service = PayloadDisclosureService::new(
+        world.store.clone(),
+        SystemClock,
+        PausingClassifier {
+            classifier: Classifier::default(),
+            entered: std::sync::Mutex::new(Some(entered)),
+            resume: std::sync::Mutex::new(released),
+        },
+        JsonPayloadProjector,
     );
     let prepared = service
         .prepare(reader, run, DisclosureSelector::Input, true, &ctx())
