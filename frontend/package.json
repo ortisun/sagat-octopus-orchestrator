@@ -21,6 +21,6 @@
     "e2e": "npm run test --workspace @sagat/e2e"
   },
   "overrides": {
-    "dompurify": "3.4.16"
+    "dompurify": "3.4.17"
   }
 }
