@@ -8,6 +8,9 @@
 - Supplemental unreleased baselines: none used for the release claim.
 - Harness: `scripts/test-payload-classification-compat.sh`.
 - Integration case: `compat::actual_v0_1_0_processes_survive_the_additive_upgrade`.
+- Harness tool prerequisite: Node 22.15+ on the Node 22 LTS line, or Node 24+, with
+  `node:module.registerHooks`. This is required only by the compatibility harness's isolated
+  Playwright import hook; it does not change the frontend or SDK runtime engine contract.
 
 The release did not publish control-plane, execution-engine or Studio artifacts. The harness builds
 them from the tagged commit with its checked-in `Cargo.lock`, `rust-toolchain.toml` and frontend
@@ -16,7 +19,18 @@ default debug profile. Before the current build can replace the target's binary 
 copies the old binaries to unique immutable names. It records SHA256 digests for both binaries, the
 lock files, toolchain file and every Studio asset before starting the compatibility test. The release
 source is a detached worktree and must remain clean. The Studio build uses a `git archive` copy
-because npm writes `node_modules`.
+because npm writes `node_modules`. That archive contains both `frontend/` and the release commit's
+`sdks/typescript/`: `frontend/e2e/package.json` declares the workspace-local dependency
+`file:../../sdks/typescript`, and npm validates every workspace while installing the shared lock even
+though the Studio bundle does not import the SDK. The manifest records every archived SDK source file.
+
+The release CI selected Node 22, whose npm 10 accepted the checked-in lock. npm 11.20 rejects that
+unchanged lock as missing the root and workspace links even when the released local SDK is present.
+The harness therefore runs the immutable lock with npm 10.9.4 and records that version plus the
+release CI workflow hash. It does not run `npm install`, regenerate a lock or copy any current SDK
+source into the release build. The old-Studio browser driver also resolves `@playwright/test` from
+this archived install rather than relying on an unrecorded `node_modules` in the current checkout;
+the manifest records the resolved Playwright version.
 
 ## Scenarios
 
@@ -85,10 +99,65 @@ the real current server. It passed one aggregate / five languages in 145.91 s, w
 Reproduce from a fresh archive with `scripts/test-released-sdk-compat.sh`; its shell syntax and
 ShellCheck passed. The recorded Cargo invocation used the equivalent archived source directly.
 
+### Immutable Studio preparation regression and rerun (2026-10-25)
+
+The release-gate rerun first failed after the immutable Rust build and before the Studio build
+(`/tmp/sagat-release-016-20261025/prior-release-compat.txt` and `.json`: exit 1 after 61.43 s;
+the old control plane and engine had built in 59.00 s). npm 11.20 reported the release frontend
+lock as missing `frontend@`, the two workspaces and `@sagat-octopus-orchestrator/sdk@0.1.0`. There
+were two independent preparation defects:
+
+1. The harness archived only `frontend/`, but the locked `frontend/e2e` workspace depends on
+   `file:../../sdks/typescript`. The required directory was absent. It is now archived from the same
+   fixed release commit, made read-only, and represented by 36 per-file SHA256 entries in the
+   artifact manifest. No current SDK source is used.
+2. A focused archive with that SDK still produced the same npm 11 workspace-lock error. The exact
+   archive installed 433 packages and built all 1,484 Studio modules with npm 10.9.4, which matches
+   the npm major used by the release CI's Node 22 job. The harness pins and records that npm version;
+   it does not update the immutable package or lock files.
+
+The first complete run after those two fixes reached the real browser stage and exposed one more
+implicit preparation dependency: the tracked browser driver is launched from the current repository,
+so its bare `@playwright/test` import did not resolve from the archived install. It failed 0/1 in
+11.95 s with `ERR_MODULE_NOT_FOUND`; the evidence remains under
+`/tmp/sagat-release-016-20261025/compat-fixed/run.TtoCXG`. The harness now directs only that import
+to the release-lock install and records Playwright 1.63.0, instead of requiring current frontend
+dependencies.
+
+The final requested command (`CARGO_BUILD_JOBS=2`, `CARGO_INCREMENTAL=0`,
+`CARGO_PROFILE_DEV_DEBUG=0`, `RUST_TEST_THREADS=2`, the private coordinated target and the project
+Colima socket) then passed 1/1, with no ignored test, in 9.57 s of test runtime. It used
+Node 26.12.0, pinned npm 10.9.4, the immutable release commit and lock SHA256
+`e3ab64e4dc1f5e2604fd1c8810bd82b3943f8d4050023529aebebbf4163dc45a`, real PostgreSQL, both
+old processes, the rebuilt current control plane, and the archived old Studio in Chromium. The
+browser log says `prior-release Studio: sign-in, run and table passed; payload canaries absent`.
+Fresh evidence:
+
+- full log: `/tmp/sagat-release-016-20261025/compat-fixed/full-compat-final.log`;
+- manifest: `/tmp/sagat-release-016-20261025/compat-fixed/run.lIlkrU/artifacts/SHA256SUMS`;
+- release control plane SHA256: `557b118d8d402f43082310f86b8bede5403895ec663a0e9ba03c5ea436459247`;
+- release engine SHA256: `9ae54dd8a196b24cde846cfb3cf3bac6f8104e700b8bdcacf6a4038b73bd91b0`;
+- current control plane SHA256: `082b229101a78f6769e334e69ebb305996ba53cfc10f391ee8b0449ec8aea96d`.
+
+The harness removed its detached release worktree on both failure and success. T016-052's actual
+prior-release compatibility case is green; the broader release gates listed under Limits remain
+separate.
+
+The Node hook prerequisite has its own early-failure barrier. Before the guard, a shim without
+`registerHooks` reached a Cargo sentinel, created the artifact root and exited 97. With the guard,
+the same shim exits 2 with the closed prerequisite message, creates no artifact root and never invokes
+Cargo. The normal Node 26.12.0 preflight reports `registerHooks=function`; no post-preflight source
+changed, so the full PostgreSQL/Chromium green above remains the executable evidence. Logs are under
+`/tmp/sagat-release-016-20261025/node-preflight-test/{red,green,positive}.log`.
+
 ## Limits
 
 - Artifacts are built from the actual tagged source with its lock files; reconstructed current
   services are not used as a substitute for old binaries.
+- The release workflow pinned only Node major 22, not its exact patch or bundled npm minor. That
+  historical pair cannot be reconstructed from the tag; this rerun records Node 26.12.0 and pins
+  compatible npm 10.9.4 explicitly. npm 11.20 is proven incompatible with the unchanged lock. The
+  Node 22.15+/24+ prerequisite above belongs to this evidence harness, not to the product SDKs.
 - The old execution engine reaches readiness on both schemas and, after upgrade, restores the
   actual retained run for a deliberately unleased heartbeat. Its typed STALE_ATTEMPT refusal
   proves that read path without an old-server state write. Old HTTP processes also read the old
