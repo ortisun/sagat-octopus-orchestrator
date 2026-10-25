@@ -15,7 +15,7 @@ every timer and every retry decision.
 | Java | `dev.sagatoctopusorchestrator:sagat-octopus-orchestrator-sdk` | [`java/`](java/) | Java ≥ 17 (run: 23; unit tests on 26) | 202 | [README](java/README.md) |
 
 "Run" is what was actually executed, on macOS arm64; the other versions are declared, not tested, and each README
-says which. Every package is `0.1.0`: before `1.0` a minor version may change an API and says so; the wire contracts
+says which. Every package is `0.2.0`: before `1.0` a minor version may change an API and says so; the wire contracts
 (REST under `/v1`, the worker protocol `1.x`) are additive and do not move with it. **Publishing to the registries is
 not automated**. All five packages use the MIT license: see `docs/runbooks/sdk-packaging.md` and
 `specs/006-sdk-multilanguage/research.md` (G122, G123).

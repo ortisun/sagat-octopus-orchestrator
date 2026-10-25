@@ -1,5 +1,27 @@
 # SDK release notes
 
+## 0.2.0
+
+All five SDK packages use 0.2.0 and remain distributed through GitHub Release assets. Go uses
+`sdks/go/v0.2.0`; no package registry publication is added. Package SemVer remains independent
+of the existing worker protocol/capability negotiation.
+
+- Shared managed PostgreSQL builders reference namespace connection names/revisions; credentials
+  remain server-side in OpenBao and execute only through the isolated managed runner.
+- Per-field classification schema setters and node output schemas use the canonical server
+  contract. Explicit PII grants/auditing and legacy-version opacity remain server authority.
+- Restricted workflow primitive builders, scoped identity and compatible root-worker paths retain
+  their documented capability gates. General nesting and production capacity acceptance remain
+  pending; see the workflow runbook and product release boundaries.
+- **Breaking for event readers:** inbox detail omits `data` and connector dead-letter detail omits
+  `body`/`headers` without the explicit authorized reveal; the list never returns those values.
+  Update callers to handle absence and the audited reveal flow.
+
+See [product notes](../docs/releases/0.2.0.md), [compatibility](../docs/sdk-compatibility.md),
+[payload classification](../docs/runbooks/payload-classification.md) and
+[database connections](../docs/runbooks/database-connections.md). Ambiguous external writes require
+reconciliation/manual review; a Sagat key alone does not deduplicate an external SQL effect.
+
 ## 0.1.0 — release candidate
 
 This is the first local release candidate for the TypeScript, Python, Go, C#/.NET and Java SDKs.

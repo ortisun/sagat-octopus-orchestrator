@@ -1,6 +1,6 @@
 # Sagat Octopus Orchestrator: Python SDK
 
-`sagat-octopus-orchestrator` 0.1.0 is the Python SDK of the Sagat Octopus Orchestrator, a durable workflow
+`sagat-octopus-orchestrator` 0.2.0 is the Python SDK of the Sagat Octopus Orchestrator, a durable workflow
 platform. It is three things in one package and nothing else (`sdks/SPEC.md`):
 
 1. a **client** of the REST API: start, read, list, cancel and signal runs, publish events (`SagatClient`, on

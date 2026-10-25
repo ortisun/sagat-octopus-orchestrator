@@ -10,13 +10,13 @@ Go, Python and C# SDKs because all five are held to the same conformance suite
 
 ## Install
 
-Coordinates: `dev.sagatoctopusorchestrator:sagat-octopus-orchestrator-sdk:0.1.0`, Java 17 or newer.
+Coordinates: `dev.sagatoctopusorchestrator:sagat-octopus-orchestrator-sdk:0.2.0`, Java 17 or newer.
 
 ```xml
 <dependency>
   <groupId>dev.sagatoctopusorchestrator</groupId>
   <artifactId>sagat-octopus-orchestrator-sdk</artifactId>
-  <version>0.1.0</version>
+  <version>0.2.0</version>
 </dependency>
 ```
 
@@ -283,7 +283,7 @@ properties). A build from an empty local repository (511 files) was run with the
 public API follows SemVer. The SDK's version is independent of the platform's. The **worker protocol** has its own
 version, negotiated at registration: this SDK offers `1.5`; a server that speaks an older minor serves it at that
 minor, a server of another major refuses with `UNSUPPORTED_PROTOCOL` (ADR-0015). Package metadata: group
-`dev.sagatoctopusorchestrator`, artifact `sagat-octopus-orchestrator-sdk`, version `0.1.0`, license `MIT` (the
+`dev.sagatoctopusorchestrator`, artifact `sagat-octopus-orchestrator-sdk`, version `0.2.0`, license `MIT` (the
 JAR includes the license text under `META-INF/LICENSE`),
 repository `https://github.com/ortisun/sagat-octopus-orchestrator`, JPMS automatic module name
 `dev.sagatoctopusorchestrator.sdk`.

@@ -7,10 +7,10 @@ description: >-
   chart: they are the operator's.
 type: application
 # Release 0.1.0 requires explicit network peers (see docs/runbooks/scaling.md).
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.2.0
+appVersion: "0.2.0"
 kubeVersion: ">=1.27.0-0"
-home: https://github.com/tentativafc/sagat-octopus-orchestrator
+home: https://github.com/ortisun/sagat-octopus-orchestrator
 sources:
-  - https://github.com/tentativafc/sagat-octopus-orchestrator
+  - https://github.com/ortisun/sagat-octopus-orchestrator
 keywords: [workflow, orchestration, saga, durable-execution]
