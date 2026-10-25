@@ -27,6 +27,9 @@ struct CompiledCarrier {
     schema_bytes: usize,
     has_numeric_constraints: bool,
     numeric_constraints_exact: bool,
+    /// True when a schema bound, constant or divisor is a non-integer, so integers beyond the
+    /// `f64` mantissa cannot be compared against it exactly.
+    decimal_constants: bool,
     has_integer_types: bool,
 }
 
@@ -214,6 +217,7 @@ fn compile_carrier(
         .map_err(|_| ProjectionFailure::SchemaUnusable)?;
     let has_numeric_constraints = has_numeric_constraints(&schema);
     let numeric_constraints_exact = numeric_constraints_exact(&schema);
+    let decimal_constants = has_decimal_constants(&schema);
     let has_integer_types = schema_contains_integer_type(&schema);
     let compiled = Arc::new(CompiledCarrier {
         schema,
@@ -221,6 +225,7 @@ fn compile_carrier(
         schema_bytes,
         has_numeric_constraints,
         numeric_constraints_exact,
+        decimal_constants,
         has_integer_types,
     });
     Ok(compiled)
@@ -247,7 +252,8 @@ impl ClassificationInterpreter for Classifier {
         let numbers = NumberLexemes::parse(request.payload)?;
         if numbers.has_numbers()
             && (!compiled.numeric_constraints_exact
-                || (compiled.has_numeric_constraints && numbers.has_unsafe_comparison()))
+                || (compiled.has_numeric_constraints
+                    && numbers.has_unsafe_comparison(compiled.decimal_constants)))
         {
             return Err(ProjectionFailure::UnsupportedPayload);
         }
@@ -263,7 +269,7 @@ impl ClassificationInterpreter for Classifier {
         // behind an applicator can therefore see a rounded integer for a fractional source
         // lexeme. The path-aware check above handles constraints it can prove directly; this
         // carrier-wide guard closes every remaining applicator conservatively.
-        if compiled.has_integer_types && numbers.has_fractional() {
+        if compiled.has_integer_types && numbers.has_rounded_fraction() {
             return Err(ProjectionFailure::UnsupportedPayload);
         }
         if !compiled.validator.is_valid(&payload) {
@@ -886,16 +892,19 @@ impl NumberLexemes {
         !self.0.is_empty()
     }
 
-    fn has_unsafe_comparison(&self) -> bool {
+    /// True when the validator, which holds every number as a machine value, could decide a
+    /// numeric keyword on a value that differs from the lexeme the author sent.
+    fn has_unsafe_comparison(&self, decimal_constants: bool) -> bool {
         self.0
             .values()
-            .any(|number| !safe_integer_comparison(number.as_str()))
+            .any(|number| !safe_comparison(number.as_str(), decimal_constants))
     }
 
-    fn has_fractional(&self) -> bool {
+    /// True when a fractional lexeme would reach an integer constraint as a whole number.
+    fn has_rounded_fraction(&self) -> bool {
         self.0
             .values()
-            .any(|number| !lexical_is_integer(number.as_str()))
+            .any(|number| is_rounded_fraction(number.as_str()))
     }
 
     fn is_integer(&self, path: &str) -> bool {
@@ -1150,11 +1159,17 @@ fn numeric_constraints_exact(schema: &Value) -> bool {
     match schema {
         Value::Object(object) => object.iter().all(|(keyword, value)| {
             let local = match keyword.as_str() {
-                // The dependency compiles an integer divisor through f64. Keep it in the
-                // exact integer-modulo branch; larger divisors would validate a rounded schema.
-                "multipleOf" => value
-                    .as_u64()
-                    .is_some_and(|divisor| divisor > 0 && divisor <= 9_007_199_254_740_991),
+                // An integer divisor stays on the exact integer-modulo branch up to the largest
+                // safe integer; a larger one would be compiled through a rounded `f64`. A decimal
+                // divisor is compared as `f64`, which is exact for a divisor of ordinary size.
+                "multipleOf" => value.as_u64().map_or_else(
+                    || {
+                        value
+                            .as_f64()
+                            .is_some_and(|divisor| divisor > 0.0 && divisor < SAFE_BOUND)
+                    },
+                    |divisor| divisor > 0 && divisor <= 9_007_199_254_740_991,
+                ),
                 "minimum" | "maximum" | "exclusiveMinimum" | "exclusiveMaximum" => {
                     exact_stored_numbers(value)
                 }
@@ -1165,6 +1180,38 @@ fn numeric_constraints_exact(schema: &Value) -> bool {
         }),
         Value::Array(values) => values.iter().all(numeric_constraints_exact),
         _ => true,
+    }
+}
+
+/// `2^53`: below it every integer is an exact `f64`.
+const SAFE_BOUND: f64 = 9_007_199_254_740_992.0;
+
+fn has_decimal_constants(schema: &Value) -> bool {
+    match schema {
+        Value::Object(object) => object.iter().any(|(keyword, value)| {
+            (matches!(
+                keyword.as_str(),
+                "minimum"
+                    | "maximum"
+                    | "exclusiveMinimum"
+                    | "exclusiveMaximum"
+                    | "multipleOf"
+                    | "const"
+                    | "enum"
+            ) && contains_decimal(value))
+                || has_decimal_constants(value)
+        }),
+        Value::Array(values) => values.iter().any(has_decimal_constants),
+        _ => false,
+    }
+}
+
+fn contains_decimal(value: &Value) -> bool {
+    match value {
+        Value::Number(number) => !(number.is_i64() || number.is_u64()),
+        Value::Array(values) => values.iter().any(contains_decimal),
+        Value::Object(values) => values.values().any(contains_decimal),
+        _ => false,
     }
 }
 
@@ -1179,16 +1226,84 @@ fn contains_number(value: &Value) -> bool {
 
 fn exact_stored_numbers(value: &Value) -> bool {
     match value {
-        Value::Number(number) => number.is_i64() || number.is_u64(),
+        // An integer is stored exactly; a decimal is an `f64`, exact for ordinary magnitudes.
+        Value::Number(number) => {
+            number.is_i64()
+                || number.is_u64()
+                || number
+                    .as_f64()
+                    .is_some_and(|value| value.abs() < SAFE_BOUND)
+        }
         Value::Array(values) => values.iter().all(exact_stored_numbers),
         Value::Object(values) => values.values().all(exact_stored_numbers),
         _ => true,
     }
 }
 
-fn safe_integer_comparison(value: &str) -> bool {
-    !value.contains(['.', 'e', 'E'])
-        && (value.parse::<i64>().is_ok() || value.parse::<u64>().is_ok())
+/// Whether the validator's machine-number comparison of this lexeme agrees with its decimal
+/// meaning. An integer fits `i64`/`u64` and is compared exactly, unless a schema constant is a
+/// decimal, which forces the comparison through `f64`. Any other lexeme must be the shortest
+/// spelling of the `f64` it parses to (`9.99` is; a 30-digit fraction is not) and stay below 2^53.
+fn safe_comparison(value: &str, decimal_constants: bool) -> bool {
+    if !value.contains(['.', 'e', 'E']) {
+        let integer = value.parse::<i64>().is_ok() || value.parse::<u64>().is_ok();
+        return integer
+            && (!decimal_constants
+                || value
+                    .trim_start_matches('-')
+                    .parse::<u64>()
+                    .is_ok_and(|magnitude| magnitude <= 1 << 53));
+    }
+    let Ok(parsed) = value.parse::<f64>() else {
+        return false;
+    };
+    parsed.is_finite() && parsed.abs() < SAFE_BOUND && same_decimal(value, &format!("{parsed:e}"))
+}
+
+/// A fractional lexeme whose machine value is a whole number (or not finite): an integer keyword
+/// would accept it although the author did not send an integer.
+fn is_rounded_fraction(value: &str) -> bool {
+    if lexical_is_integer(value) {
+        return false;
+    }
+    value
+        .parse::<f64>()
+        .map_or(true, |parsed| !parsed.is_finite() || parsed.fract() == 0.0)
+}
+
+/// Compares two JSON number spellings by decimal value, ignoring zero padding and the exponent form.
+fn same_decimal(left: &str, right: &str) -> bool {
+    match (canonical_decimal(left), canonical_decimal(right)) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
+/// `(negative, significant digits, decimal exponent of the last digit)`; zero has no digits.
+fn canonical_decimal(value: &str) -> Option<(bool, String, i64)> {
+    let (negative, unsigned) = value
+        .strip_prefix('-')
+        .map_or((false, value), |rest| (true, rest));
+    let (mantissa, exponent) = match unsigned.find(['e', 'E']) {
+        Some(at) => (&unsigned[..at], unsigned[at + 1..].parse::<i64>().ok()?),
+        None => (unsigned, 0),
+    };
+    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let mut digits = format!("{whole}{fraction}");
+    let leading = digits.len() - digits.trim_start_matches('0').len();
+    digits.drain(..leading);
+    let trailing = digits.len() - digits.trim_end_matches('0').len();
+    digits.truncate(digits.len() - trailing);
+    if digits.is_empty() {
+        return Some((false, digits, 0));
+    }
+    let places = i64::try_from(fraction.len()).ok()?;
+    let trimmed = i64::try_from(trailing).ok()?;
+    Some((
+        negative,
+        digits,
+        exponent.checked_sub(places)?.checked_add(trimmed)?,
+    ))
 }
 
 fn lexical_is_integer(value: &str) -> bool {
@@ -1264,6 +1379,7 @@ mod cache_tests {
             schema_bytes,
             has_numeric_constraints: false,
             numeric_constraints_exact: true,
+            decimal_constants: false,
             has_integer_types: false,
         })
     }
