@@ -1,72 +1,72 @@
 //! Bounded JSON Schema classification interpreter.
 
-use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 use sagat_application::classification::{
     CarrierPointer, ClassificationAnalysis, ClassificationCacheKey, ClassificationInterpreter,
-    ClassifiedPayload, MAX_CARRIER_BYTES, MAX_CLASSIFICATION_CACHE_BYTES,
-    MAX_CLASSIFICATION_CACHE_ENTRIES, MAX_PAYLOAD_BYTES, MAX_PROJECTION_DURATION, MAX_SCHEMA_DEPTH,
-    MAX_WALK_STEPS, ProjectionFailure, ProjectionRequest,
+    ClassifiedPayload, MAX_CARRIER_BYTES, MAX_CARRIER_PATTERNS, MAX_PAYLOAD_BYTES,
+    MAX_PROJECTION_DURATION, MAX_SCHEMA_DEPTH, MAX_WALK_STEPS, ProjectionFailure,
+    ProjectionRequest,
 };
 use serde_json::Value;
 
+use cache::CarrierCache;
 use numbers::{Lexemes, NumericProfile};
 use walk::{Projector, Walk};
 
-const PATTERN_SIZE_LIMIT: usize = 1024 * 1024;
+const PATTERN_SIZE_LIMIT: usize = 64 * 1024;
 
 struct CompiledCarrier {
     schema: Value,
     validator: jsonschema::Validator,
-    schema_bytes: usize,
+    /// Estimated bytes the compiled validator keeps: what the cache budget is spent on.
+    weight: usize,
     numeric: NumericProfile,
 }
 
-#[derive(Default)]
-struct Cache {
-    entries: HashMap<ClassificationCacheKey, Arc<CompiledCarrier>>,
-    order: VecDeque<ClassificationCacheKey>,
-    /// D281 bounds serialized carrier bytes. Compiled-validator heap is measured separately.
-    schema_bytes: usize,
+/// Bytes one compiled validator keeps beyond its own size, whatever the carrier holds.
+const COMPILED_BASE_BYTES: usize = 4 * 1024;
+/// Compiled bytes per serialized schema byte, rounded up from the largest ratio measured across a
+/// wide object, a 3,000-branch `allOf`, a large `enum` and a minimal schema (21 to 54).
+const COMPILED_BYTES_PER_SCHEMA_BYTE: usize = 64;
+/// What one regular expression keeps: its program and one lazy-DFA cache, each at its limit.
+const PATTERN_WEIGHT: usize = 2 * PATTERN_SIZE_LIMIT;
+
+fn compiled_weight(schema_bytes: usize, patterns: usize) -> usize {
+    COMPILED_BASE_BYTES
+        .saturating_add(schema_bytes.saturating_mul(COMPILED_BYTES_PER_SCHEMA_BYTE))
+        .saturating_add(patterns.saturating_mul(PATTERN_WEIGHT))
 }
 
-impl Cache {
-    fn promote(&mut self, key: &ClassificationCacheKey) -> Option<Arc<CompiledCarrier>> {
-        let entry = self.entries.get(key).cloned()?;
-        self.order.retain(|candidate| candidate != key);
-        self.order.push_back(key.clone());
-        Some(entry)
+/// `pattern` keywords and `patternProperties` keys: every one compiles to an automaton.
+fn count_patterns(schema: &Value) -> usize {
+    match schema {
+        Value::Object(object) => object
+            .iter()
+            .map(|(keyword, value)| {
+                let own = match (keyword.as_str(), value) {
+                    ("pattern", Value::String(_)) => 1,
+                    ("patternProperties", Value::Object(patterns)) => patterns.len(),
+                    _ => 0,
+                };
+                own + count_patterns(value)
+            })
+            .sum(),
+        Value::Array(values) => values.iter().map(count_patterns).sum(),
+        _ => 0,
     }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct CacheStats {
-    pub hits: u64,
-    pub misses: u64,
-    pub evictions: u64,
 }
 
 /// Process-local interpreter and bounded compiled-validator cache.
 pub struct Classifier {
-    cache: Mutex<Cache>,
-    /// Admits one expensive compiler while the independent cache mutex keeps hits available.
-    compilation: Mutex<()>,
-    hits: AtomicU64,
-    misses: AtomicU64,
-    evictions: AtomicU64,
+    cache: CarrierCache,
 }
 
 impl Default for Classifier {
     fn default() -> Self {
         Self {
-            cache: Mutex::new(Cache::default()),
-            compilation: Mutex::new(()),
-            hits: AtomicU64::new(0),
-            misses: AtomicU64::new(0),
-            evictions: AtomicU64::new(0),
+            cache: CarrierCache::default(),
         }
     }
 }
@@ -83,11 +83,7 @@ impl std::fmt::Debug for Classifier {
 impl Classifier {
     #[must_use]
     pub fn cache_stats(&self) -> CacheStats {
-        CacheStats {
-            hits: self.hits.load(Ordering::Relaxed),
-            misses: self.misses.load(Ordering::Relaxed),
-            evictions: self.evictions.load(Ordering::Relaxed),
-        }
+        self.cache.stats()
     }
 
     fn compiled(
@@ -95,88 +91,8 @@ impl Classifier {
         key: &ClassificationCacheKey,
         document: &[u8],
     ) -> Result<Arc<CompiledCarrier>, ProjectionFailure> {
-        self.compiled_with(key, || {}, || compile_carrier(key, document))
-    }
-
-    fn compiled_with<BeforeAdmission, Compile>(
-        &self,
-        key: &ClassificationCacheKey,
-        before_admission: BeforeAdmission,
-        compile: Compile,
-    ) -> Result<Arc<CompiledCarrier>, ProjectionFailure>
-    where
-        BeforeAdmission: FnOnce(),
-        Compile: FnOnce() -> Result<Arc<CompiledCarrier>, ProjectionFailure>,
-    {
-        if let Some(entry) = self.cached(key) {
-            self.record_hit();
-            return Ok(entry);
-        }
-
-        before_admission();
-        let _compilation = self
-            .compilation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-        if let Some(entry) = self.cached(key) {
-            self.record_hit();
-            return Ok(entry);
-        }
-
-        self.record_miss();
-        let compiled = compile()?;
-        let mut cache = self
-            .cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-        // Keep insertion safe if another private insertion path is added later: one key has one
-        // LRU position and contributes its serialized schema bytes exactly once.
-        if let Some(entry) = cache.promote(key) {
-            return Ok(entry);
-        }
-
-        let schema_bytes = compiled.schema_bytes;
-        while cache.entries.len() >= MAX_CLASSIFICATION_CACHE_ENTRIES
-            || cache.schema_bytes.saturating_add(schema_bytes) > MAX_CLASSIFICATION_CACHE_BYTES
-        {
-            let Some(oldest) = cache.order.pop_front() else {
-                break;
-            };
-            if let Some(removed) = cache.entries.remove(&oldest) {
-                cache.schema_bytes = cache.schema_bytes.saturating_sub(removed.schema_bytes);
-                self.evictions.fetch_add(1, Ordering::Relaxed);
-                metrics::counter!("classification_cache_total", "outcome" => "evict").increment(1);
-            }
-        }
-        if schema_bytes <= MAX_CLASSIFICATION_CACHE_BYTES {
-            cache.schema_bytes = cache.schema_bytes.saturating_add(schema_bytes);
-            cache.order.push_back(key.clone());
-            let replaced = cache.entries.insert(key.clone(), Arc::clone(&compiled));
-            debug_assert!(
-                replaced.is_none(),
-                "cache key was rechecked before insertion"
-            );
-        }
-        Ok(compiled)
-    }
-
-    fn cached(&self, key: &ClassificationCacheKey) -> Option<Arc<CompiledCarrier>> {
         self.cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .promote(key)
-    }
-
-    fn record_hit(&self) {
-        self.hits.fetch_add(1, Ordering::Relaxed);
-        metrics::counter!("classification_cache_total", "outcome" => "hit").increment(1);
-    }
-
-    fn record_miss(&self) {
-        self.misses.fetch_add(1, Ordering::Relaxed);
-        metrics::counter!("classification_cache_total", "outcome" => "miss").increment(1);
+            .get_or_compile(key, || {}, || compile_carrier(key, document))
     }
 }
 
@@ -195,6 +111,10 @@ fn compile_carrier(
     if schema_bytes > MAX_CARRIER_BYTES || schema_depth(&schema) > MAX_SCHEMA_DEPTH {
         return Err(ProjectionFailure::SchemaUnusable);
     }
+    let patterns = count_patterns(&schema);
+    if patterns > MAX_CARRIER_PATTERNS {
+        return Err(ProjectionFailure::SchemaUnusable);
+    }
     // A dry expansion catches cycles, outside references and the fixed expansion bound before
     // the validator sees the schema.
     Walk::new(&schema, MAX_WALK_STEPS, None).expand(&[&schema])?;
@@ -210,7 +130,7 @@ fn compile_carrier(
     let compiled = Arc::new(CompiledCarrier {
         schema,
         validator,
-        schema_bytes,
+        weight: compiled_weight(schema_bytes, patterns),
         numeric,
     });
     Ok(compiled)
@@ -344,6 +264,8 @@ fn schema_depth(root: &Value) -> usize {
     }
     maximum
 }
+#[path = "classification/cache.rs"]
+mod cache;
 #[path = "classification/numbers.rs"]
 mod numbers;
 #[path = "classification/walk.rs"]
@@ -352,284 +274,7 @@ mod walk;
 #[path = "classification/publication.rs"]
 mod publication;
 
+pub use cache::CacheStats;
 pub use publication::{
     analyze_value, resolve_classification_location, visit_classification_locations,
 };
-
-#[cfg(test)]
-#[allow(clippy::expect_used, clippy::panic)]
-mod cache_tests {
-    use std::collections::HashSet;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Barrier, Condvar, Mutex, mpsc};
-
-    use sagat_application::classification::{
-        CarrierPointer, ClassificationCacheKey, MAX_CARRIER_BYTES, MAX_CLASSIFICATION_CACHE_BYTES,
-        MAX_CLASSIFICATION_CACHE_ENTRIES, ProjectionFailure,
-    };
-    use sagat_domain::definition::WorkflowVersionId;
-    use serde_json::json;
-
-    use super::{Cache, Classifier, CompiledCarrier, NumericProfile};
-
-    fn key() -> ClassificationCacheKey {
-        ClassificationCacheKey {
-            version: WorkflowVersionId::generate(),
-            carrier: CarrierPointer::Input,
-        }
-    }
-
-    fn compiled(schema_bytes: usize) -> Arc<CompiledCarrier> {
-        let schema = json!({"type": "null"});
-        Arc::new(CompiledCarrier {
-            validator: jsonschema::options()
-                .build(&schema)
-                .expect("fixture schema"),
-            schema,
-            schema_bytes,
-            numeric: NumericProfile::of(&json!(null)),
-        })
-    }
-
-    fn assert_consistent(cache: &Cache) {
-        assert_eq!(cache.order.len(), cache.entries.len());
-        assert_eq!(
-            cache.order.iter().cloned().collect::<HashSet<_>>().len(),
-            cache.order.len(),
-            "an LRU key must appear exactly once"
-        );
-        assert_eq!(
-            cache.order.iter().cloned().collect::<HashSet<_>>(),
-            cache.entries.keys().cloned().collect::<HashSet<_>>()
-        );
-        assert_eq!(
-            cache.schema_bytes,
-            cache
-                .entries
-                .values()
-                .map(|entry| entry.schema_bytes)
-                .sum::<usize>()
-        );
-    }
-
-    #[test]
-    fn concurrent_same_key_compiles_once_and_accounts_once() {
-        let classifier = Arc::new(Classifier::default());
-        let key = key();
-        let compiled = compiled(41);
-        let before_admission = Arc::new(Barrier::new(2));
-        let compilations = Arc::new(AtomicUsize::new(0));
-
-        let handles = (0..2)
-            .map(|_| {
-                let classifier = Arc::clone(&classifier);
-                let key = key.clone();
-                let compiled = Arc::clone(&compiled);
-                let before_admission = Arc::clone(&before_admission);
-                let compilations = Arc::clone(&compilations);
-                std::thread::spawn(move || {
-                    classifier
-                        .compiled_with(
-                            &key,
-                            || {
-                                before_admission.wait();
-                            },
-                            || {
-                                compilations.fetch_add(1, Ordering::SeqCst);
-                                Ok(compiled)
-                            },
-                        )
-                        .expect("compiled carrier")
-                })
-            })
-            .collect::<Vec<_>>();
-
-        let entries = handles
-            .into_iter()
-            .map(|handle| handle.join().expect("worker"))
-            .collect::<Vec<_>>();
-        assert!(Arc::ptr_eq(&entries[0], &entries[1]));
-        assert_eq!(compilations.load(Ordering::SeqCst), 1);
-        assert_eq!(classifier.cache_stats().misses, 1);
-        assert_eq!(classifier.cache_stats().hits, 1);
-
-        let cache = classifier
-            .cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert_consistent(&cache);
-        assert_eq!(cache.entries.len(), 1);
-        assert_eq!(cache.schema_bytes, 41);
-    }
-
-    #[test]
-    fn different_key_compiles_are_serial_and_do_not_block_cached_hits() {
-        let classifier = Arc::new(Classifier::default());
-        let cached_key = key();
-        classifier
-            .compiled_with(&cached_key, || {}, || Ok(compiled(3)))
-            .expect("prime cached key");
-
-        let keys = [key(), key()];
-        let before_admission = Arc::new(Barrier::new(2));
-        let active = Arc::new(AtomicUsize::new(0));
-        let maximum_active = Arc::new(AtomicUsize::new(0));
-        let compilations = Arc::new(AtomicUsize::new(0));
-        let release_first = Arc::new((Mutex::new(false), Condvar::new()));
-        let (first_entered_tx, first_entered_rx) = mpsc::sync_channel(1);
-
-        let handles = keys
-            .iter()
-            .cloned()
-            .map(|key| {
-                let classifier = Arc::clone(&classifier);
-                let before_admission = Arc::clone(&before_admission);
-                let active = Arc::clone(&active);
-                let maximum_active = Arc::clone(&maximum_active);
-                let compilations = Arc::clone(&compilations);
-                let release_first = Arc::clone(&release_first);
-                let first_entered_tx = first_entered_tx.clone();
-                std::thread::spawn(move || {
-                    classifier.compiled_with(
-                        &key,
-                        || {
-                            before_admission.wait();
-                        },
-                        || {
-                            let now_active = active.fetch_add(1, Ordering::SeqCst) + 1;
-                            maximum_active.fetch_max(now_active, Ordering::SeqCst);
-                            let sequence = compilations.fetch_add(1, Ordering::SeqCst);
-                            if sequence == 0 {
-                                first_entered_tx.send(()).expect("first entered");
-                                let (released, wake) = &*release_first;
-                                let released = released
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                                drop(
-                                    wake.wait_while(released, |released| !*released)
-                                        .unwrap_or_else(std::sync::PoisonError::into_inner),
-                                );
-                            }
-                            active.fetch_sub(1, Ordering::SeqCst);
-                            Ok(compiled(5))
-                        },
-                    )
-                })
-            })
-            .collect::<Vec<_>>();
-
-        first_entered_rx.recv().expect("first compilation entered");
-        assert!(classifier.compilation.try_lock().is_err());
-        classifier
-            .compiled_with(
-                &cached_key,
-                || panic!("a cached hit must not enter compilation admission"),
-                || panic!("a cached hit must not compile"),
-            )
-            .expect("cached hit remains available");
-        assert_eq!(compilations.load(Ordering::SeqCst), 1);
-        {
-            let (released, wake) = &*release_first;
-            *released
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
-            wake.notify_one();
-        }
-
-        for handle in handles {
-            handle
-                .join()
-                .expect("worker")
-                .expect("different key compilation");
-        }
-        assert_eq!(compilations.load(Ordering::SeqCst), 2);
-        assert_eq!(maximum_active.load(Ordering::SeqCst), 1);
-
-        let cache = classifier
-            .cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert_consistent(&cache);
-        assert_eq!(cache.entries.len(), 3);
-        assert_eq!(cache.schema_bytes, 13);
-    }
-
-    #[test]
-    fn failed_compile_releases_admission_without_changing_cache() {
-        let classifier = Classifier::default();
-        let key = key();
-        assert!(matches!(
-            classifier.compiled_with(&key, || {}, || Err(ProjectionFailure::SchemaUnusable)),
-            Err(ProjectionFailure::SchemaUnusable)
-        ));
-        {
-            let cache = classifier
-                .cache
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            assert_consistent(&cache);
-            assert!(cache.entries.is_empty());
-        }
-
-        classifier
-            .compiled_with(&key, || {}, || Ok(compiled(7)))
-            .expect("a later compilation can recover");
-        assert_eq!(classifier.cache_stats().misses, 2);
-        let cache = classifier
-            .cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert_consistent(&cache);
-        assert_eq!(cache.schema_bytes, 7);
-    }
-
-    #[test]
-    fn hit_promotes_one_key_and_the_257th_insert_evicts_the_oldest() {
-        let classifier = Classifier::default();
-        let keys = (0..=MAX_CLASSIFICATION_CACHE_ENTRIES)
-            .map(|_| key())
-            .collect::<Vec<_>>();
-        let entry = compiled(MAX_CARRIER_BYTES);
-
-        for key in &keys[..MAX_CLASSIFICATION_CACHE_ENTRIES] {
-            classifier
-                .compiled_with(key, || {}, || Ok(Arc::clone(&entry)))
-                .expect("fill cache");
-        }
-        classifier
-            .compiled_with(
-                &keys[0],
-                || panic!("cache hit entered admission"),
-                || panic!("cache hit compiled"),
-            )
-            .expect("promote first key");
-        classifier
-            .compiled_with(
-                &keys[MAX_CLASSIFICATION_CACHE_ENTRIES],
-                || {},
-                || Ok(Arc::clone(&entry)),
-            )
-            .expect("insert 257th key");
-
-        let cache = classifier
-            .cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert_consistent(&cache);
-        assert_eq!(cache.entries.len(), MAX_CLASSIFICATION_CACHE_ENTRIES);
-        assert_eq!(cache.schema_bytes, MAX_CLASSIFICATION_CACHE_BYTES);
-        assert!(cache.entries.contains_key(&keys[0]));
-        assert!(!cache.entries.contains_key(&keys[1]));
-        assert!(
-            cache
-                .entries
-                .contains_key(&keys[MAX_CLASSIFICATION_CACHE_ENTRIES])
-        );
-        assert_eq!(classifier.cache_stats().hits, 1);
-        assert_eq!(
-            classifier.cache_stats().misses,
-            (MAX_CLASSIFICATION_CACHE_ENTRIES + 1) as u64
-        );
-        assert_eq!(classifier.cache_stats().evictions, 1);
-    }
-}

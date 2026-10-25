@@ -26,7 +26,14 @@ pub const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 pub const MAX_CLASSIFICATION_FINDINGS: usize = 20;
 pub const MAX_CLASSIFICATION_REPORT_ENTRIES: usize = 500;
 pub const MAX_CLASSIFICATION_CACHE_ENTRIES: usize = 256;
-pub const MAX_CLASSIFICATION_CACHE_BYTES: usize = 16 * 1024 * 1024;
+/// Budget of the compiled-validator cache in estimated compiled bytes, not serialized schema
+/// bytes: each entry is weighed by what compiling it keeps in memory (see the infra-schema cache).
+pub const MAX_CLASSIFICATION_CACHE_BYTES: usize = 64 * 1024 * 1024;
+/// Carriers that failed to compile are remembered so that a broken version costs one compile.
+pub const MAX_CLASSIFICATION_FAILURE_ENTRIES: usize = 1_024;
+/// `pattern` keywords and `patternProperties` keys one carrier may hold. Each compiles to an
+/// automaton, so the count bounds what a 64 KiB carrier can cost once compiled.
+pub const MAX_CARRIER_PATTERNS: usize = 32;
 
 /// A contract value failed closed validation. It never carries the rejected text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
