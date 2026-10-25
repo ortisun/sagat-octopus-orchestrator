@@ -18,6 +18,7 @@
 #![allow(
     clippy::expect_used,
     clippy::panic,
+    clippy::print_stderr,
     clippy::print_stdout,
     clippy::cast_precision_loss
 )]
@@ -25,15 +26,18 @@
 #[path = "../../support/mod.rs"]
 mod support;
 
+mod diagnostics;
 mod dr;
 
 use std::fmt::Write as _;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use futures_util::stream;
 use sagat_application::entropy::SystemEntropy;
+use sagat_application::error::AppError;
 use sagat_application::execution::Engine;
 use sagat_application::runs::StartRun;
 use sagat_domain::identity::Role;
@@ -64,6 +68,163 @@ const API_POOL: u32 = 20;
 /// Callers starting runs at the same time.
 fn load_concurrency() -> usize {
     env_usize("SAGAT_PERF_LOAD_CONCURRENCY", 80)
+}
+
+fn app_error_variant(error: &AppError) -> &'static str {
+    match error {
+        AppError::Unauthenticated => "Unauthenticated",
+        AppError::Forbidden { .. } => "Forbidden",
+        AppError::NotFound => "NotFound",
+        AppError::Conflict(_) => "Conflict",
+        AppError::RevisionConflict { .. } => "RevisionConflict",
+        AppError::IdempotencyKeyReused => "IdempotencyKeyReused",
+        AppError::InvalidDefinition(_) => "InvalidDefinition",
+        AppError::NotAllowed(_) => "NotAllowed",
+        AppError::NotBound => "NotBound",
+        AppError::SecretUnavailable { .. } => "SecretUnavailable",
+        AppError::StaleAttempt => "StaleAttempt",
+        AppError::StateConflict(_) => "StateConflict",
+        AppError::Invalid(_) => "Invalid",
+        AppError::InvalidScript(_) => "InvalidScript",
+        AppError::QuotaExceeded(_) => "QuotaExceeded",
+        AppError::Versioning(_) => "Versioning",
+        AppError::Unavailable => "Unavailable",
+        AppError::PayloadTooLarge(_) => "PayloadTooLarge",
+        AppError::Busy { .. } => "Busy",
+        AppError::Internal => "Internal",
+    }
+}
+
+struct WorkerFailure {
+    worker: usize,
+    operation: &'static str,
+    variant: &'static str,
+    retryable: bool,
+}
+
+struct WorkerProgress {
+    polls: Vec<Duration>,
+    completes: Vec<Duration>,
+    last_done: Instant,
+}
+
+impl WorkerProgress {
+    fn new() -> Self {
+        Self {
+            polls: Vec::new(),
+            completes: Vec::new(),
+            last_done: Instant::now(),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TransitionConfig {
+    api_replicas: usize,
+    workers: usize,
+    runs: usize,
+}
+
+struct FailureDiagnostics<'a> {
+    started: &'a AtomicBool,
+    observer: &'a World,
+    apis: &'a [Arc<support::engine::Replica>],
+    storage: &'a diagnostics::SafeStorageDiagnostics,
+    config: TransitionConfig,
+}
+
+async fn report_worker_failure(
+    w: &World,
+    apis: &[Arc<support::engine::Replica>],
+    storage_diagnostics: &diagnostics::SafeStorageDiagnostics,
+    config: TransitionConfig,
+    failure: &WorkerFailure,
+) {
+    let TransitionConfig {
+        api_replicas,
+        workers,
+        runs,
+    } = config;
+    eprintln!(
+        "transition configuration failure: api_replicas={api_replicas} workers={workers} runs={runs} api_pool_connections={API_POOL} worker={} operation={} error_variant={} retryable={}",
+        failure.worker, failure.operation, failure.variant, failure.retryable
+    );
+    for (replica, api) in apis.iter().enumerate() {
+        let size = api.execution_pool.size();
+        let idle = u32::try_from(api.execution_pool.num_idle()).unwrap_or(u32::MAX);
+        eprintln!(
+            "transition replica pool: replica={replica} max={API_POOL} size={size} idle={idle} in_use={} closed={}",
+            size.saturating_sub(idle),
+            api.execution_pool.is_closed()
+        );
+    }
+    let mut cause_seen = false;
+    for (classification, observations) in storage_diagnostics.counts() {
+        cause_seen = true;
+        eprintln!(
+            "transition storage cause: classification={classification} observations={observations}"
+        );
+    }
+    if !cause_seen {
+        eprintln!("transition storage cause: classification=other observations=0");
+    }
+    let activity = tokio::time::timeout(
+        Duration::from_millis(500),
+        sqlx::query_as::<_, (String, String, String, bool, i64, i64)>(
+            "SELECT coalesce(state, 'unknown'), coalesce(wait_event_type, 'CPU'), \
+                coalesce(wait_event, 'running'), cardinality(pg_blocking_pids(pid)) > 0, \
+                count(*)::bigint, \
+                coalesce(max(extract(epoch FROM (clock_timestamp() - \
+                    coalesce(xact_start, query_start, state_change))) * 1000)::bigint, 0) \
+           FROM pg_stat_activity \
+          WHERE datname = current_database() AND backend_type = 'client backend' \
+            AND pid <> pg_backend_pid() \
+          GROUP BY 1, 2, 3, 4 ORDER BY 1, 2, 3, 4",
+        )
+        .fetch_all(&w.db.pool),
+    )
+    .await;
+    match activity {
+        Ok(Ok(rows)) => {
+            for (state, wait_type, wait, blocked, connections, max_age_ms) in rows {
+                eprintln!(
+                    "transition database state: state={state} wait_type={wait_type} wait={wait} blocked={blocked} connections={connections} max_age_ms={max_age_ms}"
+                );
+            }
+        }
+        Ok(Err(_)) => eprintln!("transition database state: unavailable"),
+        Err(_) => eprintln!("transition database state: timed_out"),
+    }
+}
+
+async fn capture_worker_failure(
+    error: AppError,
+    worker: usize,
+    operation: &'static str,
+    diagnostics: &FailureDiagnostics<'_>,
+) -> WorkerFailure {
+    let failure = WorkerFailure {
+        worker,
+        operation,
+        variant: app_error_variant(&error),
+        retryable: error.is_retryable(),
+    };
+    if diagnostics
+        .started
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return std::future::pending().await;
+    }
+    report_worker_failure(
+        diagnostics.observer,
+        diagnostics.apis,
+        diagnostics.storage,
+        diagnostics.config,
+        &failure,
+    )
+    .await;
+    failure
 }
 
 // ---------------------------------------------------------------------------------- numbers
@@ -824,6 +985,7 @@ async fn refill(
 #[ignore = "benchmark: run on purpose with --ignored"]
 async fn step_transitions_per_second() {
     let runs = env_usize("SAGAT_PERF_TRANSITION_RUNS", 3_000);
+    let storage_diagnostics = diagnostics::SafeStorageDiagnostics::install();
     let w = Arc::new(world().await);
     let (wf, _) = w
         .publish(document(
@@ -853,11 +1015,21 @@ async fn step_transitions_per_second() {
         (4, 128),
         (8, 128),
     ] {
+        let config = TransitionConfig {
+            api_replicas,
+            workers,
+            runs,
+        };
+        eprintln!(
+            "transition configuration start: api_replicas={api_replicas} workers={workers} runs={runs} api_pool_connections={API_POOL}"
+        );
+        storage_diagnostics.reset();
         // The worker API replicas of this configuration, each with a pool of its own.
         let mut apis = Vec::new();
         for _ in 0..api_replicas {
             apis.push(Arc::new(w.replica_with_pool(API_POOL).await));
         }
+        let apis = Arc::new(apis);
         // Fresh runs for this configuration.
         let tag = uuid::Uuid::new_v4().simple().to_string();
         start_runs(&w, wf, &format!("chain-{tag}"), 0, runs).await;
@@ -908,75 +1080,148 @@ async fn step_transitions_per_second() {
             }
         });
         let started = Instant::now();
-        let results =
-            futures_util::future::join_all(sessions.iter().enumerate().map(|(n, session)| {
-                let api = Arc::clone(&apis[n % api_replicas]);
-                async move {
-                    let (mut polls, mut completes) = (Vec::new(), Vec::new());
-                    let mut last_done = Instant::now();
-                    let mut empty = 0;
-                    while empty < 3 {
-                        let t = Instant::now();
-                        let tasks = api
-                            .workers
-                            .poll(
-                                &session.principal,
-                                session.worker_id,
-                                &session.token,
-                                16,
-                                None,
-                            )
-                            .await
-                            .expect("poll");
-                        if tasks.is_empty() {
-                            empty += 1;
-                            continue;
-                        }
-                        empty = 0;
-                        polls.push(t.elapsed() / u32::try_from(tasks.len()).expect("small"));
-                        for task in &tasks {
+        let diagnostic_started = Arc::new(AtomicBool::new(false));
+        let mut progress = (0..workers)
+            .map(|_| WorkerProgress::new())
+            .collect::<Vec<_>>();
+        let failure =
+            diagnostics::stop_on_first_error(sessions.iter().zip(&mut progress).enumerate().map(
+                |(n, (session, progress))| {
+                    let api = Arc::clone(&apis[n % api_replicas]);
+                    let diagnostic_apis = Arc::clone(&apis);
+                    let diagnostic_started = Arc::clone(&diagnostic_started);
+                    let storage_diagnostics = storage_diagnostics.clone();
+                    let observer = Arc::clone(&w);
+                    async move {
+                        let failure_diagnostics = FailureDiagnostics {
+                            started: &diagnostic_started,
+                            observer: &observer,
+                            apis: &diagnostic_apis,
+                            storage: &storage_diagnostics,
+                            config,
+                        };
+                        let mut empty = 0;
+                        while empty < 3 {
                             let t = Instant::now();
-                            api.workers
-                                .complete(
+                            let tasks = match api
+                                .workers
+                                .poll(
                                     &session.principal,
-                                    &support::engine::task_ref(task),
-                                    b"{}",
-                                    &format!("done-{}", task.task_id()),
+                                    session.worker_id,
+                                    &session.token,
+                                    16,
+                                    None,
                                 )
                                 .await
-                                .expect("complete");
-                            completes.push(t.elapsed());
-                            last_done = Instant::now();
+                            {
+                                Ok(tasks) => tasks,
+                                Err(error) => {
+                                    let failure = capture_worker_failure(
+                                        error,
+                                        n,
+                                        "poll",
+                                        &failure_diagnostics,
+                                    )
+                                    .await;
+                                    return Err(failure);
+                                }
+                            };
+                            if tasks.is_empty() {
+                                empty += 1;
+                                continue;
+                            }
+                            empty = 0;
+                            progress
+                                .polls
+                                .push(t.elapsed() / u32::try_from(tasks.len()).expect("small"));
+                            for task in &tasks {
+                                let t = Instant::now();
+                                if let Err(error) = api
+                                    .workers
+                                    .complete(
+                                        &session.principal,
+                                        &support::engine::task_ref(task),
+                                        b"{}",
+                                        &format!("done-{}", task.task_id()),
+                                    )
+                                    .await
+                                {
+                                    let failure = capture_worker_failure(
+                                        error,
+                                        n,
+                                        "complete",
+                                        &failure_diagnostics,
+                                    )
+                                    .await;
+                                    return Err(failure);
+                                }
+                                progress.completes.push(t.elapsed());
+                                progress.last_done = Instant::now();
+                            }
                         }
+                        Ok(())
                     }
-                    (polls, completes, last_done)
-                }
-            }))
-            .await;
+                },
+            ))
+            .await
+            .err();
+        let failed = failure.is_some();
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        let (seen, samples) = sampler.await.expect("the sampler");
-        let mut by_share: Vec<_> = seen.into_iter().collect();
-        by_share.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
-        let waiting_on = by_share
-            .iter()
-            .take(4)
-            .map(|(event, n)| format!("{event} {:.0}%", 100.0 * *n as f64 / samples.max(1) as f64))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let waiting_on = match diagnostics::finish_sampler(sampler, failed)
+            .await
+            .expect("the sampler")
+        {
+            Some((seen, samples)) => {
+                let mut by_share: Vec<_> = seen.into_iter().collect();
+                by_share.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+                by_share
+                    .iter()
+                    .take(4)
+                    .map(|(event, n)| {
+                        format!("{event} {:.0}%", 100.0 * *n as f64 / samples.max(1) as f64)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+            None => "sampling unavailable after worker failure".to_owned(),
+        };
         // The rate is over the time the work took: until the last completion, not the last empty poll.
         let (mut polls, mut completes) = (Vec::new(), Vec::new());
         let mut finished = started;
-        for (p, c, last) in results {
-            polls.extend(p);
-            completes.extend(c);
-            finished = finished.max(last);
+        for worker in progress {
+            polls.extend(worker.polls);
+            completes.extend(worker.completes);
+            finished = finished.max(worker.last_done);
         }
-        let elapsed = finished - started;
         let transitions = completes.len();
-        let per_second = transitions as f64 / elapsed.as_secs_f64().max(1e-9);
-        ceiling = ceiling.max(per_second);
         polls.sort_unstable();
         completes.sort_unstable();
+        if let Some(failure) = failure {
+            body.push_str(&format!(
+                "| {api_replicas} | {workers} | {transitions} (incomplete) | n/a | {:.0} / {:.0} / {:.0} ms | {:.0} / {:.0} / {:.0} ms | {waiting_on} |\n",
+                ms(percentile(&polls, 0.50)),
+                ms(percentile(&polls, 0.95)),
+                ms(percentile(&polls, 0.99)),
+                ms(percentile(&completes, 0.50)),
+                ms(percentile(&completes, 0.95)),
+                ms(percentile(&completes, 0.99)),
+            ));
+            body.push_str(&format!(
+                "\nConfiguration `{api_replicas}` API replicas / `{workers}` workers / `{runs}` runs is **incomplete**: worker {} failed during `{}` with safe application error variant `{}` (`retryable={}`). The transition count contains acknowledged completions only; no throughput result or load-level verdict is reported for this configuration. Earlier rows remain complete.\n",
+                failure.worker, failure.operation, failure.variant, failure.retryable
+            ));
+            section(
+                "Step transitions per second (BL02, BL04) — incomplete",
+                &body,
+            );
+            panic!(
+                "transition configuration failed: api_replicas={api_replicas} workers={workers} runs={runs} operation={} error_variant={} retryable={}",
+                failure.operation, failure.variant, failure.retryable
+            );
+        }
+        let elapsed = finished - started;
+        let per_second = transitions as f64 / elapsed.as_secs_f64().max(1e-9);
+        ceiling = ceiling.max(per_second);
         body.push_str(&format!(
             "| {api_replicas} | {workers} | {transitions} | {per_second:.0} | {:.0} / {:.0} / {:.0} ms | {:.0} / {:.0} / {:.0} ms | {waiting_on} |\n",
             ms(percentile(&polls, 0.50)),
