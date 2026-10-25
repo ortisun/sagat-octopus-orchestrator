@@ -1,0 +1,29 @@
+[
+  {
+    "name": "valid two-step workflow",
+    "document": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "kind": "Workflow",
+      "metadata": { "name": "first-run" },
+      "entrypoint": "hello",
+      "nodes": [
+        { "id": "hello", "type": "activity", "activity": "hello.say", "next": "finish" },
+        { "id": "finish", "type": "activity", "activity": "hello.finish" }
+      ]
+    },
+    "codes": []
+  },
+  {
+    "name": "unknown next step",
+    "document": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "kind": "Workflow",
+      "metadata": { "name": "first-run" },
+      "entrypoint": "hello",
+      "nodes": [
+        { "id": "hello", "type": "activity", "activity": "hello.say", "next": "missing" }
+      ]
+    },
+    "codes": ["UNKNOWN_TARGET"]
+  }
+]
