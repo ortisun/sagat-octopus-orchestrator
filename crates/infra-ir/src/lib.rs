@@ -121,7 +121,16 @@ impl IrCodec for JsonIrCodec {
         from: &[u8],
         to: &[u8],
     ) -> Result<sagat_application::diff::DocumentDiff, IrError> {
-        diff::diff(from, to)
+        diff::diff(from, to, sagat_application::diff::DiffRules::CURRENT)
+    }
+
+    fn diff_with_rules(
+        &self,
+        from: &[u8],
+        to: &[u8],
+        rules: sagat_application::diff::DiffRules,
+    ) -> Result<sagat_application::diff::DocumentDiff, IrError> {
+        diff::diff(from, to, rules)
     }
 
     fn parse(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {

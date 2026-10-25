@@ -183,3 +183,64 @@ async fn republishing_an_identical_legacy_document_answers_rules_zero() {
         ClassificationRules::CURRENT
     );
 }
+
+/// FR-016-025: the service tells the comparison which rules each version pinned. A legacy version
+/// discloses nothing, so the same document as a draft relaxes what its annotations make readable.
+#[tokio::test]
+async fn a_diff_reads_the_rules_each_version_pinned() {
+    use sagat_application::definitions::DiffRef;
+
+    let w = world().await;
+    let mut source = document("legacy-diff", "a", vec![activity("a")]);
+    source["inputSchema"] = json!({"type":"object","x-sagat-classification":"public"});
+    let (workflow, _) = w.publish(source).await;
+    let current = w
+        .defs
+        .diff(
+            &w.admin,
+            workflow,
+            Some(DiffRef::Version(1)),
+            Some(DiffRef::Draft),
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    assert!(current.diff.identical);
+    assert!(
+        current
+            .diff
+            .attention
+            .iter()
+            .all(|row| !row.code.starts_with("CLASSIFICATION_")),
+        "a version under the current rules and its own draft do not differ"
+    );
+
+    sqlx::raw_sql(DOWN).execute(&w.db.pool).await.unwrap();
+    sqlx::raw_sql(UP).execute(&w.db.pool).await.unwrap();
+    let legacy = w
+        .defs
+        .diff(
+            &w.admin,
+            workflow,
+            Some(DiffRef::Version(1)),
+            Some(DiffRef::Draft),
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    let relaxed: Vec<_> = legacy
+        .diff
+        .attention
+        .iter()
+        .filter(|row| row.code == "CLASSIFICATION_RELAXED")
+        .map(|row| (row.path.as_deref(), row.message.as_str()))
+        .collect();
+    assert_eq!(
+        relaxed,
+        vec![(
+            Some("/inputSchema"),
+            "classification changed from undisclosed to public"
+        )]
+    );
+    assert!(legacy.diff.breaking.is_empty(), "attention, not breaking");
+}

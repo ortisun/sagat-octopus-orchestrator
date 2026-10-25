@@ -10,6 +10,7 @@ use sagat_application::classification::{
     MAX_CARRIER_BYTES, MAX_CLASSIFICATION_FINDINGS, MAX_CLASSIFICATION_REPORT_ENTRIES,
     MAX_REF_EXPANSIONS, MAX_SCHEMA_DEPTH,
 };
+use sagat_application::classification_index::ClassificationLocationIndex;
 use sagat_domain::classification::Level;
 use sagat_domain::workflow::NodeId;
 use serde_json::Value;
@@ -54,143 +55,17 @@ pub fn visit_classification_locations(
 }
 
 /// Resolves one semantic location using the same walk and fallback rules as publication analysis.
+///
+/// One call walks the whole document; a caller that resolves many locations of one document builds a
+/// [`ClassificationLocationIndex`] from [`visit_classification_locations`] once instead.
 #[must_use]
 pub fn resolve_classification_location(
     document: &Value,
     carrier: &CarrierPointer,
     location: &[ClassificationSegment],
 ) -> ClassificationResolution {
-    let (status, root) = location_at(document, carrier, &[]);
-    if let Some(failure) = status.failure(carrier) {
-        return ClassificationResolution::Incomplete(failure.clone());
-    }
-    let Some(mut current) = root else {
-        return ClassificationResolution::AbsentCarrier;
-    };
-    let mut selected = Vec::with_capacity(location.len());
-    let mut location_present = true;
-    for requested in location {
-        let mut exact = selected.clone();
-        exact.push(requested.clone());
-        if let (_, Some(found)) = location_at(document, carrier, &exact) {
-            selected = exact;
-            current = found;
-            continue;
-        }
-
-        let fallback = match requested {
-            ClassificationSegment::Property(_) => ClassificationSegment::AdditionalProperty,
-            ClassificationSegment::Index(_) => ClassificationSegment::RemainingItem,
-            ClassificationSegment::AdditionalProperty | ClassificationSegment::RemainingItem => {
-                return ClassificationResolution::Resolved {
-                    level: current.level.stricter(Level::UNMARKED),
-                    source_path: current.source_path,
-                    location_present: false,
-                };
-            }
-        };
-        let mut fallback_path = selected.clone();
-        fallback_path.push(fallback);
-        if let (_, Some(found)) = location_at(document, carrier, &fallback_path) {
-            selected = fallback_path;
-            current = found;
-            location_present = false;
-        } else {
-            return ClassificationResolution::Resolved {
-                level: current.level.stricter(Level::UNMARKED),
-                source_path: current.source_path,
-                location_present: false,
-            };
-        }
-    }
-    ClassificationResolution::Resolved {
-        level: current.level,
-        source_path: current.source_path,
-        location_present,
-    }
-}
-
-fn location_at(
-    document: &Value,
-    carrier: &CarrierPointer,
-    location: &[ClassificationSegment],
-) -> (ClassificationWalkStatus, Option<ClassificationLocation>) {
-    let mut found = None;
-    let mut take = |candidate: &ClassificationLocation| {
-        if candidate.location == location {
-            found = Some(candidate.clone());
-        }
-    };
-    let status = visit_one_carrier(document, carrier, &mut take);
-    (status, found)
-}
-
-fn visit_one_carrier(
-    document: &Value,
-    wanted: &CarrierPointer,
-    visitor: &mut dyn FnMut(&ClassificationLocation),
-) -> ClassificationWalkStatus {
-    let selected = match wanted {
-        CarrierPointer::Input => document
-            .get("inputSchema")
-            .map(|schema| (schema, "/inputSchema".to_owned(), false)),
-        CarrierPointer::Result => document
-            .get("outputSchema")
-            .map(|schema| (schema, "/outputSchema".to_owned(), false)),
-        CarrierPointer::NodeOutput(wanted_node) => document
-            .get("nodes")
-            .and_then(Value::as_array)
-            .and_then(|nodes| select_node_carrier(nodes, "/nodes", wanted_node)),
-        CarrierPointer::BodyNodeOutput { body, node } => document
-            .get("bodies")
-            .and_then(Value::as_object)
-            .and_then(|bodies| bodies.get(body.as_str()))
-            .and_then(|body| body.get("nodes"))
-            .and_then(Value::as_array)
-            .and_then(|nodes| {
-                select_node_carrier(
-                    nodes,
-                    &format!("/bodies/{}/nodes", escape(body.as_str())),
-                    node,
-                )
-            }),
-    };
-    let Some((schema, path, always_check)) = selected else {
-        return ClassificationWalkStatus::default();
-    };
-    let mut analysis = Analysis::default();
-    let mut status = ClassificationWalkStatus::default();
-    let mut visitor = Some(visitor);
-    process_carrier(
-        schema,
-        wanted.clone(),
-        &path,
-        always_check,
-        false,
-        &mut analysis,
-        &mut status,
-        &mut visitor,
-    );
-    status
-}
-
-fn select_node_carrier<'a>(
-    nodes: &'a [Value],
-    nodes_path: &str,
-    wanted: &NodeId,
-) -> Option<(&'a Value, String, bool)> {
-    nodes.iter().enumerate().find_map(|(index, candidate)| {
-        if !matches!(
-            candidate.get("type").and_then(Value::as_str),
-            Some("activity" | "script" | "waitEvent" | "child")
-        ) || candidate.get("id").and_then(Value::as_str) != Some(wanted.as_str())
-        {
-            return None;
-        }
-        candidate
-            .get("outputSchema")
-            .map(|schema| (schema, format!("{nodes_path}/{index}/outputSchema"), true))
-    })
+    ClassificationLocationIndex::build(|visitor| visit_classification_locations(document, visitor))
+        .resolve(carrier, location)
 }
 
 type Visitor<'a> = Option<&'a mut dyn FnMut(&ClassificationLocation)>;
@@ -360,6 +235,7 @@ fn process_carrier(
         true,
         0,
     );
+    status.steps += dry.steps;
     if let Some(failure) = dry.failure.take() {
         status
             .carriers
@@ -385,6 +261,7 @@ fn process_carrier(
         0,
     );
     debug_assert!(emit.failure.is_none());
+    status.steps += emit.steps;
     status
         .carriers
         .push(ClassificationCarrierStatus::Complete(carrier));
@@ -502,6 +379,8 @@ struct CarrierWalk<'a, 'b, 'v> {
     capture_report: bool,
     visitor: &'b mut Visitor<'v>,
     expansions: usize,
+    /// Locations and schema nodes visited (see `ClassificationWalkStatus::steps`).
+    steps: u64,
     failure: Option<ClassificationCarrierFailure>,
     /// Document paths that a local `$ref` of the carrier points at (the scan reads them).
     ref_targets: Vec<String>,
@@ -529,6 +408,7 @@ impl<'a, 'b, 'v> CarrierWalk<'a, 'b, 'v> {
             capture_report,
             visitor,
             expansions: 0,
+            steps: 0,
             failure: None,
             ref_targets: Vec::new(),
         }
@@ -586,6 +466,7 @@ impl<'a, 'b, 'v> CarrierWalk<'a, 'b, 'v> {
         root: bool,
         depth: usize,
     ) {
+        self.steps += 1;
         if depth > MAX_SCHEMA_DEPTH {
             self.fail(
                 ClassificationFindingCode::TooComplex,
@@ -812,6 +693,7 @@ impl<'a, 'b, 'v> CarrierWalk<'a, 'b, 'v> {
     ) -> Vec<SchemaNode<'a>> {
         let mut expanded = Vec::new();
         for schema in schemas {
+            self.steps += 1;
             expanded.push(schema.clone());
             let Some(object) = schema.value.as_object() else {
                 continue;
@@ -877,6 +759,7 @@ impl<'a, 'b, 'v> CarrierWalk<'a, 'b, 'v> {
         active: &mut HashSet<String>,
         unwalked: Option<usize>,
     ) -> bool {
+        self.steps += 1;
         let Some(object) = schema.as_object() else {
             return false;
         };

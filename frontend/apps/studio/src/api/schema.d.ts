@@ -2933,6 +2933,11 @@ export interface components {
             publishedBy?: string;
             /** Format: date-time */
             publishedAt?: string;
+            /**
+             * @description The payload classification rules pinned to the version when it was published (feature 016). `0` is a version published before payload classification: no value of its runs is disclosed, whatever its schemas say. `1` reads `x-sagat-classification`. Publishing a document identical to an existing version returns that version (`created: false`) with its own rules, so an unchanged legacy document stays at `0`; publish a changed document to adopt the rules.
+             * @enum {integer}
+             */
+            classificationRules: 0 | 1;
         };
         WorkflowDraft: {
             /** Format: uuid */
@@ -3211,7 +3216,15 @@ export interface components {
             revision?: number | null;
         };
         DiffFinding: {
-            /** @description TRIGGER_REMOVED, TRIGGER_CHANGED, INPUT_PROPERTY_REMOVED, INPUT_TYPE_CHANGED, INPUT_REQUIRED_ADDED, OUTPUT_PROPERTY_REMOVED, OUTPUT_TYPE_CHANGED, EVENT_TYPE_REMOVED (breaking); ACTIVITY_ADDED, ACTIVITY_CHANGED, SECRET_ADDED, SCRIPT_CHANGED, CLASSIFICATION_RELAXED and CLASSIFICATION_TIGHTENED (attention). */
+            /**
+             * @description TRIGGER_REMOVED, TRIGGER_CHANGED, INPUT_PROPERTY_REMOVED, INPUT_TYPE_CHANGED, INPUT_REQUIRED_ADDED, OUTPUT_PROPERTY_REMOVED, OUTPUT_TYPE_CHANGED, EVENT_TYPE_REMOVED (breaking); ACTIVITY_ADDED, ACTIVITY_CHANGED, SECRET_ADDED, SCRIPT_CHANGED (attention).
+             *
+             *     Payload classification (feature 016) adds these attention codes; none is breaking.
+             *     CLASSIFICATION_RELAXED and CLASSIFICATION_TIGHTENED: the effective level of the path in `path` became less or more strict between the two sides. A side that has no schema for the location (a carrier added or dropped), or that was published before payload classification (`classificationRules` 0), discloses nothing and counts as `undisclosed`, as strict as `secret`: adding an `outputSchema` that makes a field `public` relaxes it, and a legacy version compared with the same document under the current rules relaxes every location the document makes readable. The first draft of a workflow, which has no earlier version, is not compared.
+             *     CLASSIFICATION_TOO_COMPLEX, CLASSIFICATION_UNRESOLVED_REF and CLASSIFICATION_UNSUPPORTED_KEYWORD: a carrier of one side could not be walked completely (`path` says where), so none of its levels was compared and a relaxation inside it is not reported; fix the carrier and compare again. Each is reported once per carrier.
+             *     MORE_FINDINGS: findings of one kind past the first 100 are not listed, only counted in the message.
+             *     `sagat sync` prints every attention finding as `prepare`; the Studio lists them all in the version comparison, and the classification panel of the workflow settings shows the two level changes and a notice for the carriers that could not be compared.
+             */
             code: string;
             message: string;
             nodeId?: string | null;

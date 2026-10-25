@@ -11,14 +11,13 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use sagat_application::classification::{
-    CarrierPointer, ClassificationCarrierStatus, ClassificationLocation, ClassificationResolution,
-    ClassificationWalkStatus,
-};
+use sagat_application::classification::{ClassificationCarrierStatus, ClassificationResolution};
+use sagat_application::classification_index::ClassificationLocationIndex;
 use sagat_application::definitions::{IrError, MAX_IR_BYTES};
 use sagat_application::diff::{
-    Change, DiffEdge, DiffFinding, DocumentChange, DocumentDiff, NodeChange,
+    Change, DiffEdge, DiffFinding, DiffRules, DocumentChange, DocumentDiff, NodeChange,
 };
+use sagat_domain::classification::{ClassificationRules, Level};
 use serde_json::{Map, Value};
 
 /// Longest name repeated in a message.
@@ -124,7 +123,7 @@ impl Found {
     }
 }
 
-pub(crate) fn diff(from: &[u8], to: &[u8]) -> Result<DocumentDiff, IrError> {
+pub(crate) fn diff(from: &[u8], to: &[u8], rules: DiffRules) -> Result<DocumentDiff, IrError> {
     let from = object(from)?;
     let to = object(to)?;
 
@@ -183,9 +182,13 @@ pub(crate) fn diff(from: &[u8], to: &[u8]) -> Result<DocumentDiff, IrError> {
 
     let mut attention = Found::default();
     needs_preparing(&from_nodes, &to_nodes, &mut attention);
-    classification_changes(
+    // As for the breaking changes: a workflow that was never published had nobody to inform of a
+    // level that changed, so its first draft is not compared level by level.
+    let _ = classification_changes(
         &Value::Object(from.clone()),
         &Value::Object(to.clone()),
+        rules,
+        !from.is_empty(),
         &mut attention,
     );
     let (breaking, attention) = (breaking.into_list(), attention.into_list());
@@ -211,94 +214,148 @@ pub(crate) fn diff(from: &[u8], to: &[u8]) -> Result<DocumentDiff, IrError> {
     })
 }
 
-fn classification_changes(from: &Value, to: &Value, out: &mut Found) {
-    let from_status = crate::classification_check::visit_locations(from, |_| {});
-    let to_status = crate::classification_check::visit_locations(to, |_| {});
+/// What one side of a comparison discloses.
+enum Disclosure {
+    /// Published under the current rules: the effective level of every location of its carriers.
+    Levels(ClassificationLocationIndex),
+    /// Published under rules `0`: it reads no annotation and discloses no value, whatever its
+    /// schemas say (FR-016-021).
+    Nothing,
+}
 
-    let mut reported_failures = HashSet::new();
-    for status in from_status.carriers.iter().chain(&to_status.carriers) {
-        let ClassificationCarrierStatus::Failed(failure) = status else {
-            continue;
-        };
-        if reported_failures.insert((failure.carrier.clone(), failure.code)) {
-            let code = failure.code;
-            let path = failure.source_path.clone();
-            out.push(|| finding(code.as_str(), code.message().to_owned(), None, Some(path)));
+impl Disclosure {
+    fn of(document: &Value, rules: ClassificationRules) -> Self {
+        if rules == ClassificationRules::NONE {
+            return Self::Nothing;
         }
+        Self::Levels(ClassificationLocationIndex::build(|visitor| {
+            crate::classification_check::visit_locations(document, visitor)
+        }))
     }
 
-    let mut compare_from = |old: &ClassificationLocation| {
-        if carrier_failed(&to_status, &old.carrier) {
-            return;
+    fn steps(&self) -> u64 {
+        match self {
+            Self::Levels(index) => index.status().steps,
+            Self::Nothing => 0,
         }
-        let ClassificationResolution::Resolved {
-            level,
-            source_path,
-            location_present,
-        } = sagat_infra_schema::classification::resolve_classification_location(
-            to,
-            &old.carrier,
-            &old.location,
-        )
-        else {
-            return;
-        };
-        let path = if location_present {
-            source_path
-        } else {
-            old.source_path.clone()
-        };
-        classification_change(old.level, level, path, out);
-    };
-    let _ = crate::classification_check::visit_locations(from, &mut compare_from);
-
-    let mut compare_new = |new: &ClassificationLocation| {
-        if carrier_failed(&from_status, &new.carrier) {
-            return;
-        }
-        let ClassificationResolution::Resolved {
-            level,
-            location_present,
-            ..
-        } = sagat_infra_schema::classification::resolve_classification_location(
-            from,
-            &new.carrier,
-            &new.location,
-        )
-        else {
-            return;
-        };
-        if !location_present {
-            classification_change(level, new.level, new.source_path.clone(), out);
-        }
-    };
-    let _ = crate::classification_check::visit_locations(to, &mut compare_new);
+    }
 }
 
-fn carrier_failed(status: &ClassificationWalkStatus, carrier: &CarrierPointer) -> bool {
-    status.failure(carrier).is_some()
-}
+/// The level of a location as a comparison sees it: `None` is a value nobody can read, because
+/// the side has no carrier for it or reads none (a payload with no schema is structure only for
+/// everyone, which is stricter than `secret` for a person who may read nothing else).
+type Seen = Option<Level>;
 
-fn classification_change(
-    before: sagat_domain::classification::Level,
-    after: sagat_domain::classification::Level,
-    path: String,
+/// Compares the effective level of every location of both documents and returns the walk steps
+/// spent. Each document is walked once (the locations are looked up in the other one's index); the
+/// cost is the size of the carriers, not the product of locations and carrier size.
+fn classification_changes(
+    from: &Value,
+    to: &Value,
+    rules: DiffRules,
+    compare: bool,
     out: &mut Found,
-) {
-    let (code, message) = if before > after {
-        (
-            "CLASSIFICATION_RELAXED",
-            format!("classification changed from {before} to {after}"),
-        )
-    } else if before < after {
-        (
-            "CLASSIFICATION_TIGHTENED",
-            format!("classification changed from {before} to {after}"),
-        )
+) -> u64 {
+    let from_side = Disclosure::of(from, rules.from);
+    let to_side = Disclosure::of(to, rules.to);
+
+    let mut reported_failures = HashSet::new();
+    for side in [&from_side, &to_side] {
+        let Disclosure::Levels(index) = side else {
+            continue;
+        };
+        for status in &index.status().carriers {
+            let ClassificationCarrierStatus::Failed(failure) = status else {
+                continue;
+            };
+            if reported_failures.insert((failure.carrier.clone(), failure.code)) {
+                let code = failure.code;
+                let path = failure.source_path.clone();
+                out.push(|| finding(code.as_str(), code.message().to_owned(), None, Some(path)));
+            }
+        }
+    }
+    if !compare {
+        return from_side.steps() + to_side.steps();
+    }
+
+    if let Disclosure::Levels(index) = &from_side {
+        for old in index.locations() {
+            let (after, path) = match &to_side {
+                Disclosure::Nothing => (None, old.source_path.clone()),
+                Disclosure::Levels(other) => {
+                    match other.resolve(&old.carrier, &old.location) {
+                        ClassificationResolution::Resolved {
+                            level,
+                            source_path,
+                            location_present,
+                        } => (
+                            Some(level),
+                            if location_present {
+                                source_path
+                            } else {
+                                old.source_path.clone()
+                            },
+                        ),
+                        ClassificationResolution::AbsentCarrier => (None, old.source_path.clone()),
+                        // Not compared: a prefix of a carrier that failed is not the carrier.
+                        ClassificationResolution::Incomplete(_) => continue,
+                    }
+                }
+            };
+            classification_change(Some(old.level), after, &path, out);
+        }
+    }
+    if let Disclosure::Levels(index) = &to_side {
+        for new in index.locations() {
+            let before = match &from_side {
+                Disclosure::Nothing => None,
+                Disclosure::Levels(other) => match other.resolve(&new.carrier, &new.location) {
+                    // Present on both sides: compared from the other side's walk.
+                    ClassificationResolution::Resolved {
+                        location_present: true,
+                        ..
+                    }
+                    | ClassificationResolution::Incomplete(_) => continue,
+                    ClassificationResolution::Resolved { level, .. } => Some(level),
+                    ClassificationResolution::AbsentCarrier => None,
+                },
+            };
+            classification_change(before, Some(new.level), &new.source_path, out);
+        }
+    }
+    from_side.steps() + to_side.steps()
+}
+
+fn classification_change(before: Seen, after: Seen, path: &str, out: &mut Found) {
+    // Nobody can read an undisclosed value, which is as strict as `secret` can be.
+    let (rank_before, rank_after) = (
+        before.unwrap_or(Level::Secret),
+        after.unwrap_or(Level::Secret),
+    );
+    let code = if rank_before > rank_after {
+        "CLASSIFICATION_RELAXED"
+    } else if rank_before < rank_after {
+        "CLASSIFICATION_TIGHTENED"
     } else {
         return;
     };
-    out.push(|| finding(code, message, None, Some(path)));
+    out.push(|| {
+        finding(
+            code,
+            format!(
+                "classification changed from {} to {}",
+                label(before),
+                label(after)
+            ),
+            None,
+            Some(path.to_owned()),
+        )
+    });
+}
+
+fn label(seen: Seen) -> String {
+    seen.map_or_else(|| "undisclosed".to_owned(), |level| level.to_string())
 }
 
 fn object(bytes: &[u8]) -> Result<Map<String, Value>, IrError> {
@@ -772,5 +829,65 @@ fn needs_preparing(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)] // test fixtures fail immediately
+
+    use serde_json::json;
+
+    use super::*;
+
+    const PROPERTIES: usize = 2_000;
+
+    /// An object of `PROPERTIES` unannotated properties at `level` (about 52 KB, under the
+    /// 64 KiB bound of a carrier): every location inherits the level of the root.
+    fn carrier(level: &str) -> Value {
+        let properties: Map<String, Value> = (0..PROPERTIES)
+            .map(|index| (format!("p{index:04}"), json!({"type": "string"})))
+            .collect();
+        json!({"inputSchema": {
+            "type": "object", "x-sagat-classification": level, "properties": properties
+        }})
+    }
+
+    /// FR-016-025 / NFR-016-003: comparing two versions walks each carrier a fixed number of times
+    /// whatever the number of locations. The cost is counted in walk steps, not in time, so the
+    /// bound holds on a loaded machine. Before the index existed every location started a walk of
+    /// its own over the whole carrier (130 s for this document in a debug build).
+    #[test]
+    fn comparing_a_two_thousand_property_carrier_costs_a_fixed_number_of_passes() {
+        let before = carrier("pii");
+        let after = carrier("public");
+        let size = serde_json::to_vec(&before).expect("JSON").len();
+        assert!(size < 64 * 1024, "the carrier is within its bound ({size})");
+
+        let mut found = Found::default();
+        let steps = classification_changes(&before, &after, DiffRules::CURRENT, true, &mut found);
+        let locations = (PROPERTIES + 1) as u64;
+        // Measured: five steps per location and side (a scan, a dry walk and an emitting walk).
+        // A walk per location, as before, costs the number of locations times that.
+        let budget = 2 * 8 * locations;
+        assert!(
+            steps <= budget,
+            "{steps} steps for {locations} locations (budget {budget})"
+        );
+        // Every location is relaxed: the first 100 are listed and the rest counted exactly.
+        let listed = found.into_list();
+        assert_eq!(listed.len(), MAX_FINDINGS + 1);
+        assert!(
+            listed[..MAX_FINDINGS]
+                .iter()
+                .all(|f| f.code == "CLASSIFICATION_RELAXED")
+        );
+        assert_eq!(listed[MAX_FINDINGS].code, "MORE_FINDINGS");
+        assert!(listed[MAX_FINDINGS].message.starts_with("1901 more"));
+
+        // Nothing changed: the same bound, and nothing listed.
+        let mut found = Found::default();
+        let same = classification_changes(&before, &before, DiffRules::CURRENT, true, &mut found);
+        assert!(same <= budget && found.into_list().is_empty());
     }
 }
