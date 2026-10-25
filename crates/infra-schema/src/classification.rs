@@ -60,16 +60,9 @@ fn count_patterns(schema: &Value) -> usize {
 }
 
 /// Process-local interpreter and bounded compiled-validator cache.
+#[derive(Default)]
 pub struct Classifier {
     cache: CarrierCache,
-}
-
-impl Default for Classifier {
-    fn default() -> Self {
-        Self {
-            cache: CarrierCache::default(),
-        }
-    }
 }
 
 impl std::fmt::Debug for Classifier {
