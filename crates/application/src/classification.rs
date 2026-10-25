@@ -560,6 +560,15 @@ impl ClassificationAnalysis {
 pub trait ClassificationInterpreter: Send + Sync {
     fn analyze(&self, document: &[u8]) -> ClassificationAnalysis;
 
+    /// Compiles and caches the carrier validator for `key`, so that a later [`Self::project`]
+    /// is a cache hit. A caller that holds database locks must call this before it takes them:
+    /// compiling is the expensive step and nothing in it needs the transaction. The outcome is
+    /// advisory (a failure is remembered and reproduced by `project`), so the default does
+    /// nothing for interpreters without a cache.
+    fn prepare(&self, key: &ClassificationCacheKey, rules: ClassificationRules, document: &[u8]) {
+        let _ = (key, rules, document);
+    }
+
     fn project(
         &self,
         request: ProjectionRequest<'_>,

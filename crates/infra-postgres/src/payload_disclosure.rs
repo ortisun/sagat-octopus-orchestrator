@@ -4,8 +4,9 @@ use sagat_application::blobs::descriptor_json;
 use sagat_application::classification::CarrierPointer;
 use sagat_application::error::StoreError;
 use sagat_application::payload_disclosure::{
-    DisclosureEvaluator, DisclosureFailure, DisclosureRead, DisclosureRun, PayloadDisclosureStore,
-    PreparedDisclosure, SelectedDisclosure, StoredDefinition,
+    CarrierWarmup, DisclosureEvaluator, DisclosureFailure, DisclosureRead, DisclosureRun,
+    DisclosureSelector, PayloadDisclosureStore, PreparedDisclosure, SelectedDisclosure,
+    StoredDefinition,
 };
 use sagat_application::payloads::{ExternalContentKind, StoredPayload, StoredPayloadBytes};
 use sagat_application::runs::RunStore;
@@ -60,11 +61,28 @@ impl PayloadDisclosureStore for PgRunStore {
         evaluator: &dyn DisclosureEvaluator,
         audits: &sagat_application::payload_disclosure::DisclosureAudits,
     ) -> Result<DisclosureRead, StoreError> {
+        // Everything that costs CPU and needs no lock happens before the transaction: the pinned
+        // version is immutable, so what is read here cannot differ from what the transaction
+        // finds, and the transaction still repeats every authority check.
+        let Some(catalog) = self.disclosure_catalog(prepared).await? else {
+            return Ok(DisclosureRead::Missing);
+        };
+        if let Some(carrier) = &catalog.carrier {
+            off_worker(|| {
+                evaluator.prepare(CarrierWarmup {
+                    workflow_version: catalog.workflow_version,
+                    carrier,
+                    rules: catalog.rules,
+                    definition: &catalog.document,
+                });
+            });
+        }
+
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let Some(run) = sqlx::query(
             "SELECT r.namespace_id, r.run_version, r.input_digest, r.input_blob_id, \
                     r.result_digest, r.workflow_version_id, r.origin, \
-                    v.version_number, v.document, v.classification_rules \
+                    v.version_number, v.classification_rules \
              FROM runs r JOIN workflow_versions v \
                ON v.tenant_id = r.tenant_id AND v.id = r.workflow_version_id \
              WHERE r.tenant_id = $1 AND r.id = $2 FOR SHARE OF r",
@@ -104,13 +122,16 @@ impl PayloadDisclosureStore for PgRunStore {
         let run_version =
             u64::try_from(col::<i64>(&run, "run_version")?).map_err(|_| corrupt("run version"))?;
         let workflow_version = WorkflowVersionId::new(col(&run, "workflow_version_id")?);
+        if workflow_version != catalog.workflow_version {
+            return Err(corrupt("prepared disclosure workflow version"));
+        }
         let version_number = u32::try_from(col::<i32>(&run, "version_number")?)
             .map_err(|_| corrupt("workflow version number"))?;
-        let rules = u8::try_from(col::<i16>(&run, "classification_rules")?)
-            .ok()
-            .and_then(|value| ClassificationRules::try_from(value).ok())
-            .ok_or_else(|| corrupt("classification rules"))?;
-        let document: Vec<u8> = col(&run, "document")?;
+        let rules = parse_rules(col::<i16>(&run, "classification_rules")?)?;
+        if rules != catalog.rules {
+            return Err(corrupt("prepared disclosure classification rules"));
+        }
+        let document = catalog.document;
 
         let (carrier, node_id, attempt, payload) = match prepared.selector() {
             sagat_application::payload_disclosure::DisclosureSelector::Input => {
@@ -231,7 +252,8 @@ impl PayloadDisclosureStore for PgRunStore {
             definition: StoredDefinition::new(document),
             payload,
         };
-        let evaluated = evaluator.evaluate(selected, current_role, reveal_granted);
+        // The projection is CPU work under open locks: keep it off the async worker.
+        let evaluated = off_worker(|| evaluator.evaluate(selected, current_role, reveal_granted));
         let read = match evaluated {
             Ok(decision) => {
                 if let Some(kind) = decision.audit {
@@ -251,6 +273,102 @@ impl PayloadDisclosureStore for PgRunStore {
         };
         tx.commit().await.map_err(store_error)?;
         Ok(read)
+    }
+}
+
+/// What the disclosure needs to prepare its carrier before it opens a transaction.
+struct Catalog {
+    workflow_version: WorkflowVersionId,
+    rules: ClassificationRules,
+    document: Vec<u8>,
+    /// `None` when the selected record is not one of the closed carrier-producing records.
+    carrier: Option<CarrierPointer>,
+}
+
+fn parse_rules(value: i16) -> Result<ClassificationRules, StoreError> {
+    u8::try_from(value)
+        .ok()
+        .and_then(|value| ClassificationRules::try_from(value).ok())
+        .ok_or_else(|| corrupt("classification rules"))
+}
+
+impl PgRunStore {
+    /// Reads the pinned version and the carrier the selector will use, with no lock and no
+    /// transaction. A run that is not in the tenant yields `None`, as the transaction would.
+    async fn disclosure_catalog(
+        &self,
+        prepared: &PreparedDisclosure,
+    ) -> Result<Option<Catalog>, StoreError> {
+        let Some(run) = sqlx::query(
+            "SELECT r.workflow_version_id, v.document, v.classification_rules \
+             FROM runs r JOIN workflow_versions v \
+               ON v.tenant_id = r.tenant_id AND v.id = r.workflow_version_id \
+             WHERE r.tenant_id = $1 AND r.id = $2",
+        )
+        .bind(prepared.tenant_id().as_uuid())
+        .bind(prepared.run_id().as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_error)?
+        else {
+            return Ok(None);
+        };
+        let document: Vec<u8> = col(&run, "document")?;
+        let carrier = match prepared.selector() {
+            DisclosureSelector::Input => Some(CarrierPointer::Input),
+            DisclosureSelector::Result => Some(CarrierPointer::Result),
+            DisclosureSelector::Journal { sequence } => {
+                let Ok(sequence) = i64::try_from(sequence) else {
+                    return Ok(None);
+                };
+                let event = sqlx::query(
+                    "SELECT event_type, node, instance_path_nodes, instance_path_indices \
+                     FROM run_events WHERE tenant_id = $1 AND run_id = $2 AND seq = $3",
+                )
+                .bind(prepared.tenant_id().as_uuid())
+                .bind(prepared.run_id().as_uuid())
+                .bind(sequence)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(store_error)?;
+                match event {
+                    Some(event) => {
+                        let event_type: String = col(&event, "event_type")?;
+                        let node: Option<String> = col(&event, "node")?;
+                        let path_nodes: Option<Vec<String>> = col(&event, "instance_path_nodes")?;
+                        let path_indices: Option<Vec<i32>> = col(&event, "instance_path_indices")?;
+                        node.as_deref().and_then(|node| {
+                            journal_carrier(
+                                &document,
+                                &event_type,
+                                node,
+                                path_nodes.as_deref(),
+                                path_indices.as_deref(),
+                            )
+                        })
+                    }
+                    None => None,
+                }
+            }
+        };
+        Ok(Some(Catalog {
+            workflow_version: WorkflowVersionId::new(col(&run, "workflow_version_id")?),
+            rules: parse_rules(col::<i16>(&run, "classification_rules")?)?,
+            document,
+            carrier,
+        }))
+    }
+}
+
+/// Runs CPU-bound work without holding an async worker hostage. On a multi-thread runtime the
+/// worker hands its queue to another thread for the duration; elsewhere the work runs in place
+/// (a current-thread runtime has no other worker to protect).
+fn off_worker<T>(work: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(work)
+        }
+        _ => work(),
     }
 }
 

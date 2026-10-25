@@ -277,8 +277,24 @@ pub enum DisclosureFailure {
     PiiRevealNotGranted,
 }
 
+/// What an adapter knows about the carrier a disclosure will use before it opens its transaction.
+#[derive(Debug, Clone, Copy)]
+pub struct CarrierWarmup<'a> {
+    pub workflow_version: WorkflowVersionId,
+    pub carrier: &'a CarrierPointer,
+    pub rules: ClassificationRules,
+    pub definition: &'a [u8],
+}
+
 /// Synchronous policy callback used while the adapter's read transaction remains open.
 pub trait DisclosureEvaluator: Send + Sync {
+    /// Called once, before the transaction opens and while no lock is held, so that CPU-heavy
+    /// preparation of the carrier (compiling its validator) never happens under those locks.
+    /// It must not decide anything: `evaluate` repeats every check against current authority.
+    fn prepare(&self, warmup: CarrierWarmup<'_>) {
+        let _ = warmup;
+    }
+
     fn evaluate(
         &self,
         selected: SelectedDisclosure,
@@ -497,6 +513,20 @@ where
     I: ClassificationInterpreter,
     P: PayloadProjector,
 {
+    fn prepare(&self, warmup: CarrierWarmup<'_>) {
+        if warmup.rules == ClassificationRules::NONE {
+            return;
+        }
+        self.interpreter.prepare(
+            &ClassificationCacheKey {
+                version: warmup.workflow_version,
+                carrier: warmup.carrier.clone(),
+            },
+            warmup.rules,
+            warmup.definition,
+        );
+    }
+
     fn evaluate(
         &self,
         selected: SelectedDisclosure,

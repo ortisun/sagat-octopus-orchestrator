@@ -9,6 +9,7 @@ use sagat_application::classification::{
     MAX_PROJECTION_DURATION, MAX_SCHEMA_DEPTH, MAX_WALK_STEPS, ProjectionFailure,
     ProjectionRequest,
 };
+use sagat_domain::classification::ClassificationRules;
 use serde_json::Value;
 
 use cache::CarrierCache;
@@ -167,7 +168,7 @@ impl Classifier {
         request: &ProjectionRequest<'_>,
         counters: &mut WalkCounters,
     ) -> Result<ClassifiedPayload, ProjectionFailure> {
-        if request.rules == sagat_domain::classification::ClassificationRules::NONE {
+        if request.rules == ClassificationRules::NONE {
             return Err(ProjectionFailure::LegacyVersion);
         }
         if request.payload.len() > MAX_PAYLOAD_BYTES {
@@ -217,6 +218,13 @@ impl Classifier {
 impl ClassificationInterpreter for Classifier {
     fn analyze(&self, document: &[u8]) -> ClassificationAnalysis {
         crate::classification::publication::analyze(document)
+    }
+
+    fn prepare(&self, key: &ClassificationCacheKey, rules: ClassificationRules, document: &[u8]) {
+        if rules != ClassificationRules::NONE {
+            // The outcome, a failure included, is cached for `project` to reproduce.
+            let _ = self.compiled(key, document);
+        }
     }
 
     fn project(

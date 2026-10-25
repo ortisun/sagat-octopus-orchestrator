@@ -4,16 +4,18 @@
 use std::sync::{Arc, Mutex};
 
 use sagat_application::classification::{
-    ClassificationAnalysis, ClassificationInterpreter, ClassifiedNode, ClassifiedPayload,
-    DisclosedLevels, ProjectionFailure, ProjectionRequest, ScalarValue, ValueKind,
+    CarrierPointer, ClassificationAnalysis, ClassificationCacheKey, ClassificationInterpreter,
+    ClassifiedNode, ClassifiedPayload, DisclosedLevels, ProjectionFailure, ProjectionRequest,
+    ScalarValue, ValueKind,
 };
 use sagat_application::clock::Clock;
 use sagat_application::error::{AppError, StoreError};
 use sagat_application::identity::RequestContext;
 use sagat_application::payload_disclosure::{
-    DisclosureFailure, DisclosureRead, DisclosureRun, DisclosureSelector, PayloadDisclosureResult,
-    PayloadDisclosureService, PayloadDisclosureStore, PayloadDisclosureUseCase, PreparedDisclosure,
-    SelectedDisclosure, StoredDefinition, StructureOnlyReason, UnavailableDisclosureReason,
+    CarrierWarmup, DisclosureFailure, DisclosureRead, DisclosureRun, DisclosureSelector,
+    PayloadDisclosureResult, PayloadDisclosureService, PayloadDisclosureStore,
+    PayloadDisclosureUseCase, PreparedDisclosure, SelectedDisclosure, StoredDefinition,
+    StructureOnlyReason, UnavailableDisclosureReason,
 };
 use sagat_application::payloads::{
     PayloadProjection, PayloadProjector, PayloadStructure, StoredPayload, StoredPayloadBytes,
@@ -122,6 +124,15 @@ impl PayloadDisclosureStore for FakeStore {
         if state.tenant != prepared.tenant_id() || state.run != prepared.run_id() {
             return Ok(DisclosureRead::Missing);
         }
+        // The adapter contract: prepare the carrier before anything that holds locks.
+        if let Some(carrier) = &state.selected.carrier {
+            evaluator.prepare(CarrierWarmup {
+                workflow_version: state.selected.workflow_version,
+                carrier,
+                rules: state.selected.classification_rules,
+                definition: state.selected.definition.as_slice(),
+            });
+        }
         let evaluated = evaluator.evaluate(
             state.selected.clone(),
             state.current_role,
@@ -159,6 +170,7 @@ struct InterpreterState {
     failure: Option<ProjectionFailure>,
     disclosed: DisclosedLevels,
     requests: Vec<(bool, bool, bool, bool, bool)>,
+    prepared: Vec<(ClassificationCacheKey, ClassificationRules, usize)>,
 }
 
 impl FakeInterpreter {
@@ -168,6 +180,7 @@ impl FakeInterpreter {
                 failure: None,
                 disclosed,
                 requests: Vec::new(),
+                prepared: Vec::new(),
             })),
         }
     }
@@ -176,6 +189,14 @@ impl FakeInterpreter {
 impl ClassificationInterpreter for FakeInterpreter {
     fn analyze(&self, _document: &[u8]) -> ClassificationAnalysis {
         ClassificationAnalysis::default()
+    }
+
+    fn prepare(&self, key: &ClassificationCacheKey, rules: ClassificationRules, document: &[u8]) {
+        self.state
+            .lock()
+            .expect("interpreter state")
+            .prepared
+            .push((key.clone(), rules, document.len()));
     }
 
     fn project(
@@ -614,5 +635,66 @@ async fn audit_failure_prevents_a_projected_internal_value_from_returning() {
                 AppError::Unavailable
             )
         )
+    );
+}
+
+#[tokio::test]
+async fn the_carrier_is_prepared_once_with_the_pinned_identity_and_never_for_a_legacy_version() {
+    let store = FakeStore::new();
+    let interpreter = FakeInterpreter::new(DisclosedLevels::PUBLIC);
+    let service = PayloadDisclosureService::new(
+        store.clone(),
+        FixedClock,
+        interpreter.clone(),
+        StructureProjector,
+    );
+    let read = |role| {
+        let service = &service;
+        let store = store.clone();
+        async move {
+            let prepared = service
+                .prepare(
+                    &principal(store.tenant(), role),
+                    store.run(),
+                    DisclosureSelector::Input,
+                    false,
+                    &context(),
+                )
+                .await
+                .expect("prepared");
+            service.disclose(prepared).await.expect("answer")
+        }
+    };
+    read(Role::Viewer).await;
+    let (version, definition_bytes) = {
+        let state = store.0.lock().expect("state");
+        (
+            state.selected.workflow_version,
+            state.selected.definition.as_slice().len(),
+        )
+    };
+    assert_eq!(
+        interpreter.state.lock().expect("interpreter").prepared,
+        vec![(
+            ClassificationCacheKey {
+                version,
+                carrier: CarrierPointer::Input,
+            },
+            ClassificationRules::CURRENT,
+            definition_bytes,
+        )]
+    );
+
+    store.0.lock().expect("state").selected.classification_rules = ClassificationRules::NONE;
+    read(Role::Viewer).await;
+    assert_eq!(
+        interpreter
+            .state
+            .lock()
+            .expect("interpreter")
+            .prepared
+            .len(),
+        1,
+        "a version without classification rules has nothing to compile"
     );
 }
