@@ -173,7 +173,8 @@ impl<'a> Walk<'a> {
         let mut deep = 0usize;
         if let Some(object) = schema.as_object() {
             for (keyword, value) in object {
-                if WALKED_KEYWORDS.contains(&keyword.as_str()) {
+                // A `$ref` is resolved by `expand`, which lists its target as a schema of its own.
+                if keyword == "$ref" || WALKED_KEYWORDS.contains(&keyword.as_str()) {
                     continue;
                 }
                 let size = subtree_size(value);
