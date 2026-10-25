@@ -1,0 +1,556 @@
+{
+  "name": "database-connections",
+  "description": "FR-017-010/016: five public builders produce equal canonical operations; all five SDK clients start real PostgreSQL/OpenBao managed runs and their ordinary workers consume exact typed results. DDL is rejected without retry.",
+  "server": {
+    "managedDatabase": true
+  },
+  "workflows": {
+    "typed": {
+      "name": "sdk-database-types",
+      "program": [
+        {
+          "op": "database",
+          "id": "query",
+          "options": {
+            "connectionRef": {
+              "name": "orders-db",
+              "revision": 2
+            },
+            "operation": "query",
+            "statement": "SELECT $1::text AS nothing, $2::boolean AS flag, $3::bigint AS integer, $4::numeric AS decimal, $5::float8 AS float, $6::text AS text, $7::timestamptz AS timestamp, $8::date AS date, $9::bytea AS binary, $10::jsonb AS json, $11::bigint AS expression",
+            "parameters": [
+              {
+                "literal": {
+                  "type": "null",
+                  "value": null
+                }
+              },
+              {
+                "literal": {
+                  "type": "boolean",
+                  "value": true
+                }
+              },
+              {
+                "literal": {
+                  "type": "integer",
+                  "value": "9223372036854775807"
+                }
+              },
+              {
+                "literal": {
+                  "type": "decimal",
+                  "value": "12345678901234567890.123456789"
+                }
+              },
+              {
+                "literal": {
+                  "type": "float",
+                  "value": 1.25
+                }
+              },
+              {
+                "literal": {
+                  "type": "text",
+                  "value": "café"
+                }
+              },
+              {
+                "literal": {
+                  "type": "timestamp",
+                  "value": "2026-10-17T09:30:00-03:00"
+                }
+              },
+              {
+                "literal": {
+                  "type": "date",
+                  "value": "2026-10-17"
+                }
+              },
+              {
+                "literal": {
+                  "type": "binary",
+                  "value": "AP8="
+                }
+              },
+              {
+                "literal": {
+                  "type": "json",
+                  "value": {
+                    "order": "9007199254740993"
+                  }
+                }
+              },
+              {
+                "type": "integer",
+                "expression": "input.orderId"
+              }
+            ],
+            "limits": {
+              "maxRows": 2,
+              "timeoutMs": 5000
+            },
+            "timeoutMs": 10000
+          }
+        },
+        {
+          "op": "database",
+          "id": "dependent",
+          "options": {
+            "connectionRef": {
+              "name": "orders-db"
+            },
+            "operation": "query",
+            "statement": "SELECT $1::bigint AS copied",
+            "parameters": [
+              {
+                "type": "integer",
+                "expression": "steps.query.output.rows[0][2].value"
+              }
+            ]
+          }
+        },
+        {
+          "op": "step",
+          "id": "consume",
+          "activity": "database.consume"
+        }
+      ]
+    },
+    "write": {
+      "name": "sdk-database-write",
+      "program": [
+        {
+          "op": "database",
+          "id": "write",
+          "options": {
+            "connectionRef": {
+              "name": "orders-db"
+            },
+            "operation": "execute",
+            "statement": "INSERT INTO effects(id, amount) VALUES ($1::bigint, $2::numeric) RETURNING id, amount",
+            "parameters": [
+              {
+                "literal": {
+                  "type": "integer",
+                  "value": "7"
+                }
+              },
+              {
+                "literal": {
+                  "type": "decimal",
+                  "value": "19.90"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "op": "step",
+          "id": "consume",
+          "activity": "database.consume"
+        }
+      ]
+    },
+    "unsupported": {
+      "name": "sdk-database-refused",
+      "program": [
+        {
+          "op": "database",
+          "id": "refused",
+          "options": {
+            "connectionRef": {
+              "name": "orders-db"
+            },
+            "operation": "execute",
+            "statement": "DROP TABLE effects",
+            "parameters": []
+          }
+        }
+      ]
+    }
+  },
+  "invalidWorkflows": {
+    "dsn": {
+      "contains": "invalid managed database operation",
+      "workflow": {
+        "name": "invalid-database",
+        "program": [
+          {
+            "op": "database",
+            "id": "bad",
+            "options": {
+              "connectionRef": {
+                "name": "postgres://credential-canary@host/db"
+              },
+              "operation": "query",
+              "statement": "SELECT 1::bigint",
+              "parameters": []
+            }
+          }
+        ]
+      }
+    },
+    "number-integer": {
+      "contains": "invalid managed database operation",
+      "workflow": {
+        "name": "invalid-database",
+        "program": [
+          {
+            "op": "database",
+            "id": "bad",
+            "options": {
+              "connectionRef": {
+                "name": "orders-db"
+              },
+              "operation": "query",
+              "statement": "SELECT 1::bigint",
+              "parameters": [
+                {
+                  "literal": {
+                    "type": "integer",
+                    "value": 123
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "bad-decimal": {
+      "contains": "invalid managed database operation",
+      "workflow": {
+        "name": "invalid-database",
+        "program": [
+          {
+            "op": "database",
+            "id": "bad",
+            "options": {
+              "connectionRef": {
+                "name": "orders-db"
+              },
+              "operation": "query",
+              "statement": "SELECT 1::bigint",
+              "parameters": [
+                {
+                  "literal": {
+                    "type": "decimal",
+                    "value": "credential-canary"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "revision-zero": {
+      "contains": "invalid managed database operation",
+      "workflow": {
+        "name": "invalid-database",
+        "program": [
+          {
+            "op": "database",
+            "id": "bad",
+            "options": {
+              "connectionRef": {
+                "name": "orders-db",
+                "revision": 0
+              },
+              "operation": "query",
+              "statement": "SELECT 1::bigint",
+              "parameters": []
+            }
+          }
+        ]
+      }
+    },
+    "statement-empty": {
+      "contains": "invalid managed database operation",
+      "workflow": {
+        "name": "invalid-database",
+        "program": [
+          {
+            "op": "database",
+            "id": "bad",
+            "options": {
+              "connectionRef": {
+                "name": "orders-db"
+              },
+              "operation": "query",
+              "statement": "",
+              "parameters": []
+            }
+          }
+        ]
+      }
+    },
+    "limit": {
+      "contains": "invalid managed database operation",
+      "workflow": {
+        "name": "invalid-database",
+        "program": [
+          {
+            "op": "database",
+            "id": "bad",
+            "options": {
+              "connectionRef": {
+                "name": "orders-db"
+              },
+              "operation": "query",
+              "statement": "SELECT 1::bigint",
+              "parameters": [],
+              "limits": {
+                "maxRows": 10001
+              }
+            }
+          }
+        ]
+      }
+    },
+    "revision-overflow": {
+      "contains": "invalid managed database operation",
+      "workflow": {
+        "name": "invalid-database",
+        "program": [
+          {
+            "op": "database",
+            "id": "bad",
+            "options": {
+              "connectionRef": {
+                "name": "orders-db",
+                "revision": 4294967297
+              },
+              "operation": "query",
+              "statement": "SELECT 1::bigint",
+              "parameters": []
+            }
+          }
+        ]
+      }
+    },
+    "revision-fraction": {
+      "contains": "invalid managed database operation",
+      "workflow": {
+        "name": "invalid-database",
+        "program": [
+          {
+            "op": "database",
+            "id": "bad",
+            "options": {
+              "connectionRef": {
+                "name": "orders-db",
+                "revision": 1.5
+              },
+              "operation": "query",
+              "statement": "SELECT 1::bigint",
+              "parameters": []
+            }
+          }
+        ]
+      }
+    },
+    "limit-overflow": {
+      "contains": "invalid managed database operation",
+      "workflow": {
+        "name": "invalid-database",
+        "program": [
+          {
+            "op": "database",
+            "id": "bad",
+            "options": {
+              "connectionRef": {
+                "name": "orders-db"
+              },
+              "operation": "query",
+              "statement": "SELECT 1::bigint",
+              "parameters": [],
+              "limits": {
+                "maxRows": 4294967297
+              }
+            }
+          }
+        ]
+      }
+    },
+    "limit-fraction": {
+      "contains": "invalid managed database operation",
+      "workflow": {
+        "name": "invalid-database",
+        "program": [
+          {
+            "op": "database",
+            "id": "bad",
+            "options": {
+              "connectionRef": {
+                "name": "orders-db"
+              },
+              "operation": "query",
+              "statement": "SELECT 1::bigint",
+              "parameters": [],
+              "limits": {
+                "maxRows": 1.5
+              }
+            }
+          }
+        ]
+      }
+    },
+    "timeout-fraction": {
+      "contains": "invalid managed database operation",
+      "workflow": {
+        "name": "invalid-database",
+        "program": [
+          {
+            "op": "database",
+            "id": "bad",
+            "options": {
+              "connectionRef": {
+                "name": "orders-db"
+              },
+              "operation": "query",
+              "statement": "SELECT 1::bigint",
+              "parameters": [],
+              "timeoutMs": 1.5
+            }
+          }
+        ]
+      }
+    },
+    "name-newline": {
+      "contains": "invalid managed database operation",
+      "workflow": {
+        "name": "invalid-database",
+        "program": [
+          {
+            "op": "database",
+            "id": "bad",
+            "options": {
+              "connectionRef": {
+                "name": "orders-db\n"
+              },
+              "operation": "query",
+              "statement": "SELECT 1::bigint",
+              "parameters": []
+            }
+          }
+        ]
+      }
+    },
+    "integer-newline": {
+      "contains": "invalid managed database operation",
+      "workflow": {
+        "name": "invalid-database",
+        "program": [
+          {
+            "op": "database",
+            "id": "bad",
+            "options": {
+              "connectionRef": {
+                "name": "orders-db"
+              },
+              "operation": "query",
+              "statement": "SELECT 1::bigint",
+              "parameters": [
+                {
+                  "literal": {
+                    "type": "integer",
+                    "value": "123\n"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "decimal-newline": {
+      "contains": "invalid managed database operation",
+      "workflow": {
+        "name": "invalid-database",
+        "program": [
+          {
+            "op": "database",
+            "id": "bad",
+            "options": {
+              "connectionRef": {
+                "name": "orders-db"
+              },
+              "operation": "query",
+              "statement": "SELECT 1::bigint",
+              "parameters": [
+                {
+                  "literal": {
+                    "type": "decimal",
+                    "value": "1.2\n"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "database-consumer",
+      "protocolVersion": "1.4",
+      "maxInflight": 1,
+      "autostart": false,
+      "activities": {
+        "database.consume": {
+          "behavior": {
+            "echo": true
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "worker",
+      "op": "startWorker",
+      "worker": "w1"
+    },
+    {
+      "id": "typed",
+      "op": "start",
+      "workflow": "typed",
+      "input": {
+        "orderId": "9007199254740993"
+      }
+    },
+    {
+      "id": "typed-done",
+      "op": "waitForCompletion",
+      "run": "typed",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "write",
+      "op": "start",
+      "workflow": "write",
+      "input": {}
+    },
+    {
+      "id": "write-done",
+      "op": "waitForCompletion",
+      "run": "write",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "unsupported",
+      "op": "start",
+      "workflow": "unsupported",
+      "input": {}
+    },
+    {
+      "id": "unsupported-done",
+      "op": "waitForCompletion",
+      "run": "unsupported",
+      "timeoutMs": 30000
+    }
+  ]
+}

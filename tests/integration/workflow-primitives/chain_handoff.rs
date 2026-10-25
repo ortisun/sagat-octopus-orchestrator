@@ -775,14 +775,27 @@ async fn prepared_continuation_commits_replays_and_rolls_back_atomically() {
         .expect("initial segment");
     let tenant = world.admin.tenant_id();
     let scope = ChainScope::new(tenant, world.namespace.id());
-    let mut tx = world.db.pool.begin().await.expect("handoff fixture tx");
+    // The fixture re-pins the run to the continuation document, which the platform never does:
+    // run admission identity is immutable (feature 017 guard). Lift the guard for this one
+    // statement, outside the fixture transaction, and restore it at once.
+    let mut guard = world.db.pool.acquire().await.expect("fixture connection");
+    sqlx::query("ALTER TABLE runs DISABLE TRIGGER runs_private_definition_scope")
+        .execute(&mut *guard)
+        .await
+        .expect("lift the admission guard for the fixture");
     sqlx::query("UPDATE runs SET workflow_version_id=$3 WHERE tenant_id=$1 AND id=$2")
         .bind(tenant.as_uuid())
         .bind(chain_id.as_uuid())
         .bind(version.as_uuid())
-        .execute(&mut *tx)
+        .execute(&mut *guard)
         .await
         .expect("pin continuation version");
+    sqlx::query("ALTER TABLE runs ENABLE ALWAYS TRIGGER runs_private_definition_scope")
+        .execute(&mut *guard)
+        .await
+        .expect("restore the admission guard");
+    drop(guard);
+    let mut tx = world.db.pool.begin().await.expect("handoff fixture tx");
     sqlx::query("UPDATE steps SET step_id=$3 WHERE tenant_id=$1 AND run_id=$2 AND node='work'")
         .bind(tenant.as_uuid())
         .bind(chain_id.as_uuid())

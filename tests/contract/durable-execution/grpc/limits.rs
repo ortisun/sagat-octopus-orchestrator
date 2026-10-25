@@ -97,6 +97,14 @@ impl WorkerService for Stub {
         self.park().await;
         Ok(Response::new(StepCommandResponse::default()))
     }
+    async fn resolve_database(
+        &self,
+        _: Request<ResolveSecretsRequest>,
+    ) -> Result<Response<sagat_api_grpc::pb::ResolvedDatabase>, Status> {
+        Ok(Response::new(
+            sagat_api_grpc::pb::ResolvedDatabase::default(),
+        ))
+    }
     async fn resolve_secrets(
         &self,
         _: Request<ResolveSecretsRequest>,

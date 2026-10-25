@@ -48,11 +48,12 @@ const TRACE: &str = "0af7651916cd43dd8448eb211c80319c";
 #[tokio::test]
 async fn an_active_pre_014_run_survives_the_migrations_and_finishes_on_the_new_engine() {
     let w = world().await;
+    let definition = w.publish(chain("legacy-active-run")).await;
     MIGRATOR
         .undo(&w.db.pool, BEFORE)
         .await
         .expect("return to the schema that predates the primitives");
-    let (run, version) = insert_legacy_root_run(&w, "legacy-active-run").await;
+    let (run, version) = insert_legacy_root_run(&w, definition).await;
     let tenant = w.admin.tenant_id().as_uuid();
 
     let old_document: Vec<u8> = sqlx::query_scalar(

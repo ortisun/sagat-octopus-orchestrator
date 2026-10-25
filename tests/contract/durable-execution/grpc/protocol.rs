@@ -162,14 +162,30 @@ async fn task_stream_byte_credit_is_cumulative_across_frames() {
         .publish("stream-byte-credit", &single_ir("stream-byte-credit", None))
         .await;
     let mut all_runs = Vec::new();
-    for index in 0..10 {
+    for index in 0..40 {
         all_runs.push(
             p.start(&wf, &json!({"index": index, "large": "x".repeat(220_000)}))
                 .await,
         );
     }
+    // Admit both waves before the finite stream window starts. Keep the second wave behind a
+    // real run lock so the first frame cannot consume it, without thirty REST calls while the
+    // response body is deliberately unread.
+    let second_wave = all_runs[10..]
+        .iter()
+        .map(|run| uuid::Uuid::parse_str(run).expect("run id"))
+        .collect::<Vec<_>>();
+    let mut wave_guard = p.api.db.pool.begin().await.expect("second-wave barrier");
+    sqlx::query("SELECT id FROM runs WHERE tenant_id=$1 AND id=ANY($2) FOR UPDATE")
+        .bind(p.tenant.as_uuid())
+        .bind(&second_wave)
+        .fetch_all(&mut *wave_guard)
+        .await
+        .expect("hold the second wave");
     let mut w = p.worker("wendy").await;
     register_stream_worker(&mut w, 64).await;
+    // Match all five SDKs: the 8 MiB task window can produce a frame above tonic's 4 MiB default.
+    w.client = w.client.clone().max_decoding_message_size(16 * 1024 * 1024);
     let mut stream = w
         .client
         .stream_tasks(w.req(w.poll_message(64)))
@@ -182,13 +198,17 @@ async fn task_stream_byte_credit_is_cumulative_across_frames() {
         .expect("first byte frame")
         .expect("first byte frame present");
     assert!(!first.tasks.is_empty());
+    assert!(
+        first
+            .tasks
+            .iter()
+            .all(|task| all_runs[..10].contains(&task.run_id))
+    );
 
-    for index in 10..40 {
-        all_runs.push(
-            p.start(&wf, &json!({"index": index, "large": "x".repeat(220_000)}))
-                .await,
-        );
-    }
+    wave_guard
+        .rollback()
+        .await
+        .expect("release the second wave");
     let mut frames = 1;
     let mut bytes = first
         .tasks
@@ -343,6 +363,19 @@ async fn task_stream_lifetime_admission_survives_headers_and_is_released_on_drop
         p.start(&wf, &json!({"index": index, "large": "x".repeat(180_000)}))
             .await;
     }
+    // Prepare delayed work before any response window. A real run lock prevents its claim
+    // until the old watchdog's deadline passes, without spending the remaining window on REST.
+    let last_run = p
+        .start(&wf, &json!({"index": 4, "large": "x".repeat(180_000)}))
+        .await;
+    let mut last_guard = p.api.db.pool.begin().await.expect("survivor work barrier");
+    sqlx::query("SELECT id FROM runs WHERE tenant_id=$1 AND id=$2 FOR UPDATE")
+        .bind(p.tenant.as_uuid())
+        .bind(uuid::Uuid::parse_str(&last_run).expect("run id"))
+        .fetch_one(&mut *last_guard)
+        .await
+        .expect("hold survivor work");
+
     let mut w = p.worker("wendy").await;
     register_stream_worker(&mut w, 4).await;
     let mut first_client = p.connect("wendy", TENANT).await;
@@ -427,9 +460,7 @@ async fn task_stream_lifetime_admission_survives_headers_and_is_released_on_drop
         .expect("open stream on the same connection")
         .into_inner();
     tokio::time::sleep(Duration::from_millis(4_100)).await;
-    let last_run = p
-        .start(&wf, &json!({"index": 4, "large": "x".repeat(180_000)}))
-        .await;
+    last_guard.rollback().await.expect("release survivor work");
     let frame = survivor
         .message()
         .await

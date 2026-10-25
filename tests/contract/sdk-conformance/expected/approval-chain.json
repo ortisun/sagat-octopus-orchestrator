@@ -155,32 +155,6 @@
       }
     },
     {
-      "id": "transferred",
-      "ok": true,
-      "op": "queryChain",
-      "result": {
-        "result": "24.99",
-        "runId": "<uuid:6>",
-        "runVersion": 3,
-        "stateRevision": 1
-      }
-    },
-    {
-      "error": {
-        "code": "CONFLICT",
-        "message": "<text>",
-        "reason": "RUN_CONTINUED",
-        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
-        "retryAfterMs": null,
-        "retryable": false,
-        "status": 409,
-        "traceId": "<trace:2>"
-      },
-      "id": "continued-update",
-      "ok": false,
-      "op": "update"
-    },
-    {
       "id": "segments",
       "ok": true,
       "op": "listChainRuns",
@@ -228,6 +202,32 @@
         ],
         "nextCursor": null
       }
+    },
+    {
+      "id": "transferred",
+      "ok": true,
+      "op": "queryChain",
+      "result": {
+        "result": "24.99",
+        "runId": "<uuid:6>",
+        "runVersion": 7,
+        "stateRevision": 1
+      }
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "RUN_CONTINUED",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:2>"
+      },
+      "id": "continued-update",
+      "ok": false,
+      "op": "update"
     },
     {
       "id": "second-update",

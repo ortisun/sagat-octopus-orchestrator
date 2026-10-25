@@ -12,6 +12,9 @@ export const routes: RouteObject[] = [
     errorElement: <RouteErrorPage />,
     children: [
       { index: true, element: <Navigate to="/workflows" replace /> },
+      { path: 'database-executions', lazy: async () => ({ Component: (await import('../features/database/DatabaseExecutionsPage')).DatabaseExecutionsPage }) },
+      { path: 'connections', lazy: async () => ({ Component: (await import('../features/connections/ConnectionsPage')).ConnectionsPage }) },
+      { path: 'secrets', lazy: async () => ({ Component: (await import('../features/secrets/SecretsPage')).SecretsPage }) },
       { path: 'integrations', lazy: async () => ({ Component: (await import('../features/integrations/IntegrationsPage')).IntegrationsPage }) },
       { path: 'namespaces', lazy: async () => ({ Component: (await import('./NamespacesPage')).NamespacesPage }) },
       { path: 'operations', lazy: async () => ({ Component: (await import('../features/operations/OperationsPage')).OperationsPage }) },

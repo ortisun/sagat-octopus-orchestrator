@@ -66,6 +66,13 @@ pub enum AuditAction {
     PermissionDenied,
     /// A secret was created, or a new version of it was stored (rotation). Never carries a value.
     SecretStored,
+    SecretProvisioningStarted,
+    SecretProviderAbandoned,
+    SecretProviderRetired,
+    SecretAttemptPinsReleased,
+    DatabaseConnectionChanged,
+    DatabaseDenied,
+    DatabaseResultRead,
     SecretDeleted,
     /// Someone was allowed to reference a secret from workflows, or no longer is.
     SecretAccessGranted,
@@ -193,6 +200,7 @@ impl AuditAction {
                 | Self::SecretResolved
                 | Self::SecretDenied
                 | Self::SecretDeliveryRefused
+                | Self::DatabaseDenied
                 | Self::EventRejected
                 | Self::ScriptViolation
                 | Self::AuditRead
@@ -213,6 +221,7 @@ impl AuditAction {
         match self {
             Self::AuditRead
             | Self::PublicationDenied
+            | Self::DatabaseDenied
             | Self::PayloadInspected
             | Self::PayloadInspectionDenied
             | Self::RunQueried => Some(std::time::Duration::from_secs(300)),
@@ -262,6 +271,13 @@ impl AuditAction {
             Self::CrossTenantAccessDenied => "access.denied.cross_tenant",
             Self::PermissionDenied => "access.denied.permission",
             Self::SecretStored => "secret.stored",
+            Self::SecretProvisioningStarted => "secret.provisioning_started",
+            Self::SecretProviderAbandoned => "secret.provider_abandoned",
+            Self::SecretProviderRetired => "secret.provider_retired",
+            Self::SecretAttemptPinsReleased => "secret.attempt_pins_released",
+            Self::DatabaseConnectionChanged => "database.connection_changed",
+            Self::DatabaseResultRead => "database.result_read",
+            Self::DatabaseDenied => "database.denied",
             Self::SecretDeleted => "secret.deleted",
             Self::SecretAccessGranted => "secret.access_granted",
             Self::SecretAccessRevoked => "secret.access_revoked",
@@ -343,6 +359,7 @@ pub enum ResourceType {
     WorkflowVersion,
     Run,
     Secret,
+    DatabaseConnection,
     Quota,
     EgressPolicy,
     WorkerBinding,
@@ -379,6 +396,7 @@ impl ResourceType {
             Self::WorkflowVersion => "workflow_version",
             Self::Run => "run",
             Self::Secret => "secret",
+            Self::DatabaseConnection => "database_connection",
             Self::Quota => "quota",
             Self::EgressPolicy => "egress_policy",
             Self::WorkerBinding => "worker_binding",

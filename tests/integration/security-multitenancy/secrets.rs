@@ -111,7 +111,7 @@ async fn a_secret_is_stored_sealed_and_shown_nowhere() {
         (
             listed[0].name.as_str(),
             listed[0].version,
-            listed[0].key_id.as_str()
+            listed[0].key_id.as_deref().expect("local key id")
         ),
         ("stripe-key", 1, "k1")
     );

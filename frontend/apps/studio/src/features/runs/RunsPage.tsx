@@ -15,7 +15,7 @@ import { StatusBadge } from '../../ui/StatusBadge';
 import { RUN_STATUSES } from './display';
 import { Elapsed, Moment, NowProvider } from './Now';
 import { NotAllowed } from './NotAllowed';
-import { useVersions, useWorkflowIndex, versionLabel } from './queries';
+import { originLabel, useVersions, useWorkflowIndex, versionLabel } from './queries';
 import type { WorkflowIndex } from './queries';
 import { RunListStore } from './runList';
 import { ScrollRegion } from './ScrollRegion';
@@ -38,6 +38,7 @@ export function RunsPage({ variant = 'page', selectedRunId }: RunsPageProps = {}
   const namespace = useNamespace();
   const [status, setStatus] = useState('');
   const [workflowId, setWorkflowId] = useState('');
+  const [origin, setOrigin] = useState('');
   const workflows = useWorkflowIndex();
   if (!allowed) return <NotAllowed what="Runs" permission="run:read" />;
   return (
@@ -54,6 +55,7 @@ export function RunsPage({ variant = 'page', selectedRunId }: RunsPageProps = {}
             ))}
           </select>
         </Field>
+        <Field label="Origin"><select value={origin} onChange={e => setOrigin(e.target.value)}><option value="">All origins</option><option value="AD_HOC_STEP">Ad hoc database step</option><option value="AD_HOC_WORKFLOW">Ad hoc database workflow</option><option value="CONNECTION_PROBE">Connection probe</option></select></Field>
         <Field label="Workflow" hint={workflows.isError ? 'The workflows could not be listed; runs show their ids.' : workflows.data?.truncated ? 'Only the first workflows are listed.' : undefined}>
           <select value={workflowId} onChange={(event) => setWorkflowId(event.target.value)} disabled={workflows.data === undefined}>
             <option value="">All workflows</option>
@@ -70,8 +72,9 @@ export function RunsPage({ variant = 'page', selectedRunId }: RunsPageProps = {}
       ) : (
         // A different namespace or filter is a different list: nothing of the last one carries over.
         <RunList
-          key={`${namespace}|${status}|${workflowId}`}
+          key={`${namespace}|${status}|${workflowId}|${origin}`}
           namespace={namespace}
+          origin={origin}
           status={status}
           workflowId={workflowId}
           workflows={workflows.data}
@@ -84,6 +87,7 @@ export function RunsPage({ variant = 'page', selectedRunId }: RunsPageProps = {}
 }
 
 function RunList({
+  origin,
   namespace,
   status,
   workflowId,
@@ -91,6 +95,7 @@ function RunList({
   compact,
   selectedRunId,
 }: {
+  origin: string;
   namespace: string;
   status: string;
   workflowId: string;
@@ -103,7 +108,7 @@ function RunList({
   const [store] = useState(
     () =>
       new RunListStore({
-        fetchPage: (cursor, signal) => ep.listRuns({ limit: PAGE_SIZE, ...(cursor ? { cursor } : {}), ...(status ? { status } : {}), ...(workflowId ? { workflowId } : {}) }, signal),
+        fetchPage: (cursor, signal) => ep.listRuns({ limit: PAGE_SIZE, ...(cursor ? { cursor } : {}), ...(status ? { status } : {}), ...(origin ? { origin } : {}), ...(workflowId ? { workflowId } : {}) }, signal),
         onLoaded: ({ kind, count, total, hasMore }) => {
           if (kind === 'more') announce(`${count} more runs loaded, ${total} in all${hasMore ? '' : '; that is all of them'}.`);
           else announce(`${total} runs${hasMore ? ', more can be loaded' : ''}.`);
@@ -118,7 +123,7 @@ function RunList({
   const scroller = useRef<HTMLDivElement>(null);
   const { items: windowItems, padTop, padBottom, measure } = useWindowedRows({ count: snapshot.items.length, estimate: ROW_ESTIMATE, scroller });
   const running = useMemo(() => snapshot.items.some((run) => !isTerminal(run.status)), [snapshot.items]);
-  const filtered = status !== '' || workflowId !== '';
+  const filtered = status !== '' || workflowId !== '' || origin !== '';
 
   return (
     <NowProvider intervalMs={1000} enabled={running}>
@@ -215,7 +220,7 @@ function RunMasterRow({
   return (
     <li ref={measure} data-index={index} data-status={run.status} className="rn-master-row">
       <Link to={path`/runs/${run.runId}`} aria-current={selected ? 'page' : undefined}>
-        <span className="rn-master-name">{workflow ? clip(workflow.name, 80) : `workflow ${run.workflowId.slice(0, 8)}`}</span>
+        <span className="rn-master-name">{originLabel(run.origin) ?? (workflow ? clip(workflow.name, 80) : `workflow ${run.workflowId.slice(0, 8)}`)}</span>
         <StatusBadge view={runStatus(run.status)} />
         <code title={run.runId}>{run.runId.slice(-8)}</code>
         <span className="rn-master-duration">
@@ -231,7 +236,7 @@ function RunMasterRow({
 
 function RunRow({ run, index, measure, workflows }: { run: Run; index: number; measure: (element: Element | null) => void; workflows: WorkflowIndex | undefined }) {
   const workflow = workflows?.byId.get(run.workflowId);
-  const versions = useVersions(run.workflowId);
+  const versions = useVersions(run.origin ? undefined : run.workflowId);
   const finished = isTerminal(run.status);
   return (
     <tr ref={measure} data-index={index} aria-rowindex={index + 2} data-status={run.status}>
@@ -248,7 +253,7 @@ function RunRow({ run, index, measure, workflows }: { run: Run; index: number; m
         ) : null}
       </td>
       <td>
-        {workflow ? clip(workflow.name, 80) : `workflow ${run.workflowId.slice(0, 8)}`}
+        {originLabel(run.origin) ?? (workflow ? clip(workflow.name, 80) : `workflow ${run.workflowId.slice(0, 8)}`)}
         <div className="hint">{versionLabel(versions.data, run.versionId, workflow?.activeVersion)}</div>
       </td>
       <td>

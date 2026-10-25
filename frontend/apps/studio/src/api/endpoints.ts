@@ -32,7 +32,7 @@ export function endpoints(api: ApiClient) {
     }),
 
     listWorkflows: (query: { cursor?: string; limit?: number } = {}, signal?: AbortSignal) => api.get<Page<Workflow>>('/workflows', { query, signal }),
-    getWorkflow: (id: string, signal?: AbortSignal) => api.get<Workflow>(path`/workflows/${id}`, { signal }),
+    getWorkflow: (id: string, signal?: AbortSignal) => api.get<Workflow>(path`/workflows/${id}`, { signal, safeNumbers: true }),
     createWorkflow: (name: string, ir: Record<string, unknown>, key?: string) => api.post<Workflow>('/workflows', { body: { name, ir }, ...(key ? { key } : {}) }),
     updateDraft: (id: string, draftRevision: number, ir: Record<string, unknown>, key?: string) => api.put<Workflow>(path`/workflows/${id}`, { body: { draftRevision, ir }, ...(key ? { key } : {}) }),
     validate: (id: string, ir: Record<string, unknown> | undefined, signal?: AbortSignal) => api.post<Validation>(path`/workflows/${id}/validate`, { body: ir ? { ir } : {}, signal }),
@@ -40,9 +40,9 @@ export function endpoints(api: ApiClient) {
     publish: (id: string, draftRevision: number, releaseNotes?: string, key?: string) =>
       api.post<WorkflowVersion>(path`/workflows/${id}/publish`, { body: { draftRevision, ...(releaseNotes ? { releaseNotes } : {}) }, ...(key ? { key } : {}) }),
     versions: (id: string, query: { cursor?: string; limit?: number } = {}, signal?: AbortSignal) => api.get<Page<VersionSummary>>(path`/workflows/${id}/versions`, { query, signal }),
-    version: (id: string, number: number, signal?: AbortSignal) => api.get<VersionDocument>(path`/workflows/${id}/versions/${number}`, { signal }),
+    version: (id: string, number: number, signal?: AbortSignal) => api.get<VersionDocument>(path`/workflows/${id}/versions/${number}`, { signal, safeNumbers: true }),
 
-    listRuns: (query: { cursor?: string; limit?: number; workflowId?: string; status?: string } = {}, signal?: AbortSignal) => api.get<Page<Run>>('/runs', { query, signal }),
+    listRuns: (query: { cursor?: string; limit?: number; workflowId?: string; status?: string; origin?: string } = {}, signal?: AbortSignal) => api.get<Page<Run>>('/runs', { query, signal }),
     startRun: (workflowId: string, input: unknown) => api.post<Run>('/runs', { body: { workflowId, input } }),
     getRun: (id: string, signal?: AbortSignal) => api.get<Run>(path`/runs/${id}`, { signal }),
     graph: (id: string, signal?: AbortSignal) => api.get<RuntimeGraph>(path`/runs/${id}/graph`, { signal }),

@@ -1,0 +1,88 @@
+{
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "kind": "Workflow",
+  "metadata": {
+    "name": "database-types"
+  },
+  "entrypoint": "query",
+  "nodes": [
+    {
+      "id": "query",
+      "type": "database",
+      "connectionRef": {
+        "name": "orders-db",
+        "revision": 2
+      },
+      "operation": "query",
+      "statement": "SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11",
+      "parameters": [
+        {
+          "literal": {
+            "type": "null",
+            "value": null
+          }
+        },
+        {
+          "literal": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "literal": {
+            "type": "integer",
+            "value": "9223372036854775807"
+          }
+        },
+        {
+          "literal": {
+            "type": "decimal",
+            "value": "12345678901234567890.123456789"
+          }
+        },
+        {
+          "literal": {
+            "type": "float",
+            "value": 1.25
+          }
+        },
+        {
+          "literal": {
+            "type": "text",
+            "value": "café"
+          }
+        },
+        {
+          "literal": {
+            "type": "timestamp",
+            "value": "2026-10-17T09:30:00-03:00"
+          }
+        },
+        {
+          "literal": {
+            "type": "date",
+            "value": "2026-10-17"
+          }
+        },
+        {
+          "literal": {
+            "type": "binary",
+            "value": "AP8="
+          }
+        },
+        {
+          "literal": {
+            "type": "json",
+            "value": {
+              "order": "9007199254740993"
+            }
+          }
+        },
+        {
+          "type": "integer",
+          "expression": "input.orderId"
+        }
+      ]
+    }
+  ]
+}

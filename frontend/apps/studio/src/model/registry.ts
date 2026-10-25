@@ -66,6 +66,16 @@ export const NODE_KINDS: readonly NodeKindSpec[] = [
     make: (id) => ({ id, type: 'activity', activity: '' }),
   },
   {
+    type: 'database',
+    label: 'Database',
+    category: 'work',
+    description: 'A parameterized PostgreSQL query or write using a managed connection.',
+    runs: true,
+    fields: [],
+    handles: [NEXT, ON_ERROR],
+    make: (id) => ({ id, type: 'database', connectionRef: { name: '' }, operation: 'query', statement: 'SELECT 1::bigint', parameters: [] }),
+  },
+  {
     type: 'script',
     label: 'Script',
     category: 'work',
