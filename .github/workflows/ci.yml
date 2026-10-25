@@ -308,5 +308,5 @@ jobs:
       - run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo install cargo-audit --locked --version 0.22.2
-      # The one ignored advisory and why is in .cargo/audit.toml and research.md (G16).
+      # Every ignored advisory, why, and when it expires are in .cargo/audit.toml and research.md (G16, G271, G700 to G703).
       - run: cargo audit --deny warnings
