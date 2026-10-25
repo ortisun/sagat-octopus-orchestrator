@@ -36,7 +36,7 @@ test('the menu follows the hierarchy: only the namespaces until one is chosen, t
   // A first visit: the Studio chooses nothing, so the menu offers the tenant's namespaces and nothing of a namespace.
   await expect(select).toHaveValue('');
   await expect(menu.getByRole('link')).toHaveText(['Namespaces']);
-  for (const name of ['Workflows', 'Runs', 'Operations', 'Scripts', 'Ad hoc database', 'Connections', 'Secrets', 'Integrations']) await expect(menu.getByRole('link', { name, exact: true })).toHaveCount(0);
+  for (const name of ['Workflows', 'Scripts', 'Runs', 'Operations', 'Ad hoc database', 'Connections', 'Secrets', 'Integrations']) await expect(menu.getByRole('link', { name, exact: true })).toHaveCount(0);
 
   // A page of a namespace, reached by its address, says how to choose one.
   await goTo(page, '/runs');
@@ -44,7 +44,7 @@ test('the menu follows the hierarchy: only the namespaces until one is chosen, t
 
   // Choosing one opens its menu, under it, and the page the person was on.
   await select.selectOption(env.namespace);
-  await expect(page.getByRole('list', { name: `In ${env.namespace}` }).getByRole('link')).toHaveText(['Workflows', 'Runs', 'Operations', 'Scripts', 'Ad hoc database', 'Connections', 'Secrets', 'Integrations']);
+  await expect(page.getByRole('list', { name: `In ${env.namespace}` }).getByRole('link')).toHaveText(['Workflows', 'Scripts', 'Runs', 'Operations', 'Ad hoc database', 'Connections', 'Secrets', 'Integrations']);
   await expect(page.getByRole('heading', { name: 'Choose a namespace', level: 1 })).toHaveCount(0);
   await expect(page).toHaveURL(/\/studio\/runs$/);
 

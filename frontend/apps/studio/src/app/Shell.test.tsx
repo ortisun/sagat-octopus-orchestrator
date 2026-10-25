@@ -40,10 +40,10 @@ describe('Shell', () => {
     expect(within(sidebar()).getByText('sagat-octopus')).toBeInTheDocument();
     const navigation = within(sidebar()).getByRole('navigation', { name: 'Main' });
     expect(within(sidebar()).getByLabelText('Namespace')).toHaveValue('production');
-    expect(links()).toEqual(['Namespaces', 'Workflows', 'Runs', 'Operations', 'Scripts', 'Ad hoc database', 'Connections', 'Secrets', 'Integrations']);
+    expect(links()).toEqual(['Namespaces', 'Workflows', 'Scripts', 'Runs', 'Operations', 'Ad hoc database', 'Connections', 'Secrets', 'Integrations']);
     // What lives in the namespace is under it, in a list that says whose it is.
     const inside = within(navigation).getByRole('list', { name: 'In production' });
-    expect(within(inside).getAllByRole('link').map((link) => link.textContent)).toEqual(['Workflows', 'Runs', 'Operations', 'Scripts', 'Ad hoc database', 'Connections', 'Secrets', 'Integrations']);
+    expect(within(inside).getAllByRole('link').map((link) => link.textContent)).toEqual(['Workflows', 'Scripts', 'Runs', 'Operations', 'Ad hoc database', 'Connections', 'Secrets', 'Integrations']);
     expect(within(navigation).getByRole('link', { name: 'Namespaces' }).closest('ul')).not.toBe(inside);
     expect(within(navigation).getByRole('link', { name: 'Runs' })).toHaveAttribute('aria-current', 'page');
   });
@@ -62,7 +62,7 @@ describe('Shell', () => {
 
     await user.selectOptions(select, 'production');
     expect(app.namespace.current()).toBe('production');
-    expect(links()).toEqual(['Namespaces', 'Workflows', 'Runs', 'Operations', 'Scripts', 'Ad hoc database', 'Connections', 'Secrets', 'Integrations']);
+    expect(links()).toEqual(['Namespaces', 'Workflows', 'Scripts', 'Runs', 'Operations', 'Ad hoc database', 'Connections', 'Secrets', 'Integrations']);
     expect(within(sidebar()).queryByText(/Choose a namespace to open/)).not.toBeInTheDocument();
     expect(within(select).queryByRole('option', { name: 'Choose a namespace' })).not.toBeInTheDocument();
   });

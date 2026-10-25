@@ -10,9 +10,9 @@ const TENANT = [{ to: '/namespaces', label: 'Namespaces' }] as const;
 /** What belongs to one namespace: it is in the menu only while a namespace is chosen (UX review 2026-10-14, owner request). */
 export const SCOPED = [
   { to: '/workflows', label: 'Workflows' },
+  { to: '/scripts', label: 'Scripts' },
   { to: '/runs', label: 'Runs' },
   { to: '/operations', label: 'Operations' },
-  { to: '/scripts', label: 'Scripts' },
   { to: '/database-executions', label: 'Ad hoc database' },
   { to: '/connections', label: 'Connections' },
   { to: '/secrets', label: 'Secrets' },

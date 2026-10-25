@@ -450,3 +450,9 @@ The original geometry, glyph, fallback-font and console assertions remain. Fresh
 reviews closed with no remaining C1/C2 findings. The new Start run journey validates malformed
 input, then verifies the real API's retained run, actor, workflow, navigation and successful
 completion. No new human visual or screen-reader acceptance is claimed.
+
+Owner-order follow-up: preserved the later 2026-10-16 G163 decision (**Scripts immediately
+follows Workflows**) within the new namespace hierarchy. The updated Shell regression failed
+2/10 before restoration, then passed 10/10. Production build passed. The two exact Chromium
+shell/menu scenarios passed (2/2, 9.66 s including harness), using the already-built real-platform
+journey binary; Rust application/test sources were unchanged by this menu-only correction.
