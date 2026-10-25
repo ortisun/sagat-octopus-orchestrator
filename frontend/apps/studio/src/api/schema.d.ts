@@ -429,6 +429,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/namespaces/{namespaceId}/runs/{runId}/database-results/{nodeId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read one retained database step result after authorization and audit
+         * @description Requires `run:read` and `database:result:read` (Admin by default). The namespace,
+         *     run and node must identify a succeeded managed database step. Ordinary run inspection
+         *     remains structural. No digest, blob ID, query override or bulk selector is accepted.
+         *     Returns the validated complete typed result, limited to 4 MiB and 10000 rows.
+         *     Current membership is checked before object I/O and again in the audit transaction.
+         *     The audit commits before response bytes; failed audit, lost/corrupt content and
+         *     revoked access disclose no result. Reads work independently of OpenBao availability.
+         *     Namespace admission is charged once after scope/permission checks. The read and
+         *     response delivery deadline is the minimum of 30s, configured transfer duration and
+         *     the bearer lifetime. Responses have Cache-Control: private, no-store and nosniff.
+         */
+        get: operations["readDatabaseResult"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/runs/{runId}/payload-inspections": {
         parameters: {
             query?: never;
@@ -451,6 +480,32 @@ export interface paths {
          *     Canonical namespace API admission is charged once after authorization.
          */
         post: operations["inspectRunPayload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runs/{runId}/payload-disclosures": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Disclose retained run values under the workflow's pinned classification
+         * @description Needs `run:read`. Selects the run input, result or one retained journal payload and applies
+         *     the classification carrier of the workflow version pinned by that run. `public` is visible
+         *     to every run reader; `internal` also needs `payload:read-internal`; `pii` is returned only
+         *     when `reveal: [pii]` is explicit and the caller has a namespace reveal grant; `secret` is
+         *     never returned. A PII reveal is audited in the read transaction before any value leaves.
+         *     Requests are limited to 1 KiB and responses to 256 KiB. Canonical namespace admission is
+         *     charged once after authorization and opaque run resolution.
+         */
+        post: operations["discloseRunPayload"];
         delete?: never;
         options?: never;
         head?: never;
@@ -932,6 +987,52 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/namespaces/{namespaceId}/payload-reveal-grants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the identities allowed to reveal personal run payload values
+         * @description Needs `membership:manage`. Grants are scoped to this namespace and do not change a subject's role.
+         */
+        get: operations["listPayloadRevealGrants"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/payload-reveal-grants/{subject}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Grant one namespace member permission to reveal personal payload values
+         * @description Needs `membership:manage`. Idempotent. The subject must be a member of the tenant with a role
+         *     that holds `payload:read-internal`. The grant and `payload.reveal_granted` audit record commit
+         *     together; an administrator may grant this right to their own subject.
+         */
+        put: operations["grantPayloadReveal"];
+        post?: never;
+        /**
+         * Revoke one namespace member's personal-data reveal grant
+         * @description Needs `membership:manage`. The removal and `payload.reveal_revoked` audit record commit together. Returns 404 when no such grant exists.
+         */
+        delete: operations["revokePayloadReveal"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/namespaces/{namespaceId}/worker-bindings": {
         parameters: {
             query?: never;
@@ -976,6 +1077,125 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/namespaces/{namespaceId}/database-executions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retain and execute an ad hoc database step or workflow
+         * @description Requires current run:start, database:adhoc, database:use, secret ACL and database:write for writes. Definition, pins and run admission commit together. Identical requests replay with current authorization. SQL executes in the managed runner. Private definitions consume workflow and retained-content quotas.
+         */
+        post: operations["startDatabaseExecution"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/connections/{connectionName}/probe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                connectionName: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Read the latest durable connection probe metadata
+         * @description Requires namespace:read and run:read. Includes the tested revision, timestamps, durable run status and a closed failure code. Returns null when none exists. Never returns SQL, results or credentials.
+         */
+        get: operations["latestDatabaseConnectionProbe"];
+        put?: never;
+        /**
+         * Admit a fixed SELECT 1 probe in the managed runner
+         * @description Uses current ad hoc permissions and secret ACL. A paused connection is refused. Only durable SUCCEEDED is evidence of connectivity, for the run's pinned revision. SQL and parameters cannot be supplied.
+         */
+        post: operations["probeDatabaseConnection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/database-drivers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * List implemented database drivers and supported operation types
+         * @description Requires namespace:read. Advertises server capabilities, not target connectivity or
+         *     available runner capacity. PostgreSQL is the only implemented driver. Current namespace
+         *     and operator quotas can narrow the advertised hard maxima; a saved connection needs a probe.
+         */
+        get: operations["listDatabaseDrivers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/connections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List current connection metadata in the namespace
+         * @description Requires namespace:read. Values and provider routing are never returned. Deleted connections are omitted. Saving does not prove connectivity.
+         */
+        get: operations["listDatabaseConnections"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/connections/{connectionName}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read connection settings at a revision
+         * @description Requires namespace:read. The status always reflects current authority, including when selecting an older immutable revision.
+         */
+        get: operations["getDatabaseConnection"];
+        /**
+         * Create or revise a PostgreSQL connection
+         * @description Requires current database:manage and a namespace OpenBao secret. expectedRevision zero creates. Retries retain requestId; changed content conflicts. Every update or pause creates an immutable revision. Current settings and audit commit together. A legacy secret requires explicit migration. Saving performs no SQL or probe.
+         */
+        put: operations["putDatabaseConnection"];
+        post?: never;
+        /**
+         * Tombstone a connection and retain its revisions
+         * @description Requires current database:manage and optimistic revision. Subsequent execution must reject the tombstone. Retained revisions remain for run history. Repetition after deletion returns not found.
+         */
+        delete: operations["deleteDatabaseConnection"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/namespaces/{namespaceId}/secrets": {
         parameters: {
             query?: never;
@@ -985,7 +1205,7 @@ export interface paths {
         };
         /**
          * The secrets of a namespace, by name, without values
-         * @description Needs `secret:read`. These operations exist only on instances configured with a key ring (`SAGAT_SECRETS_KEYS`); elsewhere they answer 404. A value is accepted here and nowhere else, and is never returned by any operation: workers receive it through `ResolveSecrets` of the worker protocol while they hold the lease of a step whose definition declares it.
+         * @description Needs `secret:read`. These operations exist on instances configured with a local key ring or OpenBao; elsewhere they answer 404. A value is accepted here and nowhere else, and is never returned by any operation: workers receive it through `ResolveSecrets` of the worker protocol while they hold the lease of a step whose definition declares it.
          */
         get: operations["listSecrets"];
         put?: never;
@@ -1006,7 +1226,7 @@ export interface paths {
         get?: never;
         /**
          * Store a secret, or a new version of it
-         * @description Needs `secret:manage`. Stores the value sealed under the active key and keeps the last five versions. Counts against the namespace's `secrets` quota when the secret is new. Audited (the name and the actor, never the value). These operations exist only on instances configured with a key ring (`SAGAT_SECRETS_KEYS`); elsewhere they answer 404. A value is accepted here and nowhere else, and is never returned by any operation: workers receive it through `ResolveSecrets` of the worker protocol while they hold the lease of a step whose definition declares it.
+         * @description Needs `secret:manage`. With OpenBao enabled, requires requestId and expectedVersion, persists a recoverable intent and activates only a verified provider receipt. Same-key/same-body replay returns the original version; changed content or revision conflicts. Legacy instances seal under the local key ring. Keeps the last five logical versions. Counts against the namespace's `secrets` quota when the secret is new. Audited (the name and the actor, never the value). These operations exist on instances configured with a local key ring or OpenBao; elsewhere they answer 404. A value is accepted here and nowhere else, and is never returned by any operation: workers receive it through `ResolveSecrets` of the worker protocol while they hold the lease of a step whose definition declares it.
          */
         put: operations["putSecret"];
         post?: never;
@@ -1015,6 +1235,46 @@ export interface paths {
          * @description Needs `secret:manage`. Workflows that declare it stop resolving it at once. Audited.
          */
         delete: operations["deleteSecret"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/secrets/{secretName}/migrate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Explicitly migrate one local secret while preserving its logical name and ACL
+         * @description Needs current secret:manage. Provider receipt is verified before authority changes. No local fallback after cutover. Requires configured OpenBao and the legacy key ring.
+         */
+        post: operations["migrateSecretToOpenBao"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/secret-operations/{requestId}/reconcile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Recover the caller's pending provider receipt without resubmitting the secret
+         * @description Needs current secret:manage. The UUID is the client request identity, never an OpenBao path. Missing receipt requires secure value resubmission with the same request identity; changed content conflicts. Does not reactivate deleted secrets.
+         */
+        post: operations["reconcileSecretWrite"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -1525,7 +1785,12 @@ export interface paths {
         };
         /**
          * Read an event of the inbox, with what it woke or started
-         * @description Needs `event:read`. `status` is `PENDING` while the dispatcher has not finished with it, `DISPATCHED` when it has, `DEAD` when dispatching it failed again and again (`lastError` says what class of failure).
+         * @description Needs `event:read`. This is a breaking feature-016 response change: by default `data` is
+         *     absent and `dataStructure` describes only types and counts. `reveal=pii` returns `data` only
+         *     to a caller that also holds `payload:read-internal` and a reveal grant in this namespace;
+         *     otherwise that explicit reveal is 403 `PII_REVEAL_NOT_GRANTED`. `status` is `PENDING` while
+         *     the dispatcher has not finished with it, `DISPATCHED` when it has, and `DEAD` after repeated
+         *     dispatch failure (`lastError` names only the failure class).
          */
         get: operations["getInboxEvent"];
         put?: never;
@@ -1861,7 +2126,11 @@ export interface paths {
         };
         /**
          * List the messages a connector set aside, newest first
-         * @description Needs `event:read`. At most 1000 are kept per connector, the first ones: once it is full a message that cannot become an event is acknowledged to the broker and counted, but not kept.
+         * @description Needs `event:read`. This list never returns a body or headers and has no reveal parameter;
+         *     every item contains only bounded structure and sizes. This is a breaking feature-016 response
+         *     change for clients that previously read those fields. At most 1000 are kept per connector,
+         *     the first ones: once full, a message that cannot become an event is acknowledged and counted
+         *     but not retained.
          */
         get: operations["listConnectorDeadLetters"];
         put?: never;
@@ -1881,7 +2150,11 @@ export interface paths {
         };
         /**
          * Read a message a connector set aside
-         * @description Needs `event:read`. The body is shown as text, cut at 64 KiB (`truncated`).
+         * @description Needs `event:read`. This is a breaking feature-016 response change: by default `body` and
+         *     `headers` are absent and the response carries structure, byte size and header count only.
+         *     `reveal=pii` returns the retained body (cut at 64 KiB) and headers only to a caller that also
+         *     holds `payload:read-internal` and a reveal grant in this namespace; otherwise the explicit
+         *     reveal is 403 `PII_REVEAL_NOT_GRANTED`.
          */
         get: operations["getConnectorDeadLetter"];
         put?: never;
@@ -2418,6 +2691,141 @@ export interface components {
             reason: "NO_RETAINED_PAYLOAD" | "UNSUPPORTED_FORMAT";
             sizeBytes?: number;
         });
+        /** @enum {string} */
+        ClassificationLevel: "public" | "internal" | "pii" | "secret";
+        PayloadDisclosureRequest: {
+            /** @constant */
+            source: "input";
+            reveal?: "pii"[];
+        } | {
+            /** @constant */
+            source: "result";
+            reveal?: "pii"[];
+        } | {
+            /** @constant */
+            source: "journal";
+            sequence: number;
+            reveal?: "pii"[];
+        };
+        PayloadDisclosureSelector: {
+            /** @constant */
+            source: "input";
+        } | {
+            /** @constant */
+            source: "result";
+        } | {
+            /** @constant */
+            source: "journal";
+            sequence: number;
+        };
+        PayloadDisclosureCaller: {
+            /** @description The levels this answer was built to contain; `secret` is never eligible. */
+            disclosedLevels: ("public" | "internal" | "pii")[];
+            /**
+             * @description Whether a reveal grant exists and the role holds `payload:read-internal`.
+             * @enum {string}
+             */
+            revealPii: "granted" | "not_granted";
+            /** @description Whether this answer was built from an explicit PII reveal request. */
+            revealed: boolean;
+        };
+        PayloadClassificationSchema: {
+            /** @enum {string} */
+            carrier: "inputSchema" | "outputSchema" | "nodeOutputSchema";
+            versionNumber: number;
+            /** @constant */
+            rules: 1;
+        };
+        PayloadDisclosureChild: {
+            ordinal: number;
+            /** @description A declared property name, or an undeclared key only when its value is disclosed. */
+            name?: string;
+            node: components["schemas"]["PayloadDisclosureNode"];
+        };
+        PayloadDisclosureNode: {
+            /** @constant */
+            kind: "value";
+            /** @enum {string} */
+            level: "public" | "internal" | "pii";
+            /** @enum {string} */
+            type: "string" | "number" | "boolean" | "null";
+            value: string | number | boolean | null;
+            /** @constant */
+            valueTruncated?: true;
+            /** @description Original UTF-8 byte length of a truncated string. */
+            length?: number;
+        } | {
+            /** @constant */
+            kind: "container";
+            /** @enum {string} */
+            type: "object" | "array";
+            /** @enum {string} */
+            level: "public" | "internal" | "pii";
+            childCount: number;
+            omittedChildren: number;
+            children: components["schemas"]["PayloadDisclosureChild"][];
+        } | {
+            /** @constant */
+            kind: "withheld";
+            /** @enum {string} */
+            type: "object" | "array" | "string" | "number" | "boolean" | "null";
+            /** @enum {string} */
+            level: "internal" | "pii" | "secret";
+            /** @enum {string} */
+            reason: "LEVEL_NOT_PERMITTED" | "REVEAL_NOT_REQUESTED" | "SECRET";
+        };
+        PayloadDisclosure: {
+            /** Format: uuid */
+            runId: string;
+            runVersion: number;
+            selection: components["schemas"]["PayloadDisclosureSelector"];
+            nodeId?: string;
+            attempt?: number;
+            /** @constant */
+            policy: "classified-v1";
+            caller: components["schemas"]["PayloadDisclosureCaller"];
+        } & ({
+            /** @constant */
+            kind: "disclosed";
+            schema: components["schemas"]["PayloadClassificationSchema"];
+            /** @description Size of the whole stored payload. Present only for a caller with `run:payload:inspect`, because it includes personal and secret fields (D278). */
+            sizeBytes?: number;
+            truncated: boolean;
+            tree: components["schemas"]["PayloadDisclosureNode"];
+        } | {
+            /** @constant */
+            kind: "structure-only";
+            schema?: components["schemas"]["PayloadClassificationSchema"];
+            sizeBytes: number;
+            truncated: boolean;
+            /** @enum {string} */
+            reason: "NO_SCHEMA" | "SCHEMA_MISMATCH" | "LEGACY_VERSION" | "SCHEMA_UNUSABLE";
+            tree: components["schemas"]["PayloadStructure"];
+        } | {
+            /** @constant */
+            kind: "external";
+            sizeBytes: number;
+            /** @enum {string} */
+            contentKind: "json" | "text" | "binary" | "other";
+            /** @constant */
+            reason: "EXTERNAL_CONTENT_NOT_INSPECTED";
+        } | {
+            /** @constant */
+            kind: "unavailable";
+            /** @enum {string} */
+            reason: "NO_RETAINED_PAYLOAD" | "UNSUPPORTED_FORMAT" | "NOT_DISCLOSABLE";
+            sizeBytes?: number;
+        });
+        PayloadRevealGrant: {
+            subject: string;
+            grantedBy: string;
+            /** Format: date-time */
+            grantedAt: string;
+        };
+        PayloadRevealGrantPage: {
+            items: components["schemas"]["PayloadRevealGrant"][];
+            nextCursor?: string | null;
+        };
         JsonObject: {
             [key: string]: unknown;
         };
@@ -2435,7 +2843,7 @@ export interface components {
             requestId?: string;
             /** @description What can be done about it, in a sentence from a closed table: the same for every error of a `code`, refined by `details.reason` when that changes what to do. It never carries a payload, a secret or another tenant's data. Absent from the errors of a platform older than feature 008. */
             remediation?: string;
-            /** @description Extra, safe context. `reason` is a stable machine-readable refinement of `code` (for example `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`). A call the server does not have is `NOT_FOUND` with the reason `ROUTE_NOT_FOUND` (an unknown path) or `BAD_REQUEST` with `METHOD_NOT_ALLOWED` (a known path, another method): an SDK newer than the server tells that from a resource that does not exist, which is `NOT_FOUND` without those reasons. Structured workflow capabilities refine existing codes with `INVALID_SCOPE`, `INVALID_OPERATION_STATE`, `NOT_ELIGIBLE`, `INITIATOR_CANNOT_DECIDE`, `CHAIN_HEAD_CHANGED`, `RUN_NOT_MUTABLE`, `RUN_CONTINUED`, `INVALID_ARGUMENTS`, `INVALID_UPDATE_KEY`, `INVALID_DECISION_KEY`, `INVALID_REASON_CODE`, `REVISION_CONFLICT` and `UPDATE_REJECTED`; they do not add a new `Error.code` value. An `UNSUPPORTED_NODE` for a combination the design accepts but whose prerequisite is not built yet also carries `dependency`, a closed name of what has to exist first (`SCOPED_COMPENSATION`: an approval inside a collection or loop body), next to `node` and `kind`. */
+            /** @description Extra, safe context. `reason` is a stable machine-readable refinement of `code` (for example `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`). A call the server does not have is `NOT_FOUND` with the reason `ROUTE_NOT_FOUND` (an unknown path) or `BAD_REQUEST` with `METHOD_NOT_ALLOWED` (a known path, another method): an SDK newer than the server tells that from a resource that does not exist, which is `NOT_FOUND` without those reasons. Structured workflow capabilities refine existing codes with `INVALID_SCOPE`, `INVALID_OPERATION_STATE`, `NOT_ELIGIBLE`, `INITIATOR_CANNOT_DECIDE`, `CHAIN_HEAD_CHANGED`, `RUN_NOT_MUTABLE`, `RUN_CONTINUED`, `INVALID_ARGUMENTS`, `INVALID_UPDATE_KEY`, `INVALID_DECISION_KEY`, `INVALID_REASON_CODE`, `REVISION_CONFLICT` and `UPDATE_REJECTED`; payload classification refines existing codes with `PII_REVEAL_NOT_GRANTED`, `CLASSIFICATION`, `UNKNOWN_SUBJECT`, `ROLE_CANNOT_REVEAL` and `GRANT_LIMIT`; they do not add a new `Error.code` value. An `UNSUPPORTED_NODE` for a combination the design accepts but whose prerequisite is not built yet also carries `dependency`, a closed name of what has to exist first (`SCOPED_COMPENSATION`: an approval inside a collection or loop body), next to `node` and `kind`. */
             details?: {
                 [key: string]: unknown;
             };
@@ -2461,7 +2869,8 @@ export interface components {
             tenant: string;
             subject: string;
             /** @enum {string} */
-            role: "admin" | "developer" | "operator" | "viewer";
+            role: "admin" | "developer" | "operator" | "viewer" | "worker" | "runner" | "database-runner";
+            /** @description The caller's role permissions. `payload:read-internal` appears for developer, operator and admin; the namespace reveal grant is reported only on a disclosure response. */
             permissions: string[];
             traceId: string;
         };
@@ -2525,6 +2934,11 @@ export interface components {
             publishedBy?: string;
             /** Format: date-time */
             publishedAt?: string;
+            /**
+             * @description The payload classification rules pinned to the version when it was published (feature 016). `0` is a version published before payload classification: no value of its runs is disclosed, whatever its schemas say. `1` reads `x-sagat-classification`. Publishing a document identical to an existing version returns that version (`created: false`) with its own rules, so an unchanged legacy document stays at `0`; publish a changed document to adopt the rules.
+             * @enum {integer}
+             */
+            classificationRules: 0 | 1;
         };
         WorkflowDraft: {
             /** Format: uuid */
@@ -2586,7 +3000,29 @@ export interface components {
             sha256: string;
             contentType: string;
         };
+        /** @enum {string} */
+        DatabaseExecutionOrigin: "AD_HOC_STEP" | "AD_HOC_WORKFLOW" | "CONNECTION_PROBE";
+        StartDatabaseExecutionRequest: {
+            /** @enum {string} */
+            mode: "step" | "workflow";
+            /** @description Canonical IR. Step: one database node. Workflow: at most 64 database/timer/condition/parallel/end nodes, at least one database node, no triggers. */
+            definition: components["schemas"]["JsonObject"];
+            /** @default {} */
+            input: components["schemas"]["JsonObject"];
+            /** @default 300000 */
+            timeoutMs: number;
+        };
+        ProbeDatabaseConnectionRequest: {
+            revision?: number;
+        };
+        DatabaseConnectionProbe: {
+            run: components["schemas"]["Run"];
+            revision: number;
+            failureCode: string | null;
+        };
         Run: {
+            /** @description Present only for retained private managed executions. */
+            origin?: components["schemas"]["DatabaseExecutionOrigin"];
             /** Format: uuid */
             runId: string;
             /** Format: uuid */
@@ -2739,7 +3175,7 @@ export interface components {
         DefinitionProblem: {
             /** @enum {string} */
             severity: "error" | "warning";
-            /** @description Stable, upper snake case: SCHEMA, DOCUMENT_TOO_LARGE, DOCUMENT_MALFORMED, UNSUPPORTED_NODE, EXPRESSION, NAME_MISMATCH, UNKNOWN_SCRIPT, SECRET_UNAVAILABLE, CYCLE, UNREACHABLE, UNKNOWN_TARGET, UNKNOWN_ENTRYPOINT, DUPLICATE_NODE, and the other graph rules; a warning has its own (COMPENSATION_OUTSIDE_SAGA, RECURSIVE_CHILD). */
+            /** @description Stable, upper snake case: SCHEMA, DOCUMENT_TOO_LARGE, DOCUMENT_MALFORMED, UNSUPPORTED_NODE, EXPRESSION, NAME_MISMATCH, UNKNOWN_SCRIPT, SECRET_UNAVAILABLE, CYCLE, UNREACHABLE, UNKNOWN_TARGET, UNKNOWN_ENTRYPOINT, DUPLICATE_NODE, and the other graph rules. Classification uses CLASSIFICATION_INVALID_LEVEL, CLASSIFICATION_LOOSENED, CLASSIFICATION_UNSUPPORTED_KEYWORD, CLASSIFICATION_UNRESOLVED_REF, CLASSIFICATION_NOT_APPLICABLE and CLASSIFICATION_TOO_COMPLEX errors, plus the CLASSIFICATION_INHERITED_OPEN warning; other warnings include COMPENSATION_OUTSIDE_SAGA and RECURSIVE_CHILD. */
             code: string;
             /** @description Safe: never holds a value of the document beyond a clipped fragment. */
             message: string;
@@ -2748,12 +3184,29 @@ export interface components {
             /** @description A JSON pointer into the document, for a schema problem. */
             path?: string | null;
         };
+        ClassificationReportEntry: {
+            /** @enum {string} */
+            carrier: "inputSchema" | "outputSchema" | "nodeOutputSchema";
+            /** @description Present only for a node output carrier. */
+            nodeId?: string;
+            /** @description Present only for a node output carrier inside the named body; distinguishes repeated node identifiers. */
+            bodyName?: string;
+            /** @description JSON pointer inside the carrier; the root is the empty pointer. */
+            path: string;
+            level: components["schemas"]["ClassificationLevel"];
+            /** @description True when this location carries its own annotation; false when it inherits. */
+            declared: boolean;
+        };
         Validation: {
             valid: boolean;
             /** @description The digest of the canonical document, when it is valid. */
             digest?: string | null;
             problems: components["schemas"]["DefinitionProblem"][];
             warnings: components["schemas"]["DefinitionProblem"][];
+            /** @description Effective levels of declared locations in each classification carrier. */
+            classification?: components["schemas"]["ClassificationReportEntry"][];
+            /** @description True when the bounded classification report has more than 500 entries. */
+            classificationTruncated?: boolean;
         };
         DiffSide: {
             /** @enum {string} */
@@ -2764,7 +3217,15 @@ export interface components {
             revision?: number | null;
         };
         DiffFinding: {
-            /** @description TRIGGER_REMOVED, TRIGGER_CHANGED, INPUT_PROPERTY_REMOVED, INPUT_TYPE_CHANGED, INPUT_REQUIRED_ADDED, OUTPUT_PROPERTY_REMOVED, OUTPUT_TYPE_CHANGED, EVENT_TYPE_REMOVED (breaking); ACTIVITY_ADDED, ACTIVITY_CHANGED, SECRET_ADDED, SCRIPT_CHANGED (attention). */
+            /**
+             * @description TRIGGER_REMOVED, TRIGGER_CHANGED, INPUT_PROPERTY_REMOVED, INPUT_TYPE_CHANGED, INPUT_REQUIRED_ADDED, OUTPUT_PROPERTY_REMOVED, OUTPUT_TYPE_CHANGED, EVENT_TYPE_REMOVED (breaking); ACTIVITY_ADDED, ACTIVITY_CHANGED, SECRET_ADDED, SCRIPT_CHANGED (attention).
+             *
+             *     Payload classification (feature 016) adds these attention codes; none is breaking.
+             *     CLASSIFICATION_RELAXED and CLASSIFICATION_TIGHTENED: the effective level of the path in `path` became less or more strict between the two sides. A side that has no schema for the location (a carrier added or dropped), or that was published before payload classification (`classificationRules` 0), discloses nothing and counts as `undisclosed`, as strict as `secret`: adding an `outputSchema` that makes a field `public` relaxes it, and a legacy version compared with the same document under the current rules relaxes every location the document makes readable. The first draft of a workflow, which has no earlier version, is not compared.
+             *     CLASSIFICATION_TOO_COMPLEX, CLASSIFICATION_UNRESOLVED_REF and CLASSIFICATION_UNSUPPORTED_KEYWORD: a carrier of one side could not be walked completely (`path` says where), so none of its levels was compared and a relaxation inside it is not reported; fix the carrier and compare again. Each is reported once per carrier.
+             *     MORE_FINDINGS: findings of one kind past the first 100 are not listed, only counted in the message.
+             *     `sagat sync` prints every attention finding as `prepare`; the Studio lists them all in the version comparison, and the classification panel of the workflow settings shows the two level changes and a notice for the carriers that could not be compared.
+             */
             code: string;
             message: string;
             nodeId?: string | null;
@@ -2843,6 +3304,7 @@ export interface components {
                 scopeNodeId: string;
                 iterationIndex: number;
             }[];
+            /** @description Authored node kind. Managed PostgreSQL operations use database; their internal activity name, SQL and values are not disclosed. */
             type: string;
             /** @enum {string} */
             status: "NOT_STARTED" | "PENDING" | "READY" | "LEASED" | "RUNNING" | "WAITING" | "RETRY_WAIT" | "SUCCEEDED" | "FAILED" | "CANCELLED" | "SKIPPED";
@@ -3133,8 +3595,13 @@ export interface components {
         Secret: {
             name: string;
             version: number;
-            /** @description The key of the ring the current version is sealed under. */
-            keyId: string;
+            /** @description Local encryption key identifier; null for OpenBao. */
+            keyId: string | null;
+            /**
+             * @description Authority for the current secret version.
+             * @enum {string}
+             */
+            provider?: "local" | "openbao";
             createdBy: string;
             /** Format: date-time */
             updatedAt: string;
@@ -3155,6 +3622,160 @@ export interface components {
             value: string;
             /** @description Replaces the worker pools allowed to receive the secret in the same call (see `setSecretPools`). Absent leaves them as they are, and a new secret then has none; an empty list lifts the restriction. Deleting a secret deletes its restriction, so recreate one that must stay restricted with its pools, which makes it restricted from the first instant. */
             pools?: string[];
+            /**
+             * Format: uuid
+             * @description Required with OpenBao. Stable identity for retries of this exact write.
+             */
+            requestId?: string;
+            /** @description Required with OpenBao. Zero creates; otherwise matches the current logical version. */
+            expectedVersion?: number;
+            /**
+             * @description Refuse with 503 when this authority is not configured. Database connection forms must send this field.
+             * @enum {string}
+             */
+            requiredProvider?: "openbao";
+        };
+        /** Bounded managed database result */
+        DatabaseResult: {
+            columns: {
+                name: string;
+                /** @enum {unknown} */
+                type: "null" | "boolean" | "integer" | "decimal" | "float" | "text" | "timestamp" | "date" | "binary" | "json";
+            }[];
+            rows: components["schemas"]["DatabaseResultCell"][][];
+            affectedRows: string;
+            /** @constant */
+            truncated: false;
+        };
+        DatabaseResultCell: {
+            /** @constant */
+            type: "null";
+            value: null;
+        } | {
+            /** @constant */
+            type: "boolean";
+            value: boolean;
+        } | {
+            /** @constant */
+            type: "integer";
+            value: string;
+        } | {
+            /** @constant */
+            type: "decimal";
+            value: string;
+        } | {
+            /** @constant */
+            type: "float";
+            value: number;
+        } | {
+            /** @constant */
+            type: "text";
+            value: string;
+        } | {
+            /** @constant */
+            type: "timestamp";
+            /** Format: date-time */
+            value: string;
+        } | {
+            /** @constant */
+            type: "date";
+            /** Format: date */
+            value: string;
+        } | {
+            /** @constant */
+            type: "binary";
+            value: string;
+        } | {
+            /** @constant */
+            type: "json";
+            value: unknown;
+        };
+        /** @description Positive finite limits. Effective execution uses the minimum of operation, connection, namespace and deployment limits. Zero never means unlimited. */
+        DatabaseLimits: {
+            /** @default 16384 */
+            maxStatementBytes: number;
+            /** @default 64 */
+            maxParameters: number;
+            /** @default 65536 */
+            maxParameterBytes: number;
+            /** @default 1000 */
+            maxRows: number;
+            /** @default 1048576 */
+            maxResultBytes: number;
+            /** @default 10000 */
+            timeoutMs: number;
+            /** @default 5000 */
+            connectTimeoutMs: number;
+            /** @default 4 */
+            poolSize: number;
+            /** @default 30000 */
+            idleTimeoutMs: number;
+        };
+        DatabaseTls: {
+            /** @constant */
+            mode: "verify-full";
+            /** @description Optional public CA certificates, never a private key */
+            caPem?: string;
+        } | {
+            /** @constant */
+            mode: "development-plaintext";
+        };
+        PostgresConnectionConfig: {
+            /** @constant */
+            driver: "postgresql";
+            /** @description Bare DNS hostname or IP, never a URL or credentials */
+            host: string;
+            port: number;
+            database: string;
+            tls: components["schemas"]["DatabaseTls"];
+            secretName: string;
+            limits?: components["schemas"]["DatabaseLimits"];
+        };
+        DatabaseConnection: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            namespaceId: string;
+            name: string;
+            revision: number;
+            /** @enum {string} */
+            status: "ACTIVE" | "PAUSED" | "DELETED";
+            config: components["schemas"]["PostgresConnectionConfig"];
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        DatabaseDriverList: {
+            items: {
+                /** @enum {string} */
+                id: "postgresql";
+                operations: ("query" | "execute")[];
+                parameterTypes: ("null" | "boolean" | "integer" | "decimal" | "float" | "text" | "timestamp" | "date" | "binary" | "json")[];
+                defaultLimits: components["schemas"]["DatabaseLimits"];
+                maximumLimits: components["schemas"]["DatabaseLimits"];
+            }[];
+        };
+        DatabaseConnectionList: {
+            items: components["schemas"]["DatabaseConnection"][];
+        };
+        PutDatabaseConnectionRequest: {
+            /** Format: uuid */
+            requestId: string;
+            expectedRevision: number;
+            config: components["schemas"]["PostgresConnectionConfig"];
+            /** @enum {string} */
+            status: "ACTIVE" | "PAUSED";
+        };
+        DeleteDatabaseConnectionRequest: {
+            /** Format: uuid */
+            requestId: string;
+            expectedRevision: number;
+        };
+        MigrateSecretRequest: {
+            /** Format: uuid */
+            requestId: string;
+            expectedVersion: number;
         };
         EgressPolicy: {
             /** @description Exact hosts, `*.domain` rules and CIDR networks, lower-cased and masked. */
@@ -3178,11 +3799,21 @@ export interface components {
          *     value is 1..1,000,000,000, its default operator ceiling is 1,024 and, while absent or
          *     cleared, structured iteration admission is disabled. Zero disables new admission for
          *     resources that accept it.
+         *     Database operation ceilings are positive:
+         *     database_statement_bytes <= 65536, database_parameters <= 256,
+         *     database_parameter_bytes <= 262144, database_rows <= 10000,
+         *     database_result_bytes <= 4194304, database_timeout_ms <= 30000,
+         *     database_connect_timeout_ms <= 10000, database_pool_size <= 16,
+         *     database_idle_timeout_ms <= 60000. These governance ceilings default to the hard maximum;
+         *     operation and connection defaults remain smaller. Count ceilings default/max are
+         *     database_connections 100/1000 (including paused), database_concurrency 16/64,
+         *     tenant_database_concurrency 64/256, secret_provider_operations 32/128.
+         *     Zero disables new admission for count/rate/retention resources, never means unlimited.
          *     Lowering a limit does not erase retained content or rewrite existing expiry.
          */
         Quota: {
             /** @enum {string} */
-            resource: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days";
+            resource: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days" | "database_statement_bytes" | "database_parameters" | "database_parameter_bytes" | "database_rows" | "database_result_bytes" | "database_timeout_ms" | "database_connect_timeout_ms" | "database_pool_size" | "database_idle_timeout_ms" | "database_connections" | "database_concurrency" | "tenant_database_concurrency" | "secret_provider_operations";
             /** Format: int64 */
             limit: number;
             /**
@@ -3197,7 +3828,7 @@ export interface components {
             ceiling: number;
             /**
              * Format: int64
-             * @description Exact charged items or bytes, including outstanding content reservations. Absent for rate/retention policies and for a per-namespace resource in the tenant-wide view.
+             * @description Exact charged items or bytes, including outstanding content reservations. Absent for per-operation database and rate/retention policies and for a per-namespace resource in the tenant-wide view.
              */
             used?: number;
         };
@@ -3436,9 +4067,21 @@ export interface components {
             lastError?: string;
             /** Format: date-time */
             dispatchedAt?: string;
-            data: components["schemas"]["JsonObject"];
+            /**
+             * @description Whether this answer includes the whole event data. Events have no field carrier and are treated as PII as a whole.
+             * @enum {string}
+             */
+            dataDisclosure: "revealed" | "structure-only";
+            /** @description Bytes of the stored event payload. */
+            dataSizeBytes: number;
+            data?: components["schemas"]["JsonObject"];
+            /** @description The ADR-0028 structure of the event data, or {kind: opaque} when the projector does not accept the stored data (a server-side bound, not a refusal of the caller). */
+            dataStructure?: components["schemas"]["PayloadStructure"] | {
+                /** @constant */
+                kind: "opaque";
+            };
             deliveries: components["schemas"]["EventDelivery"][];
-        };
+        } & unknown;
         BrokerSubscription: {
             /** Format: uuid */
             id: string;
@@ -3727,10 +4370,41 @@ export interface components {
             position: string;
             /** @enum {string} */
             reason: "NO_EVENT_TYPE" | "BAD_ENVELOPE" | "NOT_A_JSON_OBJECT" | "TOO_LARGE" | "EVENT_ID_REUSED";
-            headers: {
+            /**
+             * @description Whether this answer includes the retained body and headers. Dead-letter values are treated as PII as a whole.
+             * @enum {string}
+             */
+            bodyDisclosure: "revealed" | "structure-only";
+            /** @description Bytes of the retained body, after the 64 KiB bound. */
+            bodySizeBytes: number;
+            headerCount: number;
+            headers?: {
                 [key: string]: string;
             };
-            body: string;
+            body?: string;
+            bodyStructure?: components["schemas"]["PayloadStructure"] | {
+                /** @constant */
+                kind: "opaque";
+            };
+            truncated: boolean;
+            /** Format: date-time */
+            receivedAt: string;
+        } & unknown;
+        DeadLetterSummary: {
+            /** Format: uuid */
+            id: string;
+            /** @description Where it was: topic/partition/offset, a stream sequence, a message id. */
+            position: string;
+            /** @enum {string} */
+            reason: "NO_EVENT_TYPE" | "BAD_ENVELOPE" | "NOT_A_JSON_OBJECT" | "TOO_LARGE" | "EVENT_ID_REUSED";
+            /** @constant */
+            bodyDisclosure: "structure-only";
+            bodySizeBytes: number;
+            headerCount: number;
+            bodyStructure: components["schemas"]["PayloadStructure"] | {
+                /** @constant */
+                kind: "opaque";
+            };
             truncated: boolean;
             /** Format: date-time */
             receivedAt: string;
@@ -3830,7 +4504,7 @@ export interface components {
             nextCursor?: string | null;
         };
         DeadLetterPage: {
-            items: components["schemas"]["DeadLetter"][];
+            items: components["schemas"]["DeadLetterSummary"][];
             nextCursor?: string;
         };
         /** @description What a script is held to. Every field has a floor and a ceiling, and the platform has a ceiling of its own that a script cannot ask past. */
@@ -4520,6 +5194,8 @@ export interface components {
         Limit: number;
         /** @description The identity (the `sub` of its token), URL-encoded. */
         WorkerSubject: string;
+        /** @description The namespace member identity (the `sub` of its token), URL-encoded. */
+        PayloadRevealSubject: string;
         SecretName: string;
         NamespaceId: string;
         EndpointId: string;
@@ -4527,7 +5203,7 @@ export interface components {
         DeliveryId: string;
         ConnectorId: string;
         DeadLetterId: string;
-        QuotaResourceName: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days";
+        QuotaResourceName: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days" | "database_statement_bytes" | "database_parameters" | "database_parameter_bytes" | "database_rows" | "database_result_bytes" | "database_timeout_ms" | "database_connect_timeout_ms" | "database_pool_size" | "database_idle_timeout_ms" | "database_connections" | "database_concurrency" | "tenant_database_concurrency" | "secret_provider_operations";
         ActivityName: string;
         WorkflowId: string;
         VersionNumber: number;
@@ -5274,6 +5950,7 @@ export interface operations {
                 /** @description Page size; values outside 1..200 are clamped. */
                 limit?: components["parameters"]["Limit"];
                 workflowId?: string;
+                origin?: components["schemas"]["DatabaseExecutionOrigin"];
                 status?: "RUNNING" | "WAITING" | "PAUSED" | "CANCELLING" | "COMPENSATING" | "MANUAL_REVIEW" | "SUCCEEDED" | "FAILED" | "CANCELLED" | "TIMED_OUT" | "COMPENSATED" | "PARTIAL" | "COMPENSATION_FAILED";
             };
             header: {
@@ -5454,6 +6131,40 @@ export interface operations {
             default: components["responses"]["InternalError"];
         };
     };
+    readDatabaseResult: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                runId: components["parameters"]["RunId"];
+                nodeId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One complete audited database result */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    "Cache-Control"?: "private, no-store";
+                    "X-Content-Type-Options"?: "nosniff";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatabaseResult"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
     inspectRunPayload: {
         parameters: {
             query?: never;
@@ -5479,6 +6190,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PayloadInspection"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            413: components["responses"]["PayloadTooLarge"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    discloseRunPayload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: components["parameters"]["RunId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PayloadDisclosureRequest"];
+            };
+        };
+        responses: {
+            /** @description A classified projection, structural fallback, external reference or unavailable state */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    "Cache-Control"?: "private, no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PayloadDisclosure"];
                 };
             };
             400: components["responses"]["BadRequest"];
@@ -6362,6 +7111,106 @@ export interface operations {
             default: components["responses"]["InternalError"];
         };
     };
+    listPayloadRevealGrants: {
+        parameters: {
+            query?: {
+                /** @description Opaque cursor returned as `nextCursor` by the previous page. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size; values outside 1..200 are clamped. */
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The reveal grants */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PayloadRevealGrantPage"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    grantPayloadReveal: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                /** @description The namespace member identity (the `sub` of its token), URL-encoded. */
+                subject: components["parameters"]["PayloadRevealSubject"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The reveal grant now in force */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PayloadRevealGrant"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    revokePayloadReveal: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                /** @description The namespace member identity (the `sub` of its token), URL-encoded. */
+                subject: components["parameters"]["PayloadRevealSubject"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The grant was removed */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
     listWorkerBindings: {
         parameters: {
             query?: never;
@@ -6462,6 +7311,293 @@ export interface operations {
             default: components["responses"]["InternalError"];
         };
     };
+    startDatabaseExecution: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartDatabaseExecutionRequest"];
+            };
+        };
+        responses: {
+            /** @description Durable managed execution */
+            201: {
+                headers: {
+                    "Cache-Control"?: "private, no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Run"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    latestDatabaseConnectionProbe: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                connectionName: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Latest probe or null */
+            200: {
+                headers: {
+                    "Cache-Control"?: "private, no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatabaseConnectionProbe"] | null;
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    probeDatabaseConnection: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                connectionName: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProbeDatabaseConnectionRequest"];
+            };
+        };
+        responses: {
+            /** @description Durable fixed probe */
+            201: {
+                headers: {
+                    "Cache-Control"?: "private, no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Run"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listDatabaseDrivers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Implemented drivers */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatabaseDriverList"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    listDatabaseConnections: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Connection metadata */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatabaseConnectionList"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    getDatabaseConnection: {
+        parameters: {
+            query?: {
+                revision?: number;
+            };
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                connectionName: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Connection metadata */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatabaseConnection"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    putDatabaseConnection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                connectionName: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PutDatabaseConnectionRequest"];
+            };
+        };
+        responses: {
+            /** @description Connection metadata */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatabaseConnection"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    deleteDatabaseConnection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                connectionName: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeleteDatabaseConnectionRequest"];
+            };
+        };
+        responses: {
+            /** @description Connection metadata */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatabaseConnection"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
     listSecrets: {
         parameters: {
             query?: never;
@@ -6523,6 +7659,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
             422: components["responses"]["ValidationError"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
@@ -6553,6 +7690,77 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    migrateSecretToOpenBao: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                secretName: components["parameters"]["SecretName"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MigrateSecretRequest"];
+            };
+        };
+        responses: {
+            /** @description Activated secret metadata, never the value */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Secret"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    reconcileSecretWrite: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                requestId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Activated secret metadata, never the value */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Secret"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
             default: components["responses"]["InternalError"];
@@ -7692,7 +8900,10 @@ export interface operations {
     };
     getInboxEvent: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Explicitly request the whole event data as PII; requires `payload:read-internal` and a namespace reveal grant. */
+                reveal?: "pii";
+            };
             header?: never;
             path: {
                 namespaceId: components["parameters"]["NamespaceId"];
@@ -7708,6 +8919,7 @@ export interface operations {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
                     "X-Request-Id": components["headers"]["HttpRequestId"];
+                    "Cache-Control"?: "private, no-store";
                     [name: string]: unknown;
                 };
                 content: {
@@ -7717,6 +8929,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
             default: components["responses"]["InternalError"];
@@ -8511,11 +9724,12 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description A page of dead letters */
+            /** @description A page of dead letters without bodies or headers */
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
                     "X-Request-Id": components["headers"]["HttpRequestId"];
+                    "Cache-Control"?: "private, no-store";
                     [name: string]: unknown;
                 };
                 content: {
@@ -8533,7 +9747,10 @@ export interface operations {
     };
     getConnectorDeadLetter: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Explicitly request the retained letter values as PII; requires `payload:read-internal` and a namespace reveal grant. */
+                reveal?: "pii";
+            };
             header?: never;
             path: {
                 namespaceId: components["parameters"]["NamespaceId"];
@@ -8549,6 +9766,7 @@ export interface operations {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
                     "X-Request-Id": components["headers"]["HttpRequestId"];
+                    "Cache-Control"?: "private, no-store";
                     [name: string]: unknown;
                 };
                 content: {
@@ -8558,6 +9776,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
             default: components["responses"]["InternalError"];

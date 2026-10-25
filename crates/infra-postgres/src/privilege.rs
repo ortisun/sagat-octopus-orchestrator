@@ -116,7 +116,12 @@ WHERE r.rolname = current_user";
 
 /// Tables nobody may rewrite or erase: the journal, the payloads and the published versions. Checked
 /// when they exist (a schema migrated only up to feature 001 has none of them).
-const APPEND_ONLY: [&str; 3] = ["run_events", "payloads", "workflow_versions"];
+const APPEND_ONLY: [&str; 4] = [
+    "run_events",
+    "payloads",
+    "workflow_versions",
+    "leaf_collection_success_certifications",
+];
 
 const INSPECT_APPEND_ONLY: &str = "\
 SELECT c.oid IS NOT NULL AS table_exists, \

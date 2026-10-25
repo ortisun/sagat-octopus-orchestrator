@@ -70,6 +70,10 @@ with SyncSagatClient(config) as client:
         print(item.run_id)
 ```
 
+The blocking facade also exposes `update_chain`, `rerun_as_new` and
+`wait_for_chain_completion(namespace_id, chain_id)`. The chain wait follows `finalOutcome` across
+continuations; `wait_for_completion(run_id)` keeps waiting for that exact segment only.
+
 ## An activity: register it, serve it
 
 ```python
@@ -296,3 +300,10 @@ the committed protobuf code; the unit tests fail when any of them is behind. The
 ## License
 
 MIT. The wheel and source distribution include the license text in `LICENSE`.
+
+## Managed PostgreSQL connections
+
+Use the database builder with a logical connection created in Sagat. See the
+[five-language guide](../../docs/guides/managed-database-sdk.md) for typed parameters,
+result consumption, permissions and the shared real-service scenario. Credentials
+are resolved by the separate managed executor.

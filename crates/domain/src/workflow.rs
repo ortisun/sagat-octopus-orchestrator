@@ -20,10 +20,16 @@
 //! Wire formats (JSON) are an adapter concern: this module holds no serialization, and expressions
 //! are opaque text evaluated by an adapter (`FR-002-001`, ADR-0003).
 
+mod collection_shape;
+pub use collection_shape::{CollectionSuccessShapeError, LeafCollectionSuccessShape};
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::time::Duration;
 
+use crate::database::{
+    DatabaseOperation, MANAGED_DATABASE_ACTIVITY, MANAGED_DATABASE_PREFIX, OperationKind,
+};
 use crate::execution::{ApprovalPolicy, ExecutionInstanceId};
 use crate::identity::{Slug, clip};
 use crate::saga::{EffectPolicy, NodeOrigin, OnCompensationFailure, SagaCancelPolicy};
@@ -59,6 +65,8 @@ const MAX_EXPRESSION_LEN: usize = 2048;
 /// Typed errors of the definition model. Messages echo at most a clipped fragment of the input.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum WorkflowError {
+    #[error("invalid managed database node or reserved activity name")]
+    InvalidDatabaseNode,
     #[error("invalid node id '{0}'")]
     InvalidNodeId(String),
     #[error("invalid activity name '{0}'")]
@@ -67,6 +75,8 @@ pub enum WorkflowError {
     InvalidEventType(String),
     #[error("invalid expression: {0}")]
     InvalidExpression(ExpressionViolation),
+    #[error("node '{node}': expression exceeds the supported limit of {limit} UTF-8 bytes")]
+    ExpressionByteLimit { node: NodeId, limit: usize },
     #[error("a workflow needs at least one node")]
     NoNodes,
     #[error("a workflow may have at most {MAX_NODES} nodes, found {0}")]
@@ -762,6 +772,7 @@ pub struct Node {
     timeout: Option<Duration>,
     effect: EffectPolicy,
     origin: NodeOrigin,
+    database: Option<DatabaseOperation>,
 }
 
 impl Node {
@@ -775,7 +786,41 @@ impl Node {
             timeout: None,
             effect: EffectPolicy::NONE,
             origin: NodeOrigin::Declared,
+            database: None,
         }
+    }
+
+    /// Managed operations always use one attempt. An ambiguous write requires manual review.
+    #[must_use]
+    pub fn database(id: NodeId, operation: DatabaseOperation) -> Self {
+        let effect = if operation.kind == OperationKind::Execute {
+            EffectPolicy {
+                high_risk: true,
+                irreversible: true,
+                ..EffectPolicy::NONE
+            }
+        } else {
+            EffectPolicy::NONE
+        };
+        let mut node = Self::new(
+            id,
+            NodeKind::Activity {
+                activity: ActivityName(MANAGED_DATABASE_ACTIVITY.to_owned()),
+                retry: RetryPolicy::no_retry(),
+                compensate_with: None,
+                reconcile_with: None,
+                idempotency_template: None,
+                secrets: Vec::new(),
+            },
+        )
+        .with_effect(effect);
+        node.database = Some(operation);
+        node
+    }
+
+    #[must_use]
+    pub const fn database_operation(&self) -> Option<&DatabaseOperation> {
+        self.database.as_ref()
     }
 
     /// What the author says about the effect of this activity (irreversible, high risk, how its
@@ -1193,6 +1238,21 @@ impl WorkflowDefinition {
         kind: GraphKind,
         continuation_policy: Option<ContinuationPolicy>,
     ) -> Result<Self, WorkflowError> {
+        // Attempt credential pins and managed executor authorization are root-only. A typed
+        // caller must obey the same composition boundary as the public IR codec (ADR-0036).
+        let managed_root = nodes.iter().any(|node| node.database_operation().is_some());
+        let managed_body = bodies
+            .iter()
+            .any(|body| body.nodes().any(|node| node.database_operation().is_some()));
+        let scoped_root = nodes.iter().any(|node| {
+            matches!(
+                node.kind(),
+                NodeKind::ForEach { .. } | NodeKind::While { .. } | NodeKind::RepeatUntil { .. }
+            )
+        });
+        if managed_body || (managed_root && (scoped_root || continuation_policy.is_some())) {
+            return Err(WorkflowError::InvalidDatabaseNode);
+        }
         let graph = DefinitionGraph::new(entrypoint, nodes, kind)?;
         if kind == GraphKind::StructuredContinuation
             && !graph
@@ -1487,6 +1547,18 @@ impl WorkflowDefinition {
         4096 + self.total_len() * PER_NODE
             + (region_entries + saga_entries + self.graph.scopes.len() + body_regions)
                 * PER_REGION_ENTRY
+            + self
+                .nodes()
+                .filter_map(Node::database_operation)
+                .map(DatabaseOperation::footprint)
+                .sum::<usize>()
+            + self
+                .bodies
+                .values()
+                .flat_map(|body| body.nodes())
+                .filter_map(Node::database_operation)
+                .map(DatabaseOperation::footprint)
+                .sum::<usize>()
     }
 
     #[must_use]
@@ -1691,7 +1763,10 @@ fn check_graph_kind(node: &Node, kind: GraphKind) -> Result<(), WorkflowError> {
                 return Err(invalid("switch cannot declare next, onError or timeout"));
             }
             if cases.iter().any(|case| case.when().as_str().len() > 1024) {
-                return Err(invalid("predicate exceeds the supported byte limit"));
+                return Err(WorkflowError::ExpressionByteLimit {
+                    node: node.id().clone(),
+                    limit: 1024,
+                });
             }
         }
         NodeKind::Approval { .. } => {
@@ -1831,10 +1906,10 @@ fn check_graph_kind(node: &Node, kind: GraphKind) -> Result<(), WorkflowError> {
             .iter()
             .any(|expression| expression.as_str().len() > 1024)
         {
-            return Err(scope_error(
-                node.id(),
-                "expression exceeds the supported byte limit",
-            ));
+            return Err(WorkflowError::ExpressionByteLimit {
+                node: node.id().clone(),
+                limit: 1024,
+            });
         }
     }
     Ok(())
@@ -1962,6 +2037,49 @@ fn check_body_references(
 }
 
 fn check_node(node: &Node) -> Result<(), WorkflowError> {
+    if let NodeKind::Activity {
+        activity,
+        compensate_with,
+        reconcile_with,
+        retry,
+        secrets,
+        idempotency_template,
+    } = &node.kind
+    {
+        let reserved = |a: &ActivityName| a.as_str().starts_with(MANAGED_DATABASE_PREFIX);
+        if compensate_with.as_ref().is_some_and(reserved)
+            || reconcile_with.as_ref().is_some_and(reserved)
+            || (reserved(activity) && node.database.is_none())
+        {
+            return Err(WorkflowError::InvalidDatabaseNode);
+        }
+        if let Some(operation) = &node.database {
+            operation
+                .validate()
+                .map_err(|_| WorkflowError::InvalidDatabaseNode)?;
+            let expected = if operation.kind == OperationKind::Execute {
+                EffectPolicy {
+                    high_risk: true,
+                    irreversible: true,
+                    ..EffectPolicy::NONE
+                }
+            } else {
+                EffectPolicy::NONE
+            };
+            if activity.as_str() != MANAGED_DATABASE_ACTIVITY
+                || *retry != RetryPolicy::no_retry()
+                || !secrets.is_empty()
+                || compensate_with.is_some()
+                || reconcile_with.is_some()
+                || idempotency_template.is_some()
+                || node.effect != expected
+            {
+                return Err(WorkflowError::InvalidDatabaseNode);
+            }
+        }
+    } else if node.database.is_some() {
+        return Err(WorkflowError::InvalidDatabaseNode);
+    }
     if let Some(timeout) = node.timeout {
         duration_in_range(&node.id, "timeout", timeout)?;
     }

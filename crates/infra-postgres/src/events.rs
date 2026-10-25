@@ -13,16 +13,13 @@ use std::time::Duration;
 use sagat_application::definitions::DefinitionStore;
 use sagat_application::error::StoreError;
 use sagat_application::events::{
-    Admission, Delivery, EndpointRecord, EventStore, NewEvent, StoredEvent, WebhookAdmission,
-    WebhookAdmissionAudits, WebhookEndpointMismatch,
+    Admission, EndpointRecord, EventStore, NewEvent, WebhookAdmission, WebhookAdmissionAudits,
+    WebhookEndpointMismatch,
 };
 use sagat_application::secrets::StoredSecret;
 use sagat_domain::audit::AuditRecord;
-use sagat_domain::events::{
-    EndpointId, EndpointLimits, EndpointStatus, EventEnvelope, EventId, EventKey, InboxStatus,
-    WebhookAuthentication,
-};
-use sagat_domain::execution::{CorrelationKey, RunId};
+use sagat_domain::events::{EndpointId, EndpointLimits, EndpointStatus, WebhookAuthentication};
+use sagat_domain::execution::CorrelationKey;
 use sagat_domain::identity::{Namespace, NamespaceId, Slug, TenantId};
 use sagat_domain::secrets::SecretName;
 use sagat_domain::workflow::EventType;
@@ -127,26 +124,6 @@ fn endpoint_from_row(row: &PgRow) -> Result<EndpointRecord, StoreError> {
 
 fn secs(value: Duration) -> i32 {
     i32::try_from(value.as_secs()).unwrap_or(i32::MAX)
-}
-
-fn envelope_from_row(row: &PgRow) -> Result<EventEnvelope, StoreError> {
-    let source: String = col(row, "source")?;
-    let id: String = col(row, "event_id")?;
-    let kind: String = col(row, "event_type")?;
-    let subject: Option<String> = col(row, "subject")?;
-    let correlation: Option<String> = col(row, "correlation_key")?;
-    EventEnvelope::new(
-        EventKey {
-            source: Slug::parse(&source).map_err(|_| corrupt("event source"))?,
-            event_id: EventId::parse(&id).map_err(|_| corrupt("event id"))?,
-        },
-        EventType::parse(&kind).map_err(|_| corrupt("event type"))?,
-        subject.as_deref(),
-        correlation
-            .map(|k| CorrelationKey::parse(&k).map_err(|_| corrupt("event correlation key")))
-            .transpose()?,
-    )
-    .map_err(|_| corrupt("event"))
 }
 
 impl EventStore for PgRunStore {
@@ -434,71 +411,6 @@ impl EventStore for PgRunStore {
             tx.commit().await.map_err(store_error)?;
         }
         Ok(WebhookAdmission::Admitted(admission))
-    }
-
-    async fn event(
-        &self,
-        tenant: TenantId,
-        namespace: NamespaceId,
-        key: &EventKey,
-    ) -> Result<Option<StoredEvent>, StoreError> {
-        let Some(row) = sqlx::query(
-            "SELECT source, event_id, event_type, correlation_key, subject, occurred_at, payload, \
-                    received_at, expires_at, status, attempts, last_error, dispatched_at \
-             FROM inbox_events \
-             WHERE tenant_id = $1 AND namespace_id = $2 AND source = $3 AND event_id = $4",
-        )
-        .bind(tenant.as_uuid())
-        .bind(namespace.as_uuid())
-        .bind(key.source.as_str())
-        .bind(key.event_id.as_str())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(store_error)?
-        else {
-            return Ok(None);
-        };
-        let deliveries = sqlx::query(
-            "SELECT consumer, run_id, node, trigger_id, delivered_at FROM event_deliveries \
-             WHERE tenant_id = $1 AND namespace_id = $2 AND source = $3 AND event_id = $4 \
-             ORDER BY delivered_at, consumer",
-        )
-        .bind(tenant.as_uuid())
-        .bind(namespace.as_uuid())
-        .bind(key.source.as_str())
-        .bind(key.event_id.as_str())
-        .fetch_all(&self.pool)
-        .await
-        .map_err(store_error)?
-        .iter()
-        .map(|d| {
-            Ok(Delivery {
-                consumer: col(d, "consumer")?,
-                run_id: col::<Option<Uuid>>(d, "run_id")?.map(RunId::new),
-                node: col(d, "node")?,
-                trigger_id: col(d, "trigger_id")?,
-                delivered_at: col(d, "delivered_at")?,
-            })
-        })
-        .collect::<Result<Vec<_>, StoreError>>()?;
-        let status: String = col(&row, "status")?;
-        let attempts: i32 = col(&row, "attempts")?;
-        Ok(Some(StoredEvent {
-            tenant_id: tenant,
-            namespace_id: namespace,
-            envelope: envelope_from_row(&row)?,
-            occurred_at: col(&row, "occurred_at")?,
-            payload: col(&row, "payload")?,
-            received_at: col(&row, "received_at")?,
-            expires_at: col(&row, "expires_at")?,
-            status: status
-                .parse::<InboxStatus>()
-                .map_err(|()| corrupt("inbox status"))?,
-            attempts: u32::try_from(attempts).map_err(|_| corrupt("inbox attempts"))?,
-            last_error: col(&row, "last_error")?,
-            dispatched_at: col(&row, "dispatched_at")?,
-            deliveries,
-        }))
     }
 }
 

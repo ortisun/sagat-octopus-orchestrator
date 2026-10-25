@@ -289,3 +289,71 @@ automated CI evidence for this branch is recorded separately.
 G167 resolved by T007-056 (2026-10-12): the authorized Studio confirmation uses the existing
 signal endpoint; eight component tests and a real browser/API/engine waiting-run journey pass.
 The earlier entry describes the restyle's scope, not the current action set.
+
+
+## Feature 016 integration checkpoint — 2026-10-17
+
+G144 now has an explicit classified disclosure view alongside structural inspection. The real
+Chromium journey passed for viewer, developer, operator and revealer, including keyboard reveal,
+forbidden canary absence and no persisted PII. This focused journey excludes the unrelated script
+sandbox journey and is not human screen-reader acceptance or the full Studio release gate.
+
+Focused commands and remaining gates are in
+`tasks/project-completion/integration-notes.md`; final release acceptance remains pending.
+
+## UX review 2026-10-14 (T007-057)
+
+A review of the built Studio in Chromium against the running control plane (15 screens, seven widths from 320 to 1920 px, light
+and dark; page overflow, clipped or overlapping text, occluded text, touch-target size, scroll regions) compared with the Temporal Web
+UI and the Windmill flow editor. Findings are labelled UXR-nn here instead of taking D/G numbers, which other branches are claiming.
+
+| | Finding | Status |
+|---|---|---|
+| UXR-01 | On a phone the navigation and top bar stayed pinned: 262 of 640 px. | Fixed (T007-057): one scrolling document below 45rem. |
+| UXR-02 | The run canvas was 286 px tall at 768 px and began 700-1050 px down; the selected step opened below it. | Fixed: canvas height is a length (`clamp(22rem, 68vh, 46rem)`); the step is a sticky side panel where the *page area* (not the window: the runs list takes some) is 62rem or wider. Below that it still opens under the graph and scrolls into view, as D158 had it. |
+| UXR-03 | The overview map covered cards, was light in the dark theme; the credit overlapped a failure label. | Fixed: map on request, themed; credit at the bottom centre. React Flow's credit is kept. |
+| UXR-04 | Journal table: nine columns, eight widths. | Fixed, with a test that counts columns against widths. |
+| UXR-05 | Filters lost on reload/back and not shareable; no way to open a run by id; no way to start a run. | Fixed for status and workflow (address), Workflows search (`?q=`, over the workflows loaded so far, and it says so), open by id, *Start run…*. Time-range and correlation-id filters need API support: not built. |
+| UXR-06 | Three date formats and no UTC on hover outside Runs. | Fixed: one formatter (`formatLocal`), `Moment` with the UTC tooltip. A relative/UTC switch is not built. |
+| UXR-07 | Five disabled actions each repeating "The run is finished." | Fixed: said once when it is the same for all, each button still described by it (`aria-describedby`). |
+| UXR-08 | Editor: toolbar orphaned *Publish…*, palette sentences pushed the canvas down at 1024 px, *Add trigger* wrapped, description in monospace. | Fixed. The editor is still not a full-height application layout. |
+| UXR-09 | The runs list was a table of six columns at 768 px (748 px of sideways scroll, status off screen). | Fixed: cards below 74rem. On a phone the Workflows list hides the draft revision and the last update (they are there from 45rem). |
+
+Not done, and why (each is a feature, not a defect, and needs its own spec delta and tests):
+
+- **A start-run form generated from the workflow's input schema.** *Start run…* exists (T007-057) with a typed JSON object, but the
+  input is not validated against `inputSchema` in the browser (the platform answers 422 and the Studio shows it) and has no
+  fields, defaults or saved inputs. It also takes no version, correlation id or deadline.
+- **A real timeline of bars** (already G168), **compact cards or an automatic fit** (D-era decision: graphs open at a readable 1:1, T007-049), a **⌘K
+  palette**, **saved views**, **batch actions**, **test-up-to-step** in the editor, a saga drawn as a group with a compensation lane.
+- **A sticky runs list** beside a long run: the list scrolls away with the detail on wide screens.
+- **Keeping the session across a reload** needs an ADR (D144 keeps the token in memory on purpose).
+- Not measured: screen readers, touch devices, slow networks, runs of more than the 12 in the demo namespace.
+
+## Menu hierarchy 2026-10-14 (T007-058)
+
+The owner's reading: the namespace is the tenant of the product, so the menus that depend on it belong under it and must appear only once it
+is chosen. The finding is UXR-10: the sidebar listed all six destinations at one level beside a selector, and the shell chose the first namespace by
+itself, so the dependent menus were always there and the hierarchy was never visible.
+
+| | Finding | Status |
+|---|---|---|
+| UXR-10 | Six peers in the menu, five of which depend on the namespace; the first namespace was chosen for the person. | Fixed (T007-058): *Namespaces*, then the selector, then Workflows, Runs, Operations, Scripts and Integrations under it, only while a namespace is chosen. No automatic choice. |
+
+Decisions taken here (the owner may reverse any of them):
+
+- **No automatic choice, not even for a single namespace.** With one, the person's click is one extra step on a first visit; the gain is that
+  the menu says the same thing every time and that nothing is shown as chosen that the person did not choose. A remembered choice (it is a slug,
+  not a secret: `studio.namespace`) is still kept across reloads while the tenant lists it.
+- **A remembered choice the tenant no longer lists is forgotten**, not replaced by the first namespace as before.
+- **There is no way back to "no namespace"** once one is chosen, other than choosing another. Nothing needs it today; add it if a tenant-level
+  page other than *Namespaces* appears.
+- **A page of a namespace without one says so in place** (*Choose a namespace*) instead of redirecting, so an address keeps its meaning and opens by
+  itself when a namespace is chosen in the menu. The pages' own "Select a namespace…" lines (Operations, Integrations) stay as their own
+  defence; the router reaches them only in the moment before a dropped remembered choice is cleared.
+- **Selecting does not navigate.** On *Namespaces*, *Use namespace* opens the menu and stays; moving to a list is the person's next click.
+- Changing the namespace while a *detail* page (`/runs/:id`, `/workflows/:id`) is open is unchanged: the page asks about its own id in the new
+  namespace and says it was not found. It could return to the list instead; not built.
+
+Not proved: the Playwright journeys (see T007-058), including their axe checks of the new nested list (a named list inside the navigation landmark),
+and any assistive technology on it.

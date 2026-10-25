@@ -1,0 +1,90 @@
+{
+  "canonical": {
+    "boundary": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"a\",\"kind\":\"Workflow\",\"limits\":{\"maxDepth\":1,\"maxInstances\":3},\"metadata\":{\"name\":\"workflow-limit-boundary\"},\"nodes\":[{\"activity\":\"workflow.limit.a\",\"id\":\"a\",\"next\":\"b\",\"type\":\"activity\"},{\"activity\":\"workflow.limit.b\",\"id\":\"b\",\"next\":\"done\",\"type\":\"activity\"},{\"id\":\"done\",\"type\":\"end\"}]}",
+    "excess": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"a\",\"kind\":\"Workflow\",\"limits\":{\"maxDepth\":8,\"maxInstances\":2},\"metadata\":{\"name\":\"workflow-limit-excess\"},\"nodes\":[{\"activity\":\"workflow.limit.a\",\"id\":\"a\",\"next\":\"b\",\"type\":\"activity\"},{\"activity\":\"workflow.limit.b\",\"id\":\"b\",\"next\":\"done\",\"type\":\"activity\"},{\"id\":\"done\",\"type\":\"end\"}]}"
+  },
+  "errors": {
+    "depth-excess": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "depth-zero": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "instances-excess": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "instances-zero": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    }
+  },
+  "workflows": {
+    "boundary": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "a",
+      "kind": "Workflow",
+      "limits": {
+        "maxDepth": 1,
+        "maxInstances": 3
+      },
+      "metadata": {
+        "name": "workflow-limit-boundary"
+      },
+      "nodes": [
+        {
+          "activity": "workflow.limit.a",
+          "id": "a",
+          "next": "b",
+          "type": "activity"
+        },
+        {
+          "activity": "workflow.limit.b",
+          "id": "b",
+          "next": "done",
+          "type": "activity"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ]
+    },
+    "excess": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "a",
+      "kind": "Workflow",
+      "limits": {
+        "maxDepth": 8,
+        "maxInstances": 2
+      },
+      "metadata": {
+        "name": "workflow-limit-excess"
+      },
+      "nodes": [
+        {
+          "activity": "workflow.limit.a",
+          "id": "a",
+          "next": "b",
+          "type": "activity"
+        },
+        {
+          "activity": "workflow.limit.b",
+          "id": "b",
+          "next": "done",
+          "type": "activity"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ]
+    }
+  }
+}

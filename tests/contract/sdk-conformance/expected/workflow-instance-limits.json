@@ -1,0 +1,323 @@
+{
+  "faultsApplied": [],
+  "observations": [
+    {
+      "id": "start-boundary",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "start-worker-boundary",
+      "ok": true,
+      "op": "startWorker",
+      "result": {
+        "protocolVersion": "1.5"
+      }
+    },
+    {
+      "id": "wait-boundary",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "two-boundary-completions",
+      "ok": true,
+      "op": "awaitWorkerLog"
+    },
+    {
+      "id": "stop-worker-boundary",
+      "ok": true,
+      "op": "stopWorker"
+    },
+    {
+      "id": "start-excess",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:2>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:5>",
+        "workflowId": "<uuid:6>"
+      }
+    },
+    {
+      "id": "start-worker-excess",
+      "ok": true,
+      "op": "startWorker",
+      "result": {
+        "protocolVersion": "1.5"
+      }
+    },
+    {
+      "id": "wait-excess",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "FAILED",
+        "traceId": "<trace:2>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:5>",
+        "workflowId": "<uuid:6>"
+      }
+    },
+    {
+      "id": "two-excess-completions",
+      "ok": true,
+      "op": "awaitWorkerLog"
+    },
+    {
+      "id": "stop-worker-excess",
+      "ok": true,
+      "op": "stopWorker"
+    }
+  ],
+  "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "a",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "b",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "CANCELLED",
+          "type": "end",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:4>",
+      "status": "FAILED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "a",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "b",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "end",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:1>",
+      "status": "SUCCEEDED"
+    }
+  ],
+  "sourceEvidence": [
+    {
+      "collection": null,
+      "runId": "<uuid:4>",
+      "status": "FAILED",
+      "stopCode": "INSTANCE_LIMIT"
+    },
+    {
+      "collection": null,
+      "runId": "<uuid:1>",
+      "status": "SUCCEEDED",
+      "stopCode": null
+    }
+  ],
+  "workerLog": {
+    "boundary": [
+      {
+        "abortedReason": null,
+        "activity": "workflow.limit.a",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:a",
+        "input": {},
+        "instance": {
+          "definitionNodeId": "a",
+          "instancePath": []
+        },
+        "kind": "activity",
+        "node": "a",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "workflow.limit.b",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:b",
+        "input": {},
+        "instance": {
+          "definitionNodeId": "b",
+          "instancePath": []
+        },
+        "kind": "activity",
+        "node": "b",
+        "outcome": "returned",
+        "steps": {
+          "a": {
+            "ok": true
+          }
+        },
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      }
+    ],
+    "excess": [
+      {
+        "abortedReason": null,
+        "activity": "workflow.limit.a",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:4>:a",
+        "input": {},
+        "instance": {
+          "definitionNodeId": "a",
+          "instancePath": []
+        },
+        "kind": "activity",
+        "node": "a",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:2>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "workflow.limit.b",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:4>:b",
+        "input": {},
+        "instance": {
+          "definitionNodeId": "b",
+          "instancePath": []
+        },
+        "kind": "activity",
+        "node": "b",
+        "outcome": "returned",
+        "steps": {
+          "a": {
+            "ok": true
+          }
+        },
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:2>",
+        "traceparentPresent": true
+      }
+    ]
+  }
+}

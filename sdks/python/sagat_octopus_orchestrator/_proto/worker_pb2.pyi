@@ -1,10 +1,29 @@
 from google.protobuf.internal import containers as _containers
+from google.protobuf.internal import enum_type_wrapper as _enum_type_wrapper
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
 from collections.abc import Iterable as _Iterable, Mapping as _Mapping
 from typing import ClassVar as _ClassVar, Optional as _Optional, Union as _Union
 
 DESCRIPTOR: _descriptor.FileDescriptor
+
+class DatabaseOperationKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    DATABASE_OPERATION_UNSPECIFIED: _ClassVar[DatabaseOperationKind]
+    DATABASE_QUERY: _ClassVar[DatabaseOperationKind]
+    DATABASE_EXECUTE: _ClassVar[DatabaseOperationKind]
+
+class DatabaseTlsMode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    DATABASE_TLS_UNSPECIFIED: _ClassVar[DatabaseTlsMode]
+    DATABASE_TLS_VERIFY_FULL: _ClassVar[DatabaseTlsMode]
+    DATABASE_TLS_DEVELOPMENT_PLAINTEXT: _ClassVar[DatabaseTlsMode]
+DATABASE_OPERATION_UNSPECIFIED: DatabaseOperationKind
+DATABASE_QUERY: DatabaseOperationKind
+DATABASE_EXECUTE: DatabaseOperationKind
+DATABASE_TLS_UNSPECIFIED: DatabaseTlsMode
+DATABASE_TLS_VERIFY_FULL: DatabaseTlsMode
+DATABASE_TLS_DEVELOPMENT_PLAINTEXT: DatabaseTlsMode
 
 class WorkerCapabilities(_message.Message):
     __slots__ = ("languages", "activities", "pools", "max_inflight", "protocol_version")
@@ -329,3 +348,91 @@ class StepCommandResponse(_message.Message):
     step_status: str
     run_status: str
     def __init__(self, command_id: _Optional[str] = ..., already_applied: _Optional[bool] = ..., step_status: _Optional[str] = ..., run_status: _Optional[str] = ...) -> None: ...
+
+class DatabaseValue(_message.Message):
+    __slots__ = ("null_value", "boolean_value", "integer_value", "decimal_value", "float_value", "text_value", "timestamp_value", "date_value", "binary_value", "json_value")
+    NULL_VALUE_FIELD_NUMBER: _ClassVar[int]
+    BOOLEAN_VALUE_FIELD_NUMBER: _ClassVar[int]
+    INTEGER_VALUE_FIELD_NUMBER: _ClassVar[int]
+    DECIMAL_VALUE_FIELD_NUMBER: _ClassVar[int]
+    FLOAT_VALUE_FIELD_NUMBER: _ClassVar[int]
+    TEXT_VALUE_FIELD_NUMBER: _ClassVar[int]
+    TIMESTAMP_VALUE_FIELD_NUMBER: _ClassVar[int]
+    DATE_VALUE_FIELD_NUMBER: _ClassVar[int]
+    BINARY_VALUE_FIELD_NUMBER: _ClassVar[int]
+    JSON_VALUE_FIELD_NUMBER: _ClassVar[int]
+    null_value: bool
+    boolean_value: bool
+    integer_value: str
+    decimal_value: str
+    float_value: float
+    text_value: str
+    timestamp_value: str
+    date_value: str
+    binary_value: bytes
+    json_value: str
+    def __init__(self, null_value: _Optional[bool] = ..., boolean_value: _Optional[bool] = ..., integer_value: _Optional[str] = ..., decimal_value: _Optional[str] = ..., float_value: _Optional[float] = ..., text_value: _Optional[str] = ..., timestamp_value: _Optional[str] = ..., date_value: _Optional[str] = ..., binary_value: _Optional[bytes] = ..., json_value: _Optional[str] = ...) -> None: ...
+
+class PostgresConnection(_message.Message):
+    __slots__ = ("host", "port", "database", "tls", "ca_pem")
+    HOST_FIELD_NUMBER: _ClassVar[int]
+    PORT_FIELD_NUMBER: _ClassVar[int]
+    DATABASE_FIELD_NUMBER: _ClassVar[int]
+    TLS_FIELD_NUMBER: _ClassVar[int]
+    CA_PEM_FIELD_NUMBER: _ClassVar[int]
+    host: str
+    port: int
+    database: str
+    tls: DatabaseTlsMode
+    ca_pem: str
+    def __init__(self, host: _Optional[str] = ..., port: _Optional[int] = ..., database: _Optional[str] = ..., tls: _Optional[_Union[DatabaseTlsMode, str]] = ..., ca_pem: _Optional[str] = ...) -> None: ...
+
+class DatabaseLimits(_message.Message):
+    __slots__ = ("max_statement_bytes", "max_parameters", "max_parameter_bytes", "max_rows", "max_result_bytes", "timeout_ms", "connect_timeout_ms", "pool_size", "idle_timeout_ms")
+    MAX_STATEMENT_BYTES_FIELD_NUMBER: _ClassVar[int]
+    MAX_PARAMETERS_FIELD_NUMBER: _ClassVar[int]
+    MAX_PARAMETER_BYTES_FIELD_NUMBER: _ClassVar[int]
+    MAX_ROWS_FIELD_NUMBER: _ClassVar[int]
+    MAX_RESULT_BYTES_FIELD_NUMBER: _ClassVar[int]
+    TIMEOUT_MS_FIELD_NUMBER: _ClassVar[int]
+    CONNECT_TIMEOUT_MS_FIELD_NUMBER: _ClassVar[int]
+    POOL_SIZE_FIELD_NUMBER: _ClassVar[int]
+    IDLE_TIMEOUT_MS_FIELD_NUMBER: _ClassVar[int]
+    max_statement_bytes: int
+    max_parameters: int
+    max_parameter_bytes: int
+    max_rows: int
+    max_result_bytes: int
+    timeout_ms: int
+    connect_timeout_ms: int
+    pool_size: int
+    idle_timeout_ms: int
+    def __init__(self, max_statement_bytes: _Optional[int] = ..., max_parameters: _Optional[int] = ..., max_parameter_bytes: _Optional[int] = ..., max_rows: _Optional[int] = ..., max_result_bytes: _Optional[int] = ..., timeout_ms: _Optional[int] = ..., connect_timeout_ms: _Optional[int] = ..., pool_size: _Optional[int] = ..., idle_timeout_ms: _Optional[int] = ...) -> None: ...
+
+class ResolvedDatabase(_message.Message):
+    __slots__ = ("connection_id", "connection_revision", "postgres", "operation", "statement", "parameters", "limits", "credential", "lease_expires_at_epoch_ms", "namespace_id", "connection_name", "tenant_id")
+    CONNECTION_ID_FIELD_NUMBER: _ClassVar[int]
+    CONNECTION_REVISION_FIELD_NUMBER: _ClassVar[int]
+    POSTGRES_FIELD_NUMBER: _ClassVar[int]
+    OPERATION_FIELD_NUMBER: _ClassVar[int]
+    STATEMENT_FIELD_NUMBER: _ClassVar[int]
+    PARAMETERS_FIELD_NUMBER: _ClassVar[int]
+    LIMITS_FIELD_NUMBER: _ClassVar[int]
+    CREDENTIAL_FIELD_NUMBER: _ClassVar[int]
+    LEASE_EXPIRES_AT_EPOCH_MS_FIELD_NUMBER: _ClassVar[int]
+    NAMESPACE_ID_FIELD_NUMBER: _ClassVar[int]
+    CONNECTION_NAME_FIELD_NUMBER: _ClassVar[int]
+    TENANT_ID_FIELD_NUMBER: _ClassVar[int]
+    connection_id: str
+    connection_revision: int
+    postgres: PostgresConnection
+    operation: DatabaseOperationKind
+    statement: str
+    parameters: _containers.RepeatedCompositeFieldContainer[DatabaseValue]
+    limits: DatabaseLimits
+    credential: ResolvedSecret
+    lease_expires_at_epoch_ms: int
+    namespace_id: str
+    connection_name: str
+    tenant_id: str
+    def __init__(self, connection_id: _Optional[str] = ..., connection_revision: _Optional[int] = ..., postgres: _Optional[_Union[PostgresConnection, _Mapping]] = ..., operation: _Optional[_Union[DatabaseOperationKind, str]] = ..., statement: _Optional[str] = ..., parameters: _Optional[_Iterable[_Union[DatabaseValue, _Mapping]]] = ..., limits: _Optional[_Union[DatabaseLimits, _Mapping]] = ..., credential: _Optional[_Union[ResolvedSecret, _Mapping]] = ..., lease_expires_at_epoch_ms: _Optional[int] = ..., namespace_id: _Optional[str] = ..., connection_name: _Optional[str] = ..., tenant_id: _Optional[str] = ...) -> None: ...

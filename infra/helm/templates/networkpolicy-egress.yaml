@@ -30,6 +30,11 @@ spec:
     - ports: [{port: {{ $oidc.port }}, protocol: TCP}]
       to:
         {{- toYaml $oidc.to | nindent 8 }}
+    {{- if .Values.openbao.enabled }}
+    - ports: [{port: {{ .Values.openbao.network.port }}, protocol: TCP}]
+      to:
+        {{- toYaml .Values.openbao.network.to | nindent 8 }}
+    {{- end }}
     {{- with $egress.controlPlaneExtra }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
@@ -61,6 +66,11 @@ spec:
     - ports: [{port: {{ $egress.nats.port }}, protocol: TCP}]
       to:
         {{- toYaml $egress.nats.to | nindent 8 }}
+    {{- end }}
+    {{- if .Values.openbao.enabled }}
+    - ports: [{port: {{ .Values.openbao.network.port }}, protocol: TCP}]
+      to:
+        {{- toYaml .Values.openbao.network.to | nindent 8 }}
     {{- end }}
     {{- with $egress.engineExtra }}
     {{- toYaml . | nindent 4 }}

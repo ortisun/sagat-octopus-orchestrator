@@ -139,3 +139,6 @@ supersedes the earlier separate-revision allocation. Execution may adopt typed s
 This approves the described dependency for implementation, not a runtime guarantee. Canonical
 contracts, migration/replay, tenant/fault tests and applicable five-SDK evidence remain the
 feature-014 release gates; existing feature behavior stays supported.
+## Approved dependent delivery: database connections
+
+Feature [017](../017-database-connections/spec.md) and [ADR-0035](../../docs/adr/ADR-0035-database-connections-and-managed-execution.md) were approved on 2026-10-16. Its [plan](../017-database-connections/plan.md) defines the bounded extension to shared contracts, admission/leases, effects, SDKs, Studio, telemetry, secret-provider/security and immutable revisions. Existing transactional, tenant and general payload-inspection guarantees remain binding. Track implementation and new runtime evidence in feature 017; this dependency note does not mark its requirements complete.

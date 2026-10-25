@@ -18,8 +18,8 @@ use std::sync::Arc;
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::execution::{
     AddressedRunEvent, CorrelationKey, Evaluation, ExecutionError, ExecutionInstanceId,
-    FailureCode, InstancePath, Progress, Resolution, RunEvent, RunId, RunState, RunStatus,
-    StopReason,
+    FailureCode, InstancePath, PathExecutionState, Progress, Resolution, RunEvent, RunId, RunState,
+    RunStatus, StopReason,
 };
 use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_domain::workflow::{ActivityName, CancelPolicy, Expression, NodeId, WorkflowDefinition};
@@ -419,6 +419,20 @@ pub trait ExpressionEvaluator: Send + Sync {
         expression: &Expression,
         data: &RunData,
     ) -> Result<Vec<u8>, ExpressionFailure>;
+    /// Evaluates a typed database parameter with the same bounded expression semantics as the
+    /// workflow. Integer/decimal inputs must be strings so SDK numeric coercion cannot lose bits.
+    fn database_parameter(
+        &self,
+        parameter: &sagat_domain::database::Parameter,
+        _data: &RunData,
+    ) -> Result<sagat_domain::database::TypedValue, ExpressionFailure> {
+        match parameter {
+            sagat_domain::database::Parameter::Literal(value) => Ok(value.clone()),
+            sagat_domain::database::Parameter::Expression { .. } => Err(ExpressionFailure(
+                "database parameter evaluation unavailable".into(),
+            )),
+        }
+    }
 
     /// The JSON document a worker receives as the input of `node`.
     fn task_input(&self, data: &RunData, node: &NodeId) -> Vec<u8>;
@@ -527,6 +541,20 @@ pub trait ExpressionEvaluator: Send + Sync {
     fn is_json_object(&self, bytes: &[u8]) -> bool;
 }
 
+/// The evaluated answer for an End node that requested its `outputExpr`.
+///
+/// Absence is represented by the command that optionally carries this answer. In particular,
+/// [`Self::Succeeded`] containing `b"null"` is a successful JSON null and is not absence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EndOutputAnswer {
+    /// Canonical JSON bytes produced by the bounded expression evaluator.
+    Succeeded(Vec<u8>),
+    /// The expression could not be evaluated over the observed Run data.
+    ExpressionError,
+    /// The result exceeded the per-payload or retained Run-data ceiling.
+    RunDataLimit,
+}
+
 /// The run that started a child, and what becomes of the child when the parent stops.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParentLink {
@@ -546,6 +574,8 @@ pub struct ChildSpawn {
 /// Everything about a run that does not change after it is created.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunInfo {
+    /// Private managed execution provenance; ordinary published runs omit it.
+    pub origin: Option<crate::runs::RunOrigin>,
     pub run_id: RunId,
     pub tenant_id: TenantId,
     pub namespace_id: NamespaceId,
@@ -594,6 +624,176 @@ pub struct RunRecord {
     /// Set by the reads that serve the API (`get`, `list`); `None` for a run outside any chain and
     /// for a record loaded inside a command transaction.
     pub chain: Option<RunSegment>,
+}
+
+/// One consistent bounded read used to plan progress in an exact scoped path.
+#[derive(Debug, Clone)]
+pub struct PathExecutionSnapshot {
+    pub info: RunInfo,
+    pub definition: Arc<WorkflowDefinition>,
+    pub state: PathExecutionState,
+    pub data: RunData,
+}
+
+/// Bounded scoped execution store. Prepared writes recheck their snapshot revision under the run
+/// lock; metadata commands can instead read the current exact path in that transaction. Neither
+/// path reopens the full [`RunTx`] history.
+pub trait PathExecutionStore: Send + Sync {
+    type Tx: PathExecutionTx;
+
+    fn load_path(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+        path: InstancePath,
+    ) -> impl Future<Output = Result<Option<PathExecutionSnapshot>, StoreError>> + Send;
+
+    /// Locks the run and reads its current bounded path on that same connection. This is for
+    /// commands such as heartbeat that need no external I/O or expensive preparation; it avoids
+    /// global revision retry storms and never waits for a second pool connection under the lock.
+    fn begin_current_path(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+        path: InstancePath,
+        lock: crate::runs::Lock,
+    ) -> impl Future<Output = Result<Option<Self::Tx>, StoreError>> + Send;
+
+    /// Opens a short mutation transaction for an already evaluated snapshot. The adapter locks the
+    /// run and compares its revision before returning, so a caller never applies a decision made
+    /// from stale path state.
+    fn begin_path(
+        &self,
+        snapshot: PathExecutionSnapshot,
+        lock: crate::runs::Lock,
+    ) -> impl Future<Output = Result<Option<Self::Tx>, StoreError>> + Send;
+}
+
+/// One revision-fenced exact-path transaction. Scoped mutation capabilities belong on this port;
+/// [`RunTx`] intentionally remains the full replay oracle.
+pub trait PathExecutionTx: Send {
+    fn snapshot(&mut self) -> &mut PathExecutionSnapshot;
+
+    /// Run-wide logical output charge under the run lock, without reading historical values.
+    fn logical_output_bytes(&mut self) -> impl Future<Output = Result<u64, StoreError>> + Send;
+
+    /// Database time observed after the run lock was acquired.
+    fn now(&self) -> OffsetDateTime;
+
+    /// Both expiry clocks of a live lease in this exact path. An outside path is not visible.
+    fn lease_deadlines(
+        &mut self,
+        instance: &ExecutionInstanceId,
+    ) -> impl Future<Output = Result<Option<LeaseDeadlines>, StoreError>> + Send;
+
+    /// Checks this run's shard owner/generation at database time and keeps its shared fence until
+    /// commit. A lease of another shard never authorizes this transaction.
+    fn holds_shard(
+        &mut self,
+        owner: &str,
+        lease: crate::shards::Lease,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    fn lease_expiry(
+        &mut self,
+        instance: &ExecutionInstanceId,
+    ) -> impl Future<Output = Result<Option<OffsetDateTime>, StoreError>> + Send;
+
+    fn worker_drained(
+        &mut self,
+        subject: &str,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    fn worker_session_room(
+        &mut self,
+        session_id: uuid::Uuid,
+        token_hash: &[u8],
+        subject: &str,
+    ) -> impl Future<Output = Result<u32, StoreError>> + Send;
+
+    fn bound_patterns(
+        &mut self,
+        subject: &str,
+    ) -> impl Future<Output = Result<Vec<String>, StoreError>> + Send;
+
+    fn secret_inputs(
+        &mut self,
+        names: &[SecretName],
+    ) -> impl Future<Output = Result<SecretInputs, StoreError>> + Send;
+
+    fn secret_pool_refusal(
+        &mut self,
+        names: &[SecretName],
+        subject: &str,
+        check: PoolCheck,
+    ) -> impl Future<Output = Result<Option<SecretName>, StoreError>> + Send;
+
+    fn secret_versions(
+        &mut self,
+        names: &[SecretName],
+    ) -> impl Future<Output = Result<Vec<StoredSecret>, StoreError>> + Send;
+
+    /// Locks and checks the worker's current tenant authority through the bounded commit.
+    fn current_worker_authorized(
+        &mut self,
+        subject: &str,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    fn required_worker_protocol_minor(
+        &mut self,
+    ) -> impl Future<Output = Result<u32, StoreError>> + Send;
+
+    fn activity_admitted(
+        &mut self,
+        activity: &ActivityName,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    fn compensation_admitted(
+        &mut self,
+        activity: &ActivityName,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    /// Freezes script retention for a lease of `instance` in this exact structured path.
+    /// Forward work also freezes any script compensation or reconciliation it can create.
+    /// Derived work inherits the pin recorded by its originating forward attempt.
+    fn script_execution_admitted(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        activity: &ActivityName,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    fn lease_unexpired(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        token_hash: &[u8],
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    fn lease_matches(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        token_hash: &[u8],
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    fn reported_by(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        token_hash: &[u8],
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    fn replay(
+        &mut self,
+        idempotency: &Idempotency,
+    ) -> impl Future<Output = Result<Option<String>, StoreError>> + Send;
+
+    /// Journals and projects already-reduced exact-path events in this short transaction.
+    fn persist_addressed(
+        &mut self,
+        events: &[AddressedRunEvent],
+        outputs: &[(ExecutionInstanceId, Vec<u8>)],
+        effects: Effects,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    fn commit(self) -> impl Future<Output = Result<(), StoreError>> + Send;
 }
 
 /// Who caused the events of one transaction (stored with every journal entry).
@@ -718,8 +918,8 @@ pub enum PoolCheck {
 pub trait RunTx: Send {
     fn info(&self) -> &RunInfo;
 
-    /// The database clock when the transaction began: every deadline is computed from it, so all
-    /// instances agree regardless of their own clocks.
+    /// The database clock sampled after the required run lock is acquired: deadlines must not be
+    /// backdated by time spent waiting for a writer. All instances use the database's clock.
     fn now(&self) -> OffsetDateTime;
 
     /// The immutable definition and the mutable state, borrowed together.
@@ -780,6 +980,17 @@ pub trait RunTx: Send {
         owner: &str,
         lease: crate::shards::Lease,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    /// A new child is admitted by the owner of its immutable parent's shard. This exceptional
+    /// fence is valid only in the uncommitted creation transaction, before its first event.
+    /// Existing children and ordinary run mutations must use their own `holds_shard` fence.
+    fn holds_parent_shard(
+        &mut self,
+        _owner: &str,
+        _lease: crate::shards::Lease,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
 
     /// Whether the worker identity `subject` is being drained in this run's namespace. It takes
     /// the drain's lock in shared mode, held to the end of the transaction, and a drain takes it
@@ -862,6 +1073,81 @@ pub trait RunTx: Send {
             }
             self.lease_unexpired(instance.node(), token_hash).await
         }
+    }
+
+    /// Locks current membership authority through the capability disclosure commit.
+    /// Adapters that cannot prove current authority refuse credential delivery.
+    fn current_worker_authorized(
+        &mut self,
+        _subject: &str,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
+
+    /// Exact current machine role/session ownership; ordinary workers cannot borrow a managed lease.
+    fn database_executor_owns(
+        &mut self,
+        _node: &NodeId,
+        _subject: &str,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
+
+    /// Current dedicated role and durable owner of a previously leased managed attempt. Used only
+    /// to return an existing report receipt after its live session linkage has been cleared.
+    fn database_report_owns(
+        &mut self,
+        _node: &NodeId,
+        _fence: sagat_domain::execution::Fence,
+        _subject: &str,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
+
+    /// Current connection/publisher/initiator admission and exact connection/namespace/tenant
+    /// concurrency reservation in the lease transaction. Unsupported stores fail closed.
+    fn database_claim(
+        &mut self,
+        _node: &NodeId,
+        _subject: &str,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
+
+    /// Selected immutable connection and credential metadata; no provider I/O occurs here.
+    fn database_input(
+        &mut self,
+        _node: &NodeId,
+        _subject: &str,
+    ) -> impl Future<Output = Result<crate::database::DatabaseInput, StoreError>> + Send {
+        async { Err(StoreError::DatabaseUnavailable) }
+    }
+
+    /// Records the credential before returning its value. The pin is immutable for this attempt.
+    fn pin_database_credential(
+        &mut self,
+        _node: &NodeId,
+        _secret: &StoredSecret,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        async { Err(StoreError::DatabaseUnavailable) }
+    }
+
+    /// Frozen connection/operation ceilings for retained output. Pause/revocation blocks new
+    /// capability delivery, but cannot discard evidence of an already delivered attempt.
+    fn database_result_limits(
+        &mut self,
+        _node: &NodeId,
+    ) -> impl Future<Output = Result<sagat_domain::database::DatabaseLimits, StoreError>> + Send
+    {
+        async { Err(StoreError::DatabaseUnavailable) }
+    }
+
+    /// Credential evidence survives logical rotation/deletion until attempt/result retention ends.
+    fn database_credential(
+        &mut self,
+        _node: &NodeId,
+    ) -> impl Future<Output = Result<Option<StoredSecret>, StoreError>> + Send {
+        async { Ok(None) }
     }
 
     /// Whether the circuit breaker of the compensations of `activity` lets one be leased now.
@@ -952,6 +1238,29 @@ pub trait RunTx: Send {
 
     /// The run's input and the outputs of its finished steps (loaded once per transaction).
     fn data(&mut self) -> impl Future<Output = Result<&RunData, StoreError>> + Send;
+
+    /// Effective retained output bytes for this Run, read before staging a new output.
+    ///
+    /// Includes verified historical collection outputs absent from legacy owner projections.
+    /// PostgreSQL reads the scalar without hydrating those values, even above the Run limit.
+    /// The compatibility default requires complete RunData; adapters with partial data or staged
+    /// outputs must override it to report the durable total.
+    fn logical_output_bytes(&mut self) -> impl Future<Output = Result<u64, StoreError>> + Send {
+        async move {
+            let mut total = 0_u64;
+            for output in self.data().await?.outputs.values() {
+                let bytes = u64::try_from(output.len()).map_err(|_| StoreError::Internal {
+                    detail: "the logical output byte count overflowed".into(),
+                })?;
+                total = total
+                    .checked_add(bytes)
+                    .ok_or_else(|| StoreError::Internal {
+                        detail: "the logical output byte count overflowed".into(),
+                    })?;
+            }
+            Ok(total)
+        }
+    }
 
     /// Makes outputs that are about to be persisted visible to this transaction's evaluations: a
     /// condition that follows a step that just completed must see what that step returned. The
@@ -1071,6 +1380,36 @@ impl<E: ExpressionEvaluator> Engine<E> {
     #[must_use]
     pub const fn evaluator(&self) -> &E {
         &self.evaluator
+    }
+
+    /// Evaluates one End output request with the same failure redaction and retained-output limits
+    /// used by normal Engine execution.
+    ///
+    /// Callers must invoke this only for an actual [`Evaluation::Output`] produced by the reducer.
+    /// A reducer that settles without requesting output has no [`EndOutputAnswer`].
+    #[must_use]
+    pub fn evaluate_run_result(
+        &self,
+        node: &NodeId,
+        expression: &Expression,
+        data: &RunData,
+    ) -> EndOutputAnswer {
+        let bytes = match self
+            .evaluator
+            .run_result(expression, data)
+            .map_err(log_failure(node))
+        {
+            Ok(bytes) => bytes,
+            Err(()) => return EndOutputAnswer::ExpressionError,
+        };
+        let retained: usize = data.outputs.values().map(Vec::len).sum();
+        if bytes.len() > MAX_PAYLOAD_BYTES
+            || retained.saturating_add(bytes.len()) > MAX_RUN_OUTPUT_BYTES
+        {
+            EndOutputAnswer::RunDataLimit
+        } else {
+            EndOutputAnswer::Succeeded(bytes)
+        }
     }
 
     /// Executes `command` against the transaction's run, resolves whatever the planner needs to
@@ -1261,25 +1600,8 @@ impl<E: ExpressionEvaluator> Engine<E> {
                 }
             }
             Evaluation::Output { node, expression } => {
-                let outcome = self
-                    .evaluator
-                    .run_result(expression, data)
-                    .map_err(log_failure(node))
-                    .map_err(|()| FailureCode::expression_error())
-                    .and_then(|bytes| {
-                        // The result is kept like any step output: within one payload, and within
-                        // what a run may retain (every lease carries it).
-                        let retained: usize = data.outputs.values().map(Vec::len).sum();
-                        if bytes.len() > MAX_PAYLOAD_BYTES
-                            || retained.saturating_add(bytes.len()) > MAX_RUN_OUTPUT_BYTES
-                        {
-                            Err(FailureCode::run_data_limit())
-                        } else {
-                            Ok(bytes)
-                        }
-                    });
-                return Ok(match outcome {
-                    Ok(bytes) => (
+                return Ok(match self.evaluate_run_result(node, expression, data) {
+                    EndOutputAnswer::Succeeded(bytes) => (
                         Resolution::Output {
                             node: node.clone(),
                             outcome: Ok(()),
@@ -1287,10 +1609,18 @@ impl<E: ExpressionEvaluator> Engine<E> {
                         None,
                         Some((node.clone(), bytes)),
                     ),
-                    Err(code) => (
+                    EndOutputAnswer::ExpressionError => (
                         Resolution::Output {
                             node: node.clone(),
-                            outcome: Err(code),
+                            outcome: Err(FailureCode::expression_error()),
+                        },
+                        None,
+                        None,
+                    ),
+                    EndOutputAnswer::RunDataLimit => (
+                        Resolution::Output {
+                            node: node.clone(),
+                            outcome: Err(FailureCode::run_data_limit()),
                         },
                         None,
                         None,
@@ -1356,6 +1686,14 @@ impl DefinitionCache {
         }
     }
 
+    /// Validates/canonicalizes a new document through the same codec used by published runs.
+    pub fn parse_document(
+        &self,
+        document: &[u8],
+    ) -> Result<crate::definitions::ParsedDefinition, IrError> {
+        self.codec.parse(document)
+    }
+
     /// The parsed definition of `version` if it is cached.
     #[must_use]
     pub fn get(&self, version: WorkflowVersionId) -> Option<Arc<WorkflowDefinition>> {
@@ -1393,7 +1731,7 @@ impl DefinitionCache {
             }
         }
         // Parse outside the lock: it can take milliseconds and other versions must not wait.
-        let parsed = Arc::new(self.codec.parse(document)?.definition);
+        let parsed = Arc::new(self.codec.parse_stored(document)?.definition);
         let mut guard = self
             .entries
             .lock()

@@ -101,11 +101,13 @@ class SyncSagatClient:
     list = _blocking(SagatClient.list)
     operate = _blocking(SagatClient.operate)
     cancel = _blocking(SagatClient.cancel)
+    rerun_as_new = _blocking(SagatClient.rerun_as_new)
     decide_approval = _blocking(SagatClient.decide_approval)
     list_approvals = _blocking(SagatClient.list_approvals)
     query = _blocking(SagatClient.query)
     query_chain = _blocking(SagatClient.query_chain)
     update = _blocking(SagatClient.update)
+    update_chain = _blocking(SagatClient.update_chain)
     inspect_chain = _blocking(SagatClient.inspect_chain)
     list_chain_runs = _blocking(SagatClient.list_chain_runs)
     signal_chain = _blocking(SagatClient.signal_chain)
@@ -114,6 +116,7 @@ class SyncSagatClient:
     publish_event = _blocking(SagatClient.publish_event)
     events = _blocking(SagatClient.events)
     wait_for_completion = _blocking(SagatClient.wait_for_completion)
+    wait_for_chain_completion = _blocking(SagatClient.wait_for_chain_completion)
 
     def list_all(
         self, *, workflow_id: str | None = None, status: str | None = None, limit: int | None = None

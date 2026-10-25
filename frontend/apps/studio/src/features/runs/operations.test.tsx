@@ -45,6 +45,17 @@ describe('which decisions are offered', () => {
     expect(list.getAllByText('You need the saga:override permission to do this.')).toHaveLength(2);
   });
 
+  it('says a reason that every action shares once, under the list, and describes each button with it', async () => {
+    const { nodes, edges } = sagaRun();
+    const finished = { run: runOf({ status: 'FAILED', finishedAt: '2026-10-10T10:05:00Z' }), graph: graphOf(nodes, edges, { status: 'FAILED' }) };
+    const { panel } = await panelOf('reserve~c', ADMIN, finished);
+    const buttons = actions(panel, 'reserve~c').getAllByRole('button');
+    expect(buttons).toHaveLength(5);
+    const sentences = within(panel).getAllByText('The run is finished.');
+    expect(sentences).toHaveLength(1);
+    for (const button of buttons) expect(button.getAttribute('aria-describedby')).toBe(sentences[0]?.id);
+  });
+
   it('lets an administrator skip or resolve it as well', async () => {
     const { panel } = await panelOf('reserve~c', ADMIN);
     const list = actions(panel, 'reserve~c');

@@ -5,20 +5,22 @@
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use sagat_application::api_admission::{ApiOperation, ApiTarget};
 use sagat_application::connectors::ConnectorChoices;
+use sagat_application::error::AppError;
+use sagat_application::event_payloads::{EventPayloadError, EventReveal};
 use sagat_domain::connectors::{
     ConnectorId, ConnectorKind, ConnectorSettings, ConnectorStatus, StartFrom,
 };
-use sagat_domain::identity::{NamespaceId, Slug};
+use sagat_domain::identity::{NamespaceId, Permission, Slug};
 use sagat_domain::secrets::SecretName;
 use sagat_domain::workflow::EventType;
 use serde::Deserialize;
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::admission::admit;
+use crate::admission::{admit, admit_resolved_namespace};
 use crate::dto_events::{
     AcceptedBody, ConnectorBody, ConnectorListBody, CreateConnectorBody, DeadLetterBody,
     DeadLetterPageBody, KafkaSettingsBody, NatsSettingsBody, SqsSettingsBody, UpdateConnectorBody,
@@ -244,12 +246,44 @@ pub struct PageQuery {
     pub limit: Option<u32>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub struct DeadLetterQuery {
+    reveal: Option<String>,
+}
+
+fn dead_letter_reveal(value: Option<&str>) -> Result<EventReveal, ApiError> {
+    match value {
+        None => Ok(EventReveal::Structure),
+        Some("pii") => Ok(EventReveal::Pii),
+        Some(_) => Err(ApiError::validation("reveal must be pii")),
+    }
+}
+
+fn event_payload_error(error: EventPayloadError) -> ApiError {
+    match error {
+        EventPayloadError::Application(error) => error.into(),
+        EventPayloadError::PiiRevealNotGranted => ApiError::from(AppError::Forbidden {
+            permission: Permission::PayloadRevealPii,
+        })
+        .with_reason("PII_REVEAL_NOT_GRANTED"),
+    }
+}
+
+fn private_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    headers
+}
+
 pub async fn list_dead_letters<B: Governance>(
     caller: Caller,
     State(state): State<B>,
     Path((namespace, id)): Path<(String, String)>,
     Query(query): Query<PageQuery>,
-) -> Result<Json<DeadLetterPageBody>, ApiError> {
+) -> Result<(HeaderMap, Json<DeadLetterPageBody>), ApiError> {
     let before = query
         .cursor
         .as_deref()
@@ -259,38 +293,63 @@ pub async fn list_dead_letters<B: Governance>(
         })
         .transpose()?;
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
-    admitted_connector(&state, &caller, &namespace, &id, ApiOperation::EventRead).await?;
-    let mut items = connectors(&state)?
-        .dead_letters(
+    let namespace = namespace_id(&namespace)?;
+    let service = state.event_payloads().ok_or_else(ApiError::not_found)?;
+    let prepared = service
+        .prepare_dead_letter(
             &caller.session.principal,
+            namespace,
             connector_id(&id)?,
-            before,
-            limit + 1,
+            None,
+            EventReveal::Structure,
+            &caller.ctx,
         )
         .await?;
+    admit_resolved_namespace(&state, &caller, prepared.namespace_id()).await?;
+    let mut items = service
+        .dead_letters(prepared, before, limit + 1)
+        .await
+        .map_err(event_payload_error)?;
     let next_cursor = if items.len() > limit as usize {
         items.truncate(limit as usize);
-        items.last().map(|d| d.id.to_string())
+        items.last().map(|d| d.letter.id.to_string())
     } else {
         None
     };
-    Ok(Json(DeadLetterPageBody {
-        items: items.iter().map(DeadLetterBody::from).collect(),
-        next_cursor,
-    }))
+    Ok((
+        private_headers(),
+        Json(DeadLetterPageBody {
+            items: items.iter().map(DeadLetterBody::from).collect(),
+            next_cursor,
+        }),
+    ))
 }
 
 pub async fn get_dead_letter<B: Governance>(
     caller: Caller,
     State(state): State<B>,
     Path((namespace, id, letter)): Path<(String, String, String)>,
-) -> Result<Json<DeadLetterBody>, ApiError> {
+    Query(query): Query<DeadLetterQuery>,
+) -> Result<(HeaderMap, Json<DeadLetterBody>), ApiError> {
     let letter = letter_id(&letter)?;
-    admitted_connector(&state, &caller, &namespace, &id, ApiOperation::EventRead).await?;
-    let found = connectors(&state)?
-        .dead_letter(&caller.session.principal, connector_id(&id)?, letter)
+    let namespace = namespace_id(&namespace)?;
+    let service = state.event_payloads().ok_or_else(ApiError::not_found)?;
+    let prepared = service
+        .prepare_dead_letter(
+            &caller.session.principal,
+            namespace,
+            connector_id(&id)?,
+            Some(letter),
+            dead_letter_reveal(query.reveal.as_deref())?,
+            &caller.ctx,
+        )
         .await?;
-    Ok(Json(DeadLetterBody::from(&found)))
+    admit_resolved_namespace(&state, &caller, prepared.namespace_id()).await?;
+    let found = service
+        .dead_letter(prepared)
+        .await
+        .map_err(event_payload_error)?;
+    Ok((private_headers(), Json(DeadLetterBody::from(&found))))
 }
 
 pub async fn discard_dead_letter<B: Governance>(

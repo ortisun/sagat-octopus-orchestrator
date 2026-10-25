@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import type { UseQueryResult } from '@tanstack/react-query';
-import type { Page, VersionSummary, Workflow } from '../../api/types';
+import type { Page, Run, VersionSummary, Workflow } from '../../api/types';
 import { useApp, useCan, useNamespace } from '../../app/context';
 
 /** The most pages of workflows read to name the runs; a namespace with more shows ids for the rest. */
@@ -56,4 +56,9 @@ export function useVersions(workflowId: string | undefined): UseQueryResult<read
 export function versionLabel(versions: readonly VersionSummary[] | undefined, versionId: string, active?: VersionSummary | null): string {
   const found = active?.versionId === versionId ? active : versions?.find((v) => v.versionId === versionId);
   return found ? `v${found.versionNumber}` : `version ${versionId.slice(0, 8)}`;
+}
+
+/** Private runs deliberately have no public workflow to link to. */
+export function originLabel(origin: Run['origin']): string | undefined {
+  return origin === 'AD_HOC_STEP' ? 'Ad hoc database step' : origin === 'AD_HOC_WORKFLOW' ? 'Ad hoc database workflow' : origin === 'CONNECTION_PROBE' ? 'Connection probe' : undefined;
 }

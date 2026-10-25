@@ -4,6 +4,13 @@ Measurements for T014-042 on one shared laptop, written 2026-10-17. They are **o
 production ceilings and not latency objectives**. The first section says what the numbers do and do not
 support; the raw summaries follow, failures and anomalies included.
 
+## Latest diagnostic update — bounded worker paths
+
+A frozen `025ce8d4` debug build completed 10,000 items at scope widths 1, 16 and 256 with zero
+scheduler errors and 10,000 durable checkpoints in each case. This is an owner-role diagnostic,
+not the final runtime-role capacity gate. See the raw update at the end; the historical results
+and failures below remain unchanged.
+
 ## What this report concludes
 
 - **Proven by assertion in the test (not only reported):** a suspended approval or timer owns no worker,
@@ -1270,3 +1277,162 @@ of the first report: "rows per transition grew from 57 (first ten) to 829 (last 
 "from 91 to 841 over 160 iterations". Both `flat_across` tests fail on "rows per transition grew with the
 size: 689 at 160, 1337 at 320" and "711 at 160, 1356 at 320". On the frontier path the same four tests pass
 (44 rows for a collection and 65 for a loop at every size).
+
+
+### Combined-profile migration name
+
+The historical measurements above use the scale branch's 20261122000000 open-step indexes,
+which develop merged under that name (PR #37). Feature 017's OpenBao migration is renumbered
+20261122000100 in the combined profile (ADR-0036), so the index migration keeps its name and
+no applied migration is renamed. Historical source measurements are
+retained as reported; the combined runtime still requires its own large-workload release gate.
+
+## Integrated profile: projected instance count (2026-10-17)
+
+Product source: `5ba1c2bc` (the performance binary was built before the subsequent bounded
+reconciliation work). Actual command:
+
+```sh
+SAGAT_TEST_DATABASE_URL=postgres://postgres:<test-only>@127.0.0.1:<owned-port>/postgres \
+CARGO_TARGET_DIR=/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target \
+CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=3 RUST_MIN_STACK=16777216 \
+cargo test --locked -p sagat-tests --test perf_workflow_primitives \
+  -- flat_across_sizes --nocapture --test-threads=1
+```
+
+Both checks passed, no ignored tests, 434.37 seconds:
+`/tmp/sagat-completion-charge-flat-cost.log`. Apple M3 Max, 16 logical CPUs, 48 GiB host RAM;
+Docker exposed 16 CPUs and 8,318,709,760 bytes RAM. Rust 1.98.0, debug test profile, PostgreSQL
+16-alpine with pg_stat_statements. The host was shared with other workloads and builds.
+
+| Scope population | Collection median rows / buffers | Loop median rows / buffers |
+| --- | --- | --- |
+| 160 | 44 / 247 | 67 / 370 |
+| 320 | 44 / 241 | 67 / 389 |
+| 640 | 44 / 266 | 67 / 391 |
+
+These are the existing tests' late checkpoint-transition samples (between two thirds and 95%
+completion), measured through pg_stat_statements in each workload's database. They cover the
+scheduler checkpoint path after replacing its historical step count with the transactional
+current-instance projection. They exclude final aggregate/finalization transitions and ordinary
+worker polling/reporting, which still use full restoration. They are not a measurement of
+10,000-item collections, 100,000 nested instances, full-run memory bounds or production capacity.
+Those accepted release criteria remain open; no ceiling or latency promise is inferred here.
+
+
+## 2026-10-17 — Frozen bounded-worker diagnostic, not final capacity acceptance
+
+Source is detached frozen `025ce8d4`; raw hardware/PostgreSQL settings, latencies, row/buffer work,
+resources and source identity are retained in [the manifest](raw/workflow-primitives/20261017-025ce8d4/manifest.json).
+The debug executable ran all three cases successfully in 3,864.6 command seconds. Each case
+completed 10,000 members, wrote 10,000 checkpoints/20,002 step rows and returned zero scheduler
+errors. Fsync and synchronous commit were on; default query/connection settings were retained,
+with pg_stat_statements preloaded and an explicit 1 GiB shared-memory budget.
+
+| Scope width | Workload wall seconds | Sampled active peak | Raw fragment |
+| --- | ---: | ---: | --- |
+| 1 | 1580.7 | 1 | [collection-10000-c1.md](raw/workflow-primitives/20261017-025ce8d4/collection-10000-c1.md) |
+| 16 | 980.4 | 15 | [collection-10000-c16.md](raw/workflow-primitives/20261017-025ce8d4/collection-10000-c16.md) |
+| 256 | 1163.4 | 255 | [collection-10000-c256.md](raw/workflow-primitives/20261017-025ce8d4/collection-10000-c256.md) |
+
+The active bounds were asserted at each observation, not inferred from elapsed time. At width
+256 the observer sampled 255, so these samples do not establish an observed peak of 256. A single
+in-process driver polls 64 tasks and completes them serially; these are logical scope widths,
+not 256 parallel external worker processes. The host also ran builds and functional suites.
+
+The fixture explicitly constructed execution stores from the owner pool: setting
+`SAGAT_TEST_AS_RUNTIME_ROLE=1` alone did not change those stores. This is recorded as an owner-role
+profile, not evidence of runtime-role performance. The even probe interval sampled only checkpoints;
+for example width1 checkpoint samples returned 41 rows with 49 statements, but no admission SQL-cost
+claim follows from them. RSS is before/after, not a measured peak, and queue delay is absent.
+The server was a dedicated manually started diagnostic profile; later acceptance uses the
+repository-declared disposable fixture. These limitations remain acceptance work, along with
+nested/low-capacity admission, 100k nested instances, waits and fairness. No production ceilings
+or complete T014-042 acceptance are claimed by these three diagnostic runs.
+
+### Measurement-driver verification
+
+The corrected driver records each leased member's database `ready_at`→`updated_at` queue delay
+before completion, observes active counts after every admission, and separates admission and
+checkpoint cost comparisons. Missing timestamps or resource observations fail the measurement.
+RSS sampled before/after and every 256 transitions is explicitly distinct from the OS process peak.
+Three measurement tests passed (6.33s), including an actual journal-writer runtime-role guard.
+A self-contained 32-item/width16 smoke passed (4.65s): observed active peak16, 32 queue observations,
+both transition families and verified `sagat_app` execution. This small dirty-source diagnostic is
+not a frozen 10k acceptance run; raw logs are under `/tmp/sagat-completion-perf-profile-smoke/`.
+On Darwin the command was additionally wrapped with `/usr/bin/time -l -o process-resources.log`
+to retain native maximum-resident-set/peak-footprint fields for the entire process. Retain this
+native output alongside future per-width fragments; do not label sampled RSS an OS peak.
+
+### Runtime-role cross-tenant contention
+
+The first runtime-role execution failed at registration (`NotBound`): the synthetic second worker
+had a namespace binding but no persisted current tenant membership. The fixture now persists its
+ordinary Worker membership before registration, preserving production authorization. The corrected
+default workload passed1/1,46.10s: 6×40 bursting members versus1×40 quiet members, quota8 per tenant.
+Persisted holders and usage counters agreed in every round and both peaked at8. The quiet tenant
+finished in87 rounds alone and87 beside its neighbour (ratio1.00); the burst finished in279 rounds
+(32.9s measured workload wall). This proves the stated case, not an unmeasured throughput SLO.
+[Raw evidence and reproducible source](raw/workflow-primitives/20261017-runtime-fairness/manifest.json)
+retain the failed registration, successful output, fixture patch, settings and shared-load limitations.
+
+### Wait resource-profile correction
+
+The frozen b1855cbe 10,000-approval/10,000-timer run failed after286.78s: its stale assertion allowed
+10 connections while the fixture's existing runtime16 and observer8 pools exposed18. This is a
+failed run, not proof of zero worker ownership; later no-worker/slot assertions were not reached.
+[Failure and native process resources](raw/workflow-primitives/20261017-waits-profile-red/manifest.json)
+retain the source and failure. The correction reads both actual configured pool maxima and verifies
+the runtime role, without increasing a pool. The contention store now also shares the execution
+pool rather than using the owner observer pool. The report states the two budgets explicitly.
+A 20-approval/20-timer check passed1/1,8.13s: 40 waits without leases/worker identities, zero worker
+sessions, zero scheduler failures, all resource observations inside the existing combined bound24,
+and exact8/64 slot admissions. Full-size corrected evidence is recorded below.
+
+
+### Runtime-role 20,000 durable waits
+
+The corrected frozen `60dfc824` workload passed1/1 (213.73s harness,214.70s command):
+10,000 approvals plus10,000 one-hour timers, using the repository disposable PostgreSQL fixture
+and verified `sagat_app` execution. All20,000 waits had no lease/token/expiry/worker identity;
+there were zero worker sessions and zero skipped, fenced or failed scheduler outcomes.
+Runtime/observer pools retained their existing16/8 maxima. Observed connections peaked at18,
+with no idle transactions. Separate runtime contention accepted8 of64 attempts and returned56
+typed quota refusals; persisted holders and counters both measured8. No client retry was added.
+Native Darwin process resources are retained without relabelling sampled RSS as a peak;
+PostgreSQL container RSS was not isolated and the shared host also ran SDK/build/flat workloads.
+[Source, command and result](raw/workflow-primitives/20261017-waits-runtime/result.json),
+[workload details](raw/workflow-primitives/20261017-waits-runtime/waits.md), and
+[native process resources](raw/workflow-primitives/20261017-waits-runtime/process-resources.txt)
+are reproducible evidence for this workload, not full T014-042 acceptance or a latency SLO.
+
+
+### Frozen runtime-role 10,000-item flat collections
+
+All three separate executions passed using frozen clean source`b1855cbe` and the copied binary
+SHA-256`372e91c1ee31bd4ce5a85e5f244423de44a1f73be629aed14bdcb4e3d8350ed2`.
+Each uses verified`sagat_app` worker/scheduler stores and the repository disposable PostgreSQL16
+fixture. Each retained10,000 checkpoints and20,002 step rows, returned zero scheduler errors,
+added no client retries and recorded10,000 actual ready-to-lease queue samples.
+
+| Logical concurrency | Observed active peak | Workload wall(s) | Queue p50/p95/p99(ms) | Sampled peak RSS(MiB) |
+| --- | ---: | ---: | --- | ---: |
+| 1 | 1 | 1238.8 | 28.9 / 96.8 / 208.8 | 121.2 |
+| 16 | 16 | 860.1 | 293.5 / 729.0 / 989.2 | 120.6 |
+| 256 | 256 | 1387.1 | 7966.6 / 43926.5 / 190292.8 | 120.4 |
+
+Actual holders were observed after every admission and every8 transitions; both configured scope
+and tenant bounds were asserted at every observation. The one in-process worker driver polls at
+most64 leases and completes them serially. Concurrency256 therefore describes logical iteration
+width, not256 parallel external workers. The shared host also ran builds and functional suites;
+these observed queue delays establish no latency SLO. Command walls, including setup/inspection,
+were1282.68/899.14/1436.18s, distinct from the workload walls above.
+Admission/checkpoint SQL work is sampled and reported as separate families. Sampled process RSS
+is not an OS peak; unmodified Darwin`time -l` maximum-resident/footprint fields are retained for
+each process, without guessing a unit conversion. PostgreSQL container RSS is not isolated.
+[Source and exact commands](raw/workflow-primitives/20261017-runtime-flat/manifest.json),
+[width1](raw/workflow-primitives/20261017-runtime-flat/collection-10000-c1.md),
+[width16](raw/workflow-primitives/20261017-runtime-flat/collection-10000-c16.md), and
+[width256](raw/workflow-primitives/20261017-runtime-flat/collection-10000-c256.md) retain full
+settings, operation quantiles, journal sizes and raw process evidence. Nested/low-quota progress,
+100k nested instances and release gates remain open; this does not close all of T014-042.

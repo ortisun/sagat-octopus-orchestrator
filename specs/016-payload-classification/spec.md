@@ -2,7 +2,7 @@
 
 **Feature Branch**: `feature/016-payload-classification`
 **Created**: 2026-10-16
-**Status**: Specified; not built. The direction is accepted in [ADR-0033](../../docs/adr/ADR-0033-payload-values-are-classified-per-field.md); this set turns it into requirements, a plan and tasks. The four product choices were answered by the owner on 2026-10-17 ([research.md](./research.md#product-decisions-answered-2026-10-17)); nothing in this set is an open product question, and what is still undecided is listed there.
+**Status**: Implementation in progress; integrated release gates pending. The direction is accepted in [ADR-0033](../../docs/adr/ADR-0033-payload-values-are-classified-per-field.md); this set turns it into requirements, a plan and tasks. The four product choices were answered by the owner on 2026-10-17 ([research.md](./research.md#product-decisions-answered-2026-10-17)); nothing in this set is an open product question, and what is still undecided is listed there.
 **Input**: Deliver ADR-0033: the author classifies the values of a workflow as `public`, `internal`, `pii` or `secret` on the JSON Schemas of the workflow, and the platform discloses a value only to a principal the level allows.
 
 ## Context and delivery boundary
@@ -91,7 +91,10 @@ run of version 1 discloses.
    version 1 is disclosed after version 2 is active, **then** the field is still `public`; in the
    reverse edit (version 2 makes a `pii` field `public`) the field stays `pii` for every run of version 1.
 6. **Given** a version published before this feature, **when** any of its runs is disclosed, **then**
-   no value is returned to anyone, exactly as today (classification rules version 0).
+   no value is returned to anyone, exactly as today (classification rules version 0). **And given** the
+   author publishes the identical document again, **then** the answer is that same version
+   (`created: false`) and says `classificationRules: 0`; a changed document is published as a new
+   version under the current rules.
 7. **Given** a diff between two versions that relaxes or tightens a level, **when** it is requested,
    **then** it lists an attention finding for each (`CLASSIFICATION_RELAXED`, `CLASSIFICATION_TIGHTENED`).
 
@@ -346,16 +349,23 @@ viewer, an operator, a developer without a grant and a developer with a grant, w
 - **FR-016-004**: Publication and `validate` MUST reject, with the problem code and the JSON pointer of
   the offender: an unknown level (`CLASSIFICATION_INVALID_LEVEL`); a node that declares a level looser
   than its effective parent level, inline or through `$ref` (`CLASSIFICATION_LOOSENED`); an annotation
-  under a keyword outside the supported set (`CLASSIFICATION_UNSUPPORTED_KEYWORD`); a `$ref` that is
+  under any key the walker does not read, that is any key other than `properties`, `items`,
+  `prefixItems`, `additionalProperties`, `allOf`, `anyOf`, `oneOf`, `$defs` or a local `$ref` target
+  (`CLASSIFICATION_UNSUPPORTED_KEYWORD`, D660); a `$ref` that is
   remote, absolute, to another carrier or unresolvable (`CLASSIFICATION_UNRESOLVED_REF`); an annotation
   anywhere but a carrier, including declared state and the schemas of Query and Update
   (`CLASSIFICATION_NOT_APPLICABLE`); and a carrier over the bounds of FR-016-024
   (`CLASSIFICATION_TOO_COMPLEX`). A declared child that inherits an open level (`public` or `internal`)
-  from an annotated container MUST produce the warning `CLASSIFICATION_INHERITED_OPEN`.
+  from an annotated container MUST produce the warning `CLASSIFICATION_INHERITED_OPEN`, whichever
+  keyword declares it (`properties`, `prefixItems`, `items` or `additionalProperties`). Only errors are
+  listed in `details.issues` of a refused document; warnings belong to the validation report.
 - **FR-016-005**: The classification MUST be immutable with the published version and pinned by every
   run. A version stores the classification rules version in force when it was published
   (`workflow_versions.classification_rules`; `0` for every version published before this feature, which
-  reads no annotation). No operation edits the document or the stored rules version of a version.
+  reads no annotation). No operation edits the document or the stored rules version of a version. Every version the API
+  returns carries it as `classificationRules`. Publishing the document of an existing version returns
+  that version (found by workflow and digest, `created: false`) with its own rules, so an unchanged
+  legacy document stays at `0`; a changed document is published under the current rules (D661).
 - **FR-016-006**: The platform MUST provide `POST /v1/runs/{runId}/payload-disclosures` with the closed
   body `{"source":"input"}`, `{"source":"result"}` or `{"source":"journal","sequence":N}`, and the
   optional `"reveal":["pii"]`. Unknown fields are refused. There is no client-supplied tenant,
@@ -377,8 +387,9 @@ viewer, an operator, a developer without a grant and a developer with a grant, w
 - **FR-016-009**: A node the caller may not read MUST be omitted for a caller without
   `run:payload:inspect`, and represented as a `withheld` node with its type, level and reason (no
   value, and no key unless the key is declared in `properties`) for a caller who holds it. A `secret`
-  node is withheld for everyone, with the reason `SECRET`. Because levels never loosen, a withheld node
-  hides its whole subtree.
+  node follows the same split: it is omitted for a caller without `run:payload:inspect` and withheld,
+  with the reason `SECRET`, for one who holds it; its value is shown to nobody. Because levels never
+  loosen, a withheld node hides its whole subtree.
 - **FR-016-010**: The catalog MUST gain `payload:read-internal` and `payload:reveal-pii`. The built-in
   roles remain six and no custom role is added (G39). `payload:read-internal` is granted to `developer`,
   `operator` and `admin`. `payload:reveal-pii` is granted to no role, `admin` included; it is held by a
@@ -387,7 +398,8 @@ viewer, an operator, a developer without a grant and a developer with a grant, w
   `payload:reveal-pii` for a subject of the tenant in one namespace
   (`/v1/namespaces/{namespaceId}/payload-reveal-grants[/{subject}]`), and the CLI MUST offer the same.
   Each change is audited in the transaction that makes it and is effective on the next request. A grant
-  is removed with its membership, and is refused for a subject whose role lacks `payload:read-internal`
+  is removed with its membership, and when the role of the membership changes (a demotion that is
+  undone later does not bring the grant back; an administrator grants again, D663), and is refused for a subject whose role lacks `payload:read-internal`
   (such a grant would be inert). At most 256 grants exist per namespace. The mechanism, a per-namespace
   grant list managed by administrators, was decided by the owner on 2026-10-17 (D275); an administrator
   may grant it to themselves, audited (D306).
@@ -403,8 +415,9 @@ viewer, an operator, a developer without a grant and a developer with a grant, w
   (`NO_RETAINED_PAYLOAD`). This selector depends on the G21 change being merged (see Assumptions).
 - **FR-016-014**: `source: "journal"` MUST resolve only the payload of the named sequence, as ADR-0028
   does, and judge it by the `outputSchema` of the node of that event; it MUST NOT substitute another
-  event's or attempt's payload. Events that carry a payload are `step.completed`, `wait.satisfied` and
-  `reconciliation.concluded`.
+  event's or attempt's payload. Events that carry a payload are `step.completed`, `wait.satisfied`,
+  `reconciliation.concluded` and G21's `child.finished`. The latter uses only the exact parent's
+  `child` node output schema, never the child's workflow schema or another node kind.
 - **FR-016-015**: An external (blob) payload MUST NOT be read for disclosure; the answer is `external`
   with `EXTERNAL_CONTENT_NOT_INSPECTED` and the catalog size, as ADR-0028 does.
 - **FR-016-016**: The following MUST remain unchanged by this feature: `getRun`, `listRunJournalEvents`,
@@ -435,6 +448,9 @@ viewer, an operator, a developer without a grant and a developer with a grant, w
 - **FR-016-021**: Existing published versions MUST keep today's behaviour (no value disclosed), existing
   runs MUST keep running unchanged, the OpenAPI and IR changes MUST be additive, and a client or Studio
   built before this feature MUST keep working.
+  Restoration of immutable versions MUST NOT reapply newer classification authoring checks.
+  An extension accepted by an older publisher remains inert for business execution; rules `0`
+  stays opaque. Syntax, graph, expression and execution capability checks remain mandatory.
 - **FR-016-022**: Errors MUST reuse the closed `Error.code` set and add only `details.reason` values:
   `PII_REVEAL_NOT_GRANTED`, `CLASSIFICATION`, `UNKNOWN_SUBJECT`, `ROLE_CANNOT_REVEAL`, `GRANT_LIMIT`. Result states
   (`structure-only`, `unavailable`, `external` and their reasons) are not errors.
@@ -450,7 +466,13 @@ viewer, an operator, a developer without a grant and a developer with a grant, w
   not capacity promises.
 - **FR-016-025**: A version diff MUST list a relaxation (a path's effective level becomes less strict)
   as `CLASSIFICATION_RELAXED` and a tightening as `CLASSIFICATION_TIGHTENED`, both as attention findings
-  (not breaking).
+  (not breaking). A side that has no schema for a location (a carrier added or dropped), or that was
+  published under classification rules `0`, discloses nothing and counts as `undisclosed`, as strict as
+  `secret`: adding an `outputSchema` that makes a field `public` relaxes it. The first draft of a
+  workflow is not compared. A carrier that cannot be walked completely is reported once
+  (`CLASSIFICATION_TOO_COMPLEX`, `_UNRESOLVED_REF` or `_UNSUPPORTED_KEYWORD`) and none of its levels is
+  compared; findings of one kind past 100 are counted in `MORE_FINDINGS`. Each side is walked once, so
+  the cost grows with the size of the carriers (D664).
 
 - **FR-016-026**: `getInboxEvent` MUST return the `data` of the event only when the request carries
   `reveal=pii` and the caller holds `event:read`, `payload:read-internal` and `payload:reveal-pii` in the
@@ -458,7 +480,8 @@ viewer, an operator, a developer without a grant and a developer with a grant, w
   `source/event id`, reason `event-data:reveal=pii`) in the transaction that reads the payload, before the
   bytes return, and never collapses. In every other case the answer has no `data` and carries
   `dataDisclosure: "structure-only"`, `dataSizeBytes` and `dataStructure` (the ADR-0028 structure with
-  its bounds: no key, no scalar). `reveal=pii` without the right is `403 FORBIDDEN` with
+  its bounds: no key, no scalar; `{"kind": "opaque"}` when the projector does not accept the data,
+  which is not a refusal of the caller, D665). `reveal=pii` without the right is `403 FORBIDDEN` with
   `details.reason = PII_REVEAL_NOT_GRANTED`. Status, attempts, last error and deliveries are unchanged.
   Both answers are `Cache-Control: private, no-store`. Event data has no classification carrier, so a
   reveal returns all of it, `secret`-looking content included (G291, G282).
@@ -477,7 +500,9 @@ viewer, an operator, a developer without a grant and a developer with a grant, w
   and in the release notes. There is no transitional switch. A client that needs the values holds the
   grant and sends `reveal=pii`. Nothing that writes events (publish, signal, webhook, connector) changes.
 - **FR-016-029**: Event and dead-letter reads MUST be scoped by the authenticated tenant in their SQL; an
-  event, connector or letter of another tenant is the opaque `404`; the grant is looked up for the event's
+  event, connector or letter of another tenant is the opaque `404`, and a namespace of another tenant
+  leaves a `CrossTenantAccessDenied` record against the tenant that probed, for `getInboxEvent`,
+  `getConnectorDeadLetter` and `listConnectorDeadLetters` (constitution V, D666); the grant is looked up for the event's
   or connector's own namespace, so a grant in another namespace reveals nothing; namespace API admission is
   charged as today (`ApiOperation::EventRead`) and never debits a foreign namespace.
 

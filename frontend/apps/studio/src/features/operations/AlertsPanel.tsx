@@ -3,7 +3,8 @@ import { useInfiniteQuery } from '@tanstack/react-query';
 import { Button } from '../../ui/Button';
 import { ErrorState } from '../../ui/ErrorState';
 import type { AlertState, OperationsApi } from './api';
-import { alertKind, safeRunbookHref, when } from './model';
+import { Moment } from '../runs/Now';
+import { alertKind, safeRunbookHref } from './model';
 
 type Filter = AlertState | 'ALL';
 
@@ -54,7 +55,7 @@ export function AlertsPanel({ api, namespaceId, sessionKey }: { api: OperationsA
                   {item.subject ? <><dt>Subject</dt><dd><code>{item.subject}</code></dd></> : null}
                   <dt>Items</dt><dd>{item.items}</dd>
                   <dt>Oldest</dt><dd>{item.oldestSeconds} seconds</dd>
-                  <dt>Last seen</dt><dd>{when(item.lastSeenAt)}</dd>
+                  <dt>Last seen</dt><dd><Moment at={item.lastSeenAt} empty="Not recorded" /></dd>
                   <dt>Firings</dt><dd>{item.firedCount}</dd>
                 </dl>
                 <p className="operations-runbook">

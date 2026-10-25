@@ -6,8 +6,10 @@
 
 use std::future::Future;
 
-use sagat_domain::audit::AuditRecord;
-use sagat_domain::execution::{CollectionDrainReason, ExecutionInstanceId, RunId};
+use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType, RunDataLimitAuditReason};
+use sagat_domain::execution::{
+    CollectionDrainReason, ExecutionInstanceId, MAX_ITERATION_INDEX, RunId,
+};
 use sagat_domain::identity::{NamespaceId, Subject, TenantId};
 use sagat_domain::sharding::Shard;
 use sagat_domain::workflow::{ActivityName, Digest};
@@ -17,6 +19,7 @@ use uuid::Uuid;
 
 use crate::collection_source::SourceItems;
 use crate::error::StoreError;
+use crate::execution::EndOutputAnswer;
 use crate::shards::Lease;
 
 /// Database-backed scheduler lease authorizing a transition for one run shard.
@@ -544,6 +547,100 @@ pub struct CollectionFinish {
     pub outbox_id: Uuid,
     result_content: Option<Vec<u8>>,
     source_digests: Option<Vec<(u32, Digest)>>,
+    end_answer: Option<EndOutputAnswer>,
+}
+
+/// Source-bound facts about a serialized aggregate that could not be retained.
+///
+/// The fields are private so a caller cannot assert a length or digest independently of the actual
+/// candidate and checkpoint bytes supplied to [`CollectionDataLimitEvidence::aggregate`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollectionAggregateDataLimitEvidence {
+    byte_len: u64,
+    result_digest: Digest,
+    source_digests: Vec<(u32, Digest)>,
+}
+
+impl CollectionAggregateDataLimitEvidence {
+    #[must_use]
+    pub const fn byte_len(&self) -> u64 {
+        self.byte_len
+    }
+
+    #[must_use]
+    pub const fn result_digest(&self) -> Digest {
+        self.result_digest
+    }
+
+    #[must_use]
+    pub fn source_digests(&self) -> &[(u32, Digest)] {
+        &self.source_digests
+    }
+}
+
+/// Transient facts selecting the native `RUN_DATA_LIMIT` collection drain revalidation.
+///
+/// `ExistingOutputs` and `StoppedForRunDataLimit` contain no caller-supplied totals or stop code:
+/// the store must establish those facts under the locked Run snapshot. Aggregate facts are derived
+/// from the actual candidate and ordered checkpoint bytes and are matched to durable sources by the
+/// store before it may start the drain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CollectionDataLimitEvidence {
+    ExistingOutputs,
+    StoppedForRunDataLimit,
+    Aggregate(CollectionAggregateDataLimitEvidence),
+}
+
+impl CollectionDataLimitEvidence {
+    #[must_use]
+    pub const fn existing_outputs() -> Self {
+        Self::ExistingOutputs
+    }
+
+    #[must_use]
+    pub const fn stopped_for_run_data_limit() -> Self {
+        Self::StoppedForRunDataLimit
+    }
+
+    /// Derives bounded aggregate evidence from the actual serialized candidate and source results.
+    ///
+    /// # Errors
+    /// Returns [`PrimitiveInputError::DataLimitEvidence`] when source indices are not strictly
+    /// increasing, exceed collection bounds, or an empty source does not produce exact JSON `[]`.
+    pub fn aggregate(
+        result_content: &[u8],
+        source_results: &[(u32, Vec<u8>)],
+    ) -> Result<Self, PrimitiveInputError> {
+        if source_results.len() > (MAX_ITERATION_INDEX as usize + 1)
+            || source_results
+                .iter()
+                .any(|(index, _)| *index > MAX_ITERATION_INDEX)
+            || source_results.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+            || (source_results.is_empty() && result_content != b"[]")
+        {
+            return Err(PrimitiveInputError::DataLimitEvidence);
+        }
+        let byte_len = u64::try_from(result_content.len())
+            .map_err(|_| PrimitiveInputError::DataLimitEvidence)?;
+        Ok(Self::Aggregate(CollectionAggregateDataLimitEvidence {
+            byte_len,
+            result_digest: digest(result_content),
+            source_digests: source_results
+                .iter()
+                .map(|(index, content)| (*index, digest(content)))
+                .collect(),
+        }))
+    }
+
+    /// The exact audit reason that must accompany this selected evidence.
+    #[must_use]
+    pub const fn required_audit_reason(&self) -> RunDataLimitAuditReason {
+        match self {
+            Self::Aggregate(_) => RunDataLimitAuditReason::Aggregate,
+            Self::ExistingOutputs => RunDataLimitAuditReason::ExistingOutputs,
+            Self::StoppedForRunDataLimit => RunDataLimitAuditReason::StoppedForRunDataLimit,
+        }
+    }
 }
 
 /// Starts fail-fast or cancellation drain under the collection owner's scheduler fence.
@@ -553,6 +650,7 @@ pub struct CollectionDrain {
     pub scope_id: CollectionScopeId,
     pub reason: CollectionDrainReason,
     pub outbox_id: Uuid,
+    data_limit_evidence: Option<CollectionDataLimitEvidence>,
 }
 
 impl CollectionDrain {
@@ -568,7 +666,52 @@ impl CollectionDrain {
             scope_id,
             reason,
             outbox_id,
+            data_limit_evidence: None,
         }
+    }
+
+    /// Constructs a native data-limit drain only after its fixed engine audit has been staged.
+    ///
+    /// The store remains responsible for checking the selected evidence against the locked Run,
+    /// scope, sources, effective output total, revision and scheduler fence. Construction alone is
+    /// never authority to write the new reason.
+    ///
+    /// # Errors
+    /// Returns [`PrimitiveInputError::DataLimitAudit`] unless the transition contains the exact
+    /// Run audit identity, action, reason, actor, trace and timestamp for this evidence.
+    pub fn for_data_limit(
+        transition: CollectionTransition,
+        scope_id: CollectionScopeId,
+        evidence: CollectionDataLimitEvidence,
+        outbox_id: Uuid,
+    ) -> Result<Self, PrimitiveInputError> {
+        let valid_audit = transition.audit().is_some_and(|audit| {
+            audit.tenant_id() == transition.tenant_id()
+                && audit.actor() == transition.actor()
+                && audit.actor() == &Subject::engine()
+                && audit.action() == AuditAction::RunDataLimitExceeded
+                && audit.resource_type() == ResourceType::Run
+                && audit.resource_id() == transition.run_id().to_string()
+                && audit.reason() == Some(evidence.required_audit_reason().as_str())
+                && audit.trace_id() == transition.trace_id()
+                && audit.created_at() == transition.occurred_at()
+        });
+        if !valid_audit {
+            return Err(PrimitiveInputError::DataLimitAudit);
+        }
+        Ok(Self {
+            transition,
+            scope_id,
+            reason: CollectionDrainReason::RunDataLimit,
+            outbox_id,
+            data_limit_evidence: Some(evidence),
+        })
+    }
+
+    /// Evidence for the native data-limit writer. Ordinary drain commands always return `None`.
+    #[must_use]
+    pub const fn data_limit_evidence(&self) -> Option<&CollectionDataLimitEvidence> {
+        self.data_limit_evidence.as_ref()
     }
 }
 
@@ -636,6 +779,32 @@ impl CollectionFinish {
             outbox_id,
             result_content: None,
             source_digests: None,
+            end_answer: None,
+        }
+    }
+
+    /// Reconstructs a source-bound Finish from already retained aggregate and checkpoint digests.
+    ///
+    /// This constructor carries no aggregate body. The store remains responsible for matching the
+    /// supplied ordered sources to the locked checkpoint rows; the metadata is replay identity,
+    /// not authority to replace those rows. An empty source list is retained as `Some([])`, while
+    /// [`Self::new`] keeps the legacy unbound representation of `None`.
+    #[must_use]
+    pub const fn from_checkpoint_digests(
+        transition: CollectionTransition,
+        scope_id: CollectionScopeId,
+        result_digest: Digest,
+        source_digests: Vec<(u32, Digest)>,
+        outbox_id: Uuid,
+    ) -> Self {
+        Self {
+            transition,
+            scope_id,
+            result_digest,
+            outbox_id,
+            result_content: None,
+            source_digests: Some(source_digests),
+            end_answer: None,
         }
     }
 
@@ -679,6 +848,21 @@ impl CollectionFinish {
     pub fn source_digests(&self) -> Option<&[(u32, Digest)]> {
         self.source_digests.as_deref()
     }
+
+    /// Adds the answer to an End output evaluation actually requested by the normal reducer.
+    ///
+    /// A finish whose reduction did not request output retains the constructor default of `None`.
+    #[must_use]
+    pub fn with_end_answer(mut self, answer: EndOutputAnswer) -> Self {
+        self.end_answer = Some(answer);
+        self
+    }
+
+    /// The prepared End answer, or `None` when reduction requested no output evaluation.
+    #[must_use]
+    pub fn end_answer(&self) -> Option<&EndOutputAnswer> {
+        self.end_answer.as_ref()
+    }
 }
 
 fn digest(content: &[u8]) -> Digest {
@@ -703,6 +887,10 @@ pub enum PrimitiveInputError {
     InstancePath,
     #[error("an admitted body must reserve its return instance")]
     MissingReturnReservation,
+    #[error("collection data-limit evidence is malformed or unbounded")]
+    DataLimitEvidence,
+    #[error("collection data-limit evidence requires its exact Run audit")]
+    DataLimitAudit,
 }
 
 /// A durable transition refusal. Details contain no workflow values or secrets.

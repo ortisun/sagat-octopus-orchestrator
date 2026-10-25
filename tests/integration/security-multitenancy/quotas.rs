@@ -378,7 +378,7 @@ async fn a_tenant_holds_a_bounded_number_of_worker_sessions_and_a_reconnect_is_n
         max_inflight: 4,
         protocol_version: "1".into(),
     };
-    let other_identity = Principal::new(w.admin.tenant_id(), subject_of("worker-2"), Role::Worker);
+    let other_identity = w.member("worker-2", Role::Worker).await;
     w.bind_everything(&other_identity).await;
     w.workers
         .register(&w.worker, "payments", "first", &caps)
@@ -526,6 +526,19 @@ async fn the_tenant_view_has_no_single_usage_for_a_per_namespace_resource() {
             (QuotaResource::EventsPerSecond, false),
             (QuotaResource::EventRetentionSeconds, false),
             (QuotaResource::ScriptRetentionDays, false),
+            (QuotaResource::DatabaseStatementBytes, false),
+            (QuotaResource::DatabaseParameters, false),
+            (QuotaResource::DatabaseParameterBytes, false),
+            (QuotaResource::DatabaseRows, false),
+            (QuotaResource::DatabaseResultBytes, false),
+            (QuotaResource::DatabaseTimeoutMs, false),
+            (QuotaResource::DatabaseConnectTimeoutMs, false),
+            (QuotaResource::DatabasePoolSize, false),
+            (QuotaResource::DatabaseIdleTimeoutMs, false),
+            (QuotaResource::DatabaseConnections, false),
+            (QuotaResource::DatabaseConcurrency, false),
+            (QuotaResource::TenantDatabaseConcurrency, true),
+            (QuotaResource::SecretProviderOperations, false),
         ]
     );
     let used = tenant_view
@@ -561,6 +574,18 @@ async fn the_tenant_view_has_no_single_usage_for_a_per_namespace_resource() {
             (QuotaResource::EventsPerSecond, None),
             (QuotaResource::EventRetentionSeconds, None),
             (QuotaResource::ScriptRetentionDays, None),
+            (QuotaResource::DatabaseStatementBytes, None),
+            (QuotaResource::DatabaseParameters, None),
+            (QuotaResource::DatabaseParameterBytes, None),
+            (QuotaResource::DatabaseRows, None),
+            (QuotaResource::DatabaseResultBytes, None),
+            (QuotaResource::DatabaseTimeoutMs, None),
+            (QuotaResource::DatabaseConnectTimeoutMs, None),
+            (QuotaResource::DatabasePoolSize, None),
+            (QuotaResource::DatabaseIdleTimeoutMs, None),
+            (QuotaResource::DatabaseConnections, Some(0)),
+            (QuotaResource::DatabaseConcurrency, Some(0)),
+            (QuotaResource::SecretProviderOperations, Some(0)),
         ]
     );
 }

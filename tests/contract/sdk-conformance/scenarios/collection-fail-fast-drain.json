@@ -1,0 +1,188 @@
+{
+  "name": "collection-fail-fast-drain",
+  "description": "WP-04 active drain: with collection concurrency two, one polling worker holds the first leased iteration in its handler. Only after the public journal records server-observed running work does a second worker start, lease the other admitted iteration and fail it permanently. The collection stops before admitting the third item, asks the held handler to cancel, drains both accepted iterations and finishes failed without reaching its success join. This case has no compensation effects and therefore asserts no order between collection compensations.",
+  "server": {
+    "iterationConcurrency": 4
+  },
+  "scopeEvidence": "summary",
+  "sourceEvidence": true,
+  "workflows": {
+    "failed": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "collection-fail-fast-active-drain",
+      "bodies": {
+        "unit": {
+          "program": [
+            {
+              "op": "step",
+              "id": "work",
+              "activity": "coll.drain.work"
+            },
+            {
+              "op": "return",
+              "id": "returned",
+              "result": "steps.work.output"
+            }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "map",
+          "id": "lines",
+          "items": "input.items",
+          "body": "unit",
+          "result": "item.label",
+          "maxItems": 3,
+          "maxConcurrency": 2
+        },
+        {
+          "op": "end",
+          "id": "done",
+          "options": {
+            "outputExpr": "steps.lines.output"
+          }
+        }
+      ]
+    }
+  },
+  "workers": {
+    "holder": {
+      "workerName": "collection-drain-holder",
+      "protocolVersion": "1.5",
+      "transport": "poll",
+      "maxInflight": 1,
+      "heartbeatIntervalMs": 100,
+      "autostart": false,
+      "activities": {
+        "coll.drain.work": {
+          "behavior": {
+            "hang": true,
+            "onCancel": {
+              "raises": true
+            }
+          }
+        }
+      }
+    },
+    "failer": {
+      "workerName": "collection-drain-failer",
+      "protocolVersion": "1.5",
+      "transport": "poll",
+      "maxInflight": 1,
+      "heartbeatIntervalMs": 100,
+      "autostart": false,
+      "activities": {
+        "coll.drain.work": {
+          "behavior": {
+            "fails": {
+              "code": "NO_STOCK",
+              "message": "nothing to ship",
+              "retryable": false
+            }
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "start-holder",
+      "op": "startWorker",
+      "worker": "holder"
+    },
+    {
+      "id": "failed",
+      "op": "start",
+      "workflow": "failed",
+      "input": {
+        "items": [
+          {
+            "label": "a"
+          },
+          {
+            "label": "b"
+          },
+          {
+            "label": "c"
+          }
+        ]
+      }
+    },
+    {
+      "id": "holder-running",
+      "op": "awaitJournal",
+      "run": "failed",
+      "eventType": "step.started",
+      "stepId": "work",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "start-failer",
+      "op": "startWorker",
+      "worker": "failer"
+    },
+    {
+      "id": "failure-observed",
+      "op": "awaitJournal",
+      "run": "failed",
+      "eventType": "step.failed",
+      "stepId": "work",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "drain-observed",
+      "op": "awaitJournal",
+      "run": "failed",
+      "eventType": "collection.drain_started",
+      "stepId": "lines",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "cancel-requested",
+      "op": "awaitJournal",
+      "run": "failed",
+      "eventType": "step.cancel_requested",
+      "stepId": "work",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "cancelled-observed",
+      "op": "awaitJournal",
+      "run": "failed",
+      "eventType": "step.cancelled",
+      "stepId": "work",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "failed-done",
+      "op": "waitForCompletion",
+      "run": "failed",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "holder-ended",
+      "op": "awaitWorkerLog",
+      "worker": "holder",
+      "count": 1,
+      "timeoutMs": 30000
+    },
+    {
+      "id": "failer-ended",
+      "op": "awaitWorkerLog",
+      "worker": "failer",
+      "count": 1,
+      "timeoutMs": 30000
+    },
+    {
+      "id": "stop-failer",
+      "op": "stopWorker",
+      "worker": "failer"
+    },
+    {
+      "id": "stop-holder",
+      "op": "stopWorker",
+      "worker": "holder"
+    }
+  ]
+}

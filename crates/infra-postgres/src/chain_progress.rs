@@ -24,7 +24,7 @@ use sagat_domain::sharding::Shard;
 use sagat_domain::workflow::{Digest, NodeKind, WorkflowDefinition};
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
-use sqlx::{PgConnection, PgPool, Row};
+use sqlx::{PgConnection, PgPool, Postgres, Row, Transaction};
 use time::OffsetDateTime;
 
 use crate::event_codec::{decode, encode};
@@ -491,11 +491,11 @@ async fn lock_chain(
 }
 
 /// A child chain's successor is a run whose parent is the chain's parent, so inserting it takes a
-/// key-share lock on the parent's row (the foreign key). Every writer of a child run locks the
-/// parent first (`claim_reservation`, the parent's own commands); a hand-off holds the chain and the
-/// head run and would take the parent last, which deadlocks against a parent that is writing the
-/// child's run (found by the ordered parent-cancellation race). Taking the same lock here, before
-/// the head run is locked, keeps one order: parent, then chain, then runs.
+/// key-share lock on the parent's row (the foreign key). Take that metadata guard before the head
+/// run/link: otherwise a parent holding its own run and waiting for the link could block the
+/// successor's late foreign-key check. Actual order here is chain, parent key-share, then head/link.
+/// ADR-0037 permits this identity-only guard under immutable initial/head/link parent ancestry;
+/// it grants no authority to read mutable parent state or mutate/upgrade the parent lock.
 async fn hold_parent(
     conn: &mut PgConnection,
     tenant_id: TenantId,
@@ -617,14 +617,14 @@ async fn lock_finalization_run(
 }
 
 async fn check_scheduler_fence(
-    conn: &mut PgConnection,
+    tx: &mut Transaction<'_, Postgres>,
     command: &ChainHandoffCommand,
 ) -> Result<(), ChainProgressError> {
-    check_fence(conn, command.scheduler(), command.expected_head()).await
+    check_fence(tx, command.scheduler(), command.expected_head()).await
 }
 
 async fn check_fence(
-    conn: &mut PgConnection,
+    tx: &mut Transaction<'_, Postgres>,
     authority: &sagat_application::primitives::SchedulerAuthority,
     run_id: RunId,
 ) -> Result<(), ChainProgressError> {
@@ -632,17 +632,13 @@ async fn check_fence(
     if lease.shard != Shard::of(run_id.as_uuid()) {
         return Err(ChainProgressError::SchedulerFenceLost);
     }
-    let held: Option<i16> = sqlx::query_scalar(
-        "SELECT shard FROM scheduler_shards WHERE shard = $1 AND generation = $2 AND owner = $3 \
-         AND expires_at > clock_timestamp() FOR SHARE",
-    )
-    .bind(i16::from(lease.shard.index()))
-    .bind(number(lease.generation, "scheduler generation")?)
-    .bind(authority.owner())
-    .fetch_optional(&mut *conn)
-    .await
-    .map_err(store_error)?;
-    if held.is_none() {
+    // Preserve this port's existing out-of-range generation error; the common run helper
+    // deliberately treats that input as an absent authority instead.
+    number(lease.generation, "scheduler generation")?;
+    if crate::execution::locked_scheduler_time(tx, run_id, authority.owner(), lease)
+        .await?
+        .is_none()
+    {
         return Err(ChainProgressError::SchedulerFenceLost);
     }
     Ok(())

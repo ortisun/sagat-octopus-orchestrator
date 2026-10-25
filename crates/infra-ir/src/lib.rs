@@ -8,10 +8,15 @@
 mod payload_projection;
 pub use payload_projection::JsonPayloadProjector;
 mod canonical;
+mod carrier_schema_check;
+mod classification_check;
 mod continuation;
 mod convert;
 pub mod cron;
+mod database;
+mod database_result;
 mod declared_state;
+pub use database_result::JsonDatabaseResultValidator;
 mod diff;
 mod evaluator;
 mod operation_evaluator;
@@ -61,20 +66,19 @@ impl JsonIrCodec {
     /// Returns bounded syntax, schema, graph or expression errors. A chain policy is accepted only
     /// for the published direct continuation shape that transfers the exact declared state.
     pub fn parse_declared_state(&self, document: &[u8]) -> Result<ParsedDeclaredState, IrError> {
-        let value = validated_document(document)?;
-        let state = declared_state::parse(&value)?;
-        let parsed = if value.get("chainPolicy").is_some() {
-            let continuation = continuation::parse_published(&value)?;
-            ParsedDefinition {
-                definition: continuation.definition().clone(),
-                canonical: continuation.canonical().to_vec(),
-                digest: continuation.digest(),
-                warnings: continuation.warnings().to_vec(),
-            }
-        } else {
-            converted_document(&value, convert::declared_state_definition)?
-        };
-        Ok(ParsedDeclaredState::new(parsed, state))
+        declared_state_definition(validated_document(document)?)
+    }
+
+    /// Restores declared operation metadata from a trusted immutable version, without applying
+    /// later classification authoring rules to its already-published business operations.
+    ///
+    /// # Errors
+    /// Syntax, graph, expression, capability and declared-state validation remain enforced.
+    pub fn parse_stored_declared_state(
+        &self,
+        document: &[u8],
+    ) -> Result<ParsedDeclaredState, IrError> {
+        declared_state_definition(validated_stored_document(document)?)
     }
 
     /// Validates and preserves additive-v1 continuation declarations.
@@ -89,6 +93,19 @@ impl JsonIrCodec {
 }
 
 impl IrCodec for JsonIrCodec {
+    fn classification_analysis(
+        &self,
+        document: &[u8],
+    ) -> Option<sagat_application::classification::ClassificationAnalysis> {
+        if document.len() > MAX_IR_BYTES {
+            return None;
+        }
+        let value: Value = serde_json::from_slice(document).ok()?;
+        value
+            .is_object()
+            .then(|| classification_check::check(&value))
+    }
+
     fn check_draft(&self, document: &[u8]) -> Result<(), IrError> {
         if document.len() > MAX_IR_BYTES {
             return Err(IrError::TooLarge);
@@ -104,67 +121,24 @@ impl IrCodec for JsonIrCodec {
         from: &[u8],
         to: &[u8],
     ) -> Result<sagat_application::diff::DocumentDiff, IrError> {
-        diff::diff(from, to)
+        diff::diff(from, to, sagat_application::diff::DiffRules::CURRENT)
+    }
+
+    fn diff_with_rules(
+        &self,
+        from: &[u8],
+        to: &[u8],
+        rules: sagat_application::diff::DiffRules,
+    ) -> Result<sagat_application::diff::DocumentDiff, IrError> {
+        diff::diff(from, to, rules)
     }
 
     fn parse(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
-        let value = validated_document(document)?;
-        if value.get("state").is_some() {
-            declared_state::parse(&value)?;
-            if value.get("chainPolicy").is_some() {
-                let parsed = continuation::parse_published(&value)?;
-                Ok(ParsedDefinition {
-                    definition: parsed.definition().clone(),
-                    canonical: parsed.canonical().to_vec(),
-                    digest: parsed.digest(),
-                    warnings: parsed.warnings().to_vec(),
-                })
-            } else {
-                converted_document(&value, convert::published_declared_state_definition)
-            }
-        } else if value.get("chainPolicy").is_some()
-            && value
-                .get("nodes")
-                .and_then(Value::as_array)
-                .is_some_and(|nodes| {
-                    nodes.iter().any(|node| {
-                        node.get("type").and_then(Value::as_str) == Some("continueAsNew")
-                    })
-                })
-        {
-            let parsed = continuation::parse_published(&value)?;
-            Ok(ParsedDefinition {
-                definition: parsed.definition().clone(),
-                canonical: parsed.canonical().to_vec(),
-                digest: parsed.digest(),
-                warnings: parsed.warnings().to_vec(),
-            })
-        } else if value
-            .get("nodes")
-            .and_then(Value::as_array)
-            .is_some_and(|nodes| {
-                nodes
-                    .iter()
-                    .any(|node| node.get("type").and_then(Value::as_str) == Some("forEach"))
-            })
-        {
-            converted_document(&value, convert::published_collection_definition)
-        } else if value
-            .get("nodes")
-            .and_then(Value::as_array)
-            .is_some_and(|nodes| {
-                nodes.iter().any(|node| {
-                    matches!(
-                        node.get("type").and_then(Value::as_str),
-                        Some("while" | "repeatUntil")
-                    )
-                })
-            })
-        {
-            converted_document(&value, convert::published_loop_definition)
-        } else {
-            converted_document(&value, convert::definition)
-        }
+        published_definition(validated_document(document)?)
+    }
+
+    fn parse_stored(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
+        published_definition(validated_stored_document(document)?)
     }
 
     fn declared_state_publication(
@@ -200,6 +174,83 @@ impl IrCodec for JsonIrCodec {
     }
 }
 
+// Both entry points use the same executable conversion and capability gates. Classification
+// metadata is checked for new publications, never retroactively interpreted during restoration.
+fn declared_state_definition(value: Value) -> Result<ParsedDeclaredState, IrError> {
+    let state = declared_state::parse(&value)?;
+    let parsed = if value.get("chainPolicy").is_some() {
+        let continuation = continuation::parse_published(&value)?;
+        ParsedDefinition {
+            definition: continuation.definition().clone(),
+            canonical: continuation.canonical().to_vec(),
+            digest: continuation.digest(),
+            warnings: continuation.warnings().to_vec(),
+        }
+    } else {
+        converted_document(&value, convert::declared_state_definition)?
+    };
+    Ok(ParsedDeclaredState::new(parsed, state))
+}
+
+fn published_definition(value: Value) -> Result<ParsedDefinition, IrError> {
+    if value.get("state").is_some() {
+        declared_state::parse(&value)?;
+        if value.get("chainPolicy").is_some() {
+            let parsed = continuation::parse_published(&value)?;
+            Ok(ParsedDefinition {
+                definition: parsed.definition().clone(),
+                canonical: parsed.canonical().to_vec(),
+                digest: parsed.digest(),
+                warnings: parsed.warnings().to_vec(),
+            })
+        } else {
+            converted_document(&value, convert::published_declared_state_definition)
+        }
+    } else if value.get("chainPolicy").is_some()
+        && value
+            .get("nodes")
+            .and_then(Value::as_array)
+            .is_some_and(|nodes| {
+                nodes
+                    .iter()
+                    .any(|node| node.get("type").and_then(Value::as_str) == Some("continueAsNew"))
+            })
+    {
+        let parsed = continuation::parse_published(&value)?;
+        Ok(ParsedDefinition {
+            definition: parsed.definition().clone(),
+            canonical: parsed.canonical().to_vec(),
+            digest: parsed.digest(),
+            warnings: parsed.warnings().to_vec(),
+        })
+    } else if value
+        .get("nodes")
+        .and_then(Value::as_array)
+        .is_some_and(|nodes| {
+            nodes
+                .iter()
+                .any(|node| node.get("type").and_then(Value::as_str) == Some("forEach"))
+        })
+    {
+        converted_document(&value, convert::published_collection_definition)
+    } else if value
+        .get("nodes")
+        .and_then(Value::as_array)
+        .is_some_and(|nodes| {
+            nodes.iter().any(|node| {
+                matches!(
+                    node.get("type").and_then(Value::as_str),
+                    Some("while" | "repeatUntil")
+                )
+            })
+        })
+    {
+        converted_document(&value, convert::published_loop_definition)
+    } else {
+        converted_document(&value, convert::definition)
+    }
+}
+
 fn parse_document(
     document: &[u8],
     convert: fn(&Value) -> Result<WorkflowDefinition, IrError>,
@@ -208,16 +259,39 @@ fn parse_document(
     converted_document(&value, convert)
 }
 
-fn validated_document(document: &[u8]) -> Result<Value, IrError> {
+fn read_document(document: &[u8]) -> Result<Value, IrError> {
     if document.len() > MAX_IR_BYTES {
         return Err(IrError::TooLarge);
     }
-    // `serde_json` bounds its own recursion (128 levels), so a nesting bomb is a syntax error.
-    let value: Value = serde_json::from_slice(document).map_err(|_| IrError::Malformed)?;
-    let issues = schema::issues(&value);
+    // serde_json's recursion bound applies to authoring and stored definitions alike.
+    serde_json::from_slice(document).map_err(|_| IrError::Malformed)
+}
+
+fn check_ir_structure(value: &Value) -> Result<(), IrError> {
+    let issues = schema::issues(value);
     if !issues.is_empty() {
         return Err(IrError::Schema(issues));
     }
+    Ok(())
+}
+
+fn validated_document(document: &[u8]) -> Result<Value, IrError> {
+    let value = read_document(document)?;
+    let classification = classification_check::check(&value);
+    if !classification.is_publishable() {
+        return Err(IrError::Classification(classification.findings));
+    }
+    check_ir_structure(&value)?;
+    let issues = carrier_schema_check::issues(&value);
+    if !issues.is_empty() {
+        return Err(IrError::Schema(issues));
+    }
+    Ok(value)
+}
+
+fn validated_stored_document(document: &[u8]) -> Result<Value, IrError> {
+    let value = read_document(document)?;
+    check_ir_structure(&value)?;
     Ok(value)
 }
 
@@ -283,6 +357,16 @@ fn check_node_expressions<'a>(
 ) -> Result<(), IrError> {
     for node in nodes {
         let id = node.id().as_str();
+        if let Some(operation) = node.database_operation() {
+            for parameter in operation.parameters() {
+                if let sagat_domain::database::Parameter::Expression { expression, .. } = parameter
+                {
+                    Compiled::compile(expression.as_str()).map_err(|_| {
+                        expression_error(id, "parameters", "invalid database parameter expression")
+                    })?;
+                }
+            }
+        }
         match node.kind() {
             NodeKind::Condition { expression, .. } => {
                 Compiled::compile(expression.as_str())

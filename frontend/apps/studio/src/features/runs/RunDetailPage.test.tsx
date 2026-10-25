@@ -191,6 +191,19 @@ describe('the run page: the graph', () => {
     expect(legend).toHaveTextContent('Dotted: omitted');
   });
 
+  it('leaves the overview map out of the graph until it is asked for, and takes it away again', async () => {
+    const { user } = await open();
+    const canvas = await screen.findByRole('group', { name: 'Graph of the run' });
+    expect(canvas.querySelector('.react-flow__minimap')).toBeNull();
+    const toggle = screen.getByRole('button', { name: 'Overview map' });
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    expect(canvas.querySelector('.react-flow__minimap')).not.toBeNull();
+    await user.click(toggle);
+    expect(canvas.querySelector('.react-flow__minimap')).toBeNull();
+  });
+
   it('shows how far the graph was behind the journal when it was read', async () => {
     const { nodes, edges } = sagaRun();
     await open({ graph: graphOf(nodes, edges, { status: 'MANUAL_REVIEW', projectionLagMs: 2500 }) });
@@ -793,9 +806,9 @@ describe('the run page: the details of a step', () => {
     expect(await within(panel).findByText(/no trace \(the worker did not send one/)).toBeInTheDocument();
   });
 
-  it('says the journal keeps no data of a step, instead of showing any', async () => {
+  it('explains that the journal carries a digest and values require a separate classified read', async () => {
     const { panel } = await select('pay');
-    expect(within(panel).getByText(/payload is redacted/)).toBeInTheDocument();
+    expect(within(panel).getByText(/journal event holds only a payload digest/)).toBeInTheDocument();
   });
 
   it('lists what leads into the step and out of it, so the structure is readable without the canvas', async () => {
@@ -932,12 +945,18 @@ describe('the run page: motion and the clock', () => {
 });
 
 describe('the run page: who may do what', () => {
-  it('offers a viewer every action disabled, each with the permission it lacks', async () => {
+  it('offers a viewer every action disabled, with the permission they lack said once and tied to each button', async () => {
     const { user } = await open({}, VIEWER);
     await user.click(await screen.findByRole('button', { name: 'Run actions' }));
     const list = screen.getByRole('list', { name: 'Run actions' });
-    for (const name of ['Pause run', 'Resume run', 'Cancel run', 'Run again as new']) expect(within(list).getByRole('button', { name })).toHaveAttribute('aria-disabled', 'true');
-    expect(within(list).getAllByText('You need the run:operate permission to do this.')).toHaveLength(4);
+    // One reason for four buttons is one sentence, not four: it stays in text, and every button points at it.
+    const reason = screen.getByText('You need the run:operate permission to do this.');
+    for (const name of ['Pause run', 'Resume run', 'Cancel run', 'Run again as new']) {
+      const button = within(list).getByRole('button', { name });
+      expect(button).toHaveAttribute('aria-disabled', 'true');
+      expect(button).toHaveAccessibleDescription('You need the run:operate permission to do this.');
+      expect(button.getAttribute('aria-describedby')).toBe(reason.id);
+    }
   });
 
   it('keeps the run open for everybody (it is read-only without run:operate)', async () => {

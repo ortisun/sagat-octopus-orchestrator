@@ -224,6 +224,7 @@ impl IdentityStore for CountingStore {
 
 /// Settings tests may tighten before the API starts.
 pub struct Options {
+    pub secret_provider: Option<Arc<dyn sagat_application::secret_provider::SecretProvider>>,
     pub http_tls: Option<sagat_api_http::HttpTlsConfig>,
     pub http_tls_ca: Option<Vec<u8>>,
     pub webhook_oidc_profiles: Vec<sagat_api_http::auth::WebhookOidcConfig>,
@@ -248,6 +249,7 @@ pub struct Options {
     /// Storage shared with another process when a test starts an execution engine separately.
     /// Blob-enabled tests use the in-process memory backend unless they opt in here.
     pub blob_store: Option<BlobStoreConfig>,
+    pub blob_backend: Option<Arc<dyn BlobBackend>>,
     pub blob_transfer: BlobTransfer,
     pub grpc: GrpcConfig,
     /// The most any script may be given.
@@ -261,6 +263,7 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
+            secret_provider: None,
             http_tls: None,
             http_tls_ca: None,
             webhook_oidc_profiles: Vec::new(),
@@ -280,6 +283,7 @@ impl Default for Options {
             worker: WorkerSettings::default(),
             blobs: None,
             blob_store: None,
+            blob_backend: None,
             blob_transfer: BlobTransfer::default(),
             grpc: GrpcConfig::default(),
             script_ceiling: sagat_domain::scripts::Policy::default(),
@@ -296,22 +300,46 @@ pub async fn start() -> TestApi {
 pub async fn start_with(options: Options) -> TestApi {
     install_crypto_provider();
     let db = migrated_db().await;
+    start_on_ready_db(db, options, None).await
+}
+
+/// Starts the real API against a caller-owned, already migrated test database.
+pub async fn start_on_db(db: TestDb, options: Options) -> TestApi {
+    install_crypto_provider();
+    start_on_ready_db(db, options, None).await
+}
+
+/// Starts the real API against a caller-owned, already migrated test database and uses the
+/// caller's exact pool for identity, execution, REST and gRPC stores.
+///
+/// The caller owns the pool configuration and lifecycle. In particular, `options.statement_timeout`
+/// is not applied to a supplied pool.
+pub async fn start_on_db_with_pool(db: TestDb, options: Options, api_pool: PgPool) -> TestApi {
+    install_crypto_provider();
+    start_on_ready_db(db, options, Some(api_pool)).await
+}
+
+async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<PgPool>) -> TestApi {
     let idp = TestIdp::start().await;
 
     let mut auth = AuthConfig::new(ISSUER, AUDIENCE, idp.jwks_url());
     auth.allow_insecure_jwks_http = true;
     (options.auth)(&mut auth);
 
-    let api_url = if options.runtime_role {
-        db.url_for(super::RUNTIME_ROLE, super::RUNTIME_ROLE_PASSWORD)
+    let api_pool = if let Some(pool) = supplied_pool {
+        pool
     } else {
-        db.url.clone()
+        let api_url = if options.runtime_role {
+            db.url_for(super::RUNTIME_ROLE, super::RUNTIME_ROLE_PASSWORD)
+        } else {
+            db.url.clone()
+        };
+        let mut pool_config = PoolConfig::new(api_url);
+        pool_config.max_connections = 8;
+        pool_config.acquire_timeout = Duration::from_secs(5);
+        pool_config.statement_timeout = options.statement_timeout;
+        connect(&pool_config).await.expect("api pool")
     };
-    let mut pool_config = PoolConfig::new(api_url);
-    pool_config.max_connections = 8;
-    pool_config.acquire_timeout = Duration::from_secs(5);
-    pool_config.statement_timeout = options.statement_timeout;
-    let api_pool = connect(&pool_config).await.expect("api pool");
     let store = PgIdentityStore::new(api_pool.clone());
     let fetcher = HttpJwksFetcher::new(&auth).expect("fetcher");
     let verifier = TokenVerifier::new(Arc::new(fetcher), &auth);
@@ -341,13 +369,21 @@ pub async fn start_with(options: Options) -> TestApi {
     let signer =
         Signer::from_pkcs8(&Signer::generate_pkcs8().expect("a signing key")).expect("a signer");
     let script_key = signer.public_key();
-    let governance = GovState::new(
+    let mut governance = GovState::new(
         state.clone(),
         sagat_application::api_admission::ApiAdmissionService::new(executions.clone(), SystemClock),
         QuotaService::new(executions.clone(), SystemClock),
         BindingService::new(executions.clone(), SystemClock),
         EgressService::new(executions.clone(), SystemClock),
+        sagat_application::reveal_grants::RevealGrantService::new(executions.clone(), SystemClock),
     )
+    .with_event_payloads(Arc::new(
+        sagat_application::event_payloads::EventPayloadService::new(
+            executions.clone(),
+            SystemClock,
+            sagat_infra_ir::JsonPayloadProjector,
+        ),
+    ))
     .with_operations(sagat_application::operations::OperationsService::new(
         executions.clone(),
         SystemClock,
@@ -397,7 +433,26 @@ pub async fn start_with(options: Options) -> TestApi {
             options.script_ceiling,
         ),
     );
+    governance = governance.with_connections(sagat_application::database::ConnectionService::new(
+        executions.clone(),
+        SystemClock,
+    ));
+    if let Some(provider) = &options.secret_provider {
+        governance = governance.with_managed_secrets(
+            sagat_application::managed_secrets::ManagedSecretService::new(
+                executions.clone(),
+                SystemClock,
+                provider.clone(),
+                sagat_domain::secrets::SecretValue::new(vec![43; 32]).expect("fixture intent key"),
+            )
+            .expect("fixture managed secret service")
+            .with_legacy_cipher(keys.cipher()),
+        );
+    }
     let blob_backend = options.blobs.as_ref().map(|_| {
+        if let Some(backend) = &options.blob_backend {
+            return backend.clone();
+        }
         let store = options
             .blob_store
             .as_ref()
@@ -438,6 +493,22 @@ pub async fn start_with(options: Options) -> TestApi {
         SystemClock,
         JsonIrCodec,
     ))
+    .with_database_results(Arc::new(
+        sagat_application::database_results::DatabaseResultService::new(
+            executions.clone(),
+            SystemClock,
+            sagat_infra_ir::JsonDatabaseResultValidator,
+            blobs.clone(),
+        ),
+    ))
+    .with_payload_disclosures(Arc::new(
+        sagat_application::payload_disclosure::PayloadDisclosureService::new(
+            executions.clone(),
+            SystemClock,
+            sagat_infra_schema::classification::Classifier::default(),
+            sagat_infra_ir::JsonPayloadProjector,
+        ),
+    ))
     .with_payload_inspections(Arc::new(PayloadInspectionService::new(
         executions.clone(),
         SystemClock,
@@ -447,17 +518,22 @@ pub async fn start_with(options: Options) -> TestApi {
         exec = exec.with_stream_limits(limits);
     }
     // The worker protocol shares the REST API's identity, budgets and database.
-    let mut grpc = WorkerGrpc::new(
-        exec.clone(),
-        WorkerService::new(
-            executions.clone(),
-            SystemClock,
-            Engine::new(JsonEvaluator),
-            SystemEntropy,
-            options.worker,
-        )
-        .with_vault(keys.cipher()),
+    let mut workers = WorkerService::new(
+        executions.clone(),
+        SystemClock,
+        Engine::new(JsonEvaluator),
+        SystemEntropy,
+        options.worker,
+    )
+    .with_vault(keys.cipher())
+    .with_database_content(
+        Arc::new(sagat_infra_secrets::database::JsonDatabaseCredentials),
+        Arc::new(sagat_infra_ir::JsonDatabaseResultValidator),
     );
+    if let Some(provider) = &options.secret_provider {
+        workers = workers.with_secret_provider(provider.clone());
+    }
+    let mut grpc = WorkerGrpc::new(exec.clone(), workers);
     if let Some(blobs) = &blobs {
         grpc = grpc.with_blobs(blobs.clone(), options.blob_transfer);
     }

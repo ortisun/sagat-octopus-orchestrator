@@ -4,20 +4,33 @@ import { Button } from '../ui/Button';
 import { useApp, useNamespace, useSession } from './context';
 import { useQuery } from '@tanstack/react-query';
 
-const NAV = [
+/** What belongs to the tenant, whatever namespace is chosen: the namespaces themselves. */
+const TENANT = [{ to: '/namespaces', label: 'Namespaces' }] as const;
+
+/** What belongs to one namespace: it is in the menu only while a namespace is chosen (UX review 2026-10-14, owner request). */
+export const SCOPED = [
   { to: '/workflows', label: 'Workflows' },
   { to: '/scripts', label: 'Scripts' },
   { to: '/runs', label: 'Runs' },
   { to: '/operations', label: 'Operations' },
+  { to: '/database-executions', label: 'Ad hoc database' },
+  { to: '/connections', label: 'Connections' },
+  { to: '/secrets', label: 'Secrets' },
   { to: '/integrations', label: 'Integrations' },
-  { to: '/namespaces', label: 'Namespaces' },
 ] as const;
 
+const at = (pathname: string, to: string) => pathname === to || pathname.startsWith(`${to}/`);
+
 function pageName(pathname: string): string {
-  return NAV.find((item) => pathname === item.to || pathname.startsWith(`${item.to}/`))?.label ?? 'Studio';
+  return [...SCOPED, ...TENANT].find((item) => at(pathname, item.to))?.label ?? 'Studio';
 }
 
-/** The frame of every page: skip link, header with the namespace and the session, navigation, main. */
+/**
+ * The frame of every page: skip link, header with the namespace and the session, navigation, main.
+ * The menu follows the hierarchy: the tenant's *Namespaces*, then the chosen namespace and, under it,
+ * what lives in it. The Studio never chooses a namespace for the person, so until one is chosen the menu
+ * offers only the namespaces.
+ */
 export function Shell() {
   const { session, ep, namespace } = useApp();
   const { info } = useSession();
@@ -25,13 +38,14 @@ export function Shell() {
   const location = useLocation();
   const namespaces = useQuery({ queryKey: ['namespaces'], queryFn: ({ signal }) => ep.namespaces(signal) });
 
-  // With one namespace there is nothing to choose; with several, the first until the user picks.
+  // A choice remembered from an earlier visit that the tenant does not list any more is forgotten, not replaced.
+  const items = namespaces.data?.items;
   useEffect(() => {
-    const items = namespaces.data?.items ?? [];
-    if (items.length > 0 && (current === undefined || !items.some((n) => n.slug === current))) {
-      namespace.set(items[0]?.slug);
-    }
-  }, [namespaces.data, current, namespace]);
+    if (items !== undefined && current !== undefined && !items.some((n) => n.slug === current)) namespace.set(undefined);
+  }, [items, current, namespace]);
+  // While the list is still on its way a remembered choice is the person's own, so its menu is shown.
+  const chosen = current !== undefined && (items === undefined || items.some((n) => n.slug === current)) ? current : undefined;
+  const scoped = SCOPED.some((item) => at(location.pathname, item.to));
 
   // After a navigation focus moves to the page, so a keyboard or screen-reader user starts at its top.
   useEffect(() => {
@@ -51,31 +65,54 @@ export function Shell() {
             <small>Durable sagas · many arms</small>
           </span>
         </div>
-        <label className="shell-namespace">
-          <span>Namespace</span>
-          <select value={current ?? ''} onChange={(event) => namespace.set(event.target.value)} aria-label="Namespace" disabled={(namespaces.data?.items.length ?? 0) === 0}>
-            {(namespaces.data?.items ?? []).map((item) => (
-              <option key={item.id} value={item.slug}>
-                {item.slug}
-              </option>
-            ))}
-          </select>
-        </label>
         <nav aria-label="Main">
           <ul>
-            {NAV.map((item) => (
+            {TENANT.map((item) => (
               <li key={item.to}>
                 <NavLink to={item.to}>{item.label}</NavLink>
               </li>
             ))}
+            <li className="shell-scope">
+              <label className="shell-namespace">
+                <span>Namespace</span>
+                <select value={chosen ?? ''} onChange={(event) => namespace.set(event.target.value)} aria-label="Namespace" disabled={items?.length === 0}>
+                  {chosen === undefined ? (
+                    <option value="" disabled>
+                      {items?.length === 0 ? 'No namespaces yet' : 'Choose a namespace'}
+                    </option>
+                  ) : null}
+                  {items === undefined && chosen !== undefined ? <option value={chosen}>{chosen}</option> : null}
+                  {(items ?? []).map((item) => (
+                    <option key={item.id} value={item.slug}>
+                      {item.slug}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {chosen !== undefined ? (
+                <ul className="shell-subnav" aria-label={`In ${chosen}`}>
+                  {SCOPED.map((item) => (
+                    <li key={item.to}>
+                      <NavLink to={item.to}>{item.label}</NavLink>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="shell-hint">Choose a namespace to open its workflows, runs, operations, scripts and integrations.</p>
+              )}
+            </li>
           </ul>
         </nav>
       </aside>
       <div className="shell-frame">
         <header className="shell-topbar">
           <div className="shell-crumb" aria-label="Current location">
-            <span>{current ?? 'No namespace'}</span>
-            <span aria-hidden="true">/</span>
+            {scoped ? (
+              <>
+                <span>{current ?? 'No namespace'}</span>
+                <span aria-hidden="true">/</span>
+              </>
+            ) : null}
             <strong>{pageName(location.pathname)}</strong>
           </div>
           <span className="shell-session" aria-label="Signed in as">

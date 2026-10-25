@@ -1,6 +1,6 @@
 {
   "name": "collection-limits",
-  "description": "WP-12 (item limit): the declared maxItems of a map holds at its boundary through the public path in every SDK. Three items under maxItems 3 run to the end; four items fail the run with ITERATION_LIMIT before any iteration is admitted and with no worker call. The instance budget (limits.maxInstances) cannot be set through the SDK builders and is covered by the Rust limits suite.",
+  "description": "WP-12 (item limit): the declared maxItems of a map holds at its boundary through the public path in every SDK. Three items under maxItems 3 run to the end; four items fail the run with ITERATION_LIMIT before any iteration is admitted and with no worker call. Instance admission is additionally exercised by workflow-instance-limits; broader native limit coverage is in the Rust limits suite.",
   "server": {
     "iterationConcurrency": 4
   },

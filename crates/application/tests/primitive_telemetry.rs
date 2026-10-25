@@ -205,6 +205,55 @@ fn failed_primitive_span_uses_a_closed_error_without_leaking_failure_data() {
 }
 
 #[test]
+fn data_limit_drain_span_and_observation_expose_no_candidate_evidence() {
+    let facts = facts();
+    let entries = [JournalEntry {
+        seq: 1,
+        event: RunEvent::CollectionDrainStarted {
+            node: node("items"),
+            reason: CollectionDrainReason::RunDataLimit,
+        },
+        instance_path: InstancePath::root(),
+        actor: "worker:secret-marker".to_owned(),
+        occurred_at: facts.created_at,
+    }];
+
+    let derived = derive(&facts, &entries, 0);
+    assert_eq!(
+        derived.observations,
+        [Observation::PrimitiveTransition {
+            kind: WorkflowPrimitiveKind::Collection,
+            outcome: WorkflowPrimitiveOutcome::Draining,
+        }]
+    );
+    assert_eq!(derived.spans.len(), 1);
+    assert_eq!(derived.spans[0].name, "workflow.iteration.commit");
+    assert_eq!(derived.spans[0].status, SpanStatus::Ok);
+    for (key, value) in &derived.spans[0].attributes {
+        for forbidden in [
+            "payload",
+            "output",
+            "digest",
+            "size",
+            "expression",
+            "reason",
+        ] {
+            assert!(!key.contains(forbidden), "unexpected span field {key}");
+        }
+        assert!(!format!("{value:?}").contains("secret-marker"));
+    }
+    let rendered = format!("{derived:?}");
+    for forbidden in [
+        "secret-marker",
+        "RUN_DATA_LIMIT:4194305",
+        "sha256:secret-marker",
+        "steps.items.output",
+    ] {
+        assert!(!rendered.contains(forbidden), "{rendered}");
+    }
+}
+
+#[test]
 fn loop_checkpoint_reports_only_closed_lifecycle_outcomes() {
     let facts = facts();
     let owner = node("poll");

@@ -135,6 +135,9 @@
           "$ref": "#/$defs/activity"
         },
         {
+          "$ref": "#/$defs/database"
+        },
+        {
           "$ref": "#/$defs/timer"
         },
         {
@@ -229,6 +232,11 @@
             },
             "activity": {
               "type": "string"
+            },
+            "outputSchema": {
+              "type": "object",
+              "maxProperties": 64,
+              "description": "Classifies this activity's retained output for payload disclosure."
             },
             "retry": {
               "$ref": "#/$defs/retry"
@@ -335,6 +343,11 @@
               "minimum": 0,
               "maximum": 604800000,
               "description": "An event of this type and correlation that arrived up to this long before the wait started also wakes it (once). Zero or absent: only an event that arrives while it waits does. It reaches back only as far as the event is still remembered: the deduplication window of its source (24 hours for a connector and by default for an endpoint)."
+            },
+            "outputSchema": {
+              "type": "object",
+              "maxProperties": 64,
+              "description": "Classifies the retained event payload that satisfied this wait for payload disclosure."
             }
           }
         }
@@ -444,6 +457,11 @@
                 "request_cancel"
               ],
               "description": "What happens to the child when the parent is stopped. propagate (default): the child is cancelled and the parent does not wait for it. request_cancel: the child is cancelled and the parent waits until it has settled. detach: the child keeps running."
+            },
+            "outputSchema": {
+              "type": "object",
+              "maxProperties": 64,
+              "description": "Classifies the child result retained as this node's output for payload disclosure."
             }
           }
         }
@@ -546,6 +564,11 @@
                 "java"
               ],
               "description": "Informational: the runner takes the language from the artifact."
+            },
+            "outputSchema": {
+              "type": "object",
+              "maxProperties": 64,
+              "description": "Classifies this script's retained output for payload disclosure."
             },
             "retry": {
               "$ref": "#/$defs/retry"
@@ -665,6 +688,342 @@
           }
         }
       ]
+    },
+    "databaseValue": {
+      "description": "Lossless tagged value. Integer and decimal use strings, binary uses canonical padded base64. JSON is a bounded JSON value.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "null"
+            },
+            "value": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "boolean"
+            },
+            "value": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "integer"
+            },
+            "value": {
+              "type": "string",
+              "pattern": "^-?[0-9]+$",
+              "maxLength": 40
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "decimal"
+            },
+            "value": {
+              "type": "string",
+              "pattern": "^-?[0-9]+(\\.[0-9]+)?$",
+              "maxLength": 16384
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "float"
+            },
+            "value": {
+              "type": "number"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "text"
+            },
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "timestamp"
+            },
+            "value": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "date"
+            },
+            "value": {
+              "type": "string",
+              "format": "date"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "binary"
+            },
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "json"
+            },
+            "value": {}
+          }
+        }
+      ]
+    },
+    "databaseParameter": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "literal"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "literal": {
+              "$ref": "#/$defs/databaseValue"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "expression"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "null",
+                "boolean",
+                "integer",
+                "decimal",
+                "float",
+                "text",
+                "timestamp",
+                "date",
+                "binary",
+                "json"
+              ]
+            },
+            "expression": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
+            }
+          }
+        }
+      ]
+    },
+    "databaseLimits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxStatementBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536
+        },
+        "maxParameters": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 256
+        },
+        "maxParameterBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 262144
+        },
+        "maxRows": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "maxResultBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4194304
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30000
+        },
+        "connectTimeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "poolSize": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        },
+        "idleTimeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60000
+        }
+      }
+    },
+    "database": {
+      "type": "object",
+      "description": "Managed PostgreSQL operation. Connection revision is frozen at admission. Credentials are resolved under the leased managed capability. One attempt; ambiguous writes require manual review. Allowed only in the root graph of a definition that has no forEach, while or repeatUntil node and no chainPolicy (never in a loop or collection body): attempt credential pins are root-scoped until a later feature proves scoped database attempts.",
+      "required": [
+        "id",
+        "type",
+        "connectionRef",
+        "operation",
+        "statement"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "database"
+        },
+        "next": {
+          "type": "string"
+        },
+        "onError": {
+          "type": "string"
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60000
+        },
+        "connectionRef": {
+          "type": "object",
+          "required": [
+            "name"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{2,63}$"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2147483647
+            }
+          }
+        },
+        "operation": {
+          "enum": [
+            "query",
+            "execute"
+          ]
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536
+        },
+        "parameters": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "$ref": "#/$defs/databaseParameter"
+          }
+        },
+        "limits": {
+          "$ref": "#/$defs/databaseLimits"
+        }
+      }
     },
     "nodeId": {
       "type": "string",
@@ -1507,6 +1866,11 @@
         "activity": {
           "$ref": "#/$defs/name"
         },
+        "outputSchema": {
+          "type": "object",
+          "maxProperties": 64,
+          "description": "Classifies this activity's retained output for payload disclosure."
+        },
         "retry": {
           "$ref": "#/$defs/bodyRetry"
         },
@@ -1614,6 +1978,11 @@
           "minimum": 0,
           "maximum": 604800000,
           "description": "An event of this type and correlation that arrived up to this long before the wait started also wakes it (once). Zero or absent: only an event that arrives while it waits does. It reaches back only as far as the event is still remembered: the deduplication window of its source (24 hours for a connector and by default for an endpoint)."
+        },
+        "outputSchema": {
+          "type": "object",
+          "maxProperties": 64,
+          "description": "Classifies the retained event payload that satisfied this wait for payload disclosure."
         }
       },
       "required": [
@@ -1741,6 +2110,11 @@
             "request_cancel"
           ],
           "description": "What happens to the child when the parent is stopped. propagate (default): the child is cancelled and the parent does not wait for it. request_cancel: the child is cancelled and the parent waits until it has settled. detach: the child keeps running."
+        },
+        "outputSchema": {
+          "type": "object",
+          "maxProperties": 64,
+          "description": "Classifies the child result retained as this node's output for payload disclosure."
         }
       },
       "required": [
@@ -1826,6 +2200,11 @@
             "java"
           ],
           "description": "Informational: the runner takes the language from the artifact."
+        },
+        "outputSchema": {
+          "type": "object",
+          "maxProperties": 64,
+          "description": "Classifies this script's retained output for payload disclosure."
         },
         "retry": {
           "$ref": "#/$defs/bodyRetry"

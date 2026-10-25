@@ -29,17 +29,19 @@
 - [x] Existing versions keep today's behaviour by construction (rules version 0), and the migration is additive.
 - [x] OTel, audit, typed errors (reasons only, closed `Error.code`), tenant boundary and performance bounds are specified for the feature.
 - [x] Five-language SDK scope is decided (setters and one golden, no helper) and justified.
-- [x] Tasks are dependency-ordered, tests precede implementation, every task has file paths and Refs, and nothing is ticked.
+- [x] Tasks are dependency-ordered, tests precede implementation, every task has file paths and Refs; implementation ticks cite executed evidence in the canonical task list.
 
 ## Open implementation gates
 
 - [x] The owner answers P1 (grant mechanism), P2 (event inbox), P3 (two readings of ADR-0033) and P4 (self-grant); T016-002. _Answered 2026-10-17; recorded in `research.md`, `docs/owner-decisions.md` and the ADR-0033 addendum._
-- [ ] Add the schema and OpenAPI changes and prove them in CI (T016-005 to T016-008).
-- [ ] Implement and prove the domain, the publication check, pinning, disclosure, reveal and grants (Phases 2 to 5).
-- [ ] Restrict and prove the event values (US08, T016-057 to T016-065), with the documented break.
-- [ ] Prove the canary suite across every boundary, the fault suite, tenant isolation, compatibility and the five-SDK golden (T016-042, T016-049 to T016-052).
-- [ ] Measure the bounds on a stated environment (T016-053) and write the runbook (T016-055).
-- [ ] Merge the G21 run-result change and then deliver `source: "result"` (T016-031).
+- [x] Canonical schema/OpenAPI and generated Studio types are implemented and locally verified (T016-005..008; 18 contract tests and generated-client/reference checks). Remote CI is not claimed.
+- [x] Domain, publication, pinning, disclosure, reveal and grants have executed unit/real-PG/REST/fault evidence (Phases 2..5; see tasks and integration notes).
+- [x] Event values are restricted and the response break documented (US08): original event gates 2 contract / 11 e2e / 111 integration tests, plus reveal/audit/200-letter/tenant-boundary cases.
+- [x] Canary boundaries, actual CLI/Chromium, transaction/process faults, tenant isolation, frozen-server byte compatibility and five-SDK builder/released-client evidence passed (T016-042, 049..052; manifests and limits in integration notes).
+- [x] Registered benchmark passed with environment, response sizes, allocations/cache policy and limits recorded; runbook delivered (T016-053, 055).
+- [x] G21 result/child carriers are integrated and actual worker/script/child/rerun/retry/blob/result scenarios passed (T016-031).
+- [ ] Complete the integrated workspace/architecture/Clippy/contracts/advisory/Compose release gates (T016-054 and shared feature-014 gates).
 
-The checked items validate the written design only. The open gates are intentional future work and
-state no result.
+Content/readiness items above validate the written design. Implementation marks cite actual local
+execution in tasks.md and the integration notes; the remaining release gate is still open. Nothing
+here claims remote CI, deployment or human visual acceptance.

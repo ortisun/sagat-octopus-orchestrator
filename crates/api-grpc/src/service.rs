@@ -17,10 +17,13 @@ use sagat_application::clock::Clock;
 use sagat_application::definitions::DefinitionStore;
 use sagat_application::entropy::Entropy;
 use sagat_application::error::{AccessDenial, AppError};
-use sagat_application::execution::{ExpressionEvaluator, MAX_PAYLOAD_BYTES};
+use sagat_application::execution::{ExpressionEvaluator, MAX_PAYLOAD_BYTES, PathExecutionStore};
 use sagat_application::identity::RequestContext;
 use sagat_application::runs::RunStore;
-use sagat_application::worker::{Capabilities, ClaimedTask, StepAck, WorkerService, WorkerStore};
+use sagat_application::worker::{
+    BlobCompletionTarget, BlobOutput, Capabilities, ClaimedTask, StepAck, WorkerService,
+    WorkerStore,
+};
 use sagat_domain::blobs::BlobId;
 use sagat_domain::execution::{ExecutionInstanceId, InstancePath};
 use sagat_domain::identity::Principal;
@@ -386,7 +389,7 @@ where
 impl<St, S, C, E, R> pb::worker_service_server::WorkerService for WorkerGrpc<St, S, C, E, R>
 where
     St: Core,
-    S: RunStore + WorkerStore + DefinitionStore + 'static,
+    S: RunStore + WorkerStore + DefinitionStore + PathExecutionStore + 'static,
     C: Clock + 'static,
     E: ExpressionEvaluator + 'static,
     R: Entropy + 'static,
@@ -798,6 +801,41 @@ where
         .await
     }
 
+    async fn resolve_database(
+        &self,
+        request: Request<pb::ResolveSecretsRequest>,
+    ) -> Result<Response<pb::ResolvedDatabase>, Status> {
+        let trace = trace_of(&request);
+        observe(&self.core, "ResolveDatabase", trace, async {
+            let auth = self.authenticate(&request).await?;
+            let m = request.get_ref();
+            let mut attempt = Attempt::parse(
+                &m.task_id,
+                &m.run_id,
+                &m.step_id,
+                m.attempt,
+                m.generation,
+                &m.lease_token,
+            )?;
+            attach_instance(
+                &mut attempt,
+                m.instance.as_ref(),
+                self.workers.supports_scoped_worker_protocol(),
+            )?;
+            let resolved = self
+                .workers
+                .resolve_database(
+                    &auth.session.principal,
+                    &attempt.task_ref(),
+                    Some(&trace.trace_id().to_string()),
+                )
+                .await
+                .map_err(app)?;
+            crate::database::response(resolved).map_err(app)
+        })
+        .await
+    }
+
     async fn heartbeat(
         &self,
         request: Request<pb::HeartbeatRequest>,
@@ -866,9 +904,9 @@ where
                     .parse::<BlobId>()
                     .map_err(|_| invalid("output_blob_ref is not a blob id"))?;
                 let principal = &auth.session.principal;
-                if let Some(ack) = self
+                let scope = match self
                     .workers
-                    .replay_blob_completion(
+                    .prepare_blob_completion(
                         principal,
                         &attempt.task_ref(),
                         id,
@@ -878,13 +916,9 @@ where
                     .await
                     .map_err(app)?
                 {
-                    return Ok(step_response(&ack));
-                }
-                let scope = self
-                    .workers
-                    .blob_report_scope(principal, &attempt.task_ref())
-                    .await
-                    .map_err(app)?;
+                    BlobCompletionTarget::Replayed(ack) => return Ok(step_response(&ack)),
+                    BlobCompletionTarget::Ready(scope) => scope,
+                };
                 let described = blobs
                     .service
                     .describe_for_commit(scope, id)
@@ -897,13 +931,39 @@ where
                 {
                     return Err(invalid("output_sha256 does not match the blob"));
                 }
+                let limit = self
+                    .workers
+                    .database_blob_limit(principal, &attempt.task_ref())
+                    .await
+                    .map_err(app)?;
+                let mut _place = None;
+                let content = if let Some(limit) = limit {
+                    if described.size() > limit as u64 {
+                        return Err(invalid("managed database result is too large"));
+                    }
+                    _place = Some(blobs.permit()?);
+                    let (actual, body) = blobs
+                        .service
+                        .read(scope.access, id)
+                        .await
+                        .map_err(read_failure)?;
+                    if actual != described {
+                        return Err(invalid("managed blob descriptor changed"));
+                    }
+                    Some(blob_failures::collect_database_result(body, limit, blobs.timeout).await?)
+                } else {
+                    None
+                };
                 let ack = self
                     .workers
                     .complete_with_blob(
                         principal,
                         &attempt.task_ref(),
-                        &described,
-                        &message.output_sha256,
+                        BlobOutput {
+                            descriptor: &described,
+                            expected_digest: &message.output_sha256,
+                            content: content.as_ref().map(|bytes| bytes.as_slice()),
+                        },
                         key,
                     )
                     .await
@@ -959,19 +1019,84 @@ where
                 self.workers.supports_scoped_worker_protocol(),
             )?;
             let principal = &auth.session.principal;
-            let scope = self
+            let write = write_request(&header)?;
+            let limit = self
                 .workers
-                .check_blob_upload(principal, &attempt.task_ref())
+                .database_blob_limit(principal, &attempt.task_ref())
                 .await
                 .map_err(app)?;
-            let write = write_request(&header)?;
-
-            let (body, flags) =
+            if limit.is_some() && write.content_type.as_str() != "application/json" {
+                return Err(invalid("managed database results require application/json"));
+            }
+            let scope = if limit.is_none() {
+                Some(
+                    self.workers
+                        .check_blob_upload(principal, &attempt.task_ref())
+                        .await
+                        .map_err(app)?,
+                )
+            } else {
+                None
+            };
+            if limit
+                .is_some_and(|limit| write.expected_size.is_some_and(|size| size > limit as u64))
+            {
+                return Err(invalid("managed database result is too large"));
+            }
+            let (mut body, flags) =
                 upload_body(stream, blobs.timeout.saturating_sub(started.elapsed()));
-            let stored = blobs
-                .service
-                .write(scope, principal.subject().as_str(), write, body)
+            let scope = if let Some(limit) = limit {
+                let collected = blob_failures::collect_database_result(
+                    body,
+                    limit,
+                    blobs.timeout.saturating_sub(started.elapsed()),
+                )
                 .await;
+                if flags.timed_out() {
+                    return Err(to_status(&ApiError::request_timeout()));
+                }
+                if flags.violation() {
+                    return Err(invalid(
+                        "after the header an upload carries only chunks of at most 256 KiB",
+                    ));
+                }
+                let content = collected?;
+                if started.elapsed() >= blobs.timeout {
+                    return Err(to_status(&ApiError::request_timeout()));
+                }
+                let scope = tokio::time::timeout(
+                    blobs.timeout.saturating_sub(started.elapsed()),
+                    self.workers.check_database_blob_upload(
+                        principal,
+                        &attempt.task_ref(),
+                        &content,
+                    ),
+                )
+                .await
+                .map_err(|_| to_status(&ApiError::request_timeout()))?
+                .map_err(app)?;
+                body = Box::pin(tokio_stream::iter([Ok(bytes::Bytes::copy_from_slice(
+                    &content,
+                ))]));
+                scope
+            } else {
+                scope.ok_or_else(|| app(AppError::Internal))?
+            };
+            let storing = blobs
+                .service
+                .write(scope, principal.subject().as_str(), write, body);
+            let stored = if limit.is_some() {
+                if started.elapsed() >= blobs.timeout {
+                    return Err(to_status(&ApiError::request_timeout()));
+                }
+                // A cancelled PUT can have an unknown outcome. The existing durable reservation
+                // and abandoned-upload sweep reconcile it; unconfirmed bytes are never usable.
+                tokio::time::timeout(blobs.timeout.saturating_sub(started.elapsed()), storing)
+                    .await
+                    .map_err(|_| to_status(&ApiError::request_timeout()))?
+            } else {
+                storing.await
+            };
             // Why the body ended early is told by the body; the use case only knows it was cut.
             if flags.timed_out() {
                 return Err(to_status(&ApiError::request_timeout()));

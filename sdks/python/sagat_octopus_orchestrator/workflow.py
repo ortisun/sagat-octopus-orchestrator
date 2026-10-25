@@ -15,11 +15,13 @@ from math import isfinite
 from typing import Any, Literal, TypeVar
 
 from ._json import canonical_json
+from .database import ConnectionRef, DatabaseLimits, DatabaseParameter, database_node
 from .errors import invalid
 
 _NAME = re.compile(r"[a-z][a-z0-9-]{2,63}")
 _OPERATION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 _SECRET = re.compile(r"[a-z][a-z0-9._-]{0,63}")
+_ARTIFACT_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 
 Node = dict[str, Any]
 _F = TypeVar("_F", bound="Flow")
@@ -263,6 +265,7 @@ class Flow:
         irreversible: bool | None = None,
         high_risk: bool | None = None,
         on_error: str | None = None,
+        output_schema: Mapping[str, Any] | None = None,
     ) -> _F:
         """An activity executed by a worker. ``compensate_with`` names the activity that undoes it (idempotent);
         ``reconcile_with`` the one that finds out whether it happened."""
@@ -287,8 +290,39 @@ class Flow:
             irreversible=irreversible,
             highRisk=high_risk,
             onError=on_error,
+            outputSchema=deepcopy(dict(output_schema)) if output_schema is not None else None,
         )
         self._push(node)
+        return self
+
+    def database(
+        self: _F,
+        node_id: str,
+        *,
+        connection_ref: ConnectionRef,
+        operation: Literal["query", "execute"],
+        statement: str,
+        parameters: Sequence[DatabaseParameter] | None = None,
+        limits: DatabaseLimits | None = None,
+        timeout_ms: int | None = None,
+        on_error: str | None = None,
+    ) -> _F:
+        """A managed database operation using a scoped connection. Credentials stay in the executor.
+
+        Integer/decimal literals use exact strings; SQL, access, policy and retry semantics are server-owned.
+        """
+        self._push(
+            database_node(
+                node_id,
+                _add(
+                    {"connectionRef": connection_ref, "operation": operation, "statement": statement},
+                    parameters=list(parameters) if parameters is not None else None,
+                    limits=limits,
+                    timeoutMs=timeout_ms,
+                    onError=on_error,
+                ),
+            )
+        )
         return self
 
     def sleep(self: _F, node_id: str, duration_ms: int) -> _F:
@@ -296,6 +330,38 @@ class Flow:
         if isinstance(duration_ms, bool) or not isinstance(duration_ms, int) or duration_ms < 1:
             raise invalid(f"sleep {node_id} needs a duration of at least 1 ms")
         self._push({"id": node_id, "type": "timer", "durationMs": duration_ms})
+        return self
+
+    def script(
+        self: _F,
+        node_id: str,
+        artifact_digest: str,
+        *,
+        language: Literal["typescript", "python", "csharp", "go", "java"] | None = None,
+        retry: RetrySpec | None = None,
+        compensate_with: str | None = None,
+        secrets: Sequence[str] | None = None,
+        on_error: str | None = None,
+        output_schema: Mapping[str, Any] | None = None,
+    ) -> _F:
+        """Runs one immutable script artifact in the platform's isolated runner."""
+        if not _ARTIFACT_DIGEST.fullmatch(artifact_digest):
+            raise invalid(f"script {node_id} needs a sha256 artifact digest")
+        for secret in secrets or ():
+            if not _SECRET.fullmatch(secret):
+                raise invalid(f"script {node_id} names a secret that is not a name: {secret!r}")
+        node: Node = {"id": node_id, "type": "script", "artifactDigest": artifact_digest}
+        self._push(
+            _add(
+                node,
+                language=language,
+                retry=_retry(retry),
+                compensateWith=compensate_with,
+                secrets=list(secrets) if secrets is not None else None,
+                onError=on_error,
+                outputSchema=deepcopy(dict(output_schema)) if output_schema is not None else None,
+            )
+        )
         return self
 
     def wait_for_event(
@@ -307,6 +373,7 @@ class Flow:
         timeout_ms: int,
         on_timeout: str | None = None,
         lookback_ms: int | None = None,
+        output_schema: Mapping[str, Any] | None = None,
     ) -> _F:
         """Waits for an event of a type with a correlation key (an expression over the run's data) or the timeout."""
         if not event_type or not correlation_expr:
@@ -320,7 +387,14 @@ class Flow:
             "correlationExpr": correlation_expr,
             "timeoutMs": timeout_ms,
         }
-        self._push(_add(node, onTimeout=on_timeout, lookbackMs=lookback_ms))
+        self._push(
+            _add(
+                node,
+                onTimeout=on_timeout,
+                lookbackMs=lookback_ms,
+                outputSchema=deepcopy(dict(output_schema)) if output_schema is not None else None,
+            )
+        )
         return self
 
     def invoke_child(
@@ -331,12 +405,21 @@ class Flow:
         version: int | None = None,
         input: str | None = None,
         cancel_policy: Literal["propagate", "detach", "request_cancel"] | None = None,
+        output_schema: Mapping[str, Any] | None = None,
     ) -> _F:
         """Starts another workflow of the namespace and waits for it."""
         if not workflow:
             raise invalid(f"invokeChild {node_id} needs the name of a workflow")
         node: Node = {"id": node_id, "type": "child", "workflowId": workflow}
-        self._push(_add(node, version=version, input=input, cancelPolicy=cancel_policy))
+        self._push(
+            _add(
+                node,
+                version=version,
+                input=input,
+                cancelPolicy=cancel_policy,
+                outputSchema=deepcopy(dict(output_schema)) if output_schema is not None else None,
+            )
+        )
         return self
 
     def condition(self: _F, node_id: str, expression: str, if_true: str, if_false: str) -> _F:
@@ -385,11 +468,7 @@ class Flow:
             raise invalid(f"forEach {node_id} needs items, body and result expressions")
         if isinstance(max_items, bool) or not isinstance(max_items, int) or not 1 <= max_items <= 10_000:
             raise invalid(f"forEach {node_id} maxItems must be between 1 and 10000")
-        if (
-            isinstance(max_concurrency, bool)
-            or not isinstance(max_concurrency, int)
-            or not 1 <= max_concurrency <= 256
-        ):
+        if isinstance(max_concurrency, bool) or not isinstance(max_concurrency, int) or not 1 <= max_concurrency <= 256:
             raise invalid(f"forEach {node_id} maxConcurrency must be between 1 and 256")
         self._push(
             {
@@ -415,9 +494,7 @@ class Flow:
         max_concurrency: int,
     ) -> _F:
         """Value-returning collection authoring; emits the same durable ``forEach`` node."""
-        return self.for_each(
-            node_id, items, body, result, max_items=max_items, max_concurrency=max_concurrency
-        )
+        return self.for_each(node_id, items, body, result, max_items=max_items, max_concurrency=max_concurrency)
 
     def while_loop(
         self: _F,
@@ -434,8 +511,16 @@ class Flow:
     ) -> _F:
         """Runs a named body sequentially while a pre-test condition is true."""
         return self._loop(
-            "while", node_id, condition, body, initial, carry,
-            max_iterations=max_iterations, timeout_ms=timeout_ms, delay_ms=delay_ms, on_error=on_error,
+            "while",
+            node_id,
+            condition,
+            body,
+            initial,
+            carry,
+            max_iterations=max_iterations,
+            timeout_ms=timeout_ms,
+            delay_ms=delay_ms,
+            on_error=on_error,
         )
 
     def repeat_until(
@@ -453,8 +538,16 @@ class Flow:
     ) -> _F:
         """Runs a named body once, then repeats it until a post-test condition is true."""
         return self._loop(
-            "repeatUntil", node_id, condition, body, initial, carry,
-            max_iterations=max_iterations, timeout_ms=timeout_ms, delay_ms=delay_ms, on_error=on_error,
+            "repeatUntil",
+            node_id,
+            condition,
+            body,
+            initial,
+            carry,
+            max_iterations=max_iterations,
+            timeout_ms=timeout_ms,
+            delay_ms=delay_ms,
+            on_error=on_error,
         )
 
     def _loop(
@@ -644,6 +737,7 @@ class WorkflowBuilder(Flow):
         self._input_schema: dict[str, Any] | None = None
         self._output_schema: dict[str, Any] | None = None
         self._state: dict[str, Any] | None = None
+        self._limits: dict[str, int] | None = None
         self._chain_policy: dict[str, int] | None = None
         self._bodies: dict[str, Body] = {}
 
@@ -683,11 +777,26 @@ class WorkflowBuilder(Flow):
         return self
 
     def input_schema(self, schema: Mapping[str, Any]) -> WorkflowBuilder:
-        self._input_schema = dict(schema)
+        self._input_schema = deepcopy(dict(schema))
         return self
 
     def output_schema(self, schema: Mapping[str, Any]) -> WorkflowBuilder:
-        self._output_schema = dict(schema)
+        self._output_schema = deepcopy(dict(schema))
+        return self
+
+    def limits(
+        self,
+        *,
+        max_instances: int | None = None,
+        max_depth: int | None = None,
+    ) -> WorkflowBuilder:
+        """Lowers the workflow instance and nesting ceilings; omitted fields retain platform defaults."""
+        declared: dict[str, int] = {}
+        if max_instances is not None:
+            declared["maxInstances"] = _schema_integer(max_instances, 1, 100_000, "limits maxInstances")
+        if max_depth is not None:
+            declared["maxDepth"] = _schema_integer(max_depth, 1, 8, "limits maxDepth")
+        self._limits = declared
         return self
 
     def state(self, definition: StateDefinition) -> WorkflowBuilder:
@@ -768,11 +877,7 @@ class WorkflowBuilder(Flow):
         if not self._nodes:
             raise invalid("a workflow needs at least one node")
         nodes = self._flatten()
-        if any(
-            node["type"] == "continueAsNew"
-            for embedded in self._embedded
-            for node in embedded._flatten()
-        ):
+        if any(node["type"] == "continueAsNew" for embedded in self._embedded for node in embedded._flatten()):
             raise invalid("continueAsNew is valid only in the top-level workflow")
         if any(node["type"] == "continueAsNew" for node in self._nodes) and self._chain_policy is None:
             raise invalid("a workflow with continueAsNew needs chainPolicy")
@@ -822,8 +927,15 @@ class WorkflowBuilder(Flow):
 
             for node in scope:
                 for field in (
-                    "next", "onError", "onTimeout", "ifTrue", "ifFalse", "begin",
-                    "onApprove", "onReject", "onExpire",
+                    "next",
+                    "onError",
+                    "onTimeout",
+                    "ifTrue",
+                    "ifFalse",
+                    "begin",
+                    "onApprove",
+                    "onReject",
+                    "onExpire",
                 ):
                     reference(node["id"], field, node.get(field))
                 for branch in node.get("branches", ()):
@@ -856,9 +968,11 @@ class WorkflowBuilder(Flow):
         if self._triggers:
             document["triggers"] = [dict(trigger) for trigger in self._triggers]
         if self._input_schema is not None:
-            document["inputSchema"] = self._input_schema
+            document["inputSchema"] = deepcopy(self._input_schema)
         if self._output_schema is not None:
-            document["outputSchema"] = self._output_schema
+            document["outputSchema"] = deepcopy(self._output_schema)
+        if self._limits is not None:
+            document["limits"] = dict(self._limits)
         if self._state is not None:
             document["state"] = deepcopy(self._state)
         if self._chain_policy is not None:

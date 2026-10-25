@@ -25,6 +25,7 @@ mod core;
 pub mod denial;
 mod dto;
 mod dto_chains;
+mod dto_database;
 mod dto_declared_operations;
 mod dto_events;
 mod dto_exec;
@@ -38,6 +39,8 @@ pub mod exec;
 mod extract;
 pub mod governance;
 mod limits;
+#[path = "routes/reveal_grants.rs"]
+pub mod reveal_grants;
 mod routes;
 mod server;
 pub mod streams;
@@ -253,16 +256,19 @@ where
 /// identity ones. The governance routes share the in-flight budget and the protective layers.
 pub fn router_with_governance<S, C, P, X, E, G>(
     state: ExecState<S, C, P, X, E>,
-    governance: GovState<S, C, G>,
+    mut governance: GovState<S, C, G>,
     limits: HttpLimits,
 ) -> Router
 where
     S: IdentityStore + 'static,
     C: Clock + 'static,
-    G: sagat_application::quotas::QuotaStore
+    G: sagat_application::reveal_grants::RevealGrantStore
+        + sagat_application::quotas::QuotaStore
         + sagat_application::api_admission::ApiAdmissionStore
         + sagat_application::bindings::BindingStore
         + sagat_application::secrets::SecretStore
+        + sagat_application::managed_secrets::ManagedSecretStore
+        + sagat_application::database::ConnectionStore
         + sagat_application::egress::EgressStore
         + sagat_application::events::EventStore
         + sagat_application::outbound::OutboundStore
@@ -275,7 +281,8 @@ where
         + 'static,
     ExecState<S, C, P, X, E>: Exec,
 {
-    compose(state, limits, move |slots, limits, _| {
+    compose(state, limits, move |slots, limits, core| {
+        governance.core = core;
         governance_routes(governance, slots, limits)
     })
 }
@@ -284,7 +291,7 @@ where
 #[allow(clippy::too_many_arguments)]
 pub fn router_with_governance_and_approvals<S, C, P, X, E, G, A, O, V>(
     state: ExecState<S, C, P, X, E>,
-    governance: GovState<S, C, G>,
+    mut governance: GovState<S, C, G>,
     approval_admission: sagat_application::api_admission::ApiAdmissionService<P, C>,
     approvals: A,
     operation_admission: sagat_application::api_admission::ApiAdmissionService<P, C>,
@@ -303,10 +310,13 @@ where
     A: sagat_application::approval_progress::ApprovalProgressStore + 'static,
     O: sagat_application::declared_operations::DeclaredOperationStore + 'static,
     V: sagat_application::declared_operations::DeclaredOperationEvaluator + 'static,
-    G: sagat_application::quotas::QuotaStore
+    G: sagat_application::reveal_grants::RevealGrantStore
+        + sagat_application::quotas::QuotaStore
         + sagat_application::api_admission::ApiAdmissionStore
         + sagat_application::bindings::BindingStore
         + sagat_application::secrets::SecretStore
+        + sagat_application::managed_secrets::ManagedSecretStore
+        + sagat_application::database::ConnectionStore
         + sagat_application::egress::EgressStore
         + sagat_application::events::EventStore
         + sagat_application::outbound::OutboundStore
@@ -324,6 +334,7 @@ where
 {
     let chain_state = state.clone();
     compose(state, limits, move |slots, limits, core| {
+        governance.core = core.clone();
         let approval_state = ApprovalApiState::new(
             core.clone(),
             approval_admission,
@@ -367,10 +378,13 @@ where
     T: Clone + Send + Sync + 'static,
     S: IdentityStore + 'static,
     C: Clock + 'static,
-    G: sagat_application::quotas::QuotaStore
+    G: sagat_application::reveal_grants::RevealGrantStore
+        + sagat_application::quotas::QuotaStore
         + sagat_application::api_admission::ApiAdmissionStore
         + sagat_application::bindings::BindingStore
         + sagat_application::secrets::SecretStore
+        + sagat_application::managed_secrets::ManagedSecretStore
+        + sagat_application::database::ConnectionStore
         + sagat_application::egress::EgressStore
         + sagat_application::events::EventStore
         + sagat_application::outbound::OutboundStore
@@ -449,6 +463,23 @@ where
                 .delete(gov::reset_egress_policy::<B<S, C, G>>),
         );
     // Without a key ring there is nothing to seal with: the secret routes do not exist.
+    if state.connections().is_some() {
+        router = router
+            .route(
+                "/namespaces/{namespace_id}/database-drivers",
+                get(routes::database::drivers::<B<S, C, G>>),
+            )
+            .route(
+                "/namespaces/{namespace_id}/connections",
+                get(routes::database::list::<B<S, C, G>>),
+            )
+            .route(
+                "/namespaces/{namespace_id}/connections/{name}",
+                get(routes::database::get::<B<S, C, G>>)
+                    .put(routes::database::put::<B<S, C, G>>)
+                    .delete(routes::database::delete::<B<S, C, G>>),
+            );
+    }
     if serves_secrets {
         router = router
             .route(
@@ -472,6 +503,17 @@ where
                 "/namespaces/{namespace_id}/secrets/{name}/access/{subject}",
                 axum::routing::put(gov::grant_secret_access::<B<S, C, G>>)
                     .delete(gov::revoke_secret_access::<B<S, C, G>>),
+            );
+    }
+    if serves_secrets {
+        router = router
+            .route(
+                "/namespaces/{namespace_id}/secrets/{name}/migrate",
+                axum::routing::post(gov::migrate_secret::<B<S, C, G>>),
+            )
+            .route(
+                "/namespaces/{namespace_id}/secret-operations/{request_id}/reconcile",
+                axum::routing::post(gov::reconcile_secret::<B<S, C, G>>),
             );
     }
     let mut router = router.layer(RequestBodyLimitLayer::new(limits.max_body_bytes));
@@ -706,6 +748,10 @@ where
             );
     }
     router
+        .merge(
+            reveal_grants::routes::<B<S, C, G>, B<S, C, G>>(state.clone())
+                .layer(RequestBodyLimitLayer::new(limits.max_body_bytes)),
+        )
         .route_layer(axum::middleware::from_fn_with_state(
             Arc::clone(slots),
             limits::shed_excess,
@@ -758,6 +804,53 @@ where
                 .with_state(state.clone()),
             upload_limits,
         )
+    } else {
+        Router::new()
+    };
+
+    let database_executions = Router::new()
+        .route(
+            "/namespaces/{namespace_id}/database-executions",
+            axum::routing::post(routes::database_executions::create::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/namespaces/{namespace_id}/connections/{name}/probe",
+            axum::routing::post(routes::database_executions::probe::<B<S, C, P, X, E>>)
+                .get(routes::database_executions::latest_probe::<B<S, C, P, X, E>>),
+        )
+        .layer(RequestBodyLimitLayer::new(2 * 1024 * 1024))
+        .route_layer(shed())
+        .route_layer(from_fn(routes::database_results::no_store))
+        .with_state(state.clone());
+
+    let database_results = if state.database_results().is_some() {
+        Router::new()
+            .route(
+                "/namespaces/{namespace_id}/runs/{run_id}/database-results/{node_id}",
+                get(routes::database_results::read::<B<S, C, P, X, E>>),
+            )
+            .layer(RequestBodyLimitLayer::new(0))
+            .route_layer(shed())
+            .route_layer(from_fn(routes::database_results::no_store))
+            .with_state(state.clone())
+    } else {
+        Router::new()
+    };
+
+    let payload_disclosures = if state.payload_disclosures().is_some() {
+        Router::new()
+            .route(
+                "/runs/{run_id}/payload-disclosures",
+                axum::routing::post(
+                    routes::payload_disclosure::disclose_payload::<B<S, C, P, X, E>>,
+                ),
+            )
+            .layer(RequestBodyLimitLayer::new(
+                routes::payload_disclosure::DISCLOSURE_MAX_BODY_BYTES,
+            ))
+            .route_layer(shed())
+            .route_layer(from_fn(routes::payload_disclosure::no_store))
+            .with_state(state.clone())
     } else {
         Router::new()
     };
@@ -933,6 +1026,9 @@ where
         .route("/ready", get(health::ready::<S, C>))
         .merge(identity_routes)
         .merge(payload_inspections)
+        .merge(payload_disclosures)
+        .merge(database_results)
+        .merge(database_executions)
         .merge(exec_routes)
         .merge(extra_routes)
         .route_layer(from_fn(context::record_route))

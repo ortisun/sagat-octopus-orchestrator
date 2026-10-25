@@ -62,6 +62,105 @@
         "type": "String"
       }
     },
+    "sagat_octopus_orchestrator.v1.DatabaseLimits": {
+      "1": {
+        "name": "max_statement_bytes",
+        "repeated": false,
+        "type": "Uint32"
+      },
+      "2": {
+        "name": "max_parameters",
+        "repeated": false,
+        "type": "Uint32"
+      },
+      "3": {
+        "name": "max_parameter_bytes",
+        "repeated": false,
+        "type": "Uint32"
+      },
+      "4": {
+        "name": "max_rows",
+        "repeated": false,
+        "type": "Uint32"
+      },
+      "5": {
+        "name": "max_result_bytes",
+        "repeated": false,
+        "type": "Uint32"
+      },
+      "6": {
+        "name": "timeout_ms",
+        "repeated": false,
+        "type": "Uint32"
+      },
+      "7": {
+        "name": "connect_timeout_ms",
+        "repeated": false,
+        "type": "Uint32"
+      },
+      "8": {
+        "name": "pool_size",
+        "repeated": false,
+        "type": "Uint32"
+      },
+      "9": {
+        "name": "idle_timeout_ms",
+        "repeated": false,
+        "type": "Uint32"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.DatabaseValue": {
+      "1": {
+        "name": "null_value",
+        "repeated": false,
+        "type": "Bool"
+      },
+      "10": {
+        "name": "json_value",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "boolean_value",
+        "repeated": false,
+        "type": "Bool"
+      },
+      "3": {
+        "name": "integer_value",
+        "repeated": false,
+        "type": "String"
+      },
+      "4": {
+        "name": "decimal_value",
+        "repeated": false,
+        "type": "String"
+      },
+      "5": {
+        "name": "float_value",
+        "repeated": false,
+        "type": "Double"
+      },
+      "6": {
+        "name": "text_value",
+        "repeated": false,
+        "type": "String"
+      },
+      "7": {
+        "name": "timestamp_value",
+        "repeated": false,
+        "type": "String"
+      },
+      "8": {
+        "name": "date_value",
+        "repeated": false,
+        "type": "String"
+      },
+      "9": {
+        "name": "binary_value",
+        "repeated": false,
+        "type": "Bytes"
+      }
+    },
     "sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity": {
       "1": {
         "name": "instance_path",
@@ -217,6 +316,33 @@
         "name": "retry_after_ms",
         "repeated": false,
         "type": "Int32"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.PostgresConnection": {
+      "1": {
+        "name": "host",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "port",
+        "repeated": false,
+        "type": "Uint32"
+      },
+      "3": {
+        "name": "database",
+        "repeated": false,
+        "type": "String"
+      },
+      "4": {
+        "name": "tls",
+        "repeated": false,
+        "type": "Enum:.sagat_octopus_orchestrator.v1.DatabaseTlsMode"
+      },
+      "5": {
+        "name": "ca_pem",
+        "repeated": false,
+        "type": "String"
       }
     },
     "sagat_octopus_orchestrator.v1.ReadBlobHeader": {
@@ -376,6 +502,68 @@
         "name": "secrets",
         "repeated": true,
         "type": "Message:.sagat_octopus_orchestrator.v1.ResolvedSecret"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.ResolvedDatabase": {
+      "1": {
+        "name": "connection_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "10": {
+        "name": "namespace_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "11": {
+        "name": "connection_name",
+        "repeated": false,
+        "type": "String"
+      },
+      "12": {
+        "name": "tenant_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "connection_revision",
+        "repeated": false,
+        "type": "Uint32"
+      },
+      "3": {
+        "name": "postgres",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.PostgresConnection"
+      },
+      "4": {
+        "name": "operation",
+        "repeated": false,
+        "type": "Enum:.sagat_octopus_orchestrator.v1.DatabaseOperationKind"
+      },
+      "5": {
+        "name": "statement",
+        "repeated": false,
+        "type": "String"
+      },
+      "6": {
+        "name": "parameters",
+        "repeated": true,
+        "type": "Message:.sagat_octopus_orchestrator.v1.DatabaseValue"
+      },
+      "7": {
+        "name": "limits",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.DatabaseLimits"
+      },
+      "8": {
+        "name": "credential",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.ResolvedSecret"
+      },
+      "9": {
+        "name": "lease_expires_at_epoch_ms",
+        "repeated": false,
+        "type": "Int64"
       }
     },
     "sagat_octopus_orchestrator.v1.ResolvedSecret": {
@@ -671,6 +859,12 @@
         "clientStreaming": false,
         "input": ".sagat_octopus_orchestrator.v1.RegisterWorkerRequest",
         "output": ".sagat_octopus_orchestrator.v1.RegisterWorkerResponse",
+        "serverStreaming": false
+      },
+      "ResolveDatabase": {
+        "clientStreaming": false,
+        "input": ".sagat_octopus_orchestrator.v1.ResolveSecretsRequest",
+        "output": ".sagat_octopus_orchestrator.v1.ResolvedDatabase",
         "serverStreaming": false
       },
       "ResolveSecrets": {

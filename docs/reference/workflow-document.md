@@ -34,7 +34,7 @@ Made from `specs/001-platform-foundation/contracts/workflow.schema.json`. A work
 
 ## Nodes
 
-Every node has the fields below; each kind adds its own. The kinds: [`activity`](#activity), [`timer`](#timer), [`waitEvent`](#waitEvent), [`condition`](#condition), [`parallel`](#parallel), [`child`](#child), [`saga`](#saga), [`script`](#script), [`foreach`](#foreach), [`humanApproval`](#humanApproval), [`end`](#end), [`forEach`](#forEach), [`while`](#while), [`repeatUntil`](#repeatUntil), [`approval`](#approval), [`switch`](#switch), [`continueAsNew`](#continueAsNew).
+Every node has the fields below; each kind adds its own. The kinds: [`activity`](#activity), [`database`](#database), [`timer`](#timer), [`waitEvent`](#waitEvent), [`condition`](#condition), [`parallel`](#parallel), [`child`](#child), [`saga`](#saga), [`script`](#script), [`foreach`](#foreach), [`humanApproval`](#humanApproval), [`end`](#end), [`forEach`](#forEach), [`while`](#while), [`repeatUntil`](#repeatUntil), [`approval`](#approval), [`switch`](#switch), [`continueAsNew`](#continueAsNew).
 
 ### base
 
@@ -57,10 +57,28 @@ Every node has the fields below; each kind adds its own. The kinds: [`activity`]
 | `highRisk` | boolean |  | An attempt whose outcome is unknown (lease lost, timeout, OUTCOME_UNKNOWN) is never retried or compensated blindly: it is reconciled when reconcileWith says how, and otherwise waits for an operator. |
 | `idempotencyTemplate` | string |  |  |
 | `irreversible` | boolean |  | The effect cannot be undone once it has happened. A saga, or the collection or loop that owns the body, that has to compensate past it ends PARTIAL. Cannot be combined with compensateWith. |
+| `outputSchema` | object |  | Classifies this activity's retained output for payload disclosure. |
 | `reconcileWith` | string |  | The activity that finds out whether this one happened, after an attempt with an unknown outcome. It answers {"effect": "applied"\|"not_applied"\|"unknown"} and, for applied, optionally {"output": ...}. |
 | `retry` | [`retry`](#retry) |  |  |
 | `secrets` | array of string (max items 16) |  | Names of the secrets of the namespace the worker may ask for while it holds a lease on this step. Names only: a value is never part of a definition. |
 | `type` | `"activity"` | yes |  |
+
+### database
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `connectionRef` | object | yes |  |
+| `connectionRef.name` | string (pattern `^[a-z][a-z0-9-]{2,63}$`) | yes |  |
+| `connectionRef.revision` | integer (min 1, max 2147483647) |  |  |
+| `id` | string (min length 1) | yes |  |
+| `limits` | [`databaseLimits`](#databaseLimits) |  |  |
+| `next` | string |  |  |
+| `onError` | string |  |  |
+| `operation` | one of `"query"`, `"execute"` | yes |  |
+| `parameters` | array of [`databaseParameter`](#databaseParameter) (max items 256) |  |  |
+| `statement` | string (min length 1, max length 65536) | yes |  |
+| `timeoutMs` | integer (min 1, max 60000) |  |  |
+| `type` | `"database"` | yes |  |
 
 ### timer
 
@@ -77,6 +95,7 @@ Every node has the fields below; each kind adds its own. The kinds: [`activity`]
 | `eventType` | string | yes |  |
 | `lookbackMs` | integer (min 0, max 604800000) |  | An event of this type and correlation that arrived up to this long before the wait started also wakes it (once). Zero or absent: only an event that arrives while it waits does. It reaches back only as far as the event is still remembered: the deduplication window of its source (24 hours for a connector and by default for an endpoint). |
 | `onTimeout` | string |  |  |
+| `outputSchema` | object |  | Classifies the retained event payload that satisfied this wait for payload disclosure. |
 | `timeoutMs` | integer (min 1) | yes |  |
 | `type` | `"waitEvent"` | yes |  |
 
@@ -104,6 +123,7 @@ Every node has the fields below; each kind adds its own. The kinds: [`activity`]
 |---|---|---|---|
 | `cancelPolicy` | one of `"propagate"`, `"detach"`, `"request_cancel"` |  | What happens to the child when the parent is stopped. propagate (default): the child is cancelled and the parent does not wait for it. request_cancel: the child is cancelled and the parent waits until it has settled. detach: the child keeps running. |
 | `input` | string |  | Expression over the parent's data that must evaluate to a JSON object (for example input.order or steps.charge.output); the parent's own input when absent. |
+| `outputSchema` | object |  | Classifies the child result retained as this node's output for payload disclosure. |
 | `type` | `"child"` | yes |  |
 | `version` | integer (min 1) |  | Pins a published version number; the workflow's active version when absent. |
 | `workflowId` | string | yes | Name of the workflow to start, resolved in the namespace of the parent run when the child starts. |
@@ -124,6 +144,7 @@ Every node has the fields below; each kind adds its own. The kinds: [`activity`]
 | `artifactDigest` | string (pattern `^sha256:[0-9a-f]{64}$`) | yes | The artifact a build made: the digest of a ready version of a script of the same tenant. The step runs exactly this code; publishing a newer version of the script changes nothing about a workflow that names this digest. Checked when the workflow is published. |
 | `compensateWith` | string |  |  |
 | `language` | one of `"typescript"`, `"python"`, `"csharp"`, `"go"`, `"java"` |  | Informational: the runner takes the language from the artifact. |
+| `outputSchema` | object |  | Classifies this script's retained output for payload disclosure. |
 | `retry` | [`retry`](#retry) |  |  |
 | `secrets` | array of string (max items 16) |  | Names of the secrets of the namespace the script may ask for with octopus.secret while it holds a lease on this step. Names only: a value is never part of a definition. A script that asks for any other name is refused and audited. |
 | `type` | `"script"` | yes |  |
@@ -265,6 +286,7 @@ Every node has the fields below; each kind adds its own. The kinds: [`activity`]
 | `irreversible` | boolean |  | The effect cannot be undone once it has happened. A saga, or the collection or loop that owns the body, that has to compensate past it ends PARTIAL. Cannot be combined with compensateWith. |
 | `next` | [`nodeId`](#nodeId) |  |  |
 | `onError` | [`nodeId`](#nodeId) |  |  |
+| `outputSchema` | object |  | Classifies this activity's retained output for payload disclosure. |
 | `reconcileWith` | [`name`](#name) |  |  |
 | `retry` | [`bodyRetry`](#bodyRetry) |  |  |
 | `secrets` | array of string (max items 16) |  | Names of the secrets of the namespace the worker may ask for while it holds a lease on this step. Names only: a value is never part of a definition. |
@@ -280,6 +302,7 @@ Every node has the fields below; each kind adds its own. The kinds: [`activity`]
 | `input` | [`expression`](#expression) |  |  |
 | `next` | [`nodeId`](#nodeId) |  |  |
 | `onError` | [`nodeId`](#nodeId) |  |  |
+| `outputSchema` | object |  | Classifies the child result retained as this node's output for payload disclosure. |
 | `timeoutMs` | [`duration`](#duration) |  |  |
 | `type` | `"child"` | yes |  |
 | `version` | integer (min 1) |  | Pins a published version number; the workflow's active version when absent. |
@@ -347,6 +370,7 @@ any
 | `language` | one of `"typescript"`, `"python"`, `"csharp"`, `"go"`, `"java"` |  | Informational: the runner takes the language from the artifact. |
 | `next` | [`nodeId`](#nodeId) |  |  |
 | `onError` | [`nodeId`](#nodeId) |  |  |
+| `outputSchema` | object |  | Classifies this script's retained output for payload disclosure. |
 | `retry` | [`bodyRetry`](#bodyRetry) |  |  |
 | `secrets` | array of string (max items 16) |  | Names of the secrets of the namespace the script may ask for with octopus.secret while it holds a lease on this step. Names only: a value is never part of a definition. A script that asks for any other name is refused and audited. |
 | `timeoutMs` | [`duration`](#duration) |  |  |
@@ -374,6 +398,7 @@ any
 | `next` | [`nodeId`](#nodeId) |  |  |
 | `onError` | [`nodeId`](#nodeId) |  |  |
 | `onTimeout` | [`nodeId`](#nodeId) |  |  |
+| `outputSchema` | object |  | Classifies the retained event payload that satisfied this wait for payload disclosure. |
 | `timeoutMs` | [`duration`](#duration) | yes |  |
 | `type` | `"waitEvent"` | yes |  |
 
@@ -391,6 +416,28 @@ any
 |---|---|---|---|
 | `maxSegments` | integer (min 1, max 10000) | yes |  |
 | `timeoutMs` | [`duration`](#duration) | yes |  |
+
+### databaseLimits
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `connectTimeoutMs` | integer (min 1, max 10000) |  |  |
+| `idleTimeoutMs` | integer (min 1, max 60000) |  |  |
+| `maxParameterBytes` | integer (min 1, max 262144) |  |  |
+| `maxParameters` | integer (min 1, max 256) |  |  |
+| `maxResultBytes` | integer (min 1, max 4194304) |  |  |
+| `maxRows` | integer (min 1, max 10000) |  |  |
+| `maxStatementBytes` | integer (min 1, max 65536) |  |  |
+| `poolSize` | integer (min 1, max 16) |  |  |
+| `timeoutMs` | integer (min 1, max 30000) |  |  |
+
+### databaseParameter
+
+any
+
+### databaseValue
+
+any
 
 ### duration
 

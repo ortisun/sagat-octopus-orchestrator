@@ -153,7 +153,7 @@ pub(crate) async fn seed_quiescent_chain(name: &str, deadline_after: Duration) -
             .expect("input digest");
     let input = sagat_domain::workflow::Digest::new(input.try_into().expect("sha-256 digest"));
     let authority = scheduler(&world.db.pool, chain).await;
-    let store = PgChainProgressStore::new(world.db.pool.clone(), world.cache.clone());
+    let store = PgChainProgressStore::new(world.execution_pool.clone(), world.cache.clone());
     ChainFixture {
         world,
         store,
@@ -1335,5 +1335,140 @@ async fn chain_handoff_and_finalization_are_written_by_the_least_privilege_runti
             .await
             .expect("and replays the outcome")
             .replayed()
+    );
+}
+
+#[tokio::test]
+async fn post_wait_fence_rejects_an_expired_legacy_chain_handoff_without_effects() {
+    use crate::bounded_fences::{SchedulerExpiryBarrier, chain_checkpoint};
+    let fixture = seed_quiescent_chain("chain-handoff-post-wait-fence", Duration::hours(1)).await;
+    let next = RunId::generate();
+    let now = crate::support::now();
+    let prepared = command(
+        &fixture,
+        next,
+        fixture.authority.clone(),
+        now,
+        audit(&fixture, now),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+    );
+    let barrier = SchedulerExpiryBarrier::hold(&fixture.world.db.pool, fixture.chain).await;
+    let before = chain_checkpoint(&fixture.world, fixture.chain).await;
+    let (result, ()) = tokio::join!(
+        fixture.store.continue_as_new(&prepared),
+        barrier.expire_after_wait()
+    );
+    assert_eq!(result, Err(ChainProgressError::SchedulerFenceLost));
+    assert_eq!(
+        chain_checkpoint(&fixture.world, fixture.chain).await,
+        before
+    );
+    let fresh = scheduler(&fixture.world.db.pool, fixture.chain).await;
+    let now = crate::support::now();
+    let retry = command(
+        &fixture,
+        next,
+        fresh,
+        now,
+        audit(&fixture, now),
+        prepared.continuation_outbox_id(),
+        prepared.successor_outbox_id(),
+    );
+    let committed = fixture
+        .store
+        .continue_as_new(&retry)
+        .await
+        .expect("fresh own authority may hand off");
+    assert!(!committed.replayed());
+    assert!(
+        fixture
+            .store
+            .continue_as_new(&retry)
+            .await
+            .expect("exact handoff replay")
+            .replayed()
+    );
+    fixture
+        .world
+        .store
+        .verify_run(fixture.world.admin.tenant_id(), fixture.chain)
+        .await
+        .expect("predecessor consistent");
+    fixture
+        .world
+        .store
+        .verify_run(fixture.world.admin.tenant_id(), next)
+        .await
+        .expect("successor consistent");
+}
+
+#[tokio::test]
+async fn post_wait_fence_rejects_expired_chain_finalization_without_effects() {
+    use crate::bounded_fences::{SchedulerExpiryBarrier, chain_checkpoint};
+    let fixture = seed_quiescent_chain("chain-final-post-wait-fence", Duration::hours(1)).await;
+    let run_outbox = Uuid::now_v7();
+    let chain_outbox = Uuid::now_v7();
+    let prepared = finalization(&fixture, run_outbox, chain_outbox);
+    let barrier = SchedulerExpiryBarrier::hold(&fixture.world.db.pool, fixture.chain).await;
+    let before = chain_checkpoint(&fixture.world, fixture.chain).await;
+    let (result, ()) = tokio::join!(
+        fixture.store.finalize_chain(&prepared),
+        barrier.expire_after_wait()
+    );
+    assert_eq!(result, Err(ChainProgressError::SchedulerFenceLost));
+    assert_eq!(
+        chain_checkpoint(&fixture.world, fixture.chain).await,
+        before
+    );
+    let fresh = scheduler(&fixture.world.db.pool, fixture.chain).await;
+    let retry = finalization_with_authority(&fixture, fresh, run_outbox, chain_outbox);
+    assert!(
+        !fixture
+            .store
+            .finalize_chain(&retry)
+            .await
+            .expect("fresh finalization")
+            .replayed()
+    );
+    assert!(
+        fixture
+            .store
+            .finalize_chain(&retry)
+            .await
+            .expect("exact final replay")
+            .replayed()
+    );
+    fixture
+        .world
+        .store
+        .verify_run(fixture.world.admin.tenant_id(), fixture.chain)
+        .await
+        .expect("final run consistent");
+}
+
+#[tokio::test]
+async fn post_wait_fence_preserves_the_oversized_generation_storage_error() {
+    let fixture = seed_quiescent_chain("chain-generation-overflow", Duration::hours(1)).await;
+    let now = crate::support::now();
+    let prepared = command(
+        &fixture,
+        RunId::generate(),
+        SchedulerAuthority::for_run(fixture.authority.owner(), fixture.chain, u64::MAX),
+        now,
+        audit(&fixture, now),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+    );
+    let before = crate::bounded_fences::chain_checkpoint(&fixture.world, fixture.chain).await;
+    assert!(matches!(
+        fixture.store.continue_as_new(&prepared).await,
+        Err(ChainProgressError::Storage(
+            sagat_application::error::StoreError::Internal { .. }
+        ))
+    ));
+    assert_eq!(
+        crate::bounded_fences::chain_checkpoint(&fixture.world, fixture.chain).await,
+        before
     );
 }

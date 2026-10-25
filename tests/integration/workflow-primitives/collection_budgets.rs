@@ -12,9 +12,9 @@ use crate::support::scope_flow::{
     Flow, all_compensations, forward, iteration, node, reserve_and_charge,
 };
 
-async fn usage(flow: &Flow) -> (i32, i32, i32) {
-    let row: (i32, i32, i32) = sqlx::query_as(
-        "SELECT max_instances, admitted_instances, reserved_instances \
+async fn usage(flow: &Flow) -> (i32, i32, i32, i32) {
+    let row: (i32, i32, i32, i32) = sqlx::query_as(
+        "SELECT max_instances, admitted_instances, reserved_instances, retired_reservations \
          FROM run_instance_usage WHERE run_id = $1",
     )
     .bind(flow.run.as_uuid())
@@ -52,8 +52,8 @@ async fn a_retried_iteration_is_charged_once_and_a_derived_activation_uses_its_r
     flow.drive().await;
     let reserves = flow.poll().await;
     assert_eq!(reserves.len(), 2);
-    let (_, admitted, reserved) = usage(&flow).await;
-    let accepted = admitted + reserved;
+    let (_, admitted, reserved, retired) = usage(&flow).await;
+    let accepted = admitted + reserved + retired;
     // The owner, then per iteration the reserve (+ its release), the charge (+ its refund) and the
     // return: five instances each, all charged up front.
     assert_eq!(accepted, 1 + 2 * 5, "owner plus five per iteration");
@@ -70,12 +70,13 @@ async fn a_retried_iteration_is_charged_once_and_a_derived_activation_uses_its_r
             .any(|task| iteration(task) == 0 && node(task) == "reserve" && task.attempt == 2),
         "iteration 0 is leased again as attempt 2"
     );
-    let (_, admitted_after, reserved_after) = usage(&flow).await;
+    let (_, admitted_after, reserved_after, retired_after) = usage(&flow).await;
     assert_eq!(
         (admitted_after, reserved_after),
         (admitted, reserved),
         "a retry allocates no instance"
     );
+    assert_eq!(retired_after, retired, "a retry retires no reservation");
 
     // Everything succeeds but the second charge, which is declined: the saga undoes the rest with
     // the activations that were reserved, so nothing is charged beyond what was accepted.
@@ -91,12 +92,13 @@ async fn a_retried_iteration_is_charged_once_and_a_derived_activation_uses_its_r
     flow.fail(&charges[1], "PAYMENT_DECLINED", false).await;
     all_compensations(&flow).await;
     assert_eq!(flow.run_status().await, "COMPENSATED");
-    let (_, admitted_end, reserved_end) = usage(&flow).await;
-    // Derived activations consumed reservations (reserved fell, admitted rose); a reservation the
-    // drained iterations no longer needed was handed back, so the sum can only shrink.
-    assert!(
-        admitted_end + reserved_end <= accepted,
-        "nothing was charged beyond the {accepted} accepted up front: {admitted_end}+{reserved_end}"
+    let (_, admitted_end, reserved_end, retired_end) = usage(&flow).await;
+    // Derived activations consume reservations; reservations no longer needed by a drained
+    // iteration become retired. Neither path refunds the run's lifetime charge.
+    assert_eq!(
+        admitted_end + reserved_end + retired_end,
+        accepted,
+        "the accepted lifetime charge is monotonic across drain"
     );
     assert!(
         admitted_end > admitted && reserved_end < reserved,
@@ -115,11 +117,11 @@ async fn a_budget_reduced_to_what_is_accepted_still_lets_the_accepted_failure_be
     )
     .await;
     forward(&flow, &[("reserve", 0), ("reserve", 1)]).await;
-    let (_, admitted, reserved) = usage(&flow).await;
+    let (_, admitted, reserved, retired) = usage(&flow).await;
     // Tenant policy lowers the run to exactly what it has accepted, reservations included.
     sqlx::query("UPDATE run_instance_usage SET max_instances = $2 WHERE run_id = $1")
         .bind(flow.run.as_uuid())
-        .bind(admitted + reserved)
+        .bind(admitted + reserved + retired)
         .execute(&flow.api.db.pool)
         .await
         .expect("reduce the budget");
@@ -134,11 +136,12 @@ async fn a_budget_reduced_to_what_is_accepted_still_lets_the_accepted_failure_be
         "COMPENSATED",
         "the reservations made before the reduction pay for the compensation"
     );
-    let (max, admitted_end, reserved_end) = usage(&flow).await;
-    assert_eq!(max, admitted + reserved, "the reduction was kept");
-    assert!(
-        admitted_end + reserved_end <= admitted + reserved,
-        "the compensation stayed inside what was accepted before the reduction"
+    let (max, admitted_end, reserved_end, retired_end) = usage(&flow).await;
+    assert_eq!(max, admitted + reserved + retired, "the reduction was kept");
+    assert_eq!(
+        admitted_end + reserved_end + retired_end,
+        admitted + reserved + retired,
+        "drain preserves the accepted lifetime charge"
     );
     flow.verify().await;
 }

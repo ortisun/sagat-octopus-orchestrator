@@ -319,6 +319,9 @@ impl Scan {
             let in_from = keyword == Some("from") && !self.is_syntax_from(i);
             if in_from || keyword == Some("join") {
                 let mut at = i + 1;
+                if self.is(at, "lateral") {
+                    at += 1;
+                }
                 while let Some((name, next)) = self.relation(at) {
                     if self.sym(next, '(') {
                         // A function in FROM, such as `unnest(...)`: not a relation.
@@ -788,6 +791,21 @@ mod tests {
         has(sql, "EXECUTE unnest()");
         lacks(sql, "SELECT s");
         lacks(sql, "SELECT unnest");
+    }
+
+    #[test]
+    fn lateral_preserves_function_and_nested_relation_privilege_checks() {
+        let sql = "SELECT s.name FROM secrets s JOIN LATERAL \
+                   public.sagat_lock_secret_access($1, s.id, ARRAY['read']) access ON true";
+        has(sql, "SELECT secrets");
+        has(sql, "EXECUTE sagat_lock_secret_access()");
+        lacks(sql, "SELECT lateral");
+        lacks(sql, "SELECT access");
+        let nested = "SELECT s.id FROM secrets s JOIN LATERAL \
+                      (SELECT id FROM secret_versions WHERE secret_id=s.id FOR SHARE) v ON true";
+        has(nested, "SELECT secret_versions");
+        has(nested, "ROW LOCK secret_versions");
+        lacks(nested, "SELECT lateral");
     }
 
     #[test]

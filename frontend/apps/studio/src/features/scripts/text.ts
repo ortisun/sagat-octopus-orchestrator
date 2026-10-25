@@ -5,6 +5,8 @@
  * log safe to put in a `<pre>` and bound how much of it is put there.
  */
 
+import { formatLocal, parseTime } from '../runs/time';
+
 /**
  * CSI (`ESC [ ... final`, also the one-byte form), OSC (`ESC ] ... BEL|ST`), and the two-byte
  * escapes. An escape that was cut at the end of the text (the platform cuts a log at its limit) is
@@ -152,9 +154,7 @@ export function clipLabel(text: string, max = 60): string {
   return safe.length > max ? `${safe.slice(0, max)}…` : safe;
 }
 
-/** A time from the platform for people: local, to the minute. An unreadable one is shown as unknown, not as an error. */
+/** A time from the platform for people: local, in the one format the whole Studio uses. An unreadable one is shown as unknown, not as an error. */
 export function formatTime(iso: string | undefined): string {
-  if (iso === undefined) return '—';
-  const at = new Date(iso);
-  return Number.isNaN(at.getTime()) ? '—' : at.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+  return parseTime(iso) === undefined ? '—' : formatLocal(iso);
 }

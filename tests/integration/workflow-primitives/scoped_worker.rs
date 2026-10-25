@@ -42,7 +42,7 @@ pub(super) type ScopedWorkers =
     WorkerService<PgRunStore, SystemClock, JsonEvaluator, SystemEntropy>;
 
 #[derive(Debug)]
-struct StructuredJsonIrCodec;
+pub(super) struct StructuredJsonIrCodec;
 
 impl IrCodec for StructuredJsonIrCodec {
     fn check_draft(&self, document: &[u8]) -> Result<(), IrError> {
@@ -351,7 +351,12 @@ async fn fixture_with_progress(name: &str, prepare_collection: bool) -> Fixture 
     assert_eq!(root_only.accepted_protocol_version, "1.4");
 
     let cache = DefinitionCache::new(Arc::new(StructuredJsonIrCodec), 8);
-    let store = PgRunStore::new(world.db.pool.clone(), cache).with_scoped_worker_protocol();
+    let execution_pool = if crate::support::as_runtime_role() {
+        world.db.runtime_pool_with(8).await
+    } else {
+        world.db.pool.clone()
+    };
+    let store = PgRunStore::new(execution_pool, cache).with_scoped_worker_protocol();
     let workers = WorkerService::new(
         store.clone(),
         SystemClock,
@@ -1842,6 +1847,68 @@ async fn a_late_journal_failure_rolls_back_the_whole_scoped_report() {
 }
 
 #[tokio::test]
+async fn scoped_maintenance_does_not_read_whole_run_iteration_history() {
+    let fixture = fixture("bounded-scoped-maintenance").await;
+    let original = poll(&fixture, 1).await.pop().expect("one scoped task");
+    age_instance_column(&fixture, &original, "lease_expires_at").await;
+    let pool = fixture.world.db.runtime_pool_with(8).await;
+    let store = PgRunStore::new(
+        pool.clone(),
+        DefinitionCache::new(Arc::new(StructuredJsonIrCodec), 8),
+    )
+    .with_scoped_worker_protocol();
+    // The whole-run oracle reads every iteration checkpoint. Exact-path maintenance must not:
+    // revoke that read in this test's isolated database, without changing any production grant.
+    sqlx::query("REVOKE SELECT ON iteration_checkpoints FROM sagat_app")
+        .execute(&fixture.world.db.pool)
+        .await
+        .expect("withhold whole-run iteration history");
+    assert!(
+        store
+            .begin(
+                fixture.world.admin.tenant_id(),
+                fixture.run,
+                sagat_application::runs::Lock::Wait,
+            )
+            .await
+            .is_err(),
+        "the full restore oracle must actually be unavailable"
+    );
+    let scheduler = Scheduler::new(
+        store,
+        Engine::new(JsonEvaluator),
+        SystemEntropy,
+        SchedulerSettings::default(),
+    )
+    .with_placement(fixture.placement.clone());
+    let expired = scheduler.tick().await;
+    assert_eq!(expired.failed, 0, "{expired:?}");
+    assert_eq!(expired.leases_expired, 1, "{expired:?}");
+    assert_eq!(
+        instance_retry_evidence(&fixture, &original).await,
+        ("RETRY_WAIT".into(), 1, 1, 0)
+    );
+    age_instance_column(&fixture, &original, "next_attempt_at").await;
+    let released = scheduler.tick().await;
+    assert_eq!(released.failed, 0, "{released:?}");
+    assert_eq!(released.retries_released, 1, "{released:?}");
+    assert_eq!(
+        instance_retry_evidence(&fixture, &original).await,
+        ("READY".into(), 1, 1, 1)
+    );
+    sqlx::query("GRANT SELECT ON iteration_checkpoints TO sagat_app")
+        .execute(&fixture.world.db.pool)
+        .await
+        .expect("restore the ordinary grant");
+    fixture
+        .store
+        .verify_run(fixture.world.admin.tenant_id(), fixture.run)
+        .await
+        .expect("maintenance projections agree with journal replay");
+    pool.close().await;
+}
+
+#[tokio::test]
 async fn a_scoped_failure_retries_after_restart_and_rejects_the_old_fence() {
     let fixture = fixture("scoped-worker-retry").await;
     let original = poll(&fixture, 1).await.pop().expect("one scoped task");
@@ -2040,6 +2107,46 @@ async fn a_scoped_lease_observes_cancellation_and_acknowledges_it_before_restart
         .await
         .expect("leased member observes cancellation");
     assert!(beat.cancel_requested);
+    assert!(matches!(
+        fixture
+            .workers
+            .resolve_secrets(&fixture.session.principal, &task_ref(&task), None)
+            .await,
+        Err(AppError::StaleAttempt)
+    ));
+    // Ordinary blob outputs with declared secrets remain closed before any upload capability.
+    assert!(matches!(
+        fixture
+            .workers
+            .check_blob_upload(&fixture.session.principal, &task_ref(&task))
+            .await,
+        Err(AppError::NotAllowed(_))
+    ));
+    assert!(matches!(
+        fixture
+            .workers
+            .complete(
+                &fixture.session.principal,
+                &task_ref(&task),
+                b"{}",
+                "cancelled-scoped-completion",
+            )
+            .await,
+        Err(AppError::StaleAttempt)
+    ));
+    assert!(matches!(
+        fixture
+            .workers
+            .fail(
+                &fixture.session.principal,
+                &task_ref(&task),
+                "SAFE_ERROR",
+                false,
+                "cancelled-scoped-arbitrary-failure",
+            )
+            .await,
+        Err(AppError::StaleAttempt)
+    ));
     fixture
         .workers
         .fail(
@@ -2500,4 +2607,139 @@ async fn aggregate_retention_quota_atomically_drains_and_replays_the_open_scope(
         storage_quota_audits(&fixture, "collection storage quota exceeded").await,
         1
     );
+}
+
+#[tokio::test]
+async fn scope_chain_prefix_collection_entry_precedes_own_run_and_replays() {
+    use crate::bounded_fences::{initialize_member_chain, scope_checkpoint, through_member_chain};
+    let fixture = fixture_with_progress("collection-entry-chain-prefix", false).await;
+    let tenant = fixture.world.admin.tenant_id();
+    let pool = &fixture.world.db.pool;
+    initialize_member_chain(pool, tenant, fixture.world.namespace.id(), fixture.run).await;
+    let snapshot =
+        serde_json::to_vec(&json!([{"sku":"first"},{"sku":"second"}])).expect("snapshot");
+    let snapshot_digest = digest(&snapshot);
+    sqlx::query(
+        "INSERT INTO payloads(tenant_id,digest,content) VALUES($1,$2,$3) ON CONFLICT DO NOTHING",
+    )
+    .bind(tenant.as_uuid())
+    .bind(snapshot_digest.as_bytes().as_slice())
+    .bind(snapshot)
+    .execute(pool)
+    .await
+    .expect("captured collection source");
+    let lease = fixture
+        .placement
+        .snapshot()
+        .lease_of(Shard::of(fixture.run.as_uuid()), std::time::Instant::now())
+        .expect("own shard lease");
+    let command = CollectionEntry::new(
+        collection_transition(
+            &fixture.world,
+            fixture.run,
+            2,
+            ExecutionInstanceId::root(NodeId::parse("items").expect("owner")),
+            lease,
+        ),
+        CollectionScopeId::generate(),
+        2,
+        snapshot_digest,
+        CollectionLimits::new(2, 2, 20, 2).expect("limits"),
+    )
+    .expect("collection entry after chain initialization");
+    let store = PgCollectionStore::with_definition_cache(
+        fixture.world.db.runtime_pool().await,
+        DefinitionCache::new(Arc::new(StructuredJsonIrCodec), 8),
+    );
+    let write = through_member_chain(
+        pool,
+        tenant.as_uuid(),
+        fixture.run,
+        store.enter_collection(&command),
+    )
+    .await
+    .expect("entry under member chain");
+    assert!(write.applied);
+    assert_eq!(write.run_version, 3);
+    let events: i64 = sqlx::query_scalar("SELECT count(*) FROM run_events WHERE tenant_id=$1 AND run_id=$2 AND event_type='collection.entered'")
+        .bind(tenant.as_uuid()).bind(fixture.run.as_uuid()).fetch_one(pool).await.expect("entry once");
+    assert_eq!(events, 1);
+    let committed = scope_checkpoint(pool, tenant.as_uuid()).await;
+    assert!(
+        !store
+            .enter_collection(&command)
+            .await
+            .expect("entry replay")
+            .applied
+    );
+    assert_eq!(scope_checkpoint(pool, tenant.as_uuid()).await, committed);
+}
+
+#[tokio::test]
+async fn scope_chain_prefix_collection_drain_precedes_own_run_and_replays() {
+    use crate::bounded_fences::{initialize_member_chain, scope_checkpoint, through_member_chain};
+    let fixture = fixture("collection-drain-chain-prefix").await;
+    let tenant = fixture.world.admin.tenant_id();
+    let pool = &fixture.world.db.pool;
+    initialize_member_chain(pool, tenant, fixture.world.namespace.id(), fixture.run).await;
+    cancel(&fixture, "chain-prefix-cancel").await;
+    let (scope, version): (Uuid, i64) = sqlx::query_as(
+        "SELECT s.scope_id,r.run_version FROM iteration_scopes s JOIN runs r \
+         ON r.tenant_id=s.tenant_id AND r.id=s.run_id WHERE s.tenant_id=$1 AND s.run_id=$2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .fetch_one(pool)
+    .await
+    .expect("cancelled scope");
+    let lease = fixture
+        .placement
+        .snapshot()
+        .lease_of(Shard::of(fixture.run.as_uuid()), std::time::Instant::now())
+        .expect("own shard lease");
+    let outbox = Uuid::now_v7();
+    let command = CollectionDrain::new(
+        collection_transition(
+            &fixture.world,
+            fixture.run,
+            u64::try_from(version).expect("revision"),
+            ExecutionInstanceId::root(NodeId::parse("items").expect("owner")),
+            lease,
+        ),
+        CollectionScopeId::new(scope),
+        CollectionDrainReason::Cancelled,
+        outbox,
+    );
+    let store = PgCollectionStore::with_definition_cache(
+        fixture.world.db.runtime_pool().await,
+        DefinitionCache::new(Arc::new(StructuredJsonIrCodec), 8),
+    );
+    assert!(
+        through_member_chain(
+            pool,
+            tenant.as_uuid(),
+            fixture.run,
+            store.start_collection_drain(&command)
+        )
+        .await
+        .expect("start cancelled scope drain")
+        .applied
+    );
+    let effects: (String,i64,i64) = sqlx::query_as(
+        "SELECT lifecycle, \
+         (SELECT count(*) FROM run_events WHERE tenant_id=$1 AND run_id=$2 AND event_type='collection.drain_started'), \
+         (SELECT count(*) FROM event_outbox WHERE tenant_id=$1 AND id=$3) \
+         FROM iteration_scopes WHERE tenant_id=$1 AND run_id=$2 AND scope_id=$4",
+    ).bind(tenant.as_uuid()).bind(fixture.run.as_uuid()).bind(outbox).bind(scope)
+    .fetch_one(pool).await.expect("drain once");
+    assert_eq!(effects, ("DRAINING".into(), 1, 1));
+    let committed = scope_checkpoint(pool, tenant.as_uuid()).await;
+    assert!(
+        !store
+            .start_collection_drain(&command)
+            .await
+            .expect("drain replay")
+            .applied
+    );
+    assert_eq!(scope_checkpoint(pool, tenant.as_uuid()).await, committed);
 }

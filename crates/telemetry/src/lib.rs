@@ -8,7 +8,9 @@
 //!
 //! OTLP/HTTP JSON export supports spans plus focused log and gauge records.
 
+mod capacity;
 mod json_log;
+mod leaf_certification;
 mod logging;
 mod metrics;
 mod otlp;
@@ -16,7 +18,9 @@ mod redact;
 mod span;
 mod trace;
 
+pub use capacity::{CAPACITY_FINISH_SPAN, CapacityFinishOutcome};
 pub use json_log::{LogLayer, Style};
+pub use leaf_certification::{LEAF_CERTIFICATION_SPAN, LeafCertificationOutcome};
 pub use logging::{LogFormat, Telemetry, TelemetryConfig, init, init_logging};
 pub use metrics::{
     Metrics, WorkflowPrimitiveKind, WorkflowPrimitiveMetric, WorkflowPrimitiveOutcome,

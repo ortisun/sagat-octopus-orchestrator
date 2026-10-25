@@ -37,6 +37,7 @@ public final class WorkflowBuilder {
     private JsonNode inputSchema;
     private JsonNode outputSchema;
     private ObjectNode state;
+    private ObjectNode limits;
     private ChainPolicy chainPolicy;
 
     private WorkflowBuilder(String name) {
@@ -74,6 +75,23 @@ public final class WorkflowBuilder {
 
     public WorkflowBuilder outputSchema(Object schema) {
         this.outputSchema = objectOrThrow(schema, "outputSchema");
+        return this;
+    }
+
+    /** Lowers the workflow instance and nesting ceilings. */
+    public WorkflowBuilder limits(WorkflowLimits value) {
+        if (value == null) {
+            throw SagatException.invalid("limits are required");
+        }
+        if (value.maxInstances() != null && (value.maxInstances() < 1 || value.maxInstances() > 100_000)) {
+            throw SagatException.invalid("limits maxInstances must be between 1 and 100000");
+        }
+        if (value.maxDepth() != null && (value.maxDepth() < 1 || value.maxDepth() > 8)) {
+            throw SagatException.invalid("limits maxDepth must be between 1 and 8");
+        }
+        limits = F.objectNode();
+        if (value.maxInstances() != null) limits.put("maxInstances", value.maxInstances());
+        if (value.maxDepth() != null) limits.put("maxDepth", value.maxDepth());
         return this;
     }
 
@@ -137,6 +155,12 @@ public final class WorkflowBuilder {
         return this;
     }
 
+    /** A managed database operation. Credentials are resolved only by the dedicated executor. */
+    public WorkflowBuilder database(String id, DatabaseOptions options) {
+        body.database(id, options);
+        return this;
+    }
+
     public WorkflowBuilder sleep(String id, Duration duration) {
         body.sleep(id, duration);
         return this;
@@ -144,6 +168,11 @@ public final class WorkflowBuilder {
 
     public WorkflowBuilder sleepMs(String id, long durationMs) {
         body.sleepMs(id, durationMs);
+        return this;
+    }
+
+    public WorkflowBuilder script(String id, String artifactDigest, ScriptOptions options) {
+        body.script(id, artifactDigest, options);
         return this;
     }
 
@@ -292,6 +321,9 @@ public final class WorkflowBuilder {
         }
         if (outputSchema != null) {
             document.set("outputSchema", outputSchema.deepCopy());
+        }
+        if (limits != null) {
+            document.set("limits", limits.deepCopy());
         }
         if (state != null) {
             document.set("state", state.deepCopy());

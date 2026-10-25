@@ -15,6 +15,23 @@ import (
 
 type doc = map[string]any
 
+func TestClassifiedResultSchemasAndWorkflowLimitsUseTheirTypedCarriers(t *testing.T) {
+	schema := doc{"type": "object", "x-sagat-classification": "internal", "properties": doc{"value": doc{"type": "string"}}}
+	b := workflow.New("classified-flow").Limits(workflow.MaxInstances(23), workflow.MaxDepth(4)).OutputSchema(schema).
+		Step("a", "act.a", workflow.OutputSchema(schema)).
+		Script("s", "sha256:"+strings.Repeat("0", 64), workflow.ScriptOutputSchema(schema)).
+		WaitForEvent("w", "done", "input.id", 10*time.Millisecond, workflow.WaitOutputSchema(schema)).
+		InvokeChild("c", "child-flow", workflow.ChildOutputSchema(schema)).End("done")
+	document, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	same(t, document["limits"], doc{"maxInstances": int64(23), "maxDepth": int64(4)})
+	for _, item := range nodes(t, document)[:4] {
+		same(t, item.(doc)["outputSchema"], schema)
+	}
+}
+
 func nodes(t *testing.T, d doc) []any {
 	t.Helper()
 	list, ok := d["nodes"].([]any)

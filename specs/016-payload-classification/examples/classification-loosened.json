@@ -1,0 +1,132 @@
+{
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "kind": "Workflow",
+  "metadata": {
+    "name": "orders-classified"
+  },
+  "entrypoint": "charge",
+  "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "x-sagat-classification": "public",
+    "properties": {
+      "orderId": {
+        "type": "string"
+      },
+      "amount": {
+        "type": "number",
+        "x-sagat-classification": "internal"
+      },
+      "customer": {
+        "type": "object",
+        "additionalProperties": false,
+        "x-sagat-classification": "pii",
+        "properties": {
+          "name": {
+            "type": "string",
+            "x-sagat-classification": "public"
+          },
+          "email": {
+            "type": "string"
+          },
+          "cardToken": {
+            "type": "string",
+            "x-sagat-classification": "secret"
+          }
+        },
+        "required": [
+          "name",
+          "email",
+          "cardToken"
+        ]
+      }
+    },
+    "required": [
+      "orderId",
+      "amount",
+      "customer"
+    ]
+  },
+  "outputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "x-sagat-classification": "public",
+    "properties": {
+      "status": {
+        "type": "string"
+      },
+      "ledgerRef": {
+        "type": "string",
+        "x-sagat-classification": "internal"
+      },
+      "receiptEmail": {
+        "type": "string",
+        "x-sagat-classification": "pii"
+      },
+      "authCode": {
+        "type": "string",
+        "x-sagat-classification": "secret"
+      },
+      "amount": {
+        "type": "number",
+        "x-sagat-classification": "internal"
+      }
+    },
+    "required": [
+      "status",
+      "ledgerRef",
+      "receiptEmail",
+      "authCode",
+      "amount"
+    ]
+  },
+  "nodes": [
+    {
+      "id": "charge",
+      "type": "activity",
+      "activity": "classification.demo.charge",
+      "retry": {
+        "maxAttempts": 1
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "x-sagat-classification": "public",
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "ledgerRef": {
+            "type": "string",
+            "x-sagat-classification": "internal"
+          },
+          "receiptEmail": {
+            "type": "string",
+            "x-sagat-classification": "pii"
+          },
+          "authCode": {
+            "type": "string",
+            "x-sagat-classification": "secret"
+          },
+          "amount": {
+            "type": "number",
+            "x-sagat-classification": "internal"
+          }
+        },
+        "required": [
+          "status",
+          "ledgerRef",
+          "receiptEmail",
+          "authCode",
+          "amount"
+        ]
+      },
+      "next": "done"
+    },
+    {
+      "id": "done",
+      "type": "end",
+      "outputExpr": "steps.charge.output"
+    }
+  ]
+}

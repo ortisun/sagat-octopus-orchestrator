@@ -4,8 +4,7 @@
 use std::{sync::Arc, time::Duration as StdDuration};
 
 use sagat_application::chain_progress::{
-    ChainHandoffCommand, ChainInitialization, ChainProgressError, ChainProgressStore,
-    EvaluatedChainHandoffCommand,
+    ChainHandoffCommand, ChainProgressError, ChainProgressStore, EvaluatedChainHandoffCommand,
 };
 use sagat_application::declared_operations::{
     DeclaredOperationEvaluator, DeclaredOperationStore, DeclaredQuery,
@@ -16,17 +15,13 @@ use sagat_application::execution::{DefinitionCache, Engine, instance_step_id};
 use sagat_application::operation_evaluation::DeclaredOperationArguments;
 use sagat_application::primitives::SchedulerAuthority;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
-use sagat_domain::definition::WorkflowVersionId;
 use sagat_domain::execution::{
-    ChainPolicy, ChainScope, ContinuationTransfer, ExecutionInstanceId, OperationAddress,
-    OperationScope, RunId,
+    ChainScope, ContinuationTransfer, ExecutionInstanceId, OperationAddress, OperationScope, RunId,
 };
 use sagat_domain::sharding::Shard;
 use sagat_domain::workflow::{ActivityName, Digest};
 use sagat_infra_ir::{JsonDeclaredOperationEvaluator, JsonEvaluator, JsonIrCodec};
-use sagat_infra_postgres::{
-    PgChainProgressStore, PgDeclaredOperationStore, PgRunStore, initialize_chain_in_transaction,
-};
+use sagat_infra_postgres::{PgChainProgressStore, PgDeclaredOperationStore, PgRunStore};
 use sagat_scheduler::{Keeper, KeeperSettings, Placement, Scheduler, SchedulerSettings};
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
@@ -34,7 +29,7 @@ use sqlx::Row;
 use time::Duration;
 use uuid::Uuid;
 
-use crate::support::engine::{activity, document, world};
+use crate::support::engine::world;
 
 #[derive(Debug)]
 struct ContinuationCodec;
@@ -719,10 +714,7 @@ async fn scheduler(pool: &sqlx::PgPool, run: RunId) -> SchedulerAuthority {
 async fn prepared_continuation_commits_replays_and_rolls_back_atomically() {
     let world = world().await;
     let name = format!("chain-handoff-{}", Uuid::now_v7());
-    let (workflow, _) = world
-        .publish(document(&name, "work", vec![activity("work")]))
-        .await;
-    let document = serde_json::to_vec(&json!({
+    let document = json!({
         "apiVersion": "sagat-octopus-orchestrator.io/v1",
         "kind": "Workflow",
         "metadata": { "name": name },
@@ -741,27 +733,10 @@ async fn prepared_continuation_commits_replays_and_rolls_back_atomically() {
             }
         ],
         "chainPolicy": { "maxSegments": 3, "timeoutMs": 3_600_000 }
-    }))
-    .expect("continuation document");
-    let parsed = JsonIrCodec
-        .parse_continuation(&document)
-        .expect("typed continuation");
-    let version = WorkflowVersionId::new(Uuid::now_v7());
-    sqlx::query(
-        "INSERT INTO workflow_versions \
-         (id,tenant_id,workflow_id,version_number,digest,document,published_by,published_at) \
-         VALUES ($1,$2,$3,2,$4,$5,$6,$7)",
-    )
-    .bind(version.as_uuid())
-    .bind(world.admin.tenant_id().as_uuid())
-    .bind(workflow.as_uuid())
-    .bind(parsed.digest().to_hex())
-    .bind(&document)
-    .bind(world.admin.subject().as_str())
-    .bind(crate::support::now())
-    .execute(&world.db.pool)
-    .await
-    .expect("trusted continuation fixture");
+    });
+    // Admit the run with its real immutable version and chain metadata. Retargeting an admitted
+    // run (the former fixture shortcut) is correctly refused by the integrated admission guard.
+    let (workflow, version) = world.publish(document).await;
 
     let deadline = crate::support::now() + Duration::hours(1);
     let chain_id = world
@@ -776,33 +751,6 @@ async fn prepared_continuation_commits_replays_and_rolls_back_atomically() {
     let tenant = world.admin.tenant_id();
     let scope = ChainScope::new(tenant, world.namespace.id());
     let mut tx = world.db.pool.begin().await.expect("handoff fixture tx");
-    sqlx::query("UPDATE runs SET workflow_version_id=$3 WHERE tenant_id=$1 AND id=$2")
-        .bind(tenant.as_uuid())
-        .bind(chain_id.as_uuid())
-        .bind(version.as_uuid())
-        .execute(&mut *tx)
-        .await
-        .expect("pin continuation version");
-    sqlx::query("UPDATE steps SET step_id=$3 WHERE tenant_id=$1 AND run_id=$2 AND node='work'")
-        .bind(tenant.as_uuid())
-        .bind(chain_id.as_uuid())
-        .bind(instance_step_id(
-            version,
-            chain_id,
-            &ExecutionInstanceId::root(
-                sagat_domain::workflow::NodeId::parse("work").expect("work node"),
-            ),
-        ))
-        .execute(&mut *tx)
-        .await
-        .expect("pin entry step identity");
-    initialize_chain_in_transaction(
-        &mut tx,
-        &ChainInitialization::new(scope, chain_id, ChainPolicy::new(3).expect("chain policy")),
-    )
-    .await
-    .expect("initialize chain");
-
     let first_sequence: i64 =
         sqlx::query_scalar("SELECT run_version FROM runs WHERE tenant_id=$1 AND id=$2 FOR UPDATE")
             .bind(tenant.as_uuid())
@@ -880,6 +828,17 @@ async fn prepared_continuation_commits_replays_and_rolls_back_atomically() {
     .execute(&mut *tx)
     .await
     .expect("complete activity");
+    // The fixture writes the retained output directly, so it also charges the logical byte ledger
+    // that the engine would have charged when the step completed.
+    sqlx::query(
+        "UPDATE run_instance_usage SET logical_output_bytes=$3 WHERE tenant_id=$1 AND run_id=$2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(chain_id.as_uuid())
+    .bind(i64::try_from(selected_input.len()).expect("output length"))
+    .execute(&mut *tx)
+    .await
+    .expect("charge the retained output");
     sqlx::query(
         "INSERT INTO steps \
          (tenant_id,run_id,node,step_id,namespace_id,status,routed,updated_at, \
@@ -1105,6 +1064,17 @@ async fn prepared_continuation_commits_replays_and_rolls_back_atomically() {
     .execute(&mut *second_tx)
     .await
     .expect("complete second activity");
+    // The fixture writes the retained output directly, so it also charges the logical byte ledger
+    // that the engine would have charged when the step completed.
+    sqlx::query(
+        "UPDATE run_instance_usage SET logical_output_bytes=$3 WHERE tenant_id=$1 AND run_id=$2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(successor.as_uuid())
+    .bind(i64::try_from(third_input.len()).expect("output length"))
+    .execute(&mut *second_tx)
+    .await
+    .expect("charge the retained output");
     sqlx::query(
         "INSERT INTO steps \
          (tenant_id,run_id,node,step_id,namespace_id,status,routed,updated_at, \

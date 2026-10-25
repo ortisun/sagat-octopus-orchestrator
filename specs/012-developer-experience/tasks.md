@@ -5,7 +5,7 @@
 
 ## Phase 1: Setup / contracts
 - [x] T012-001 Check FR-012-001..FR-012-006, SCs and ADRs; record gaps in `specs/012-developer-experience/research.md`. — **evidence:** `research.md` D206–D228 and G215–G237
-- [x] T012-002 [P] Define fixtures and contract validation in `tests/contract/developer-experience/fixtures/`. — **evidence:** the fixtures are the six templates and the examples: `apps/cli/tests/templates.rs` (each is a document the codec accepts, with answers and a README), `contract_developer_experience` (the documents hold the commands and excerpts they show); there is no `fixtures/` directory
+- [x] T012-002 [P] Define fixtures and contract validation in `tests/contract/developer-experience/fixtures/`. — **evidence:** the fixtures are the six templates and the examples: `apps/cli/tests/templates.rs` (each is a document the codec accepts, with answers and a README), `contract_developer_experience` (the documents hold the commands and excerpts they show). Integration 2026-10-25 also retains the committed `feature/012-spec-foundation` diagnostic corpus in `fixtures/diagnostics.json`, executed by `apps/cli/tests/contract_fixtures.rs`: `cargo test -p sagat-cli --test contract_fixtures --locked -- --nocapture` passed 1/1 (0.02 s), checking valid/unknown-target documents, exact codes, locations, remediation and documentation links
 - [x] T012-003 [P] Document types, transitions and invariants in `specs/012-developer-experience/data-model.md`. — **evidence:** `data-model.md` (no table: the files the tool reads and writes, the mock file, the provider)
 
 ## Phase 2: Foundation

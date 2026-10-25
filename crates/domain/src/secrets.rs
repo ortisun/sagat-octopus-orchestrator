@@ -137,7 +137,8 @@ pub struct SecretMeta {
     pub namespace_id: NamespaceId,
     pub name: SecretName,
     pub version: u32,
-    pub key_id: String,
+    /// Local encryption key, absent for provider-backed values.
+    pub key_id: Option<String>,
     pub created_by: String,
     pub created_at: OffsetDateTime,
 }

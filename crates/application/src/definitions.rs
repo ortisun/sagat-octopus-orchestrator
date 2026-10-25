@@ -9,11 +9,12 @@
 use std::future::Future;
 
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
+use sagat_domain::classification::ClassificationRules;
 use sagat_domain::definition::{Workflow, WorkflowId, WorkflowVersion, WorkflowVersionId};
 use sagat_domain::identity::{Namespace, NamespaceId, Permission, Principal, Slug, TenantId};
 use sagat_domain::saga::{SagaPlan, compensation_plans};
 use sagat_domain::workflow::{
-    DefinitionWarning, Digest, NodeKind, WorkflowDefinition, WorkflowError,
+    DefinitionWarning, Digest, NodeId, NodeKind, WorkflowDefinition, WorkflowError,
 };
 use time::OffsetDateTime;
 
@@ -97,6 +98,8 @@ pub enum IrError {
     Malformed,
     #[error("the document does not match the workflow schema ({} problem(s))", .0.len())]
     Schema(Vec<IrIssue>),
+    #[error("classification annotations are invalid ({} finding(s))", .0.len())]
+    Classification(Vec<crate::classification::ClassificationFinding>),
     /// A node kind that exists in the schema but that this version of the engine does not run.
     #[error("node '{node}' is a '{kind}', which is not supported yet: {reason}")]
     Unsupported {
@@ -123,6 +126,13 @@ pub enum IrError {
     },
     #[error("{0}")]
     Invalid(WorkflowError),
+    /// Unlike an ordinary missing root target, this edge leaves its named body's closed graph.
+    #[error("body '{body}': node '{from}' references '{to}' outside its declared body")]
+    EscapingBodyEdge {
+        body: NodeId,
+        from: NodeId,
+        to: NodeId,
+    },
     #[error("node '{node}', field '{field}': {message}")]
     Expression {
         node: String,
@@ -198,6 +208,7 @@ pub struct Validation {
     pub problems: Vec<Problem>,
     pub warnings: Vec<Problem>,
     pub digest: Option<String>,
+    pub classification: Option<crate::classification::ClassificationAnalysis>,
 }
 
 impl Validation {
@@ -213,6 +224,25 @@ pub fn problems_of(error: &IrError) -> Vec<Problem> {
     match error {
         IrError::TooLarge => vec![Problem::error("DOCUMENT_TOO_LARGE", error.to_string())],
         IrError::Malformed => vec![Problem::error("DOCUMENT_MALFORMED", error.to_string())],
+        IrError::Classification(findings) => {
+            let mut problems: Vec<_> = findings
+                .iter()
+                .filter(|finding| {
+                    finding.code.severity() == crate::classification::FindingSeverity::Error
+                })
+                .map(|finding| {
+                    Problem::error(finding.code.as_str(), finding.code.message())
+                        .at_path(finding.path.as_str())
+                })
+                .collect();
+            if problems.is_empty() {
+                problems.push(Problem::error(
+                    "CLASSIFICATION_TOO_COMPLEX",
+                    "classification carrier exceeds a fixed complexity bound",
+                ));
+            }
+            problems
+        }
         IrError::Schema(issues) => issues
             .iter()
             .map(|issue| {
@@ -240,6 +270,11 @@ pub fn problems_of(error: &IrError) -> Vec<Problem> {
                 None => problem,
             }]
         }
+        IrError::EscapingBodyEdge { body, from, .. } => vec![
+            Problem::error("UNKNOWN_TARGET", error.to_string())
+                .at_node(from.to_string())
+                .at_path(format!("/bodies/{body}")),
+        ],
     }
 }
 
@@ -247,10 +282,12 @@ pub fn problems_of(error: &IrError) -> Vec<Problem> {
 fn graph_rule(error: &WorkflowError) -> (&'static str, Option<String>) {
     use WorkflowError as E;
     match error {
+        E::InvalidDatabaseNode => ("INVALID_DATABASE_NODE", None),
         E::InvalidNodeId(id) => ("INVALID_NODE_ID", Some(id.clone())),
         E::InvalidActivityName(_) => ("INVALID_ACTIVITY_NAME", None),
         E::InvalidEventType(_) => ("INVALID_EVENT_TYPE", None),
         E::InvalidExpression(_) => ("INVALID_EXPRESSION", None),
+        E::ExpressionByteLimit { node, .. } => ("EXPRESSION", Some(node.to_string())),
         E::NoNodes => ("NO_NODES", None),
         E::TooManyNodes(_) => ("TOO_MANY_NODES", None),
         E::TooManyParallels(_) => ("TOO_MANY_PARALLELS", None),
@@ -334,6 +371,25 @@ pub trait IrCodec: Send + Sync {
     /// An [`IrError`] describing why the document cannot be published.
     fn parse(&self, document: &[u8]) -> Result<ParsedDefinition, IrError>;
 
+    /// Restores the executable IR of an already persisted immutable version. Publication-time
+    /// metadata checks must not reinterpret an older version's business execution. Syntax,
+    /// structural limits, expressions and supported execution capabilities still fail closed.
+    /// A codec with no distinct authoring-only rules uses its ordinary parser.
+    ///
+    /// # Errors
+    /// An [`IrError`] for an unreadable/unsupported execution definition.
+    fn parse_stored(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
+        self.parse(document)
+    }
+
+    /// Bounded authoring report, independent of tenant data and persistence.
+    fn classification_analysis(
+        &self,
+        _document: &[u8],
+    ) -> Option<crate::classification::ClassificationAnalysis> {
+        None
+    }
+
     /// Returns immutable declared-state metadata when the document contains that capability.
     /// Codecs that do not implement declared state remain closed and return no publication.
     ///
@@ -363,12 +419,28 @@ pub trait IrCodec: Send + Sync {
     }
 
     /// What differs between two documents, compared as written (so a draft that does not
-    /// validate can be compared with the version it came from).
+    /// validate can be compared with the version it came from), both sides under the current
+    /// classification rules.
     ///
     /// # Errors
     /// [`IrError::TooLarge`] or [`IrError::Malformed`] when a side is not a JSON object within
     /// [`MAX_IR_BYTES`].
     fn diff(&self, from: &[u8], to: &[u8]) -> Result<crate::diff::DocumentDiff, IrError>;
+
+    /// [`IrCodec::diff`] told which classification rules each side was published under, so that a
+    /// side under rules `0` (which discloses no value) is compared as such. An adapter that does
+    /// not read classification annotations keeps the default, which ignores `rules`.
+    ///
+    /// # Errors
+    /// As [`IrCodec::diff`].
+    fn diff_with_rules(
+        &self,
+        from: &[u8],
+        to: &[u8],
+        _rules: crate::diff::DiffRules,
+    ) -> Result<crate::diff::DocumentDiff, IrError> {
+        self.diff(from, to)
+    }
 }
 
 /// How an idempotent write is recognised: the key the client chose and the bytes that identify the
@@ -453,6 +525,25 @@ pub struct Published {
 ///
 /// Every method takes the tenant explicitly; adapters MUST apply it as a filter on every statement.
 pub trait DefinitionStore: QuotaLookup + SecretAccessLookup + ScriptLookup + Send + Sync {
+    /// Current connection/secret authority, for author feedback before publication. The publisher
+    /// repeats the check in its transaction. Adapters without managed support fail closed.
+    fn check_database_access(
+        &self,
+        _principal: &Principal,
+        _namespace: NamespaceId,
+        definition: &WorkflowDefinition,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        async move {
+            if definition
+                .nodes()
+                .any(|node| node.database_operation().is_some())
+            {
+                Err(StoreError::DatabaseUnavailable)
+            } else {
+                Ok(())
+            }
+        }
+    }
     /// Resolves a namespace by slug inside `tenant`.
     fn find_namespace_by_slug(
         &self,
@@ -525,6 +616,7 @@ pub trait DefinitionStore: QuotaLookup + SecretAccessLookup + ScriptLookup + Sen
         digest: Digest,
         document: &[u8],
         declared_state: Option<&crate::declared_operations::PublishedDeclaredState>,
+        definition: &WorkflowDefinition,
         release_notes: Option<&str>,
         plans: &[SagaPlan],
         triggers: &[TriggerRegistration],
@@ -841,6 +933,18 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
         }
         self.check_secrets(principal, &record, &parsed.definition, ctx)
             .await?;
+        let database_check = self
+            .store
+            .check_database_access(
+                principal,
+                record.workflow.namespace_id(),
+                &parsed.definition,
+            )
+            .await;
+        if let Err(error) = database_check {
+            self.audit_database_denial(principal, id, &error, ctx).await;
+            return Err(error.into());
+        }
         self.check_scripts(principal, &parsed.definition).await?;
         Ok((record, parsed))
     }
@@ -899,6 +1003,7 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                 parsed.digest,
                 &parsed.canonical,
                 declared_state.as_ref(),
+                &parsed.definition,
                 release_notes,
                 &compensation_plans(&parsed.definition),
                 &triggers_of(id, &parsed.definition),
@@ -907,7 +1012,14 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                 &idempotency,
                 now,
             )
-            .await?;
+            .await;
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.audit_database_denial(principal, id, &error, ctx).await;
+                return Err(error.into());
+            }
+        };
         match outcome {
             Some(Applied::Done((version, created))) => Ok(Published {
                 version,
@@ -949,11 +1061,30 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
         principal.authorize(Permission::DefinitionWrite)?;
         let record = self.get_workflow(principal, id, ctx).await?;
         let bytes = document.unwrap_or(&record.draft);
+        let classification = self.codec.classification_analysis(bytes);
+        let classification_warnings = classification.as_ref().map_or_else(Vec::new, |analysis| {
+            analysis
+                .findings
+                .iter()
+                .filter(|finding| {
+                    finding.code.severity() == crate::classification::FindingSeverity::Warning
+                })
+                .map(|finding| Problem {
+                    severity: Severity::Warning,
+                    code: finding.code.as_str(),
+                    message: finding.code.message().to_owned(),
+                    node: None,
+                    path: Some(finding.path.as_str().to_owned()),
+                })
+                .collect::<Vec<_>>()
+        });
         let parsed = match self.codec.parse(bytes) {
             Ok(parsed) => parsed,
             Err(error) => {
                 return Ok(Validation {
                     problems: problems_of(&error),
+                    warnings: classification_warnings,
+                    classification,
                     ..Validation::default()
                 });
             }
@@ -970,11 +1101,34 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                 .await?,
         );
         problems.extend(self.unknown_scripts(principal, &parsed.definition).await?);
+        match self
+            .store
+            .check_database_access(
+                principal,
+                record.workflow.namespace_id(),
+                &parsed.definition,
+            )
+            .await
+        {
+            Ok(()) => {}
+            Err(StoreError::DatabaseUnavailable) => problems.push(Problem::error(
+                "DATABASE_UNAVAILABLE",
+                "a database connection is inactive, unavailable or may not be used",
+            )),
+            Err(StoreError::DatabaseLimit) => problems.push(Problem::error(
+                "DATABASE_LIMIT_EXCEEDED",
+                "a database operation exceeds connection limits",
+            )),
+            Err(error) => return Err(error.into()),
+        }
         let valid = problems.is_empty();
+        let mut warnings: Vec<_> = parsed.warnings.iter().map(warning_problem).collect();
+        warnings.extend(classification_warnings);
         Ok(Validation {
             problems,
-            warnings: parsed.warnings.iter().map(warning_problem).collect(),
+            warnings,
             digest: valid.then(|| parsed.digest.to_string()),
+            classification,
         })
     }
 
@@ -1004,12 +1158,21 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
             .map(|version| DiffRef::Version(version.number()));
         let from = side(from, default_from);
         let to = side(to, Some(DiffRef::Draft));
-        let resolve = async |reference: Option<DiffRef>| -> Result<(DiffSide, Vec<u8>), AppError> {
+        // A draft is published under the current rules; a version under the ones it pinned.
+        let resolve = async |reference: Option<DiffRef>| -> Result<
+            (DiffSide, Vec<u8>, ClassificationRules),
+            AppError,
+        > {
             match reference {
-                None => Ok((DiffSide::Empty, b"{}".to_vec())),
+                None => Ok((
+                    DiffSide::Empty,
+                    b"{}".to_vec(),
+                    ClassificationRules::CURRENT,
+                )),
                 Some(DiffRef::Draft) => Ok((
                     DiffSide::Draft(record.workflow.draft_revision()),
                     record.draft.clone(),
+                    ClassificationRules::CURRENT,
                 )),
                 Some(DiffRef::Version(number)) => {
                     let version = self
@@ -1017,15 +1180,26 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                         .get_version(principal.tenant_id(), id, number)
                         .await?
                         .ok_or(AppError::NotFound)?;
-                    Ok((DiffSide::Version(number), version.document))
+                    Ok((
+                        DiffSide::Version(number),
+                        version.document,
+                        version.version.classification_rules(),
+                    ))
                 }
             }
         };
-        let (from_side, from_bytes) = resolve(from).await?;
-        let (to_side, to_bytes) = resolve(to).await?;
+        let (from_side, from_bytes, from_rules) = resolve(from).await?;
+        let (to_side, to_bytes, to_rules) = resolve(to).await?;
         let diff = self
             .codec
-            .diff(&from_bytes, &to_bytes)
+            .diff_with_rules(
+                &from_bytes,
+                &to_bytes,
+                crate::diff::DiffRules {
+                    from: from_rules,
+                    to: to_rules,
+                },
+            )
             .map_err(|e| AppError::InvalidDefinition(Box::new(e)))?;
         Ok(DefinitionDiff {
             from: from_side,
@@ -1156,6 +1330,33 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
             .list_versions(principal.tenant_id(), id, after, limit + 1)
             .await?;
         Ok(paginate(rows, limit, |r| r.version.number().to_string()))
+    }
+
+    pub(crate) async fn audit_database_denial(
+        &self,
+        principal: &Principal,
+        workflow: WorkflowId,
+        error: &StoreError,
+        ctx: &RequestContext,
+    ) {
+        if !matches!(
+            error,
+            StoreError::DatabaseUnavailable | StoreError::DatabaseLimit
+        ) {
+            return;
+        }
+        let audit = AuditRecord::by(
+            principal,
+            AuditAction::DatabaseDenied,
+            ResourceType::Workflow,
+            workflow.to_string(),
+            ctx.trace_id.clone(),
+            self.clock.now(),
+        )
+        .with_reason("database publication refused".to_owned());
+        if let Err(error) = self.store.record_denial(&audit).await {
+            tracing::error!(%error, "failed to record database denial");
+        }
     }
 
     /// A workflow that declares secrets can be published only by someone who may use every one of

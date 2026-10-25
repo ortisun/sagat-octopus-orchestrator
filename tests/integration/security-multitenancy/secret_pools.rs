@@ -22,8 +22,8 @@ fn ns(w: &World) -> NamespaceId {
     w.namespace.id()
 }
 
-fn worker(w: &World, name: &str) -> Principal {
-    Principal::new(w.admin.tenant_id(), subject_of(name), Role::Worker)
+async fn worker(w: &World, name: &str) -> Principal {
+    w.member(name, Role::Worker).await
 }
 
 fn names(list: &[&str]) -> Vec<String> {
@@ -95,7 +95,7 @@ async fn step_state(w: &World, run: RunId) -> (String, i32, bool) {
 async fn a_secret_without_a_pool_list_is_delivered_to_any_worker_bound_to_the_activity() {
     let w = world().await;
     run_declaring(&w).await;
-    let anyone = worker(&w, "anyone");
+    let anyone = worker(&w, "anyone").await;
     grant(&w, "anyone", &[]).await;
     let session = w.session_as(&anyone, &["act.a"], 10).await;
     let task = w.one_task(&session).await;
@@ -113,7 +113,7 @@ async fn a_worker_of_an_allowed_pool_gets_the_task_and_the_value() {
     let w = world().await;
     run_declaring(&w).await;
     restrict(&w, "stripe-key", &["trusted", "other"]).await;
-    let insider = worker(&w, "insider");
+    let insider = worker(&w, "insider").await;
     grant(&w, "insider", &["trusted"]).await;
     let session = w.session_as(&insider, &["act.a"], 10).await;
     let task = w.one_task(&session).await;
@@ -131,11 +131,11 @@ async fn a_worker_outside_the_pools_is_not_handed_the_lease_and_an_allowed_one_i
     let w = world().await;
     let run = run_declaring(&w).await;
     restrict(&w, "stripe-key", &["trusted"]).await;
-    let outsider = worker(&w, "outsider");
+    let outsider = worker(&w, "outsider").await;
     grant(&w, "outsider", &["scratch"]).await;
-    let bare = worker(&w, "bare");
+    let bare = worker(&w, "bare").await;
     grant(&w, "bare", &[]).await;
-    let insider = worker(&w, "insider");
+    let insider = worker(&w, "insider").await;
     grant(&w, "insider", &["trusted"]).await;
 
     // What a worker *says* about itself is not read: advertising `trusted` changes nothing.
@@ -143,7 +143,7 @@ async fn a_worker_outside_the_pools_is_not_handed_the_lease_and_an_allowed_one_i
         .bind(&w.admin, ns(&w), "liar", &names(&["*"]), &ctx())
         .await
         .expect("bind");
-    let liar = worker(&w, "liar");
+    let liar = worker(&w, "liar").await;
     let registered = w
         .workers
         .register(
@@ -192,8 +192,8 @@ async fn a_refusal_is_audited_once_per_worker_identity_and_attempt_however_often
     let w = world().await;
     let run = run_declaring(&w).await;
     restrict(&w, "stripe-key", &["trusted"]).await;
-    let one = worker(&w, "outsider-one");
-    let two = worker(&w, "outsider-two");
+    let one = worker(&w, "outsider-one").await;
+    let two = worker(&w, "outsider-two").await;
     grant(&w, "outsider-one", &["scratch"]).await;
     grant(&w, "outsider-two", &[]).await;
     let first = w.session_as(&one, &["act.a"], 10).await;
@@ -243,9 +243,9 @@ async fn a_retry_is_a_new_attempt_and_the_next_refusal_is_a_new_event_but_the_tr
         .await;
     let run = w.start(wf, &json!({})).await;
     restrict(&w, "stripe-key", &["trusted"]).await;
-    let outsider = worker(&w, "outsider");
+    let outsider = worker(&w, "outsider").await;
     grant(&w, "outsider", &[]).await;
-    let insider = worker(&w, "insider");
+    let insider = worker(&w, "insider").await;
     grant(&w, "insider", &["trusted"]).await;
     let outside = w.session_as(&outsider, &["act.a"], 10).await;
     let inside = w.session_as(&insider, &["act.a"], 10).await;
@@ -273,7 +273,7 @@ async fn a_lease_held_by_a_worker_that_left_the_pool_cannot_resolve_the_value() 
     let w = world().await;
     run_declaring(&w).await;
     restrict(&w, "stripe-key", &["trusted"]).await;
-    let insider = worker(&w, "insider");
+    let insider = worker(&w, "insider").await;
     grant(&w, "insider", &["trusted"]).await;
     let session = w.session_as(&insider, &["act.a"], 10).await;
     let task = w.one_task(&session).await;
@@ -306,7 +306,7 @@ async fn a_lease_held_by_a_worker_that_left_the_pool_cannot_resolve_the_value() 
 async fn restricting_a_secret_after_the_lease_was_handed_out_stops_the_next_resolution() {
     let w = world().await;
     run_declaring(&w).await;
-    let anyone = worker(&w, "anyone");
+    let anyone = worker(&w, "anyone").await;
     grant(&w, "anyone", &[]).await;
     let session = w.session_as(&anyone, &["act.a"], 10).await;
     let task = w.one_task(&session).await;
@@ -363,6 +363,15 @@ async fn pool_names_belong_to_the_tenant_and_the_namespace_that_granted_them() {
         subject_of("shared-name"),
         Role::Worker,
     );
+    sagat_infra_postgres::PgIdentityStore::new(w.db.pool.clone())
+        .insert_membership(&sagat_domain::identity::Membership::restore(
+            foreign.tenant_id(),
+            foreign.subject().clone(),
+            Role::Worker,
+            crate::support::now(),
+        ))
+        .await
+        .expect("foreign secret-pool worker membership");
     let session = w.session_as(&foreign, &["act.a"], 10).await;
     assert_eq!(
         poll_len(&w, &session).await,
@@ -558,7 +567,7 @@ async fn refused_steps_ahead_of_the_window_do_not_starve_a_general_worker() {
     let (free, _) = w.publish(document("free", "a", vec![activity("a")])).await;
     let free_run = w.start(free, &json!({})).await;
 
-    let general = worker(&w, "general");
+    let general = worker(&w, "general").await;
     grant(&w, "general", &[]).await;
     let session = w.session_as(&general, &["act.a"], 100).await;
     let tasks = w.poll(&session, 8).await;
@@ -580,7 +589,7 @@ async fn refused_steps_ahead_of_the_window_do_not_starve_a_general_worker() {
     );
 
     // The entitled worker still gets the restricted work, oldest first.
-    let insider = worker(&w, "insider");
+    let insider = worker(&w, "insider").await;
     grant(&w, "insider", &["trusted"]).await;
     let inside = w.session_as(&insider, &["act.a"], 100).await;
     assert_eq!(poll_len(&w, &inside).await, 8);
@@ -597,7 +606,7 @@ async fn a_step_created_before_its_secrets_were_recorded_is_still_refused_at_the
         .execute(&w.db.pool)
         .await
         .expect("legacy step");
-    let outsider = worker(&w, "outsider");
+    let outsider = worker(&w, "outsider").await;
     grant(&w, "outsider", &[]).await;
     let session = w.session_as(&outsider, &["act.a"], 10).await;
     assert_eq!(poll_len(&w, &session).await, 0);
@@ -741,7 +750,7 @@ async fn resolution_waits_for_the_change(change: &str) {
     let w = Arc::new(world().await);
     run_declaring(&w).await;
     restrict(&w, "stripe-key", &["trusted"]).await;
-    let insider = worker(&w, "insider");
+    let insider = worker(&w, "insider").await;
     grant(&w, "insider", &["trusted"]).await;
     let session = w.session_as(&insider, &["act.a"], 10).await;
     let task = w.one_task(&session).await;

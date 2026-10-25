@@ -883,10 +883,11 @@ where
                 "the chain head is not waiting for that signal",
             ));
         }
-        let retained: usize = tx.data().await?.outputs.values().map(Vec::len).sum();
-        if retained.saturating_add(payload.len().saturating_mul(targets.len()))
-            > crate::execution::MAX_RUN_OUTPUT_BYTES
-        {
+        let retained = tx.logical_output_bytes().await?;
+        let payload_bytes = u64::try_from(payload.len()).unwrap_or(u64::MAX);
+        let copies = u64::try_from(targets.len()).unwrap_or(u64::MAX);
+        let additional = payload_bytes.saturating_mul(copies);
+        if retained.saturating_add(additional) > crate::execution::MAX_RUN_OUTPUT_BYTES as u64 {
             return Err(AppError::QuotaExceeded("output retained by one run"));
         }
         let now = self.clock.now();
@@ -1009,7 +1010,7 @@ where
                 self.clock.now(),
             )
             .with_reason("resource not accessible from this tenant");
-            if let Err(error) = self.store.record_denial(&audit).await {
+            if let Err(error) = RunStore::record_denial(&self.store, &audit).await {
                 tracing::error!(%error, action = %audit.action(), "failed to record chain denial");
             }
         }

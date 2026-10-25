@@ -88,6 +88,10 @@ def apply(target: Flow, ops: list[Obj]) -> None:
         kind = op["op"]
         if kind == "step":
             target.step(op["id"], op["activity"], **snake(op.get("options")))
+        elif kind == "database":
+            target.database(op["id"], **snake(op["options"]))
+        elif kind == "script":
+            target.script(op["id"], op["artifactDigest"], **snake(op.get("options")))
         elif kind == "sleep":
             target.sleep(op["id"], op["durationMs"])
         elif kind == "waitForEvent":
@@ -194,6 +198,8 @@ def builder_of(definition: Obj) -> Any:
         builder.input_schema(definition["inputSchema"])
     if definition.get("outputSchema") is not None:
         builder.output_schema(definition["outputSchema"])
+    if definition.get("limits") is not None:
+        builder.limits(**snake(definition["limits"]))
     if definition.get("state") is not None:
         declared = definition["state"]
         queries = {
@@ -906,15 +912,24 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                     )
                 elif op == "waitForChainCompletion":
                     chain = await client.wait_for_chain_completion(
-                        chain_ref(step["namespaceId"]), chain_ref(step["chainId"]),
-                        timeout=step.get("timeoutMs", 60_000) / 1000, poll_interval=0.1,
+                        chain_ref(step["namespaceId"]),
+                        chain_ref(step["chainId"]),
+                        timeout=step.get("timeoutMs", 60_000) / 1000,
+                        poll_interval=0.1,
                     )
                     result = {
-                        "chainId": chain.chain_id, "currentRunId": chain.current_run_id, "revision": chain.revision,
-                        "cancelRequested": chain.cancel_requested, "finalOutcome": chain.final_outcome,
+                        "chainId": chain.chain_id,
+                        "currentRunId": chain.current_run_id,
+                        "revision": chain.revision,
+                        "cancelRequested": chain.cancel_requested,
+                        "finalOutcome": chain.final_outcome,
                         "segments": [
-                            {"index": segment.index, "runId": segment.run_id,
-                             "predecessorRunId": segment.predecessor_run_id, "successorRunId": segment.successor_run_id}
+                            {
+                                "index": segment.index,
+                                "runId": segment.run_id,
+                                "predecessorRunId": segment.predecessor_run_id,
+                                "successorRunId": segment.successor_run_id,
+                            }
                             for segment in chain.segments
                         ],
                     }

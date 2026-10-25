@@ -5,6 +5,9 @@
 //! against that rebuild. Every event is validated before anything is mutated: a rejected event
 //! leaves the state exactly as it was.
 
+#[path = "state_effects.rs"]
+pub(super) mod effects;
+
 use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
@@ -362,6 +365,83 @@ impl FromStr for RunStatus {
     }
 }
 
+/// Run-wide work facts. A bounded path retains only the facts about other paths, so local
+/// transitions can derive the same global status without reading their individual steps.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RunWorkSummary {
+    active: bool,
+    live: bool,
+    waiting: bool,
+    reviewing: bool,
+}
+
+impl RunWorkSummary {
+    /// Restores trusted existential facts from one consistent storage snapshot.
+    ///
+    /// # Errors
+    /// Live work must be active, and a review must be waiting.
+    pub fn restore(
+        active: bool,
+        live: bool,
+        waiting: bool,
+        reviewing: bool,
+    ) -> Result<Self, ExecutionError> {
+        if (live && !active) || (reviewing && !waiting) {
+            return Err(ExecutionError::Invariant("inconsistent run work summary"));
+        }
+        Ok(Self {
+            active,
+            live,
+            waiting,
+            reviewing,
+        })
+    }
+
+    pub(super) fn from_steps<'a>(steps: impl Iterator<Item = &'a StepState>) -> Self {
+        let mut summary = Self::default();
+        for step in steps {
+            let live = matches!(
+                step.status,
+                StepStatus::Ready
+                    | StepStatus::Leased
+                    | StepStatus::Running
+                    | StepStatus::RetryWait
+            );
+            summary.active |= live || step.status == StepStatus::Pending;
+            summary.live |= live;
+            summary.waiting |= step.status == StepStatus::Waiting;
+            summary.reviewing |= step.status == StepStatus::Waiting
+                && matches!(step.waiting, Some(WaitingOn::Operator { .. }));
+        }
+        summary
+    }
+
+    pub(super) fn union(self, other: Self) -> Self {
+        Self {
+            active: self.active || other.active,
+            live: self.live || other.live,
+            waiting: self.waiting || other.waiting,
+            reviewing: self.reviewing || other.reviewing,
+        }
+    }
+
+    pub(super) fn status(self, compensating: bool, stopping: bool, paused: bool) -> RunStatus {
+        if self.reviewing && !self.live {
+            RunStatus::ManualReview
+        } else if compensating {
+            RunStatus::Compensating
+        } else if stopping {
+            RunStatus::Cancelling
+        } else if paused {
+            RunStatus::Paused
+        } else if !self.active && self.waiting {
+            RunStatus::Waiting
+        } else {
+            RunStatus::Running
+        }
+    }
+}
+
 /// Status of one step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StepStatus {
@@ -650,6 +730,15 @@ impl CollectionState {
         self.iterations
             .values()
             .filter(|iteration| iteration.is_active())
+            .count()
+    }
+
+    /// Iterations whose result was checkpointed or whose drain completed.
+    #[must_use]
+    pub fn completed_count(&self) -> usize {
+        self.iterations
+            .values()
+            .filter(|iteration| iteration.is_settled())
             .count()
     }
 
@@ -1099,7 +1188,7 @@ pub struct StepState {
 }
 
 impl StepState {
-    const fn pending() -> Self {
+    pub(super) const fn pending() -> Self {
         Self {
             status: StepStatus::Pending,
             attempt: 0,
@@ -1141,6 +1230,10 @@ impl StepState {
     #[must_use]
     pub const fn routed(&self) -> bool {
         self.routed
+    }
+
+    pub(super) fn mark_routed(&mut self) {
+        self.routed = true;
     }
 
     #[must_use]
@@ -1218,6 +1311,123 @@ impl StepState {
 
     const fn fenced_by(&self, attempt: u32, generation: u64) -> bool {
         self.attempt == attempt && self.generation == generation
+    }
+
+    pub(super) fn apply_instance_lifecycle(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        event: &RunEvent,
+    ) -> Result<(), ExecutionError> {
+        use StepStatus::{
+            Cancelled, Failed, Leased, Pending, Ready, RetryWait, Running, Succeeded, Waiting,
+        };
+        let name = event.name();
+        let require = |step: &Self, allowed: &[StepStatus]| {
+            if allowed.contains(&step.status) {
+                Ok(())
+            } else {
+                Err(illegal_transition(instance, step.status, name))
+            }
+        };
+        match event {
+            RunEvent::StepReleased { .. } => {
+                require(self, &[Pending])?;
+                self.status = Ready;
+            }
+            RunEvent::StepLeased {
+                attempt,
+                generation,
+                ..
+            } => {
+                require(self, &[Ready])?;
+                if *attempt != self.attempt + 1 || *generation != self.generation + 1 {
+                    return Err(stale_attempt(instance));
+                }
+                self.status = Leased;
+                self.attempt = *attempt;
+                self.generation = *generation;
+                self.cancel_requested = false;
+                self.next_attempt_at = None;
+            }
+            RunEvent::StepStarted {
+                attempt,
+                generation,
+                ..
+            } => {
+                require(self, &[Leased])?;
+                if !self.fenced_by(*attempt, *generation) {
+                    return Err(stale_attempt(instance));
+                }
+                self.status = Running;
+            }
+            RunEvent::StepCompleted {
+                attempt,
+                generation,
+                ..
+            } => {
+                require(self, &[Leased, Running])?;
+                if !self.fenced_by(*attempt, *generation) {
+                    return Err(stale_attempt(instance));
+                }
+                self.status = Succeeded;
+                self.cancel_requested = false;
+            }
+            RunEvent::StepRetryScheduled {
+                attempt,
+                generation,
+                code,
+                not_before,
+                ..
+            } => {
+                require(self, &[Leased, Running])?;
+                if !self.fenced_by(*attempt, *generation) {
+                    return Err(stale_attempt(instance));
+                }
+                self.status = RetryWait;
+                self.failure = Some(code.clone());
+                self.next_attempt_at = Some(*not_before);
+            }
+            RunEvent::StepRetryDue { .. } => {
+                require(self, &[RetryWait])?;
+                self.status = Ready;
+                self.next_attempt_at = None;
+            }
+            RunEvent::StepFailed { code, fence, .. } => {
+                require(self, &[Leased, Running, Pending, Waiting])?;
+                match (self.status.is_leased(), fence) {
+                    (true, Some(fence)) if self.fenced_by(fence.attempt, fence.generation) => {}
+                    (true, _) => return Err(stale_attempt(instance)),
+                    (false, None) => {}
+                    (false, Some(_)) => {
+                        return Err(illegal_transition(instance, self.status, name));
+                    }
+                }
+                self.status = Failed;
+                self.failure = Some(code.clone());
+                self.waiting = None;
+                self.cancel_requested = false;
+            }
+            RunEvent::StepCancelRequested { .. } => {
+                require(self, &[Leased, Running, Waiting])?;
+                if (self.status == Waiting
+                    && !matches!(self.waiting, Some(WaitingOn::Child { .. })))
+                    || self.cancel_requested
+                {
+                    return Err(illegal_transition(instance, self.status, name));
+                }
+                self.cancel_requested = true;
+            }
+            RunEvent::StepCancelled { .. } => {
+                require(self, &[Pending, Ready, Leased, Running, Waiting, RetryWait])?;
+                self.status = Cancelled;
+                self.routed = true;
+                self.waiting = None;
+                self.next_attempt_at = None;
+                self.cancel_requested = false;
+            }
+            _ => return Err(ExecutionError::UnsupportedScopedEvent(name)),
+        }
+        Ok(())
     }
 }
 
@@ -1631,6 +1841,7 @@ impl RunState {
                     None,
                     Some(
                         CollectionDrainReason::Failed { .. }
+                            | CollectionDrainReason::RunDataLimit
                             | CollectionDrainReason::StorageQuotaExceeded
                     )
                 )
@@ -1672,8 +1883,10 @@ impl RunState {
             }
             CollectionPhase::Failed => {
                 let storage_quota = FailureCode::storage_quota_exceeded();
+                let run_data_limit = FailureCode::run_data_limit();
                 let expected = match &drain_reason {
                     Some(CollectionDrainReason::Failed { code, .. }) => Some(code),
+                    Some(CollectionDrainReason::RunDataLimit) => Some(&run_data_limit),
                     Some(CollectionDrainReason::StorageQuotaExceeded) => Some(&storage_quota),
                     _ => None,
                 };
@@ -2271,24 +2484,6 @@ impl RunState {
         }
     }
 
-    fn fenced_instance(
-        &mut self,
-        instance: &ExecutionInstanceId,
-        event: &'static str,
-        allowed: &[StepStatus],
-        attempt: u32,
-        generation: u64,
-    ) -> Result<&mut StepState, ExecutionError> {
-        let step = self.instance_mut(instance, event, allowed)?;
-        if step.fenced_by(attempt, generation) {
-            Ok(step)
-        } else {
-            Err(ExecutionError::StaleInstanceAttempt {
-                instance: instance.clone(),
-            })
-        }
-    }
-
     fn activate(&mut self, nodes: &[NodeId]) -> Result<(), ExecutionError> {
         for (i, node) in nodes.iter().enumerate() {
             if self
@@ -2714,6 +2909,15 @@ impl RunState {
                         Some(CollectionDrainReason::Failed { code: recorded, .. }),
                     ) => {
                         scope.phase == CollectionPhase::Draining && code == recorded && all_settled
+                    }
+                    (
+                        CollectionOutcome::Failed(code),
+                        None,
+                        Some(CollectionDrainReason::RunDataLimit),
+                    ) => {
+                        scope.phase == CollectionPhase::Draining
+                            && code == &FailureCode::run_data_limit()
+                            && all_settled
                     }
                     (
                         CollectionOutcome::Failed(code),
@@ -3868,10 +4072,7 @@ impl RunState {
     /// # Errors
     /// An [`ExecutionError`] when the addressed transition is illegal or not enabled.
     pub fn apply_addressed(&mut self, addressed: &AddressedRunEvent) -> Result<(), ExecutionError> {
-        use StepStatus::{
-            Cancelled, Failed, Leased, Pending, Ready, RetryWait, Running, Skipped, Succeeded,
-            Waiting,
-        };
+        use StepStatus::{Failed, Pending, Skipped, Succeeded, Waiting};
 
         if addressed.path().is_root() {
             return self.apply(addressed.event());
@@ -3903,117 +4104,19 @@ impl RunState {
                     ))?
                     .routed = true;
             }
-            RunEvent::StepReleased { .. } => {
-                self.instance_mut(&instance, name, &[Pending])?.status = Ready;
-            }
-            RunEvent::StepLeased {
-                attempt,
-                generation,
-                ..
-            } => {
-                let step = self.instance_mut(&instance, name, &[Ready])?;
-                if *attempt != step.attempt + 1 || *generation != step.generation + 1 {
-                    return Err(ExecutionError::StaleInstanceAttempt { instance });
-                }
-                step.status = Leased;
-                step.attempt = *attempt;
-                step.generation = *generation;
-                step.cancel_requested = false;
-                step.next_attempt_at = None;
-            }
-            RunEvent::StepStarted {
-                attempt,
-                generation,
-                ..
-            } => {
-                self.fenced_instance(&instance, name, &[Leased], *attempt, *generation)?
-                    .status = StepStatus::Running;
-            }
-            RunEvent::StepCompleted {
-                attempt,
-                generation,
-                ..
-            } => {
-                let step = self.fenced_instance(
-                    &instance,
-                    name,
-                    &[Leased, Running],
-                    *attempt,
-                    *generation,
-                )?;
-                step.status = Succeeded;
-                step.cancel_requested = false;
-            }
-            RunEvent::StepRetryScheduled {
-                attempt,
-                generation,
-                code,
-                not_before,
-                ..
-            } => {
-                let step = self.fenced_instance(
-                    &instance,
-                    name,
-                    &[Leased, Running],
-                    *attempt,
-                    *generation,
-                )?;
-                step.status = RetryWait;
-                step.failure = Some(code.clone());
-                step.next_attempt_at = Some(*not_before);
-            }
-            RunEvent::StepRetryDue { .. } => {
-                let step = self.instance_mut(&instance, name, &[RetryWait])?;
-                step.status = Ready;
-                step.next_attempt_at = None;
-            }
-            RunEvent::StepFailed { code, fence, .. } => {
-                let step =
-                    self.instance_mut(&instance, name, &[Leased, Running, Pending, Waiting])?;
-                match (step.status.is_leased(), fence) {
-                    (true, Some(fence)) if step.fenced_by(fence.attempt, fence.generation) => {}
-                    (true, _) => {
-                        return Err(ExecutionError::StaleInstanceAttempt { instance });
-                    }
-                    (false, None) => {}
-                    (false, Some(_)) => {
-                        return Err(ExecutionError::IllegalInstanceTransition {
-                            instance,
-                            status: step.status,
-                            event: name,
-                        });
-                    }
-                }
-                step.status = Failed;
-                step.failure = Some(code.clone());
-                step.waiting = None;
-                step.cancel_requested = false;
-            }
-            RunEvent::StepCancelRequested { .. } => {
-                let step = self.instance_mut(&instance, name, &[Leased, Running, Waiting])?;
-                if (step.status == Waiting
-                    && !matches!(step.waiting, Some(WaitingOn::Child { .. })))
-                    || step.cancel_requested
-                {
-                    return Err(ExecutionError::IllegalInstanceTransition {
-                        instance,
-                        status: step.status,
-                        event: name,
-                    });
-                }
-                step.cancel_requested = true;
-            }
-            RunEvent::StepCancelled { .. } => {
-                let step = self.instance_mut(
-                    &instance,
-                    name,
-                    &[Pending, Ready, Leased, Running, Waiting, RetryWait],
-                )?;
-                step.status = Cancelled;
-                step.routed = true;
-                step.waiting = None;
-                step.next_attempt_at = None;
-                step.cancel_requested = false;
+            event @ (RunEvent::StepReleased { .. }
+            | RunEvent::StepLeased { .. }
+            | RunEvent::StepStarted { .. }
+            | RunEvent::StepCompleted { .. }
+            | RunEvent::StepRetryScheduled { .. }
+            | RunEvent::StepRetryDue { .. }
+            | RunEvent::StepFailed { .. }
+            | RunEvent::StepCancelRequested { .. }
+            | RunEvent::StepCancelled { .. }) => {
+                self.steps
+                    .get_mut(&instance)
+                    .ok_or_else(|| ExecutionError::UnknownInstance(instance.clone()))?
+                    .apply_instance_lifecycle(&instance, event)?;
             }
             RunEvent::ApprovalOpened { request_id, .. } => {
                 let step = self.instance_mut(&instance, name, &[Pending])?;
@@ -4078,44 +4181,6 @@ impl RunState {
         Ok(())
     }
 
-    /// The step at `instance`, with the error variants of its address: a root step keeps the
-    /// node-based errors the root reducer always had, a scoped one names its instance.
-    fn locate_mut(
-        &mut self,
-        instance: &ExecutionInstanceId,
-        event: &'static str,
-        allowed: &[StepStatus],
-    ) -> Result<&mut StepState, ExecutionError> {
-        let step = self.steps.get_mut(instance).ok_or_else(|| {
-            if instance.path().is_root() {
-                ExecutionError::UnknownStep(instance.node().clone())
-            } else {
-                ExecutionError::UnknownInstance(instance.clone())
-            }
-        })?;
-        if allowed.contains(&step.status) {
-            Ok(step)
-        } else {
-            Err(illegal_transition(instance, step.status, event))
-        }
-    }
-
-    fn locate_fenced(
-        &mut self,
-        instance: &ExecutionInstanceId,
-        event: &'static str,
-        allowed: &[StepStatus],
-        attempt: u32,
-        generation: u64,
-    ) -> Result<&mut StepState, ExecutionError> {
-        let step = self.locate_mut(instance, event, allowed)?;
-        if step.fenced_by(attempt, generation) {
-            Ok(step)
-        } else {
-            Err(stale_attempt(instance))
-        }
-    }
-
     /// Reconciliation, operator holds and operator decisions about one logical instance. The root
     /// reducer and the scoped one are this function, so the two cannot drift apart: a scoped step
     /// differs only in the path its derived companions share.
@@ -4124,173 +4189,7 @@ impl RunState {
         instance: &ExecutionInstanceId,
         event: &RunEvent,
     ) -> Result<(), ExecutionError> {
-        use StepStatus::{
-            Failed, Leased, Pending, Ready, RetryWait, Running, Skipped, Succeeded, Waiting,
-        };
-        let name = event.name();
-        let node = instance.node();
-        match event {
-            RunEvent::ReconciliationRequested { fence, cause, .. } => {
-                let reconciliation =
-                    ExecutionInstanceId::in_path(instance.path().clone(), node.reconciliation());
-                let reusable = match self.steps.get(&reconciliation) {
-                    None => true,
-                    Some(step) => matches!(step.status, Succeeded | Failed),
-                };
-                if !reusable {
-                    return Err(ExecutionError::AlreadyScheduled(
-                        reconciliation.node().clone(),
-                    ));
-                }
-                let step = self.locate_fenced(
-                    instance,
-                    name,
-                    &[Leased, Running],
-                    fence.attempt,
-                    fence.generation,
-                )?;
-                step.status = Waiting;
-                step.waiting = Some(WaitingOn::Reconciliation);
-                step.failure = Some(cause.clone());
-                step.cancel_requested = false;
-                // A step that is reconciled again (after an attempt that was retried, or after an
-                // operator asked for another one) reopens its reconciliation: the counters go on, so
-                // the retry budget of the reconciliation is shared by every round.
-                let companion = self
-                    .steps
-                    .entry(reconciliation)
-                    .or_insert_with(StepState::pending);
-                companion.status = Pending;
-                companion.routed = false;
-                companion.waiting = None;
-                companion.failure = None;
-                companion.cancel_requested = false;
-                companion.next_attempt_at = None;
-            }
-            RunEvent::ReconciliationConcluded {
-                verdict, result, ..
-            } => {
-                let step = self.locate_mut(instance, name, &[Waiting])?;
-                if !matches!(step.waiting, Some(WaitingOn::Reconciliation)) {
-                    return Err(illegal_transition(instance, step.status, name));
-                }
-                let paired = matches!(
-                    (verdict, result),
-                    (ReconcileVerdict::Applied, ReconcileResult::Succeeded)
-                        | (
-                            ReconcileVerdict::NotApplied,
-                            ReconcileResult::RetryAt(_) | ReconcileResult::Failed(_)
-                        )
-                        | (ReconcileVerdict::Unknown, ReconcileResult::Review(_))
-                );
-                if !paired {
-                    return Err(ExecutionError::Invariant(
-                        "a reconciliation result does not follow from what it found",
-                    ));
-                }
-                step.waiting = None;
-                match result {
-                    ReconcileResult::Succeeded => {
-                        step.status = Succeeded;
-                        step.failure = None;
-                    }
-                    ReconcileResult::RetryAt(at) => {
-                        step.status = RetryWait;
-                        step.next_attempt_at = Some(*at);
-                        // The lookup said it did not happen: the step is no longer one whose outcome
-                        // is unknown, so a saga that stops while it backs off has nothing to undo.
-                        step.failure = Some(FailureCode::reconciled_not_applied());
-                    }
-                    ReconcileResult::Failed(code) => {
-                        step.status = Failed;
-                        step.failure = Some(code.clone());
-                    }
-                    ReconcileResult::Review(code) => {
-                        step.status = Waiting;
-                        step.waiting = Some(WaitingOn::Operator { code: code.clone() });
-                        step.failure = Some(code.clone());
-                    }
-                }
-            }
-            RunEvent::StepNeedsReview { code, fence, .. } => {
-                let step = self.locate_mut(
-                    instance,
-                    name,
-                    &[Leased, Running, Waiting, Ready, RetryWait],
-                )?;
-                match (step.status.is_leased(), fence, &step.waiting) {
-                    (true, Some(f), _) if step.fenced_by(f.attempt, f.generation) => {}
-                    (true, _, _) => return Err(stale_attempt(instance)),
-                    (false, None, Some(WaitingOn::Reconciliation)) => {}
-                    // An operator holds a step that has not started: it waits for a decision like
-                    // the ones that ran out of attempts.
-                    (false, None, None) if matches!(step.status, Ready | RetryWait) => {}
-                    _ => return Err(illegal_transition(instance, step.status, name)),
-                }
-                // An operator's hold of a step that has not started says why it waits now (the
-                // code of the waiting); it does not say what happened to its last attempt. If that
-                // attempt ended without anyone knowing whether the effect happened, the step still
-                // says so: a saga that is stopped later must undo it.
-                let held = fence.is_none() && matches!(step.status, Ready | RetryWait);
-                step.status = Waiting;
-                step.waiting = Some(WaitingOn::Operator { code: code.clone() });
-                if !(held && step.failure.is_some()) {
-                    step.failure = Some(code.clone());
-                }
-                step.cancel_requested = false;
-                step.next_attempt_at = None;
-            }
-            RunEvent::StepRetryRequested { .. } => {
-                // A step that waits for a decision, or one whose retry is scheduled and an operator
-                // does not want to wait for: the scheduler's own `retry_due` finds it no longer in
-                // `RETRY_WAIT` and does nothing, so the two cannot both start an attempt.
-                let step = self.locate_mut(instance, name, &[Waiting, RetryWait])?;
-                if step.status == Waiting
-                    && !matches!(step.waiting, Some(WaitingOn::Operator { .. }))
-                {
-                    return Err(illegal_transition(instance, step.status, name));
-                }
-                step.status = Ready;
-                step.waiting = None;
-                step.next_attempt_at = None;
-            }
-            RunEvent::StepSkipped { .. } => {
-                if !node.is_compensation() {
-                    return Err(ExecutionError::Invariant(
-                        "only a compensation can be skipped",
-                    ));
-                }
-                let step = self.locate_mut(instance, name, &[Waiting])?;
-                if !matches!(step.waiting, Some(WaitingOn::Operator { .. })) {
-                    return Err(illegal_transition(instance, step.status, name));
-                }
-                step.status = Skipped;
-                step.waiting = None;
-            }
-            RunEvent::StepResolved { outcome, .. } => {
-                let step = self.locate_mut(instance, name, &[Waiting])?;
-                if !matches!(step.waiting, Some(WaitingOn::Operator { .. })) {
-                    return Err(illegal_transition(instance, step.status, name));
-                }
-                step.waiting = None;
-                match outcome {
-                    ReviewOutcome::Succeeded => {
-                        step.status = Succeeded;
-                        step.failure = None;
-                    }
-                    ReviewOutcome::Failed(code) => {
-                        step.status = Failed;
-                        step.failure = Some(code.clone());
-                    }
-                }
-            }
-            _ => {
-                return Err(ExecutionError::Invariant(
-                    "a non-effect event reached the effect reducer",
-                ));
-            }
-        }
-        Ok(())
+        effects::apply_effect_event(self, instance, event)
     }
 
     /// The scope-level events of a compensating collection or loop (D380..D385).
@@ -4506,51 +4405,20 @@ impl RunState {
             }
             _ => {}
         }
-        let active = |s: &StepState| {
-            matches!(
-                s.status,
-                StepStatus::Pending
-                    | StepStatus::Ready
-                    | StepStatus::Leased
-                    | StepStatus::Running
-                    | StepStatus::RetryWait
-            )
-        };
-        // Something can still move by itself.
-        let live = |s: &StepState| {
-            matches!(
-                s.status,
-                StepStatus::Ready
-                    | StepStatus::Leased
-                    | StepStatus::Running
-                    | StepStatus::RetryWait
-            )
-        };
-        let reviewing = self.steps.values().any(|s| {
-            s.status == StepStatus::Waiting && matches!(s.waiting, Some(WaitingOn::Operator { .. }))
-        });
-        let compensating = self
-            .sagas
+        self.status = RunWorkSummary::from_steps(self.steps.values()).status(
+            self.compensation_in_progress(),
+            self.stop.is_some(),
+            self.paused,
+        );
+    }
+
+    pub(super) fn compensation_in_progress(&self) -> bool {
+        self.sagas
             .values()
-            .any(|s| matches!(s.phase, SagaPhase::Aborting | SagaPhase::Compensating))
+            .any(|saga| matches!(saga.phase, SagaPhase::Aborting | SagaPhase::Compensating))
             || self
                 .scope_sagas
                 .values()
-                .any(|s| s.phase == SagaPhase::Compensating);
-        self.status = if reviewing && !self.steps.values().any(live) {
-            RunStatus::ManualReview
-        } else if compensating {
-            RunStatus::Compensating
-        } else if self.stop.is_some() {
-            RunStatus::Cancelling
-        } else if self.paused {
-            RunStatus::Paused
-        } else if !self.steps.values().any(active)
-            && self.steps.values().any(|s| s.status == StepStatus::Waiting)
-        {
-            RunStatus::Waiting
-        } else {
-            RunStatus::Running
-        };
+                .any(|saga| saga.phase == SagaPhase::Compensating)
     }
 }

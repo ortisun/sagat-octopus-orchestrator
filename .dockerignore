@@ -13,3 +13,6 @@ runners/dotnet/**/obj
 **/.env
 **/.env.*
 !infra/docker/.env.example
+
+# Includes unseal material, leaf keys and local fixture credentials.
+.local

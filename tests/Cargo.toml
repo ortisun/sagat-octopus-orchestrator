@@ -13,6 +13,7 @@ autotests = false
 workspace = true
 
 [dev-dependencies]
+tempfile = "3"
 tokio-stream.workspace = true
 bytes.workspace = true
 sagat-infra-blobstore.workspace = true
@@ -61,7 +62,7 @@ tonic.workspace = true
 prost.workspace = true
 prost-types = "0.14"
 protox.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "net", "process"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
@@ -306,6 +307,26 @@ name = "contract_developer_experience"
 path = "contract/developer-experience/main.rs"
 
 [[test]]
+name = "contract_payload_classification"
+path = "contract/payload-classification/main.rs"
+
+[[test]]
+name = "integration_payload_classification"
+path = "integration/payload-classification/main.rs"
+
+[[test]]
+name = "fault_payload_classification"
+path = "fault/payload-classification/main.rs"
+
+[[test]]
+name = "e2e_payload_classification"
+path = "e2e/payload-classification/main.rs"
+
+[[test]]
+name = "perf_payload_classification"
+path = "performance/payload-classification/main.rs"
+
+[[test]]
 name = "fault_developer_experience"
 path = "fault/developer-experience/main.rs"
 
@@ -345,3 +366,15 @@ path = "fault/scalability-ha/main.rs"
 [[test]]
 name = "e2e_scalability_ha"
 path = "e2e/scalability-ha/main.rs"
+
+[[test]]
+name = "integration_database_connections"
+path = "integration/database-connections/main.rs"
+
+[[test]]
+name = "integration_database_runner"
+path = "integration/database-runner/main.rs"
+
+[[test]]
+name = "e2e_database_connections"
+path = "e2e/database-connections/main.rs"

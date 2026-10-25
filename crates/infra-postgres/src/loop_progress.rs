@@ -23,7 +23,7 @@ use sagat_domain::sharding::Shard;
 use sagat_domain::workflow::{ActivityName, NodeId, NodeKind, WorkflowDefinition};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
-use sqlx::{PgConnection, PgPool, Row};
+use sqlx::{PgConnection, PgPool, Postgres, Row, Transaction};
 
 use crate::PgRunStore;
 use crate::identity::{insert_audit, store_error};
@@ -174,9 +174,16 @@ fn payload_matches(content: &[u8], digest: sagat_domain::workflow::Digest) -> bo
 }
 
 async fn lock_run(
-    conn: &mut PgConnection,
+    tx: &mut Transaction<'_, Postgres>,
     transition: &LoopTransition,
 ) -> Result<LockedRun, LoopProgressError> {
+    crate::execution::lock_member_chain(
+        tx,
+        transition.tenant_id(),
+        transition.namespace_id(),
+        transition.run_id(),
+    )
+    .await?;
     let row = sqlx::query(
         "SELECT namespace_id, workflow_version_id, run_version, status,stop_reason,stop_code \
          FROM runs \
@@ -184,7 +191,7 @@ async fn lock_run(
     )
     .bind(transition.tenant_id().as_uuid())
     .bind(transition.run_id().as_uuid())
-    .fetch_optional(&mut *conn)
+    .fetch_optional(&mut **tx)
     .await
     .map_err(store_error)?
     .ok_or(LoopProgressError::Missing)?;
@@ -224,7 +231,7 @@ fn check_revision(run: &LockedRun, transition: &LoopTransition) -> Result<(), Lo
 }
 
 async fn check_scheduler_fence(
-    conn: &mut PgConnection,
+    tx: &mut Transaction<'_, Postgres>,
     transition: &LoopTransition,
 ) -> Result<(), LoopProgressError> {
     let authority = transition.scheduler();
@@ -232,18 +239,12 @@ async fn check_scheduler_fence(
     if lease.shard != Shard::of(transition.run_id().as_uuid()) {
         return Err(LoopProgressError::SchedulerFenceLost);
     }
-    let held: Option<i16> = sqlx::query_scalar(
-        "SELECT shard FROM scheduler_shards \
-         WHERE shard = $1 AND generation = $2 AND owner = $3 \
-           AND expires_at > clock_timestamp() FOR SHARE",
-    )
-    .bind(i16::from(lease.shard.index()))
-    .bind(number(lease.generation, "scheduler generation")?)
-    .bind(authority.owner())
-    .fetch_optional(&mut *conn)
-    .await
-    .map_err(store_error)?;
-    if held.is_none() {
+    // Keep this port's existing conversion error for an oversized generation.
+    number(lease.generation, "scheduler generation")?;
+    if crate::execution::locked_scheduler_time(tx, transition.run_id(), authority.owner(), lease)
+        .await?
+        .is_none()
+    {
         return Err(LoopProgressError::SchedulerFenceLost);
     }
     Ok(())
@@ -256,6 +257,7 @@ struct LockedUsage {
     tenant_limit: i32,
     admitted: i32,
     reserved: i32,
+    retired: i32,
     max_instances: i32,
 }
 
@@ -295,7 +297,7 @@ async fn lock_usage(
     .map_err(store_error)?;
     let tenant_active = tenant_active.ok_or_else(|| invalid_storage("tenant iteration usage"))?;
     let run = sqlx::query(
-        "SELECT admitted_instances, reserved_instances, max_instances \
+        "SELECT admitted_instances, reserved_instances, retired_reservations, max_instances \
          FROM run_instance_usage WHERE tenant_id = $1 AND run_id = $2 FOR UPDATE",
     )
     .bind(transition.tenant_id().as_uuid())
@@ -310,6 +312,7 @@ async fn lock_usage(
         tenant_limit,
         admitted: run.get("admitted_instances"),
         reserved: run.get("reserved_instances"),
+        retired: run.get("retired_reservations"),
         max_instances: run.get("max_instances"),
     })
 }
@@ -1417,6 +1420,7 @@ impl LoopProgressStore for PgLoopProgressStore {
         let terminal_charge = i64::from(terminal.is_some());
         if i64::from(usage.admitted)
             + i64::from(usage.reserved)
+            + i64::from(usage.retired)
             + owner_charge
             + first_charge
             + terminal_charge
@@ -1874,18 +1878,20 @@ impl LoopProgressStore for PgLoopProgressStore {
             } else {
                 1
             };
-            let consumed = i64::from(usage.admitted) + i64::from(usage.reserved);
+            let consumed =
+                i64::from(usage.admitted) + i64::from(usage.reserved) + i64::from(usage.retired);
             if consumed + charge <= i64::from(usage.max_instances) {
                 return Err(LoopProgressError::InvalidTransition);
             }
         } else if let Some(next) = &command.next_activity {
             let charge = 1_i64 + i64::from(next.reserved_instances);
-            let consumed = i64::from(usage.admitted) + i64::from(usage.reserved);
+            let consumed =
+                i64::from(usage.admitted) + i64::from(usage.reserved) + i64::from(usage.retired);
             if consumed + charge > i64::from(usage.max_instances) {
                 return Err(LoopProgressError::InstanceBudgetExceeded);
             }
         } else if terminal.is_some()
-            && i64::from(usage.admitted) + i64::from(usage.reserved) + 1
+            && i64::from(usage.admitted) + i64::from(usage.reserved) + i64::from(usage.retired) + 1
                 > i64::from(usage.max_instances)
         {
             return Err(LoopProgressError::InstanceBudgetExceeded);
@@ -2331,7 +2337,7 @@ impl LoopProgressStore for PgLoopProgressStore {
             return Err(LoopProgressError::AtCapacity);
         }
         let charge = 1_i64 + i64::from(command.next_activity.reserved_instances);
-        if i64::from(usage.admitted) + i64::from(usage.reserved) + charge
+        if i64::from(usage.admitted) + i64::from(usage.reserved) + i64::from(usage.retired) + charge
             > i64::from(usage.max_instances)
         {
             return Err(LoopProgressError::InstanceBudgetExceeded);
@@ -2623,7 +2629,9 @@ impl LoopProgressStore for PgLoopProgressStore {
                     }
                     _ => return Err(LoopProgressError::InvalidTransition),
                 };
-                let consumed = i64::from(usage.admitted) + i64::from(usage.reserved);
+                let consumed = i64::from(usage.admitted)
+                    + i64::from(usage.reserved)
+                    + i64::from(usage.retired);
                 let limit_reached = |code: &FailureCode| {
                     (code == &FailureCode::iteration_limit()
                         && iteration.saturating_add(1) >= max_iterations)
@@ -3012,7 +3020,8 @@ impl LoopProgressStore for PgLoopProgressStore {
         .await
         .map_err(store_error)?;
         let usage_updated = sqlx::query(
-            "UPDATE run_instance_usage SET reserved_instances=reserved_instances-$3 \
+            "UPDATE run_instance_usage SET reserved_instances=reserved_instances-$3, \
+                    retired_reservations=retired_reservations+$3 \
              WHERE tenant_id=$1 AND run_id=$2 AND reserved_instances >= $3",
         )
         .bind(command.transition.tenant_id().as_uuid())

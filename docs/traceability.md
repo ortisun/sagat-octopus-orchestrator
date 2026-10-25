@@ -16,9 +16,11 @@
 | [010 scalability-ha](../specs/010-scalability-ha/spec.md) | FR-010-001..007 | 4 | `tests/e2e/scalability-ha/`, `tests/integration/scalability-ha/`, `tests/contract/scalability-ha/`, `tests/fault/scalability-ha/`, `tests/fault/failover/`, `tests/performance/scalability-ha/`, `infra/dr/` | Implemented within the measured scope, including exact per-activity concurrency admission and one-node full-product KEDA validation; 5 000 transitions/s, journal partitioning, a generic pool/queue quota and multi-node disruption remain unproven |
 | [011 gitops-versioning](../specs/011-gitops-versioning/spec.md) | FR-011-001..006 | 4 | `tests/e2e/gitops-versioning/`, `tests/integration/gitops-versioning/`, `tests/contract/gitops-versioning/`, `tests/fault/gitops-versioning/`, `tests/performance/gitops-versioning/`, `apps/cli/tests/` | Implemented; artifact/history retention, scripts in the manifest and a packaged binary remain open |
 | [012 developer-experience](../specs/012-developer-experience/spec.md) | FR-012-001..006 | 4 | `tests/e2e/developer-experience/`, `tests/fault/developer-experience/`, `tests/contract/developer-experience/`, `tests/performance/developer-experience/`, `apps/cli/tests/`, `apps/dev-idp/tests/` | Implemented; human acceptance remains open (no person was timed for SC-012-001, and there is no packaged binary, published SDK or hosted documentation) |
-| [016 payload-classification](../specs/016-payload-classification/spec.md) | FR-016-001..029 | 8 | `tests/contract/payload-classification/`, `tests/integration/payload-classification/`, `tests/fault/payload-classification/`, `tests/e2e/payload-classification/`, `tests/performance/payload-classification/`, `frontend/e2e/tests/payload-disclosure.spec.ts` (all planned, none exist) | Specified; not built |
+| [016 payload-classification](../specs/016-payload-classification/spec.md) | FR-016-001..029 | 8 | `tests/contract/payload-classification/`, `tests/integration/payload-classification/`, `tests/fault/payload-classification/`, `tests/e2e/payload-classification/`, `tests/performance/payload-classification/`, `frontend/e2e/tests/payload-disclosure.spec.ts` (focused implementations and evidence in `tasks/project-completion/integration-notes.md`; final gates pending) | Implementation in progress |
 
 ## Evidence protocol
+
+Feature [017 database-connections](../specs/017-database-connections/spec.md) is approved (2026-10-16), implemented and integrated with the feature-014 base of `develop` on `feature/017-database-connections-integration` (2026-10-24). FR-017-001..022 and SC-017-001..011 are tracked in its [tasks](../specs/017-database-connections/tasks.md), its [traceability](../specs/017-database-connections/traceability.md) and the "Integration into develop" section of its [verification](../specs/017-database-connections/verification.md). Deployment-gated criteria (private-network egress, three-member Raft restore, Kubernetes) keep the limits recorded there.
 
 1. Link the PR to the FR and SC satisfied; reference the exact test (name and CI execution).
 2. For durability invariants: failure scenario, journal evidence and absence of a double transition.
@@ -217,10 +219,11 @@ baseline and current restyle checks are distinguished in `specs/007-workflow-stu
 | FR-007-006 incremental updates by stream with a polling fallback, no reload of the whole graph | Done | `GET /runs/{id}/graph/changes` and `/stream` (`e2e_workflow_studio us03`: 14 tests, among them reconnection with `Last-Event-ID`, the caps, the token's expiry, a removed member, the cost of a quiet stream), `follow.ts` and its tests, the journey US03 asserts the graph is loaded once; a quiet stream costs the read of one row per tick (G143) |
 | FR-007-007 RBAC and a confirmation that explains the consequence | Done | `ops.ts` and the dialog (`operations.test.tsx`: 32 tests), `e2e_workflow_studio us04`, `fault_workflow_studio` (two operators at once, a request repeated, a stale view, an undo that fails again, another tenant), journeys US04 |
 | FR-007-008 WCAG AA as a target and an alternative table/list view | Done as a target, partly proven | axe-core (WCAG 2.2 A and AA rules) on every page in the journeys, dialogs and menus driven by the keyboard alone, the table and the timeline as first-class views, the list view of the editor; T007-050 adds focused, explicit route-load recovery with 320px reflow/axe and a real CSS-404→reload→sign-in journey (24 browser journeys passed, two benchmarks skipped, US02 excluded; quickstart). **No screen reader was used by a person (G146).** |
-| FR-007-009 the visual direction on every screen | Implemented; owner approved | shared tokens/themes, local Geist fonts, sidebar/top bar, wide Runs master/detail, graph cards/curves/grid and derived editor/Script/sign-in styles; `tokens.test.ts`, `Shell.test.tsx`, `RunDetailPage.test.tsx`, `styles.test.ts`; final browser suite passed after the dark Monaco correction, including all three themes, 320px reflow and system fonts; owner approval was recorded on 2026-10-11 (T007-043/044), with captures linked in the design record. T007-049 corrects initial graph scale, responsive panels, forced-colour controls and populated Scripts scrolling; 1 049 unit tests and 23 real-browser journeys passed on 2026-10-12 (two opt-in benchmarks skipped; US02 excluded), with geometry coverage and eight before/after captures in the quickstart/design record. |
+| FR-007-009 the visual direction on every screen | Implemented; owner approved | shared tokens/themes, local Geist fonts, sidebar/top bar, wide Runs master/detail, graph cards/curves/grid and derived editor/Script/sign-in styles; `tokens.test.ts`, `Shell.test.tsx`, `RunDetailPage.test.tsx`, `styles.test.ts`; final browser suite passed after the dark Monaco correction, including all three themes, 320px reflow and system fonts; owner approval was recorded on 2026-10-11 (T007-043/044), with captures linked in the design record. T007-049 corrects initial graph scale, responsive panels, forced-colour controls and populated Scripts scrolling; 1 049 unit tests and 23 real-browser journeys passed on 2026-10-12 (two opt-in benchmarks skipped; US02 excluded), with geometry coverage and eight before/after captures in the quickstart/design record. T007-057 (2026-10-14) corrects the layout and navigation defects of a seven-width browser review (mobile shell, graph canvas and side panel, overview map, table columns, address-held filters, one time format); 1 122 unit tests pass, the Playwright journeys were not re-run for this change. |
 | FR-007-010 no element without a data source | Implemented and unit-tested | only real navigation destinations; run facts use API fields, omit queue/worker/trigger-kind/global counts, and show unknown terminal duration without `finishedAt`; `Shell.test.tsx`, compact-list and detail regressions; authorized payload structure inspection is delivered (T007-048); signal action and per-step timeline bars remain unbuilt (G163–G168) |
 | T007-052 integrated namespace management | Done | A dedicated **Namespaces** menu and `/namespaces` route list tenant namespaces/environments, select context and authorize creation through the real identity API. Ten focused tests, the 1,066-test full frontend suite and a real Chromium/API creation-selection journey are recorded in the feature quickstart; the later full-suite pass supersedes the earlier six concurrent graph-layout failures. |
 | T007-053 integrated broker management | Done for inbound connectors | A dedicated **Integrations** menu lists and creates/edits/activates inbound NATS JetStream, Kafka and SQS connectors with write-only secret references and explicit namespace egress editing. Eleven focused component tests, 1,077 frontend tests and a real Chromium/API persistence/redaction journey passed. The journey used paused synthetic brokers and did not claim external connectivity; outbound event subscriptions remain a separate API without Studio UI. |
+| T007-058 namespace-first navigation | Done in unit tests and a Chromium drive; Playwright journeys not run | The sidebar is Namespaces, the selector and, under it only while a namespace is chosen, Workflows/Runs/Operations/Scripts/Integrations; the Studio chooses no namespace itself and forgets a remembered one the tenant does not list; pages of a namespace wait behind *Choose a namespace*. 1,145 frontend tests (12 new: `Shell.test.tsx`, `NamespaceGate.test.tsx`), lint, typecheck, build; `frontend/e2e/support/studio.ts` and `smoke.spec.ts` updated, unproved until the platform is built. |
 | NFR-007-SEC tenant isolation, RBAC, least privilege, no secret in logs or the journal | Done for what exists | two rounds of independent security and correctness reviews of the Studio, each confirmed finding fixed failing-first (quadratic and unbounded work on hostile documents, the file server's memory, the cost and the role of a stream, a delta that missed created steps, step reads after a rename, a decision repeated with a new key; the list is in `quickstart.md`); the strict policy of the page is asserted (`crates/api-http/tests/studio.rs`, journey SEC), the token is in memory only, text from outside is rendered as text (journey SEC), another tenant gets the answer an unknown run gets (`contract_rest_security_multitenancy` battery, `fault_workflow_studio`, `e2e_workflow_studio`) |
 | NFR-007-DUR after commit, losing a worker or the broker loses no transition | Done | the Studio adds no state; a decision is made once however many ask and however often (`fault_workflow_studio`); deltas equal the whole graph (`e2e_workflow_studio us03` and an invariant of the chaos test) |
 | NFR-007-OBS logs, correlated traces, essential metrics, auditability | Partial | the platform's request metrics, trace ids in every error, `run_streams_open`, `run_streams_refused_total`, `run_streams_tick_errors_total`, `http_write_stalls_total`, every decision audited with its reason; **the browser sends no telemetry (G159)**, the Studio's files have no request metrics (G158) |
@@ -352,21 +355,27 @@ Gaps and decisions: `specs/010-scalability-ha/research.md` (D229–D260 and G239
 
 ## Evidence: 016 payload-classification
 
-Decision: [ADR-0033](adr/ADR-0033-payload-values-are-classified-per-field.md). Design, gaps (G272-G293), decisions (D261-D290 and D302-D306) and the owner's answers of 2026-10-17 to P1-P4: `specs/016-payload-classification/research.md`. Tasks: `specs/016-payload-classification/tasks.md` (65; only T016-002, the recording of the owner's answers, is ticked). **Specified; not built.** Every row below is a placeholder: no code, test or measurement exists, and nothing in this block is evidence of behaviour.
+Decision: [ADR-0033](adr/ADR-0033-payload-values-are-classified-per-field.md); combined dependency
+policy: [ADR-0036](adr/ADR-0036-integrated-scoped-managed-and-classified-execution.md). Implementation
+is in progress. [Integration notes](../tasks/project-completion/integration-notes.md) name the actual
+commands and focused results (that tree is not in git: a tick stands on a test in the repository);
+unchecked canonical tasks require their full acceptance criteria. Two independent reviews on
+2026-10-25 reopened T016-053 (benchmark: the cache does not bound compiled-validator memory) and
+T016-054 (workspace gates never run as one set); see the review section of
+[the analysis](../specs/016-payload-classification/analysis.md).
 
-| Requirement or criterion | State | Evidence |
+| Requirement or criterion | State | Evidence and remaining gate |
 |---|---|---|
-| FR-016-001..005 annotation, carriers, semantics, publication checks, pinning to the version | Specified; not built | none yet (T016-005..008, T016-013..022) |
-| FR-016-006..009, 013..015 the disclosure operation, audiences, validity gate, withheld nodes, result, step outputs, external content | Specified; not built | none yet (T016-023..031, T016-038..039) |
-| FR-016-010..012 permissions, reveal grants (per-namespace list, decided 2026-10-17), audit | Specified; not built | none yet (T016-009..012, T016-032..037) |
-| FR-016-016..017 unchanged surfaces; no value in telemetry, logs, metrics, audit or errors | Specified; not built | none yet (T016-026, T016-049) |
-| FR-016-018..019 Studio and CLI | Specified; not built | none yet (T016-043..048) |
-| FR-016-020 five SDK builders | Specified; not built | none yet (T016-040..042) |
-| FR-016-021..025 compatibility, typed errors, tenant boundary, bounds, version diff | Specified; not built | none yet (T016-018, T016-051..053) |
-| FR-016-026..029 event values restricted to the reveal grant (`getInboxEvent` `data`, dead-letter `body` and `headers`); breaking for current readers | Specified; not built | none yet (T016-057..065) |
-| NFR-016-001..006 security, consistency, performance, compatibility, observability, accessibility | Specified; not built | none yet |
-| SC-016-001..010 | Not proven | none yet |
-| Today, before the change: the event inbox (`getInboxEvent` `data`, connector dead-letter `body` and `headers`) discloses values to every `event:read` holder | To be restricted by US08 (G272, D302); still the behaviour of the code | `crates/api-http/src/dto_events.rs` (`EventBody`, `DeadLetterBody`) |
+| FR-016-001..005 authoring and immutable pinning | Focused gates passed | Pure domain, publication/ref security, all corpus runtime shapes and generated monotonicity; real PostgreSQL legacy, ordinary/approved publish and promotion pinning |
+| FR-016-006..009, 013..015 disclosure and exact carrier selection | Registered core gate passed | 10 application tests, 96-cell REST matrix, retained run result and exact scoped journal carriers; actual script/blob/child/rerun/retry outputs |
+| FR-016-010..012 permissions, grants and audit | Focused fault gates passed | 48-permission catalog, grant fences/cap/cascade, deferred audit failures and actual process death before/after commit with lost-response retry; concurrent publication/activation pinning case passed |
+| FR-016-016..017 unchanged surfaces and value-free telemetry | Focused byte and canary gates passed | 22 key/value classes across API/CLI and captured logs, OTLP, metrics and audit; ten actual HTTP surfaces matched immutable pre-classification response bytes (`compat::unchanged_surfaces_match_actual_pre_classification_response_bytes`); broader combined workspace gate remains |
+| FR-016-018..019 Studio and CLI | Focused browser and real CLI passed | 1149 Studio tests, typecheck/lint/build, actual four-role Chromium disclosure journey and actual CLI grant/disclose/revoke journey; broader release matrix remains |
+| FR-016-020 five SDK builders | Focused builders and canonical scenario passed | All five emitted the same 1,474-byte carrier document; full integrated runtime protocol matrix remains pending |
+| FR-016-021..025 compatibility, errors, boundaries, bounds and diff | Named compatibility and boundary gates passed | Actual v0.1.0 control plane/engine, archived Studio in Chromium and five released SDK sources passed named cases; legacy extension regression reproduced before the fix and passed afterward with current-process pause/resume, immutable bytes/pins and legacy opacity. Frozen contract checksum, 87 gRPC/security cases, numeric guards/diff and bounded benchmark passed. See the [compatibility report](../tests/integration/payload-classification/compatibility-report.md); complete current SDK/workspace gates remain separate |
+| FR-016-026..029 event and dead-letter values | Actual HTTP canary core passed | Six roles × grant × reveal across three reads; captured event telemetry/audit, empty-page authority, default structure and mandatory reveal audit; original event suites and full tenant release matrix remain |
+| NFR-016-001..006 and SC-016-001..010 | Complete acceptance not yet established | Measured 720 disclosure projections, actual byte compatibility, prior-release processes/browser/SDKs, complete named API/CLI audience matrix and executable quickstart passed on recorded checkpoints. The validator cache charges schema weight, not actual compiled heap. Complete current SDK/workspace and broader Studio/Compose release gates remain |
+
 
 ## Completion follow-up — 2026-10-12
 
@@ -398,19 +407,387 @@ the SDK version and capability matrix is [sdk-compatibility.md](sdk-compatibilit
 
 | Requirement / criterion | Status | Evidence / remaining work |
 |---|---|---|
-| FR-014-001, FR-014-002, SC-014-001 — practical examples and parity | Implemented and locally verified | `examples/order-processing/`: three workflows in all five SDK languages. `e2e_developer_experience` filter `order_processing::` passed 25 workflow runs and 10 configuration checks on a real disposable platform; the common CI example job includes it. |
-| FR-014-003 — rejection before publication, durable instance identity | Implemented and locally verified | Additive v1 IR ([ADR-0032](adr/ADR-0032-additive-workflow-ir.md)); `contract_workflow_primitives` (47) incl. `ceilings.rs` (maxItems/maxIterations 1..10000, maxConcurrency 1..256, node/depth/expression ceilings); typed root and scoped identity (`identity_storage`, `journal_identity`); `compatibility.rs` (7) for the unsupported combinations. Gap: WP-02/12/13 rejections are covered in Rust, not in the five-SDK scenarios (G425, G426). |
-| FR-014-004, FR-014-005 — collections (forEach/map) | Implemented and locally verified; **10,000-item scope slow** | Ordered aggregation, fail-fast drain, shared run/tenant budgets, derived-instance reservations: `collections_http`, `collection_budgets`, `fault/…/collections.rs`; blob item sources: `collection_sources` (10) + `fault/…/collection_sources.rs` (5), migration `20261121000000`; scenarios `collection-*` in all five SDKs. A 10,000-item scope is correct but quadratic (G461, 1 h 54 min); fix in progress, ceilings provisional (O460). Bodies: one to eight activities then a return; nested scopes, branches and timers stay closed (O383). |
-| FR-014-006 — while / repeatUntil | Implemented and locally verified | Checkpoints, delay timers, limits, `onError` to `end` or an activity chain, entry-expression errors routed (G340, G341), public cancel of an active loop (G343): `loops_http`, `fault/…/loops.rs` (16), `primitive_loops.rs`; zero-worker delay proven (`a_while_loop_waits_out_its_delay_with_no_worker_connected`); six `loop-*` scenarios in all five SDKs. Not supported: a run deadline over an open loop (G381/O382); declared state with a loop. |
-| FR-014-005, FR-014-006, FR-003-002 — compensation of collection and loop bodies | Implemented and locally verified | A compensable scope is its own saga (D380); `scoped_compensation.rs` (25), `scope_compensation_http`, `fault/…/scope_compensation.rs` (8, every crash point), scenarios `collection-compensation`, `loop-compensation`. SDK `operate` and Studio cannot send `instancePath` yet (G382). |
-| FR-014-007, FR-014-008 — approval | Implemented and locally verified | Request, expiry, decision, audit and receipt in one transaction; initiator/viewer/revoked-role refusals; `approval_progress`, `approvals_http`, `approval_scheduler`, `fault/…/approvals.rs` (13); combined with declared state and chains (D295): `approval_combinations` (13 + 8 races); inside bodies refused with `details.dependency = SCOPED_COMPENSATION`; six `approval-*` scenarios in all five SDKs. Bugs found and fixed: D443–D445. Open: approval as chain entrypoint (O441). |
-| FR-014-009 — switch | Implemented and locally verified | `switch.rs`, `switch_storage`, `fault/…/switch.rs`; WP-07 in all five SDKs. |
-| FR-014-010, FR-014-011 — declared Query/Update | Implemented and locally verified | `operations_http`, `operations.rs`, `fault/…/operations/*` (crash at every await, races with worker completion, timer and wait timeout, duplicate keys, redaction, query invariance); WP-08/09 and `state-operations` in all five SDKs. G294 (a row lock the runtime role cannot take) found and fixed. |
-| FR-014-012, FR-014-013 — Continue-As-New chains | Implemented and locally verified | One hand-off transaction; waiting boundary (D296); child chains (D301); `GET …/chains/{id}/runs` (D299); `waitEvent` entrypoint (D500); `RERUN_AS_NEW` in the SDKs and CLI; `chain_handoff`, `chains.rs`, `chains_http`, `chain_wait.rs`, `fault/…/chains.rs` (18); scenarios `chain-*` (10) in all five SDKs. Not built: bounded `inspectChain` (G375), Studio screen (G376). |
-| FR-014-014 — journal order, ownership, fencing | Implemented and locally verified | Fault matrix: `fault_workflow_primitives` (see the validation report, "Fault matrix"), plus `runtime_privileges` (every store statement within the runtime role's privileges). |
-| FR-014-015 — tenant-scoped admission and bounds | Implemented and locally verified; ceilings provisional | `limits.rs`, `byte_ceilings.rs`, `durable_quotas`, tenant bound asserted in the performance harness (279 rounds, never exceeded). Production ceilings are not accepted until G461/G468 are closed. |
-| FR-014-016, NFR-014-004, SC-014-005 — immutability and compatibility | Implemented and locally verified | `compatibility.rs` (active pre-014 run survives the migrations; old worker minors never receive scoped work; pre-primitive documents keep their digest), 51 scenarios x 5 languages without bless, [sdk-compatibility.md](sdk-compatibility.md). Cells without a test say "not tested". |
-| FR-014-017 — telemetry, hints, redaction | Implemented and locally verified | Closed-vocabulary spans and metrics (`observability.rs`, `approval_telemetry.rs`); 17 outbox hint types in `events.asyncapi.yaml` 0.3.0 validated by `hint_contract.rs`; trace id on every run; secret and credential-shaped text never leaves the operation boundary (`operations/redaction.rs`). Not exercised: OTLP export of approval spans end to end. |
-| SC-014-002–004 — acceptance scenarios, fault boundaries, negative cases | Implemented and locally verified | See the validation report: happy and failure evidence for US02–US07, the fault matrix, and the tenant/secret negative cases (`integration_security_multitenancy`). |
-| SC-014-006, NFR-014-003 — resource bounds | **Measured; ceilings not yet accepted** | [workflow-primitives.md](../tests/performance/reports/workflow-primitives.md): waits cost no worker, thread or connection (10,000 approvals + 1,000 timers: 4 threads, 8 connections); the tenant slot bound holds. Open: quadratic scope cost (G461) and idle tick growth with pending waits (G468). |
-| NFR-014-001, NFR-014-002 — durability, security | Implemented and locally verified | Crash/duplicate/lost-broker/restart tests above; tenant opacity and revoked-role tests; runtime-role sweep (`SAGAT_TEST_AS_RUNTIME_ROLE=1`) over the new suites. |
+| FR-014-001, FR-014-002, SC-014-001 — practical examples and parity | Implemented and locally verified | `examples/order-processing/`: three workflows in all five SDK languages. `e2e_developer_experience` filter `order_processing::` passed 25 workflow runs and 10 configuration checks on a real disposable platform. The common CI example job includes this filter. |
+| FR-014-003, FR-014-009, FR-014-014 — additive v1 identity and bounded switch | Switch implemented and locally verified; broader identity scope partial | The v1 schema, typed root/scoped identity and compatible PostgreSQL migration are implemented. A switch choice is journaled with step projection and outbox in one transaction; PostgreSQL fault tests cover replay, recovery and rollback. WP-07 uses one reviewed scenario across all five SDKs. Restricted scoped collection and loop execution now has public worker 1.5 evidence; broader bodies remain gated. See the [validation report](../specs/014-workflow-primitives/validation-report.md). |
+| FR-014-010–011 — declared Query/Update | Run-addressed subset implemented and locally verified | Public v1 publication accepts bounded declared state with existing basic nodes. Real PostgreSQL and HTTP tests cover revision, replay, authorization, audit, rollback and a response lost after commit; WP-08/09 runs in all five SDKs. Chain Query/Update have focused HTTP/PostgreSQL evidence, including head fencing and replay; a direct public continuation transfers declared state. The `chain-query-handoff` scenario passes successor Query, Update, exact replay and stale expected-head Query in all five SDKs. Timer race, secret-manager capability canaries, broader handoff faults and performance limits remain open. |
+| FR-014-004–008, FR-014-012–013, FR-014-015–017 — collections, loops, approval, continuation and cross-cutting rules | Partially implemented; public runtime incomplete | A bounded root approval can be published, started, listed and decided through the public API; PostgreSQL integration/fault tests and the five-language `approval-decisions` runtime scenario cover its available slice. Approval combined with parallel execution, declared state or another structured primitive remains disabled. A restricted continuation graph can create a chain publicly and hand off with fenced PostgreSQL transactions; focused handoff and HTTP tests cover success/FINAL, CHAIN_LIMIT/FINAL, replay, tenant opacity and direct declared-state transfer. The five-language `chain-query-handoff` scenario distinguishes segment and chain waits. The five-language `chain-commands` scenario proves a signal-controlled wait after an entry activity, exact signal/cancel replay, stale-head fences, tenant opacity and final cancellation. A `waitEvent` entrypoint (the successor is created already waiting; five-language `chain-root-wait`), a parent cancelled mid-chain (`chain-cancel-parent`) and `RERUN_AS_NEW` (`chain-rerun`) are covered; bodies, triggers and wider graphs remain open. A restricted root collection chain with one-activity/return bodies can be published and executed through HTTP, worker 1.5 and the fenced scheduler after audited tenant capacity provisioning; public PostgreSQL tests cover two scopes, ordered checkpoints, terminal rollback/retry and replay. Broader collection bodies, nested scopes and compensation/reconciliation remain closed. A restricted public loop has PostgreSQL restart/rollback and five-SDK `loop-runtime` evidence; mapped collection results have source-bound transactional storage and five-SDK `collection-runtime` evidence. Broader loop graphs and the remaining failure matrix stay open. The separate IR revision was superseded by [ADR-0032](adr/ADR-0032-additive-workflow-ir.md); documents retain v1. |
+| SC-014-002–006 and NFR-014-001–004 — primitive release guarantees | **Not fully verified** | The latest consolidated checkpoint passed 139 real-PostgreSQL integration tests, 26 contracts and 25 fault tests; a separate real HTTP/PostgreSQL E2E route scenario passed. The scheduler finalizes a deterministic continuation transfer failure with `EXPRESSION_ERROR`; fault tests verify rollback and retry after outbox failures, including signal-controlled handoff. All 36 active shared scenarios pass in five SDKs with explicitly pinned historical worker 1.4 fixtures and 1.5 primitive fixtures. The missing WP cases, full crash/race/tenant/upgrade suites and measured resource ceilings remain open. Exact commands and limits are in the validation report. |
+| FR-014-017 — primitive telemetry and published hints | Query/Update and hint contract verified locally | Declared Query/Update emit the contracted `workflow.query`/`workflow.update` spans, `workflow_operation_duration_seconds` and `workflow_primitive_rejections_total` with closed labels; `observability.rs` also proves trace/request correlation and fail-closed audit. All 17 outbox hint types are in `events.asyncapi.yaml` 0.3.0 and `hint_contract.rs` validates the real rows of 11 scenarios. Runs finished by a loop (and by `finalize_chain`) now reach `run.finished` subscribers; both regressions failed first. See the [validation report](../specs/014-workflow-primitives/validation-report.md). |
+| FR-014-017 — projection compatibility | Partial | The PostgreSQL graph/telemetry integration target covers scoped identities, switch routes and continuation links. A future journal event is skipped by the current decoder while its persisted sequence advances the telemetry watermark in one projector round; the real-PostgreSQL regression failed before the fix and passed after it. Studio unknown-node card tests passed 76/76. Explicit unsupported telemetry representation for future definition node kinds remains open. |
+
+
+Classification completion checkpoint (2026-10-17, local integration): T016-049 now has the
+768-REST/96-stream role/guarded-payload matrix, 96 actual CLI-process cases, expanded Chromium
+identity/navigation/storage checks and ten exact old/new HTTP body pairs. T016-056 has complete
+checked-in examples and an actual CLI/curl/HTTP/gRPC/PostgreSQL walkthrough (1/1, 21.00 s), plus
+prerequisite, component and reference gates. Commands/manifests/limits are in
+`tasks/project-completion/integration-notes.md`. Full workspace/advisory/Compose integration
+(T016-054 / T014-043), remaining accepted feature-014 runtime and large-workload evidence remain
+open; this checkpoint is not remote CI or deployment evidence.
+
+
+### Integrated bounded execution evidence (feature 014)
+
+FR-014-005/014/015: shared bounded/full effect and attempt policies are covered by
+`crates/domain/tests/bounded_path_planning.rs` and `scoped_compensation.rs`; the real runtime-role
+path writer is covered by `byte_ceilings::a_bounded_reconciliation_persists_its_companion_and_manual_review_status`.
+Run status preserves other-path review/live facts, outputs and lookup hints are committed with
+the journal, and full replay verifies persisted results. Existing event telemetry vocabulary is
+reused; no payload/secret fields are added to logs or metric labels. Internal work-summary/index
+contracts are in feature 014's data model and migrations 20261207000000/20261208000000.
+Exact commands, initial failures, performance phase exclusions and unproven full worker/control/
+root-finalization criteria remain recorded in `tasks/project-completion/integration-notes.md`.
+
+
+### Focused scoped BlobOutput checkpoint — 2026-10-17
+
+FR-014-004/005/014/015/016: ordinary forward iteration outputs may use the existing claim-check
+blob protocol. `scoped_blob_completion.rs` traces exact identity/current authority, stable replay,
+cancellation effect accounting, catalog/output/journal rollback and live quota recovery;
+`collection-blob-output` and `blobs` provide all-five SDK result equality. Contracts:
+`specs/014-workflow-primitives/contracts/conformance.md`; existing worker.scoped.report spans,
+blob upload/read auditing and quota refusal counters remain. Reproduce happy/failure cases with
+the commands in `docs/runbooks/workflow-primitives.md`. Exact runtime/static evidence is recorded
+in `specs/014-workflow-primitives/validation-report.md` and its scoped-blob manifest. This is a
+partial checkpoint; broader/nested bodies and complete feature/release tasks remain unchecked.
+
+### Admission lock checkpoint — 2026-10-18
+
+FR-014-012/014/015: `chains::grandchild_handoff_and_root_child_admission_do_not_deadlock_on_the_root_foreign_key`
+and `chains::handoff_and_new_root_admission_do_not_invert_quota_and_payload_locks` exercise real
+PostgreSQL tree/FK and active-quota/payload competition. The correction preserves transactional
+journal/audit/outbox boundaries and existing scheduler failure telemetry. Contract details are
+in feature014's spec/plan/data model; reproduction is in the workflow-primitives runbook.
+The validation report and `tasks/project-completion/evidence/child-root-fk-20261018/` retain
+failed fixtures separately from behavioral RED and subsequent GREEN. B0's complete lock graph,
+nested capacity and canonical release tasks remain open.
+
+
+### Public publication fixture checkpoint — 2026-10-18
+
+FR-014-003/015/016, T014-004: the 47 native primitive contracts and 10 public HTTP draft/publication
+rejections pass. Scope errors retain named-body provenance; ordinary root dangling edges retain
+GRAPH. Unsupported object literals and 1024-byte effective expression failures use EXPRESSION,
+including schema-valid multibyte strings above the legacy wrapper limit. Trace/header correlation
+and independent no-version SQL assertions accompany every HTTP case; the byte-limit diagnostic
+contains no expression content. The public reproduction command and operator remediation are in
+`docs/runbooks/workflow-primitives.md`. Three bounded review findings and exact failures/source/
+results are in `tasks/project-completion/evidence/publication-scope-20261018/manifest.json`.
+Together with existing five-SDK instance-limit evidence and fresh ordered10,000-reference
+materialization in the379-test runtime-role regression,
+this closes the fixture task; broader runtime and shared release tasks remain unchecked.
+
+
+### Child-chain settlement checkpoint — 2026-10-18
+
+FR-014-012–015: parent cancellation/final notification updates its child-chain link without
+mixing legacy child flag UPDATEs. Three real PostgreSQL trigger regressions failed before
+correction and passed afterward; exact cancellation audits and one parent completion journal
+event accompany consistency checks. Full fault 92 and durable 178 targets pass, including legacy
+child policies and ordered cancellation/handoff races. The strict ADR metadata-guard question,
+remaining B0 prefixes and canonical broader tasks stay open. Reproduction/remediation are in
+`docs/runbooks/workflow-primitives.md`; exact evidence is in
+`tasks/project-completion/evidence/child-link-only-20261018/manifest.json`.
+
+
+## 2026-10-18 — Stable parent identity guard (ADR-0037)
+
+The existing handoff keeps chain→parent KEY SHARE→own head→incoming link. ADR-0037 permits
+this narrow identity protection under immutable initial/head/link ancestry; it grants no parent
+business-state or mutation authority. Parent commands still require explicit own-run FOR UPDATE.
+No executable production change, migration, SDK/API change or nested activation is introduced.
+
+Removing only the early guard as a reversible negative control made the existing ordered race
+fail 0/1: handoff committed but parent cancellation returned Unavailable. That is an observed
+public error, not proof of PostgreSQL SQLSTATE/deadlock cause. Original source bytes were restored
+exactly and the same two-order race passed 1/1 (3.64s). Added positive ancestry assertions passed
+for three direct child segments/link (3.05s) and a depth-two handoff with distinct parent/root
+(2.85s). Two independent scoped reviews resolved an unstated ancestry precondition, then found
+no remaining concrete defects. This is a current-writer invariant, not a stronger FK guarantee.
+
+Exact controls, hashes and review: tasks/project-completion/evidence/parent-fk-guard-20261018/.
+The complete B0 graph, B1/group persistence, compatibility fencing and production resource/release
+gates remain open. No canonical checkbox closes from this clarification.
+
+
+### Exact-path storage prefix — 2026-10-18
+
+FR-014-014/015, ADR-0030§18: begin_current_path/begin_path retain their applicable tenant chain
+guard before the own-run lock. Four storage barrier regressions fail before and pass after;
+eight bounded fence tests pass, with actual chain blocking, no premature run lock and guard
+lifetime through commit. This is a trusted internal composition fixture, not new public nesting
+or chain-finality support. Exact commands/source/review: tasks/project-completion/evidence/
+path-chain-prefix-20261018/. Remaining B0 and canonical runtime/release tasks stay unchecked.
+
+
+FR-014-014 / ADR-0030§18: direct run-addressed declared Update now takes its membership chain
+before the exact run. HTTP successor barrier, transaction-lifetime probes, unchanged predecessor,
+one receipt/event/outbox plus two audited apply/replay calls are recorded in
+`tasks/project-completion/evidence/direct-update-chain-prefix-20261018/`. Existing terminal,
+permissions and tenant HTTP regressions remain; no canonical task closes from this narrow fix.
+
+
+FR-014-014/015, current scheduler authority: three unchanged-tuple barriers reproduced legacy
+handoff, evaluated continuation and finalization committing after authority expired during a
+row-lock wait. Shared transaction-typed post-lock validation makes all three reject with no
+persisted effects; fresh authority/replay and generation-error compatibility pass (4/4). Private
+chain fixtures now select execution_pool when runtime-role mode is requested. Historical owner
+fixture results do not imply runtime privilege coverage from the environment flag alone. Exact
+source/commands/reviews: tasks/project-completion/evidence/chain-post-wait-fence-20261018/.
+
+
+### Collection/loop authority expiry during lock wait (2026-10-18)
+
+Refs:T014-040, FR-014-014/015. The collection and loop adapters retain their scheduler SHARE
+guard in the owning transaction and validate expiry using a database clock sampled after
+acquiring it. Wrong-shard and generation-conversion errors keep their existing precedence.
+A rejected entry changes no projection, payload, quota, timer, journal, outbox or audit. A supplied
+collection entry audit is inserted once through finish_version, atomically with the transition.
+Private runtime-role entry barriers reproduce the stale commits and verify rejection, fresh
+authority and replay. This is not a continuous wall-clock-until-commit guarantee or acceptance
+of nested scopes. Approval's separate check and B0 ordering remain pending. Existing fenced
+metrics use kind=collection/loop without tenant/run labels; the port tests do not test counters.
+Evidence: tasks/project-completion/evidence/scope-post-wait-fence-20261018/.
+
+
+### Approval scheduler authority after lock waits (2026-10-18)
+
+Refs:T014-040, FR-014-008/014. Open/expire retain a scheduler SHARE guard in their owning
+transaction and validate authority against a database clock sampled after acquiring it. An
+expired authority returns the existing typed fence error before request/timer/projection, journal,
+outbox, audit or telemetry queue effects. Oversized-generation storage errors keep precedence;
+decide uses its current-user authorization. No business-deadline clock or opening replay contract
+changes. Real runtime-role barriers cover both opening and genuinely due expiry; the atomic
+checkpoint includes the telemetry queue and approval tables. Existing fenced metrics use
+approval_open/approval_expire kinds without tenant/run labels; these port tests do not assert
+counters. This does not enable nested scopes or complete B0.
+Evidence: tasks/project-completion/evidence/approval-post-wait-fence-20261018/.
+
+
+### Approval member-chain writer guard (2026-10-18)
+
+Refs:T014-040, FR-014-008/014. Approval open/expire/decide acquire a tenant/namespace-scoped
+applicable membership chain before the exact own run, retaining both guards through commit.
+The shared transaction helper is the existing declared Run Update guard; it never forwards or
+grants head authority. Initial membership commits with new-run creation and later identity is
+immutable; live reparent/migration requires its own protocol. Decision authorization, typed
+errors, terminal/replay and audit/outbox boundaries remain unchanged. Native wait/final-audit
+barriers verify ordering and guard lifetime; no new public composition or B0 completion is
+inferred. Existing outcome metrics and sensitive-data-free logs keep their current mapping.
+Evidence: tasks/project-completion/evidence/approval-chain-prefix-20261018/.
+
+
+### Collection/loop member-chain serialization (2026-10-18)
+
+Refs:T014-040, FR-014-004/006/014. Collection entry/drain and loop writer helpers retain an
+applicable scoped membership chain before own-run UPDATE in their owning transaction. Existing
+CAS, fences, quota/deadline/drain rules, typed errors, audit/outbox and telemetry mapping stay
+unchanged. Native app-role barriers prove chain wait precedes own-run acquisition; fresh/replay
+controls cover persisted writes. Shared guard lifetime is separately proven by the approval
+final-audit barrier. These trusted storage fixtures grant no new public composition, head
+authority or nested eligibility; complete B0/group and resource gates remain pending.
+Evidence: tasks/project-completion/evidence/scope-chain-prefix-20261018/.
+
+
+### Production incident lock prefix (ADR-0038,2026-10-18)
+
+Refs:T014-040, FR-009-004/005/008, FR-014-014. Production attribution now takes applicable
+member chain→exact own run→binding EXCLUSIVE→own step→audit deduplication, refining ADR-0022's
+reproduced opposite report/binding edge. Current tenant/namespace/fence/expiry/binding checks,
+redacted closed categories, deduplication and commit-before-ACK remain unchanged. No execution
+state/outbox or new capability is introduced; test-run attribution is unchanged. Native runtime
+barriers cover the actual report storage cycle (PostgreSQL deadlocks0→1 before correction) and
+a genuinely published/leased script chain. Completion/journal consistency are positive controls.
+Reproduce with runtime option and external DB unset:
+`cargo test --locked -p sagat-tests --test integration_security_multitenancy incident_lock_order_`.
+Existing script_incidents_total/log mappings remain after commit; port tests do not assert counters.
+Exact source, review and regression limits: tasks/project-completion/evidence/incident-lock-order-20261018/.
+Complete B0/group and release gates remain open.
+
+
+## Worker session renewal freshness — 2026-10-18
+
+Refs:T014-040/044, FR-009-001/003, FR-014-014. WorkerStore.use_session locks only the matching
+tenant/id/token row, then samples database clock and renews in the same transaction if live.
+Missing/expired sessions retain the existing unauthenticated mapping. No session expired during
+an unchanged-row wait may extend its TTL or claim work. Existing TTL, caller-subject check and
+wire remain unchanged; this sample is not continuous authority through commit. No run/group
+lock or new API is added. Separate full/path claim-room and managed-database checks stay open.
+
+Actual public-poll RED renewed an expired session and leased1 task (0/1,5.10s). GREEN1/1,5.82s
+observes an actual sagat_app session wait while live, releases only after database expiry and
+compares one atomic checkpoint of expiry/run version/events/outbox/active leases. A fresh
+session claims successfully; old authority remains refused. No token/hash/task debug is logged.
+The entire security integration passes126/126 (81.09s); strict locked workspace/all-target
+Clippy (80.91s), format/diff and24-crate architecture pass. Two bounded plan/code reviews ended
+with no concrete defects; reviewers ran no tests. Owner's current-review selection applies,
+with no external CLI. Existing worker authentication/transport error and trace mapping is used;
+these integration tests do not assert telemetry counters. No all-workspace/SDK58/Compose/advisory/
+resource/nesting acceptance or canonical checkbox closure is claimed. Exact source/commands/
+limits: tasks/project-completion/evidence/session-renewal-postwait-20261018/manifest.json.
+
+
+## Full/exact-path claim-room session freshness — 2026-10-18
+
+Refs:T014-040/044, FR-009-001/003, FR-014-014. Both claim-time ports now share a private
+transaction-typed matching tenant/namespace/id/token/subject session guard. Sample DB clock
+after row acquisition; expired/missing yields0, otherwise preserve active LEASED/RUNNING count,
+conversion and saturation. Keep row guard on owning execution TX through count/lease commit;
+no renewal or new lock/API/TTL policy. Preserve root run/drain→session and scoped run/drain/
+binding→session separately; there is no new root binding guard. This sample does not promise
+continuous validity until commit. Separate managed-database SHARE guard/B0/group remain open.
+
+Both native-port RED cases returned8 after expiry (0/2,5.58s); GREEN2/2,7.02s. Actual known
+blocker and sagat_app wait are observed before expiry, unchanged guard rolls back after DB
+expiry, and zero room leaves21-table execution checkpoint and session expiry unchanged. Fresh
+public registration supplies8, old remains0, verify_run passes. These are claim-time port
+barriers, not publicpoll expired-lease acceptance: earlier publicpoll renewal is separate.
+Regression: scoped_worker18/18 (15.62s), bounded_fences10/10 (14.04s), security126/126 (85.39s).
+The10 include the focused2. Strict locked workspace/all-target Clippy113.29s, fmt/diff and
+24-crate architecture pass. Two bounded reviews ended with no concrete issues after correcting
+the prompt's root/scoped prefix wording; reviewers ran no tests. Existing worker.scoped.claim
+trace and outcome/error mapping stay intact; port tests do not assert counters. No new full
+workspace/SDK58/Compose/advisory/resource/nested acceptance or canonical checkbox closure.
+Exact source/commands/limits: tasks/project-completion/evidence/session-room-postwait-20261018/manifest.json.
+
+
+## Managed owner session freshness after SHARE wait — 2026-10-18
+
+Refs:T014-040/044, FR-017-012/019, FR-014-014. Existing database_owner now retains matching
+session SHARE then samples DB clock; missing/expired supplies no owner authority. Keep exact
+tenant/namespace/ownrun/rootnode/subject/minor>=6 filters and binding→session→namespaceSecrets
+quota→current dedicated membership order. No TTL/wire/provider/role change or new run lock.
+Validity is at that postlock sample, not continuous through later catalog waits or commit.
+
+Real PostgreSQL/OpenBao aggregate creates credential/catalog/published database query/dedicated
+runner and obtains an actual public lease. Unchanged-row barrier observes known blocker and
+actual sagat_app JOINsession waiter whilelive, rolls back only after DBexpiry. RED aggregate
+0/1,17.20s: public heartbeat accepted and extended lease after session expiry. This proves
+heartbeat authorization failure, not credential disclosure. GREEN whole connections target3/3,
+28.78s: heartbeatNotBound and atomic runversion/events/outbox/audits/pins/sessionexpiry/leaseexpiry
+unchanged, verify_run; public same-name reconnect preserves ID, replaces token and permits
+heartbeat before continuing all prior aggregate cases. No owner SQL revives positive authority.
+
+Fresh isolated database-runner process integration1/1,28.49s (latency measurement filtered),
+with rebuilt binary; strict locked workspace/all-target Clippy67.59s, fmt/diff and24-crate
+architecture pass. Two fresh bounded plan/code reviews found no actionable issues; no tests
+run by reviewers or external CLI. Existing database.resolve/worker heartbeat metrics, closed
+errors and after-commit audit mappings remain; native barriers do not assert counters.
+Complete B0/group, fullworkspace/SDK58/Compose/advisory/resource acceptance remain pending,
+with no canonical checkbox closure. Exact sources/commands/limits:
+tasks/project-completion/evidence/database-session-postwait-20261018/manifest.json.
+
+
+## Managed report receipt binding order — 2026-10-18
+
+Refs:T014-040/044, FR-017-019, FR-014-014. Existing managed report replay now retains binding S
+before namespace Secrets quota X and dedicated membership S. Permission, durable attempt owner,
+fingerprint and current binding/role remain required, including after session removal. Live/
+missing-receipt and ordinary paths retain their semantics. No new provider I/O, execution/pin/
+resolution-audit/outbox write or public field. This is a focused existing017 dependency of B0.
+
+Actual real PostgreSQL/OpenBao public receipt replay RED aggregate0/1 (17.62s) retains Secrets X
+while blocked on Binding S. This ordered-prefix failure is not a three-party deadlock proof.
+GREEN full connections3/3 (27.25s): known blocker/app-role wait, free Secrets probe, session
+cleared, exact already-applied receipt/status, unchanged atomic runversion/events/outbox/audit/
+pincounts and verify_run; public reconnect and next managed claim succeed.
+Fresh isolated runner integration1/1 (28.85s, benchmark filtered), rebuilt binary; strict locked
+workspace/all-target Clippy85.74s, formatting/diff and24-crate architecture pass. Sol/high
+provided a read-only test draft; root inspected, extended/applied and ran all tests. Fresh
+Astra/xhigh bounded code review found no concrete issues, no tests run by reviewer. Owner's
+current-review selection applies, no external CLI. Existing typed errors, database/worker
+metrics and committed audit mapping remain; these barriers do not assert counters.
+No fullworkspace/SDK58/Compose/advisory/resource/nested/group acceptance or task closure.
+Exact source/commands/limits: tasks/project-completion/evidence/managed-replay-prefix-20261018/manifest.json.
+
+
+## Rerun source identity admission — 2026-10-18
+
+Refs:T014-040/044, FR-014-012–015, T017-012/024. ADR-0039 advances exact tenant/source KEY SHARE
+after existing receipt replay and before retained definition, managed catalog, active-run and
+payload admission. Identity only; missing reference stays MissingReference/NotFound. Cleanup
+FOR UPDATE SKIP LOCKED is unchanged. Current reruns create unrelated roots and child writers
+have no rerun source: documented writer invariant, not a schema/type guarantee. No source-state
+or group authority, wire field, provider I/O or external-effect guarantee is added.
+
+The runtime-role real PostgreSQL/OpenBao barrier actually reproduced the old source/catalog
+cycle: deadlocks0→1; rerun succeeded and native pin cleanup returned Unavailable. Corrected
+full connections initially3/3 (27.30s). Missing source leaves atomic counts unchanged; cancelling
+the source-blocked request rolls back before same-key retry; cleanup skips guarded source and
+later full cleanup releases it. A real new rerun claims, resolves, completes and releases its pin;
+strengthened metadata control requires the current rotated credential and rejects source version.
+The first strengthened-control run hit an INT4/i64 fixture decode error, retained separately;
+only test SELECT casts changed. Final exact results are in the manifest below.
+
+Segment rerun/independent-chain regression1/1 (1.95s). Three fresh Astra/xhigh bounded plan/code
+reviews; actionable SKIP/error/runtime-role/writer-invariant and stale-credential-test findings
+incorporated, final no concrete issues. Sol/high read-only draft, root sole writer/test executor;
+owner's current review applies, no external CLI. Existing run.rerun trace/typed error and committed
+RunRerun audit/outbox/metrics mappings remain; native barriers do not assert metric counters.
+No fullworkspace tests/SDK58/100k/Compose/advisory/S3/nested/group acceptance or canonical closure.
+Evidence: tasks/project-completion/evidence/rerun-source-identity-20261018/manifest.json.
+
+Final stronger-control full connections3/3 (27.36s), strict locked all-target workspace Clippy
+passes2.87s, formatting4.11s, architecture24crates and diff check pass.
+
+
+## Pure capacity header restoration — 2026-10-18
+
+Refs:T014-014/017/040. Checked CapacityGroup::restore preserves identities/revision/epoch/count/
+possession, validates nonzero/bounded counters and exact Active holder consistency, and rejects
+malformed snapshots with InconsistentSnapshot. Maximum counters restore without reset; mutation
+overflow is inert. No registry hydration or new infrastructure/domain dependency.
+
+Test-first missing API compilation is retained, not reported as behavioral RED. Focused model9/9
+(0.22s),1024histories seed3714 roundtrip after every accepted independent-registry transition,
+15invalid header/fact tuples, explicit maximum preservation; internal overflow2/2. Strict domain
+all-target Clippy1.00s, fmt4.05s, architecture24crates. Fresh adversarial Astra/xhigh code review
+found no substantive issues; only root ran tests. No external reviewCLI, owner's current selection.
+Supplied consistency is not actual database count/tenant/unique history/own-member authority. SQL
+port/atomic journal/audit/outbox/OTel, mixed writers, eligibility/resource/SDK/nested acceptance
+remain pending adapter/integration work; no canonical checkbox closure. Evidence:
+tasks/project-completion/evidence/capacity-header-restore-20261018/manifest.json.
+
+
+## Dormant capacity Finish vocabulary — 2026-10-18
+
+Refs:T014-014/017/040. Truthful engine audit capacity.member.finished / capacity_group, without
+generic repeat collapse; native receipt dedup proof remains pending. Canonical closed AsyncAPI
+hint contains reference identities/result revision/epoch/retired/optional nullable trace only.
+Only new baseline message added manually; all prior parsed shapes and SDK goldens unchanged.
+Audit7/7, synthetic hint1/1, AsyncAPI evolution/actual existing outbound conformance4/4 (2.02s).
+Initial API/fixture compile errors retained separately; corrected hint RED0/1 (0.04s) on missing
+channel. Actual new producer/outbox/receipt behavior remains B2d/e; no broker delivery claim.
+Pinned CLI validates0errors/0warnings plus1version info; strict locked workspace/all-target
+Clippy83.89s, fmt4.04s,24-crate architecture pass. Fresh Astra/xhigh review's only finding was an
+overclaiming test name, corrected and audit rerun. No external reviewCLI. Native schema/port,
+SDK58/fullworkspace/resource/old-writer/nested acceptance and canonical tasks remain pending.
+Evidence: tasks/project-completion/evidence/capacity-finish-vocabulary-20261018/manifest.json.
+
+
+## Dormant native capacity Finish checkpoint — 2026-10-18
+
+Refs:T014-014/017/040, FR-014-015. Local A1/B1a/B1b.1/B2a-e deliver only existing ChildRoot
+Finish in owner-seeded metadata. Actual current physical child FINAL and fence precede atomic
+member/header/receipt/audit/outbox; current head cannot be inferred from CONTINUED history.
+Schema constraints, narrow runtime column privileges and retained tombstones are tested; permanent
+chain references currently pin history and require C0 retention compatibility before activation.
+G Busy consumes the transaction, duplicate commands serialize, postwait expiry rejects first
+apply and replay, injected statement/deferred failures leave zero effects, and actual unresolved
+COMMIT response loss reconciles both real server outcomes with the retained original command.
+Handoff queue ordering, exact stale-head rejection and same-tenant two-namespace membership with
+both holder placements have native tests. Execution/retained usage snapshots remain unchanged;
+actual capacity.member.finished hints validate against the closed canonical AsyncAPI message.
+
+B2f adds workflow.capacity.finish and finite returned attempt metrics; see the exact native
+observation contract in specs/014-workflow-primitives/contracts/README.md. Only acknowledged first
+commit increments workflow_capacity_member_finished_total. Replay and unknown acknowledgement do
+not; the durable receipt remains authoritative. No identifier metric labels, payloads, scheduler
+credentials or arbitrary error strings are introduced by these observations. An untraced direct
+call emits metrics without an OTLP span; a future production caller must establish trace context.
+This dormant port has no production caller, creation/admission/eligibility, scoped-path Finish,
+retention rollout or nested execution authority. Full B1/B2, canonical tasks and broad runtime/
+SDK/resource/release gates remain open. Exact tests/reviews/source provenance are recorded under tasks/project-completion/evidence:
+capacity-finish-schema-20261018, capacity-native-finish-20261018, capacity-finish-barriers-20261018,
+capacity-finish-commit-loss-20261018, capacity-finish-races-20261018 and
+capacity-finish-observations-20261018.

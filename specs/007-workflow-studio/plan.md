@@ -156,6 +156,11 @@ Owner correction (T007-052): **Namespaces** is a dedicated navigation menu and `
 page, listing namespaces and hosting **New namespace**. The sidebar selector remains for
 switching context; creation is not a sidebar button. Reuse identity contracts and permissions.
 
+Owner correction (T007-058): the menu follows the hierarchy. **Namespaces** is the tenant's own entry; the selector
+comes next and, under it, only while a namespace is chosen, its destinations: Workflows, Runs, Operations, Scripts and Integrations.
+The Studio does not choose a namespace for the person; a remembered choice the tenant no longer lists is forgotten. A page of a
+namespace reached without one says *Choose a namespace*. No wire, permission or execution change.
+
 ## Integrations management (T007-053)
 
 Approved dependencies are feature 004 connector APIs and feature 009 namespace secrets. Reuse

@@ -927,6 +927,13 @@ impl DeclaredOperationStore for PgDeclaredOperationStore {
         .await?;
         let (resolved_run_id, run, prior) = match request.scope().address() {
             OperationAddress::Run(run_id) => {
+                crate::execution::lock_member_chain(
+                    &mut tx,
+                    request.scope().tenant_id(),
+                    request.scope().namespace_id(),
+                    *run_id,
+                )
+                .await?;
                 let run = lock_run(&mut tx, request.scope(), *run_id, true).await?;
                 let prior = find_receipt(&mut tx, update).await?;
                 (*run_id, run, prior)
