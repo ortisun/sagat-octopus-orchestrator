@@ -342,7 +342,10 @@ async fn relay(
     diagnostics: Arc<RelayDiagnostics>,
 ) -> io::Result<()> {
     let (mut client, _) = listener.accept().await?;
+    // This proxy models commit-reply loss, not packetization latency between frames.
+    client.set_nodelay(true)?;
     let mut upstream = TcpStream::connect((host.as_str(), port)).await?;
+    upstream.set_nodelay(true)?;
     upstream.write_all(&startup(&mut client).await?).await?;
     let (mut client_read, mut client_write) = client.into_split();
     let (mut server_read, mut server_write) = upstream.into_split();
