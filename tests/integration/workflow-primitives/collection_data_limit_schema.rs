@@ -13,6 +13,16 @@ use uuid::Uuid;
 
 const BEFORE_RUN_DATA_LIMIT: i64 = 20_261_212_000_000;
 const RUN_DATA_LIMIT_VERSION: i64 = 20_261_213_000_000;
+
+/// The newest migration: later ones (feature 016's role-change trigger) sit above the run-data-limit
+/// vocabulary this module exercises, so a fully migrated database reports the head, not that one.
+fn head_version() -> i64 {
+    MIGRATOR
+        .iter()
+        .map(|migration| migration.version)
+        .max()
+        .expect("migrations")
+}
 struct SchemaFixture {
     platform: Platform,
     run: Uuid,
@@ -431,7 +441,7 @@ async fn ordinary_history_without_the_new_reason_downgrades_and_reapplies() {
     migrate(pool)
         .await
         .expect("reapply run-data-limit vocabulary");
-    assert_eq!(migration_version(pool).await, RUN_DATA_LIMIT_VERSION);
+    assert_eq!(migration_version(pool).await, head_version());
     let definition = constraint_definition(pool).await;
     assert!(definition.contains("RUN_DATA_LIMIT"));
     assert!(definition.contains("IS TRUE"));
@@ -577,7 +587,7 @@ async fn downgrade_owns_run_before_a_new_reason_writer_and_the_writer_rolls_back
     .await
     .expect("pre-queue Run and journal projection");
     assert_eq!(before.1, 0);
-    assert_eq!(migration_version(pool).await, RUN_DATA_LIMIT_VERSION);
+    assert_eq!(migration_version(pool).await, head_version());
 
     let mut gate = pool.begin().await.expect("scope table gate");
     let gate_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
