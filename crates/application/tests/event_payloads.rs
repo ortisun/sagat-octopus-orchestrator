@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use sagat_application::authz::NamespaceDirectory;
 use sagat_application::clock::Clock;
 use sagat_application::error::StoreError;
 use sagat_application::event_payloads::*;
@@ -53,6 +54,9 @@ struct Store {
     fail_audit: bool,
     audits: std::sync::Arc<std::sync::Mutex<Vec<AuditRecord>>>,
     lookups: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// The namespace exists only in another tenant.
+    foreign: bool,
+    denials: std::sync::Arc<std::sync::Mutex<Vec<AuditRecord>>>,
 }
 impl Store {
     fn new(role: Role, grant: bool) -> Self {
@@ -62,6 +66,8 @@ impl Store {
             fail_audit: false,
             audits: std::sync::Arc::default(),
             lookups: std::sync::Arc::default(),
+            foreign: false,
+            denials: std::sync::Arc::default(),
         }
     }
 
@@ -75,6 +81,22 @@ impl Store {
             .lock()
             .expect("audit records")
             .push(record.clone());
+        Ok(())
+    }
+}
+impl NamespaceDirectory for Store {
+    async fn namespace_exists(&self, _: TenantId, _: NamespaceId) -> Result<bool, StoreError> {
+        Ok(!self.foreign)
+    }
+    async fn namespace_exists_outside(
+        &self,
+        _: TenantId,
+        _: NamespaceId,
+    ) -> Result<bool, StoreError> {
+        Ok(self.foreign)
+    }
+    async fn record_denial(&self, audit: &AuditRecord) -> Result<(), StoreError> {
+        self.denials.lock().expect("denials").push(audit.clone());
         Ok(())
     }
 }
@@ -384,4 +406,86 @@ async fn roles_without_event_read_are_refused_before_lookup() {
         );
         assert_eq!(lookups.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
+}
+
+/// Constitution V: a probe of a resource of another tenant is audited whatever it reads. The three
+/// event read operations answer the opaque 404 and write one `CrossTenantAccessDenied`.
+#[tokio::test]
+async fn a_cross_tenant_probe_of_each_event_read_is_audited() {
+    use sagat_application::error::AppError;
+    use sagat_domain::audit::ResourceType;
+    for operation in ["event", "dead_letter", "dead_letters"] {
+        let mut store = Store::new(Role::Developer, true);
+        store.foreign = true;
+        let denials = std::sync::Arc::clone(&store.denials);
+        let lookups = std::sync::Arc::clone(&store.lookups);
+        let service = EventPayloadService::new(store, FixedClock, Projector);
+        let caller = principal(Role::Developer);
+        let foreign = namespace();
+        let connector = ConnectorId::new(Uuid::new_v4());
+        let outcome = match operation {
+            "event" => service
+                .prepare_event(&caller, foreign, key(), EventReveal::Pii, &ctx())
+                .await
+                .map(|_| ()),
+            "dead_letter" => service
+                .prepare_dead_letter(
+                    &caller,
+                    foreign,
+                    connector,
+                    Some(Uuid::new_v4()),
+                    EventReveal::Pii,
+                    &ctx(),
+                )
+                .await
+                .map(|_| ()),
+            _ => service
+                .prepare_dead_letter(
+                    &caller,
+                    foreign,
+                    connector,
+                    None,
+                    EventReveal::Structure,
+                    &ctx(),
+                )
+                .await
+                .map(|_| ()),
+        };
+        assert_eq!(outcome, Err(AppError::NotFound), "{operation}");
+        assert_eq!(
+            lookups.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "{operation}: nothing is looked up in a namespace of another tenant"
+        );
+        let denials = denials.lock().expect("denials");
+        assert_eq!(denials.len(), 1, "{operation}: one audit record");
+        assert_eq!(denials[0].action(), AuditAction::CrossTenantAccessDenied);
+        assert_eq!(denials[0].resource_type(), ResourceType::Namespace);
+        assert_eq!(denials[0].tenant_id(), caller.tenant_id());
+        assert_eq!(denials[0].actor(), caller.subject());
+        assert_eq!(denials[0].resource_id(), foreign.to_string());
+    }
+}
+
+/// A limit of the projector is not a refusal of the caller: an event whose data the projector does
+/// not accept is still readable (envelope, size, status) with an opaque structure, as a dead letter
+/// is, instead of a `403` that says the caller lacks `event:read`.
+#[tokio::test]
+async fn an_event_the_projector_cannot_shape_is_opaque_not_forbidden() {
+    let service = EventPayloadService::new(
+        Store::new(Role::Developer, false),
+        FixedClock,
+        OpaqueProjector,
+    );
+    let caller = principal(Role::Developer);
+    let prepared = service
+        .prepare_event(&caller, namespace(), key(), EventReveal::Structure, &ctx())
+        .await
+        .expect("prepared");
+    let read = service
+        .event(prepared)
+        .await
+        .expect("an unprojectable event is still readable");
+    assert!(matches!(read.data, EventData::Structure(_)));
+    assert_eq!(read.data, EventData::Structure(DataStructure::Opaque));
 }

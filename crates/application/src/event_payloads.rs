@@ -11,6 +11,7 @@ use sagat_domain::identity::{NamespaceId, Permission, Principal, Role, TenantId}
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::authz::{NamespaceDirectory, require_namespace};
 use crate::clock::Clock;
 use crate::error::{AppError, StoreError};
 use crate::events::Delivery;
@@ -130,9 +131,18 @@ impl std::fmt::Debug for SelectedDeadLetter {
     }
 }
 
+/// The shape of stored bytes shown to a reader without the reveal: the ADR-0028 structure, or
+/// `Opaque` when the bytes are not bounded JSON the projector accepts (never an error: the reader
+/// still gets the envelope, the size and the status).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DataStructure {
+    Json(PayloadProjection),
+    Opaque,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventData {
-    Structure(PayloadProjection),
+    Structure(DataStructure),
     Revealed(StoredPayloadBytes),
 }
 
@@ -143,11 +153,8 @@ pub struct InboxEventRead {
     pub data: EventData,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DeadLetterStructure {
-    Json(PayloadProjection),
-    Opaque,
-}
+/// A dead letter shows the same structure as an event does.
+pub type DeadLetterStructure = DataStructure;
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum DeadLetterData {
@@ -212,7 +219,7 @@ pub trait EventPayloadEvaluator: Send + Sync {
     ) -> Result<DeadLetterRead, EventPayloadFailure>;
 }
 
-pub trait EventPayloadStore: Send + Sync {
+pub trait EventPayloadStore: NamespaceDirectory + Send + Sync {
     fn event_scope(
         &self,
         tenant: TenantId,
@@ -316,6 +323,9 @@ impl<S: EventPayloadStore, C: Clock, P: PayloadProjector> EventPayloadService<S,
         ctx: &RequestContext,
     ) -> Result<PreparedInboxEvent, AppError> {
         principal.authorize(Permission::EventRead)?;
+        // A namespace of another tenant is the opaque 404 and leaves the audit record of a probe
+        // (constitution V), as every other read by namespace does.
+        require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
         if self
             .store
             .event_scope(principal.tenant_id(), namespace, &key)
@@ -342,6 +352,7 @@ impl<S: EventPayloadStore, C: Clock, P: PayloadProjector> EventPayloadService<S,
         ctx: &RequestContext,
     ) -> Result<PreparedDeadLetter, AppError> {
         principal.authorize(Permission::EventRead)?;
+        require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
         if self
             .store
             .dead_letter_scope(principal.tenant_id(), namespace, connector, letter)
@@ -531,11 +542,9 @@ impl<P: PayloadProjector> EventPayloadEvaluator for Evaluator<'_, P> {
         let data_size_bytes = payload.as_slice().len();
         let data = match self.reveal {
             EventReveal::Pii => EventData::Revealed(payload),
-            EventReveal::Structure => EventData::Structure(
-                self.projector
-                    .project(payload.as_slice())
-                    .map_err(|_| EventPayloadFailure::EventReadNotGranted)?,
-            ),
+            EventReveal::Structure => {
+                EventData::Structure(structure_of(self.projector, payload.as_slice(), false))
+            }
         };
         Ok(InboxEventRead {
             event: selected,
@@ -556,17 +565,11 @@ impl<P: PayloadProjector> EventPayloadEvaluator for Evaluator<'_, P> {
         let header_count = headers.len();
         let data = match self.reveal {
             EventReveal::Pii => DeadLetterData::Revealed { headers, body },
-            EventReveal::Structure => {
-                let s = if selected.truncated {
-                    DeadLetterStructure::Opaque
-                } else {
-                    self.projector
-                        .project(body.as_slice())
-                        .map(DeadLetterStructure::Json)
-                        .unwrap_or(DeadLetterStructure::Opaque)
-                };
-                DeadLetterData::Structure(s)
-            }
+            EventReveal::Structure => DeadLetterData::Structure(structure_of(
+                self.projector,
+                body.as_slice(),
+                selected.truncated,
+            )),
         };
         Ok(DeadLetterRead {
             letter: selected,
@@ -576,6 +579,21 @@ impl<P: PayloadProjector> EventPayloadEvaluator for Evaluator<'_, P> {
         })
     }
 }
+/// The structure of `bytes`, or `Opaque` when they were cut (`truncated`) or the projector does not
+/// accept them. A limit of the server is not a refusal of the caller.
+fn structure_of<P: PayloadProjector>(
+    projector: &P,
+    bytes: &[u8],
+    truncated: bool,
+) -> DataStructure {
+    if truncated {
+        return DataStructure::Opaque;
+    }
+    projector
+        .project(bytes)
+        .map_or(DataStructure::Opaque, DataStructure::Json)
+}
+
 fn authorize(role: Role, reveal: EventReveal, grant: bool) -> Result<(), EventPayloadFailure> {
     if !role.grants(Permission::EventRead) {
         return Err(EventPayloadFailure::EventReadNotGranted);

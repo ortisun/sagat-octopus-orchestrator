@@ -1,7 +1,7 @@
 //! Wire types of the event routes.
 
 use sagat_application::event_payloads::{
-    DeadLetterData, DeadLetterRead, DeadLetterStructure, EventData, InboxEventRead,
+    DataStructure, DeadLetterData, DeadLetterRead, EventData, InboxEventRead,
 };
 use sagat_application::events::{Delivery, EndpointRecord, Received};
 use sagat_application::payloads::PayloadStructure;
@@ -183,7 +183,9 @@ impl From<&Delivery> for EventDeliveryBody {
 }
 
 /// An event of the inbox, with what it woke or started.
-#[derive(Debug, Serialize)]
+///
+/// `data` holds a revealed value, so `Debug` is written by hand and prints state and sizes only.
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EventBody {
     pub event_id: String,
@@ -223,6 +225,20 @@ pub struct EventBody {
     pub deliveries: Vec<EventDeliveryBody>,
 }
 
+impl std::fmt::Debug for EventBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EventBody")
+            .field("status", &self.status)
+            .field("attempts", &self.attempts)
+            .field("data_disclosure", &self.data_disclosure)
+            .field("data_size_bytes", &self.data_size_bytes)
+            .field("has_data", &self.data.is_some())
+            .field("has_data_structure", &self.data_structure.is_some())
+            .field("deliveries", &self.deliveries.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl From<&InboxEventRead> for EventBody {
     fn from(read: &InboxEventRead) -> Self {
         let event = &read.event;
@@ -232,10 +248,10 @@ impl From<&InboxEventRead> for EventBody {
                 serde_json::from_slice(bytes.as_slice()).ok(),
                 None,
             ),
-            EventData::Structure(projection) => (
+            EventData::Structure(structure) => (
                 "structure-only",
                 None,
-                Some(PayloadStructureBody::from(&projection.tree)),
+                Some(PayloadStructureBody::from(structure)),
             ),
         };
         Self {
@@ -829,7 +845,9 @@ pub struct ConnectorListBody {
     pub items: Vec<ConnectorBody>,
 }
 
-#[derive(Debug, Serialize)]
+/// A dead letter. `headers` and `body` hold revealed values, so `Debug` is written by hand and
+/// prints state and sizes only.
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeadLetterBody {
     pub id: String,
@@ -850,6 +868,20 @@ pub struct DeadLetterBody {
     pub received_at: time::OffsetDateTime,
 }
 
+impl std::fmt::Debug for DeadLetterBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeadLetterBody")
+            .field("reason", &self.reason)
+            .field("body_disclosure", &self.body_disclosure)
+            .field("body_size_bytes", &self.body_size_bytes)
+            .field("header_count", &self.header_count)
+            .field("has_headers", &self.headers.is_some())
+            .field("has_body", &self.body.is_some())
+            .field("truncated", &self.truncated)
+            .finish_non_exhaustive()
+    }
+}
+
 impl From<&DeadLetterRead> for DeadLetterBody {
     fn from(read: &DeadLetterRead) -> Self {
         let letter = &read.letter;
@@ -864,12 +896,7 @@ impl From<&DeadLetterRead> for DeadLetterBody {
                 "structure-only",
                 None,
                 None,
-                Some(match structure {
-                    DeadLetterStructure::Json(projection) => {
-                        PayloadStructureBody::from(&projection.tree)
-                    }
-                    DeadLetterStructure::Opaque => PayloadStructureBody::Opaque { kind: "opaque" },
-                }),
+                Some(PayloadStructureBody::from(structure)),
             ),
         };
         Self {
@@ -924,6 +951,15 @@ pub enum PayloadTreeBody {
     Null {
         redacted: bool,
     },
+}
+
+impl From<&DataStructure> for PayloadStructureBody {
+    fn from(structure: &DataStructure) -> Self {
+        match structure {
+            DataStructure::Json(projection) => Self::from(&projection.tree),
+            DataStructure::Opaque => Self::Opaque { kind: "opaque" },
+        }
+    }
 }
 
 impl From<&PayloadStructure> for PayloadStructureBody {
@@ -991,5 +1027,98 @@ impl From<&sagat_domain::events::WebhookAuthentication> for WebhookAuthenticatio
                 certificate_sha256: certificate_sha256.clone(),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)] // test fixtures fail immediately
+
+    use std::collections::BTreeMap;
+
+    use sagat_application::event_payloads::{SelectedDeadLetter, SelectedInboxEvent};
+    use sagat_application::payloads::StoredPayloadBytes;
+    use sagat_domain::connectors::{ConnectorId, DeadLetter};
+    use sagat_domain::events::{EventEnvelope, EventId, EventKey, InboxStatus};
+    use sagat_domain::identity::Slug;
+    use sagat_domain::workflow::EventType;
+    use time::OffsetDateTime;
+    use uuid::Uuid;
+
+    use super::*;
+
+    const CANARY: &str = "canary-9f3a-never-in-debug";
+
+    fn revealed_event() -> InboxEventRead {
+        let key = EventKey {
+            source: Slug::parse("source-a").unwrap(),
+            event_id: EventId::parse("evt-1").unwrap(),
+        };
+        let data = format!(r#"{{"card":"{CANARY}"}}"#).into_bytes();
+        InboxEventRead {
+            data_size_bytes: data.len(),
+            data: EventData::Revealed(StoredPayloadBytes::new(data)),
+            event: SelectedInboxEvent {
+                envelope: EventEnvelope::new(
+                    key,
+                    EventType::parse("invoice.created").unwrap(),
+                    None,
+                    None,
+                )
+                .unwrap(),
+                occurred_at: None,
+                payload: StoredPayloadBytes::new(Vec::new()),
+                received_at: OffsetDateTime::UNIX_EPOCH,
+                expires_at: OffsetDateTime::UNIX_EPOCH,
+                status: InboxStatus::Pending,
+                attempts: 0,
+                last_error: None,
+                dispatched_at: None,
+                deliveries: vec![],
+            },
+        }
+    }
+
+    fn revealed_letter() -> DeadLetterRead {
+        let headers = BTreeMap::from([("authorization".to_owned(), CANARY.to_owned())]);
+        DeadLetterRead {
+            header_count: headers.len(),
+            body_size_bytes: CANARY.len(),
+            data: DeadLetterData::Revealed {
+                headers,
+                body: StoredPayloadBytes::new(CANARY.as_bytes().to_vec()),
+            },
+            letter: SelectedDeadLetter {
+                id: Uuid::new_v4(),
+                connector_id: ConnectorId::new(Uuid::new_v4()),
+                position: "p/0/1".into(),
+                reason: DeadLetter::BadEnvelope,
+                headers: BTreeMap::new(),
+                body: StoredPayloadBytes::new(Vec::new()),
+                truncated: false,
+                received_at: OffsetDateTime::UNIX_EPOCH,
+            },
+        }
+    }
+
+    /// FR-016-017: the `Debug` output of a response type that carries a revealed value holds state
+    /// and sizes only. The serialised body does carry the value (that is the reveal).
+    #[test]
+    fn debug_of_a_response_that_holds_revealed_values_prints_no_value() {
+        let event = EventBody::from(&revealed_event());
+        let letter = DeadLetterBody::from(&revealed_letter());
+        assert!(
+            serde_json::to_string(&event).unwrap().contains(CANARY),
+            "the fixture really holds the value"
+        );
+        assert!(serde_json::to_string(&letter).unwrap().contains(CANARY));
+        for debug in [format!("{event:?}"), format!("{letter:?}")] {
+            assert!(!debug.contains(CANARY), "{debug}");
+        }
+        for debug in [format!("{event:#?}"), format!("{letter:#?}")] {
+            assert!(!debug.contains(CANARY), "{debug}");
+        }
+        assert!(format!("{event:?}").contains("data_size_bytes"));
+        assert!(format!("{letter:?}").contains("body_size_bytes"));
     }
 }
