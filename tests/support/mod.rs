@@ -13,6 +13,7 @@
 pub mod api;
 pub mod approval_flow;
 pub mod blob_collections;
+pub mod bounded;
 pub mod brokers;
 pub mod collector;
 pub mod contract;
@@ -108,7 +109,7 @@ async fn start_server() -> Server {
     // `pg_stat_statements` is preloaded so that a test can count the rows and buffers a statement
     // touched (the work-per-transition assertions of the performance target, G461). It records
     // nothing until a database creates the extension.
-    let container = Postgres::default()
+    let started = Postgres::default()
         .with_tag("16-alpine")
         // Docker's 64 MiB default cannot hold concurrent parallel-query shared memory. Keep the
         // query settings intact and budget the test database explicitly, as the Compose profile does.
@@ -121,9 +122,14 @@ async fn start_server() -> Server {
             "-c",
             "pg_stat_statements.max=10000",
         ])
-        .start()
-        .await
-        .expect("start PostgreSQL (is Docker running? or set SAGAT_TEST_DATABASE_URL)");
+        .start();
+    let container = bounded::within(
+        "pull and start postgres:16-alpine",
+        bounded::START_LIMIT,
+        started,
+    )
+    .await
+    .expect("start PostgreSQL (is Docker running? or set SAGAT_TEST_DATABASE_URL)");
     let port = container
         .get_host_port_ipv4(5432)
         .await
@@ -147,18 +153,22 @@ async fn start_server() -> Server {
 async fn wait_until_queryable(url: &str) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
+        // One attempt is bounded too: a proxy that accepts the connection and never answers would
+        // otherwise outlive the deadline.
         let attempt = async {
             let mut conn = PgConnection::connect(url).await?;
             sqlx::query("SELECT 1").execute(&mut conn).await?;
             conn.close().await
         };
-        match attempt.await {
-            Ok(()) => return,
-            Err(error) if std::time::Instant::now() < deadline => {
-                let _ = error; // not ready yet; keep polling
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(10), attempt).await;
+        match outcome {
+            Ok(Ok(())) => return,
+            Ok(Err(_)) | Err(_) if std::time::Instant::now() < deadline => {
+                // not ready yet; keep polling
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
-            Err(error) => panic!("PostgreSQL never became queryable: {error}"),
+            Ok(Err(error)) => panic!("PostgreSQL never became queryable: {error}"),
+            Err(_) => panic!("PostgreSQL never answered a query within 60 s (connection stalled)"),
         }
     }
 }

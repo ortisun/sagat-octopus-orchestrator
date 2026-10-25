@@ -1664,14 +1664,24 @@ async fn scope_lifecycle(flow: &Flow) -> String {
         .expect("loop scope")
 }
 
+/// The loop timeout of the two tests that need the deadline to pass during the delay. The window has to
+/// outlast the time a loaded runner needs to reach the delay (first iteration, completion, checkpoint):
+/// with 4 s the first iteration timed out before any timer existed and the test failed on CI.
+const TIMEOUT_MS: u64 = 15_000;
+
 /// The deadline passed during the delay and a cancel committed before the scheduler noticed: the
 /// run-level cancellation wins and the `onError` edge is never taken (D342).
 #[tokio::test]
 async fn a_cancel_that_commits_before_the_timeout_is_noticed_ends_the_run_cancelled() {
     let name = format!("delay-cancel-first-{}", Uuid::now_v7());
-    let flow = Flow::start(&name, delayed_loop(&name, 3_000, 4_000, true), json!([])).await;
+    let flow = Flow::start(
+        &name,
+        delayed_loop(&name, 3_000, TIMEOUT_MS, true),
+        json!([]),
+    )
+    .await;
     until_the_delay(&flow).await;
-    tokio::time::sleep(std::time::Duration::from_millis(4_300)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(TIMEOUT_MS + 300)).await;
     cancel(&flow).await;
 
     flow.drive().await;
@@ -1692,9 +1702,14 @@ async fn a_cancel_that_commits_before_the_timeout_is_noticed_ends_the_run_cancel
 #[tokio::test]
 async fn a_cancel_that_lands_after_the_timeout_started_draining_still_wins() {
     let name = format!("delay-cancel-second-{}", Uuid::now_v7());
-    let flow = Flow::start(&name, delayed_loop(&name, 3_000, 4_000, true), json!([])).await;
+    let flow = Flow::start(
+        &name,
+        delayed_loop(&name, 3_000, TIMEOUT_MS, true),
+        json!([]),
+    )
+    .await;
     until_the_delay(&flow).await;
-    tokio::time::sleep(std::time::Duration::from_millis(4_300)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(TIMEOUT_MS + 300)).await;
     let drain = flow.scheduler.tick().await;
     assert_eq!((drain.failed, drain.loops_advanced), (0, 1), "{drain:?}");
     assert_eq!(scope_lifecycle(&flow).await, "DRAINING");

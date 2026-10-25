@@ -1,7 +1,8 @@
 //! Ordinary workers must release durable run locks during provider I/O.
+use super::world;
 use super::{
     ReadBarrier,
-    support::engine::{activity, ctx, document, task_ref, with, world},
+    support::engine::{activity, ctx, document, task_ref, with},
 };
 use sagat_application::{
     clock::SystemClock,

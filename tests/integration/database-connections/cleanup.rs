@@ -1,5 +1,6 @@
 //! Real provider retirement, crash recovery and active-attempt retention.
-use super::support::engine::{ctx, world};
+use super::support::engine::ctx;
+use super::world;
 use sagat_application::{
     clock::SystemClock,
     error::AppError,

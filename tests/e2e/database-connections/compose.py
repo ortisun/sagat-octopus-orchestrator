@@ -30,6 +30,10 @@ env["SAGAT_ENV"] = "dev"
 env["SAGAT_OIDC_ISSUER"] = "http://dev-idp:9100/"
 compose = ["docker", "compose", "-p", project, "-f", str(ROOT / "infra/docker/compose.yaml"), "-f", str(ROOT / "infra/docker/compose.database.yaml"), "--env-file", str(ROOT / "infra/docker/.env.example"), "--env-file", str(private / "compose.env")]
 
+# A command that pulls or starts containers gets this much on a cold runner; anything else stays at 60 s.
+# A timeout here is a failure that names the command, never a wait without end.
+SLOW = 300
+
 def run(argv, data=None, check=True, timeout=60):
     result = subprocess.run(argv, input=data, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, cwd=ROOT)
     if check and result.returncode:
@@ -94,11 +98,11 @@ try:
     config["namespaces"][0]["allowCidrs"] = [selected[1]]
     config_path.write_text(json.dumps(config))
     dc("config", "--quiet")
-    dc("up", "-d", "openbao", "target-postgres", "dev-idp", "migrate", "nats")
+    dc("up", "-d", "openbao", "target-postgres", "dev-idp", "migrate", "nats", timeout=SLOW)
     wait(lambda: http("GET", "/.well-known/jwks.json", identity=True), "local OIDC")
     run(["python3", "infra/openbao/bootstrap-development.py", "--directory", str(private), "--address", "https://127.0.0.1:" + env["SAGAT_BAO_PORT"], "--idp", idp])
-    dc("--profile", "seed", "run", "--rm", "seed")
-    dc("up", "-d", "control-plane", "execution-engine")
+    dc("--profile", "seed", "run", "--rm", "seed", timeout=SLOW)
+    dc("up", "-d", "control-plane", "execution-engine", timeout=SLOW)
     wait(lambda: http("GET", "/ready"), "control-plane readiness")
     admin = http("POST", "/token", {"subject":"dev-admin", "tenant":"dev"}, identity=True)["access_token"]
     ns = next(n["id"] for n in http("GET", "/namespaces")["items"] if n["slug"] == "payments")
@@ -113,7 +117,7 @@ COMMIT;"""
     http("PUT", f"/namespaces/{ns}/worker-bindings/database-runner", {"activities":["sagat.database.postgresql"]})
     http("PUT", f"/namespaces/{ns}/secrets/db-credential", {"value":(private / "credential.json").read_text(), "requestId":str(uuid.uuid4()), "expectedVersion":0, "requiredProvider":"openbao"})
     http("PUT", f"/namespaces/{ns}/connections/orders-db", {"requestId":str(uuid.uuid4()), "expectedRevision":0, "status":"ACTIVE", "config":{"driver":"postgresql", "host":"target-postgres", "port":5432, "database":"postgres", "secretName":"db-credential", "tls":{"mode":"verify-full", "caPem":(private / "tls/ca.crt").read_text()}}})
-    dc("--profile", "database", "up", "-d", "database-runner")
+    dc("--profile", "database", "up", "-d", "database-runner", timeout=SLOW)
     def finished(run_id, status):
         def check():
             value = http("GET", "/runs/" + run_id)

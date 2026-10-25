@@ -15,6 +15,7 @@ mod signing_consumers;
 mod support;
 
 use sagat_application::secret_provider::SecretProvider;
+use sagat_application::worker::ClaimedTask;
 use sagat_application::{
     clock::SystemClock,
     error::AppError,
@@ -23,11 +24,25 @@ use sagat_application::{
 use sagat_domain::secrets::SecretValue;
 use sagat_infra_secrets::openbao::{OpenBao, OpenBaoConfig};
 use std::{sync::Arc, time::Duration};
-use support::engine::{ctx, world};
-use testcontainers_modules::testcontainers::{
-    GenericImage, ImageExt, core::WaitFor, runners::AsyncRunner,
-};
+use support::bounded::{self, LIFECYCLE_LIMIT, Progress};
+use support::engine::{World, ctx, world_with};
 use uuid::Uuid;
+
+mod bounded_stages;
+
+/// A world whose leases outlive the slowest machine this suite runs on.
+///
+/// The default lease lasts 30 s. A scenario that leases a task early and uses it at the end took
+/// 25 s on a quiet laptop and more than 60 s on a loaded runner: the lease expired, the call was
+/// refused before it reached the provider, and the barrier waiting for that read never opened. A
+/// scenario that tests a lease expiring ages it on purpose (`age_lease`).
+pub(crate) async fn world() -> World {
+    world_with(sagat_application::worker::WorkerSettings {
+        lease_ttl: Duration::from_secs(3600),
+        ..Default::default()
+    })
+    .await
+}
 
 // This aggregate lifecycle contains deeply nested adapter futures. Keep its explicit test-only
 // stack allocation local; the worker and control-plane runtimes keep their normal settings.
@@ -41,26 +56,24 @@ fn durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotation() 
                 .enable_all()
                 .build()
                 .unwrap()
-                .block_on(managed_secret_lifecycle())
+                .block_on(bounded::lifecycle(
+                    "managed secret lifecycle",
+                    LIFECYCLE_LIMIT,
+                    managed_secret_lifecycle,
+                ))
         })
         .unwrap()
         .join()
-        .expect("managed secret lifecycle thread");
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
 }
 
-async fn managed_secret_lifecycle() {
+async fn managed_secret_lifecycle(progress: Progress) {
+    progress.enter("start PostgreSQL and platform");
     let mut w = world().await;
-    let container = GenericImage::new("openbao/openbao", "2.7.1")
-        .with_wait_for(WaitFor::message_on_stdout(
-            "Development mode should NOT be used in production",
-        ))
-        .with_exposed_port(8200.into())
-        .with_env_var("BAO_DEV_ROOT_TOKEN_ID", "sagat-test-bootstrap")
-        .with_cmd(["server", "-dev", "-dev-listen-address=0.0.0.0:8200"])
-        .start()
-        .await
-        .unwrap();
+    progress.enter("start OpenBao");
+    let container = bounded::start_openbao("sagat-test-bootstrap").await;
     let port = container.get_host_port_ipv4(8200).await.unwrap();
+    progress.enter("managed secrets");
     let temp = tempfile::tempdir().unwrap();
     let token_file = temp.path().join("token");
     std::fs::write(&token_file, "sagat-test-bootstrap").unwrap();
@@ -238,54 +251,39 @@ async fn managed_secret_lifecycle() {
     let authority: String = sqlx::query_scalar("SELECT authority FROM secrets WHERE tenant_id=$1 AND namespace_id=$2 AND name='legacy-credential'")
         .bind(w.admin.tenant_id().as_uuid()).bind(ns.as_uuid()).fetch_one(&w.db.pool).await.unwrap();
     assert_eq!(authority, "openbao");
+    progress.enter("managed HTTP facade");
     Box::pin(managed_http_facade(provider.clone())).await;
+    progress.enter("connection catalog");
     connection_catalog(&w).await;
+    progress.enter("ad_hoc::run");
     Box::pin(ad_hoc::run(&w)).await;
+    progress.enter("admission::run");
     Box::pin(admission::run(&w, &service)).await;
+    progress.enter("cleanup::run");
     Box::pin(cleanup::run(provider.clone())).await;
+    progress.enter("cleanup_retention::run");
     Box::pin(cleanup_retention::run(provider.clone())).await;
+    progress.enter("key_rotation::run");
     Box::pin(key_rotation::run(provider.clone())).await;
+    progress.enter("consumers::run");
     Box::pin(consumers::run(provider.clone())).await;
+    progress.enter("signing_consumers::run");
     Box::pin(signing_consumers::run(provider.clone())).await;
+    progress.enter("policies::run");
     Box::pin(policies::run(provider.clone())).await;
+    progress.enter("executor::run");
     Box::pin(executor::run(provider.clone())).await;
+    progress.enter("executor::grpc");
     Box::pin(executor::grpc(provider.clone())).await;
+    progress.enter("output::run");
     Box::pin(output::run(provider.clone())).await;
+    progress.enter("output_blobs::run");
     Box::pin(output_blobs::run(provider.clone())).await;
 
-    // The preceding independent scenarios can outlast a lease. Acquire a fresh one so this
-    // race exercises revocation during provider I/O rather than an already expired capability.
-    w.start(workflow, &serde_json::json!({})).await;
-    let session = w.session(&["act.a"]).await;
-    let task = w.one_task(&session).await;
-
-    // An ACL/membership change during provider I/O must discard the value already read.
-    let gated = Arc::new(ReadBarrier {
-        inner: provider.clone(),
-        entered: tokio::sync::Barrier::new(2),
-        resume: tokio::sync::Barrier::new(2),
-    });
+    progress.enter("membership change during a provider read");
+    let gated = Arc::new(ReadBarrier::new(provider.clone()));
     w.workers = w.workers.with_secret_provider(gated.clone());
-    let task_ref = support::engine::task_ref(&task);
-    let resolving = w
-        .workers
-        .resolve_secrets(&session.principal, &task_ref, None);
-    let revoking = async {
-        gated.entered.wait().await;
-        sqlx::query("UPDATE memberships SET role = 'viewer' WHERE tenant_id = $1 AND subject = $2")
-            .bind(w.admin.tenant_id().as_uuid())
-            .bind(w.admin.subject().as_str())
-            .execute(&w.db.pool)
-            .await
-            .unwrap();
-        gated.resume.wait().await;
-    };
-    let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
-        tokio::join!(resolving, revoking)
-    })
-    .await
-    .expect("provider I/O revocation race must finish within the fresh lease");
-    assert!(matches!(result, Err(AppError::SecretUnavailable { .. })));
+    revoke_during_provider_read(&w, &gated, &session, &task).await;
     // Stale in-memory admin principals cannot replay a management receipt either.
     assert!(service.put(&w.admin, ns, write(), &ctx()).await.is_err());
     let catalog = sagat_application::database::ConnectionService::new(w.store.clone(), SystemClock);
@@ -314,10 +312,58 @@ async fn managed_secret_lifecycle() {
     );
 }
 
+/// An ACL/membership change during provider I/O must discard the value already read.
+///
+/// The change is made while the provider read is held at a barrier. If the call ends before it reaches
+/// the provider (the lease expired, the worker binding went away), no read ever arrives and the
+/// barrier would wait forever, so that outcome is a failure that says what the call returned.
+///
+/// `w.workers` must already read through `gated`.
+async fn revoke_during_provider_read(
+    w: &World,
+    gated: &ReadBarrier,
+    session: &support::engine::Session,
+    task: &ClaimedTask,
+) {
+    let task_ref = support::engine::task_ref(task);
+    let mut resolving = Box::pin(
+        w.workers
+            .resolve_secrets(&session.principal, &task_ref, None),
+    );
+    tokio::select! {
+        () = async { gated.entered.wait().await; } => {}
+        early = &mut resolving => panic!(
+            "resolve_secrets returned before it read the provider ({:?}): the lease or the binding was gone, \
+             so there is no read to hold",
+            early.as_ref().map(Vec::len)
+        ),
+    }
+    let revoking = async {
+        sqlx::query("UPDATE memberships SET role = 'viewer' WHERE tenant_id = $1 AND subject = $2")
+            .bind(w.admin.tenant_id().as_uuid())
+            .bind(w.admin.subject().as_str())
+            .execute(&w.db.pool)
+            .await
+            .unwrap();
+        gated.resume.wait().await;
+    };
+    let (result, ()) = tokio::join!(resolving, revoking);
+    assert!(matches!(result, Err(AppError::SecretUnavailable { .. })));
+}
+
 struct ReadBarrier {
     inner: Arc<dyn SecretProvider>,
     entered: tokio::sync::Barrier,
     resume: tokio::sync::Barrier,
+}
+impl ReadBarrier {
+    fn new(inner: Arc<dyn SecretProvider>) -> Self {
+        Self {
+            inner,
+            entered: tokio::sync::Barrier::new(2),
+            resume: tokio::sync::Barrier::new(2),
+        }
+    }
 }
 impl SecretProvider for ReadBarrier {
     fn create<'a>(

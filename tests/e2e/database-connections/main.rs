@@ -8,10 +8,6 @@ use sagat_domain::identity::{Membership, Role};
 use sagat_infra_secrets::openbao::{OpenBao, OpenBaoConfig};
 use serde_json::json;
 use std::{path::Path, process::Stdio, sync::Arc, time::Duration};
-use testcontainers_modules::postgres::Postgres;
-use testcontainers_modules::testcontainers::{
-    GenericImage, ImageExt, core::WaitFor, runners::AsyncRunner,
-};
 use tokio::process::Command;
 
 #[tokio::test]
@@ -19,27 +15,22 @@ use tokio::process::Command;
 async fn catalog_and_secrets_in_a_real_browser() {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     if std::env::var("SAGAT_STUDIO_REBUILD").as_deref() != Ok("0") {
+        let mut build = Command::new("npm");
+        build
+            .args(["run", "build"])
+            .current_dir(repo.join("frontend"))
+            .stdin(Stdio::null());
         assert!(
-            Command::new("npm")
-                .args(["run", "build"])
-                .current_dir(repo.join("frontend"))
-                .stdin(Stdio::null())
-                .status()
-                .await
-                .unwrap()
-                .success()
+            support::bounded::exit_status(
+                "build the Studio",
+                support::bounded::PROCESS_LIMIT,
+                build
+            )
+            .await
+            .success()
         );
     }
-    let container = GenericImage::new("openbao/openbao", "2.7.1")
-        .with_wait_for(WaitFor::message_on_stdout(
-            "Development mode should NOT be used in production",
-        ))
-        .with_exposed_port(8200.into())
-        .with_env_var("BAO_DEV_ROOT_TOKEN_ID", "sagat-browser-bootstrap")
-        .with_cmd(["server", "-dev", "-dev-listen-address=0.0.0.0:8200"])
-        .start()
-        .await
-        .unwrap();
+    let container = support::bounded::start_openbao("sagat-browser-bootstrap").await;
     let port = container.get_host_port_ipv4(8200).await.unwrap();
     let dir = tempfile::tempdir().unwrap();
     let token_file = dir.path().join("token");
@@ -75,11 +66,7 @@ async fn catalog_and_secrets_in_a_real_browser() {
     let namespace = api
         .create_namespace("owner", "database-browser", &workspace, "database", "dev")
         .await;
-    let target = Postgres::default()
-        .with_tag("16-alpine")
-        .start()
-        .await
-        .unwrap();
+    let target = support::bounded::start_postgres_target().await;
     let target_port = target.get_host_port_ipv4(5432).await.unwrap();
     let target_admin = sqlx::postgres::PgPoolOptions::new()
         .max_connections(2)
@@ -133,7 +120,8 @@ async fn catalog_and_secrets_in_a_real_browser() {
         .spawn()
         .unwrap();
     let token = api.idp.token("owner", "database-browser").build();
-    let status = Command::new("npx")
+    let mut journeys = Command::new("npx");
+    journeys
         .args(["playwright", "test", "database-connections.spec.ts"])
         .current_dir(repo.join("frontend/e2e"))
         .env("STUDIO_DATABASE_CONNECTIONS", "1")
@@ -151,11 +139,13 @@ async fn catalog_and_secrets_in_a_real_browser() {
             "STUDIO_TOKEN_VIEWER",
             api.idp.token("browser-viewer", "database-browser").build(),
         )
-        .stdin(Stdio::null())
-        .kill_on_drop(true)
-        .status()
-        .await
-        .unwrap();
+        .stdin(Stdio::null());
+    let status = support::bounded::exit_status(
+        "Playwright database journeys",
+        support::bounded::PROCESS_LIMIT,
+        journeys,
+    )
+    .await;
     let _ = runner.kill().await;
     let _ = runner.wait().await;
     assert!(

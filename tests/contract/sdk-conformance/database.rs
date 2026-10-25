@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use std::{collections::HashMap, path::PathBuf, process::Stdio, sync::Arc, time::Duration};
 use testcontainers_modules::{
     postgres::Postgres,
-    testcontainers::{ContainerAsync, GenericImage, ImageExt, core::WaitFor, runners::AsyncRunner},
+    testcontainers::{ContainerAsync, GenericImage},
 };
 use uuid::Uuid;
 
@@ -34,16 +34,7 @@ pub struct Fixture {
 impl Fixture {
     pub async fn start() -> Self {
         let dir = tempfile::tempdir().expect("database fixture directory");
-        let bao = GenericImage::new("openbao/openbao", "2.7.1")
-            .with_wait_for(WaitFor::message_on_stdout(
-                "Development mode should NOT be used in production",
-            ))
-            .with_exposed_port(8200.into())
-            .with_env_var("BAO_DEV_ROOT_TOKEN_ID", "sdk-bootstrap")
-            .with_cmd(["server", "-dev", "-dev-listen-address=0.0.0.0:8200"])
-            .start()
-            .await
-            .expect("OpenBao");
+        let bao = crate::support::bounded::start_openbao("sdk-bootstrap").await;
         let address = format!(
             "http://127.0.0.1:{}",
             bao.get_host_port_ipv4(8200).await.expect("port")
@@ -61,11 +52,7 @@ impl Fixture {
             })
             .expect("provider"),
         );
-        let target = Postgres::default()
-            .with_tag("16-alpine")
-            .start()
-            .await
-            .expect("target PostgreSQL");
+        let target = crate::support::bounded::start_postgres_target().await;
         let port = target.get_host_port_ipv4(5432).await.expect("port");
         let admin = sqlx::postgres::PgPoolOptions::new()
             .max_connections(2)

@@ -16,6 +16,9 @@ jobs:
   rust:
     name: rust (fmt, clippy, tests)
     runs-on: ubuntu-latest
+    # A cold build takes about 30 minutes and the workspace tests about as long again. A test that hangs
+    # must not hold the runner for the default six hours (it did on pull request 45).
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # rust-toolchain.toml pins the exact compiler; rustup installs it on first use.
@@ -34,6 +37,7 @@ jobs:
       - name: build isolated database executor for process tests
         run: cargo build -p sagat-database-runner --bin database-runner --locked
       - run: cargo test --workspace --locked --no-fail-fast
+        timeout-minutes: 110
 
   native-runners:
     name: native Go and Java (${{ matrix.os }})
@@ -177,6 +181,7 @@ jobs:
       - name: browser journeys
         run: cargo test -p sagat-tests --test e2e_workflow_studio --locked -- --ignored journeys
       - name: managed PostgreSQL and OpenBao browser journeys
+        timeout-minutes: 30
         run: |
           cargo build -p sagat-database-runner --bin database-runner --locked
           cargo test -p sagat-tests --test e2e_database_connections --locked -- --ignored
@@ -242,6 +247,7 @@ jobs:
       # workflow with the CLI and tears everything down (see scripts/smoke-compose.sh).
       - run: SAGAT_BIN=target/debug/sagat SAGAT_SMOKE_BROWSER=1 scripts/smoke-compose.sh
       - name: managed database containers and coordinated restore
+        timeout-minutes: 15
         run: |
           docker build -f infra/docker/Dockerfile --target database-runner -t sagat-octopus-orchestrator/database-runner:dev .
           python3 tests/e2e/database-connections/compose.py
@@ -320,5 +326,5 @@ jobs:
       - run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo install cargo-audit --locked --version 0.22.2
-      # The one ignored advisory and why is in .cargo/audit.toml and research.md (G16).
+      # Every ignored advisory, why, and when it expires are in .cargo/audit.toml and research.md (G16, G271, G700 to G703).
       - run: cargo audit --deny warnings

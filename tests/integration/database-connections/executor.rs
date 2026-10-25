@@ -1,7 +1,8 @@
 //! Live capability checks, with the real provider deliberately stopped between read and recheck.
+use super::world;
 use super::{
     ReadBarrier,
-    support::engine::{Session, ctx, document, task_ref, world},
+    support::engine::{Session, ctx, document, task_ref},
 };
 use sagat_application::{
     clock::SystemClock,
