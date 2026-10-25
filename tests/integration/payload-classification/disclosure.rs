@@ -6,7 +6,8 @@ use sagat_application::clock::SystemClock;
 use sagat_application::error::AppError;
 use sagat_application::payload_disclosure::{
     DisclosureSelector, PayloadDisclosure, PayloadDisclosureError, PayloadDisclosureResult,
-    PayloadDisclosureService, PayloadDisclosureUseCase,
+    PayloadDisclosureService, PayloadDisclosureUseCase, StructureOnlyReason,
+    UnavailableDisclosureReason,
 };
 use sagat_domain::execution::RunId;
 use sagat_domain::identity::{Principal, Role};
@@ -274,4 +275,162 @@ async fn missing_and_foreign_runs_are_the_same_opaque_not_found() {
             Err(PayloadDisclosureError::Application(AppError::NotFound))
         );
     }
+}
+
+async fn count_audits(world: &World, actor: &Principal, run: RunId, action: &str) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM audit_records WHERE tenant_id=$1 AND actor=$2 \
+         AND resource_id=$3 AND action=$4",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(actor.subject().as_str())
+    .bind(run.to_string())
+    .bind(action)
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("audit count")
+}
+
+/// Correctness review C3: a version stored before the feature has no rules, so every inspector
+/// read of it is a structure read, and ADR-0028 audits those as `payload.inspected`.
+#[tokio::test]
+async fn a_structure_read_of_a_legacy_run_is_audited_as_an_inspection_and_collapses() {
+    let world = world().await;
+    let schema = json!({
+        "type":"object", "x-sagat-classification":"public",
+        "properties":{"name":{"type":"string"}}
+    });
+    let (workflow, _) = world
+        .publish(classified_document("legacy-structure-audit", schema))
+        .await;
+    let run = world.start(workflow, &json!({"name":"Ada"})).await;
+    sqlx::query("ALTER TABLE workflow_versions DISABLE TRIGGER workflow_versions_immutable")
+        .execute(&world.db.pool)
+        .await
+        .expect("open the legacy fixture");
+    sqlx::query(
+        "UPDATE workflow_versions SET classification_rules=0 \
+         WHERE id=(SELECT workflow_version_id FROM runs WHERE tenant_id=$1 AND id=$2)",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(run.as_uuid())
+    .execute(&world.db.pool)
+    .await
+    .expect("mark the version legacy");
+    sqlx::query("ALTER TABLE workflow_versions ENABLE TRIGGER workflow_versions_immutable")
+        .execute(&world.db.pool)
+        .await
+        .expect("close the legacy fixture");
+    let operator = world.member("legacy-operator", Role::Operator).await;
+    let developer = world.member("legacy-developer", Role::Developer).await;
+    let viewer = world.member("legacy-viewer", Role::Viewer).await;
+
+    for _ in 0..2 {
+        let answer = disclose(&world, &operator, run, DisclosureSelector::Input)
+            .await
+            .expect("structure answer");
+        assert!(matches!(
+            answer.result,
+            PayloadDisclosureResult::StructureOnly {
+                reason: StructureOnlyReason::LegacyVersion,
+                ..
+            }
+        ));
+    }
+    let reason: String = sqlx::query_scalar(
+        "SELECT reason FROM audit_records WHERE tenant_id=$1 AND actor=$2 \
+         AND resource_id=$3 AND action='payload.inspected'",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(operator.subject().as_str())
+    .bind(run.to_string())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("one inspection row for two reads within the collapse window");
+    assert_eq!(reason, "classified-v1:input:structure");
+
+    for reader in [&developer, &viewer] {
+        let answer = disclose(&world, reader, run, DisclosureSelector::Input)
+            .await
+            .expect("opaque answer");
+        assert!(matches!(
+            answer.result,
+            PayloadDisclosureResult::Unavailable {
+                reason: UnavailableDisclosureReason::NotDisclosable,
+                size_bytes: None,
+            }
+        ));
+        assert_eq!(
+            count_audits(&world, reader, run, "payload.inspected").await,
+            0,
+            "a caller who receives no structure leaves no inspection record"
+        );
+    }
+}
+
+/// Security review S2 and correctness review C1 on the real store.
+#[tokio::test]
+async fn decimals_disclose_and_what_cannot_be_validated_is_opaque_to_everyone_but_inspectors() {
+    let world = world().await;
+    let schema = json!({
+        "type":"object", "x-sagat-classification":"public",
+        "properties":{"price":{"type":"number","minimum":0.5}}
+    });
+    let (workflow, _) = world
+        .publish(classified_document("decimal-and-unsupported", schema))
+        .await;
+    let ordinary = world.start(workflow, &json!({"price":9.99})).await;
+    // An integer beyond 2^53 cannot be compared with a decimal bound without rounding.
+    let rounded = world
+        .start(workflow, &json!({"price": 9_007_199_254_740_993_u64}))
+        .await;
+    let viewer = world.member("decimal-viewer", Role::Viewer).await;
+    let operator = world.member("decimal-operator", Role::Operator).await;
+
+    for (reader, inspector) in [(&viewer, false), (&operator, true)] {
+        let answer = disclose(&world, reader, ordinary, DisclosureSelector::Input)
+            .await
+            .expect("ordinary decimal");
+        let PayloadDisclosureResult::Disclosed {
+            projection,
+            size_bytes,
+            ..
+        } = answer.result
+        else {
+            panic!("{{\"price\":9.99}} under minimum 0.5 must disclose")
+        };
+        let ClassifiedNode::Container { children, .. } = projection.tree else {
+            panic!("object")
+        };
+        assert!(matches!(
+            children[0].node.as_ref(),
+            ClassifiedNode::Value { value: ScalarValue::Number(number), .. } if number.as_str() == "9.99"
+        ));
+        assert_eq!(
+            size_bytes.is_some(),
+            inspector,
+            "the stored size is for inspectors only"
+        );
+    }
+
+    let hidden = disclose(&world, &viewer, rounded, DisclosureSelector::Input)
+        .await
+        .expect("opaque answer");
+    assert!(matches!(
+        hidden.result,
+        PayloadDisclosureResult::Unavailable {
+            reason: UnavailableDisclosureReason::NotDisclosable,
+            size_bytes: None,
+        }
+    ));
+    let inspected = disclose(&world, &operator, rounded, DisclosureSelector::Input)
+        .await
+        .expect("inspector answer");
+    assert!(matches!(
+        inspected.result,
+        PayloadDisclosureResult::Unavailable {
+            reason: UnavailableDisclosureReason::UnsupportedFormat,
+            size_bytes: Some(_),
+        }
+    ));
 }

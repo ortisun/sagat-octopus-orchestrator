@@ -2788,7 +2788,8 @@ export interface components {
             /** @constant */
             kind: "disclosed";
             schema: components["schemas"]["PayloadClassificationSchema"];
-            sizeBytes: number;
+            /** @description Size of the whole stored payload. Present only for a caller with `run:payload:inspect`, because it includes personal and secret fields (D278). */
+            sizeBytes?: number;
             truncated: boolean;
             tree: components["schemas"]["PayloadDisclosureNode"];
         } | {

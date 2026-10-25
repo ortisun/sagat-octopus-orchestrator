@@ -59,10 +59,25 @@ identity; it does not substitute another sequence, attempt or same-named node.
 
 Structural inspectors receive withheld nodes where permitted. Other readers receive no hidden
 keys or values. Missing schemas, legacy versions, invalid payloads and unsupported exact numeric
-validation produce bounded structural or unavailable answers. A valid payload may still be
-withheld when the validator cannot establish exact numeric comparisons. The API and CLI preserve
-numeric representations; Studio refuses numbers it cannot display exactly and directs the user
-to those interfaces.
+validation produce bounded structural or unavailable answers; a caller without
+`run:payload:inspect` gets `NOT_DISCLOSABLE` for every one of them and no `sizeBytes`, so the state
+of a payload is not learned from the answer. A structural answer to an inspector is audited as
+`payload.inspected` (reason `classified-v1:<selector>:structure`, one record per 300 s).
+
+Numbers are checked on the spelling that was sent. Ordinary values such as `9.99`, `12.5` or
+`1.5e2` disclose under `minimum`, `multipleOf`, `const`, `enum` and `uniqueItems`. A valid payload
+is withheld only when a numeric keyword would compare a rounded value: a fraction with more digits
+than a 64-bit float keeps (for example thirty decimals), `1e400`, or an integer above 2^53 in a
+carrier that has a decimal bound or constant. Inspectors then see `UNSUPPORTED_FORMAT`. The API
+and CLI preserve numeric representations; Studio refuses numbers it cannot display exactly and
+directs the user to those interfaces.
+
+A carrier is also refused (`SCHEMA_UNUSABLE` for inspectors, `NOT_DISCLOSABLE` for others) when it
+holds more than 32 `pattern` keywords and `patternProperties` keys, or when one read would cost
+more than the walk budget (4,000,000 steps, five seconds): for example thousands of `allOf` branches
+repeated over a long array. Publication does not yet warn about either (G642); keep carriers small.
+The compiled validator of a version is built before the read transaction opens and cached per
+process; a version whose carrier cannot be compiled is remembered, so it costs one attempt.
 
 Responses use `Cache-Control: private, no-store`. The request body is limited to 1 KiB, and
 payload, schema, traversal and response ceilings also apply. Treat truncation as incomplete

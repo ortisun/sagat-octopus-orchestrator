@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use sagat_application::classification::{
     CarrierPointer, ClassificationCacheKey, ClassificationInterpreter, ClassifiedNode,
-    ClassifiedPayload, MAX_CARRIER_BYTES, MAX_CLASSIFICATION_CACHE_BYTES,
+    ClassifiedPayload, MAX_CARRIER_BYTES, MAX_CARRIER_PATTERNS, MAX_CLASSIFICATION_CACHE_BYTES,
     MAX_CLASSIFICATION_CACHE_ENTRIES, MAX_PAYLOAD_BYTES, MAX_RESPONSE_BYTES, PiiRevealFacts,
     ProjectionRequest, ScalarValue, ValueKind,
 };
@@ -324,6 +324,18 @@ fn warm(scenario: &Scenario) -> Samples {
     samples
 }
 
+/// Steps one projection of the scenario spends against the walk budget (D641).
+fn walk_steps(scenario: &Scenario) -> (usize, usize, usize) {
+    let classifier = Classifier::default();
+    let (answer, counters) = classifier.project_counted(request(
+        scenario,
+        WorkflowVersionId::generate(),
+        &scenario.payload,
+    ));
+    answer.expect("the maximum payload projects inside the walk budget");
+    (counters.steps, counters.limit, counters.retained_bytes)
+}
+
 fn percentile<T: Copy + Ord>(values: &[T], percentile: usize) -> T {
     let mut sorted = values.to_vec();
     sorted.sort_unstable();
@@ -462,6 +474,101 @@ fn cache_capacity(scenario: &Scenario) -> Capacity {
     }
 }
 
+struct WeightCheck {
+    name: &'static str,
+    serialized_bytes: usize,
+    estimated_bytes: usize,
+    measured_bytes: i64,
+}
+
+/// Retained heap of one compiled carrier against the weight the cache charged for it. The weight
+/// must be an upper bound, or the cache budget would not bound memory.
+fn weight_check(name: &'static str, schema: &Value, payload: &str) -> WeightCheck {
+    let document = serde_json::to_vec(&json!({"inputSchema": schema})).expect("document");
+    let serialized_bytes = serde_json::to_vec(schema).expect("schema").len();
+    assert!(serialized_bytes <= MAX_CARRIER_BYTES, "{name} is too large");
+    let classifier = Classifier::default();
+    let before = heap_snapshot();
+    // The projection result is not asserted: a payload that does not match still compiles the
+    // carrier and, for patterns, builds the matcher caches.
+    let _ = classifier.project(ProjectionRequest {
+        cache_key: ClassificationCacheKey {
+            version: WorkflowVersionId::generate(),
+            carrier: CarrierPointer::Input,
+        },
+        rules: ClassificationRules::CURRENT,
+        document: &document,
+        payload: payload.as_bytes(),
+        audience: Audience::new(false, false, false),
+        reveal: PiiRevealFacts {
+            granted: false,
+            requested: false,
+        },
+    });
+    let after = heap_snapshot();
+    let stats = classifier.cache_stats();
+    assert_eq!(stats.entries, 1, "{name} must be cached");
+    WeightCheck {
+        name,
+        serialized_bytes,
+        estimated_bytes: stats.weight_bytes,
+        measured_bytes: before.zip(after).map_or(i64::MAX, |(before, after)| {
+            signed_delta(after.bytes, before.bytes)
+        }),
+    }
+}
+
+fn weight_checks() -> Vec<WeightCheck> {
+    let mut wide = Map::new();
+    let mut index = 0usize;
+    loop {
+        wide.insert(
+            format!("p{index:04}"),
+            json!({"type": "string", "minLength": 0, "maxLength": 4096}),
+        );
+        index += 1;
+        if serde_json::to_vec(&Value::Object(wide.clone()))
+            .expect("properties")
+            .len()
+            > MAX_CARRIER_BYTES - 200
+        {
+            break;
+        }
+    }
+    let patterns: Vec<Value> = (0..MAX_CARRIER_PATTERNS)
+        .map(|index| {
+            json!({"type": "string", "pattern": format!("^(a|b|c|d|e|f|g){{1,200}}x{index:03}$")})
+        })
+        .collect();
+    vec![
+        weight_check(
+            "wide object (largest carrier)",
+            &json!({"type": "object", "x-sagat-classification": "public", "properties": wide}),
+            "{}",
+        ),
+        weight_check(
+            "3,000-branch allOf",
+            &json!({"x-sagat-classification": "public", "allOf": vec![json!({"type": "integer"}); 3_000]}),
+            "1",
+        ),
+        weight_check(
+            "large enum",
+            &json!({"x-sagat-classification": "public", "enum": (0..8_000).collect::<Vec<_>>()}),
+            "1",
+        ),
+        weight_check(
+            "32 patterns (the per-carrier cap)",
+            &json!({"x-sagat-classification": "public", "allOf": patterns}),
+            "\"abx000\"",
+        ),
+        weight_check(
+            "minimal object",
+            &json!({"type": "object", "x-sagat-classification": "public", "properties": {"a": {"type": "string"}}}),
+            "{}",
+        ),
+    ]
+}
+
 fn sh(command: &str, arguments: &[&str]) -> String {
     std::process::Command::new(command)
         .args(arguments)
@@ -557,7 +664,7 @@ fn heap_cell(snapshot: Option<HeapSnapshot>) -> String {
 #[ignore = "benchmark: run on purpose, see the module documentation"]
 fn maximum_carriers_and_payloads_stay_inside_the_measured_bounds() {
     let (telemetry, recorder) = Metrics::detached(Duration::from_secs(600));
-    let (wide, deep, wide_cold, wide_warm, deep_cold, deep_warm, capacity) =
+    let (wide, deep, wide_cold, wide_warm, deep_cold, deep_warm, capacity, weights) =
         metrics::with_local_recorder(&recorder, || {
             for outcome in ["hit", "miss", "evict"] {
                 metrics::counter!("classification_cache_total", "outcome" => outcome).increment(0);
@@ -569,8 +676,9 @@ fn maximum_carriers_and_payloads_stay_inside_the_measured_bounds() {
             let deep_cold = cold(&deep);
             let deep_warm = warm(&deep);
             let capacity = cache_capacity(&wide);
+            let weights = weight_checks();
             (
-                wide, deep, wide_cold, wide_warm, deep_cold, deep_warm, capacity,
+                wide, deep, wide_cold, wide_warm, deep_cold, deep_warm, capacity, weights,
             )
         });
 
@@ -593,19 +701,34 @@ fn maximum_carriers_and_payloads_stay_inside_the_measured_bounds() {
         assert_eq!(warm.cache.hits, WARM_SAMPLES as u64);
         assert_eq!(warm.cache.misses, 1);
     }
+    // The budget is estimated compiled bytes, so the 256th carrier does not fit: the cache
+    // evicted while it filled, held fewer entries than the entry limit, and stayed in budget.
     assert_eq!(
         capacity.full.misses,
         MAX_CLASSIFICATION_CACHE_ENTRIES as u64
     );
-    assert_eq!(capacity.full.evictions, 0);
-    assert_eq!(capacity.after_eviction.evictions, 1);
-    assert_eq!(capacity.after_revisit.evictions, 2);
+    assert!(capacity.full.evictions > 0, "{:?}", capacity.full);
+    assert!(capacity.full.entries < MAX_CLASSIFICATION_CACHE_ENTRIES);
+    assert!(capacity.full.weight_bytes <= MAX_CLASSIFICATION_CACHE_BYTES);
+    assert_eq!(
+        capacity.after_eviction.evictions,
+        capacity.full.evictions + 1
+    );
+    assert_eq!(
+        capacity.after_revisit.misses,
+        capacity.after_eviction.misses + 1,
+        "the first carrier was evicted long ago"
+    );
     assert!(
         capacity.baseline.is_some()
             && capacity.full_heap.is_some()
             && capacity.after_drop_heap.is_some(),
         "macOS heap snapshots are required for the allocation evidence"
     );
+
+    let (wide_steps, step_limit, wide_retained) = walk_steps(&wide);
+    let (deep_steps, _, deep_retained) = walk_steps(&deep);
+    assert!(wide_steps * 4 < step_limit && deep_steps * 4 < step_limit);
 
     let metrics_page = telemetry.render();
     let metric_hit = metric_value(&metrics_page, "hit");
@@ -626,7 +749,8 @@ fn maximum_carriers_and_payloads_stay_inside_the_measured_bounds() {
             + wide_warm.cache.misses
             + deep_cold.cache.misses
             + deep_warm.cache.misses
-            + capacity.after_revisit.misses,
+            + capacity.after_revisit.misses
+            + weights.len() as u64,
         "{metrics_page}"
     );
     assert_eq!(
@@ -640,21 +764,42 @@ fn maximum_carriers_and_payloads_stay_inside_the_measured_bounds() {
         "cache metrics carry only their closed outcome: {metrics_page}"
     );
 
-    let logical_cache_bytes = MAX_CLASSIFICATION_CACHE_ENTRIES * MAX_CARRIER_BYTES;
-    assert_eq!(logical_cache_bytes, MAX_CLASSIFICATION_CACHE_BYTES);
-    let retained_observation = if capacity.retained_bytes
-        > i64::try_from(MAX_CLASSIFICATION_CACHE_BYTES).expect("cache bound fits")
-    {
-        format!(
-            "The cache retained **{:.2} MiB** of allocator-requested live bytes at the logical 16 MiB/256-entry limit, so the current 16 MiB control is a schema-byte weight and does **not** bound compiled-validator heap or process RSS. Before claiming a physical memory budget, measure per-entry compiled weight across representative schemas and either include that weight in eviction or lower the entry/byte limits. This benchmark does not change cache semantics.",
-            mib(capacity.retained_bytes)
-        )
-    } else {
-        format!(
-            "The cache retained **{:.2} MiB** of allocator-requested live bytes in this run. The 16 MiB control still counts serialized schema bytes only; it is not a process-RSS guarantee.",
-            mib(capacity.retained_bytes)
-        )
-    };
+    for check in &weights {
+        assert!(
+            check.measured_bytes <= i64::try_from(check.estimated_bytes).expect("weight fits"),
+            "{}: measured {} bytes against an estimated weight of {}",
+            check.name,
+            check.measured_bytes,
+            check.estimated_bytes
+        );
+    }
+    assert!(
+        capacity.retained_bytes <= i64::try_from(capacity.full.weight_bytes).expect("weight fits"),
+        "the retained heap {} exceeds the estimated weight {}",
+        capacity.retained_bytes,
+        capacity.full.weight_bytes
+    );
+    let weight_rows = weights
+        .iter()
+        .map(|check| {
+            format!(
+                "| {} | {} | {} | {} | {:.1}% |\n",
+                check.name,
+                check.serialized_bytes,
+                check.estimated_bytes,
+                check.measured_bytes,
+                check.measured_bytes as f64 * 100.0 / check.estimated_bytes as f64
+            )
+        })
+        .collect::<String>();
+    let retained_observation = format!(
+        "The cache held **{} entries** (limit {MAX_CLASSIFICATION_CACHE_ENTRIES}) with an estimated weight of **{:.2} MiB** (budget {:.0} MiB) after {} evictions, and the allocator-requested live bytes it retained were **{:.2} MiB**. The estimate is an upper bound on every shape in the table above, so the budget bounds compiled-validator heap. It is not process RSS: `heap` does not count allocator fragmentation, resident pages or the per-thread caches that regex matchers build while serving requests.",
+        capacity.full.entries,
+        mib(i64::try_from(capacity.full.weight_bytes).expect("weight fits")),
+        mib(i64::try_from(MAX_CLASSIFICATION_CACHE_BYTES).expect("budget fits")),
+        capacity.full.evictions,
+        mib(capacity.retained_bytes)
+    );
 
     let mut latency = String::new();
     for (scenario, cold, warm) in [
@@ -666,20 +811,23 @@ fn maximum_carriers_and_payloads_stay_inside_the_measured_bounds() {
     }
 
     let report = format!(
-        "# Benchmark: payload classification (feature 016)\n\nMeasured by `tests/performance/payload-classification/main.rs`. These are observations on one shared machine, not latency or capacity promises.\n\n## Environment\n\n{}\n\n## Dataset and method\n\n- Two JSON payloads of exactly **{} bytes**: a wide object with {WIDE_CHILDREN} public string values against {} declared string subschemas, and {DEEP_ARRAYS} nested public arrays with a terminal string beyond the response-depth boundary.\n- Each carrier is exactly **{} bytes**. The wide carrier spends almost all of that limit on compiled property/type/length constraints; `$comment` only fills the final sub-128-byte remainder. The deep carrier uses `$comment` padding and measures the depth boundary, not worst-case validator complexity.\n- Cold rows create a new classifier/version for each of {COLD_SAMPLES} samples. Warm rows prime one immutable `(version, carrier)` and then measure {WARM_SAMPLES} cache hits. Timing covers `Classifier::project`; response encoding is performed afterward and reported separately.\n- Live allocations are three macOS `heap <pid>` snapshots: before filling the cache, while 256 compiled entries are retained, and after the classifier is dropped.\n\n## Latency and response size\n\n| Shape | Cache | Samples | p50 | p95 | p99 | Maximum encoded response | Failures |\n|---|---|---:|---:|---:|---:|---:|---:|\n{latency}\n## Cache behavior and retained heap\n\n| Measurement | Result |\n|---|---:|\n| wide warm hit ratio (prime included) | {:.3}% ({} hits, {} miss) |\n| deep warm hit ratio (prime included) | {:.3}% ({} hits, {} miss) |\n| logical full cache | {} entries × {} bytes = {} bytes |\n| baseline live heap | {} |\n| live heap at logical full cache | {} |\n| after dropping the classifier | {} |\n| full-cache delta | {} allocations / {} bytes ({:.2} MiB) |\n| live bytes released when the classifier was dropped | {} bytes ({:.2} MiB) |\n| 257th distinct carrier | {} eviction |\n| revisiting the first carrier | {} total evictions (the first was absent) |\n| emitted `classification_cache_total` during this run | hit={metric_hit}, miss={metric_miss}, evict={metric_evict} |\n\n{retained_observation}\n\n## Bounds and failures\n\n- Both maximum payloads and both maximum carriers were accepted. All {} measured projections succeeded.\n- Maximum encoded responses were {} bytes (wide) and {} bytes (deep), below the {}-byte response bound. Both are truncated by documented disclosure bounds; truncation is a successful bounded response.\n- Benchmark harness failure: {}.\n- No latency threshold existed before this run (NFR-016-003), so the percentile table establishes a baseline rather than claiming an SLO.\n- `heap` reports requested live allocation nodes and bytes. It does not include allocator fragmentation or resident pages, and the live-byte result must not be presented as RSS.\n\n## Gate status\n\nSC-016-008's required measurements are present for this environment: maximum payload/schema, p50/p95/p99, cache ratio, live allocation count, retained logical heap, encoded response size and failures. The numeric bounds held in this run. D281 limits serialized schema bytes, not compiled heap or RSS; no physical 16 MiB memory guarantee is inferred. The registered target and concurrent cache accounting/admission tests must pass before T016-053 closes. This measurement preserves the approved schema-weight policy and needs no new owner decision.\n",
+        "# Benchmark: payload classification (feature 016)\n\nMeasured by `tests/performance/payload-classification/main.rs`. These are observations on one shared machine, not latency or capacity promises.\n\n## Environment\n\n{}\n\n## Dataset and method\n\n- Two JSON payloads of exactly **{} bytes**: a wide object with {WIDE_CHILDREN} public string values against {} declared string subschemas, and {DEEP_ARRAYS} nested public arrays with a terminal string beyond the response-depth boundary.\n- Each carrier is exactly **{} bytes**. The wide carrier spends almost all of that limit on compiled property/type/length constraints; `$comment` only fills the final sub-128-byte remainder. The deep carrier uses `$comment` padding and measures the depth boundary, not worst-case validator complexity.\n- Cold rows create a new classifier/version for each of {COLD_SAMPLES} samples. Warm rows prime one immutable `(version, carrier)` and then measure {WARM_SAMPLES} cache hits. Timing covers `Classifier::project`; response encoding is performed afterward and reported separately.\n- Live allocations are macOS `heap <pid>` snapshots: before filling the cache, while the cache holds what its budget admits after 256 distinct versions of the wide carrier were compiled, and after the classifier is dropped. Five further carriers are compiled one at a time and their retained heap is compared with the weight the cache charged for them.\n\n## Latency and response size\n\n| Shape | Cache | Samples | p50 | p95 | p99 | Maximum encoded response | Failures |\n|---|---|---:|---:|---:|---:|---:|---:|\n{latency}\n## Walk cost\n\nSteps are the walk's own counter (D641), not time. The limit is {step_limit}.\n\n| Shape | Steps | Share of the limit | Bytes kept for number spellings |\n|---|---:|---:|---:|\n| wide (128 public strings) | {wide_steps} | {:.2}% | {wide_retained} |\n| deep (17 nested arrays) | {deep_steps} | {:.2}% | {deep_retained} |\n\n## Estimated weight against measured heap\n\n| Carrier | Serialized bytes | Estimated weight (bytes) | Measured retained heap (bytes) | Measured / estimated |\n|---|---:|---:|---:|---:|\n{weight_rows}\n## Cache behavior and retained heap\n\n| Measurement | Result |\n|---|---:|\n| wide warm hit ratio (prime included) | {:.3}% ({} hits, {} miss) |\n| deep warm hit ratio (prime included) | {:.3}% ({} hits, {} miss) |\n| cache after 256 distinct wide carriers | {} entries, estimated weight {} bytes of a {} byte budget, {} evictions |\n| baseline live heap | {} |\n| live heap with the cache full | {} |\n| after dropping the classifier | {} |\n| full-cache delta | {} allocations / {} bytes ({:.2} MiB) |\n| live bytes released when the classifier was dropped | {} bytes ({:.2} MiB) |\n| one more distinct carrier | {} total evictions |\n| revisiting the first carrier | {} total evictions (it had been evicted, so it compiled again) |\n| emitted `classification_cache_total` during this run | hit={metric_hit}, miss={metric_miss}, evict={metric_evict} |\n\n{retained_observation}\n\n## Bounds and failures\n\n- Both maximum payloads and both maximum carriers were accepted. All {} measured projections succeeded.\n- Maximum encoded responses were {} bytes (wide) and {} bytes (deep), below the {}-byte response bound. Both are truncated by documented disclosure bounds; truncation is a successful bounded response.\n- Benchmark harness failure: {}.\n- No latency threshold existed before this run (NFR-016-003), so the percentile table establishes a baseline rather than claiming an SLO.\n- `heap` reports requested live allocation nodes and bytes. It does not include allocator fragmentation or resident pages, and the live-byte result must not be presented as RSS.\n\n## Gate status\n\nSC-016-008's required measurements are present for this environment: maximum payload/schema, p50/p95/p99, cache ratio, live allocation count, retained logical heap, encoded response size and failures. The numeric bounds held in this run. The cache budget is an estimate of compiled bytes (decision D643): the table above shows it above the retained heap for every measured shape, in the profile named under Environment. It is a bound on allocator-requested heap, not on RSS, and it assumes the shapes measured here are representative; a carrier shape that compiles larger than 64 bytes per serialized byte plus the pattern allowance would break it, which is why the measurement is repeated whenever the carrier limits or the validator version change.\n",
         environment(),
         MAX_PAYLOAD_BYTES,
         wide.declared_properties.expect("wide properties"),
         MAX_CARRIER_BYTES,
+        wide_steps as f64 * 100.0 / step_limit as f64,
+        deep_steps as f64 * 100.0 / step_limit as f64,
         hit_ratio(wide_warm.cache),
         wide_warm.cache.hits,
         wide_warm.cache.misses,
         hit_ratio(deep_warm.cache),
         deep_warm.cache.hits,
         deep_warm.cache.misses,
-        MAX_CLASSIFICATION_CACHE_ENTRIES,
-        MAX_CARRIER_BYTES,
-        logical_cache_bytes,
+        capacity.full.entries,
+        capacity.full.weight_bytes,
+        MAX_CLASSIFICATION_CACHE_BYTES,
+        capacity.full.evictions,
         heap_cell(capacity.baseline),
         heap_cell(capacity.full_heap),
         heap_cell(capacity.after_drop_heap),

@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sagat_application::classification::{
-    ClassificationAnalysis, ClassificationInterpreter, ClassifiedNode, ClassifiedPayload,
-    ProjectionFailure, ProjectionRequest, ScalarValue,
+    ClassificationAnalysis, ClassificationCacheKey, ClassificationInterpreter, ClassifiedNode,
+    ClassifiedPayload, ProjectionFailure, ProjectionRequest, ScalarValue,
 };
 use sagat_application::clock::SystemClock;
 use sagat_application::payload_disclosure::{
@@ -14,6 +14,7 @@ use sagat_application::payload_disclosure::{
     PayloadDisclosureService, PayloadDisclosureUseCase,
 };
 use sagat_application::reveal_grants::RevealGrantService;
+use sagat_domain::classification::ClassificationRules;
 use sagat_domain::execution::RunId;
 use sagat_domain::identity::{Principal, Role};
 use sagat_infra_ir::JsonPayloadProjector;
@@ -30,6 +31,10 @@ struct SharedClassifier(Arc<Classifier>);
 impl ClassificationInterpreter for SharedClassifier {
     fn analyze(&self, document: &[u8]) -> ClassificationAnalysis {
         self.0.analyze(document)
+    }
+
+    fn prepare(&self, key: &ClassificationCacheKey, rules: ClassificationRules, document: &[u8]) {
+        self.0.prepare(key, rules, document);
     }
 
     fn project(
@@ -480,4 +485,197 @@ async fn concurrent_duplicate_reveals_each_audit_and_service_recreation_starts_w
     );
     assert_eq!(recreated_classifier.cache_stats().misses, 1);
     assert_eq!(reveal_audit_count(&world, &reader, run).await, 3);
+}
+
+/// Pauses where an adapter is allowed to do CPU-heavy preparation and records what the read
+/// transaction found when it got to `project`.
+struct PreparePausing {
+    classifier: Classifier,
+    entered: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    resume: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    misses_at_project: std::sync::atomic::AtomicU64,
+}
+
+impl ClassificationInterpreter for PreparePausing {
+    fn analyze(&self, document: &[u8]) -> ClassificationAnalysis {
+        self.classifier.analyze(document)
+    }
+
+    fn prepare(&self, key: &ClassificationCacheKey, rules: ClassificationRules, document: &[u8]) {
+        if let Some(entered) = self.entered.lock().expect("entry barrier").take() {
+            entered.send(()).expect("announce preparation");
+            self.resume
+                .lock()
+                .expect("resume barrier")
+                .recv_timeout(Duration::from_secs(30))
+                .expect("release preparation");
+        }
+        self.classifier.prepare(key, rules, document);
+    }
+
+    fn project(
+        &self,
+        request: ProjectionRequest<'_>,
+    ) -> Result<ClassifiedPayload, ProjectionFailure> {
+        self.misses_at_project.store(
+            self.classifier.cache_stats().misses,
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        self.classifier.project(request)
+    }
+}
+
+#[derive(Clone)]
+struct Probe(Arc<PreparePausing>);
+
+impl ClassificationInterpreter for Probe {
+    fn analyze(&self, document: &[u8]) -> ClassificationAnalysis {
+        self.0.analyze(document)
+    }
+
+    fn prepare(&self, key: &ClassificationCacheKey, rules: ClassificationRules, document: &[u8]) {
+        self.0.prepare(key, rules, document);
+    }
+
+    fn project(
+        &self,
+        request: ProjectionRequest<'_>,
+    ) -> Result<ClassifiedPayload, ProjectionFailure> {
+        self.0.project(request)
+    }
+}
+
+async fn transactions_idle_in_transaction(world: &World) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM pg_stat_activity \
+         WHERE datname = current_database() AND pid <> pg_backend_pid() \
+           AND state IN ('idle in transaction', 'idle in transaction (aborted)')",
+    )
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("transactions in flight")
+}
+
+/// Security review S5 / correctness review C5: a cold carrier must compile before the read
+/// transaction takes its run, namespace, membership and grant locks, never inside it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cold_carrier_compiles_before_the_transaction_and_holds_no_lock_while_it_does() {
+    let world = world().await;
+    let (workflow, _) = world.publish(classified_document("compile-first")).await;
+    let run = world
+        .start(workflow, &json!({"personal": "concurrent-pii-canary"}))
+        .await;
+    let reader = world.member("compile-reader", Role::Operator).await;
+    let grants = RevealGrantService::new(world.store.clone(), SystemClock);
+    let scope = grants
+        .prepare(&world.admin, world.namespace.id(), &ctx())
+        .await
+        .expect("grant scope");
+    grants
+        .grant(&scope, reader.subject().as_str(), &ctx())
+        .await
+        .expect("grant reader");
+
+    let (entered, preparing) = tokio::sync::oneshot::channel();
+    let (resume, released) = std::sync::mpsc::channel();
+    let probe = Arc::new(PreparePausing {
+        classifier: Classifier::default(),
+        entered: std::sync::Mutex::new(Some(entered)),
+        resume: std::sync::Mutex::new(released),
+        misses_at_project: std::sync::atomic::AtomicU64::new(0),
+    });
+    let service = Arc::new(PayloadDisclosureService::new(
+        world.store.clone(),
+        SystemClock,
+        Probe(Arc::clone(&probe)),
+        JsonPayloadProjector,
+    ));
+    let prepared = service
+        .prepare(&reader, run, DisclosureSelector::Input, true, &ctx())
+        .await
+        .expect("prepared reveal");
+    let reading = {
+        let service = Arc::clone(&service);
+        tokio::spawn(async move { service.disclose(prepared).await })
+    };
+    tokio::time::timeout(Duration::from_secs(10), preparing)
+        .await
+        .expect("the carrier was never prepared before the transaction opened")
+        .expect("preparation announced");
+    assert_eq!(
+        transactions_idle_in_transaction(&world).await,
+        0,
+        "no transaction may be open while the carrier compiles"
+    );
+    resume.send(()).expect("resume preparation");
+    let answer = reading.await.expect("read task").expect("reveal");
+    assert_revealed(answer);
+    assert_eq!(
+        probe
+            .misses_at_project
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the validator was compiled before project ran, so the transaction only hit the cache"
+    );
+}
+
+/// The projection is CPU work. With one runtime worker, a read that is inside `project` must not
+/// keep that worker: other tasks (publication, activation, every other request) still run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn a_projection_in_progress_does_not_occupy_the_only_runtime_worker() {
+    let world = world().await;
+    let (workflow, _) = world.publish(classified_document("worker-free")).await;
+    let run = world
+        .start(workflow, &json!({"personal": "concurrent-pii-canary"}))
+        .await;
+    let reader = world.member("worker-reader", Role::Operator).await;
+    let grants = RevealGrantService::new(world.store.clone(), SystemClock);
+    let scope = grants
+        .prepare(&world.admin, world.namespace.id(), &ctx())
+        .await
+        .expect("grant scope");
+    grants
+        .grant(&scope, reader.subject().as_str(), &ctx())
+        .await
+        .expect("grant reader");
+
+    let (entered, inside) = tokio::sync::oneshot::channel();
+    let (resume, released) = std::sync::mpsc::channel();
+    let service = Arc::new(PayloadDisclosureService::new(
+        world.store.clone(),
+        SystemClock,
+        PausingClassifier {
+            classifier: Classifier::default(),
+            entered: std::sync::Mutex::new(Some(entered)),
+            resume: std::sync::Mutex::new(released),
+        },
+        JsonPayloadProjector,
+    ));
+    let prepared = service
+        .prepare(&reader, run, DisclosureSelector::Input, true, &ctx())
+        .await
+        .expect("prepared reveal");
+    let reading = {
+        let service = Arc::clone(&service);
+        tokio::spawn(async move { service.disclose(prepared).await })
+    };
+    tokio::time::timeout(Duration::from_secs(10), inside)
+        .await
+        .expect("projection entry timeout")
+        .expect("projection entered");
+
+    // A task spawned now needs a worker. The wait is on a std channel because a timer would need
+    // the same worker.
+    let (done, ran) = std::sync::mpsc::channel();
+    tokio::spawn(async move {
+        let _ = done.send(());
+    });
+    let served = ran.recv_timeout(Duration::from_secs(5)).is_ok();
+    resume.send(()).expect("resume projection");
+    let answer = reading.await.expect("read task").expect("reveal");
+    assert_revealed(answer);
+    assert!(
+        served,
+        "a projection kept the only runtime worker, so no other task could run"
+    );
 }

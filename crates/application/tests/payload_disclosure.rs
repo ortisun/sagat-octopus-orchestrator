@@ -4,16 +4,18 @@
 use std::sync::{Arc, Mutex};
 
 use sagat_application::classification::{
-    ClassificationAnalysis, ClassificationInterpreter, ClassifiedNode, ClassifiedPayload,
-    DisclosedLevels, ProjectionFailure, ProjectionRequest, ScalarValue, ValueKind,
+    CarrierPointer, ClassificationAnalysis, ClassificationCacheKey, ClassificationInterpreter,
+    ClassifiedNode, ClassifiedPayload, DisclosedLevels, ProjectionFailure, ProjectionRequest,
+    ScalarValue, ValueKind,
 };
 use sagat_application::clock::Clock;
 use sagat_application::error::{AppError, StoreError};
 use sagat_application::identity::RequestContext;
 use sagat_application::payload_disclosure::{
-    DisclosureFailure, DisclosureRead, DisclosureRun, DisclosureSelector, PayloadDisclosureResult,
-    PayloadDisclosureService, PayloadDisclosureStore, PayloadDisclosureUseCase, PreparedDisclosure,
-    SelectedDisclosure, StoredDefinition, StructureOnlyReason, UnavailableDisclosureReason,
+    CarrierWarmup, DisclosureFailure, DisclosureRead, DisclosureRun, DisclosureSelector,
+    PayloadDisclosureResult, PayloadDisclosureService, PayloadDisclosureStore,
+    PayloadDisclosureUseCase, PreparedDisclosure, SelectedDisclosure, StoredDefinition,
+    StructureOnlyReason, UnavailableDisclosureReason,
 };
 use sagat_application::payloads::{
     PayloadProjection, PayloadProjector, PayloadStructure, StoredPayload, StoredPayloadBytes,
@@ -122,6 +124,15 @@ impl PayloadDisclosureStore for FakeStore {
         if state.tenant != prepared.tenant_id() || state.run != prepared.run_id() {
             return Ok(DisclosureRead::Missing);
         }
+        // The adapter contract: prepare the carrier before anything that holds locks.
+        if let Some(carrier) = &state.selected.carrier {
+            evaluator.prepare(CarrierWarmup {
+                workflow_version: state.selected.workflow_version,
+                carrier,
+                rules: state.selected.classification_rules,
+                definition: state.selected.definition.as_slice(),
+            });
+        }
         let evaluated = evaluator.evaluate(
             state.selected.clone(),
             state.current_role,
@@ -159,6 +170,7 @@ struct InterpreterState {
     failure: Option<ProjectionFailure>,
     disclosed: DisclosedLevels,
     requests: Vec<(bool, bool, bool, bool, bool)>,
+    prepared: Vec<(ClassificationCacheKey, ClassificationRules, usize)>,
 }
 
 impl FakeInterpreter {
@@ -168,6 +180,7 @@ impl FakeInterpreter {
                 failure: None,
                 disclosed,
                 requests: Vec::new(),
+                prepared: Vec::new(),
             })),
         }
     }
@@ -176,6 +189,14 @@ impl FakeInterpreter {
 impl ClassificationInterpreter for FakeInterpreter {
     fn analyze(&self, _document: &[u8]) -> ClassificationAnalysis {
         ClassificationAnalysis::default()
+    }
+
+    fn prepare(&self, key: &ClassificationCacheKey, rules: ClassificationRules, document: &[u8]) {
+        self.state
+            .lock()
+            .expect("interpreter state")
+            .prepared
+            .push((key.clone(), rules, document.len()));
     }
 
     fn project(
@@ -325,17 +346,26 @@ async fn closed_projector_failures_never_authorize_values_or_emit_a_success_audi
                 assert!(
                     matches!(answer.result, PayloadDisclosureResult::StructureOnly { reason, .. } if reason == expected)
                 );
+                // The structure answer is an inspection and is audited as one (ADR-0028).
+                let state = store.0.lock().expect("state");
+                assert_eq!(state.audits.len(), 1);
+                assert_eq!(state.audits[0].action(), AuditAction::PayloadInspected);
             } else {
-                let expected = if expected_structure.is_some() {
-                    UnavailableDisclosureReason::NotDisclosable
-                } else {
+                // Only a caller who may inspect is told why a payload is not shown. Everyone else
+                // gets the one answer that is the same for invalid, schema-less and legacy
+                // payloads, so the state of a payload is not an oracle (D269, D278).
+                let expected = if role == Role::Operator {
                     UnavailableDisclosureReason::UnsupportedFormat
+                } else {
+                    UnavailableDisclosureReason::NotDisclosable
                 };
                 assert!(
-                    matches!(answer.result, PayloadDisclosureResult::Unavailable { reason, .. } if reason == expected)
+                    matches!(answer.result, PayloadDisclosureResult::Unavailable { reason, .. } if reason == expected),
+                    "{failure:?} for {role:?}: {:?}",
+                    answer.result
                 );
+                assert!(store.0.lock().expect("state").audits.is_empty());
             }
-            assert!(store.0.lock().expect("state").audits.is_empty());
         }
     }
 }
@@ -615,4 +645,184 @@ async fn audit_failure_prevents_a_projected_internal_value_from_returning() {
             )
         )
     );
+}
+
+#[tokio::test]
+async fn the_carrier_is_prepared_once_with_the_pinned_identity_and_never_for_a_legacy_version() {
+    let store = FakeStore::new();
+    let interpreter = FakeInterpreter::new(DisclosedLevels::PUBLIC);
+    let service = PayloadDisclosureService::new(
+        store.clone(),
+        FixedClock,
+        interpreter.clone(),
+        StructureProjector,
+    );
+    let read = |role| {
+        let service = &service;
+        let store = store.clone();
+        async move {
+            let prepared = service
+                .prepare(
+                    &principal(store.tenant(), role),
+                    store.run(),
+                    DisclosureSelector::Input,
+                    false,
+                    &context(),
+                )
+                .await
+                .expect("prepared");
+            service.disclose(prepared).await.expect("answer")
+        }
+    };
+    read(Role::Viewer).await;
+    let (version, definition_bytes) = {
+        let state = store.0.lock().expect("state");
+        (
+            state.selected.workflow_version,
+            state.selected.definition.as_slice().len(),
+        )
+    };
+    assert_eq!(
+        interpreter.state.lock().expect("interpreter").prepared,
+        vec![(
+            ClassificationCacheKey {
+                version,
+                carrier: CarrierPointer::Input,
+            },
+            ClassificationRules::CURRENT,
+            definition_bytes,
+        )]
+    );
+
+    store.0.lock().expect("state").selected.classification_rules = ClassificationRules::NONE;
+    read(Role::Viewer).await;
+    assert_eq!(
+        interpreter
+            .state
+            .lock()
+            .expect("interpreter")
+            .prepared
+            .len(),
+        1,
+        "a version without classification rules has nothing to compile"
+    );
+}
+
+#[tokio::test]
+async fn every_structure_answer_to_an_inspector_is_audited_as_an_inspection_and_only_those() {
+    // (failure of the validity gate, whether the selected record has a carrier at all)
+    let cases = [
+        (Some(ProjectionFailure::LegacyVersion), true),
+        (Some(ProjectionFailure::NoCarrier), true),
+        (Some(ProjectionFailure::SchemaUnusable), true),
+        (Some(ProjectionFailure::SchemaMismatch), true),
+        (None, false),
+    ];
+    for (failure, has_carrier) in cases {
+        for (role, audited) in [
+            (Role::Operator, true),
+            (Role::Developer, false),
+            (Role::Viewer, false),
+        ] {
+            let store = FakeStore::new();
+            {
+                let mut state = store.0.lock().expect("state");
+                state.current_role = role;
+                if !has_carrier {
+                    state.selected.carrier = None;
+                }
+            }
+            let interpreter = FakeInterpreter::new(DisclosedLevels::NONE);
+            interpreter.state.lock().expect("interpreter").failure = failure;
+            let service = PayloadDisclosureService::new(
+                store.clone(),
+                FixedClock,
+                interpreter,
+                StructureProjector,
+            );
+            let prepared = service
+                .prepare(
+                    &principal(store.tenant(), role),
+                    store.run(),
+                    DisclosureSelector::Journal { sequence: 4 },
+                    false,
+                    &context(),
+                )
+                .await
+                .expect("prepared");
+            let answer = service.disclose(prepared).await.expect("answer");
+            let state = store.0.lock().expect("state");
+            if audited {
+                assert!(
+                    matches!(answer.result, PayloadDisclosureResult::StructureOnly { .. }),
+                    "{failure:?}: {:?}",
+                    answer.result
+                );
+                assert_eq!(state.audits.len(), 1, "{failure:?} for {role:?}");
+                assert_eq!(state.audits[0].action(), AuditAction::PayloadInspected);
+                assert_eq!(
+                    state.audits[0].reason(),
+                    Some("classified-v1:journal:4:structure")
+                );
+            } else {
+                assert!(
+                    !matches!(answer.result, PayloadDisclosureResult::StructureOnly { .. }),
+                    "{role:?} must not receive structure"
+                );
+                assert!(state.audits.is_empty(), "{failure:?} for {role:?}");
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_stored_size_goes_only_to_a_caller_who_may_inspect() {
+    let stored_len = br#"{"name":"Ada"}"#.len() as u64;
+    // None is a successful disclosure; each failure is a way the payload is not shown.
+    let outcomes = [
+        None,
+        Some(ProjectionFailure::NotDisclosable),
+        Some(ProjectionFailure::SchemaMismatch),
+        Some(ProjectionFailure::UnsupportedPayload),
+        Some(ProjectionFailure::PayloadTooLarge),
+    ];
+    for failure in outcomes {
+        for role in [Role::Viewer, Role::Developer, Role::Operator] {
+            let store = FakeStore::new();
+            store.0.lock().expect("state").current_role = role;
+            let interpreter = FakeInterpreter::new(DisclosedLevels::PUBLIC);
+            interpreter.state.lock().expect("interpreter").failure = failure;
+            let service = PayloadDisclosureService::new(
+                store.clone(),
+                FixedClock,
+                interpreter,
+                StructureProjector,
+            );
+            let prepared = service
+                .prepare(
+                    &principal(store.tenant(), role),
+                    store.run(),
+                    DisclosureSelector::Input,
+                    false,
+                    &context(),
+                )
+                .await
+                .expect("prepared");
+            let answer = service.disclose(prepared).await.expect("answer");
+            let expected = (role == Role::Operator).then_some(stored_len);
+            match answer.result {
+                PayloadDisclosureResult::Disclosed { size_bytes, .. } => {
+                    assert_eq!(size_bytes, expected, "{failure:?} for {role:?}");
+                }
+                PayloadDisclosureResult::Unavailable { size_bytes, .. } => {
+                    assert_eq!(size_bytes, expected, "{failure:?} for {role:?}");
+                }
+                PayloadDisclosureResult::StructureOnly { size_bytes, .. } => {
+                    assert_eq!(role, Role::Operator, "structure is for inspectors only");
+                    assert_eq!(size_bytes, stored_len);
+                }
+                other => panic!("unexpected answer {other:?}"),
+            }
+        }
+    }
 }

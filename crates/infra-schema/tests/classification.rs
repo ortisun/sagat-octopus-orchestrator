@@ -800,3 +800,31 @@ fn multiple_of_schema_divisors_must_not_be_rounded_during_compilation() {
         "a supported small divisor retains exact large integer modulo"
     );
 }
+
+/// Pending owner decision O640 (security review S4). D279 says an undeclared key carries its name
+/// whenever its value is disclosed, so a map governed only by `additionalProperties` names its keys
+/// at the level of its values. A key can be personal (an email address) while the author can only
+/// classify values. This test pins today's behaviour so that a change is deliberate; it is not an
+/// endorsement. If the owner chooses to withhold such names, this is the test to change.
+#[test]
+fn pending_decision_keys_of_an_additional_properties_map_are_named_at_their_values_level() {
+    let doc = document(json!({
+        "type": "object", "x-sagat-classification": "public",
+        "additionalProperties": {"type": "integer"}
+    }));
+    let result = Classifier::default()
+        .project(request(
+            &doc,
+            br#"{"ada@example.com":3}"#,
+            Audience::new(false, false, false),
+        ))
+        .expect("projection");
+    let ClassifiedNode::Container { ref children, .. } = result.tree else {
+        panic!("container")
+    };
+    assert_eq!(
+        children[0].name.as_deref(),
+        Some("ada@example.com"),
+        "D279 as written: the key follows its value's level (public here); see O640"
+    );
+}

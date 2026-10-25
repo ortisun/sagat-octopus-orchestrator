@@ -8,7 +8,14 @@ use sagat_domain::workflow::NodeId;
 
 pub const MAX_CARRIER_BYTES: usize = 64 * 1024;
 pub const MAX_SCHEMA_DEPTH: usize = 32;
+/// `$ref` hops one schema location may expand. The limit is per location, never per instance.
 pub const MAX_REF_EXPANSIONS: usize = 1_000;
+/// Steps one projection may spend: every expanded subschema is charged once for each instance
+/// node it applies to, which is also what the validator spends. Exhaustion fails closed.
+pub const MAX_WALK_STEPS: usize = 4_000_000;
+/// Wall-clock backstop for one projection while a read transaction is open. The step budget is
+/// the deterministic bound; this catches a starved or stalled worker.
+pub const MAX_PROJECTION_DURATION: std::time::Duration = std::time::Duration::from_secs(5);
 pub const MAX_PAYLOAD_BYTES: usize = 256 * 1024;
 pub const MAX_PROJECTION_DEPTH: usize = 16;
 pub const MAX_PROJECTION_NODES: usize = 1_024;
@@ -19,7 +26,14 @@ pub const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 pub const MAX_CLASSIFICATION_FINDINGS: usize = 20;
 pub const MAX_CLASSIFICATION_REPORT_ENTRIES: usize = 500;
 pub const MAX_CLASSIFICATION_CACHE_ENTRIES: usize = 256;
-pub const MAX_CLASSIFICATION_CACHE_BYTES: usize = 16 * 1024 * 1024;
+/// Budget of the compiled-validator cache in estimated compiled bytes, not serialized schema
+/// bytes: each entry is weighed by what compiling it keeps in memory (see the infra-schema cache).
+pub const MAX_CLASSIFICATION_CACHE_BYTES: usize = 64 * 1024 * 1024;
+/// Carriers that failed to compile are remembered so that a broken version costs one compile.
+pub const MAX_CLASSIFICATION_FAILURE_ENTRIES: usize = 1_024;
+/// `pattern` keywords and `patternProperties` keys one carrier may hold. Each compiles to an
+/// automaton, so the count bounds what a 64 KiB carrier can cost once compiled.
+pub const MAX_CARRIER_PATTERNS: usize = 32;
 
 /// A contract value failed closed validation. It never carries the rejected text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -545,6 +559,15 @@ impl ClassificationAnalysis {
 /// Synchronous CPU-only boundary implemented by the schema adapter.
 pub trait ClassificationInterpreter: Send + Sync {
     fn analyze(&self, document: &[u8]) -> ClassificationAnalysis;
+
+    /// Compiles and caches the carrier validator for `key`, so that a later [`Self::project`]
+    /// is a cache hit. A caller that holds database locks must call this before it takes them:
+    /// compiling is the expensive step and nothing in it needs the transaction. The outcome is
+    /// advisory (a failure is remembered and reproduced by `project`), so the default does
+    /// nothing for interpreters without a cache.
+    fn prepare(&self, key: &ClassificationCacheKey, rules: ClassificationRules, document: &[u8]) {
+        let _ = (key, rules, document);
+    }
 
     fn project(
         &self,

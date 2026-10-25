@@ -20,6 +20,6 @@ serde_json.workspace = true
 sha2 = "0.11"
 sqlx.workspace = true
 time.workspace = true
-tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
 uuid.workspace = true

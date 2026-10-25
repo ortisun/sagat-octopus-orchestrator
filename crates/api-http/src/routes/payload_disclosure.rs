@@ -253,8 +253,10 @@ fn result(out: &mut Vec<u8>, result: &PayloadDisclosureResult) -> Result<(), Api
             string(out, "disclosed")?;
             field_name(out, "schema", false)?;
             schema_body(out, schema)?;
-            field_name(out, "sizeBytes", false)?;
-            integer(out, *size_bytes);
+            if let Some(size_bytes) = size_bytes {
+                field_name(out, "sizeBytes", false)?;
+                integer(out, *size_bytes);
+            }
             field_name(out, "truncated", false)?;
             boolean(out, projection.truncated);
             field_name(out, "tree", false)?;
@@ -577,7 +579,7 @@ mod tests {
                     version_number: 1,
                     rules: ClassificationRules::CURRENT,
                 },
-                size_bytes: u64::try_from(value.len()).expect("test size"),
+                size_bytes: Some(u64::try_from(value.len()).expect("test size")),
                 projection: ClassifiedPayload {
                     tree: ClassifiedNode::Value {
                         level: Level::Public,
@@ -613,7 +615,7 @@ mod tests {
                     version_number: 3,
                     rules: ClassificationRules::CURRENT,
                 },
-                size_bytes: 32,
+                size_bytes: Some(32),
                 projection: ClassifiedPayload {
                     tree: ClassifiedNode::Container {
                         level: Level::Public,
@@ -647,6 +649,25 @@ mod tests {
         let parsed: serde_json::Value =
             serde_json::from_str(&text.replace(number, "0")).expect("valid JSON shape");
         assert_eq!(parsed["kind"], "disclosed");
+    }
+
+    #[test]
+    fn the_stored_size_is_in_the_answer_only_when_the_use_case_gave_it() {
+        let mut disclosure = scalar_disclosure("x".into());
+        let body = |disclosure: &PayloadDisclosure| -> serde_json::Value {
+            serde_json::from_slice(&encode_disclosure(disclosure).expect("envelope"))
+                .expect("JSON envelope")
+        };
+        assert_eq!(body(&disclosure)["sizeBytes"], 1);
+        if let PayloadDisclosureResult::Disclosed { size_bytes, .. } = &mut disclosure.result {
+            *size_bytes = None;
+        }
+        let without = body(&disclosure);
+        assert_eq!(without["kind"], "disclosed");
+        assert!(
+            without.get("sizeBytes").is_none(),
+            "a caller who may not inspect must not learn the size of the stored payload"
+        );
     }
 
     #[test]
