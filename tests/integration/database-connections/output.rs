@@ -1,7 +1,8 @@
 //! Retained-pin content checks use provider I/O outside the engine transaction and fail closed.
+use super::world;
 use super::{
     ReadBarrier,
-    support::engine::{Session, ctx, document, task_ref, world},
+    support::engine::{Session, ctx, document, task_ref},
 };
 use sagat_application::{
     clock::SystemClock,

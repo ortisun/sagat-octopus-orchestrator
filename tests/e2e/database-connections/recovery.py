@@ -79,7 +79,7 @@ def restore(dc, private, address, verify):
     assert bao("GET", "secret/data/" + credential)["data"]["metadata"]["version"] == 1
     assert bao("GET", "secret/metadata/" + retired)["data"]["versions"]["1"]["destroyed"] is True
     bao("POST", "secret/data/" + retired, {"options":{"cas":0}, "data":{"late":True}}, expected=400)
-    dc("up", "-d", "control-plane", "execution-engine")
-    dc("--profile", "database", "up", "-d", "database-runner")
+    dc("up", "-d", "control-plane", "execution-engine", timeout=300)
+    dc("--profile", "database", "up", "-d", "database-runner", timeout=300)
     verify()
     print("PASS: coordinated PostgreSQL/Raft restore, process restart, retained result, live credential and permanent retirement fence", flush=True)

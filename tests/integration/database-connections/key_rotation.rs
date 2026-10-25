@@ -1,5 +1,6 @@
 //! The intent key has a quiesced replacement procedure, not a mixed-key rolling window.
-use super::support::engine::{ctx, world};
+use super::support::engine::ctx;
+use super::world;
 use sagat_application::{
     clock::SystemClock,
     error::AppError,

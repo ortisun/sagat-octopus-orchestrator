@@ -1,7 +1,8 @@
 //! Real PostgreSQL/OpenBao: current policy, capacity and two-phase capability fencing.
+use super::world;
 use super::{
     ReadBarrier,
-    support::engine::{Session, ctx, document, task_ref, world},
+    support::engine::{Session, ctx, document, task_ref},
 };
 use sagat_application::{
     clock::SystemClock,

@@ -24,10 +24,6 @@ use support::{
     engine::document,
     worker::{Platform, platform_with},
 };
-use testcontainers_modules::{
-    postgres::Postgres,
-    testcontainers::{GenericImage, ImageExt, core::WaitFor, runners::AsyncRunner},
-};
 use uuid::Uuid;
 
 struct Process(Child);
@@ -126,6 +122,19 @@ async fn measure_managed_database_phase_latency() {
 }
 
 async fn scenario(benchmark: bool) {
+    // A measurement may take longer on purpose; the correctness run must not.
+    let limit = if benchmark {
+        support::bounded::LIFECYCLE_LIMIT * 6
+    } else {
+        support::bounded::LIFECYCLE_LIMIT
+    };
+    support::bounded::lifecycle("isolated database runner", limit, |_| {
+        process_scenario(benchmark)
+    })
+    .await;
+}
+
+async fn process_scenario(benchmark: bool) {
     let binary = std::env::var_os("SAGAT_DATABASE_RUNNER_BIN")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
@@ -137,16 +146,7 @@ async fn scenario(benchmark: bool) {
     );
     let dir = tempfile::tempdir().unwrap();
     let collector = support::collector::Collector::start().await;
-    let bao = GenericImage::new("openbao/openbao", "2.7.1")
-        .with_wait_for(WaitFor::message_on_stdout(
-            "Development mode should NOT be used in production",
-        ))
-        .with_exposed_port(8200.into())
-        .with_env_var("BAO_DEV_ROOT_TOKEN_ID", "runner-bootstrap")
-        .with_cmd(["server", "-dev", "-dev-listen-address=0.0.0.0:8200"])
-        .start()
-        .await
-        .unwrap();
+    let bao = support::bounded::start_openbao("runner-bootstrap").await;
     let bao_token = dir.path().join("bao-token");
     std::fs::write(&bao_token, "runner-bootstrap").unwrap();
     let provider = Arc::new(
@@ -176,11 +176,7 @@ async fn scenario(benchmark: bool) {
     .await;
     let ns = p.namespace_id().await;
     let proxy = proxy::start(&p.api.grpc_url).await;
-    let target = Postgres::default()
-        .with_tag("16-alpine")
-        .start()
-        .await
-        .unwrap();
+    let target = support::bounded::start_postgres_target().await;
     let port = target.get_host_port_ipv4(5432).await.unwrap();
     let admin = sqlx::postgres::PgPoolOptions::new()
         .max_connections(2)

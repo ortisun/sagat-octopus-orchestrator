@@ -1,9 +1,10 @@
 //! Migration grace versions cannot become an outage fallback for HMAC consumers.
+use super::world;
 use super::{
     consumers::Down,
     support::{
         self,
-        engine::{activity, ctx, document, world},
+        engine::{activity, ctx, document},
         receiver::Receiver,
     },
 };
