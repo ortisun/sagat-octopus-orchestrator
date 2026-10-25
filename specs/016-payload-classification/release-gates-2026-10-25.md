@@ -78,3 +78,10 @@ with formatting and focused strict Clippy also passing. A fresh independent revi
 C1/C2 issue in the change or its validation contract. The earlier macOS pass did not reproduce
 the Linux failure, so these local results do not establish the Linux regression fix: the new
 integrated heads must pass actual Linux CI before merge or release.
+
+
+Root repeated the same combined five-case command above on the integrated 0.2.0 candidate
+`0d2791a9`: **5 passed; 0 failed; 0 ignored; 549 filtered out; 14.00 s**, 53.03 s overall
+including compilation. Formatting, architecture (24 crates), agent configuration, release-version
+agreement and Actionlint passed. This primary integrated-tree rerun remains local evidence;
+actual Linux CI is still required to close the regression.
