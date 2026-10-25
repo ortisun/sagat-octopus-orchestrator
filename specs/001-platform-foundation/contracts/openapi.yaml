@@ -5477,7 +5477,11 @@ components:
         dataDisclosure: {type: string, enum: [revealed, structure-only], description: 'Whether this answer includes the whole event data. Events have no field carrier and are treated as PII as a whole.'}
         dataSizeBytes: {type: integer, minimum: 0, description: 'Bytes of the stored event payload.'}
         data: {$ref: '#/components/schemas/JsonObject'}
-        dataStructure: {$ref: '#/components/schemas/PayloadStructure'}
+        dataStructure:
+          description: 'The ADR-0028 structure of the event data, or {kind: opaque} when the projector does not accept the stored data (a server-side bound, not a refusal of the caller).'
+          oneOf:
+            - {$ref: '#/components/schemas/PayloadStructure'}
+            - {type: object, additionalProperties: false, required: [kind], properties: {kind: {type: string, const: opaque}}}
         deliveries: {type: array, items: {$ref: '#/components/schemas/EventDelivery'}}
     BrokerSubscription:
       type: object

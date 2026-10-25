@@ -357,7 +357,11 @@ Gaps and decisions: `specs/010-scalability-ha/research.md` (D229–D260 and G239
 Decision: [ADR-0033](adr/ADR-0033-payload-values-are-classified-per-field.md); combined dependency
 policy: [ADR-0036](adr/ADR-0036-integrated-scoped-managed-and-classified-execution.md). Implementation
 is in progress. [Integration notes](../tasks/project-completion/integration-notes.md) name the actual
-commands and focused results; unchecked canonical tasks require their full acceptance criteria.
+commands and focused results (that tree is not in git: a tick stands on a test in the repository);
+unchecked canonical tasks require their full acceptance criteria. Two independent reviews on
+2026-10-25 reopened T016-053 (benchmark: the cache does not bound compiled-validator memory) and
+T016-054 (workspace gates never run as one set); see the review section of
+[the analysis](../specs/016-payload-classification/analysis.md).
 
 | Requirement or criterion | State | Evidence and remaining gate |
 |---|---|---|

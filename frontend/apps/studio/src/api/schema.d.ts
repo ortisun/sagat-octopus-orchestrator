@@ -4074,7 +4074,11 @@ export interface components {
             /** @description Bytes of the stored event payload. */
             dataSizeBytes: number;
             data?: components["schemas"]["JsonObject"];
-            dataStructure?: components["schemas"]["PayloadStructure"];
+            /** @description The ADR-0028 structure of the event data, or {kind: opaque} when the projector does not accept the stored data (a server-side bound, not a refusal of the caller). */
+            dataStructure?: components["schemas"]["PayloadStructure"] | {
+                /** @constant */
+                kind: "opaque";
+            };
             deliveries: components["schemas"]["EventDelivery"][];
         } & unknown;
         BrokerSubscription: {

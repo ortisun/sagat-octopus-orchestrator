@@ -15,9 +15,9 @@ holds in an implementation.
 | Non-functional requirements | 6 |
 | Success criteria | 10 |
 | Requirement/criterion coverage by tasks | 45/45 (every FR, NFR and SC appears in the `Refs` of at least one task) |
-| Tasks | 65 (T016-001 to T016-065), 1 ticked (T016-002, the recording of the owner's answers) |
+| Tasks | 65 (T016-001 to T016-065). At the design review 1 was ticked (T016-002). On 2026-10-25: 62 ticked, 3 open (T016-001 closes when the set is merged; T016-053 and T016-054 are open, see the review below) |
 | Tasks without file paths or `Refs` | 0 |
-| Decisions / gaps | D261-D290 and D302-D306 (35) / G272-G293 (22) |
+| Decisions / gaps | D261-D290, D302-D306 and D660-D666 (42) / G272-G293 and G660-G664 (27); owner questions O660-O661 with defaults |
 | Product questions for the owner | 4 asked (P1-P4), 4 answered on 2026-10-17; none open |
 | Unresolved clarification markers | 0 |
 | Findings of the validation against ADRs and code | 15, all corrected in the documents or recorded as gaps; 3 of them were put to the owner and are now decided |
@@ -154,3 +154,28 @@ and Chromium commands in the guide have their separate executed evidence recorde
 are reused where the tested production path is unchanged, not invented reruns. The requirements
 checklist now distinguishes executed local evidence from the still-open full workspace/release
 gates. T016-056 closes for the delivered guide and traceability; T016-054 remains open.
+
+
+## Review of the integrated branch — 2026-10-25
+
+Two independent read-only reviews (security and correctness) of the integrated branch found defects.
+The surface half is fixed on `feature/016-fix-surface` (publication, diff, events, grants, response
+types, specification and evidence); the engine half (walker, validator cache, disclosure store,
+decimals, budgets, audit of structure reads, keys admitted by `additionalProperties`) is recorded under
+D640+ by the branch that fixes it. The decisions are D660 to D666 and the gaps G660 to G664 in
+[research.md](./research.md#surface-fixes-after-the-two-independent-reviews-2026-10-25).
+
+What the review changed in this set:
+
+| Finding | Correction |
+|---|---|
+| T016-054 was ticked with no evidence while this file said it was open | Unticked; the gates run on the merged tree (G662) |
+| T016-053 was ticked while its own report says the target and the cache tests must pass first, and the cache holds about 26 times the weight it counts | Unticked (G662) |
+| T016-047 cited a test of the format of one `prepare` line for the diff findings | The evidence names `classification_diff.rs` and the other tests that prove it |
+| T016-050 cited a test that drives the grant helper, not a reveal | A test pauses a production reveal and revokes and deletes the membership while it runs |
+| T016-056 cited a test that hard-coded its commands | The test reads `quickstart.md` and compares |
+| 56 evidence lines cite `tasks/project-completion/`, which is not in git | Each says "(outside git)"; a tick stands on a test in the repository (G663) |
+| FR-016-009 said a `secret` node is withheld for everyone, the matrix and the code omit it for a caller without `run:payload:inspect` | The text says what the matrix says (D662) |
+| US01.6 did not say what republishing an identical legacy document does | It does, and `classificationRules` is returned (D661) |
+
+Nothing in this review is evidence that a requirement holds beyond the tests named in `tasks.md`.
