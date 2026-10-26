@@ -5,7 +5,10 @@
 **Status**: Implemented; integrated release gates passed and merged into the 0.2.0 checkpoint on 2026-10-26. See [release evidence](release-gates-2026-10-25.md). The direction is accepted in [ADR-0033](../../docs/adr/ADR-0033-payload-values-are-classified-per-field.md). The four product choices were answered by the owner on 2026-10-17 ([research.md](./research.md#product-decisions-answered-2026-10-17)); nothing in this set is an open product question, and what is still undecided is listed there.
 **Input**: Deliver ADR-0033: the author classifies the values of a workflow as `public`, `internal`, `pii` or `secret` on the JSON Schemas of the workflow, and the platform discloses a value only to a principal the level allows.
 
-## Original context and delivery boundary
+## Context and delivery boundary
+
+The baseline below describes the design context of 2026-10-16; the implemented status and current
+release evidence are recorded above.
 
 Today no REST call returns the value of a run payload. The run, its journal and its runtime graph carry
 a `payloadRef` digest and a failure code; an Admin or Operator may inspect the *structure* of the run
