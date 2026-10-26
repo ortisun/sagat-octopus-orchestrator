@@ -220,3 +220,21 @@ The ignored benchmarks and DR scenarios require their explicit scripted runs.
 Final integrated-head benchmark/CI/preflight validation remains mandatory before
 merge or release; these local results are not a waiver. Historical Linux
 `Unavailable` causes remain unknown. Refs: T010-034, NFR-010-PERF, T016-054.
+
+## Primary verification on the integrated 0.2.0 candidate
+
+Root reran the reviewed client on release candidate `5aec324e` using the runtime
+role, a private Cargo target, two build jobs and two test threads. The complete
+nonignored `perf_scalability_ha` target passed **16 tests; 0 failed; 7 ignored;
+11.29 s** (32.76 s including Cargo). The script
+`SAGAT_PERF_TRANSITION_RUNS=60 SAGAT_PERF_SCENARIOS=step_transitions_per_second
+tests/performance/scalability-ha/run.sh` passed all nine configurations, each
+with 60 three-activity runs: **1,620 distinct acknowledged transitions**, with
+terminal-run, journal/replay, lease and transaction checks, in **18.03 s**
+(236.62 s including compilation). This used macOS arm64 and the script-owned
+PostgreSQL 18.6; all rows recorded zero failed attempts and exhausted calls.
+This particular run does not establish the cause of historical Linux failures.
+
+`cargo clippy --workspace --all-targets --locked -- -D warnings` also passed on
+that integrated tree in **88.86 s**. The full current-head CI gates remain
+mandatory; these local results do not replace them.
