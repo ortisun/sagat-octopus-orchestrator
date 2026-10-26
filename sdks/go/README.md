@@ -15,7 +15,7 @@ transition: the server owns every state and every retry decision. The behaviour 
 [`sdks/SPEC.md`](../SPEC.md); the five SDKs (TypeScript, Go, Python, C#, Java) are held to it by one
 conformance suite ([`tests/contract/sdk-conformance`](../../tests/contract/sdk-conformance/README.md)).
 
-Package metadata: module `github.com/ortisun/sagat-octopus-orchestrator/sdks/go`, version `0.1.0`,
+Package metadata: module `github.com/ortisun/sagat-octopus-orchestrator/sdks/go`, version `0.2.0`,
 license `MIT` (the module source artifact includes `LICENSE`),
 repository `https://github.com/ortisun/sagat-octopus-orchestrator`, directory `sdks/go`.
 
@@ -27,7 +27,7 @@ Go 1.25 or newer (gRPC v1.83 requires it).
 go get github.com/ortisun/sagat-octopus-orchestrator/sdks/go@latest
 ```
 
-The module lives in a subdirectory of the repository, so its release tags are `sdks/go/v0.1.0`
+The module lives in a subdirectory of the repository, so its release tags are `sdks/go/v0.2.0`
 and so on. No tag has been published yet: until one is, use a `replace` directive or a `go.work`
 that points at a checkout of the repository.
 

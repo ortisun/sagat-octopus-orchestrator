@@ -12,7 +12,7 @@
 
   <ItemGroup>
     <!-- Until the SDK is published, use the checkout. Replace this with
-         <PackageReference Include="SagatOctopusOrchestrator.Sdk" Version="0.1.0" /> once it is. -->
+         <PackageReference Include="SagatOctopusOrchestrator.Sdk" Version="0.2.0" /> once it is. -->
     <ProjectReference Include="../../../sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/SagatOctopusOrchestrator.Sdk.csproj" />
   </ItemGroup>
 

@@ -709,3 +709,69 @@ weakened. On this branch, the focused real PostgreSQL/OpenBao test was observed 
 74.78 s). Command: `cargo test -p sagat-tests --test integration_database_connections --locked
 durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotation -- --exact --nocapture`.
 This focused result does not replace the full integrated CI gate.
+
+## Compose startup failure diagnostics — 2026-10-25
+
+Release candidate `5aec324e` failed the managed-database Compose job in
+[run 40253401769](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/40253401769/job/121349960406).
+The general smoke scenario had passed. Initial managed-fixture dependency startup
+then returned nonzero after approximately 13 seconds; it did not reach its
+300-second timeout. The fixture discarded captured stdout/stderr before its
+project cleanup, so the historical startup cause remains **unclassified**.
+Neither a port conflict nor an infrastructure outage has been established.
+
+The correction addresses that demonstrated evidence-loss defect. Failed initial
+startup now retains a closed diagnostic category and only the seven allowed
+services' state, health and bounded exit code. Probes select the exact owned
+project and validated container IDs, with one five-second diagnostic budget,
+bounded capture while reading, and a reserved kill/reap interval. Raw streams,
+provider errors, health logs, credentials, environment and identifiers are never
+included in the diagnostic. Successful startup performs no diagnostic probes.
+The original failure survives diagnostic or cleanup failure. This changes no
+startup retry, resource, topology, allocator, deadline or scenario assertion.
+
+Behavioral negative controls failed before their corrections: missing startup
+evidence, invalid state/exit data, capture/deadline handling, and interruption or
+temporary-directory cleanup replacing the primary failure. Three independent
+review cycles closed the core; the last two supervisor findings were decomposed
+into exact mock-only RED/GREEN cases, without a fourth broad review cycle.
+
+Root's first controlled real-Compose proof failed because the local CLI used
+`didn't complete successfully`, which the category table did not recognize.
+A focused classification regression failed with `unclassified` before that
+single phrase was added. The corrected controlled proof then passed **1/1 in
+1.027 s**, including the failed dependency's exit 42, safe diagnostics and
+checked removal of the owned containers and networks. It used the repository's
+exact pinned OpenBao 2.7.1 image on the private `sagat-remaining` Colima daemon;
+no image pull, application build or foreign project was required.
+
+Reproduce the controlled proof from the repository root:
+
+```sh
+SAGAT_RUN_REAL_COMPOSE_DIAGNOSTIC=1 python3 -m unittest scripts.tests.test_compose_diagnostics.SafeComposeDiagnostics.test_real_compose_dependency_failure_is_safe_and_project_scoped -v
+python3 -m unittest discover -s scripts/tests -v
+```
+
+After merging the correction into `release/0.2.0`, root ran the full script
+discovery with the real-Compose opt-in enabled: **43 passed; 0 failed; 0 skipped;
+4.063 s** (4.45 s overall). Architecture passed for all 24 crates with no cycles,
+agent configuration passed, and `bash scripts/release-version.sh` returned
+`0.2.0`. Production code, SDKs, Studio, infrastructure, dependencies, workflows
+and the reviewed Rust benchmark remained byte-identical to `5aec324e`.
+
+The full affected Compose scenario and all current release-head gates remain
+mandatory before merge. A subsequent passing run does not identify or fix the
+discarded historical startup cause. Refs: T017-025, FR-017-020, FR-017-022.
+
+## Final 0.2.0 integration — 2026-10-26
+
+PR #45 merged into `develop` after all 12 checks passed. The final combined
+candidate `769a7d1d` then passed all 11 CI jobs in run 40259828158, independent
+SDK packaging, and all six release-preflight build/consumer/recovery jobs.
+The full affected Compose scenario passed its original TLS, OpenBao, probe,
+typed-result, replay, restore, restart, retirement-fence and provider-outage
+assertions. No diagnostic category is retroactively assigned to the old failure.
+PR #51 merged that exact tested tree into `main` as `bfda3420`; both 0.2.0 tags
+reference that actual main merge. See the shared
+[release evidence](../016-payload-classification/release-gates-2026-10-25.md)
+for exact run links, publication proof and preserved feature-014 boundaries.
