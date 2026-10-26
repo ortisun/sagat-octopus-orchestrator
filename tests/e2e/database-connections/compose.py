@@ -14,6 +14,10 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from compose_diagnostics import (
+    cleanup_fixture,
+    require_successful_initial_start,
+)
 from recovery import restore
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -98,7 +102,11 @@ try:
     config["namespaces"][0]["allowCidrs"] = [selected[1]]
     config_path.write_text(json.dumps(config))
     dc("config", "--quiet")
-    dc("up", "-d", "openbao", "target-postgres", "dev-idp", "migrate", "nats", timeout=SLOW)
+    initial = dc(
+        "up", "-d", "openbao", "target-postgres", "dev-idp", "migrate", "nats",
+        timeout=SLOW, check=False,
+    )
+    require_successful_initial_start(initial, project, env, ROOT)
     wait(lambda: http("GET", "/.well-known/jwks.json", identity=True), "local OIDC")
     run(["python3", "infra/openbao/bootstrap-development.py", "--directory", str(private), "--address", "https://127.0.0.1:" + env["SAGAT_BAO_PORT"], "--idp", idp])
     dc("--profile", "seed", "run", "--rm", "seed", timeout=SLOW)
@@ -151,6 +159,8 @@ COMMIT;"""
     finished(failed["runId"], "FAILED")
     print("PASS: provider outage fails closed; no local credential fallback", flush=True)
 finally:
-    if (private / "compose.env").exists():
-        dc("--profile", "database", "down", "-v", "--remove-orphans", check=False)
-    work.cleanup()
+    cleanup_fixture(
+        lambda: (private / "compose.env").exists(),
+        lambda: dc("--profile", "database", "down", "-v", "--remove-orphans", check=False),
+        work.cleanup,
+    )
