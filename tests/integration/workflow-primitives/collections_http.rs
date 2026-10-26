@@ -520,10 +520,10 @@ async fn publication_keeps_unproven_collection_bodies_closed() {
         json!([
             {
                 "id": "price",
-                "type": "activity",
-                "activity": "line.price",
-                "next": "return-price",
-                "onError": "fallback"
+                "type": "condition",
+                "expression": "true",
+                "ifTrue": "fallback",
+                "ifFalse": "return-price"
             },
             {
                 "id": "fallback",

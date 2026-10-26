@@ -4,7 +4,10 @@ The public workflow document remains additive `sagat-octopus-orchestrator.io/v1`
 `switch`, run-addressed declared Query/Update and a bounded root human approval are available
 with the existing basic root nodes. A public collection workflow may start with ordinary source
 activities followed by a chain of `forEach` nodes ending at `end`; each referenced body contains a
-chain of one to eight activities followed by one `return`.
+bounded acyclic graph of one to eight activities followed by one `return`. In the 0.3
+increment, an activity may take a local `onError` route; a recovery failure drains with its own
+code. Unselected branches retain their lifetime charge as retired reservations, while actual
+completed/unknown effects keep the compensation capacity they require.
 The restricted public loop shape uses an activity followed by a return in its body; a loop's
 `onError` edge may lead to an `end` or to recovery activities that end at an `end`. Nested
 collections, triggers, structured-primitive combinations and broader body graphs remain closed.

@@ -673,6 +673,21 @@ fn is_activity_chain(body: &sagat_domain::workflow::BodyDefinition, limit: usize
     activities >= 1 && activities + 1 == declared
 }
 
+/// A validated body is already acyclic, reachable, closed and has exactly one terminal return.
+/// Activity-only success/error routes execute one branch at a time and reuse local routing.
+/// Every activity retains a success edge; control nodes and nested scopes remain separately gated.
+fn is_collection_activity_body(body: &sagat_domain::workflow::BodyDefinition) -> bool {
+    let mut activities = 0;
+    for node in body.nodes() {
+        match node.kind() {
+            NodeKind::Activity { .. } if node.next().is_some() => activities += 1,
+            NodeKind::Return { .. } => {}
+            _ => return false,
+        }
+    }
+    (1..=MAX_BODY_CHAIN).contains(&activities)
+}
+
 /// The first approval a document declares inside a named body, if any. An approval in an iteration
 /// needs the iteration's scoped compensation to settle (decision D295), so publication names that
 /// dependency before it looks at the body's shape.
@@ -781,11 +796,11 @@ pub(crate) fn published_collection_definition(
                 reason: "published collection bodies must be referenced by a collection owner",
             });
         }
-        if !is_activity_chain(body, MAX_BODY_CHAIN) {
+        if !is_collection_activity_body(body) {
             return Err(IrError::Unsupported {
                 node: body.name().as_str().to_owned(),
                 kind: "body".to_owned(),
-                reason: "the runtime supports a collection body of one to eight activities in sequence followed by one return",
+                reason: "the runtime supports a collection body of one to eight activities with local success/error routes and one return",
             });
         }
     }

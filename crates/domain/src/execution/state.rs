@@ -1252,6 +1252,27 @@ impl StepState {
         self.failure.as_ref()
     }
 
+    /// A terminal failure that has not taken its own declared error route. The complete
+    /// instance identity resolves equal local node names in different bodies independently.
+    /// A missing declaration or an unrouted failure remains unhandled.
+    #[must_use]
+    pub fn unhandled_instance_failure(
+        &self,
+        definition: &crate::workflow::WorkflowDefinition,
+        instance: &ExecutionInstanceId,
+    ) -> Option<&FailureCode> {
+        if self.status != StepStatus::Failed
+            || (self.routed
+                && definition
+                    .node_for_instance(instance)
+                    .is_some_and(|node| node.on_error().is_some()))
+        {
+            None
+        } else {
+            self.failure.as_ref()
+        }
+    }
+
     /// The branch a condition chose, once evaluated.
     #[must_use]
     pub const fn condition(&self) -> Option<bool> {

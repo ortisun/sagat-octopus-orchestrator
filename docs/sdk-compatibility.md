@@ -503,3 +503,17 @@ This evidence does not accept general nested runtime, C0, production ceilings or
 | `worker-stream-faults` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
 | `worker-transport-faults` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
 | `workflow-instance-limits` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+
+
+## 0.3 focused collection-recovery checkpoint
+
+`collection-local-recovery` uses the existing activity `onError` option, additive IR v1
+and worker minor 1.5 in all five SDKs. Initial observation produced five identical complete
+normalized outputs; the aggregate correctly failed because the two new reference files
+were absent. The workflow documents, ten worker calls, original compensation target,
+ordered `[1, 2]` result, `RECOVERY_FAILED` drain and concurrency bound were inspected before
+recording those files. The subsequent all-five run without a bless switch passed in
+36.39 s. Native tests separately exercise selective recovery, sibling isolation, exact
+lifetime retirement, rejected handled-error drains and full/frontier journal equivalence.
+This focused scenario adds to the historical 60-scenario evidence; it is not a new complete
+61-scenario release run. Nested capacity and production ceilings remain pending.

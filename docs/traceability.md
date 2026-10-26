@@ -431,6 +431,25 @@ and six release-preflight jobs. T014-043 and the other seven unfinished primitiv
 open under ADR-0040; the shared CI pass does not close their broader acceptance criteria.
 
 
+### 0.3 collection local-recovery increment (2026-10-26)
+
+Refs: T014-014–017/040/043/044, FR-014-004/005/014–017. The activity-only
+collection body now permits local acyclic `onError` routes. `collection_recovery.rs`
+proves sibling isolation, ordered recovery, an unhandled recovery's own failure/compensation,
+a rejected native drain from an already handled failure, lifetime reservation retirement and
+full/frontier transition/journal/status parity. The selected/unselected compensable branch
+cases additionally exercise real compensation versus an empty atomic saga. Native REDs
+reproduced unsupported publication, erroneous native handled-error drain, the checkpoint
+closure assumption, a phantom unselected compensation reservation and empty-plan projection.
+
+The common `collection-local-recovery` fixture produced five matching complete outputs;
+reviewed workflow/runtime reference files then passed all five SDKs without a bless switch
+(36.39 s, focused scenario). The final integrated regression and release-wide gates remain
+separate. Existing IR v1, worker minor1.5, closed errors, journal/graph projection and metric
+vocabulary are retained. No nested capacity or large-resource criterion is closed here.
+[The 0.3 execution ledger](../specs/014-workflow-primitives/implementation-0.3.md) owns
+current commands/results, including the incompatible unpublished legacy-fixture limitation.
+
 ### Integrated bounded execution evidence (feature 014)
 
 FR-014-005/014/015: shared bounded/full effect and attempt policies are covered by

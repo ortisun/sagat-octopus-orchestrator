@@ -61,8 +61,9 @@ switch integration target exercises these outcomes against PostgreSQL and checks
 The five SDKs can construct additive v1 collection, bounded-loop, approval and continuation
 documents. The server accepts a restricted collection graph with an optional ordinary source
 activity prefix followed by one or more root `forEach` nodes ending at `end`; each body contains a
-chain of one to eight activities followed
-by one `return`. Before starting work, an administrator must set the tenant-wide active iteration budget:
+bounded acyclic graph of one to eight activities followed by one `return`. The 0.3 increment
+adds local activity `onError` recovery inside that body; scoped conditions, timers, child
+workflows and nesting remain separately gated. Before starting work, an administrator must set the tenant-wide active iteration budget:
 
 ```sh
 curl -X PUT "$API/v1/quotas/iteration_concurrency" \
@@ -547,3 +548,27 @@ with real PostgreSQL, REST publication and gRPC workers:
 SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test --locked -p sagat-tests \
   --test integration_workflow_primitives collection_pipeline -- --test-threads=2 --nocapture
 ```
+
+
+## Local collection recovery (0.3 increment)
+
+An activity can declare `"onError": "recover"` while its ordinary `next` names a
+separate success route. Both routes must stay in the same acyclic activity-only body
+and reach its single `return`. A known failed attempt follows recovery once; an unknown
+effect still uses its declared reconciliation/operator policy first. A recovery failure
+stops admission, drains active work and compensates accepted effects with that failure code.
+The runtime graph retains the qualified error edge for the affected iteration.
+
+With Docker and a private `CARGO_TARGET_DIR` configured, the reproducible happy/failure,
+reservation, native-refusal and full/frontier cases are:
+
+```sh
+cargo test -p sagat-tests --test integration_workflow_primitives --locked collection_recovery::
+SAGAT_SDK_SCENARIO=collection-local-recovery cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+```
+
+The common SDK fixture uses existing `onError` options in all five builders. A successful
+recovery yields ordered results `[1, 2]`; a failed recovery reaches `COMPENSATED` with
+`RECOVERY_FAILED` after the original reservation's compensation. These simulated effects
+make no external-provider undo guarantee. This increment does not accept nested capacity
+or the remaining large-workload release gates.

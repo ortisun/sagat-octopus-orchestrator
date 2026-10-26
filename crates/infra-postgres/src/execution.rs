@@ -5493,12 +5493,32 @@ impl PgRunTx {
             return Err(corrupt("scope compensation projection"));
         };
         let (path_nodes, path_indices) = stored_path_parts(owner.path());
-        let sequence = i64::try_from(self.state.version()).map_err(|_| corrupt("sequence"))?;
-        let planned = events.iter().any(|event| {
-            matches!(event.event(), RunEvent::ScopeCompensationPlanned { .. })
-                && event.instance().as_ref() == Some(owner)
-        });
-        if planned {
+        let previous = self.persisted;
+        let sequence_at = |index: usize| -> Result<i64, StoreError> {
+            let offset = u64::try_from(index).map_err(|_| corrupt("scope event sequence"))?;
+            previous
+                .checked_add(offset)
+                .and_then(|value| value.checked_add(1))
+                .and_then(|value| i64::try_from(value).ok())
+                .ok_or_else(|| corrupt("scope event sequence"))
+        };
+        let planned = events
+            .iter()
+            .position(|event| {
+                matches!(event.event(), RunEvent::ScopeCompensationPlanned { .. })
+                    && event.instance().as_ref() == Some(owner)
+            })
+            .map(sequence_at)
+            .transpose()?;
+        let ended = events
+            .iter()
+            .position(|event| {
+                matches!(event.event(), RunEvent::ScopeCompensated { .. })
+                    && event.instance().as_ref() == Some(owner)
+            })
+            .map(sequence_at)
+            .transpose()?;
+        if let Some(planned_sequence) = planned {
             sqlx::query(
                 "INSERT INTO scope_sagas \
                  (tenant_id, run_id, owner_path_nodes, owner_path_indices, owner_node, phase, \
@@ -5510,11 +5530,11 @@ impl PgRunTx {
             .bind(&path_nodes)
             .bind(&path_indices)
             .bind(owner.node().as_str())
-            .bind(saga.phase().as_str())
+            .bind(SagaPhase::Compensating.as_str())
             .bind(saga.cause().as_str())
-            .bind(saga.outcome().map(SagaOutcome::as_str))
+            .bind(None::<&str>)
             .bind(saga.during_stop())
-            .bind(sequence)
+            .bind(planned_sequence)
             .bind(self.now)
             .execute(&mut *self.tx)
             .await
@@ -5534,6 +5554,7 @@ impl PgRunTx {
             }
         }
         if saga.outcome().is_some() {
+            let ended_sequence = ended.ok_or_else(|| corrupt("scope compensation end event"))?;
             let updated = sqlx::query(
                 "UPDATE scope_sagas SET phase = $6, outcome = $7, during_stop = $8, \
                         ended_sequence = $9, updated_at = $10 \
@@ -5548,7 +5569,7 @@ impl PgRunTx {
             .bind(saga.phase().as_str())
             .bind(saga.outcome().map(SagaOutcome::as_str))
             .bind(saga.during_stop())
-            .bind(sequence)
+            .bind(ended_sequence)
             .bind(self.now)
             .execute(&mut *self.tx)
             .await

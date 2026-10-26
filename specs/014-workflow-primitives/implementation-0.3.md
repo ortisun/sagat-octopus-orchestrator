@@ -54,3 +54,98 @@ choice of the current review and smaller decisions remains applicable.
   Dormant storage is not evidence of enabled nested execution.
 
 Refs: T014-014, T014-015, T014-016, T014-017, T014-040, T014-042, T014-043, T014-044.
+
+## Executed baseline and historical fixture limitation
+
+`CARGO_TARGET_DIR=<private target> CARGO_BUILD_JOBS=2 cargo test -p sagat-domain --locked`
+passed **544 tests, zero failures, zero ignored**, across 39 targets on the integrated
+baseline. The current integration target compiled successfully with the candidate Applied
+test; compilation was not counted as runtime acceptance.
+
+The candidate `applied-report-before-drain` coordinator was actually executed using the
+repository Compose PostgreSQL service in private project `sagat-v03-20261026`. Its old
+producer passed 1/1; current attachment failed before reporting with
+`VersionMissing(20261206000000)`. The immutable unpublished `6c44a0e4` profile has
+OpenBao at `20261122000000` and the open-step indexes at `20261206000000`; the released
+integrated profile preserves develop's index migration at `20261122000000` and OpenBao
+at `20261122000100`. ADR-0036 explicitly excludes rewriting this incompatible history.
+
+The candidate test was not accepted, and no migration ledger, applied migration or runtime
+authority was changed to make it pass. The foreign worktree remains untouched. Historical
+unpublished-profile tests remain historical evidence, not 0.2.0→0.3.0 upgrade acceptance.
+Continue the runtime increments against the integrated profile; supported release upgrade
+tests must use the actual released profile. An explicit bridge for unpublished conflicting
+histories is not part of this release request.
+
+
+## First runtime increment: local collection activity recovery
+
+Implementation uses existing addressed worker routing. Publication accepts an acyclic
+activity-only body with1..8 activities and one terminal Return. The bounded frontier and
+full-run scheduler ignore only a committed local handled failure; the native checkpoint
+also proves local closure and native drain revalidates an actual unhandled cause. Unselected
+branch reservations retire without refunding lifetime charge. Drain retention uses the
+planner's same completed/unknown-effect predicate on actual post-drain local states.
+An empty saga can plan and finish atomically; persisted plan/end references identify their
+actual journal events instead of the batch head.
+
+Observed native results so far (each separate invocation, not added together):
+
+- Initial public publication tests:2failed/0passed, correct unsupported-body RED.
+- First runtime correction:1passed/1failed at checkpoint; diagnostic exposed its closed-step guard.
+- Checkpoint correction:2passed/0failed.
+- Baseline native drain guard regression:1failed, actual wrongful applied drain of a handled error.
+- Corrected four-case suite:4passed/0failed/0ignored,9.15s; includes full/frontier oracle and lifetime12.
+- Unselected compensable branch: genuine reservation RED `(3,1,2)` versus `(3,0,3)`;
+  its full lifecycle also exposed the pre-existing empty-saga projection failure.
+- Corrected six-case suite:6passed/0failed/0ignored,9.11s. Subsequent assertions add the
+  public qualified graph edge and exact native plan/end journal references; final regression pending.
+
+Common SDK case: initial observation executed all five languages and produced identical
+complete normalized outputs; the aggregate failed only for the two absent new reference
+files. After inspecting canonical workflows, all ten worker calls, ordered results, actual
+compensation target, failure cause and peak concurrency, those files were recorded without
+blessing. The all-five no-bless verification passed1aggregate/0failed/0ignored in36.39s.
+That result precedes the last drain-retention/empty-saga correction; rerun on final sources.
+
+Bounded adversarial reviews found and corrected the checkpoint closure, unused branch
+reservations, native failed-drain revalidation, stale negative publication fixtures and
+missing full/frontier evidence. Final focused drain-retention review and the separate empty-
+saga transaction review found no required issue. Root executes the actual verification gates;
+reviewer reports alone are not test evidence. The eight canonical tasks stay unchecked.
+
+### Current-tree gates for the first increment
+
+- `cargo test -p sagat-domain -p sagat-infra-ir --locked`:721 passed,0 failed,0 ignored
+  across57 targets (including empty doc-test targets),89.70s including compilation.
+- `cargo test -p sagat-tests --test contract_workflow_primitives --locked`:47 passed,
+  0 failed,0 ignored,0.59s test execution.
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`:exit0,171.25s.
+- `SAGAT_TEST_AS_RUNTIME_ROLE=1 RUST_TEST_THREADS=1 cargo test -p sagat-tests
+  --test integration_workflow_primitives --locked -- collection_recovery::
+  refusal_secret_versions::a_scanned_output_refusal_rechecks_the_original_lease_after_path_drop`:
+  7 passed,0 failed,0 ignored,553 filtered,34.53s test execution. All six current
+  recovery cases include the final graph and exact plan/end-reference assertions.
+- Architecture:24 crates, respected layers, no cycles. Agent configuration and formatting pass.
+- All five SDK unit/lint command groups from `sdks/AGENTS.md` passed. Python uses the
+  existing Python3.12.12 toolchain with the hashed dev lock:264 tests, mypy38 files,
+  ruff clean. TypeScript uses Node26.12.0, Go selects its pinned1.25.14 toolchain,
+  .NET10.0.401 passes450 tests on net10.0 and builds both SDK target frameworks,
+  and Maven uses Java23 with the project's
+  release target. These are local results, not evidence of CI's Node22/Java21 jobs.
+
+The full two-thread PostgreSQL invocation completed with541 passed,3 failed,16 ignored
+in610.26s. Two migrations failed with PostgreSQL SQLSTATE53100 (`No space left on
+device`) in the shared30GiB Docker VM. A separate refusal race incorrectly compared a
+database-clock binding timestamp with the host-clock request interval; the host and VM
+were observed about325ms apart. `ce4bace4` bounds the binding by PostgreSQL samples while
+keeping the API-clock audit's own request interval. The corrected race passes in the
+seven-case least-privilege invocation above. The isolated `populated_` migration group
+passes4/4 with one outer test thread and fresh harness servers.
+
+A complete serial outer-runner regression and the92-test fault suite are in progress at
+this checkpoint. One outer test thread preserves every concurrency/barrier inside each
+test and avoids accumulation of hundreds of migrated test databases in a continuously
+held shared server. The failed two-thread invocation is retained as failed evidence;
+no ignored test was changed and no Docker data from another session was removed.
+Final all-five recovery conformance is also in progress. No merge/release gate is inferred.

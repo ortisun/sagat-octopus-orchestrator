@@ -686,3 +686,13 @@ coverage remains separately scoped, with other historical features/versions unte
 
 Evidence: [complete SDK60 aggregate](../../../tasks/project-completion/evidence/sdk60-current-20261018/reproduce.md).
 This evidence does not accept general nested runtime, C0, production ceilings or final release gates.
+
+
+`collection-local-recovery.json` is the 0.3 WP-03/04 local activity-error-route case.
+All five existing builders preserve `onError`, instance/depth limits and worker minor1.5.
+A known failure followed by successful recovery returns ordered `[1,2]`; a failed recovery
+stops admission and compensates its actual reservation with `RECOVERY_FAILED`. The native
+collection_recovery suite separately checks skipped recovery branches, sibling isolation,
+retired lifetime reservations, native false-drain refusal and full/frontier parity. New
+workflow and runtime goldens were recorded after reading the complete matching observed
+outputs, then verified in all five languages without a bless switch.

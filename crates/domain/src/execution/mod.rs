@@ -71,7 +71,7 @@ pub use path_state::{
     PathLoopState, PathScopeSagaState,
 };
 pub use plan::{AddressedPlan, Evaluation, Plan, plan, plan_addressed, plan_path};
-pub use scoped_sagas::plan_scope_compensation;
+pub use scoped_sagas::{plan_scope_compensation, scope_compensation_candidate};
 pub use state::{
     CollectionIterationRestore, CollectionPhase, CollectionResult, CollectionState, LoopCheckpoint,
     LoopIterationRestore, LoopPhase, LoopState, RunChainState, RunId, RunState, RunStatus,

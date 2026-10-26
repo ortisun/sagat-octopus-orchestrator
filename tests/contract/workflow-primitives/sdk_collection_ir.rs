@@ -39,11 +39,10 @@ fn collection_publication_rejects_an_unproven_body_shape() {
     let source = std::fs::read(path).expect("reviewed SDK golden");
     let golden: Value = serde_json::from_slice(&source).expect("golden JSON");
     let mut document = golden["workflows"]["map"].clone();
-    // A body that routes on an error is not a chain of activities: the scoped planner routes the
-    // success path of activities only.
+    // Scoped conditions still require their own evaluated routing and runtime evidence.
     document["bodies"]["line"]["nodes"] = serde_json::json!([
-        {"id": "price", "type": "activity", "activity": "line.price", "next": "return-price",
-         "onError": "fallback"},
+        {"id": "price", "type": "condition", "expression": "true",
+         "ifTrue": "fallback", "ifFalse": "return-price"},
         {"id": "fallback", "type": "activity", "activity": "line.fallback", "next": "return-price"},
         {"id": "return-price", "type": "return", "result": "steps.price.output"}
     ]);

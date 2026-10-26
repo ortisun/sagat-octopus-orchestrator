@@ -1307,9 +1307,7 @@ where
             &FailureCode,
         > = std::collections::HashMap::new();
         for (instance, step) in state.instances() {
-            if step.status() == execution::StepStatus::Failed
-                && let Some(code) = step.failure()
-            {
+            if let Some(code) = step.unhandled_instance_failure(&definition, instance) {
                 failed.entry(instance.path()).or_insert(code);
             }
         }
@@ -1886,10 +1884,11 @@ where
                 return Ok(Some(CollectionAdvance::AlreadyFinished));
             }
             execution::CollectionPhase::Open => {
-                let active_failure = frontier
-                    .active
-                    .iter()
-                    .find_map(|member| member.first_failure().map(|code| (member.index, code)));
+                let active_failure = frontier.active.iter().find_map(|member| {
+                    member
+                        .first_unhandled_failure(definition)
+                        .map(|code| (member.index, code))
+                });
                 if frontier.run.stop_reason == Some(StopReason::Cancelled) {
                     self.store
                         .start_collection_drain(&CollectionDrain::new(

@@ -143,12 +143,19 @@ fails the run with `EXPRESSION_ERROR`.
 
 ### Bodies that compensate (T014-014..021, D380-D389)
 
-A published collection or loop body is a chain of one to eight activities followed by its `return`
-(`MAX_BODY_CHAIN`, an `onError` on a body activity stays refused). Each activity may declare
+A published collection body contains one to eight activities and one terminal `return`.
+The 0.3 increment permits local acyclic activity success/error routes; all paths stay inside
+that body. A committed handled error does not fail the collection. An unhandled recovery
+failure retains its own failure code and uses the normal drain/compensation path. Each
+unselected branch's unused forward and derived reservations are retired, preserving the
+lifetime instance charge; selected completed/unknown effects retain their required drain
+reservations. A loop body retains the linear activity-chain subset with no body `onError`.
+Each activity may declare
 `compensateWith`, `reconcileWith`, `compensationRetry`, `compensationTimeoutMs`, `irreversible`
 and `highRisk` with the meaning they have at the root; `irreversible` and `compensateWith` on one
-step are refused as at the root. Branching, `saga`, timers, child workflows and nested scopes inside a
-body remain closed.
+step are refused as at the root. Scoped `condition`/`switch`, `saga`, timers, child workflows
+and nested scopes inside a body remain closed. The existing IR fields and worker minor 1.5
+are unchanged. `collection-local-recovery` verifies the common five-SDK contract.
 
 A scope whose body declares any of `compensateWith`, `irreversible` or `highRisk` is its own saga.
 When it stops for a failed iteration, the storage quota, an outer cancellation or a loop timeout, the
