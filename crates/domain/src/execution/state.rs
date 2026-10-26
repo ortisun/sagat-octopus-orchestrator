@@ -1488,6 +1488,19 @@ impl StepState {
                 self.status = Succeeded;
                 self.switch_selection = Some(selection.clone());
             }
+            RunEvent::TimerStarted { due_at, .. } => {
+                require(self, &[Pending])?;
+                self.status = Waiting;
+                self.waiting = Some(WaitingOn::Timer { due_at: *due_at });
+            }
+            RunEvent::TimerFired { .. } => {
+                require(self, &[Waiting])?;
+                if !matches!(self.waiting, Some(WaitingOn::Timer { .. })) {
+                    return Err(illegal_transition(instance, self.status, name));
+                }
+                self.status = Succeeded;
+                self.waiting = None;
+            }
             RunEvent::StepCancelRequested { .. } => {
                 require(self, &[Leased, Running, Waiting])?;
                 if (self.status == Waiting
@@ -4194,6 +4207,8 @@ impl RunState {
             | RunEvent::StepFailed { .. }
             | RunEvent::ConditionEvaluated { .. }
             | RunEvent::SwitchEvaluated { .. }
+            | RunEvent::TimerStarted { .. }
+            | RunEvent::TimerFired { .. }
             | RunEvent::StepCancelRequested { .. }
             | RunEvent::StepCancelled { .. }) => {
                 self.steps

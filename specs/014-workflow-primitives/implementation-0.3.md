@@ -345,3 +345,22 @@ unchecked and no version/tag/release has been changed.
 
 Complete native regression of this new migration profile and the complete63-scenario
 aggregate remain pending; the555/92 broad result above belongs to b4dbb28d.
+
+
+## Fourth increment preparation: recorded scoped timer lifecycle
+
+Public timer bodies remain closed. Three initial domain tests failed for the correct reason:
+scoped planning returned UnsupportedScopedEvent(scoped non-activity planning) and recorded
+TimerStarted was refused. Shared full/path step lifecycle now records Pending→Waiting(Timer)
+and Waiting(Timer)→Succeeded, rejecting duplicate/cancelled fire without mutation. Pending
+timers remain idle for a future clocked scheduler start; no domain wall clock was introduced.
+The property test varies member identity and explicit deadline offsets, preserving sibling
+state and full/path replay equality.
+
+`scoped-timer-domain-green` passed19tests across the four focused targets. After adding the
+property test, `scoped-timer-domain-final` (`cargo test -p sagat-domain --locked`) passed
+554tests,0failed,0ignored across41targets in16.87s. Strict domain/all-targets Clippy passed
+in2.83s build output.
+This is recorded lifecycle preparation only: clocked commands, native due-time persistence,
+qualified discovery, pause/resume/drain, public runtime and SDK evidence remain pending in
+[scoped-timer-runtime.md](./scoped-timer-runtime.md). Canonical tasks stay unchecked.

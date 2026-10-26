@@ -151,6 +151,7 @@ pub fn plan_addressed(
                 NodeKind::ForEach { .. }
                 | NodeKind::Condition { .. }
                 | NodeKind::Switch { .. }
+                | NodeKind::Timer { .. }
                 | NodeKind::Approval { .. }
                 | NodeKind::While { .. }
                 | NodeKind::RepeatUntil { .. }
@@ -231,6 +232,7 @@ pub fn plan_path(
             NodeKind::ForEach { .. }
             | NodeKind::Condition { .. }
             | NodeKind::Switch { .. }
+            | NodeKind::Timer { .. }
             | NodeKind::Approval { .. }
             | NodeKind::While { .. }
             | NodeKind::RepeatUntil { .. }
