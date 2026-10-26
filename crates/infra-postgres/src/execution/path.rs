@@ -352,6 +352,8 @@ impl PgPathExecutionTx {
                     | RunEvent::StepStarted { .. }
                     | RunEvent::StepCompleted { .. }
                     | RunEvent::StepFailed { .. }
+                    | RunEvent::ConditionEvaluated { .. }
+                    | RunEvent::SwitchEvaluated { .. }
                     | RunEvent::StepRouted { .. }
                     | RunEvent::StepRetryScheduled { .. }
                     | RunEvent::StepRetryDue { .. }
@@ -1026,10 +1028,8 @@ impl PgPathExecutionTx {
             Some(WaitingOn::Operator { .. }) => Some("OPERATOR"),
             Some(_) => return Err(corrupt("bounded step waiting kind")),
         };
-        if step.condition().is_some() || step.switch_selection().is_some() {
-            return Err(corrupt("bounded control projection"));
-        }
         let declared = self.snapshot.definition.node_for_instance(instance);
+        validate_scoped_control_projection(declared, &step)?;
         let kind = declared.map_or("FORWARD", |node| node.origin().label());
         let node_kind = declared.map_or("activity", |node| node.kind().label());
         let status = step.status().as_str();
@@ -1118,8 +1118,8 @@ impl PgPathExecutionTx {
         }
 
         self.ensure_path_node_kind(instance, node_kind).await?;
-        let updated = sqlx::query(
-            "UPDATE steps SET status=$6,attempt=$7,generation=$8,cancel_requested=$9,routed=$10, \
+        let updated = sqlx::query(concat!(
+            "UPDATE steps AS s SET status=$6,attempt=$7,generation=$8,cancel_requested=$9,routed=$10, \
                     timed_out=$11,failure_code=$12,next_attempt_at=$13, \
                     ready_at=CASE WHEN $6='READY' \
                       THEN COALESCE(CASE WHEN status='READY' THEN ready_at END,$14) ELSE ready_at END, \
@@ -1138,10 +1138,14 @@ impl PgPathExecutionTx {
                       WHEN $19::bytea IS NOT NULL THEN $22 ELSE leased_by END, \
                     reported_lease_token_hash=CASE WHEN $6 IN ('LEASED','RUNNING') THEN NULL \
                       WHEN $25::bytea IS NOT NULL THEN $25 ELSE reported_lease_token_hash END, \
-                    output_digest=COALESCE($16,output_digest),waiting_kind=$26,updated_at=$14 \
+                    output_digest=COALESCE($16,output_digest),waiting_kind=$26,updated_at=$14, \
+                    condition=$27,switch_case_id=$28 \
              WHERE tenant_id=$1 AND run_id=$2 AND node=$3 AND step_id=$4 AND namespace_id=$5 \
-               AND instance_path_nodes=$17 AND instance_path_indices=$18",
-        )
+               AND instance_path_nodes=$17 AND instance_path_indices=$18 \
+               AND (NOT $29 OR (",
+            scoped_control_metadata_empty!(),
+            " AND s.node_kind=$30))",
+        ))
         .bind(self.snapshot.info.tenant_id.as_uuid())
         .bind(self.snapshot.info.run_id.as_uuid())
         .bind(instance.node().as_str())
@@ -1168,6 +1172,10 @@ impl PgPathExecutionTx {
         .bind(rehinted)
         .bind(reported.map(|reported| reported.token_hash.clone()))
         .bind(waiting_kind)
+        .bind(step.condition())
+        .bind(stored_switch_case_id(&step))
+        .bind(matches!(node_kind, "condition" | "switch"))
+        .bind(node_kind)
         .execute(&mut *self.tx)
         .await
         .map_err(store_error)?

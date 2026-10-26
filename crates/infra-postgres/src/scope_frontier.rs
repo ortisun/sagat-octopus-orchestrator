@@ -25,21 +25,27 @@ use uuid::Uuid;
 
 use crate::collection_outputs;
 use crate::execution::{
-    PgRunStore, RUN_SNAPSHOT, instance_path, run_record, step_instance_path, step_state,
+    PgRunStore, RUN_SNAPSHOT, instance_path, run_record, scoped_control_metadata_empty,
+    step_instance_path, step_state, validate_scoped_control_row,
 };
 use crate::identity::{col, corrupt, store_error};
 use crate::pool::BeginSafely;
 
 /// The columns of a step that `step_state` reads, plus the identity and the retained output.
-const MEMBER_STEPS: &str = "SELECT s.node, s.instance_path_nodes, s.instance_path_indices, \
+const MEMBER_STEPS: &str = concat!(
+    "SELECT s.node, s.instance_path_nodes, s.instance_path_indices, \
         s.status, s.attempt, s.generation, s.cancel_requested, s.routed, s.condition, \
         s.switch_case_id, s.timed_out, s.failure_code, s.next_attempt_at, s.waiting_kind, \
-        s.due_at, s.correlation_key, s.child_run_id, s.approval_request_id, p.content AS output \
+        s.due_at, s.correlation_key, s.child_run_id, s.approval_request_id, p.content AS output, \
+        s.node_kind AS stored_node_kind, (",
+    scoped_control_metadata_empty!(),
+    ") AS control_metadata_empty \
      FROM unnest($4::int[]) AS member(last_index) \
      JOIN steps s ON s.tenant_id = $1 AND s.run_id = $2 \
       AND s.instance_path_nodes = $3 \
       AND s.instance_path_indices = array_append($5::int[], member.last_index) \
-     LEFT JOIN payloads p ON p.tenant_id = s.tenant_id AND p.digest = s.output_digest";
+     LEFT JOIN payloads p ON p.tenant_id = s.tenant_id AND p.digest = s.output_digest"
+);
 
 /// A snapshot read: one consistent view, no row lock, nothing written.
 async fn snapshot(store: &PgRunStore) -> Result<Transaction<'static, Postgres>, StoreError> {
@@ -165,8 +171,7 @@ async fn base_data(
 /// `last_indices`, all under the same `base` path of an owner. The outputs go into `data`.
 async fn member_steps(
     conn: &mut PgConnection,
-    tenant: TenantId,
-    run: RunId,
+    scope_run: &ScopeRun,
     nodes: &[String],
     base_indices: &[i32],
     last_indices: &[i32],
@@ -177,8 +182,8 @@ async fn member_steps(
         return Ok(by_member);
     }
     let rows: Vec<PgRow> = sqlx::query(MEMBER_STEPS)
-        .bind(tenant.as_uuid())
-        .bind(run.as_uuid())
+        .bind(scope_run.info.tenant_id.as_uuid())
+        .bind(scope_run.info.run_id.as_uuid())
         .bind(nodes)
         .bind(last_indices)
         .bind(base_indices)
@@ -196,10 +201,13 @@ async fn member_steps(
         if let Some(output) = col::<Option<Vec<u8>>>(row, "output")? {
             data.insert_output(instance.clone(), output);
         }
-        by_member
-            .entry(last)
-            .or_default()
-            .insert(instance, step_state(row)?);
+        let step = step_state(row)?;
+        validate_scoped_control_row(
+            scope_run.definition.node_for_instance(&instance),
+            &step,
+            row,
+        )?;
+        by_member.entry(last).or_default().insert(instance, step);
     }
     Ok(by_member)
 }
@@ -350,7 +358,7 @@ impl ScopeFrontierStore for PgRunStore {
         }
         let mut by_member = match &common {
             Some((nodes, base)) => {
-                member_steps(&mut tx, tenant_id, run_id, nodes, base, &lasts, &mut data).await?
+                member_steps(&mut tx, &header.run, nodes, base, &lasts, &mut data).await?
             }
             None => BTreeMap::new(),
         };
@@ -479,16 +487,8 @@ impl ScopeFrontierStore for PgRunStore {
                     },
                 );
             }
-            let mut by_member = member_steps(
-                &mut tx,
-                tenant_id,
-                run_id,
-                &nodes,
-                &base,
-                &[last],
-                &mut data,
-            )
-            .await?;
+            let mut by_member =
+                member_steps(&mut tx, &header.run, &nodes, &base, &[last], &mut data).await?;
             member = Some(ScopeMember {
                 index,
                 steps: by_member.remove(&last).unwrap_or_default(),

@@ -688,6 +688,13 @@ Evidence: [complete SDK60 aggregate](../../../tasks/project-completion/evidence/
 This evidence does not accept general nested runtime, C0, production ceilings or final release gates.
 
 
+`collection-control-routing.json` adds the 0.3 WP-03 local condition/switch case. Both bodies
+start with a compensable reservation; positive items notify, negative items go directly to
+Return. Every SDK must produce `[1,-1]`, the same six qualified worker calls, two recorded
+choices per Run and no `selected` instance for index1. Authored lifetime12/depth1 and worker
+minor1.5 stay in the reviewed workflow/runtime references. This is a focused scenario;
+native tests own rollback, malformed physical metadata, stale snapshot and failure proofs.
+
 `collection-local-recovery.json` is the 0.3 WP-03/04 local activity-error-route case.
 All five existing builders preserve `onError`, instance/depth limits and worker minor1.5.
 A known failure followed by successful recovery returns ordered `[1,2]`; a failed recovery

@@ -11,6 +11,80 @@ fn node(value: &str) -> NodeId {
 }
 
 #[test]
+fn scoped_conditions_read_only_their_exact_iteration_and_local_outputs() {
+    let mut data = RunData {
+        input: br#"{"enabled":true}"#.to_vec(),
+        ..RunData::default()
+    };
+    data.insert_root_output(node("reserve"), br#"{"index":99}"#.to_vec());
+    let expression =
+        Expression::parse("input.enabled && item > 0 && steps.reserve.output.index == index")
+            .expect("predicate");
+    for (index, item) in [(0, 1), (1, -1)] {
+        let path = InstancePath::root()
+            .child(node("lines"), index)
+            .expect("path");
+        data.scope_inputs.insert(
+            path.clone(),
+            ScopeInput::Collection {
+                index,
+                item: item.to_string().into_bytes(),
+            },
+        );
+        data.insert_output(
+            ExecutionInstanceId::in_path(path, node("reserve")),
+            serde_json::to_vec(&json!({"index":index})).expect("output"),
+        );
+    }
+    for index in [0, 1] {
+        let instance = ExecutionInstanceId::in_path(
+            InstancePath::root()
+                .child(node("lines"), index)
+                .expect("path"),
+            node("choose"),
+        );
+        assert_eq!(
+            JsonEvaluator
+                .condition_instance(&expression, &data, &instance)
+                .expect("scoped boolean"),
+            index == 0
+        );
+    }
+    let absent = ExecutionInstanceId::in_path(
+        InstancePath::root().child(node("lines"), 2).expect("path"),
+        node("choose"),
+    );
+    assert!(
+        JsonEvaluator
+            .condition_instance(&expression, &data, &absent)
+            .is_err(),
+        "a missing scoped input cannot fall back to another iteration"
+    );
+}
+
+#[test]
+fn root_condition_evaluation_keeps_its_context_and_non_boolean_failure() {
+    let data = RunData {
+        input: br#"{"enabled":true}"#.to_vec(),
+        ..RunData::default()
+    };
+    let root = ExecutionInstanceId::root(node("choose"));
+    for text in [
+        "input.enabled",
+        "true",
+        "17",
+        "input.absent",
+        "node.id == null",
+    ] {
+        let expression = Expression::parse(text).expect("expression");
+        assert_eq!(
+            JsonEvaluator.condition_instance(&expression, &data, &root),
+            JsonEvaluator.condition(&expression, &data)
+        );
+    }
+}
+
+#[test]
 fn root_task_context_remains_byte_identical_when_scoped_outputs_exist() {
     let reserve = node("reserve");
     let scoped = ExecutionInstanceId::in_path(

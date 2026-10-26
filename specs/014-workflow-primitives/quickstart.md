@@ -61,9 +61,10 @@ switch integration target exercises these outcomes against PostgreSQL and checks
 The five SDKs can construct additive v1 collection, bounded-loop, approval and continuation
 documents. The server accepts a restricted collection graph with an optional ordinary source
 activity prefix followed by one or more root `forEach` nodes ending at `end`; each body contains a
-bounded acyclic graph of one to eight activities followed by one `return`. The 0.3 increment
-adds local activity `onError` recovery inside that body; scoped conditions, timers, child
-workflows and nesting remain separately gated. Before starting work, an administrator must set the tenant-wide active iteration budget:
+bounded acyclic graph with an activity entry, one to eight executable nodes (activities,
+conditions, switches) and one `return`. The 0.3 increment adds local `onError` recovery and
+recorded local decisions. Control-node entry, timers, child workflows and nesting remain
+separately gated. Before starting work, an administrator must set the tenant-wide active iteration budget:
 
 ```sh
 curl -X PUT "$API/v1/quotas/iteration_concurrency" \
@@ -572,3 +573,36 @@ recovery yields ordered results `[1, 2]`; a failed recovery reaches `COMPENSATED
 `RECOVERY_FAILED` after the original reservation's compensation. These simulated effects
 make no external-provider undo guarantee. This increment does not accept nested capacity
 or the remaining large-workload release gates.
+
+## Local collection decisions (0.3 increment)
+
+After an entry activity, a body can evaluate `condition` or ordered `switch` nodes.
+The predicate reads its exact `item`, `index` and local `steps` outputs. A control node
+never leases a worker; its recorded answer, route and selected activity commit together.
+For example, the following body notifies only positive items and returns every original item:
+
+```json
+{
+  "entrypoint": "reserve",
+  "nodes": [
+    {"id": "reserve", "type": "activity", "activity": "line.reserve", "compensateWith": "line.release", "next": "choose"},
+    {"id": "choose", "type": "condition", "expression": "item > 0", "ifTrue": "notify", "ifFalse": "returned"},
+    {"id": "notify", "type": "activity", "activity": "line.notify", "next": "returned"},
+    {"id": "returned", "type": "return", "result": "item"}
+  ]
+}
+```
+
+`collection-control-routing` constructs this shape with both condition and switch in all
+five SDKs. Input `[1, -1]` produces `[1, -1]` with no notification for index1. A missing
+predicate field records `EXPRESSION_ERROR`; the native failure demo drains and compensates
+the actual reservation. A condition may instead declare a local `onError` recovery.
+
+```sh
+RUST_TEST_THREADS=1 cargo test -p sagat-tests --test integration_workflow_primitives --locked -- collection_controls:: collection_control_transactions::
+SAGAT_SDK_SCENARIO=collection-control-routing cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+```
+
+Bodies still require an activity entry, at most eight executable declared nodes and one
+Return. Timers, children, scoped approval and nesting have separate pending admission/runtime
+gates. A loop's body capability remains the existing linear activity/Return subset.

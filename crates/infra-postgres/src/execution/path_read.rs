@@ -30,13 +30,14 @@ impl PgRunStore {
             .transpose()
             .map_err(|_| corrupt("stop code"))?;
         let (path_nodes, path_indices) = stored_path_parts(&path);
-        let rows = sqlx::query(
+        let rows = sqlx::query(concat!(
             "SELECT node,status,attempt,generation,cancel_requested,routed,condition,switch_case_id, \
                     timed_out,failure_code,next_attempt_at,waiting_kind,due_at,correlation_key, \
-                    child_run_id,approval_request_id \
-             FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+                    child_run_id,approval_request_id,s.node_kind AS stored_node_kind, (",
+            scoped_control_metadata_empty!(),
+            ") AS control_metadata_empty FROM steps s WHERE tenant_id=$1 AND run_id=$2 \
                AND instance_path_nodes=$3 AND instance_path_indices=$4 ORDER BY node",
-        )
+        ))
         .bind(tenant.as_uuid())
         .bind(run.as_uuid())
         .bind(&path_nodes)
@@ -613,6 +614,15 @@ impl PgRunStore {
         let definition = self
             .definition(&mut *tx, tenant, record.info.version_id)
             .await?;
+        for row in &rows {
+            let node = NodeId::parse_stored(&col::<String>(row, "node")?)
+                .map_err(|_| corrupt("step node"))?;
+            let instance = ExecutionInstanceId::in_path(path.clone(), node.clone());
+            let step = steps
+                .get(&node)
+                .ok_or_else(|| corrupt("bounded step identity"))?;
+            validate_scoped_control_row(definition.node_for_instance(&instance), step, row)?;
+        }
         for node in collections.keys() {
             let owner = ExecutionInstanceId::in_path(path.clone(), node.clone());
             if !matches!(

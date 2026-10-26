@@ -143,8 +143,9 @@ fails the run with `EXPRESSION_ERROR`.
 
 ### Bodies that compensate (T014-014..021, D380-D389)
 
-A published collection body contains one to eight activities and one terminal `return`.
-The 0.3 increment permits local acyclic activity success/error routes; all paths stay inside
+A published collection body starts with an activity, contains one to eight executable nodes
+(activities, `condition`, `switch`) and one terminal `return`.
+The 0.3 increment permits local acyclic success/error routes; all paths stay inside
 that body. A committed handled error does not fail the collection. An unhandled recovery
 failure retains its own failure code and uses the normal drain/compensation path. Each
 unselected branch's unused forward and derived reservations are retired, preserving the
@@ -153,9 +154,15 @@ reservations. A loop body retains the linear activity-chain subset with no body 
 Each activity may declare
 `compensateWith`, `reconcileWith`, `compensationRetry`, `compensationTimeoutMs`, `irreversible`
 and `highRisk` with the meaning they have at the root; `irreversible` and `compensateWith` on one
-step are refused as at the root. Scoped `condition`/`switch`, `saga`, timers, child workflows
-and nested scopes inside a body remain closed. The existing IR fields and worker minor 1.5
-are unchanged. `collection-local-recovery` verifies the common five-SDK contract.
+step are refused as at the root. A local condition reads its own admitted item/index and local
+outputs; a switch selects the first true case or its default. An expression failure records
+`EXPRESSION_ERROR`. Preparing a decision uses one exact snapshot, and its write compares the
+Run revision, checks current shard authority and global/ancestor forward fences, then commits
+the choice, routing and selected task/outbox together. Malformed control state and orphan
+worker/wait metadata are rejected by full/path/frontier readers and both native writers.
+Control-node entry, `saga`, timers, child workflows and nested scopes remain closed. The existing
+IR fields and worker minor 1.5 are unchanged. `collection-local-recovery` and
+`collection-control-routing` verify these focused common five-SDK contracts.
 
 A scope whose body declares any of `compensateWith`, `irreversible` or `highRisk` is its own saga.
 When it stops for a failed iteration, the storage quota, an outer cancellation or a loop timeout, the

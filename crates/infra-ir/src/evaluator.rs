@@ -147,6 +147,20 @@ impl ExpressionEvaluator for JsonEvaluator {
         compiled.eval_bool(&env).map_err(failure)
     }
 
+    fn condition_instance(
+        &self,
+        expression: &Expression,
+        data: &RunData,
+        instance: &ExecutionInstanceId,
+    ) -> Result<bool, ExpressionFailure> {
+        if instance.path().is_root() {
+            return self.condition(expression, data);
+        }
+        let compiled = Compiled::compile(expression.as_str()).map_err(failure)?;
+        let env = environment(&compiled.variables(), data, Some(instance))?;
+        compiled.eval_bool(&env).map_err(failure)
+    }
+
     fn correlation_key(
         &self,
         expression: &Expression,

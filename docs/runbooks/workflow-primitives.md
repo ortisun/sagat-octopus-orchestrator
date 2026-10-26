@@ -4,13 +4,14 @@ The public workflow document remains additive `sagat-octopus-orchestrator.io/v1`
 `switch`, run-addressed declared Query/Update and a bounded root human approval are available
 with the existing basic root nodes. A public collection workflow may start with ordinary source
 activities followed by a chain of `forEach` nodes ending at `end`; each referenced body contains a
-bounded acyclic graph of one to eight activities followed by one `return`. In the 0.3
-increment, an activity may take a local `onError` route; a recovery failure drains with its own
+bounded acyclic graph with an activity entry, one to eight executable nodes (activities,
+conditions, switches) and one `return`. In the 0.3 increment, local `onError` routes and
+recorded decisions may select a branch; a recovery failure drains with its own
 code. Unselected branches retain their lifetime charge as retired reservations, while actual
 completed/unknown effects keep the compensation capacity they require.
 The restricted public loop shape uses an activity followed by a return in its body; a loop's
 `onError` edge may lead to an `end` or to recovery activities that end at an `end`. Nested
-collections, triggers, structured-primitive combinations and broader body graphs remain closed.
+collections, control-node entry, waits inside bodies, triggers and broader structured combinations remain closed.
 The public continuation subset accepts an activity followed by `continueAsNew`, including exact
 declared-state transfer, or an activity and condition that select the same continuation or `end`.
 An approval combines with declared state and with a continuation chain (an entry activity, then an
@@ -310,6 +311,38 @@ trace, with the closed `approved`/`rejected`/`expired` outcome), `workflow_primi
 `workflow_approval_wait_seconds{outcome}` and, for a refused decision,
 `workflow_primitive_rejections_total{kind="approval",code}`. The earlier `workflow_approval_http_*` counters
 were removed (D446).
+
+## Local collection decisions (0.3 increment)
+
+For a body decision, use the qualified journal address (`lines[0]/choose`, for example).
+`condition.evaluated`/`switch.evaluated` and the following `step.routed` explain the chosen
+branch. The decision and selected task/outbox share one commit. `EXPRESSION_ERROR` either
+takes a condition's local error route or starts the ordinary collection drain and compensation.
+
+The operator questions and their evidence are:
+
+- Which branch ran: the qualified choice and route in the journal and runtime graph.
+- Why progress waited: `scheduler_actions_total{kind="collection",outcome="skipped"}`
+  versus `outcome="fenced"`; inspect the Run revision/paused state and scheduler ownership.
+- Where a control transaction waited: the `scheduler.action` span with
+  `kind="collection_control"`, its run/tenant/instance and expected revision, correlated to
+  the Run's trace and parent span. Items, outputs and expression text are absent from it.
+
+The real PostgreSQL cases cover a pause committed ahead of a prepared answer, native outbox
+rollback, malformed controls and orphan timer/lease metadata in full/path/frontier reads and
+prepared writes. An invalid projection is an integrity error; do not invent a choice or reset
+its metadata manually. Preserve the journal and compare it with the projection using
+`verify_run` before attempting recovery.
+
+```sh
+RUST_TEST_THREADS=1 cargo test -p sagat-tests --test integration_workflow_primitives --locked -- collection_control_transactions:: collection_controls::
+SAGAT_SDK_SCENARIO=collection-control-routing cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+```
+
+The published body has an activity entry, up to eight executable activity/condition/switch
+nodes and one Return. Control entry, waits, children and nesting remain gated. The existing
+wire fields and worker minor1.5 are unchanged; a full release-wide compatibility matrix
+remains required before shipping.
 
 ## Rollback and compatibility
 

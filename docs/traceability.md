@@ -450,6 +450,32 @@ vocabulary are retained. No nested capacity or large-resource criterion is close
 [The 0.3 execution ledger](../specs/014-workflow-primitives/implementation-0.3.md) owns
 current commands/results, including the incompatible unpublished legacy-fixture limitation.
 
+### 0.3 local collection decision increment (2026-10-26)
+
+Refs: T014-014–017/040/043/044, FR-014-004/005/014–017. An activity-entry body now
+admits up to eight executable activity/condition/switch nodes and one Return. The exact-path
+snapshot prepares the answer; revision CAS, current scheduler authority and ancestor/global
+fences protect its commit. Choices, routing, tasks, usage and outbox stay in one transaction.
+The full Run remains the independent oracle.
+
+`collection_controls.rs` and `collection_control_transactions.rs` exercise distinct local
+item/step contexts, first-true/default selection, expression failure/compensation, local
+condition recovery, full/frontier transition and complete-journal equivalence, native
+outbox rollback, a pause committed ahead of the prepared decision, malformed projections
+and orphan physical timer/reported-lease state. Observed REDs cover unsupported publication,
+missing scoped evaluation, malformed state accepted by all three readers and a prepared
+writer incorrectly returning success over orphan metadata. The corrected ten-case native
+invocation passed10/10,0 ignored; the separately exercised trace canary passed1/1 after
+its missing-span RED. The current Run-correlated span omits items, outputs and expressions.
+
+`collection-control-routing` produced five identical normalized results. After inspecting
+the workflows, all six actual worker calls, both journals, skipped index1 activity and
+ordered `[1,-1]` results, the reviewed references passed all five SDKs without blessing
+(43.02s, focused scenario). The four core crates passed1009 tests; strict workspace Clippy
+and remaining regression commands are recorded in the execution ledger. No new worker
+minor or wire field is required. Control entry, waits, children, nesting and the full
+62-scenario release aggregate remain pending; no canonical task is closed by this increment.
+
 ### Integrated bounded execution evidence (feature 014)
 
 FR-014-005/014/015: shared bounded/full effect and attempt policies are covered by

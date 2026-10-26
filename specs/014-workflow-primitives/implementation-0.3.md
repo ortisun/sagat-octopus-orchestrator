@@ -182,3 +182,69 @@ requires a scoped evaluator, exact snapshot/revision/fence validation, transacti
 condition/switch projection and branch reservation accounting. An evaluator compatibility
 default must delegate root calls and refuse unsupported scoped evaluation. No canonical
 task closes through this domain foundation.
+
+### Completed first-increment broad regression
+
+The complete serial `integration_workflow_primitives` invocation against the first
+increment's binary (`5c20d0de` production sources) passed544 tests,0 failures,16 explicitly
+ignored,1601.09s test execution. This includes the corrected clock witness. It supersedes
+the pending broad-run status above without erasing the earlier two-thread failures.
+
+### Local-control runtime and integrity increments
+
+Scoped boolean evaluation delegates roots unchanged and uses the exact instance's local
+environment. Its actual RED was1 pass/1 failure at unsupported scoped evaluation; all11
+evaluator tests then passed. The domain control command validates pending state, exact
+node/kind/case and every global/ancestor forward fence; its six-case target passes, including
+ten malformed pending-metadata variants rejected without a partial state change.
+
+The two public decision tests first failed at the correct unsupported-body boundary, then
+passed2/2 in6.31s. The subsequent native suite passed8/8 in29.28s, covering local conditions,
+ordered/default switch, expression failure and actual prefix compensation, local recovery,
+outbox rollback in bounded/full writes, malformed projection reads and a held-lock pause/CAS
+race. An intermediate race fixture expected HTTP200 for resume; the documented operation
+returns202. Correcting that assertion completed the lifecycle; it was not a runtime fix.
+
+Adversarial review found two typed-state gaps: three readers accepted malformed scoped controls,
+and a routed Pending control could record a choice without its route. The native RED observed
+all three readers succeed when all should reject. The shared domain invariant and full/path/
+frontier read validation corrected them. A further physical-row counterexample reproduced
+orphan `due_at` acceptance in all readers and a prepared native writer returning `Ok(())` over
+an orphan reported-lease hash. One shared SQL predicate now checks physical worker/wait/child/
+approval/output absence in the existing read projections and both guarded UPDATEs. No extra
+per-member/history query, schema, role grant or wire field was added. Final bounded physical-
+guard review found no required issue; root reran the actual ten-case native suite:
+10 passed,0 failed,0 ignored,56.83s (117.15s including compilation).
+
+The scoped transaction span reuses `scheduler.action` with closed kind `collection_control`
+and run/tenant/instance/expected-revision correlation. The real trace canary was observed
+failing at the missing-span assertion with the annotations removed, then passed1/1 in2.63s
+after restoring them; item and expression canaries are absent from the captured output.
+
+`cargo test -p sagat-domain -p sagat-application -p sagat-infra-ir -p sagat-scheduler --locked`
+passed1009 tests,0 failures,0 ignored across77 targets,66.57s including compilation.
+Strict workspace/all-target Clippy after the physical correction passed (exit0,83.92s);
+its final trace-instrumented follow-up and affected contract/regression gates are in progress.
+
+The common `collection-control-routing` observation ran all five languages; all normalized
+outputs were identical (SHA256 `91e94795046ca7e2d647ecdc083f8c1b5f40b704aca0fa93712a0844a1448ceb`).
+The only aggregate failures were the two absent new references. Root inspected both complete
+workflows/canonical forms, both journals, qualified graphs, all six actual worker calls,
+skipped index1 notifications, lifetime12/depth1 and ordered results before recording references.
+The subsequent all-five invocation without bless/reuse/archive/language filtering passed
+1 aggregate,0 failures,43.02s test execution (70.35s including compilation). The two ordinary
+non-ignored registry checks were filtered by `--ignored`, not counted as passes. Registry size
+is now62; the full62-scenario release aggregate remains pending.
+
+Current public body capability is activity entry, at most eight executable activity/condition/
+switch nodes and one Return. Control entry, waits, children, nested scopes and loop broadening
+remain separate increments. All eight canonical tasks remain unchecked; no release metadata,
+merge or final release acceptance follows from these focused results.
+
+Final local-control follow-ups: trace-instrumented workspace/all-target Clippy passed
+(exit0,93.94s). The affected contract/ordinary registry command passed47 primitive contracts
+and2 registry/harness tests; its one expensive all-SDK aggregate remained explicitly ignored
+in that ordinary invocation and is represented only by the separate focused all-five result.
+Formatting, architecture (24 crates/no cycles) and agent configuration pass. The final
+physical-guard adversarial review found no required issue, ending its bounded three-cycle
+review. A broader committed-tree regression remains separate from the focused evidence.

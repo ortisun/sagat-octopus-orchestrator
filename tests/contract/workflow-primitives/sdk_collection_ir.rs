@@ -39,7 +39,7 @@ fn collection_publication_rejects_an_unproven_body_shape() {
     let source = std::fs::read(path).expect("reviewed SDK golden");
     let golden: Value = serde_json::from_slice(&source).expect("golden JSON");
     let mut document = golden["workflows"]["map"].clone();
-    // Scoped conditions still require their own evaluated routing and runtime evidence.
+    // Control-node entry still requires its own admission and runtime evidence.
     document["bodies"]["line"]["nodes"] = serde_json::json!([
         {"id": "price", "type": "condition", "expression": "true",
          "ifTrue": "fallback", "ifFalse": "return-price"},

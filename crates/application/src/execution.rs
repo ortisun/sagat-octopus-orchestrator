@@ -350,6 +350,23 @@ pub trait ExpressionEvaluator: Send + Sync {
     fn condition(&self, expression: &Expression, data: &RunData)
     -> Result<bool, ExpressionFailure>;
 
+    /// Evaluates a boolean in one exact execution context. An adapter must explicitly support
+    /// scoped evaluation; the compatibility default delegates roots and refuses scoped data.
+    fn condition_instance(
+        &self,
+        expression: &Expression,
+        data: &RunData,
+        instance: &ExecutionInstanceId,
+    ) -> Result<bool, ExpressionFailure> {
+        if instance.path().is_root() {
+            self.condition(expression, data)
+        } else {
+            Err(ExpressionFailure(
+                "scoped condition evaluation is unsupported".into(),
+            ))
+        }
+    }
+
     /// # Errors
     /// [`ExpressionFailure`] when the result is not a usable correlation key.
     fn correlation_key(

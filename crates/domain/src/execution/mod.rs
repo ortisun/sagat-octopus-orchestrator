@@ -15,6 +15,7 @@ mod operations;
 mod path_state;
 mod plan;
 mod sagas;
+mod scoped_controls;
 mod scoped_sagas;
 mod state;
 
@@ -71,6 +72,7 @@ pub use path_state::{
     PathLoopState, PathScopeSagaState,
 };
 pub use plan::{AddressedPlan, Evaluation, Plan, plan, plan_addressed, plan_path};
+pub use scoped_controls::{resolve_control_instance, resolve_control_path_instance};
 pub use scoped_sagas::{plan_scope_compensation, scope_compensation_candidate};
 pub use state::{
     CollectionIterationRestore, CollectionPhase, CollectionResult, CollectionState, LoopCheckpoint,

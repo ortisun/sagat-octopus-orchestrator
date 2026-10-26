@@ -13,6 +13,23 @@ mod database;
 mod path;
 mod path_read;
 
+// A deterministic control owns no worker, timer, event, child, approval or output capability.
+// Reuse the same physical-row predicate in snapshot readers and guarded update writers.
+macro_rules! scoped_control_metadata_empty {
+    () => {
+        "s.activity IS NULL AND s.secrets IS NULL AND s.output_digest IS NULL \
+         AND s.ready_at IS NULL AND s.last_hinted_at IS NULL AND s.hint_count=0 \
+         AND s.lease_token_hash IS NULL AND s.lease_expires_at IS NULL \
+         AND s.attempt_deadline_at IS NULL AND s.leased_by IS NULL \
+         AND s.reported_lease_token_hash IS NULL AND s.waiting_kind IS NULL \
+         AND s.due_at IS NULL AND s.event_type IS NULL AND s.correlation_key IS NULL \
+         AND s.event_since IS NULL AND s.event_scanned_at IS NULL \
+         AND s.child_run_id IS NULL AND NOT s.child_started AND s.child_input IS NULL \
+         AND s.approval_request_id IS NULL AND s.kind='FORWARD'"
+    };
+}
+pub(crate) use scoped_control_metadata_empty;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -200,12 +217,13 @@ impl PgRunStore {
             .await
             .map_err(store_error)?;
         let input_digest: Vec<u8> = col(&row, "input_digest")?;
-        let step_rows = sqlx::query(
+        let step_rows = sqlx::query(concat!(
             "SELECT node, instance_path_nodes, instance_path_indices, status, attempt, generation, cancel_requested, routed, condition, switch_case_id, \
                     timed_out, failure_code, next_attempt_at, waiting_kind, due_at, correlation_key, \
-                    child_run_id, approval_request_id \
-             FROM steps WHERE tenant_id = $1 AND run_id = $2",
-        )
+                    child_run_id, approval_request_id, s.node_kind AS stored_node_kind, (",
+            scoped_control_metadata_empty!(),
+            ") AS control_metadata_empty FROM steps s WHERE tenant_id = $1 AND run_id = $2",
+        ))
         .bind(tenant.as_uuid())
         .bind(run.as_uuid())
         .fetch_all(&mut *tx)
@@ -248,6 +266,17 @@ impl PgRunStore {
         let definition = self
             .definition(&mut tx, tenant, record.info.version_id)
             .await?;
+        for row in &step_rows {
+            let node = NodeId::parse_stored(&col::<String>(row, "node")?)
+                .map_err(|_| corrupt("step node"))?;
+            let instance = ExecutionInstanceId::in_path(step_instance_path(row)?, node);
+            if !instance.path().is_root() {
+                let step = state
+                    .instance(&instance)
+                    .ok_or_else(|| corrupt("scoped step identity"))?;
+                validate_scoped_control_row(definition.node_for_instance(&instance), step, row)?;
+            }
+        }
         Ok(Some(PgRunTx {
             tx,
             info: record.info,
@@ -1877,6 +1906,46 @@ fn switch_selection(row: &PgRow) -> Result<Option<SwitchSelection>, StoreError> 
             .map(Some)
             .map_err(|_| corrupt("switch case id")),
     }
+}
+
+fn stored_switch_case_id(step: &StepState) -> Option<&str> {
+    step.switch_selection().map(|selection| match selection {
+        SwitchSelection::Case(id) => id.as_str(),
+        SwitchSelection::Default => "",
+    })
+}
+
+pub(crate) fn validate_scoped_control_projection(
+    node: Option<&Node>,
+    step: &StepState,
+) -> Result<(), StoreError> {
+    let valid = node.map_or_else(
+        || step.condition().is_none() && step.switch_selection().is_none(),
+        |node| step.is_valid_scoped_control(node),
+    );
+    if !valid {
+        return Err(corrupt("scoped control projection"));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_scoped_control_row(
+    node: Option<&Node>,
+    step: &StepState,
+    row: &PgRow,
+) -> Result<(), StoreError> {
+    validate_scoped_control_projection(node, step)?;
+    if let Some(node) = node
+        && matches!(
+            node.kind(),
+            NodeKind::Condition { .. } | NodeKind::Switch { .. }
+        )
+        && (!col::<bool>(row, "control_metadata_empty")?
+            || col::<String>(row, "stored_node_kind")? != node.kind().label())
+    {
+        return Err(corrupt("scoped control physical metadata"));
+    }
+    Ok(())
 }
 
 struct RestoredCollectionRows {
@@ -4767,6 +4836,8 @@ impl PgRunTx {
                     | RunEvent::StepStarted { .. }
                     | RunEvent::StepCompleted { .. }
                     | RunEvent::StepFailed { .. }
+                    | RunEvent::ConditionEvaluated { .. }
+                    | RunEvent::SwitchEvaluated { .. }
                     | RunEvent::StepRouted { .. }
                     | RunEvent::StepRetryScheduled { .. }
                     | RunEvent::StepRetryDue { .. }
@@ -5657,11 +5728,7 @@ impl PgRunTx {
                 });
             }
         };
-        if step.condition().is_some() || step.switch_selection().is_some() {
-            return Err(StoreError::Internal {
-                detail: "the scoped step projection is not supported by addressed storage".into(),
-            });
-        }
+        validate_scoped_control_projection(self.def.node_for_instance(instance), &step)?;
         let kind = self
             .def
             .node_for_instance(instance)
@@ -5766,8 +5833,8 @@ impl PgRunTx {
 
         self.ensure_node_kind(instance, node_kind).await?;
 
-        let updated = sqlx::query(
-            "UPDATE steps SET status = $6, attempt = $7, generation = $8, \
+        let updated = sqlx::query(concat!(
+            "UPDATE steps AS s SET status = $6, attempt = $7, generation = $8, \
                     cancel_requested = $9, routed = $10, timed_out = $11, failure_code = $12, \
                     next_attempt_at = $13, \
                     ready_at = CASE WHEN $6 = 'READY' \
@@ -5795,10 +5862,13 @@ impl PgRunTx {
                                                      WHEN $25::bytea IS NOT NULL THEN $25 \
                                                      ELSE reported_lease_token_hash END, \
                     output_digest = COALESCE($16, output_digest), waiting_kind = $26, \
-                    updated_at = $14 \
+                    updated_at = $14, condition = $27, switch_case_id = $28 \
              WHERE tenant_id = $1 AND run_id = $2 AND node = $3 AND step_id = $4 \
-               AND namespace_id = $5 AND instance_path_nodes = $17 AND instance_path_indices = $18",
-        )
+               AND namespace_id = $5 AND instance_path_nodes = $17 AND instance_path_indices = $18 \
+               AND (NOT $29 OR (",
+            scoped_control_metadata_empty!(),
+            " AND s.node_kind=$30))",
+        ))
         .bind(self.info.tenant_id.as_uuid())
         .bind(self.info.run_id.as_uuid())
         .bind(instance.node().as_str())
@@ -5829,6 +5899,10 @@ impl PgRunTx {
         .bind(rehinted)
         .bind(reported.map(|reported| reported.token_hash.clone()))
         .bind(waiting_kind)
+        .bind(step.condition())
+        .bind(stored_switch_case_id(&step))
+        .bind(matches!(node_kind, "condition" | "switch"))
+        .bind(node_kind)
         .execute(&mut *self.tx)
         .await
         .map_err(store_error)?
@@ -5977,10 +6051,7 @@ impl PgRunTx {
         let instance = ExecutionInstanceId::root(node.clone());
         let step_uuid = instance_step_id(self.info.version_id, self.info.run_id, &instance);
         let status = step.status().as_str();
-        let switch_case_id = step.switch_selection().map(|selection| match selection {
-            SwitchSelection::Case(id) => id.as_str(),
-            SwitchSelection::Default => "",
-        });
+        let switch_case_id = stored_switch_case_id(&step);
         let attempt = i32::try_from(step.attempt()).map_err(|_| corrupt("attempt"))?;
         let generation = i64::try_from(step.generation()).map_err(|_| corrupt("generation"))?;
         let inserted = !self.stored.contains(&instance);

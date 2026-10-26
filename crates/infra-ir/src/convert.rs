@@ -674,18 +674,29 @@ fn is_activity_chain(body: &sagat_domain::workflow::BodyDefinition, limit: usize
 }
 
 /// A validated body is already acyclic, reachable, closed and has exactly one terminal return.
-/// Activity-only success/error routes execute one branch at a time and reuse local routing.
-/// Every activity retains a success edge; control nodes and nested scopes remain separately gated.
-fn is_collection_activity_body(body: &sagat_domain::workflow::BodyDefinition) -> bool {
-    let mut activities = 0;
+/// One local branch executes at a time. Activity entry reuses existing admission; evaluated
+/// conditions/switches continue from a revision-fenced exact-path snapshot. Waits/nesting and
+/// control-node entry retain their separate admission gates.
+fn is_collection_body(body: &sagat_domain::workflow::BodyDefinition) -> bool {
+    if !body
+        .node(body.entrypoint())
+        .is_some_and(|node| matches!(node.kind(), NodeKind::Activity { .. }))
+    {
+        return false;
+    }
+    let mut steps = 0;
     for node in body.nodes() {
         match node.kind() {
-            NodeKind::Activity { .. } if node.next().is_some() => activities += 1,
+            NodeKind::Activity { .. } if node.next().is_some() => steps += 1,
+            NodeKind::Condition { .. } if node.next().is_none() && node.timeout().is_none() => {
+                steps += 1
+            }
+            NodeKind::Switch { .. } => steps += 1,
             NodeKind::Return { .. } => {}
             _ => return false,
         }
     }
-    (1..=MAX_BODY_CHAIN).contains(&activities)
+    (1..=MAX_BODY_CHAIN).contains(&steps)
 }
 
 /// The first approval a document declares inside a named body, if any. An approval in an iteration
@@ -796,11 +807,11 @@ pub(crate) fn published_collection_definition(
                 reason: "published collection bodies must be referenced by a collection owner",
             });
         }
-        if !is_collection_activity_body(body) {
+        if !is_collection_body(body) {
             return Err(IrError::Unsupported {
                 node: body.name().as_str().to_owned(),
                 kind: "body".to_owned(),
-                reason: "the runtime supports a collection body of one to eight activities with local success/error routes and one return",
+                reason: "the runtime supports an activity-entry collection body of one to eight activities/conditions/switches with local routes and one return",
             });
         }
     }

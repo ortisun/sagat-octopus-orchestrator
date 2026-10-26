@@ -63,6 +63,8 @@ use time::OffsetDateTime;
 use tracing::Instrument;
 
 use crate::fairness::{self, Weights};
+
+mod collection_controls;
 use crate::shards::{Placement, Snapshot};
 
 /// Delivered outbox messages deleted per housekeeping round.
@@ -148,6 +150,8 @@ pub struct Report {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CollectionAdvance {
     Entered,
+    /// One local condition/switch answer and its selected successor committed atomically.
+    BodyProgress,
     Admitted {
         index: u32,
     },
@@ -651,7 +655,7 @@ where
         owner: &ExecutionInstanceId,
     ) -> Result<CollectionAdvance, CollectionAdvanceError>
     where
-        S: CollectionStore,
+        S: CollectionStore + PathExecutionStore,
     {
         let view = self.view();
         self.advance_collection_in_view(&view, tenant, run, owner)
@@ -1416,6 +1420,35 @@ where
         }
         let terminal_ready = collection.next_admission() == collection.item_count()
             && collection.active_count() == 0;
+        if !state.is_paused() {
+            let active_paths = collection
+                .active_iterations()
+                .filter_map(|index| {
+                    collection
+                        .entry_instance(index)
+                        .map(ExecutionInstanceId::path)
+                })
+                .collect::<std::collections::BTreeSet<_>>();
+            if let Some((instance, _)) = state.instances().find(|(instance, step)| {
+                active_paths.contains(instance.path())
+                    && step.status() == execution::StepStatus::Pending
+                    && matches!(
+                        definition
+                            .node_for_instance(instance)
+                            .map(sagat_domain::workflow::Node::kind),
+                        Some(NodeKind::Condition { .. } | NodeKind::Switch { .. })
+                    )
+            }) {
+                return self
+                    .advance_collection_control_from_run(
+                        view,
+                        transition(state.version()),
+                        tx,
+                        instance,
+                    )
+                    .await;
+            }
+        }
         if terminal_ready && state.is_paused() {
             drop(tx);
             return Ok(CollectionAdvance::Waiting);
@@ -1819,7 +1852,7 @@ where
         owner: &ExecutionInstanceId,
     ) -> Result<CollectionAdvance, CollectionAdvanceError>
     where
-        S: CollectionStore,
+        S: CollectionStore + PathExecutionStore,
     {
         let lease = match view.hold_for(run) {
             Hold::Lease(lease) => lease,
@@ -1848,7 +1881,7 @@ where
         frontier: &CollectionFrontier,
     ) -> Result<Option<CollectionAdvance>, CollectionAdvanceError>
     where
-        S: CollectionStore,
+        S: CollectionStore + PathExecutionStore,
     {
         let definition = &frontier.run.definition;
         let NodeKind::ForEach { body, .. } = definition
@@ -1979,6 +2012,23 @@ where
                     ))
                     .await?;
                 return Ok(Some(CollectionAdvance::DrainFinished));
+            }
+        }
+
+        for member in &frontier.active {
+            if let Some((instance, _)) = member.steps.iter().find(|(instance, step)| {
+                step.status() == execution::StepStatus::Pending
+                    && matches!(
+                        definition
+                            .node_for_instance(instance)
+                            .map(sagat_domain::workflow::Node::kind),
+                        Some(NodeKind::Condition { .. } | NodeKind::Switch { .. })
+                    )
+            }) {
+                return self
+                    .advance_collection_control(view, transition(), scope_id, instance)
+                    .await
+                    .map(Some);
             }
         }
 
@@ -3973,7 +4023,10 @@ where
             .await
     }
 
-    async fn collections(&self, view: &View, report: &mut Report) {
+    async fn collections(&self, view: &View, report: &mut Report)
+    where
+        S: PathExecutionStore,
+    {
         if view.snapshot.is_none() {
             return;
         }
@@ -4002,6 +4055,7 @@ where
                 {
                     Ok(
                         CollectionAdvance::Entered
+                        | CollectionAdvance::BodyProgress
                         | CollectionAdvance::Admitted { .. }
                         | CollectionAdvance::Checkpointed { .. }
                         | CollectionAdvance::DrainStarted

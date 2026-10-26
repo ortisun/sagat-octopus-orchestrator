@@ -27,6 +27,8 @@ mod chains;
 mod chains_http;
 mod collection_10k;
 mod collection_budgets;
+mod collection_control_transactions;
+mod collection_controls;
 mod collection_data_limit_native;
 mod collection_data_limit_readers;
 mod collection_data_limit_schema;

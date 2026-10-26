@@ -1252,6 +1252,56 @@ impl StepState {
         self.failure.as_ref()
     }
 
+    /// Checks deterministic scoped control state. Controls never own an attempt, wait or retry;
+    /// non-control steps must not retain condition/switch choices.
+    #[must_use]
+    pub fn is_valid_scoped_control(&self, node: &crate::workflow::Node) -> bool {
+        use crate::workflow::NodeKind;
+        if !matches!(
+            node.kind(),
+            NodeKind::Condition { .. } | NodeKind::Switch { .. }
+        ) {
+            return self.condition.is_none() && self.switch_selection.is_none();
+        }
+        if self.attempt != 0
+            || self.generation != 0
+            || self.cancel_requested
+            || self.timed_out
+            || self.waiting.is_some()
+            || self.next_attempt_at.is_some()
+        {
+            return false;
+        }
+        let no_choice = self.condition.is_none() && self.switch_selection.is_none();
+        match self.status {
+            StepStatus::Pending => !self.routed && self.failure.is_none() && no_choice,
+            StepStatus::Succeeded => {
+                self.failure.is_none()
+                    && match node.kind() {
+                        NodeKind::Condition { .. } => {
+                            self.condition.is_some() && self.switch_selection.is_none()
+                        }
+                        NodeKind::Switch { cases, .. } => {
+                            self.condition.is_none()
+                                && match &self.switch_selection {
+                                    Some(super::SwitchSelection::Default) => true,
+                                    Some(super::SwitchSelection::Case(id)) => {
+                                        cases.iter().any(|case| case.id() == id)
+                                    }
+                                    None => false,
+                                }
+                        }
+                        _ => false,
+                    }
+            }
+            StepStatus::Failed => {
+                self.failure.as_ref() == Some(&FailureCode::expression_error()) && no_choice
+            }
+            StepStatus::Cancelled => self.routed && self.failure.is_none() && no_choice,
+            _ => false,
+        }
+    }
+
     /// A terminal failure that has not taken its own declared error route. The complete
     /// instance identity resolves equal local node names in different bodies independently.
     /// A missing declaration or an unrouted failure remains unhandled.

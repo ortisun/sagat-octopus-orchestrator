@@ -26,10 +26,14 @@ continuation may transfer the exact declared state snapshot. A continuation may 
 is created already waiting, in the hand-off transaction.
 Collections have a restricted public path: an optional prefix of ordinary root source activities,
 then one or more root `forEach` nodes ending at `end`, with each referenced body containing
-one to eight activities and one terminal `return`. The 0.3 development increment also permits
-acyclic local activity `onError` routes: a handled failure continues its own iteration; an
+an activity entry, one to eight executable nodes (activities, local `condition`/`switch`)
+and one terminal `return`. The 0.3 development increment also permits
+acyclic local `onError` routes: a handled failure continues its own iteration; an
 unhandled recovery failure drains with its own code. Unselected branches retire their unused
-reservations without refunding lifetime instance budget. A body
+reservations without refunding lifetime instance budget. Local decisions read only their exact
+iteration's item/index and outputs; the recorded answer and chosen route commit together under
+the Run revision and scheduler fence. A control-entry body, waits, children and nested scopes
+remain separately gated. A body
 activity may declare `compensateWith`, `reconcileWith`, `irreversible` and `highRisk`, and a failed or
 cancelled scope then compensates its completed iterations (FR-014-005, FR-014-006). A source prefix
 may supply an inline array or its own committed blob through `steps.fetch.output`; source-prefix
