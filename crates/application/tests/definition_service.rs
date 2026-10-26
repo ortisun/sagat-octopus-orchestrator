@@ -328,6 +328,8 @@ impl DefinitionStore for FakeStore {
         version_id: WorkflowVersionId,
         digest: Digest,
         document: &[u8],
+        _declared_state: Option<&sagat_application::declared_operations::PublishedDeclaredState>,
+        _definition: &sagat_domain::workflow::WorkflowDefinition,
         _release_notes: Option<&str>,
         plans: &[sagat_domain::saga::SagaPlan],
         _triggers: &[sagat_application::dispatch::TriggerRegistration],
@@ -1712,6 +1714,21 @@ fn every_error_of_the_codec_maps_to_a_stable_code_that_says_where() {
                 to: id("zzz"),
             }),
             vec![("UNKNOWN_TARGET", Some("a"), None)],
+        ),
+        (
+            IrError::EscapingBodyEdge {
+                body: id("line"),
+                from: id("a"),
+                to: id("zzz"),
+            },
+            vec![("UNKNOWN_TARGET", Some("a"), Some("/bodies/line"))],
+        ),
+        (
+            IrError::Invalid(WorkflowError::ExpressionByteLimit {
+                node: id("a"),
+                limit: 1024,
+            }),
+            vec![("EXPRESSION", Some("a"), None)],
         ),
         (
             IrError::Invalid(WorkflowError::Unreachable(id("orphan"))),

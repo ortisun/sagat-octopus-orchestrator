@@ -19,10 +19,10 @@ from .retry import DEFAULT_RETRY, RetryPolicy
 if TYPE_CHECKING:
     import httpx
 
-SDK_VERSION = "0.1.0"
+SDK_VERSION = "0.2.0"
 """Sent in ``User-Agent`` as ``sagat-sdk-python/<version>``."""
 
-PROTOCOL_VERSION = "1.4"
+PROTOCOL_VERSION = "1.5"
 """The newest minor version of worker protocol 1 this SDK speaks (``sdks/SPEC.md`` section 6.1)."""
 
 LANGUAGE = "python"

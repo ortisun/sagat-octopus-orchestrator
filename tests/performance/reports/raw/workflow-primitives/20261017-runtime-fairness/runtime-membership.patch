@@ -1,0 +1,20 @@
+diff --git a/tests/performance/workflow-primitives/common.rs b/tests/performance/workflow-primitives/common.rs
+index 74bdf466..f3194327 100644
+--- a/tests/performance/workflow-primitives/common.rs
++++ b/tests/performance/workflow-primitives/common.rs
+@@ -103,6 +103,15 @@ impl Platform {
+             subject_of(&format!("perf-worker-b-{}", Uuid::now_v7())),
+             Role::Worker,
+         );
++        sagat_infra_postgres::PgIdentityStore::new(self.world.db.pool.clone())
++            .insert_membership(&sagat_domain::identity::Membership::restore(
++                principal.tenant_id(),
++                principal.subject().clone(),
++                Role::Worker,
++                time::OffsetDateTime::now_utc(),
++            ))
++            .await
++            .expect("persist the second tenant's current worker membership");
+         self.world.bind_everything(&principal).await;
+         principal
+     }

@@ -1,7 +1,7 @@
 import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { StrictMode } from 'react';
-import { Route, Routes } from 'react-router';
+import { Route, Routes, useLocation } from 'react-router';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { fakePlatform, renderApp } from '../../../test/render';
 import type { Routes as FakeRoutes } from '../../../test/render';
@@ -9,7 +9,7 @@ import { installRunsDom } from '../../../test/runsDom';
 import { OPERATOR, VERSION_ID, WORKFLOW_ID, at, failure, runOf, signedInApp } from '../../../test/runs';
 import type { Run } from '../../api/types';
 import { RUN_STATUSES } from './display';
-import { RunsPage } from './RunsPage';
+import { RunsPage, parseRunId, readFilters } from './RunsPage';
 
 let undo: () => void;
 beforeAll(() => {
@@ -57,16 +57,31 @@ function runsPlatform(initial: Run[], options: { size?: number; routes?: FakeRou
   return { ...platform, state, requests, headers };
 }
 
-async function open(runs: Run[], options: { size?: number; routes?: FakeRoutes; permissions?: string[]; namespace?: string | null; strict?: boolean } = {}) {
+/** Says where the page is, so a test can read the address the filters were written to. */
+function Where() {
+  const { pathname, search } = useLocation();
+  return <output data-testid="where">{`${pathname}${search}`}</output>;
+}
+
+async function open(runs: Run[], options: { size?: number; routes?: FakeRoutes; permissions?: string[]; namespace?: string | null; strict?: boolean; path?: string } = {}) {
   const platform = runsPlatform(runs, options);
   const app = await signedInApp(platform.fetcher, options.permissions ?? OPERATOR);
   if (options.namespace === null) app.namespace.set(undefined);
   const routes = (
     <Routes>
-      <Route path="/runs" element={<RunsPage />} />
+      <Route
+        path="/runs"
+        element={
+          <>
+            <RunsPage />
+            <Where />
+          </>
+        }
+      />
+      <Route path="/runs/:runId" element={<Where />} />
     </Routes>
   );
-  const view = renderApp(options.strict ? <StrictMode>{routes}</StrictMode> : routes, { app, path: '/runs' });
+  const view = renderApp(options.strict ? <StrictMode>{routes}</StrictMode> : routes, { app, path: options.path ?? '/runs' });
   return { platform, ...view, user: userEvent.setup() };
 }
 
@@ -271,5 +286,93 @@ describe('the runs page: keeping up to date', () => {
       await vi.advanceTimersByTimeAsync(30_000);
     });
     expect(platform.requests.length).toBe(before);
+  });
+});
+
+describe('the runs page: filters in the address', () => {
+  const where = () => screen.getByTestId('where').textContent;
+
+  it('takes only filters the page could have written: a status it knows, a workflow id that is one', () => {
+    expect(readFilters(new URLSearchParams(`status=FAILED&workflow=${OTHER_WORKFLOW}`))).toEqual({ status: 'FAILED', workflowId: OTHER_WORKFLOW });
+    expect(readFilters(new URLSearchParams('status=DROP%20TABLE&workflow=../../etc'))).toEqual({ status: '', workflowId: '' });
+    expect(readFilters(new URLSearchParams(''))).toEqual({ status: '', workflowId: '' });
+  });
+
+  it('opens with the filters of the link it was reached by, and asks the platform for them', async () => {
+    const { platform } = await open([run(1), run(2, { status: 'FAILED' }), run(3, { status: 'FAILED', workflowId: OTHER_WORKFLOW })], { path: `/runs?status=FAILED&workflow=${OTHER_WORKFLOW}` });
+    await screen.findByRole('table', { name: 'Runs, newest first' });
+    expect(runIds()).toEqual([run(3).runId]);
+    expect(platform.requests.at(-1)?.get('status')).toBe('FAILED');
+    expect(platform.requests.at(-1)?.get('workflowId')).toBe(OTHER_WORKFLOW);
+    expect(screen.getByRole('combobox', { name: 'Status' })).toHaveValue('FAILED');
+  });
+
+  it('writes a filter to the address when it is chosen, so the back button and a shared link have it, and clears them together', async () => {
+    const { user } = await open([run(1), run(2, { status: 'FAILED' })]);
+    await screen.findByRole('table', { name: 'Runs, newest first' });
+    expect(screen.queryByRole('button', { name: 'Clear filters' })).not.toBeInTheDocument();
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Status' }), 'FAILED');
+    expect(where()).toBe('/runs?status=FAILED');
+    await user.click(screen.getByRole('button', { name: 'Clear filters' }));
+    expect(where()).toBe('/runs');
+    await waitFor(() => expect(rows()).toHaveLength(2));
+  });
+
+  it('clears the origin alone and together with address filters', async () => {
+    const { platform, user } = await open([run(1), run(2, { status: 'FAILED' })]);
+    await screen.findByRole('table', { name: 'Runs, newest first' });
+    const origin = screen.getByRole('combobox', { name: 'Origin' });
+    await user.selectOptions(origin, 'CONNECTION_PROBE');
+    await waitFor(() => expect(platform.requests.at(-1)?.get('origin')).toBe('CONNECTION_PROBE'));
+    await user.click(screen.getByRole('button', { name: 'Clear filters' }));
+    expect(origin).toHaveValue('');
+    await waitFor(() => expect(platform.requests.at(-1)?.has('origin')).toBe(false));
+    await user.selectOptions(origin, 'CONNECTION_PROBE');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Status' }), 'FAILED');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Workflow' }), WORKFLOW_ID);
+    await user.click(screen.getByRole('button', { name: 'Clear filters' }));
+    expect(where()).toBe('/runs');
+    expect(origin).toHaveValue('');
+    await waitFor(() => {
+      const query = platform.requests.at(-1);
+      expect(query?.has('origin')).toBe(false);
+      expect(query?.has('status')).toBe(false);
+      expect(query?.has('workflowId')).toBe(false);
+    });
+  });
+
+  it('keeps the filters on the link to a run, so the list beside it stays the one that was chosen', async () => {
+    await open([run(2, { status: 'FAILED' })], { path: '/runs?status=FAILED' });
+    await screen.findByRole('table', { name: 'Runs, newest first' });
+    expect(within(rows()[0] as HTMLElement).getByRole('link')).toHaveAttribute('href', `/runs/${run(2).runId}?status=FAILED`);
+  });
+
+  it('opens a run from its id however it was pasted, and says so when the text is not an id', async () => {
+    expect(parseRunId(`  ${run(5).runId.toUpperCase()}\n`)).toBe(run(5).runId);
+    expect(parseRunId(`https://studio.example/studio/runs/${run(5).runId}`)).toBe(run(5).runId);
+    expect(parseRunId('not-a-run')).toBeUndefined();
+    const { user } = await open([run(1)]);
+    await screen.findByRole('table', { name: 'Runs, newest first' });
+    const field = screen.getByRole('searchbox', { name: 'Open a run by id' });
+    await user.type(field, 'not-a-run{Enter}');
+    expect(await screen.findByRole('alert')).toHaveTextContent(/not a run id/);
+    await user.clear(field);
+    await user.type(field, `${run(1).runId}{Enter}`);
+    await waitFor(() => expect(where()).toBe(`/runs/${run(1).runId}`));
+  });
+});
+
+describe('the runs page: narrow windows', () => {
+  it('shows the runs as cards where a table of six columns would not fit, and as a table where it does', async () => {
+    vi.stubGlobal('matchMedia', (query: string) => ({ matches: query.includes('max-width'), media: query, addEventListener: () => undefined, removeEventListener: () => undefined }));
+    try {
+      await open([run(1, { status: 'FAILED' })]);
+      const cards = await screen.findByRole('list', { name: 'Runs, newest first' });
+      expect(screen.queryByRole('table')).not.toBeInTheDocument();
+      expect(within(cards).getByText('Failed')).toBeInTheDocument();
+      expect(within(cards).getByRole('link')).toHaveAttribute('href', `/runs/${run(1).runId}`);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

@@ -311,9 +311,12 @@ async fn the_fence_is_good_for_the_current_lease_and_for_nothing_else() {
     let (wf, _) = w.publish(chain("fenced")).await;
     let run = w.start(wf, &json!({})).await;
     let tenant = w.admin.tenant_id();
+    // A fence is good only for the shard that owns the run (the scoped scheduler checks it).
+    let own = Shard::of(run.as_uuid());
+    let other = shard((own.index() + 1) % SHARDS);
     let lease = w
         .store
-        .acquire("alpha", &[shard(5)], TTL)
+        .acquire("alpha", &[own], TTL)
         .await
         .expect("acquire")
         .remove(0);
@@ -343,7 +346,7 @@ async fn the_fence_is_good_for_the_current_lease_and_for_nothing_else() {
         !tx.holds_shard(
             "alpha",
             Lease {
-                shard: shard(6),
+                shard: other,
                 ..lease
             }
         )
@@ -366,7 +369,7 @@ async fn the_fence_is_good_for_the_current_lease_and_for_nothing_else() {
     // And one that another replica took: the old generation is refused, the new one is good.
     let theirs = w
         .store
-        .acquire("beta", &[shard(5)], TTL)
+        .acquire("beta", &[own], TTL)
         .await
         .expect("acquire")
         .remove(0);
@@ -390,9 +393,11 @@ async fn a_takeover_never_overtakes_the_transaction_that_found_the_lease_good() 
     let (wf, _) = w.publish(chain("fenced-race")).await;
     let run = w.start(wf, &json!({})).await;
     let tenant = w.admin.tenant_id();
+    let own = Shard::of(run.as_uuid());
+    let free = shard((own.index() + 1) % SHARDS);
     let lease = w
         .store
-        .acquire("alpha", &[shard(11)], Duration::from_secs(3))
+        .acquire("alpha", &[own], Duration::from_secs(3))
         .await
         .expect("acquire")
         .remove(0);
@@ -416,7 +421,7 @@ async fn a_takeover_never_overtakes_the_transaction_that_found_the_lease_good() 
     let started = std::time::Instant::now();
     let got = tokio::time::timeout(
         Duration::from_secs(3),
-        rival.store.acquire("beta", &[shard(11), shard(12)], TTL),
+        rival.store.acquire("beta", &[own, free], TTL),
     )
     .await
     .expect("the takeover does not wait for the action")
@@ -424,16 +429,16 @@ async fn a_takeover_never_overtakes_the_transaction_that_found_the_lease_good() 
     assert!(started.elapsed() < Duration::from_secs(2));
     assert_eq!(
         got.iter().map(|l| l.shard).collect::<Vec<_>>(),
-        vec![shard(12)],
+        vec![free],
         "the free shard is taken, the one the action holds is not"
     );
-    assert_eq!(row(&w, shard(11)).await.0.as_deref(), Some("alpha"));
+    assert_eq!(row(&w, own).await.0.as_deref(), Some("alpha"));
 
     // The action ends; the next round takes the shard, with a new generation.
     tx.commit().await.expect("the action ends");
     let taken = rival
         .store
-        .acquire("beta", &[shard(11)], TTL)
+        .acquire("beta", &[own], TTL)
         .await
         .expect("acquire");
     assert_eq!(taken[0].generation, lease.generation + 1);

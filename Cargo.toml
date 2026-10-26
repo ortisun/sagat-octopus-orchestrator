@@ -1,10 +1,10 @@
 [workspace]
 resolver = "3"
-members = ["crates/domain", "crates/application", "crates/infra-postgres", "crates/infra-blobstore", "crates/telemetry", "crates/api-http", "crates/api-grpc", "crates/infra-nats", "crates/infra-egress", "crates/infra-connectors", "crates/infra-secrets", "crates/infra-expr", "crates/infra-ir", "crates/infra-sandbox", "crates/infra-schema", "crates/scheduler", "apps/cli", "apps/control-plane", "apps/dev-idp", "apps/execution-engine", "apps/sandbox-runner", "tests"]
+members = ["crates/domain", "crates/application", "crates/infra-postgres", "crates/infra-database", "crates/infra-blobstore", "crates/telemetry", "crates/api-http", "crates/api-grpc", "crates/infra-nats", "crates/infra-egress", "crates/infra-connectors", "crates/infra-secrets", "crates/infra-expr", "crates/infra-ir", "crates/infra-sandbox", "crates/infra-schema", "crates/scheduler", "apps/cli", "apps/control-plane", "apps/dev-idp", "apps/execution-engine", "apps/sandbox-runner", "apps/database-runner", "tests"]
 
 [workspace.package]
 license = "MIT"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.98"
 repository = "https://github.com/ortisun/sagat-octopus-orchestrator"
@@ -17,6 +17,7 @@ sagat-domain = { path = "crates/domain" }
 sagat-application = { path = "crates/application" }
 sagat-infra-blobstore = { path = "crates/infra-blobstore" }
 sagat-infra-postgres = { path = "crates/infra-postgres" }
+sagat-infra-database = { path = "crates/infra-database" }
 sagat-telemetry = { path = "crates/telemetry" }
 sagat-api-http = { path = "crates/api-http" }
 sagat-api-grpc = { path = "crates/api-grpc" }
@@ -34,6 +35,7 @@ sagat-control-plane = { path = "apps/control-plane" }
 sagat-dev-idp = { path = "apps/dev-idp" }
 sagat-execution-engine = { path = "apps/execution-engine" }
 sagat-sandbox-runner = { path = "apps/sandbox-runner" }
+sagat-database-runner = { path = "apps/database-runner" }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "migrate", "macros", "uuid", "time", "json"] }
 testcontainers-modules = { version = "0.15", features = ["postgres", "nats", "kafka", "elasticmq", "watchdog"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query", "matched-path"] }
@@ -45,7 +47,7 @@ metrics-exporter-prometheus = { version = "0.18", default-features = false }
 metrics-util = { version = "0.20", default-features = false }
 jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

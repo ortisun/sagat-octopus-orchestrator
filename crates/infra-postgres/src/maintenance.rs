@@ -12,13 +12,14 @@
 use std::time::Duration;
 
 use sagat_application::error::StoreError;
+use sagat_application::execution::MAX_RUN_OUTPUT_BYTES;
 use sagat_application::maintenance::{
     EndedChild, LeaseLoss, LostLease, MaintenanceStore, OutboxDue, OutboxMessage, OutboxStore,
-    PendingChild, RunRef, StepRef, Window,
+    PendingChild, PendingContinuation, RunRef, StepRef, Window,
 };
-use sagat_domain::execution::{Fence, RunId};
+use sagat_domain::execution::{Fence, InstancePath, RunId};
 use sagat_domain::identity::TenantId;
-use sagat_domain::workflow::NodeId;
+use sagat_domain::workflow::{MAX_NODES, NodeId};
 use sqlx::postgres::PgRow;
 use uuid::Uuid;
 
@@ -42,7 +43,26 @@ fn step_ref(row: &PgRow) -> Result<StepRef, StoreError> {
         tenant_id: TenantId::new(col::<Uuid>(row, "tenant_id")?),
         run_id: RunId::new(col::<Uuid>(row, "run_id")?),
         node: NodeId::parse_stored(&node).map_err(|_| corrupt("step node"))?,
+        instance_path: InstancePath::root(),
     })
+}
+
+fn addressed_step_ref(row: &PgRow) -> Result<StepRef, StoreError> {
+    let mut step = step_ref(row)?;
+    let nodes: Vec<String> = col(row, "instance_path_nodes")?;
+    let indices: Vec<i32> = col(row, "instance_path_indices")?;
+    if nodes.len() != indices.len() {
+        return Err(corrupt("step instance path"));
+    }
+    for (node, index) in nodes.into_iter().zip(indices) {
+        let node = NodeId::parse_stored(&node).map_err(|_| corrupt("scope node"))?;
+        let index = u32::try_from(index).map_err(|_| corrupt("scope index"))?;
+        step.instance_path = step
+            .instance_path
+            .child(node, index)
+            .map_err(|_| corrupt("step instance path"))?;
+    }
+    Ok(step)
 }
 
 /// The messages of the rows a claim returned, in the order they were written.
@@ -79,11 +99,195 @@ fn window_params(window: &Window) -> (i64, Vec<i16>, Vec<Uuid>) {
 }
 
 impl MaintenanceStore for PgRunStore {
-    // Each query is the same shape: for every shard the replica owns, the oldest `limit` due items of
+    /// Boundaries that can be handed off now. A run that still holds open work is not a candidate: it
+    /// would sit at the head of the oldest-first list and keep the others from being examined
+    /// (D296). The store proves quiescence again under the chain and run locks.
+    async fn continuation_candidates(
+        &self,
+        window: &Window,
+    ) -> Result<Vec<PendingContinuation>, StoreError> {
+        let (limit, shards, exclude) = window_params(window);
+        sqlx::query(
+            "SELECT candidate.tenant_id,candidate.namespace_id,candidate.chain_id, \
+                    candidate.run_id,candidate.node \
+             FROM unnest($2::smallint[]) AS sh(s) \
+             CROSS JOIN LATERAL ( \
+               SELECT step.tenant_id,chain.namespace_id,chain.chain_id,step.run_id,step.node, \
+                      step.updated_at \
+               FROM steps step JOIN runs run \
+                 ON run.tenant_id=step.tenant_id AND run.id=step.run_id \
+               JOIN execution_chains chain \
+                 ON chain.tenant_id=step.tenant_id AND chain.current_run_id=step.run_id \
+               WHERE run_shard(step.run_id)=sh.s AND run.status='RUNNING' \
+                 AND step.status='PENDING' AND cardinality(step.instance_path_nodes)=0 \
+                 AND chain.cancel_requested=false AND chain.final_outcome IS NULL \
+                 AND step.tenant_id <> ALL($3::uuid[]) \
+                 AND NOT EXISTS ( \
+                   SELECT 1 FROM steps open \
+                   WHERE open.tenant_id=step.tenant_id AND open.run_id=step.run_id \
+                     AND (open.node<>step.node OR cardinality(open.instance_path_nodes)>0) \
+                     AND (open.status<>'SUCCEEDED' OR open.routed=false)) \
+                 AND NOT EXISTS ( \
+                   SELECT 1 FROM run_sagas saga WHERE saga.tenant_id=step.tenant_id \
+                     AND saga.run_id=step.run_id AND saga.phase<>'DONE') \
+                 AND NOT EXISTS ( \
+                   SELECT 1 FROM approval_requests approval \
+                   WHERE approval.tenant_id=step.tenant_id AND approval.run_id=step.run_id \
+                     AND approval.status='PENDING') \
+                 AND NOT EXISTS ( \
+                   SELECT 1 FROM runs child WHERE child.tenant_id=step.tenant_id \
+                     AND child.parent_run_id=step.run_id AND child.parent_settled=false) \
+                 AND NOT EXISTS ( \
+                   SELECT 1 FROM child_chain_links link WHERE link.tenant_id=step.tenant_id \
+                     AND link.parent_run_id=step.run_id \
+                     AND (link.final_outcome IS NULL OR link.settled=false)) \
+               ORDER BY step.updated_at LIMIT $1 \
+             ) candidate ORDER BY candidate.updated_at LIMIT $1",
+        )
+        .bind(limit)
+        .bind(shards)
+        .bind(exclude)
+        .fetch_all(self.pool())
+        .await
+        .map_err(store_error)?
+        .iter()
+        .map(|row| {
+            let node: String = col(row, "node")?;
+            Ok(PendingContinuation {
+                tenant_id: TenantId::new(col::<Uuid>(row, "tenant_id")?),
+                namespace_id: sagat_domain::identity::NamespaceId::new(col::<Uuid>(
+                    row,
+                    "namespace_id",
+                )?),
+                chain_id: RunId::new(col::<Uuid>(row, "chain_id")?),
+                run_id: RunId::new(col::<Uuid>(row, "run_id")?),
+                node: NodeId::parse_stored(&node).map_err(|_| corrupt("continuation node"))?,
+            })
+        })
+        .collect()
+    }
+
+    // The queue shape is: for every shard the replica owns, the oldest `limit` due items of
     // that shard (the first entries of an index whose leading column is the shard, so a shard with
     // nothing due costs one probe), then the oldest `limit` of all of them. The oldest `limit` of the
     // owned shards are among the oldest `limit` of each, so the answer is exactly what one query
-    // over all of them would give.
+    // over all of them would give. Collection discovery also filters semantic scope/history facts;
+    // its output limits do not bound the number of scanned rows or imply a shard-first index.
+    async fn collection_candidates(&self, window: &Window) -> Result<Vec<StepRef>, StoreError> {
+        let (limit, shards, exclude) = window_params(window);
+        let output_limit =
+            i64::try_from(MAX_RUN_OUTPUT_BYTES).map_err(|_| corrupt("run output byte limit"))?;
+        let root_limit = i64::try_from(MAX_NODES).map_err(|_| corrupt("root collection limit"))?;
+        // Lengths only nominate a dormant root owner. The frontier's repeatable-read inspection
+        // and the locked native command verify the legacy evidence and effective total again.
+        // Keep fitting legacy histories out of the limited queue; a missing join is not zero bytes.
+        sqlx::query(
+            "SELECT candidate.tenant_id,candidate.run_id,candidate.node, \
+                    candidate.instance_path_nodes,candidate.instance_path_indices \
+             FROM unnest($2::smallint[]) AS sh(s) \
+             CROSS JOIN LATERAL ( \
+               SELECT work.tenant_id,work.run_id,work.node,work.instance_path_nodes, \
+                      work.instance_path_indices,work.updated_at \
+               FROM ( \
+                 SELECT step.tenant_id,step.run_id,step.node,step.instance_path_nodes, \
+                        step.instance_path_indices,step.updated_at \
+                 FROM steps step JOIN runs run \
+                   ON run.tenant_id=step.tenant_id AND run.id=step.run_id \
+                 JOIN workflow_versions version \
+                   ON version.tenant_id=run.tenant_id AND version.id=run.workflow_version_id \
+                 WHERE run_shard(step.run_id)=sh.s AND run.status='RUNNING' \
+                   AND step.status='PENDING' AND cardinality(step.instance_path_nodes)=0 \
+                   AND step.tenant_id <> ALL($3::uuid[]) \
+                   AND EXISTS ( \
+                     SELECT 1 FROM jsonb_array_elements( \
+                       (convert_from(version.document,'UTF8')::jsonb)->'nodes') declared \
+                     WHERE declared->>'id'=step.node AND declared->>'type'='forEach') \
+                 UNION ALL \
+                 SELECT scope.tenant_id,scope.run_id,scope.owner_node, \
+                        scope.owner_path_nodes,scope.owner_path_indices,scope.updated_at \
+                 FROM iteration_scopes scope JOIN runs run \
+                   ON run.tenant_id=scope.tenant_id AND run.id=scope.run_id \
+                 LEFT JOIN run_instance_usage usage \
+                   ON usage.tenant_id=run.tenant_id AND usage.run_id=run.id \
+                 WHERE run_shard(scope.run_id)=sh.s \
+                   AND run.status IN ('RUNNING','WAITING','CANCELLING','COMPENSATING') \
+                   AND scope.kind='COLLECTION' \
+                   AND scope.tenant_id <> ALL($3::uuid[]) \
+                   AND ( \
+                     scope.lifecycle='DRAINING' \
+                     OR (scope.lifecycle='OPEN' AND ( \
+                       run.status='CANCELLING' \
+                       OR (scope.owner_path_nodes='{}'::text[] \
+                         AND scope.owner_path_indices='{}'::integer[] \
+                         AND (usage.logical_output_bytes IS NULL \
+                           OR usage.logical_output_bytes < 0 \
+                           OR EXISTS ( \
+                             SELECT 1 FROM ( \
+                               SELECT prior.owner_node,prior.namespace_id,prior.result_digest \
+                               FROM iteration_scopes prior \
+                               WHERE prior.tenant_id=scope.tenant_id \
+                                 AND prior.run_id=scope.run_id \
+                                 AND prior.owner_path_nodes='{}'::text[] \
+                                 AND prior.owner_path_indices='{}'::integer[] \
+                                 AND prior.lifecycle='SUCCEEDED' \
+                               ORDER BY prior.owner_node LIMIT ($5 + 1) \
+                             ) completed \
+                             LEFT JOIN steps owner \
+                               ON owner.tenant_id=scope.tenant_id \
+                              AND owner.run_id=scope.run_id \
+                              AND owner.instance_path_nodes='{}'::text[] \
+                              AND owner.instance_path_indices='{}'::integer[] \
+                              AND owner.node=completed.owner_node \
+                             LEFT JOIN payloads payload \
+                               ON payload.tenant_id=scope.tenant_id \
+                              AND payload.digest=completed.result_digest \
+                             HAVING count(*) > $5 \
+                               OR bool_or( \
+                                 completed.namespace_id IS DISTINCT FROM run.namespace_id \
+                                 OR completed.result_digest IS NULL \
+                                 OR octet_length(completed.result_digest) <> 32 \
+                                 OR owner.step_id IS NULL \
+                                 OR owner.namespace_id IS DISTINCT FROM run.namespace_id \
+                                 OR owner.kind IS DISTINCT FROM 'FORWARD' \
+                                 OR owner.node_kind NOT IN ('forEach','legacyControl') \
+                                 OR owner.status IS DISTINCT FROM 'SUCCEEDED' \
+                                 OR owner.routed IS DISTINCT FROM true \
+                                 OR (owner.output_digest IS NOT NULL \
+                                   AND owner.output_digest IS DISTINCT FROM completed.result_digest) \
+                                 OR payload.digest IS NULL) \
+                               OR coalesce(sum(octet_length(payload.content)::bigint) \
+                                 FILTER (WHERE owner.output_digest IS NULL),0) \
+                                 > $4::numeric - usage.logical_output_bytes::numeric))) \
+                       OR (scope.next_admission_index < scope.item_count \
+                         AND scope.active_count < scope.max_concurrency) \
+                       OR scope.completed_count = scope.item_count \
+                       OR EXISTS ( \
+                         SELECT 1 FROM collection_iterations member JOIN steps returned \
+                           ON returned.tenant_id=member.tenant_id \
+                          AND returned.run_id=member.run_id \
+                          AND returned.instance_path_nodes=member.entry_path_nodes \
+                          AND returned.instance_path_indices=member.entry_path_indices \
+                         WHERE member.tenant_id=scope.tenant_id \
+                           AND member.run_id=scope.run_id AND member.scope_id=scope.scope_id \
+                           AND member.lifecycle='ADMITTED' \
+                           AND returned.status IN ('PENDING','FAILED')))) \
+                   ) \
+               ) work ORDER BY work.updated_at LIMIT $1 \
+             ) candidate ORDER BY candidate.updated_at LIMIT $1",
+        )
+        .bind(limit)
+        .bind(shards)
+        .bind(exclude)
+        .bind(output_limit)
+        .bind(root_limit)
+        .fetch_all(self.pool())
+        .await
+        .map_err(store_error)?
+        .iter()
+        .map(addressed_step_ref)
+        .collect()
+    }
+
     async fn due_timers(&self, window: &Window) -> Result<Vec<StepRef>, StoreError> {
         let (limit, shards, exclude) = window_params(window);
         sqlx::query(
@@ -91,6 +295,7 @@ impl MaintenanceStore for PgRunStore {
              CROSS JOIN LATERAL ( \
                  SELECT tenant_id, run_id, node, due_at FROM steps \
                  WHERE run_shard(run_id) = sh.s AND status = 'WAITING' AND waiting_kind = 'TIMER' \
+                   AND cardinality(instance_path_nodes) = 0 \
                    AND due_at <= now() AND tenant_id <> ALL($3::uuid[]) \
                  ORDER BY due_at LIMIT $1) t \
              ORDER BY t.due_at LIMIT $1",
@@ -113,6 +318,7 @@ impl MaintenanceStore for PgRunStore {
              CROSS JOIN LATERAL ( \
                  SELECT tenant_id, run_id, node, due_at FROM steps \
                  WHERE run_shard(run_id) = sh.s AND status = 'WAITING' AND waiting_kind = 'EVENT' \
+                   AND cardinality(instance_path_nodes) = 0 \
                    AND due_at <= now() AND tenant_id <> ALL($3::uuid[]) \
                  ORDER BY due_at LIMIT $1) t \
              ORDER BY t.due_at LIMIT $1",
@@ -131,10 +337,13 @@ impl MaintenanceStore for PgRunStore {
     async fn due_retries(&self, window: &Window) -> Result<Vec<StepRef>, StoreError> {
         let (limit, shards, exclude) = window_params(window);
         sqlx::query(
-            "SELECT t.tenant_id, t.run_id, t.node FROM unnest($2::smallint[]) AS sh(s) \
+            "SELECT t.tenant_id, t.run_id, t.node, t.instance_path_nodes, \
+                    t.instance_path_indices FROM unnest($2::smallint[]) AS sh(s) \
              CROSS JOIN LATERAL ( \
-                 SELECT tenant_id, run_id, node, next_attempt_at FROM steps \
+                 SELECT tenant_id, run_id, node, instance_path_nodes, instance_path_indices, \
+                        next_attempt_at FROM steps \
                  WHERE run_shard(run_id) = sh.s AND status = 'RETRY_WAIT' \
+                   AND ($4 OR cardinality(instance_path_nodes) = 0) \
                    AND next_attempt_at <= now() AND tenant_id <> ALL($3::uuid[]) \
                  ORDER BY next_attempt_at LIMIT $1) t \
              ORDER BY t.next_attempt_at LIMIT $1",
@@ -142,11 +351,12 @@ impl MaintenanceStore for PgRunStore {
         .bind(limit)
         .bind(shards)
         .bind(exclude)
+        .bind(self.scoped_worker_protocol)
         .fetch_all(self.pool())
         .await
         .map_err(store_error)?
         .iter()
-        .map(step_ref)
+        .map(addressed_step_ref)
         .collect()
     }
 
@@ -154,22 +364,28 @@ impl MaintenanceStore for PgRunStore {
         let (limit, shards, exclude) = window_params(window);
         // Two index scans (one per partial index) rather than one query with OR.
         let rows = sqlx::query(
-            "(SELECT t.tenant_id, t.run_id, t.node, t.attempt, t.generation, t.cause \
+            "(SELECT t.tenant_id, t.run_id, t.node, t.instance_path_nodes, \
+                    t.instance_path_indices, t.attempt, t.generation, t.cause \
                 FROM unnest($2::smallint[]) AS sh(s) \
                 CROSS JOIN LATERAL ( \
-                    SELECT tenant_id, run_id, node, attempt, generation, 'TIMED_OUT' AS cause, \
+                    SELECT tenant_id, run_id, node, instance_path_nodes, instance_path_indices, \
+                           attempt, generation, 'TIMED_OUT' AS cause, \
                            attempt_deadline_at AS at FROM steps \
                     WHERE run_shard(run_id) = sh.s AND status IN ('LEASED', 'RUNNING') \
+                      AND ($4 OR cardinality(instance_path_nodes) = 0) \
                       AND attempt_deadline_at <= now() AND tenant_id <> ALL($3::uuid[]) \
                     ORDER BY attempt_deadline_at LIMIT $1) t \
               ORDER BY t.at LIMIT $1) \
              UNION ALL \
-             (SELECT t.tenant_id, t.run_id, t.node, t.attempt, t.generation, t.cause \
+             (SELECT t.tenant_id, t.run_id, t.node, t.instance_path_nodes, \
+                     t.instance_path_indices, t.attempt, t.generation, t.cause \
                 FROM unnest($2::smallint[]) AS sh(s) \
                 CROSS JOIN LATERAL ( \
-                    SELECT tenant_id, run_id, node, attempt, generation, 'EXPIRED' AS cause, \
+                    SELECT tenant_id, run_id, node, instance_path_nodes, instance_path_indices, \
+                           attempt, generation, 'EXPIRED' AS cause, \
                            lease_expires_at AS at FROM steps \
                     WHERE run_shard(run_id) = sh.s AND status IN ('LEASED', 'RUNNING') \
+                      AND ($4 OR cardinality(instance_path_nodes) = 0) \
                       AND lease_expires_at <= now() AND tenant_id <> ALL($3::uuid[]) \
                     ORDER BY lease_expires_at LIMIT $1) t \
               ORDER BY t.at LIMIT $1)",
@@ -177,12 +393,13 @@ impl MaintenanceStore for PgRunStore {
         .bind(limit)
         .bind(shards)
         .bind(exclude)
+        .bind(self.scoped_worker_protocol)
         .fetch_all(self.pool())
         .await
         .map_err(store_error)?;
         let mut out: Vec<LostLease> = Vec::with_capacity(rows.len());
         for row in &rows {
-            let step = step_ref(row)?;
+            let step = addressed_step_ref(row)?;
             let attempt: i32 = col(row, "attempt")?;
             let generation: i64 = col(row, "generation")?;
             let fence = Fence {
@@ -230,6 +447,33 @@ impl MaintenanceStore for PgRunStore {
         .collect()
     }
 
+    async fn stopped_runs(&self, window: &Window) -> Result<Vec<RunRef>, StoreError> {
+        let (limit, shards, exclude) = window_params(window);
+        sqlx::query(
+            "SELECT t.tenant_id, t.id FROM unnest($2::smallint[]) AS sh(s) \
+             CROSS JOIN LATERAL ( \
+                 SELECT run.tenant_id, run.id, run.updated_at FROM runs run \
+                 WHERE run_shard(run.id) = sh.s AND run.status = 'CANCELLING' \
+                   AND run.finished_at IS NULL AND run.stop_reason IS NOT NULL AND NOT run.paused \
+                   AND run.tenant_id <> ALL($3::uuid[]) \
+                   AND NOT EXISTS ( \
+                     SELECT 1 FROM steps held \
+                     WHERE held.tenant_id = run.tenant_id AND held.run_id = run.id \
+                       AND held.status IN ('LEASED','RUNNING')) \
+                 ORDER BY run.updated_at LIMIT $1) t \
+             ORDER BY t.updated_at LIMIT $1",
+        )
+        .bind(limit)
+        .bind(shards)
+        .bind(exclude)
+        .fetch_all(self.pool())
+        .await
+        .map_err(store_error)?
+        .iter()
+        .map(run_ref)
+        .collect()
+    }
+
     async fn stale_hints(
         &self,
         older_than: Duration,
@@ -237,10 +481,16 @@ impl MaintenanceStore for PgRunStore {
     ) -> Result<Vec<StepRef>, StoreError> {
         let (limit, shards, exclude) = window_params(window);
         sqlx::query(
-            "SELECT t.tenant_id, t.run_id, t.node FROM unnest($2::smallint[]) AS sh(s) \
+            "SELECT t.tenant_id, t.run_id, t.node, t.instance_path_nodes, \
+                    t.instance_path_indices \
+             FROM unnest($2::smallint[]) AS sh(s) \
              CROSS JOIN LATERAL ( \
-                 SELECT tenant_id, run_id, node, last_hinted_at FROM steps \
-                 WHERE run_shard(run_id) = sh.s AND status = 'READY' AND hint_count < 5 \
+                 SELECT tenant_id, run_id, node, instance_path_nodes, instance_path_indices, \
+                        last_hinted_at \
+                 FROM steps \
+                 WHERE run_shard(run_id) = sh.s AND status = 'READY' \
+                   AND ($5 OR cardinality(instance_path_nodes) = 0) \
+                   AND hint_count < 5 \
                    AND last_hinted_at <= now() - $4 * interval '1 microsecond' \
                    AND tenant_id <> ALL($3::uuid[]) \
                  ORDER BY last_hinted_at LIMIT $1) t \
@@ -250,11 +500,12 @@ impl MaintenanceStore for PgRunStore {
         .bind(shards)
         .bind(exclude)
         .bind(micros(older_than))
+        .bind(self.scoped_worker_protocol)
         .fetch_all(self.pool())
         .await
         .map_err(store_error)?
         .iter()
-        .map(step_ref)
+        .map(addressed_step_ref)
         .collect()
     }
 
@@ -267,6 +518,7 @@ impl MaintenanceStore for PgRunStore {
              CROSS JOIN LATERAL ( \
                  SELECT tenant_id, run_id, node, child_run_id, child_input, updated_at FROM steps \
                  WHERE run_shard(run_id) = sh.s AND status = 'WAITING' AND waiting_kind = 'CHILD' \
+                   AND cardinality(instance_path_nodes) = 0 \
                    AND child_started = false AND child_input IS NOT NULL \
                    AND tenant_id <> ALL($3::uuid[]) \
                  ORDER BY updated_at LIMIT $1) t \
@@ -290,17 +542,59 @@ impl MaintenanceStore for PgRunStore {
         .collect()
     }
 
+    async fn run_result(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        sqlx::query_scalar(
+            "SELECT p.content FROM runs r \
+             JOIN payloads p ON p.tenant_id = r.tenant_id AND p.digest = r.result_digest \
+             WHERE r.tenant_id = $1 AND r.id = $2",
+        )
+        .bind(tenant.as_uuid())
+        .bind(run.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_error)
+    }
+
     async fn ended_children(&self, window: &Window) -> Result<Vec<EndedChild>, StoreError> {
         let (limit, shards, exclude) = window_params(window);
-        // The child that ended is told to its parent: the shard is the parent's.
+        // The child that ended is told to its parent: the shard is the parent's. A child chain is
+        // told once, by its final outcome, through its link (the runs of a chain are created
+        // settled); the parent step must still be waiting for that chain.
         sqlx::query(
-            "SELECT t.tenant_id, t.id, t.parent_run_id, t.parent_node, t.status \
+            "SELECT t.tenant_id, t.child, t.parent_run_id, t.parent_node, t.status \
              FROM unnest($2::smallint[]) AS sh(s) \
              CROSS JOIN LATERAL ( \
-                 SELECT tenant_id, id, parent_run_id, parent_node, status, finished_at FROM runs \
-                 WHERE run_shard(parent_run_id) = sh.s AND parent_run_id IS NOT NULL \
-                   AND parent_settled = false AND finished_at IS NOT NULL \
-                   AND tenant_id <> ALL($3::uuid[]) \
+                 SELECT * FROM ( \
+                     SELECT tenant_id, id AS child, parent_run_id, parent_node, status, \
+                            finished_at FROM runs \
+                     WHERE run_shard(parent_run_id) = sh.s AND parent_run_id IS NOT NULL \
+                       AND parent_settled = false AND finished_at IS NOT NULL \
+                       AND tenant_id <> ALL($3::uuid[]) \
+                     ORDER BY finished_at LIMIT $1) plain \
+                 UNION ALL \
+                 SELECT * FROM ( \
+                     SELECT link.tenant_id, link.child_chain_id AS child, link.parent_run_id, \
+                            first.parent_node, link.final_outcome AS status, \
+                            link.updated_at AS finished_at \
+                     FROM child_chain_links link \
+                     JOIN runs first ON first.tenant_id = link.tenant_id \
+                                    AND first.id = link.child_chain_id \
+                     WHERE run_shard(link.parent_run_id) = sh.s \
+                       AND link.final_outcome IS NOT NULL AND link.settled = false \
+                       AND link.tenant_id <> ALL($3::uuid[]) \
+                       AND EXISTS ( \
+                           SELECT 1 FROM steps parent_step \
+                           WHERE parent_step.tenant_id = link.tenant_id \
+                             AND parent_step.run_id = link.parent_run_id \
+                             AND parent_step.step_id = link.parent_instance_id \
+                             AND parent_step.status = 'WAITING' \
+                             AND parent_step.waiting_kind = 'CHILD' \
+                             AND parent_step.child_run_id = link.child_chain_id) \
+                     ORDER BY link.updated_at LIMIT $1) chained \
                  ORDER BY finished_at LIMIT $1) t \
              ORDER BY t.finished_at LIMIT $1",
         )
@@ -316,7 +610,7 @@ impl MaintenanceStore for PgRunStore {
             let status: String = col(row, "status")?;
             Ok(EndedChild {
                 tenant_id: TenantId::new(col::<Uuid>(row, "tenant_id")?),
-                child: RunId::new(col::<Uuid>(row, "id")?),
+                child: RunId::new(col::<Uuid>(row, "child")?),
                 parent: RunId::new(col::<Uuid>(row, "parent_run_id")?),
                 node: NodeId::parse(&node).map_err(|_| corrupt("parent node"))?,
                 status: status.parse().map_err(|_| corrupt("run status"))?,
@@ -327,12 +621,24 @@ impl MaintenanceStore for PgRunStore {
 
     async fn children_to_cancel(&self, window: &Window) -> Result<Vec<RunRef>, StoreError> {
         let (limit, shards, exclude) = window_params(window);
+        // A run the parent asked to stop, and the current head of a child chain whose link the
+        // parent latched (the head is the only run of the chain that is still unfinished).
         sqlx::query(
             "SELECT t.tenant_id, t.id FROM unnest($2::smallint[]) AS sh(s) \
              CROSS JOIN LATERAL ( \
-                 SELECT tenant_id, id FROM runs \
-                 WHERE run_shard(id) = sh.s AND parent_cancel AND finished_at IS NULL \
-                   AND stop_reason IS NULL AND tenant_id <> ALL($3::uuid[]) \
+                 SELECT tenant_id, id FROM ( \
+                     SELECT tenant_id, id FROM runs \
+                     WHERE run_shard(id) = sh.s AND parent_cancel AND finished_at IS NULL \
+                       AND stop_reason IS NULL AND tenant_id <> ALL($3::uuid[]) \
+                     UNION ALL \
+                     SELECT run.tenant_id, run.id FROM child_chain_links link \
+                     JOIN execution_chains chain ON chain.tenant_id = link.tenant_id \
+                                                AND chain.chain_id = link.child_chain_id \
+                     JOIN runs run ON run.tenant_id = chain.tenant_id \
+                                  AND run.id = chain.current_run_id \
+                     WHERE link.cancel_requested AND run_shard(run.id) = sh.s \
+                       AND chain.final_outcome IS NULL AND run.finished_at IS NULL \
+                       AND run.stop_reason IS NULL AND link.tenant_id <> ALL($3::uuid[])) due \
                  ORDER BY id LIMIT $1) t \
              ORDER BY t.id LIMIT $1",
         )

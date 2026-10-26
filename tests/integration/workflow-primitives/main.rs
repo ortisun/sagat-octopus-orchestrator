@@ -1,0 +1,65 @@
+//! Workflow-primitive integration tests against real PostgreSQL. The shared support starts PostgreSQL or
+//! fails when infrastructure is unavailable; scenario modules use deterministic barriers at commit
+//! boundaries rather than timing sleeps.
+#![allow(clippy::expect_used, clippy::panic)]
+
+#[path = "../../support/mod.rs"]
+mod support;
+
+mod api_reopen;
+mod approval_combinations;
+mod approval_progress;
+mod approval_scheduler;
+mod approval_telemetry;
+mod approvals_http;
+mod bounded_capabilities;
+mod bounded_fences;
+mod bounded_report_provider;
+mod bounded_reports;
+mod bounded_worker;
+mod byte_ceilings;
+mod capacity_finish;
+mod chain_handoff;
+mod chain_progress;
+mod chain_storage;
+mod chain_wait;
+mod chains;
+mod chains_http;
+mod collection_10k;
+mod collection_budgets;
+mod collection_data_limit_native;
+mod collection_data_limit_readers;
+mod collection_data_limit_schema;
+mod collection_empty_quota;
+mod collection_end_result;
+mod collection_finish_atomic;
+mod collection_pipeline;
+mod collection_restore;
+mod collection_sources;
+mod collections_http;
+mod compatibility;
+mod hint_contract;
+mod identity_storage;
+mod journal_identity;
+mod leaf_certification;
+mod leaf_certification_native;
+mod legacy_collection_inflight_applied_v1;
+mod legacy_collection_inflight_report_v1;
+mod legacy_collection_output_view;
+mod limits;
+mod loop_progress;
+mod loops_http;
+mod observability;
+mod operations;
+mod operations_http;
+mod primitive_transactions;
+mod projection;
+mod public_refusal_commit_loss;
+mod publication_rejections;
+mod refusal_secret_versions;
+mod scope_compensation_http;
+mod scope_frontier;
+mod scoped_blob_completion;
+mod scoped_worker;
+mod security;
+mod switch_storage;

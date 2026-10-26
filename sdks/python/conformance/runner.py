@@ -28,17 +28,24 @@ from sagat_octopus_orchestrator import (
     SDK_VERSION,
     ActivityContext,
     ActivityFailure,
+    ApprovalPolicy,
     BlobDescriptor,
     BlobOutput,
+    Body,
     ClientConfig,
     Flow,
+    QueryDefinition,
     RetryPolicy,
     Run,
     SagatClient,
     SagatError,
+    StateDefinition,
+    SwitchCase,
+    UpdateDefinition,
     Verdict,
     WorkerConfig,
     WorkerHost,
+    body,
     flow,
     format_instant,
     trace_id_of,
@@ -81,6 +88,10 @@ def apply(target: Flow, ops: list[Obj]) -> None:
         kind = op["op"]
         if kind == "step":
             target.step(op["id"], op["activity"], **snake(op.get("options")))
+        elif kind == "database":
+            target.database(op["id"], **snake(op["options"]))
+        elif kind == "script":
+            target.script(op["id"], op["artifactDigest"], **snake(op.get("options")))
         elif kind == "sleep":
             target.sleep(op["id"], op["durationMs"])
         elif kind == "waitForEvent":
@@ -89,6 +100,74 @@ def apply(target: Flow, ops: list[Obj]) -> None:
             target.invoke_child(op["id"], op["workflow"], **snake(op.get("options")))
         elif kind == "condition":
             target.condition(op["id"], op["expression"], op["ifTrue"], op["ifFalse"])
+        elif kind == "switch":
+            target.switch(
+                op["id"],
+                [SwitchCase(id=item["id"], when=item["when"], target=item["target"]) for item in op["cases"]],
+                op["default"],
+            )
+        elif kind == "forEach":
+            target.for_each(
+                op["id"],
+                op["items"],
+                op["body"],
+                op["result"],
+                max_items=op["maxItems"],
+                max_concurrency=op["maxConcurrency"],
+            )
+        elif kind == "map":
+            target.map(
+                op["id"],
+                op["items"],
+                op["body"],
+                op["result"],
+                max_items=op["maxItems"],
+                max_concurrency=op["maxConcurrency"],
+            )
+        elif kind == "while":
+            target.while_loop(
+                op["id"],
+                op["condition"],
+                op["body"],
+                op["initial"],
+                op["carry"],
+                max_iterations=op["maxIterations"],
+                timeout_ms=op["timeoutMs"],
+                delay_ms=op.get("delayMs"),
+                on_error=op.get("onError"),
+            )
+        elif kind == "repeatUntil":
+            target.repeat_until(
+                op["id"],
+                op["condition"],
+                op["body"],
+                op["initial"],
+                op["carry"],
+                max_iterations=op["maxIterations"],
+                timeout_ms=op["timeoutMs"],
+                delay_ms=op.get("delayMs"),
+                on_error=op.get("onError"),
+            )
+        elif kind == "approval":
+            policy = op["policy"]
+            target.approval(
+                op["id"],
+                ApprovalPolicy(
+                    subjects=policy.get("subjects"),
+                    roles=policy.get("roles"),
+                    exclude_initiator=policy.get("excludeInitiator"),
+                ),
+                timeout_ms=op["timeoutMs"],
+                on_approve=op["onApprove"],
+                on_reject=op["onReject"],
+                on_expire=op["onExpire"],
+            )
+        elif kind == "continueAsNew":
+            target.continue_as_new(op["id"], op["input"], state=op.get("state"))
+        elif kind == "return":
+            if not isinstance(target, Body):
+                raise ValueError("return is only valid in a named body")
+            target.return_value(op["id"], op["result"])
         elif kind == "parallel":
             branches = []
             for branch_ops in op["branches"]:
@@ -119,6 +198,45 @@ def builder_of(definition: Obj) -> Any:
         builder.input_schema(definition["inputSchema"])
     if definition.get("outputSchema") is not None:
         builder.output_schema(definition["outputSchema"])
+    if definition.get("limits") is not None:
+        builder.limits(**snake(definition["limits"]))
+    if definition.get("state") is not None:
+        declared = definition["state"]
+        queries = {
+            name: QueryDefinition(
+                args_schema=query.get("argsSchema"),
+                result_schema=query.get("resultSchema"),
+                expression=query.get("expression"),
+                disclosure=query.get("disclosure"),
+            )
+            for name, query in (declared.get("queries") or {}).items()
+        }
+        updates = {
+            name: UpdateDefinition(
+                args_schema=update.get("argsSchema"),
+                validate=update.get("validate"),
+                state=update.get("state"),
+                result=update.get("result"),
+                result_schema=update.get("resultSchema"),
+                disclosure=update.get("disclosure"),
+            )
+            for name, update in (declared.get("updates") or {}).items()
+        }
+        builder.state(
+            StateDefinition(
+                schema=declared.get("schema"),
+                initial=declared.get("initial"),
+                queries=queries,
+                updates=updates,
+            )
+        )
+    if definition.get("chainPolicy") is not None:
+        policy = definition["chainPolicy"]
+        builder.chain_policy(max_segments=policy["maxSegments"], timeout_ms=policy["timeoutMs"])
+    for name, body_definition in (definition.get("bodies") or {}).items():
+        nested = body()
+        apply(nested, body_definition["program"])
+        builder.body(name, nested)
     apply(builder, definition["program"])
     return builder
 
@@ -156,7 +274,7 @@ def instant(value: Any) -> str | None:
 
 
 def run_json(run: Run) -> Obj:
-    return {
+    observed: Obj = {
         "runId": run.run_id,
         "workflowId": run.workflow_id,
         "versionId": run.version_id,
@@ -177,6 +295,18 @@ def run_json(run: Run) -> Obj:
             else None
         ),
     }
+    # Present only for a run in a chain, so the observations of every other run stay as they were.
+    if run.chain is not None:
+        observed["chain"] = {
+            "chainId": run.chain.chain_id,
+            "segmentIndex": run.chain.segment_index,
+            "completionKind": run.chain.completion_kind,
+            "successorRunId": run.chain.successor_run_id,
+        }
+    # Present only for a run started again from an ended one.
+    if run.rerun_of is not None:
+        observed["rerunOf"] = run.rerun_of
+    return observed
 
 
 def error_json(error: BaseException) -> Obj:
@@ -198,6 +328,17 @@ def behavior_handler(name: str, kind: str, behavior: Obj, log: list[Obj], measur
         )
         outcome = "returned"
         try:
+            # `holdUntilLogged`: a scoped instance waits until the worker has logged that many finished
+            # attempts, which orders completions by what happened rather than by how long anything took.
+            holds = behavior.get("holdUntilLogged")
+            hold_until = holds[ctx.index or 0] if holds else 0
+            while len(log) < hold_until:
+                try:
+                    await asyncio.wait_for(ctx.cancellation.wait(), timeout=0.01)
+                except asyncio.TimeoutError:
+                    continue
+                outcome = "cancelled"
+                return None
             until = behavior.get("failsUntilAttempt")
             if (until is not None and ctx.attempt < until) or (until is None and behavior.get("fails")):
                 outcome = "failed"
@@ -239,7 +380,9 @@ def behavior_handler(name: str, kind: str, behavior: Obj, log: list[Obj], measur
             if behavior.get("blobRoundTripBytes") is not None:
                 body = b"x" * behavior["blobRoundTripBytes"]
                 descriptor = await ctx.write_blob(
-                    [body], content_type="application/octet-stream", expected_size=len(body),
+                    [body],
+                    content_type="application/octet-stream",
+                    expected_size=len(body),
                     expected_sha256=hashlib.sha256(body).hexdigest(),
                 )
                 read = bytearray()
@@ -266,8 +409,14 @@ def behavior_handler(name: str, kind: str, behavior: Obj, log: list[Obj], measur
                 descriptor = await ctx.write_blob(
                     [b"z" * behavior["blobInlineBytes"]], content_type="application/octet-stream"
                 )
-                return {"$blob": {"id": descriptor.id, "size": descriptor.size, "sha256": descriptor.sha256,
-                                  "contentType": descriptor.content_type}}
+                return {
+                    "$blob": {
+                        "id": descriptor.id,
+                        "size": descriptor.size,
+                        "sha256": descriptor.sha256,
+                        "contentType": descriptor.content_type,
+                    }
+                }
             if behavior.get("verdict") is not None:
                 verdict = behavior["verdict"]
                 if verdict == "applied":
@@ -288,6 +437,23 @@ def behavior_handler(name: str, kind: str, behavior: Obj, log: list[Obj], measur
                     "kind": kind,
                     "node": ctx.node,
                     "attempt": ctx.attempt,
+                    **(
+                        {
+                            "instance": {
+                                "instancePath": [
+                                    {
+                                        "scopeNodeId": segment.scope_node_id,
+                                        "iterationIndex": segment.iteration_index,
+                                    }
+                                    for segment in ctx.instance.instance_path
+                                ],
+                                "definitionNodeId": ctx.instance.definition_node_id,
+                            }
+                        }
+                        if ctx.instance is not None
+                        else {}
+                    ),
+                    **({"scopeInput": {"item": ctx.item, "index": ctx.index}} if ctx.index is not None else {}),
                     "input": run_input,
                     "taskKind": ctx.task_kind,
                     "targetNode": ctx.target_node,
@@ -369,6 +535,12 @@ async def run(scenario: Obj, config: Obj) -> Obj:
         "default": client_for(config["clientToken"]),
         "bad": client_for(config["badToken"]),
         "other": client_for(config["otherTenantToken"]),
+        # Members of the tenant with one role each, the worker identity, and an operator the scenario revokes.
+        "worker": client_for(config["workerToken"]),
+        "operator": client_for(config["operatorToken"]),
+        "viewer": client_for(config["viewerToken"]),
+        "runner": client_for(config["runnerToken"]),
+        "revoked": client_for(config["revokedToken"]),
     }
     logs: dict[str, list[Obj]] = {}
     measurements: dict[str, Obj] = {}
@@ -391,10 +563,43 @@ async def run(scenario: Obj, config: Obj) -> Obj:
     results: dict[str, Obj] = {}
 
     def run_of(step: Obj) -> str:
-        found = results.get(step["run"], {}).get("runId")
+        if isinstance(step.get("page"), str):
+            # A segment of a page of listChainRuns, by position.
+            items = results.get(step["page"], {}).get("items")
+            index = int(step.get("index", 0))
+            if not isinstance(items, list) or not 0 <= index < len(items) or not isinstance(items[index], dict):
+                raise ValueError(f"step {step['page']} has no segment {index}")
+            return str(items[index]["runId"])
+        # A rerun answers `newRunId` and no `runId`: the step then names the run it started.
+        named = results.get(step["run"], {})
+        found = named.get("runId", named.get("newRunId"))
         if not isinstance(found, str):
             raise ValueError(f"step {step['run']} has no run")
         return found
+
+    def approval_of(step: Obj) -> str:
+        direct = step.get("approvalId")
+        if isinstance(direct, str):
+            return direct
+        items = results.get(str(step.get("approval")), {}).get("items")
+        if not isinstance(items, list) or not items or not isinstance(items[0], dict):
+            raise ValueError(f"step {step.get('approval')} has no approval")
+        approval_id = items[0].get("approvalId")
+        if not isinstance(approval_id, str):
+            raise ValueError(f"step {step.get('approval')} has no approval")
+        return approval_id
+
+    def chain_ref(value: str) -> str:
+        if value == "{{namespaceId}}":
+            return str(config["namespaceId"])
+        for prefix, field in (("{{chainId:", "runId"), ("{{currentRunId:", "currentRunId")):
+            if value.startswith(prefix) and value.endswith("}}"):
+                source = value[len(prefix) : -2]
+                resolved = results.get(source, {}).get(field)
+                if not isinstance(resolved, str):
+                    raise ValueError(f"step {source} has no {field}")
+                return resolved
+        return value
 
     try:
         for key, (definition, _) in hosts.items():
@@ -424,15 +629,24 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                     )
                 elif op == "startWithBlob":
                     workflow_id = config["workflows"][step["workflow"]]["workflowId"]
-                    blob_body = b"i" * step["inputBlobBytes"]
+                    blob_body = (
+                        step["inputBlobText"].encode("utf-8")
+                        if "inputBlobText" in step
+                        else b"i" * step["inputBlobBytes"]
+                    )
                     descriptor = await client.upload_run_input(
                         [blob_body], expected_size=len(blob_body), expected_sha256=hashlib.sha256(blob_body).hexdigest()
                     )
-                    result = run_json(await client.start_with_blob(
-                        workflow_id, descriptor, idempotency_key=step.get("idempotencyKey"),
-                        correlation_id=step.get("correlationId"), traceparent=step.get("traceparent"),
-                        deadline_in=(step["deadlineInMs"] / 1000 if step.get("deadlineInMs") is not None else None),
-                    ))
+                    result = run_json(
+                        await client.start_with_blob(
+                            workflow_id,
+                            descriptor,
+                            idempotency_key=step.get("idempotencyKey"),
+                            correlation_id=step.get("correlationId"),
+                            traceparent=step.get("traceparent"),
+                            deadline_in=(step["deadlineInMs"] / 1000 if step.get("deadlineInMs") is not None else None),
+                        )
+                    )
                 elif op == "workflowByName":
                     name = config["workflows"][step["workflow"]]["name"]
                     result = run_json(
@@ -448,8 +662,54 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                     else:
                         page = await client.list(status=step.get("status"), limit=step.get("limit"))
                         ids.extend(item.run_id for item in page.items)
-                    # In the order the server gave (newest first): the SDK keeps it, also across pages.
-                    result = {"items": ids}
+                        # `waitForCount`: the runs of a chain are made by the scheduler, so a scenario that needs a
+                        # hand-off to have happened waits for it by the count of runs in a status.
+                        for _ in range(100):
+                            if len(ids) >= step.get("waitForCount", 0):
+                                break
+                            await asyncio.sleep(0.05)
+                            page = await client.list(status=step.get("status"), limit=step.get("limit"))
+                            ids = [item.run_id for item in page.items]
+                    # In the order the server gave (newest first): the SDK keeps it, also across pages. `countOnly`
+                    # answers the number alone, for runs whose ids are derived from their parent's and so sort anywhere.
+                    result = {"count": len(ids)} if step.get("countOnly") else {"items": ids}
+                elif op == "listApprovals":
+                    approval_page = await client.list_approvals(
+                        run_of(step),
+                        cursor=step.get("cursor"),
+                        limit=step.get("limit"),
+                        traceparent=step.get("traceparent"),
+                    )
+                    for _ in range(100):
+                        if not step.get("waitForItem") or approval_page.items:
+                            break
+                        await asyncio.sleep(0.05)
+                        approval_page = await client.list_approvals(
+                            run_of(step),
+                            cursor=step.get("cursor"),
+                            limit=step.get("limit"),
+                            traceparent=step.get("traceparent"),
+                        )
+                    result = {
+                        "items": [
+                            {
+                                "approvalId": item.approval_id,
+                                "runId": item.run_id,
+                                "nodeId": item.node_id,
+                                "instancePath": [
+                                    {"scopeNodeId": scope.scope_node_id, "iterationIndex": scope.iteration_index}
+                                    for scope in item.instance_path
+                                ],
+                                "status": item.status,
+                                "deadline": item.deadline.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+                                "settledAt": item.settled_at.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+                                if item.settled_at
+                                else None,
+                            }
+                            for item in approval_page.items
+                        ],
+                        "nextCursor": approval_page.next_cursor,
+                    }
                 elif op == "cancel":
                     cancelled = await client.cancel(
                         run_of(step), step["reason"], expected_run_version=step.get("expectedRunVersion")
@@ -465,6 +725,174 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                         error_code=step.get("errorCode"),
                     )
                     result = {"accepted": operated.accepted, "runStatus": operated.run_status}
+                    # `newRunId` only for the action that starts a run, so the other operations observe as they did.
+                    if operated.new_run_id is not None:
+                        result["newRunId"] = operated.new_run_id
+                elif op == "decideApproval":
+                    receipt = await client.decide_approval(
+                        approval_of(step),
+                        step["decision"],
+                        decision_key=step["decisionKey"],
+                        reason_code=step.get("reasonCode"),
+                        traceparent=step.get("traceparent"),
+                    )
+                    result = {
+                        "receiptId": receipt.receipt_id,
+                        "approvalId": receipt.approval_id,
+                        "decisionKey": receipt.decision_key,
+                        "decision": receipt.decision,
+                        "reasonCode": receipt.reason_code,
+                        "actor": receipt.actor,
+                        "decidedAt": receipt.decided_at.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+                        "outcomeSequence": receipt.outcome_sequence,
+                        "replayed": receipt.replayed,
+                    }
+                elif op == "query":
+                    queried = await client.query(
+                        run_of(step), step["name"], step.get("args"), traceparent=step.get("traceparent")
+                    )
+                    result = {
+                        "runVersion": queried.run_version,
+                        "stateRevision": queried.state_revision,
+                        "result": queried.result,
+                    }
+                elif op == "update":
+                    updated = await client.update(
+                        run_of(step),
+                        step["name"],
+                        step.get("args"),
+                        update_key=step["updateKey"],
+                        expected_state_revision=step.get("expectedStateRevision"),
+                        traceparent=step.get("traceparent"),
+                    )
+                    result = {
+                        "operation": updated.operation,
+                        "updateKey": updated.update_key,
+                        "status": updated.status,
+                        "result": updated.result,
+                        "beforeStateRevision": updated.before_state_revision,
+                        "afterStateRevision": updated.after_state_revision,
+                        "runVersion": updated.run_version,
+                        "replayed": updated.replayed,
+                    }
+                elif op == "queryChain":
+                    queried = await client.query_chain(
+                        chain_ref(step["namespaceId"]),
+                        chain_ref(step["chainId"]),
+                        step["name"],
+                        step.get("args"),
+                        expected_run_id=(chain_ref(step["expectedRunId"]) if step.get("expectedRunId") else None),
+                        traceparent=step.get("traceparent"),
+                    )
+                    result = {
+                        "runId": queried.run_id,
+                        "runVersion": queried.run_version,
+                        "stateRevision": queried.state_revision,
+                        "result": queried.result,
+                    }
+                elif op == "updateChain":
+                    updated = await client.update_chain(
+                        chain_ref(step["namespaceId"]),
+                        chain_ref(step["chainId"]),
+                        step["name"],
+                        step.get("args"),
+                        update_key=step["updateKey"],
+                        expected_run_id=(chain_ref(step["expectedRunId"]) if step.get("expectedRunId") else None),
+                        expected_state_revision=step.get("expectedStateRevision"),
+                        traceparent=step.get("traceparent"),
+                    )
+                    result = {
+                        "runId": updated.run_id,
+                        "operation": updated.operation,
+                        "updateKey": updated.update_key,
+                        "status": updated.status,
+                        "result": updated.result,
+                        "beforeStateRevision": updated.before_state_revision,
+                        "afterStateRevision": updated.after_state_revision,
+                        "runVersion": updated.run_version,
+                        "replayed": updated.replayed,
+                    }
+                elif op == "listChainRuns":
+                    cursor = step.get("cursor")
+                    if isinstance(cursor, str) and cursor.startswith("{{nextCursor:") and cursor.endswith("}}"):
+                        cursor = results.get(cursor[len("{{nextCursor:") : -2], {}).get("nextCursor")
+                        if not isinstance(cursor, str):
+                            raise ValueError("the referenced step has no next page")
+                    chain_page = await client.list_chain_runs(
+                        chain_ref(step["namespaceId"]),
+                        chain_ref(step["chainId"]),
+                        cursor=cursor,
+                        limit=step.get("limit"),
+                        traceparent=step.get("traceparent"),
+                    )
+                    result = {
+                        "items": [
+                            {
+                                "index": segment.index,
+                                "runId": segment.run_id,
+                                "status": segment.status,
+                                "completionKind": segment.completion_kind,
+                                "predecessorRunId": segment.predecessor_run_id,
+                                "successorRunId": segment.successor_run_id,
+                                "createdAt": instant(segment.created_at),
+                                "finishedAt": instant(segment.finished_at),
+                            }
+                            for segment in chain_page.items
+                        ],
+                        "nextCursor": chain_page.next_cursor,
+                    }
+                elif op == "inspectChain":
+                    chain = await client.inspect_chain(
+                        chain_ref(step["namespaceId"]), chain_ref(step["chainId"]), traceparent=step.get("traceparent")
+                    )
+                    if step.get("waitForHeadChange"):
+                        previous = chain_ref(step["waitForHeadChange"])
+                        for _ in range(100):
+                            if chain.current_run_id != previous:
+                                break
+                            await asyncio.sleep(0.05)
+                            chain = await client.inspect_chain(
+                                chain_ref(step["namespaceId"]),
+                                chain_ref(step["chainId"]),
+                                traceparent=step.get("traceparent"),
+                            )
+                    result = {
+                        "chainId": chain.chain_id,
+                        "currentRunId": chain.current_run_id,
+                        "revision": chain.revision,
+                        "cancelRequested": chain.cancel_requested,
+                        "finalOutcome": chain.final_outcome,
+                        "segments": [
+                            {
+                                "index": item.index,
+                                "runId": item.run_id,
+                                "predecessorRunId": item.predecessor_run_id,
+                                "successorRunId": item.successor_run_id,
+                            }
+                            for item in chain.segments
+                        ],
+                    }
+                elif op == "signalChain":
+                    signalled = await client.signal_chain(
+                        chain_ref(step["namespaceId"]),
+                        chain_ref(step["chainId"]),
+                        step["name"],
+                        step.get("payload"),
+                        expected_run_id=chain_ref(step["expectedRunId"]),
+                        idempotency_key=step.get("idempotencyKey"),
+                        traceparent=step.get("traceparent"),
+                    )
+                    result = {"deliveredTo": list(signalled.delivered_to)}
+                elif op == "cancelChain":
+                    await client.cancel_chain(
+                        chain_ref(step["namespaceId"]),
+                        chain_ref(step["chainId"]),
+                        step["reason"],
+                        expected_run_id=chain_ref(step["expectedRunId"]),
+                        idempotency_key=step.get("idempotencyKey"),
+                        traceparent=step.get("traceparent"),
+                    )
+                    result = {"accepted": True}
                 elif op == "signal":
                     signalled = await client.signal(run_of(step), step["name"], step.get("payload") or {})
                     result = {"deliveredTo": list(signalled.delivered_to)}
@@ -482,6 +910,29 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                             run_of(step), timeout=step.get("timeoutMs", 60_000) / 1000, poll_interval=0.1
                         )
                     )
+                elif op == "waitForChainCompletion":
+                    chain = await client.wait_for_chain_completion(
+                        chain_ref(step["namespaceId"]),
+                        chain_ref(step["chainId"]),
+                        timeout=step.get("timeoutMs", 60_000) / 1000,
+                        poll_interval=0.1,
+                    )
+                    result = {
+                        "chainId": chain.chain_id,
+                        "currentRunId": chain.current_run_id,
+                        "revision": chain.revision,
+                        "cancelRequested": chain.cancel_requested,
+                        "finalOutcome": chain.final_outcome,
+                        "segments": [
+                            {
+                                "index": segment.index,
+                                "runId": segment.run_id,
+                                "predecessorRunId": segment.predecessor_run_id,
+                                "successorRunId": segment.successor_run_id,
+                            }
+                            for segment in chain.segments
+                        ],
+                    }
                 elif op == "events":
                     journal = await client.events(run_of(step), limit=200)
                     result = {

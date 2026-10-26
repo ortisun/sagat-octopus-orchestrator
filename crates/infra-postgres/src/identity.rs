@@ -72,6 +72,17 @@ impl PgIdentityStore {
         self
     }
 
+    /// Waits until every denial write already accepted by this store has finished.
+    pub async fn flush_denial_writes(&self) {
+        let permits = Arc::clone(&self.denial_slots)
+            .acquire_many_owned(MAX_PENDING_DENIALS as u32)
+            .await;
+        match permits {
+            Ok(permits) => drop(permits),
+            Err(error) => tracing::error!(%error, "denial-write barrier unexpectedly closed"),
+        }
+    }
+
     /// Creates a tenant and its first administrator atomically.
     ///
     /// Provisioning is a platform operation (operators and the development seed), deliberately
@@ -208,6 +219,24 @@ async fn insert_namespace(
     Ok(())
 }
 
+/// Denial audit is best effort across the entire transaction, including deferred checks at
+/// commit and a rollback failure. Callers must still return their original typed refusal.
+pub(crate) async fn best_effort_denial_audit(
+    mut tx: sqlx::Transaction<'_, sqlx::Postgres>,
+    audit: &AuditRecord,
+) {
+    if insert_audit(&mut tx, audit).await.is_err() {
+        tracing::warn!(action = %audit.action(), phase = "insert", "failed to record reveal denial");
+        if tx.rollback().await.is_err() {
+            tracing::warn!(action = %audit.action(), phase = "rollback", "failed to record reveal denial");
+        }
+        return;
+    }
+    if tx.commit().await.is_err() {
+        tracing::warn!(action = %audit.action(), phase = "commit", "failed to record reveal denial");
+    }
+}
+
 pub(crate) async fn insert_audit(
     conn: &mut PgConnection,
     audit: &AuditRecord,
@@ -272,7 +301,7 @@ pub(crate) async fn insert_audit(
 
 /// Appends `audit` unless an identical event (same tenant, actor, action and resource) was already
 /// recorded within `window`.
-async fn insert_denial_once(
+pub(crate) async fn insert_denial_once(
     pool: &PgPool,
     audit: &AuditRecord,
     window: Duration,
@@ -586,6 +615,17 @@ impl IdentityStore for PgIdentityStore {
         Ok(())
     }
 
+    async fn record_permission_denial(&self, audit: &AuditRecord) -> Result<(), StoreError> {
+        // Counted by what was denied (a closed set of audit actions), whether or not the write
+        // succeeds: a failing audit table must not hide a flood of denials.
+        metrics::counter!("security_denials_total", "action" => audit.action().as_str())
+            .increment(1);
+        // One statement, awaited and never collapsed: one record per denial. Its volume is bounded
+        // upstream by the per-subject budget, which the call was charged to before authorization.
+        let mut conn = self.pool.acquire().await.map_err(store_error)?;
+        insert_audit(&mut conn, audit).await
+    }
+
     async fn ping(&self) -> Result<(), StoreError> {
         // Readiness means "can do this process's work", not merely "the server answers": every
         // table it reads or writes must exist, so an instance pointed at an unmigrated database is
@@ -693,7 +733,11 @@ fn record(mapped: StoreError) -> StoreError {
         | StoreError::MissingReference
         | StoreError::RevisionConflict { .. }
         | StoreError::QuotaExceeded { .. }
-        | StoreError::IdempotencyKeyReused => {}
+        | StoreError::UnreadableDefinition
+        | StoreError::IdempotencyKeyReused
+        | StoreError::StateConflict(_)
+        | StoreError::DatabaseUnavailable
+        | StoreError::DatabaseLimit => {}
     }
     mapped
 }

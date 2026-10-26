@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 
 const SCHEMA: &str =
     include_str!("../../../specs/001-platform-foundation/contracts/workflow.schema.json");
+
 /// Most issues reported at once; a document with thousands of problems gets the first few.
 const MAX_ISSUES: usize = 20;
 const MAX_MESSAGE: usize = 200;
@@ -36,9 +37,10 @@ fn clip(text: &str) -> String {
     }
 }
 
-/// The node types the schema knows, in the order it lists them.
-const NODE_TYPES: &[&str] = &[
+/// Root node types in the order used by the canonical schema.
+const ROOT_NODE_TYPES: &[&str] = &[
     "activity",
+    "database",
     "timer",
     "waitEvent",
     "condition",
@@ -49,6 +51,30 @@ const NODE_TYPES: &[&str] = &[
     "foreach",
     "humanApproval",
     "end",
+    "forEach",
+    "while",
+    "repeatUntil",
+    "approval",
+    "switch",
+    "continueAsNew",
+];
+
+/// Closed-body node types in the order used by the canonical schema.
+const BODY_NODE_TYPES: &[&str] = &[
+    "activity",
+    "timer",
+    "waitEvent",
+    "condition",
+    "parallel",
+    "child",
+    "saga",
+    "script",
+    "forEach",
+    "while",
+    "repeatUntil",
+    "approval",
+    "switch",
+    "return",
 ];
 
 /// One validator per node type, to say what is wrong with a node against the type it claims.
@@ -59,8 +85,9 @@ fn node_validators() -> &'static HashMap<&'static str, Validator> {
             return HashMap::new();
         };
         let definitions = schema.get("$defs").cloned().unwrap_or(Value::Null);
-        NODE_TYPES
+        ROOT_NODE_TYPES
             .iter()
+            .chain(BODY_NODE_TYPES.iter())
             .filter_map(|kind| {
                 let own = json!({"$ref": format!("#/$defs/{kind}"), "$defs": definitions});
                 jsonschema::options()
@@ -73,15 +100,37 @@ fn node_validators() -> &'static HashMap<&'static str, Validator> {
     })
 }
 
-/// `/nodes/<index>` and nothing deeper: where a failed `oneOf` over the node types is reported.
-fn is_node_path(path: &str) -> bool {
-    path.strip_prefix("/nodes/")
+/// The allowed node kinds at a failed `oneOf` path.
+fn node_types(path: &str) -> Option<&'static [&'static str]> {
+    if path
+        .strip_prefix("/nodes/")
         .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return Some(ROOT_NODE_TYPES);
+    }
+    let mut parts = path.split('/');
+    match (
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+    ) {
+        (Some(""), Some("bodies"), Some(body), Some("nodes"), Some(index), None)
+            if !body.is_empty()
+                && !index.is_empty()
+                && index.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            Some(BODY_NODE_TYPES)
+        }
+        _ => None,
+    }
 }
 
 /// What is wrong with `node`, said against the type it claims to be (the generic answer of a
 /// `oneOf`, "is not valid under any of the schemas", tells an author nothing).
-fn node_issues(node: &Value, path: &str) -> Vec<IrIssue> {
+fn node_issues(node: &Value, path: &str, expected: &[&str]) -> Vec<IrIssue> {
     let issue = |path: String, message: String| IrIssue {
         path,
         message: clip(&message),
@@ -89,16 +138,20 @@ fn node_issues(node: &Value, path: &str) -> Vec<IrIssue> {
     let Some(kind) = node.get("type").and_then(Value::as_str) else {
         return vec![issue(
             format!("{path}/type"),
-            format!("a node needs a `type`, one of {}", NODE_TYPES.join(", ")),
+            format!("a node needs a `type`, one of {}", expected.join(", ")),
         )];
     };
-    let Some(validator) = node_validators().get(kind) else {
+    let Some(validator) = expected
+        .contains(&kind)
+        .then(|| node_validators().get(kind))
+        .flatten()
+    else {
         return vec![issue(
             format!("{path}/type"),
             format!(
                 "unknown node type '{}'; expected one of {}",
                 kind.chars().take(32).collect::<String>(),
-                NODE_TYPES.join(", ")
+                expected.join(", ")
             ),
         )];
     };
@@ -106,6 +159,14 @@ fn node_issues(node: &Value, path: &str) -> Vec<IrIssue> {
         .iter_errors(node)
         .take(MAX_ISSUES)
         .map(|error| {
+            // JSON Schema diagnostics can quote the entire invalid instance (including SQL and
+            // values), or user-authored unknown keys. Only a safe node path leaves this boundary.
+            if kind == "database" {
+                return issue(
+                    path.to_owned(),
+                    "invalid database node fields or limits".into(),
+                );
+            }
             issue(
                 format!("{path}{}", error.instance_path()),
                 error.to_string(),
@@ -129,10 +190,10 @@ pub(crate) fn issues(document: &Value) -> Vec<IrIssue> {
         let path = error.instance_path().to_string();
         let failed_one_of = format!("{:?}", error.kind()).starts_with("OneOf");
         if failed_one_of
-            && is_node_path(&path)
+            && let Some(expected) = node_types(&path)
             && let Some(node) = document.pointer(&path)
         {
-            let precise = node_issues(node, &path);
+            let precise = node_issues(node, &path, expected);
             if !precise.is_empty() {
                 found.extend(precise);
                 continue;
@@ -140,9 +201,34 @@ pub(crate) fn issues(document: &Value) -> Vec<IrIssue> {
         }
         found.push(IrIssue {
             path,
-            message: clip(&error.to_string()),
+            message: if document
+                .get("nodes")
+                .and_then(Value::as_array)
+                .is_some_and(|nodes| {
+                    nodes
+                        .iter()
+                        .any(|n| n.get("type").and_then(Value::as_str) == Some("database"))
+                }) {
+                "invalid workflow document containing a database operation".into()
+            } else {
+                clip(&error.to_string())
+            },
         });
     }
     found.truncate(MAX_ISSUES);
     found
+}
+
+#[cfg(test)]
+mod embedded_contract_tests {
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn embedded_workflow_schema_matches_the_canonical_contract_bytes() {
+        let canonical = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../specs/001-platform-foundation/contracts/workflow.schema.json"),
+        )
+        .expect("canonical workflow schema");
+        assert_eq!(super::SCHEMA.as_bytes(), canonical);
+    }
 }

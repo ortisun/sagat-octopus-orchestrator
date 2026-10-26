@@ -14,7 +14,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     // A resolved secret is a credential: the generated `Debug` would print its bytes, so it is
     // skipped here and replaced by a redacting one in `lib.rs`.
     let mut config = tonic_prost_build::Config::new();
-    config.skip_debug(["sagat_octopus_orchestrator.v1.ResolvedSecret"]);
+    config.skip_debug([
+        "sagat_octopus_orchestrator.v1.ResolvedSecret",
+        "sagat_octopus_orchestrator.v1.ResolvedDatabase",
+        "sagat_octopus_orchestrator.v1.DatabaseValue",
+    ]);
     // The chunks of a blob are handed on without being copied.
     config.bytes([
         ".sagat_octopus_orchestrator.v1.WriteBlobRequest.chunk",

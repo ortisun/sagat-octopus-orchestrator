@@ -21,13 +21,113 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type DatabaseOperationKind int32
+
+const (
+	DatabaseOperationKind_DATABASE_OPERATION_UNSPECIFIED DatabaseOperationKind = 0
+	DatabaseOperationKind_DATABASE_QUERY                 DatabaseOperationKind = 1
+	DatabaseOperationKind_DATABASE_EXECUTE               DatabaseOperationKind = 2
+)
+
+// Enum value maps for DatabaseOperationKind.
+var (
+	DatabaseOperationKind_name = map[int32]string{
+		0: "DATABASE_OPERATION_UNSPECIFIED",
+		1: "DATABASE_QUERY",
+		2: "DATABASE_EXECUTE",
+	}
+	DatabaseOperationKind_value = map[string]int32{
+		"DATABASE_OPERATION_UNSPECIFIED": 0,
+		"DATABASE_QUERY":                 1,
+		"DATABASE_EXECUTE":               2,
+	}
+)
+
+func (x DatabaseOperationKind) Enum() *DatabaseOperationKind {
+	p := new(DatabaseOperationKind)
+	*p = x
+	return p
+}
+
+func (x DatabaseOperationKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (DatabaseOperationKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes[0].Descriptor()
+}
+
+func (DatabaseOperationKind) Type() protoreflect.EnumType {
+	return &file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes[0]
+}
+
+func (x DatabaseOperationKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use DatabaseOperationKind.Descriptor instead.
+func (DatabaseOperationKind) EnumDescriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{0}
+}
+
+type DatabaseTlsMode int32
+
+const (
+	DatabaseTlsMode_DATABASE_TLS_UNSPECIFIED           DatabaseTlsMode = 0
+	DatabaseTlsMode_DATABASE_TLS_VERIFY_FULL           DatabaseTlsMode = 1
+	DatabaseTlsMode_DATABASE_TLS_DEVELOPMENT_PLAINTEXT DatabaseTlsMode = 2
+)
+
+// Enum value maps for DatabaseTlsMode.
+var (
+	DatabaseTlsMode_name = map[int32]string{
+		0: "DATABASE_TLS_UNSPECIFIED",
+		1: "DATABASE_TLS_VERIFY_FULL",
+		2: "DATABASE_TLS_DEVELOPMENT_PLAINTEXT",
+	}
+	DatabaseTlsMode_value = map[string]int32{
+		"DATABASE_TLS_UNSPECIFIED":           0,
+		"DATABASE_TLS_VERIFY_FULL":           1,
+		"DATABASE_TLS_DEVELOPMENT_PLAINTEXT": 2,
+	}
+)
+
+func (x DatabaseTlsMode) Enum() *DatabaseTlsMode {
+	p := new(DatabaseTlsMode)
+	*p = x
+	return p
+}
+
+func (x DatabaseTlsMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (DatabaseTlsMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes[1].Descriptor()
+}
+
+func (DatabaseTlsMode) Type() protoreflect.EnumType {
+	return &file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes[1]
+}
+
+func (x DatabaseTlsMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use DatabaseTlsMode.Descriptor instead.
+func (DatabaseTlsMode) EnumDescriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{1}
+}
+
 type WorkerCapabilities struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	Languages       []string               `protobuf:"bytes,1,rep,name=languages,proto3" json:"languages,omitempty"`
-	Activities      []string               `protobuf:"bytes,2,rep,name=activities,proto3" json:"activities,omitempty"`
-	Pools           []string               `protobuf:"bytes,3,rep,name=pools,proto3" json:"pools,omitempty"`
-	MaxInflight     int32                  `protobuf:"varint,4,opt,name=max_inflight,json=maxInflight,proto3" json:"max_inflight,omitempty"`
-	ProtocolVersion string                 `protobuf:"bytes,5,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Languages   []string               `protobuf:"bytes,1,rep,name=languages,proto3" json:"languages,omitempty"`
+	Activities  []string               `protobuf:"bytes,2,rep,name=activities,proto3" json:"activities,omitempty"`
+	Pools       []string               `protobuf:"bytes,3,rep,name=pools,proto3" json:"pools,omitempty"`
+	MaxInflight int32                  `protobuf:"varint,4,opt,name=max_inflight,json=maxInflight,proto3" json:"max_inflight,omitempty"`
+	// The newest additive minor understood by the worker. The server accepts 1.5 only when its
+	// scoped claim and report storage path is enabled; otherwise negotiation remains at 1.4.
+	ProtocolVersion string `protobuf:"bytes,5,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -277,6 +377,115 @@ func (x *PollTasksRequest) GetMaxTasks() int32 {
 	return 0
 }
 
+// One ordered scope in a logical execution path. The path is structural: node names are never
+// flattened together with indices, so equal definition nodes in different iterations stay distinct.
+type ScopePathSegment struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	ScopeNodeId    string                 `protobuf:"bytes,1,opt,name=scope_node_id,json=scopeNodeId,proto3" json:"scope_node_id,omitempty"`
+	IterationIndex uint32                 `protobuf:"varint,2,opt,name=iteration_index,json=iterationIndex,proto3" json:"iteration_index,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *ScopePathSegment) Reset() {
+	*x = ScopePathSegment{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ScopePathSegment) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ScopePathSegment) ProtoMessage() {}
+
+func (x *ScopePathSegment) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ScopePathSegment.ProtoReflect.Descriptor instead.
+func (*ScopePathSegment) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *ScopePathSegment) GetScopeNodeId() string {
+	if x != nil {
+		return x.ScopeNodeId
+	}
+	return ""
+}
+
+func (x *ScopePathSegment) GetIterationIndex() uint32 {
+	if x != nil {
+		return x.IterationIndex
+	}
+	return 0
+}
+
+// Added in protocol 1.5. Tenant, namespace and run remain in the authenticated session and the
+// retained request fields. This message identifies the logical definition-node execution within
+// that run. Root work has an empty instance_path. Attempt and generation remain separate fences.
+type ExecutionInstanceIdentity struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	InstancePath     []*ScopePathSegment    `protobuf:"bytes,1,rep,name=instance_path,json=instancePath,proto3" json:"instance_path,omitempty"`
+	DefinitionNodeId string                 `protobuf:"bytes,2,opt,name=definition_node_id,json=definitionNodeId,proto3" json:"definition_node_id,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *ExecutionInstanceIdentity) Reset() {
+	*x = ExecutionInstanceIdentity{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExecutionInstanceIdentity) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExecutionInstanceIdentity) ProtoMessage() {}
+
+func (x *ExecutionInstanceIdentity) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExecutionInstanceIdentity.ProtoReflect.Descriptor instead.
+func (*ExecutionInstanceIdentity) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *ExecutionInstanceIdentity) GetInstancePath() []*ScopePathSegment {
+	if x != nil {
+		return x.InstancePath
+	}
+	return nil
+}
+
+func (x *ExecutionInstanceIdentity) GetDefinitionNodeId() string {
+	if x != nil {
+		return x.DefinitionNodeId
+	}
+	return ""
+}
+
 type TaskLease struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	TaskId           string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
@@ -306,13 +515,17 @@ type TaskLease struct {
 	// this lookup, and must be sent to the provider so that asking again never repeats the effect.
 	TargetNode           string `protobuf:"bytes,15,opt,name=target_node,json=targetNode,proto3" json:"target_node,omitempty"`
 	TargetIdempotencyKey string `protobuf:"bytes,16,opt,name=target_idempotency_key,json=targetIdempotencyKey,proto3" json:"target_idempotency_key,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	// A root lease may include it; older workers ignore the additive field. Scoped leases require 1.5.
+	Instance *ExecutionInstanceIdentity `protobuf:"bytes,17,opt,name=instance,proto3" json:"instance,omitempty"`
+	// For compensation and reconciliation, the exact forward instance. Empty for ordinary work.
+	TargetInstance *ExecutionInstanceIdentity `protobuf:"bytes,18,opt,name=target_instance,json=targetInstance,proto3" json:"target_instance,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *TaskLease) Reset() {
 	*x = TaskLease{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[4]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -324,7 +537,7 @@ func (x *TaskLease) String() string {
 func (*TaskLease) ProtoMessage() {}
 
 func (x *TaskLease) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[4]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -337,7 +550,7 @@ func (x *TaskLease) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskLease.ProtoReflect.Descriptor instead.
 func (*TaskLease) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{4}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *TaskLease) GetTaskId() string {
@@ -452,6 +665,20 @@ func (x *TaskLease) GetTargetIdempotencyKey() string {
 	return ""
 }
 
+func (x *TaskLease) GetInstance() *ExecutionInstanceIdentity {
+	if x != nil {
+		return x.Instance
+	}
+	return nil
+}
+
+func (x *TaskLease) GetTargetInstance() *ExecutionInstanceIdentity {
+	if x != nil {
+		return x.TargetInstance
+	}
+	return nil
+}
+
 type PollTasksResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Tasks         []*TaskLease           `protobuf:"bytes,1,rep,name=tasks,proto3" json:"tasks,omitempty"`
@@ -462,7 +689,7 @@ type PollTasksResponse struct {
 
 func (x *PollTasksResponse) Reset() {
 	*x = PollTasksResponse{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[5]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -474,7 +701,7 @@ func (x *PollTasksResponse) String() string {
 func (*PollTasksResponse) ProtoMessage() {}
 
 func (x *PollTasksResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[5]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -487,7 +714,7 @@ func (x *PollTasksResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PollTasksResponse.ProtoReflect.Descriptor instead.
 func (*PollTasksResponse) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{5}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *PollTasksResponse) GetTasks() []*TaskLease {
@@ -511,16 +738,17 @@ type HeartbeatRequest struct {
 	Generation int64                  `protobuf:"varint,3,opt,name=generation,proto3" json:"generation,omitempty"`
 	LeaseToken string                 `protobuf:"bytes,4,opt,name=lease_token,json=leaseToken,proto3" json:"lease_token,omitempty"`
 	// Added in 1.1 (additive): identify the step exactly, as CompleteStep and FailStep do.
-	RunId         string `protobuf:"bytes,5,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
-	StepId        string `protobuf:"bytes,6,opt,name=step_id,json=stepId,proto3" json:"step_id,omitempty"`
-	Attempt       int32  `protobuf:"varint,7,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	RunId         string                     `protobuf:"bytes,5,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	StepId        string                     `protobuf:"bytes,6,opt,name=step_id,json=stepId,proto3" json:"step_id,omitempty"`
+	Attempt       int32                      `protobuf:"varint,7,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	Instance      *ExecutionInstanceIdentity `protobuf:"bytes,8,opt,name=instance,proto3" json:"instance,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *HeartbeatRequest) Reset() {
 	*x = HeartbeatRequest{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[6]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -532,7 +760,7 @@ func (x *HeartbeatRequest) String() string {
 func (*HeartbeatRequest) ProtoMessage() {}
 
 func (x *HeartbeatRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[6]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -545,7 +773,7 @@ func (x *HeartbeatRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeartbeatRequest.ProtoReflect.Descriptor instead.
 func (*HeartbeatRequest) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{6}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *HeartbeatRequest) GetTaskId() string {
@@ -597,6 +825,13 @@ func (x *HeartbeatRequest) GetAttempt() int32 {
 	return 0
 }
 
+func (x *HeartbeatRequest) GetInstance() *ExecutionInstanceIdentity {
+	if x != nil {
+		return x.Instance
+	}
+	return nil
+}
+
 type HeartbeatResponse struct {
 	state                 protoimpl.MessageState `protogen:"open.v1"`
 	LeaseExpiresAtEpochMs int64                  `protobuf:"varint,1,opt,name=lease_expires_at_epoch_ms,json=leaseExpiresAtEpochMs,proto3" json:"lease_expires_at_epoch_ms,omitempty"`
@@ -607,7 +842,7 @@ type HeartbeatResponse struct {
 
 func (x *HeartbeatResponse) Reset() {
 	*x = HeartbeatResponse{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[7]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -619,7 +854,7 @@ func (x *HeartbeatResponse) String() string {
 func (*HeartbeatResponse) ProtoMessage() {}
 
 func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[7]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -632,7 +867,7 @@ func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeartbeatResponse.ProtoReflect.Descriptor instead.
 func (*HeartbeatResponse) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{7}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *HeartbeatResponse) GetLeaseExpiresAtEpochMs() int64 {
@@ -653,25 +888,26 @@ func (x *HeartbeatResponse) GetCancelRequested() bool {
 // for a larger output; `output_sha256`, if sent, must then be the blob's digest). The step's output
 // the run keeps is the blob's small descriptor.
 type CompleteStepRequest struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	TaskId         string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
-	RunId          string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
-	StepId         string                 `protobuf:"bytes,3,opt,name=step_id,json=stepId,proto3" json:"step_id,omitempty"`
-	Attempt        int32                  `protobuf:"varint,4,opt,name=attempt,proto3" json:"attempt,omitempty"`
-	Generation     int64                  `protobuf:"varint,5,opt,name=generation,proto3" json:"generation,omitempty"`
-	LeaseToken     string                 `protobuf:"bytes,6,opt,name=lease_token,json=leaseToken,proto3" json:"lease_token,omitempty"`
-	IdempotencyKey string                 `protobuf:"bytes,7,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
-	OutputJson     string                 `protobuf:"bytes,8,opt,name=output_json,json=outputJson,proto3" json:"output_json,omitempty"`
-	OutputBlobRef  string                 `protobuf:"bytes,9,opt,name=output_blob_ref,json=outputBlobRef,proto3" json:"output_blob_ref,omitempty"`
-	OutputSha256   string                 `protobuf:"bytes,10,opt,name=output_sha256,json=outputSha256,proto3" json:"output_sha256,omitempty"`
-	Traceparent    string                 `protobuf:"bytes,11,opt,name=traceparent,proto3" json:"traceparent,omitempty"`
+	state          protoimpl.MessageState     `protogen:"open.v1"`
+	TaskId         string                     `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	RunId          string                     `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	StepId         string                     `protobuf:"bytes,3,opt,name=step_id,json=stepId,proto3" json:"step_id,omitempty"`
+	Attempt        int32                      `protobuf:"varint,4,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	Generation     int64                      `protobuf:"varint,5,opt,name=generation,proto3" json:"generation,omitempty"`
+	LeaseToken     string                     `protobuf:"bytes,6,opt,name=lease_token,json=leaseToken,proto3" json:"lease_token,omitempty"`
+	IdempotencyKey string                     `protobuf:"bytes,7,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	OutputJson     string                     `protobuf:"bytes,8,opt,name=output_json,json=outputJson,proto3" json:"output_json,omitempty"`
+	OutputBlobRef  string                     `protobuf:"bytes,9,opt,name=output_blob_ref,json=outputBlobRef,proto3" json:"output_blob_ref,omitempty"`
+	OutputSha256   string                     `protobuf:"bytes,10,opt,name=output_sha256,json=outputSha256,proto3" json:"output_sha256,omitempty"`
+	Traceparent    string                     `protobuf:"bytes,11,opt,name=traceparent,proto3" json:"traceparent,omitempty"`
+	Instance       *ExecutionInstanceIdentity `protobuf:"bytes,12,opt,name=instance,proto3" json:"instance,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
 
 func (x *CompleteStepRequest) Reset() {
 	*x = CompleteStepRequest{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[8]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -683,7 +919,7 @@ func (x *CompleteStepRequest) String() string {
 func (*CompleteStepRequest) ProtoMessage() {}
 
 func (x *CompleteStepRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[8]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -696,7 +932,7 @@ func (x *CompleteStepRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompleteStepRequest.ProtoReflect.Descriptor instead.
 func (*CompleteStepRequest) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{8}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *CompleteStepRequest) GetTaskId() string {
@@ -776,26 +1012,34 @@ func (x *CompleteStepRequest) GetTraceparent() string {
 	return ""
 }
 
+func (x *CompleteStepRequest) GetInstance() *ExecutionInstanceIdentity {
+	if x != nil {
+		return x.Instance
+	}
+	return nil
+}
+
 type FailStepRequest struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	TaskId         string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
-	RunId          string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
-	StepId         string                 `protobuf:"bytes,3,opt,name=step_id,json=stepId,proto3" json:"step_id,omitempty"`
-	Attempt        int32                  `protobuf:"varint,4,opt,name=attempt,proto3" json:"attempt,omitempty"`
-	Generation     int64                  `protobuf:"varint,5,opt,name=generation,proto3" json:"generation,omitempty"`
-	LeaseToken     string                 `protobuf:"bytes,6,opt,name=lease_token,json=leaseToken,proto3" json:"lease_token,omitempty"`
-	IdempotencyKey string                 `protobuf:"bytes,7,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
-	ErrorCode      string                 `protobuf:"bytes,8,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
-	SafeMessage    string                 `protobuf:"bytes,9,opt,name=safe_message,json=safeMessage,proto3" json:"safe_message,omitempty"`
-	Retryable      bool                   `protobuf:"varint,10,opt,name=retryable,proto3" json:"retryable,omitempty"`
-	Traceparent    string                 `protobuf:"bytes,11,opt,name=traceparent,proto3" json:"traceparent,omitempty"`
+	state          protoimpl.MessageState     `protogen:"open.v1"`
+	TaskId         string                     `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	RunId          string                     `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	StepId         string                     `protobuf:"bytes,3,opt,name=step_id,json=stepId,proto3" json:"step_id,omitempty"`
+	Attempt        int32                      `protobuf:"varint,4,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	Generation     int64                      `protobuf:"varint,5,opt,name=generation,proto3" json:"generation,omitempty"`
+	LeaseToken     string                     `protobuf:"bytes,6,opt,name=lease_token,json=leaseToken,proto3" json:"lease_token,omitempty"`
+	IdempotencyKey string                     `protobuf:"bytes,7,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	ErrorCode      string                     `protobuf:"bytes,8,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
+	SafeMessage    string                     `protobuf:"bytes,9,opt,name=safe_message,json=safeMessage,proto3" json:"safe_message,omitempty"`
+	Retryable      bool                       `protobuf:"varint,10,opt,name=retryable,proto3" json:"retryable,omitempty"`
+	Traceparent    string                     `protobuf:"bytes,11,opt,name=traceparent,proto3" json:"traceparent,omitempty"`
+	Instance       *ExecutionInstanceIdentity `protobuf:"bytes,12,opt,name=instance,proto3" json:"instance,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
 
 func (x *FailStepRequest) Reset() {
 	*x = FailStepRequest{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[9]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -807,7 +1051,7 @@ func (x *FailStepRequest) String() string {
 func (*FailStepRequest) ProtoMessage() {}
 
 func (x *FailStepRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[9]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -820,7 +1064,7 @@ func (x *FailStepRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FailStepRequest.ProtoReflect.Descriptor instead.
 func (*FailStepRequest) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{9}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *FailStepRequest) GetTaskId() string {
@@ -900,22 +1144,30 @@ func (x *FailStepRequest) GetTraceparent() string {
 	return ""
 }
 
+func (x *FailStepRequest) GetInstance() *ExecutionInstanceIdentity {
+	if x != nil {
+		return x.Instance
+	}
+	return nil
+}
+
 type ResolveSecretsRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TaskId        string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
-	RunId         string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
-	StepId        string                 `protobuf:"bytes,3,opt,name=step_id,json=stepId,proto3" json:"step_id,omitempty"`
-	Attempt       int32                  `protobuf:"varint,4,opt,name=attempt,proto3" json:"attempt,omitempty"`
-	Generation    int64                  `protobuf:"varint,5,opt,name=generation,proto3" json:"generation,omitempty"`
-	LeaseToken    string                 `protobuf:"bytes,6,opt,name=lease_token,json=leaseToken,proto3" json:"lease_token,omitempty"`
-	Traceparent   string                 `protobuf:"bytes,7,opt,name=traceparent,proto3" json:"traceparent,omitempty"`
+	state         protoimpl.MessageState     `protogen:"open.v1"`
+	TaskId        string                     `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	RunId         string                     `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	StepId        string                     `protobuf:"bytes,3,opt,name=step_id,json=stepId,proto3" json:"step_id,omitempty"`
+	Attempt       int32                      `protobuf:"varint,4,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	Generation    int64                      `protobuf:"varint,5,opt,name=generation,proto3" json:"generation,omitempty"`
+	LeaseToken    string                     `protobuf:"bytes,6,opt,name=lease_token,json=leaseToken,proto3" json:"lease_token,omitempty"`
+	Traceparent   string                     `protobuf:"bytes,7,opt,name=traceparent,proto3" json:"traceparent,omitempty"`
+	Instance      *ExecutionInstanceIdentity `protobuf:"bytes,8,opt,name=instance,proto3" json:"instance,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ResolveSecretsRequest) Reset() {
 	*x = ResolveSecretsRequest{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[10]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -927,7 +1179,7 @@ func (x *ResolveSecretsRequest) String() string {
 func (*ResolveSecretsRequest) ProtoMessage() {}
 
 func (x *ResolveSecretsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[10]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -940,7 +1192,7 @@ func (x *ResolveSecretsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveSecretsRequest.ProtoReflect.Descriptor instead.
 func (*ResolveSecretsRequest) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{10}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ResolveSecretsRequest) GetTaskId() string {
@@ -992,6 +1244,13 @@ func (x *ResolveSecretsRequest) GetTraceparent() string {
 	return ""
 }
 
+func (x *ResolveSecretsRequest) GetInstance() *ExecutionInstanceIdentity {
+	if x != nil {
+		return x.Instance
+	}
+	return nil
+}
+
 type ResolvedSecret struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
@@ -1003,7 +1262,7 @@ type ResolvedSecret struct {
 
 func (x *ResolvedSecret) Reset() {
 	*x = ResolvedSecret{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[11]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1015,7 +1274,7 @@ func (x *ResolvedSecret) String() string {
 func (*ResolvedSecret) ProtoMessage() {}
 
 func (x *ResolvedSecret) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[11]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1028,7 +1287,7 @@ func (x *ResolvedSecret) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolvedSecret.ProtoReflect.Descriptor instead.
 func (*ResolvedSecret) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{11}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ResolvedSecret) GetName() string {
@@ -1061,7 +1320,7 @@ type ResolveSecretsResponse struct {
 
 func (x *ResolveSecretsResponse) Reset() {
 	*x = ResolveSecretsResponse{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[12]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1073,7 +1332,7 @@ func (x *ResolveSecretsResponse) String() string {
 func (*ResolveSecretsResponse) ProtoMessage() {}
 
 func (x *ResolveSecretsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[12]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1086,7 +1345,7 @@ func (x *ResolveSecretsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveSecretsResponse.ProtoReflect.Descriptor instead.
 func (*ResolveSecretsResponse) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{12}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ResolveSecretsResponse) GetSecrets() []*ResolvedSecret {
@@ -1110,7 +1369,7 @@ type WriteBlobRequest struct {
 
 func (x *WriteBlobRequest) Reset() {
 	*x = WriteBlobRequest{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[13]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1122,7 +1381,7 @@ func (x *WriteBlobRequest) String() string {
 func (*WriteBlobRequest) ProtoMessage() {}
 
 func (x *WriteBlobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[13]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1135,7 +1394,7 @@ func (x *WriteBlobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteBlobRequest.ProtoReflect.Descriptor instead.
 func (*WriteBlobRequest) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{13}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *WriteBlobRequest) GetPart() isWriteBlobRequest_Part {
@@ -1191,15 +1450,16 @@ type WriteBlobHeader struct {
 	ContentType string `protobuf:"bytes,7,opt,name=content_type,json=contentType,proto3" json:"content_type,omitempty"`
 	// Optional (0 and empty mean "not stated"): the upload is refused unless the content has exactly
 	// this many bytes and this SHA-256 (lower-case hex).
-	ExpectedSize   int64  `protobuf:"varint,8,opt,name=expected_size,json=expectedSize,proto3" json:"expected_size,omitempty"`
-	ExpectedSha256 string `protobuf:"bytes,9,opt,name=expected_sha256,json=expectedSha256,proto3" json:"expected_sha256,omitempty"`
+	ExpectedSize   int64                      `protobuf:"varint,8,opt,name=expected_size,json=expectedSize,proto3" json:"expected_size,omitempty"`
+	ExpectedSha256 string                     `protobuf:"bytes,9,opt,name=expected_sha256,json=expectedSha256,proto3" json:"expected_sha256,omitempty"`
+	Instance       *ExecutionInstanceIdentity `protobuf:"bytes,10,opt,name=instance,proto3" json:"instance,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
 
 func (x *WriteBlobHeader) Reset() {
 	*x = WriteBlobHeader{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[14]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1211,7 +1471,7 @@ func (x *WriteBlobHeader) String() string {
 func (*WriteBlobHeader) ProtoMessage() {}
 
 func (x *WriteBlobHeader) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[14]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1224,7 +1484,7 @@ func (x *WriteBlobHeader) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteBlobHeader.ProtoReflect.Descriptor instead.
 func (*WriteBlobHeader) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{14}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *WriteBlobHeader) GetTaskId() string {
@@ -1290,6 +1550,13 @@ func (x *WriteBlobHeader) GetExpectedSha256() string {
 	return ""
 }
 
+func (x *WriteBlobHeader) GetInstance() *ExecutionInstanceIdentity {
+	if x != nil {
+		return x.Instance
+	}
+	return nil
+}
+
 type WriteBlobResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	BlobId        string                 `protobuf:"bytes,1,opt,name=blob_id,json=blobId,proto3" json:"blob_id,omitempty"`
@@ -1302,7 +1569,7 @@ type WriteBlobResponse struct {
 
 func (x *WriteBlobResponse) Reset() {
 	*x = WriteBlobResponse{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[15]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1314,7 +1581,7 @@ func (x *WriteBlobResponse) String() string {
 func (*WriteBlobResponse) ProtoMessage() {}
 
 func (x *WriteBlobResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[15]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1327,7 +1594,7 @@ func (x *WriteBlobResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteBlobResponse.ProtoReflect.Descriptor instead.
 func (*WriteBlobResponse) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{15}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *WriteBlobResponse) GetBlobId() string {
@@ -1359,21 +1626,22 @@ func (x *WriteBlobResponse) GetContentType() string {
 }
 
 type ReadBlobRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TaskId        string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
-	RunId         string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
-	StepId        string                 `protobuf:"bytes,3,opt,name=step_id,json=stepId,proto3" json:"step_id,omitempty"`
-	Attempt       int32                  `protobuf:"varint,4,opt,name=attempt,proto3" json:"attempt,omitempty"`
-	Generation    int64                  `protobuf:"varint,5,opt,name=generation,proto3" json:"generation,omitempty"`
-	LeaseToken    string                 `protobuf:"bytes,6,opt,name=lease_token,json=leaseToken,proto3" json:"lease_token,omitempty"`
-	BlobId        string                 `protobuf:"bytes,7,opt,name=blob_id,json=blobId,proto3" json:"blob_id,omitempty"`
+	state         protoimpl.MessageState     `protogen:"open.v1"`
+	TaskId        string                     `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	RunId         string                     `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	StepId        string                     `protobuf:"bytes,3,opt,name=step_id,json=stepId,proto3" json:"step_id,omitempty"`
+	Attempt       int32                      `protobuf:"varint,4,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	Generation    int64                      `protobuf:"varint,5,opt,name=generation,proto3" json:"generation,omitempty"`
+	LeaseToken    string                     `protobuf:"bytes,6,opt,name=lease_token,json=leaseToken,proto3" json:"lease_token,omitempty"`
+	BlobId        string                     `protobuf:"bytes,7,opt,name=blob_id,json=blobId,proto3" json:"blob_id,omitempty"`
+	Instance      *ExecutionInstanceIdentity `protobuf:"bytes,8,opt,name=instance,proto3" json:"instance,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ReadBlobRequest) Reset() {
 	*x = ReadBlobRequest{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[16]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1385,7 +1653,7 @@ func (x *ReadBlobRequest) String() string {
 func (*ReadBlobRequest) ProtoMessage() {}
 
 func (x *ReadBlobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[16]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1398,7 +1666,7 @@ func (x *ReadBlobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReadBlobRequest.ProtoReflect.Descriptor instead.
 func (*ReadBlobRequest) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{16}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ReadBlobRequest) GetTaskId() string {
@@ -1450,6 +1718,13 @@ func (x *ReadBlobRequest) GetBlobId() string {
 	return ""
 }
 
+func (x *ReadBlobRequest) GetInstance() *ExecutionInstanceIdentity {
+	if x != nil {
+		return x.Instance
+	}
+	return nil
+}
+
 // ReadBlob: `header` first, then `chunk`s.
 type ReadBlobResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1464,7 +1739,7 @@ type ReadBlobResponse struct {
 
 func (x *ReadBlobResponse) Reset() {
 	*x = ReadBlobResponse{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[17]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1476,7 +1751,7 @@ func (x *ReadBlobResponse) String() string {
 func (*ReadBlobResponse) ProtoMessage() {}
 
 func (x *ReadBlobResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[17]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1489,7 +1764,7 @@ func (x *ReadBlobResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReadBlobResponse.ProtoReflect.Descriptor instead.
 func (*ReadBlobResponse) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{17}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ReadBlobResponse) GetPart() isReadBlobResponse_Part {
@@ -1545,7 +1820,7 @@ type ReadBlobHeader struct {
 
 func (x *ReadBlobHeader) Reset() {
 	*x = ReadBlobHeader{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[18]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1557,7 +1832,7 @@ func (x *ReadBlobHeader) String() string {
 func (*ReadBlobHeader) ProtoMessage() {}
 
 func (x *ReadBlobHeader) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[18]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1570,7 +1845,7 @@ func (x *ReadBlobHeader) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReadBlobHeader.ProtoReflect.Descriptor instead.
 func (*ReadBlobHeader) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{18}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ReadBlobHeader) GetBlobId() string {
@@ -1613,7 +1888,7 @@ type StepCommandResponse struct {
 
 func (x *StepCommandResponse) Reset() {
 	*x = StepCommandResponse{}
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[19]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1625,7 +1900,7 @@ func (x *StepCommandResponse) String() string {
 func (*StepCommandResponse) ProtoMessage() {}
 
 func (x *StepCommandResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[19]
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1638,7 +1913,7 @@ func (x *StepCommandResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StepCommandResponse.ProtoReflect.Descriptor instead.
 func (*StepCommandResponse) Descriptor() ([]byte, []int) {
-	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{19}
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *StepCommandResponse) GetCommandId() string {
@@ -1669,6 +1944,536 @@ func (x *StepCommandResponse) GetRunStatus() string {
 	return ""
 }
 
+// Managed execution types, additive in 1.6. Integers and decimals are decimal strings, never
+// doubles. JSON contains one valid JSON value; timestamp is RFC3339 and date is YYYY-MM-DD.
+type DatabaseValue struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Value:
+	//
+	//	*DatabaseValue_NullValue
+	//	*DatabaseValue_BooleanValue
+	//	*DatabaseValue_IntegerValue
+	//	*DatabaseValue_DecimalValue
+	//	*DatabaseValue_FloatValue
+	//	*DatabaseValue_TextValue
+	//	*DatabaseValue_TimestampValue
+	//	*DatabaseValue_DateValue
+	//	*DatabaseValue_BinaryValue
+	//	*DatabaseValue_JsonValue
+	Value         isDatabaseValue_Value `protobuf_oneof:"value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DatabaseValue) Reset() {
+	*x = DatabaseValue{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DatabaseValue) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DatabaseValue) ProtoMessage() {}
+
+func (x *DatabaseValue) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DatabaseValue.ProtoReflect.Descriptor instead.
+func (*DatabaseValue) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *DatabaseValue) GetValue() isDatabaseValue_Value {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+func (x *DatabaseValue) GetNullValue() bool {
+	if x != nil {
+		if x, ok := x.Value.(*DatabaseValue_NullValue); ok {
+			return x.NullValue
+		}
+	}
+	return false
+}
+
+func (x *DatabaseValue) GetBooleanValue() bool {
+	if x != nil {
+		if x, ok := x.Value.(*DatabaseValue_BooleanValue); ok {
+			return x.BooleanValue
+		}
+	}
+	return false
+}
+
+func (x *DatabaseValue) GetIntegerValue() string {
+	if x != nil {
+		if x, ok := x.Value.(*DatabaseValue_IntegerValue); ok {
+			return x.IntegerValue
+		}
+	}
+	return ""
+}
+
+func (x *DatabaseValue) GetDecimalValue() string {
+	if x != nil {
+		if x, ok := x.Value.(*DatabaseValue_DecimalValue); ok {
+			return x.DecimalValue
+		}
+	}
+	return ""
+}
+
+func (x *DatabaseValue) GetFloatValue() float64 {
+	if x != nil {
+		if x, ok := x.Value.(*DatabaseValue_FloatValue); ok {
+			return x.FloatValue
+		}
+	}
+	return 0
+}
+
+func (x *DatabaseValue) GetTextValue() string {
+	if x != nil {
+		if x, ok := x.Value.(*DatabaseValue_TextValue); ok {
+			return x.TextValue
+		}
+	}
+	return ""
+}
+
+func (x *DatabaseValue) GetTimestampValue() string {
+	if x != nil {
+		if x, ok := x.Value.(*DatabaseValue_TimestampValue); ok {
+			return x.TimestampValue
+		}
+	}
+	return ""
+}
+
+func (x *DatabaseValue) GetDateValue() string {
+	if x != nil {
+		if x, ok := x.Value.(*DatabaseValue_DateValue); ok {
+			return x.DateValue
+		}
+	}
+	return ""
+}
+
+func (x *DatabaseValue) GetBinaryValue() []byte {
+	if x != nil {
+		if x, ok := x.Value.(*DatabaseValue_BinaryValue); ok {
+			return x.BinaryValue
+		}
+	}
+	return nil
+}
+
+func (x *DatabaseValue) GetJsonValue() string {
+	if x != nil {
+		if x, ok := x.Value.(*DatabaseValue_JsonValue); ok {
+			return x.JsonValue
+		}
+	}
+	return ""
+}
+
+type isDatabaseValue_Value interface {
+	isDatabaseValue_Value()
+}
+
+type DatabaseValue_NullValue struct {
+	NullValue bool `protobuf:"varint,1,opt,name=null_value,json=nullValue,proto3,oneof"`
+}
+
+type DatabaseValue_BooleanValue struct {
+	BooleanValue bool `protobuf:"varint,2,opt,name=boolean_value,json=booleanValue,proto3,oneof"`
+}
+
+type DatabaseValue_IntegerValue struct {
+	IntegerValue string `protobuf:"bytes,3,opt,name=integer_value,json=integerValue,proto3,oneof"`
+}
+
+type DatabaseValue_DecimalValue struct {
+	DecimalValue string `protobuf:"bytes,4,opt,name=decimal_value,json=decimalValue,proto3,oneof"`
+}
+
+type DatabaseValue_FloatValue struct {
+	FloatValue float64 `protobuf:"fixed64,5,opt,name=float_value,json=floatValue,proto3,oneof"`
+}
+
+type DatabaseValue_TextValue struct {
+	TextValue string `protobuf:"bytes,6,opt,name=text_value,json=textValue,proto3,oneof"`
+}
+
+type DatabaseValue_TimestampValue struct {
+	TimestampValue string `protobuf:"bytes,7,opt,name=timestamp_value,json=timestampValue,proto3,oneof"`
+}
+
+type DatabaseValue_DateValue struct {
+	DateValue string `protobuf:"bytes,8,opt,name=date_value,json=dateValue,proto3,oneof"`
+}
+
+type DatabaseValue_BinaryValue struct {
+	BinaryValue []byte `protobuf:"bytes,9,opt,name=binary_value,json=binaryValue,proto3,oneof"`
+}
+
+type DatabaseValue_JsonValue struct {
+	JsonValue string `protobuf:"bytes,10,opt,name=json_value,json=jsonValue,proto3,oneof"`
+}
+
+func (*DatabaseValue_NullValue) isDatabaseValue_Value() {}
+
+func (*DatabaseValue_BooleanValue) isDatabaseValue_Value() {}
+
+func (*DatabaseValue_IntegerValue) isDatabaseValue_Value() {}
+
+func (*DatabaseValue_DecimalValue) isDatabaseValue_Value() {}
+
+func (*DatabaseValue_FloatValue) isDatabaseValue_Value() {}
+
+func (*DatabaseValue_TextValue) isDatabaseValue_Value() {}
+
+func (*DatabaseValue_TimestampValue) isDatabaseValue_Value() {}
+
+func (*DatabaseValue_DateValue) isDatabaseValue_Value() {}
+
+func (*DatabaseValue_BinaryValue) isDatabaseValue_Value() {}
+
+func (*DatabaseValue_JsonValue) isDatabaseValue_Value() {}
+
+type PostgresConnection struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Host          string                 `protobuf:"bytes,1,opt,name=host,proto3" json:"host,omitempty"`
+	Port          uint32                 `protobuf:"varint,2,opt,name=port,proto3" json:"port,omitempty"`
+	Database      string                 `protobuf:"bytes,3,opt,name=database,proto3" json:"database,omitempty"`
+	Tls           DatabaseTlsMode        `protobuf:"varint,4,opt,name=tls,proto3,enum=sagat_octopus_orchestrator.v1.DatabaseTlsMode" json:"tls,omitempty"`
+	CaPem         string                 `protobuf:"bytes,5,opt,name=ca_pem,json=caPem,proto3" json:"ca_pem,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PostgresConnection) Reset() {
+	*x = PostgresConnection{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PostgresConnection) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PostgresConnection) ProtoMessage() {}
+
+func (x *PostgresConnection) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PostgresConnection.ProtoReflect.Descriptor instead.
+func (*PostgresConnection) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *PostgresConnection) GetHost() string {
+	if x != nil {
+		return x.Host
+	}
+	return ""
+}
+
+func (x *PostgresConnection) GetPort() uint32 {
+	if x != nil {
+		return x.Port
+	}
+	return 0
+}
+
+func (x *PostgresConnection) GetDatabase() string {
+	if x != nil {
+		return x.Database
+	}
+	return ""
+}
+
+func (x *PostgresConnection) GetTls() DatabaseTlsMode {
+	if x != nil {
+		return x.Tls
+	}
+	return DatabaseTlsMode_DATABASE_TLS_UNSPECIFIED
+}
+
+func (x *PostgresConnection) GetCaPem() string {
+	if x != nil {
+		return x.CaPem
+	}
+	return ""
+}
+
+type DatabaseLimits struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	MaxStatementBytes uint32                 `protobuf:"varint,1,opt,name=max_statement_bytes,json=maxStatementBytes,proto3" json:"max_statement_bytes,omitempty"`
+	MaxParameters     uint32                 `protobuf:"varint,2,opt,name=max_parameters,json=maxParameters,proto3" json:"max_parameters,omitempty"`
+	MaxParameterBytes uint32                 `protobuf:"varint,3,opt,name=max_parameter_bytes,json=maxParameterBytes,proto3" json:"max_parameter_bytes,omitempty"`
+	MaxRows           uint32                 `protobuf:"varint,4,opt,name=max_rows,json=maxRows,proto3" json:"max_rows,omitempty"`
+	MaxResultBytes    uint32                 `protobuf:"varint,5,opt,name=max_result_bytes,json=maxResultBytes,proto3" json:"max_result_bytes,omitempty"`
+	TimeoutMs         uint32                 `protobuf:"varint,6,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
+	ConnectTimeoutMs  uint32                 `protobuf:"varint,7,opt,name=connect_timeout_ms,json=connectTimeoutMs,proto3" json:"connect_timeout_ms,omitempty"`
+	PoolSize          uint32                 `protobuf:"varint,8,opt,name=pool_size,json=poolSize,proto3" json:"pool_size,omitempty"`
+	IdleTimeoutMs     uint32                 `protobuf:"varint,9,opt,name=idle_timeout_ms,json=idleTimeoutMs,proto3" json:"idle_timeout_ms,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *DatabaseLimits) Reset() {
+	*x = DatabaseLimits{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DatabaseLimits) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DatabaseLimits) ProtoMessage() {}
+
+func (x *DatabaseLimits) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DatabaseLimits.ProtoReflect.Descriptor instead.
+func (*DatabaseLimits) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *DatabaseLimits) GetMaxStatementBytes() uint32 {
+	if x != nil {
+		return x.MaxStatementBytes
+	}
+	return 0
+}
+
+func (x *DatabaseLimits) GetMaxParameters() uint32 {
+	if x != nil {
+		return x.MaxParameters
+	}
+	return 0
+}
+
+func (x *DatabaseLimits) GetMaxParameterBytes() uint32 {
+	if x != nil {
+		return x.MaxParameterBytes
+	}
+	return 0
+}
+
+func (x *DatabaseLimits) GetMaxRows() uint32 {
+	if x != nil {
+		return x.MaxRows
+	}
+	return 0
+}
+
+func (x *DatabaseLimits) GetMaxResultBytes() uint32 {
+	if x != nil {
+		return x.MaxResultBytes
+	}
+	return 0
+}
+
+func (x *DatabaseLimits) GetTimeoutMs() uint32 {
+	if x != nil {
+		return x.TimeoutMs
+	}
+	return 0
+}
+
+func (x *DatabaseLimits) GetConnectTimeoutMs() uint32 {
+	if x != nil {
+		return x.ConnectTimeoutMs
+	}
+	return 0
+}
+
+func (x *DatabaseLimits) GetPoolSize() uint32 {
+	if x != nil {
+		return x.PoolSize
+	}
+	return 0
+}
+
+func (x *DatabaseLimits) GetIdleTimeoutMs() uint32 {
+	if x != nil {
+		return x.IdleTimeoutMs
+	}
+	return 0
+}
+
+type ResolvedDatabase struct {
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	ConnectionId          string                 `protobuf:"bytes,1,opt,name=connection_id,json=connectionId,proto3" json:"connection_id,omitempty"`
+	ConnectionRevision    uint32                 `protobuf:"varint,2,opt,name=connection_revision,json=connectionRevision,proto3" json:"connection_revision,omitempty"`
+	Postgres              *PostgresConnection    `protobuf:"bytes,3,opt,name=postgres,proto3" json:"postgres,omitempty"`
+	Operation             DatabaseOperationKind  `protobuf:"varint,4,opt,name=operation,proto3,enum=sagat_octopus_orchestrator.v1.DatabaseOperationKind" json:"operation,omitempty"`
+	Statement             string                 `protobuf:"bytes,5,opt,name=statement,proto3" json:"statement,omitempty"`
+	Parameters            []*DatabaseValue       `protobuf:"bytes,6,rep,name=parameters,proto3" json:"parameters,omitempty"`
+	Limits                *DatabaseLimits        `protobuf:"bytes,7,opt,name=limits,proto3" json:"limits,omitempty"`
+	Credential            *ResolvedSecret        `protobuf:"bytes,8,opt,name=credential,proto3" json:"credential,omitempty"`
+	LeaseExpiresAtEpochMs int64                  `protobuf:"varint,9,opt,name=lease_expires_at_epoch_ms,json=leaseExpiresAtEpochMs,proto3" json:"lease_expires_at_epoch_ms,omitempty"`
+	// Verified scope and canonical reference for the runner's namespace destination policy.
+	NamespaceId    string `protobuf:"bytes,10,opt,name=namespace_id,json=namespaceId,proto3" json:"namespace_id,omitempty"`
+	ConnectionName string `protobuf:"bytes,11,opt,name=connection_name,json=connectionName,proto3" json:"connection_name,omitempty"`
+	// Trusted identity scope for audit-correlated executor telemetry; not a metric label.
+	TenantId      string `protobuf:"bytes,12,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResolvedDatabase) Reset() {
+	*x = ResolvedDatabase{}
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResolvedDatabase) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResolvedDatabase) ProtoMessage() {}
+
+func (x *ResolvedDatabase) ProtoReflect() protoreflect.Message {
+	mi := &file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResolvedDatabase.ProtoReflect.Descriptor instead.
+func (*ResolvedDatabase) Descriptor() ([]byte, []int) {
+	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *ResolvedDatabase) GetConnectionId() string {
+	if x != nil {
+		return x.ConnectionId
+	}
+	return ""
+}
+
+func (x *ResolvedDatabase) GetConnectionRevision() uint32 {
+	if x != nil {
+		return x.ConnectionRevision
+	}
+	return 0
+}
+
+func (x *ResolvedDatabase) GetPostgres() *PostgresConnection {
+	if x != nil {
+		return x.Postgres
+	}
+	return nil
+}
+
+func (x *ResolvedDatabase) GetOperation() DatabaseOperationKind {
+	if x != nil {
+		return x.Operation
+	}
+	return DatabaseOperationKind_DATABASE_OPERATION_UNSPECIFIED
+}
+
+func (x *ResolvedDatabase) GetStatement() string {
+	if x != nil {
+		return x.Statement
+	}
+	return ""
+}
+
+func (x *ResolvedDatabase) GetParameters() []*DatabaseValue {
+	if x != nil {
+		return x.Parameters
+	}
+	return nil
+}
+
+func (x *ResolvedDatabase) GetLimits() *DatabaseLimits {
+	if x != nil {
+		return x.Limits
+	}
+	return nil
+}
+
+func (x *ResolvedDatabase) GetCredential() *ResolvedSecret {
+	if x != nil {
+		return x.Credential
+	}
+	return nil
+}
+
+func (x *ResolvedDatabase) GetLeaseExpiresAtEpochMs() int64 {
+	if x != nil {
+		return x.LeaseExpiresAtEpochMs
+	}
+	return 0
+}
+
+func (x *ResolvedDatabase) GetNamespaceId() string {
+	if x != nil {
+		return x.NamespaceId
+	}
+	return ""
+}
+
+func (x *ResolvedDatabase) GetConnectionName() string {
+	if x != nil {
+		return x.ConnectionName
+	}
+	return ""
+}
+
+func (x *ResolvedDatabase) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
 var File_sagat_octopus_orchestrator_v1_worker_proto protoreflect.FileDescriptor
 
 const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
@@ -1694,7 +2499,13 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"\x10PollTasksRequest\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12#\n" +
 	"\rsession_token\x18\x02 \x01(\tR\fsessionToken\x12\x1b\n" +
-	"\tmax_tasks\x18\x03 \x01(\x05R\bmaxTasks\"\xaa\x04\n" +
+	"\tmax_tasks\x18\x03 \x01(\x05R\bmaxTasks\"_\n" +
+	"\x10ScopePathSegment\x12\"\n" +
+	"\rscope_node_id\x18\x01 \x01(\tR\vscopeNodeId\x12'\n" +
+	"\x0fiteration_index\x18\x02 \x01(\rR\x0eiterationIndex\"\x9f\x01\n" +
+	"\x19ExecutionInstanceIdentity\x12T\n" +
+	"\rinstance_path\x18\x01 \x03(\v2/.sagat_octopus_orchestrator.v1.ScopePathSegmentR\finstancePath\x12,\n" +
+	"\x12definition_node_id\x18\x02 \x01(\tR\x10definitionNodeId\"\xe3\x05\n" +
 	"\tTaskLease\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x15\n" +
 	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x17\n" +
@@ -1717,10 +2528,12 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"\ttask_kind\x18\x0e \x01(\tR\btaskKind\x12\x1f\n" +
 	"\vtarget_node\x18\x0f \x01(\tR\n" +
 	"targetNode\x124\n" +
-	"\x16target_idempotency_key\x18\x10 \x01(\tR\x14targetIdempotencyKey\"y\n" +
+	"\x16target_idempotency_key\x18\x10 \x01(\tR\x14targetIdempotencyKey\x12T\n" +
+	"\binstance\x18\x11 \x01(\v28.sagat_octopus_orchestrator.v1.ExecutionInstanceIdentityR\binstance\x12a\n" +
+	"\x0ftarget_instance\x18\x12 \x01(\v28.sagat_octopus_orchestrator.v1.ExecutionInstanceIdentityR\x0etargetInstance\"y\n" +
 	"\x11PollTasksResponse\x12>\n" +
 	"\x05tasks\x18\x01 \x03(\v2(.sagat_octopus_orchestrator.v1.TaskLeaseR\x05tasks\x12$\n" +
-	"\x0eretry_after_ms\x18\x02 \x01(\x05R\fretryAfterMs\"\xd3\x01\n" +
+	"\x0eretry_after_ms\x18\x02 \x01(\x05R\fretryAfterMs\"\xa9\x02\n" +
 	"\x10HeartbeatRequest\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x1b\n" +
 	"\tworker_id\x18\x02 \x01(\tR\bworkerId\x12\x1e\n" +
@@ -1731,10 +2544,11 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"leaseToken\x12\x15\n" +
 	"\x06run_id\x18\x05 \x01(\tR\x05runId\x12\x17\n" +
 	"\astep_id\x18\x06 \x01(\tR\x06stepId\x12\x18\n" +
-	"\aattempt\x18\a \x01(\x05R\aattempt\"x\n" +
+	"\aattempt\x18\a \x01(\x05R\aattempt\x12T\n" +
+	"\binstance\x18\b \x01(\v28.sagat_octopus_orchestrator.v1.ExecutionInstanceIdentityR\binstance\"x\n" +
 	"\x11HeartbeatResponse\x128\n" +
 	"\x19lease_expires_at_epoch_ms\x18\x01 \x01(\x03R\x15leaseExpiresAtEpochMs\x12)\n" +
-	"\x10cancel_requested\x18\x02 \x01(\bR\x0fcancelRequested\"\xf2\x02\n" +
+	"\x10cancel_requested\x18\x02 \x01(\bR\x0fcancelRequested\"\xc8\x03\n" +
 	"\x13CompleteStepRequest\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x15\n" +
 	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x17\n" +
@@ -1751,7 +2565,8 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"\x0foutput_blob_ref\x18\t \x01(\tR\routputBlobRef\x12#\n" +
 	"\routput_sha256\x18\n" +
 	" \x01(\tR\foutputSha256\x12 \n" +
-	"\vtraceparent\x18\v \x01(\tR\vtraceparent\"\xe0\x02\n" +
+	"\vtraceparent\x18\v \x01(\tR\vtraceparent\x12T\n" +
+	"\binstance\x18\f \x01(\v28.sagat_octopus_orchestrator.v1.ExecutionInstanceIdentityR\binstance\"\xb6\x03\n" +
 	"\x0fFailStepRequest\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x15\n" +
 	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x17\n" +
@@ -1768,7 +2583,8 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"\fsafe_message\x18\t \x01(\tR\vsafeMessage\x12\x1c\n" +
 	"\tretryable\x18\n" +
 	" \x01(\bR\tretryable\x12 \n" +
-	"\vtraceparent\x18\v \x01(\tR\vtraceparent\"\xdd\x01\n" +
+	"\vtraceparent\x18\v \x01(\tR\vtraceparent\x12T\n" +
+	"\binstance\x18\f \x01(\v28.sagat_octopus_orchestrator.v1.ExecutionInstanceIdentityR\binstance\"\xb3\x02\n" +
 	"\x15ResolveSecretsRequest\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x15\n" +
 	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x17\n" +
@@ -1779,7 +2595,8 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"generation\x12\x1f\n" +
 	"\vlease_token\x18\x06 \x01(\tR\n" +
 	"leaseToken\x12 \n" +
-	"\vtraceparent\x18\a \x01(\tR\vtraceparent\"T\n" +
+	"\vtraceparent\x18\a \x01(\tR\vtraceparent\x12T\n" +
+	"\binstance\x18\b \x01(\v28.sagat_octopus_orchestrator.v1.ExecutionInstanceIdentityR\binstance\"T\n" +
 	"\x0eResolvedSecret\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value\x12\x18\n" +
@@ -1789,7 +2606,7 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"\x10WriteBlobRequest\x12H\n" +
 	"\x06header\x18\x01 \x01(\v2..sagat_octopus_orchestrator.v1.WriteBlobHeaderH\x00R\x06header\x12\x16\n" +
 	"\x05chunk\x18\x02 \x01(\fH\x00R\x05chunkB\x06\n" +
-	"\x04part\"\xa6\x02\n" +
+	"\x04part\"\xfc\x02\n" +
 	"\x0fWriteBlobHeader\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x15\n" +
 	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x17\n" +
@@ -1802,12 +2619,14 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"leaseToken\x12!\n" +
 	"\fcontent_type\x18\a \x01(\tR\vcontentType\x12#\n" +
 	"\rexpected_size\x18\b \x01(\x03R\fexpectedSize\x12'\n" +
-	"\x0fexpected_sha256\x18\t \x01(\tR\x0eexpectedSha256\"{\n" +
+	"\x0fexpected_sha256\x18\t \x01(\tR\x0eexpectedSha256\x12T\n" +
+	"\binstance\x18\n" +
+	" \x01(\v28.sagat_octopus_orchestrator.v1.ExecutionInstanceIdentityR\binstance\"{\n" +
 	"\x11WriteBlobResponse\x12\x17\n" +
 	"\ablob_id\x18\x01 \x01(\tR\x06blobId\x12\x12\n" +
 	"\x04size\x18\x02 \x01(\x03R\x04size\x12\x16\n" +
 	"\x06sha256\x18\x03 \x01(\tR\x06sha256\x12!\n" +
-	"\fcontent_type\x18\x04 \x01(\tR\vcontentType\"\xce\x01\n" +
+	"\fcontent_type\x18\x04 \x01(\tR\vcontentType\"\xa4\x02\n" +
 	"\x0fReadBlobRequest\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x15\n" +
 	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x17\n" +
@@ -1818,7 +2637,8 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"generation\x12\x1f\n" +
 	"\vlease_token\x18\x06 \x01(\tR\n" +
 	"leaseToken\x12\x17\n" +
-	"\ablob_id\x18\a \x01(\tR\x06blobId\"{\n" +
+	"\ablob_id\x18\a \x01(\tR\x06blobId\x12T\n" +
+	"\binstance\x18\b \x01(\v28.sagat_octopus_orchestrator.v1.ExecutionInstanceIdentityR\binstance\"{\n" +
 	"\x10ReadBlobResponse\x12G\n" +
 	"\x06header\x18\x01 \x01(\v2-.sagat_octopus_orchestrator.v1.ReadBlobHeaderH\x00R\x06header\x12\x16\n" +
 	"\x05chunk\x18\x02 \x01(\fH\x00R\x05chunkB\x06\n" +
@@ -1835,7 +2655,68 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"\vstep_status\x18\x03 \x01(\tR\n" +
 	"stepStatus\x12\x1d\n" +
 	"\n" +
-	"run_status\x18\x04 \x01(\tR\trunStatus2\xaa\b\n" +
+	"run_status\x18\x04 \x01(\tR\trunStatus\"\x84\x03\n" +
+	"\rDatabaseValue\x12\x1f\n" +
+	"\n" +
+	"null_value\x18\x01 \x01(\bH\x00R\tnullValue\x12%\n" +
+	"\rboolean_value\x18\x02 \x01(\bH\x00R\fbooleanValue\x12%\n" +
+	"\rinteger_value\x18\x03 \x01(\tH\x00R\fintegerValue\x12%\n" +
+	"\rdecimal_value\x18\x04 \x01(\tH\x00R\fdecimalValue\x12!\n" +
+	"\vfloat_value\x18\x05 \x01(\x01H\x00R\n" +
+	"floatValue\x12\x1f\n" +
+	"\n" +
+	"text_value\x18\x06 \x01(\tH\x00R\ttextValue\x12)\n" +
+	"\x0ftimestamp_value\x18\a \x01(\tH\x00R\x0etimestampValue\x12\x1f\n" +
+	"\n" +
+	"date_value\x18\b \x01(\tH\x00R\tdateValue\x12#\n" +
+	"\fbinary_value\x18\t \x01(\fH\x00R\vbinaryValue\x12\x1f\n" +
+	"\n" +
+	"json_value\x18\n" +
+	" \x01(\tH\x00R\tjsonValueB\a\n" +
+	"\x05value\"\xb1\x01\n" +
+	"\x12PostgresConnection\x12\x12\n" +
+	"\x04host\x18\x01 \x01(\tR\x04host\x12\x12\n" +
+	"\x04port\x18\x02 \x01(\rR\x04port\x12\x1a\n" +
+	"\bdatabase\x18\x03 \x01(\tR\bdatabase\x12@\n" +
+	"\x03tls\x18\x04 \x01(\x0e2..sagat_octopus_orchestrator.v1.DatabaseTlsModeR\x03tls\x12\x15\n" +
+	"\x06ca_pem\x18\x05 \x01(\tR\x05caPem\"\xee\x02\n" +
+	"\x0eDatabaseLimits\x12.\n" +
+	"\x13max_statement_bytes\x18\x01 \x01(\rR\x11maxStatementBytes\x12%\n" +
+	"\x0emax_parameters\x18\x02 \x01(\rR\rmaxParameters\x12.\n" +
+	"\x13max_parameter_bytes\x18\x03 \x01(\rR\x11maxParameterBytes\x12\x19\n" +
+	"\bmax_rows\x18\x04 \x01(\rR\amaxRows\x12(\n" +
+	"\x10max_result_bytes\x18\x05 \x01(\rR\x0emaxResultBytes\x12\x1d\n" +
+	"\n" +
+	"timeout_ms\x18\x06 \x01(\rR\ttimeoutMs\x12,\n" +
+	"\x12connect_timeout_ms\x18\a \x01(\rR\x10connectTimeoutMs\x12\x1b\n" +
+	"\tpool_size\x18\b \x01(\rR\bpoolSize\x12&\n" +
+	"\x0fidle_timeout_ms\x18\t \x01(\rR\ridleTimeoutMs\"\xb0\x05\n" +
+	"\x10ResolvedDatabase\x12#\n" +
+	"\rconnection_id\x18\x01 \x01(\tR\fconnectionId\x12/\n" +
+	"\x13connection_revision\x18\x02 \x01(\rR\x12connectionRevision\x12M\n" +
+	"\bpostgres\x18\x03 \x01(\v21.sagat_octopus_orchestrator.v1.PostgresConnectionR\bpostgres\x12R\n" +
+	"\toperation\x18\x04 \x01(\x0e24.sagat_octopus_orchestrator.v1.DatabaseOperationKindR\toperation\x12\x1c\n" +
+	"\tstatement\x18\x05 \x01(\tR\tstatement\x12L\n" +
+	"\n" +
+	"parameters\x18\x06 \x03(\v2,.sagat_octopus_orchestrator.v1.DatabaseValueR\n" +
+	"parameters\x12E\n" +
+	"\x06limits\x18\a \x01(\v2-.sagat_octopus_orchestrator.v1.DatabaseLimitsR\x06limits\x12M\n" +
+	"\n" +
+	"credential\x18\b \x01(\v2-.sagat_octopus_orchestrator.v1.ResolvedSecretR\n" +
+	"credential\x128\n" +
+	"\x19lease_expires_at_epoch_ms\x18\t \x01(\x03R\x15leaseExpiresAtEpochMs\x12!\n" +
+	"\fnamespace_id\x18\n" +
+	" \x01(\tR\vnamespaceId\x12'\n" +
+	"\x0fconnection_name\x18\v \x01(\tR\x0econnectionName\x12\x1b\n" +
+	"\ttenant_id\x18\f \x01(\tR\btenantId*e\n" +
+	"\x15DatabaseOperationKind\x12\"\n" +
+	"\x1eDATABASE_OPERATION_UNSPECIFIED\x10\x00\x12\x12\n" +
+	"\x0eDATABASE_QUERY\x10\x01\x12\x14\n" +
+	"\x10DATABASE_EXECUTE\x10\x02*u\n" +
+	"\x0fDatabaseTlsMode\x12\x1c\n" +
+	"\x18DATABASE_TLS_UNSPECIFIED\x10\x00\x12\x1c\n" +
+	"\x18DATABASE_TLS_VERIFY_FULL\x10\x01\x12&\n" +
+	"\"DATABASE_TLS_DEVELOPMENT_PLAINTEXT\x10\x022\xa4\t\n" +
 	"\rWorkerService\x12}\n" +
 	"\x0eRegisterWorker\x124.sagat_octopus_orchestrator.v1.RegisterWorkerRequest\x1a5.sagat_octopus_orchestrator.v1.RegisterWorkerResponse\x12n\n" +
 	"\tPollTasks\x12/.sagat_octopus_orchestrator.v1.PollTasksRequest\x1a0.sagat_octopus_orchestrator.v1.PollTasksResponse\x12r\n" +
@@ -1843,7 +2724,8 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"\tHeartbeat\x12/.sagat_octopus_orchestrator.v1.HeartbeatRequest\x1a0.sagat_octopus_orchestrator.v1.HeartbeatResponse\x12v\n" +
 	"\fCompleteStep\x122.sagat_octopus_orchestrator.v1.CompleteStepRequest\x1a2.sagat_octopus_orchestrator.v1.StepCommandResponse\x12n\n" +
 	"\bFailStep\x12..sagat_octopus_orchestrator.v1.FailStepRequest\x1a2.sagat_octopus_orchestrator.v1.StepCommandResponse\x12}\n" +
-	"\x0eResolveSecrets\x124.sagat_octopus_orchestrator.v1.ResolveSecretsRequest\x1a5.sagat_octopus_orchestrator.v1.ResolveSecretsResponse\x12p\n" +
+	"\x0eResolveSecrets\x124.sagat_octopus_orchestrator.v1.ResolveSecretsRequest\x1a5.sagat_octopus_orchestrator.v1.ResolveSecretsResponse\x12x\n" +
+	"\x0fResolveDatabase\x124.sagat_octopus_orchestrator.v1.ResolveSecretsRequest\x1a/.sagat_octopus_orchestrator.v1.ResolvedDatabase\x12p\n" +
 	"\tWriteBlob\x12/.sagat_octopus_orchestrator.v1.WriteBlobRequest\x1a0.sagat_octopus_orchestrator.v1.WriteBlobResponse(\x01\x12m\n" +
 	"\bReadBlob\x12..sagat_octopus_orchestrator.v1.ReadBlobRequest\x1a/.sagat_octopus_orchestrator.v1.ReadBlobResponse0\x01B\xbf\x01\n" +
 	"(dev.sagatoctopusorchestrator.protocol.v1Zlgithub.com/ortisun/sagat-octopus-orchestrator/proto/sagat_octopus_orchestrator/v1;sagatoctopusorchestratorv1\xaa\x02$SagatOctopusOrchestrator.Protocol.V1b\x06proto3"
@@ -1860,58 +2742,84 @@ func file_sagat_octopus_orchestrator_v1_worker_proto_rawDescGZIP() []byte {
 	return file_sagat_octopus_orchestrator_v1_worker_proto_rawDescData
 }
 
-var file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
+var file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
 var file_sagat_octopus_orchestrator_v1_worker_proto_goTypes = []any{
-	(*WorkerCapabilities)(nil),     // 0: sagat_octopus_orchestrator.v1.WorkerCapabilities
-	(*RegisterWorkerRequest)(nil),  // 1: sagat_octopus_orchestrator.v1.RegisterWorkerRequest
-	(*RegisterWorkerResponse)(nil), // 2: sagat_octopus_orchestrator.v1.RegisterWorkerResponse
-	(*PollTasksRequest)(nil),       // 3: sagat_octopus_orchestrator.v1.PollTasksRequest
-	(*TaskLease)(nil),              // 4: sagat_octopus_orchestrator.v1.TaskLease
-	(*PollTasksResponse)(nil),      // 5: sagat_octopus_orchestrator.v1.PollTasksResponse
-	(*HeartbeatRequest)(nil),       // 6: sagat_octopus_orchestrator.v1.HeartbeatRequest
-	(*HeartbeatResponse)(nil),      // 7: sagat_octopus_orchestrator.v1.HeartbeatResponse
-	(*CompleteStepRequest)(nil),    // 8: sagat_octopus_orchestrator.v1.CompleteStepRequest
-	(*FailStepRequest)(nil),        // 9: sagat_octopus_orchestrator.v1.FailStepRequest
-	(*ResolveSecretsRequest)(nil),  // 10: sagat_octopus_orchestrator.v1.ResolveSecretsRequest
-	(*ResolvedSecret)(nil),         // 11: sagat_octopus_orchestrator.v1.ResolvedSecret
-	(*ResolveSecretsResponse)(nil), // 12: sagat_octopus_orchestrator.v1.ResolveSecretsResponse
-	(*WriteBlobRequest)(nil),       // 13: sagat_octopus_orchestrator.v1.WriteBlobRequest
-	(*WriteBlobHeader)(nil),        // 14: sagat_octopus_orchestrator.v1.WriteBlobHeader
-	(*WriteBlobResponse)(nil),      // 15: sagat_octopus_orchestrator.v1.WriteBlobResponse
-	(*ReadBlobRequest)(nil),        // 16: sagat_octopus_orchestrator.v1.ReadBlobRequest
-	(*ReadBlobResponse)(nil),       // 17: sagat_octopus_orchestrator.v1.ReadBlobResponse
-	(*ReadBlobHeader)(nil),         // 18: sagat_octopus_orchestrator.v1.ReadBlobHeader
-	(*StepCommandResponse)(nil),    // 19: sagat_octopus_orchestrator.v1.StepCommandResponse
+	(DatabaseOperationKind)(0),        // 0: sagat_octopus_orchestrator.v1.DatabaseOperationKind
+	(DatabaseTlsMode)(0),              // 1: sagat_octopus_orchestrator.v1.DatabaseTlsMode
+	(*WorkerCapabilities)(nil),        // 2: sagat_octopus_orchestrator.v1.WorkerCapabilities
+	(*RegisterWorkerRequest)(nil),     // 3: sagat_octopus_orchestrator.v1.RegisterWorkerRequest
+	(*RegisterWorkerResponse)(nil),    // 4: sagat_octopus_orchestrator.v1.RegisterWorkerResponse
+	(*PollTasksRequest)(nil),          // 5: sagat_octopus_orchestrator.v1.PollTasksRequest
+	(*ScopePathSegment)(nil),          // 6: sagat_octopus_orchestrator.v1.ScopePathSegment
+	(*ExecutionInstanceIdentity)(nil), // 7: sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	(*TaskLease)(nil),                 // 8: sagat_octopus_orchestrator.v1.TaskLease
+	(*PollTasksResponse)(nil),         // 9: sagat_octopus_orchestrator.v1.PollTasksResponse
+	(*HeartbeatRequest)(nil),          // 10: sagat_octopus_orchestrator.v1.HeartbeatRequest
+	(*HeartbeatResponse)(nil),         // 11: sagat_octopus_orchestrator.v1.HeartbeatResponse
+	(*CompleteStepRequest)(nil),       // 12: sagat_octopus_orchestrator.v1.CompleteStepRequest
+	(*FailStepRequest)(nil),           // 13: sagat_octopus_orchestrator.v1.FailStepRequest
+	(*ResolveSecretsRequest)(nil),     // 14: sagat_octopus_orchestrator.v1.ResolveSecretsRequest
+	(*ResolvedSecret)(nil),            // 15: sagat_octopus_orchestrator.v1.ResolvedSecret
+	(*ResolveSecretsResponse)(nil),    // 16: sagat_octopus_orchestrator.v1.ResolveSecretsResponse
+	(*WriteBlobRequest)(nil),          // 17: sagat_octopus_orchestrator.v1.WriteBlobRequest
+	(*WriteBlobHeader)(nil),           // 18: sagat_octopus_orchestrator.v1.WriteBlobHeader
+	(*WriteBlobResponse)(nil),         // 19: sagat_octopus_orchestrator.v1.WriteBlobResponse
+	(*ReadBlobRequest)(nil),           // 20: sagat_octopus_orchestrator.v1.ReadBlobRequest
+	(*ReadBlobResponse)(nil),          // 21: sagat_octopus_orchestrator.v1.ReadBlobResponse
+	(*ReadBlobHeader)(nil),            // 22: sagat_octopus_orchestrator.v1.ReadBlobHeader
+	(*StepCommandResponse)(nil),       // 23: sagat_octopus_orchestrator.v1.StepCommandResponse
+	(*DatabaseValue)(nil),             // 24: sagat_octopus_orchestrator.v1.DatabaseValue
+	(*PostgresConnection)(nil),        // 25: sagat_octopus_orchestrator.v1.PostgresConnection
+	(*DatabaseLimits)(nil),            // 26: sagat_octopus_orchestrator.v1.DatabaseLimits
+	(*ResolvedDatabase)(nil),          // 27: sagat_octopus_orchestrator.v1.ResolvedDatabase
 }
 var file_sagat_octopus_orchestrator_v1_worker_proto_depIdxs = []int32{
-	0,  // 0: sagat_octopus_orchestrator.v1.RegisterWorkerRequest.capabilities:type_name -> sagat_octopus_orchestrator.v1.WorkerCapabilities
-	4,  // 1: sagat_octopus_orchestrator.v1.PollTasksResponse.tasks:type_name -> sagat_octopus_orchestrator.v1.TaskLease
-	11, // 2: sagat_octopus_orchestrator.v1.ResolveSecretsResponse.secrets:type_name -> sagat_octopus_orchestrator.v1.ResolvedSecret
-	14, // 3: sagat_octopus_orchestrator.v1.WriteBlobRequest.header:type_name -> sagat_octopus_orchestrator.v1.WriteBlobHeader
-	18, // 4: sagat_octopus_orchestrator.v1.ReadBlobResponse.header:type_name -> sagat_octopus_orchestrator.v1.ReadBlobHeader
-	1,  // 5: sagat_octopus_orchestrator.v1.WorkerService.RegisterWorker:input_type -> sagat_octopus_orchestrator.v1.RegisterWorkerRequest
-	3,  // 6: sagat_octopus_orchestrator.v1.WorkerService.PollTasks:input_type -> sagat_octopus_orchestrator.v1.PollTasksRequest
-	3,  // 7: sagat_octopus_orchestrator.v1.WorkerService.StreamTasks:input_type -> sagat_octopus_orchestrator.v1.PollTasksRequest
-	6,  // 8: sagat_octopus_orchestrator.v1.WorkerService.Heartbeat:input_type -> sagat_octopus_orchestrator.v1.HeartbeatRequest
-	8,  // 9: sagat_octopus_orchestrator.v1.WorkerService.CompleteStep:input_type -> sagat_octopus_orchestrator.v1.CompleteStepRequest
-	9,  // 10: sagat_octopus_orchestrator.v1.WorkerService.FailStep:input_type -> sagat_octopus_orchestrator.v1.FailStepRequest
-	10, // 11: sagat_octopus_orchestrator.v1.WorkerService.ResolveSecrets:input_type -> sagat_octopus_orchestrator.v1.ResolveSecretsRequest
-	13, // 12: sagat_octopus_orchestrator.v1.WorkerService.WriteBlob:input_type -> sagat_octopus_orchestrator.v1.WriteBlobRequest
-	16, // 13: sagat_octopus_orchestrator.v1.WorkerService.ReadBlob:input_type -> sagat_octopus_orchestrator.v1.ReadBlobRequest
-	2,  // 14: sagat_octopus_orchestrator.v1.WorkerService.RegisterWorker:output_type -> sagat_octopus_orchestrator.v1.RegisterWorkerResponse
-	5,  // 15: sagat_octopus_orchestrator.v1.WorkerService.PollTasks:output_type -> sagat_octopus_orchestrator.v1.PollTasksResponse
-	5,  // 16: sagat_octopus_orchestrator.v1.WorkerService.StreamTasks:output_type -> sagat_octopus_orchestrator.v1.PollTasksResponse
-	7,  // 17: sagat_octopus_orchestrator.v1.WorkerService.Heartbeat:output_type -> sagat_octopus_orchestrator.v1.HeartbeatResponse
-	19, // 18: sagat_octopus_orchestrator.v1.WorkerService.CompleteStep:output_type -> sagat_octopus_orchestrator.v1.StepCommandResponse
-	19, // 19: sagat_octopus_orchestrator.v1.WorkerService.FailStep:output_type -> sagat_octopus_orchestrator.v1.StepCommandResponse
-	12, // 20: sagat_octopus_orchestrator.v1.WorkerService.ResolveSecrets:output_type -> sagat_octopus_orchestrator.v1.ResolveSecretsResponse
-	15, // 21: sagat_octopus_orchestrator.v1.WorkerService.WriteBlob:output_type -> sagat_octopus_orchestrator.v1.WriteBlobResponse
-	17, // 22: sagat_octopus_orchestrator.v1.WorkerService.ReadBlob:output_type -> sagat_octopus_orchestrator.v1.ReadBlobResponse
-	14, // [14:23] is the sub-list for method output_type
-	5,  // [5:14] is the sub-list for method input_type
-	5,  // [5:5] is the sub-list for extension type_name
-	5,  // [5:5] is the sub-list for extension extendee
-	0,  // [0:5] is the sub-list for field type_name
+	2,  // 0: sagat_octopus_orchestrator.v1.RegisterWorkerRequest.capabilities:type_name -> sagat_octopus_orchestrator.v1.WorkerCapabilities
+	6,  // 1: sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity.instance_path:type_name -> sagat_octopus_orchestrator.v1.ScopePathSegment
+	7,  // 2: sagat_octopus_orchestrator.v1.TaskLease.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	7,  // 3: sagat_octopus_orchestrator.v1.TaskLease.target_instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	8,  // 4: sagat_octopus_orchestrator.v1.PollTasksResponse.tasks:type_name -> sagat_octopus_orchestrator.v1.TaskLease
+	7,  // 5: sagat_octopus_orchestrator.v1.HeartbeatRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	7,  // 6: sagat_octopus_orchestrator.v1.CompleteStepRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	7,  // 7: sagat_octopus_orchestrator.v1.FailStepRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	7,  // 8: sagat_octopus_orchestrator.v1.ResolveSecretsRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	15, // 9: sagat_octopus_orchestrator.v1.ResolveSecretsResponse.secrets:type_name -> sagat_octopus_orchestrator.v1.ResolvedSecret
+	18, // 10: sagat_octopus_orchestrator.v1.WriteBlobRequest.header:type_name -> sagat_octopus_orchestrator.v1.WriteBlobHeader
+	7,  // 11: sagat_octopus_orchestrator.v1.WriteBlobHeader.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	7,  // 12: sagat_octopus_orchestrator.v1.ReadBlobRequest.instance:type_name -> sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity
+	22, // 13: sagat_octopus_orchestrator.v1.ReadBlobResponse.header:type_name -> sagat_octopus_orchestrator.v1.ReadBlobHeader
+	1,  // 14: sagat_octopus_orchestrator.v1.PostgresConnection.tls:type_name -> sagat_octopus_orchestrator.v1.DatabaseTlsMode
+	25, // 15: sagat_octopus_orchestrator.v1.ResolvedDatabase.postgres:type_name -> sagat_octopus_orchestrator.v1.PostgresConnection
+	0,  // 16: sagat_octopus_orchestrator.v1.ResolvedDatabase.operation:type_name -> sagat_octopus_orchestrator.v1.DatabaseOperationKind
+	24, // 17: sagat_octopus_orchestrator.v1.ResolvedDatabase.parameters:type_name -> sagat_octopus_orchestrator.v1.DatabaseValue
+	26, // 18: sagat_octopus_orchestrator.v1.ResolvedDatabase.limits:type_name -> sagat_octopus_orchestrator.v1.DatabaseLimits
+	15, // 19: sagat_octopus_orchestrator.v1.ResolvedDatabase.credential:type_name -> sagat_octopus_orchestrator.v1.ResolvedSecret
+	3,  // 20: sagat_octopus_orchestrator.v1.WorkerService.RegisterWorker:input_type -> sagat_octopus_orchestrator.v1.RegisterWorkerRequest
+	5,  // 21: sagat_octopus_orchestrator.v1.WorkerService.PollTasks:input_type -> sagat_octopus_orchestrator.v1.PollTasksRequest
+	5,  // 22: sagat_octopus_orchestrator.v1.WorkerService.StreamTasks:input_type -> sagat_octopus_orchestrator.v1.PollTasksRequest
+	10, // 23: sagat_octopus_orchestrator.v1.WorkerService.Heartbeat:input_type -> sagat_octopus_orchestrator.v1.HeartbeatRequest
+	12, // 24: sagat_octopus_orchestrator.v1.WorkerService.CompleteStep:input_type -> sagat_octopus_orchestrator.v1.CompleteStepRequest
+	13, // 25: sagat_octopus_orchestrator.v1.WorkerService.FailStep:input_type -> sagat_octopus_orchestrator.v1.FailStepRequest
+	14, // 26: sagat_octopus_orchestrator.v1.WorkerService.ResolveSecrets:input_type -> sagat_octopus_orchestrator.v1.ResolveSecretsRequest
+	14, // 27: sagat_octopus_orchestrator.v1.WorkerService.ResolveDatabase:input_type -> sagat_octopus_orchestrator.v1.ResolveSecretsRequest
+	17, // 28: sagat_octopus_orchestrator.v1.WorkerService.WriteBlob:input_type -> sagat_octopus_orchestrator.v1.WriteBlobRequest
+	20, // 29: sagat_octopus_orchestrator.v1.WorkerService.ReadBlob:input_type -> sagat_octopus_orchestrator.v1.ReadBlobRequest
+	4,  // 30: sagat_octopus_orchestrator.v1.WorkerService.RegisterWorker:output_type -> sagat_octopus_orchestrator.v1.RegisterWorkerResponse
+	9,  // 31: sagat_octopus_orchestrator.v1.WorkerService.PollTasks:output_type -> sagat_octopus_orchestrator.v1.PollTasksResponse
+	9,  // 32: sagat_octopus_orchestrator.v1.WorkerService.StreamTasks:output_type -> sagat_octopus_orchestrator.v1.PollTasksResponse
+	11, // 33: sagat_octopus_orchestrator.v1.WorkerService.Heartbeat:output_type -> sagat_octopus_orchestrator.v1.HeartbeatResponse
+	23, // 34: sagat_octopus_orchestrator.v1.WorkerService.CompleteStep:output_type -> sagat_octopus_orchestrator.v1.StepCommandResponse
+	23, // 35: sagat_octopus_orchestrator.v1.WorkerService.FailStep:output_type -> sagat_octopus_orchestrator.v1.StepCommandResponse
+	16, // 36: sagat_octopus_orchestrator.v1.WorkerService.ResolveSecrets:output_type -> sagat_octopus_orchestrator.v1.ResolveSecretsResponse
+	27, // 37: sagat_octopus_orchestrator.v1.WorkerService.ResolveDatabase:output_type -> sagat_octopus_orchestrator.v1.ResolvedDatabase
+	19, // 38: sagat_octopus_orchestrator.v1.WorkerService.WriteBlob:output_type -> sagat_octopus_orchestrator.v1.WriteBlobResponse
+	21, // 39: sagat_octopus_orchestrator.v1.WorkerService.ReadBlob:output_type -> sagat_octopus_orchestrator.v1.ReadBlobResponse
+	30, // [30:40] is the sub-list for method output_type
+	20, // [20:30] is the sub-list for method input_type
+	20, // [20:20] is the sub-list for extension type_name
+	20, // [20:20] is the sub-list for extension extendee
+	0,  // [0:20] is the sub-list for field type_name
 }
 
 func init() { file_sagat_octopus_orchestrator_v1_worker_proto_init() }
@@ -1919,26 +2827,39 @@ func file_sagat_octopus_orchestrator_v1_worker_proto_init() {
 	if File_sagat_octopus_orchestrator_v1_worker_proto != nil {
 		return
 	}
-	file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[13].OneofWrappers = []any{
+	file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[15].OneofWrappers = []any{
 		(*WriteBlobRequest_Header)(nil),
 		(*WriteBlobRequest_Chunk)(nil),
 	}
-	file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[17].OneofWrappers = []any{
+	file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[19].OneofWrappers = []any{
 		(*ReadBlobResponse_Header)(nil),
 		(*ReadBlobResponse_Chunk)(nil),
+	}
+	file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes[22].OneofWrappers = []any{
+		(*DatabaseValue_NullValue)(nil),
+		(*DatabaseValue_BooleanValue)(nil),
+		(*DatabaseValue_IntegerValue)(nil),
+		(*DatabaseValue_DecimalValue)(nil),
+		(*DatabaseValue_FloatValue)(nil),
+		(*DatabaseValue_TextValue)(nil),
+		(*DatabaseValue_TimestampValue)(nil),
+		(*DatabaseValue_DateValue)(nil),
+		(*DatabaseValue_BinaryValue)(nil),
+		(*DatabaseValue_JsonValue)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc), len(file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   20,
+			NumEnums:      2,
+			NumMessages:   26,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_sagat_octopus_orchestrator_v1_worker_proto_goTypes,
 		DependencyIndexes: file_sagat_octopus_orchestrator_v1_worker_proto_depIdxs,
+		EnumInfos:         file_sagat_octopus_orchestrator_v1_worker_proto_enumTypes,
 		MessageInfos:      file_sagat_octopus_orchestrator_v1_worker_proto_msgTypes,
 	}.Build()
 	File_sagat_octopus_orchestrator_v1_worker_proto = out.File

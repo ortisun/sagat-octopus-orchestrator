@@ -33,11 +33,58 @@ public interface ISagatClient
     /// <summary>Pauses, resumes, cancels or decides about a run.</summary>
     Task<OperationResult> OperateAsync(string runId, RunAction action, string reason, OperateOptions? options = null, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Starts a new run of the same version, with the same input and correlation id, from a run that ended
+    /// (the server's reason has 8 to 2000 characters). A run that has not ended is refused with <c>CONFLICT</c>. The
+    /// answer's <see cref="OperationResult.NewRunId"/> is the new run, which names its origin in <see cref="Run.RerunOf"/>;
+    /// a segment of a continuation chain starts a run with a chain of its own.
+    /// </summary>
+    Task<OperationResult> RerunAsNewAsync(string runId, string reason, OperateOptions? options = null, CancellationToken cancellationToken = default);
+
     /// <summary>Cancels a run (the server's reason has 8 to 2000 characters).</summary>
     Task<OperationResult> CancelAsync(string runId, string reason, OperateOptions? options = null, CancellationToken cancellationToken = default);
 
+    /// <summary>Records an eligible actor's durable decision for an approval request.</summary>
+    Task<ApprovalDecisionReceipt> DecideApprovalAsync(string approvalId, ApprovalDecision decision, ApprovalDecisionOptions options, CancellationToken cancellationToken = default);
+
+    /// <summary>Reads one bounded page of approval requests in immutable opening order.</summary>
+    Task<ApprovalPage> ListApprovalsAsync(string runId, ApprovalListOptions? options = null, CancellationToken cancellationToken = default);
+
+    /// <summary>Streams every approval request for a run, following opaque cursors.</summary>
+    IAsyncEnumerable<ApprovalListItem> ListAllApprovalsAsync(string runId, ApprovalListOptions? options = null, CancellationToken cancellationToken = default);
+
+    /// <summary>Evaluates a declared side-effect-free query over one committed state snapshot.</summary>
+    Task<QueryResult> QueryAsync<TArgs>(string runId, string name, TArgs args, RequestOptions? options = null, CancellationToken cancellationToken = default);
+
+    /// <summary>Evaluates a declared query against the chain head selected under the server's chain lock.</summary>
+    Task<QueryResult> QueryChainAsync<TArgs>(string namespaceId, string chainId, string name, TArgs args, ChainQueryOptions? options = null, CancellationToken cancellationToken = default);
+
+    /// <summary>Applies or replays a declared durable state update.</summary>
+    Task<UpdateReceipt> UpdateAsync<TArgs>(string runId, string name, TArgs args, UpdateOptions options, CancellationToken cancellationToken = default);
+
+    /// <summary>Applies or replays a declared update against the chain's current head.</summary>
+    Task<UpdateReceipt> UpdateChainAsync<TArgs>(string namespaceId, string chainId, string name, TArgs args, ChainUpdateOptions options, CancellationToken cancellationToken = default);
+
     /// <summary>Sends a signal to the steps of a run that wait for it; a signal nobody waits for is a <see cref="SagatErrorCode.Conflict"/>.</summary>
     Task<SignalResult> SignalAsync<TPayload>(string runId, string name, TPayload payload, RequestOptions? options = null, CancellationToken cancellationToken = default);
+
+    /// <summary>Reads one committed chain head and lineage snapshot.</summary>
+    Task<ChainInspection> InspectChainAsync(string namespaceId, string chainId, RequestOptions? options = null, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Reads one bounded page of a chain's runs in segment order. The cursor is opaque and stable: a segment is
+    /// only appended, so a page never repeats or skips one while the chain grows.
+    /// </summary>
+    Task<ChainRunPage> ListChainRunsAsync(string namespaceId, string chainId, ChainRunListOptions? options = null, CancellationToken cancellationToken = default);
+
+    /// <summary>Streams every run of a chain, in segment order, by following the server's opaque cursor.</summary>
+    IAsyncEnumerable<ChainRun> ListAllChainRunsAsync(string namespaceId, string chainId, ChainRunListOptions? options = null, CancellationToken cancellationToken = default);
+
+    /// <summary>Signals a root wait on the expected current chain head.</summary>
+    Task<SignalResult> SignalChainAsync<TPayload>(string namespaceId, string chainId, string name, TPayload payload, ChainCommandOptions options, CancellationToken cancellationToken = default);
+
+    /// <summary>Latches cancellation and cancels the expected current chain head.</summary>
+    Task CancelChainAsync(string namespaceId, string chainId, string reason, ChainCommandOptions options, CancellationToken cancellationToken = default);
 
     /// <summary>Publishes an event to the inbox of the namespace, once per event id for the deduplication window.</summary>
     Task<EventAccepted> PublishEventAsync(PublishEventRequest request, RequestOptions? options = null, CancellationToken cancellationToken = default);
@@ -47,4 +94,5 @@ public interface ISagatClient
 
     /// <summary>Polls <see cref="GetAsync"/> until the run is in a terminal status or the timeout of <paramref name="options"/> passes.</summary>
     Task<Run> WaitForCompletionAsync(string runId, WaitOptions? options = null, CancellationToken cancellationToken = default);
+    Task<ChainInspection> WaitForChainCompletionAsync(string namespaceId, string chainId, WaitOptions? options = null, CancellationToken cancellationToken = default);
 }

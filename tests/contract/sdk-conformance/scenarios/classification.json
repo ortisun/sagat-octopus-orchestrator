@@ -1,0 +1,112 @@
+{
+  "name": "classification",
+  "description": "Every SDK preserves classified workflow and node output schemas exactly, and exposes the workflow instance and depth limits through its public builder.",
+  "workflows": {
+    "carriers": {
+      "name": "classification-carriers",
+      "limits": {
+        "maxInstances": 23,
+        "maxDepth": 4
+      },
+      "inputSchema": {
+        "type": "object",
+        "x-sagat-classification": "public",
+        "additionalProperties": false,
+        "properties": {
+          "orderId": {
+            "type": "string"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "x-sagat-classification": "internal",
+        "additionalProperties": false,
+        "properties": {
+          "receipt": {
+            "type": "string"
+          }
+        }
+      },
+      "program": [
+        {
+          "op": "step",
+          "id": "charge",
+          "activity": "payments.charge",
+          "options": {
+            "outputSchema": {
+              "type": "object",
+              "x-sagat-classification": "pii",
+              "properties": {
+                "token": {
+                  "type": "string",
+                  "x-sagat-classification": "secret"
+                }
+              }
+            }
+          }
+        },
+        {
+          "op": "script",
+          "id": "score",
+          "artifactDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "options": {
+            "language": "typescript",
+            "outputSchema": {
+              "type": "object",
+              "x-sagat-classification": "internal",
+              "properties": {
+                "score": {
+                  "type": "number"
+                }
+              }
+            }
+          }
+        },
+        {
+          "op": "waitForEvent",
+          "id": "confirmed",
+          "options": {
+            "eventType": "payment.confirmed",
+            "correlationExpr": "input.orderId",
+            "timeoutMs": 60000,
+            "outputSchema": {
+              "type": "object",
+              "x-sagat-classification": "internal",
+              "properties": {
+                "confirmationId": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "op": "invokeChild",
+          "id": "ship",
+          "workflow": "shipping-flow",
+          "options": {
+            "input": "input",
+            "outputSchema": {
+              "type": "object",
+              "x-sagat-classification": "public",
+              "properties": {
+                "trackingId": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "op": "end",
+          "id": "done",
+          "options": {
+            "outputExpr": "steps.ship.output"
+          }
+        }
+      ]
+    }
+  },
+  "buildOnly": true
+}

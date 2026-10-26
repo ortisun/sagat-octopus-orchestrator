@@ -7,14 +7,17 @@
 use std::time::Duration;
 
 use sagat_application::definitions::{IrError, IrIssue};
+use sagat_domain::execution::ApprovalPolicy;
 use sagat_domain::identity::Slug;
+use sagat_domain::identity::{Role, Subject};
 use sagat_domain::saga::{EffectPolicy, OnCompensationFailure, SagaCancelPolicy};
 use sagat_domain::scripts::{Digest, Language, activity_of};
 use sagat_domain::secrets::{MAX_SECRETS_PER_ACTIVITY, SecretName};
 use sagat_domain::triggers::{CronSpec, Trigger, TriggerKind};
 use sagat_domain::workflow::{
-    ActivityName, BackoffStrategy, CancelPolicy, EventType, Expression, JoinPolicy, Node, NodeId,
-    NodeKind, RetryPolicy, WorkflowDefinition, WorkflowError,
+    ActivityName, BackoffStrategy, BodyDefinition, CancelPolicy, ContinuationPolicy, EventType,
+    Expression, JoinPolicy, Node, NodeId, NodeKind, RetryPolicy, SwitchCase, WorkflowDefinition,
+    WorkflowError, WorkflowLimits,
 };
 use serde_json::{Map, Value};
 
@@ -59,23 +62,44 @@ fn node_id(value: &str, at: &str) -> Result<NodeId, IrError> {
     NodeId::parse(value).map_err(|e| issue(at.to_owned(), e.to_string()))
 }
 
-fn expression(value: &str, at: &str) -> Result<Expression, IrError> {
-    Expression::parse(value).map_err(|e| issue(at.to_owned(), e.to_string()))
-}
-
 fn reference(node: &Map<String, Value>, field: &str, at: &str) -> Result<Option<NodeId>, IrError> {
     optional_text(node, field, at)?
         .map(|v| node_id(v, &format!("{at}/{field}")))
         .transpose()
 }
 
-/// Why a node kind that exists in the schema is not executed yet.
+/// Historical placeholder shapes have no executable definition.
 fn unsupported(kind: &str) -> Option<&'static str> {
     Some(match kind {
-        "foreach" => "bounded loops are not part of any planned feature yet",
-        "humanApproval" => "human approval is not part of any planned feature yet",
+        "foreach" => "legacy collection placeholder has no executable definition",
+        "humanApproval" => "legacy approval placeholder has no executable definition",
+        "forEach" | "while" | "repeatUntil" | "return" | "continueAsNew" => {
+            "this workflow capability is not enabled by the runtime"
+        }
         _ => return None,
     })
+}
+
+fn unsupported_structured(kind: &str) -> Option<&'static str> {
+    Some(match kind {
+        "foreach" => "legacy collection placeholder has no executable definition",
+        "humanApproval" => "legacy approval placeholder has no executable definition",
+        _ => return None,
+    })
+}
+
+fn integer_u32(node: &Map<String, Value>, field: &str, at: &str) -> Result<u32, IrError> {
+    node.get(field)
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| issue(format!("{at}/{field}"), "expected a positive integer"))
+}
+
+fn integer_u16(node: &Map<String, Value>, field: &str, at: &str) -> Result<u16, IrError> {
+    node.get(field)
+        .and_then(Value::as_u64)
+        .and_then(|value| u16::try_from(value).ok())
+        .ok_or_else(|| issue(format!("{at}/{field}"), "expected a positive integer"))
 }
 
 fn retry(node: &Map<String, Value>, at: &str) -> Result<RetryPolicy, IrError> {
@@ -194,7 +218,24 @@ fn secrets(node: &Map<String, Value>, at: &str) -> Result<Vec<SecretName>, IrErr
     Ok(names)
 }
 
-fn kind_of(node: &Map<String, Value>, kind: &str, at: &str) -> Result<NodeKind, IrError> {
+fn kind_of(
+    node: &Map<String, Value>,
+    kind: &str,
+    at: &str,
+    id: &NodeId,
+    structured: bool,
+) -> Result<NodeKind, IrError> {
+    let expression = |value: &str, path: &str| {
+        // Reject the effective bound before the legacy 2048-byte wrapper can erase the cause.
+        // Schema maxLength counts characters, so a schema-valid multibyte value can exceed both.
+        if (structured || kind == "switch") && value.len() > 1024 {
+            return Err(IrError::Invalid(WorkflowError::ExpressionByteLimit {
+                node: id.clone(),
+                limit: 1024,
+            }));
+        }
+        Expression::parse(value).map_err(|error| issue(path.to_owned(), error.to_string()))
+    };
     Ok(match kind {
         "activity" => NodeKind::Activity {
             activity: ActivityName::parse(text(node, "activity", at)?).map_err(IrError::Invalid)?,
@@ -260,6 +301,30 @@ fn kind_of(node: &Map<String, Value>, kind: &str, at: &str) -> Result<NodeKind, 
             if_true: node_id(text(node, "ifTrue", at)?, &format!("{at}/ifTrue"))?,
             if_false: node_id(text(node, "ifFalse", at)?, &format!("{at}/ifFalse"))?,
         },
+        "switch" => {
+            let cases = node
+                .get("cases")
+                .and_then(Value::as_array)
+                .ok_or_else(|| issue(format!("{at}/cases"), "expected an array"))?
+                .iter()
+                .enumerate()
+                .map(|(index, raw)| {
+                    let path = format!("{at}/cases/{index}");
+                    let case = raw
+                        .as_object()
+                        .ok_or_else(|| issue(path.clone(), "expected an object"))?;
+                    Ok(SwitchCase::new(
+                        node_id(text(case, "id", &path)?, &format!("{path}/id"))?,
+                        expression(text(case, "when", &path)?, &format!("{path}/when"))?,
+                        node_id(text(case, "target", &path)?, &format!("{path}/target"))?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, IrError>>()?;
+            NodeKind::Switch {
+                cases,
+                default: node_id(text(node, "default", at)?, &format!("{at}/default"))?,
+            }
+        }
         "parallel" => {
             let branches = node
                 .get("branches")
@@ -331,6 +396,91 @@ fn kind_of(node: &Map<String, Value>, kind: &str, at: &str) -> Result<NodeKind, 
                 })?,
             },
         },
+        "forEach" => NodeKind::ForEach {
+            items: expression(text(node, "items", at)?, &format!("{at}/items"))?,
+            body: node_id(text(node, "body", at)?, &format!("{at}/body"))?,
+            result: expression(text(node, "result", at)?, &format!("{at}/result"))?,
+            max_items: integer_u32(node, "maxItems", at)?,
+            max_concurrency: integer_u16(node, "maxConcurrency", at)?,
+        },
+        "while" => NodeKind::While {
+            condition: expression(text(node, "condition", at)?, &format!("{at}/condition"))?,
+            body: node_id(text(node, "body", at)?, &format!("{at}/body"))?,
+            initial: expression(text(node, "initial", at)?, &format!("{at}/initial"))?,
+            carry: expression(text(node, "carry", at)?, &format!("{at}/carry"))?,
+            max_iterations: integer_u32(node, "maxIterations", at)?,
+            delay: match node.get("delayMs") {
+                None => None,
+                Some(_) => Some(millis(node, "delayMs", at)?),
+            },
+        },
+        "repeatUntil" => NodeKind::RepeatUntil {
+            condition: expression(text(node, "condition", at)?, &format!("{at}/condition"))?,
+            body: node_id(text(node, "body", at)?, &format!("{at}/body"))?,
+            initial: expression(text(node, "initial", at)?, &format!("{at}/initial"))?,
+            carry: expression(text(node, "carry", at)?, &format!("{at}/carry"))?,
+            max_iterations: integer_u32(node, "maxIterations", at)?,
+            delay: match node.get("delayMs") {
+                None => None,
+                Some(_) => Some(millis(node, "delayMs", at)?),
+            },
+        },
+        "approval" => {
+            let policy_path = format!("{at}/policy");
+            let policy = node
+                .get("policy")
+                .and_then(Value::as_object)
+                .ok_or_else(|| issue(policy_path.clone(), "expected an object"))?;
+            let subjects = policy
+                .get("subjects")
+                .and_then(Value::as_array)
+                .map_or(&[][..], Vec::as_slice)
+                .iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    let path = format!("{policy_path}/subjects/{index}");
+                    value
+                        .as_str()
+                        .ok_or_else(|| issue(path.clone(), "expected a string"))
+                        .and_then(|value| Subject::parse(value).map_err(|error| issue(path, error.to_string())))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let roles = policy
+                .get("roles")
+                .and_then(Value::as_array)
+                .map_or(&[][..], Vec::as_slice)
+                .iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    let path = format!("{policy_path}/roles/{index}");
+                    value
+                        .as_str()
+                        .ok_or_else(|| issue(path.clone(), "expected a string"))
+                        .and_then(|value| value.parse::<Role>().map_err(|error| issue(path, error.to_string())))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let exclude_initiator = policy
+                .get("excludeInitiator")
+                .map(Value::as_bool)
+                .unwrap_or(Some(true))
+                .ok_or_else(|| issue(format!("{policy_path}/excludeInitiator"), "expected a boolean"))?;
+            NodeKind::Approval {
+                policy: ApprovalPolicy::with_initiator_exclusion(subjects, roles, exclude_initiator)
+                    .map_err(|error| issue(policy_path, error.to_string()))?,
+                on_approve: node_id(text(node, "onApprove", at)?, &format!("{at}/onApprove"))?,
+                on_reject: node_id(text(node, "onReject", at)?, &format!("{at}/onReject"))?,
+                on_expire: node_id(text(node, "onExpire", at)?, &format!("{at}/onExpire"))?,
+            }
+        }
+        "return" => NodeKind::Return {
+            result: expression(text(node, "result", at)?, &format!("{at}/result"))?,
+        },
+        "continueAsNew" => NodeKind::ContinueAsNew {
+            input: expression(text(node, "input", at)?, &format!("{at}/input"))?,
+            state: optional_text(node, "state", at)?
+                .map(|value| expression(value, &format!("{at}/state")))
+                .transpose()?,
+        },
         "end" => NodeKind::End {
             output: optional_text(node, "outputExpr", at)?
                 .map(|e| expression(e, &format!("{at}/outputExpr")))
@@ -348,38 +498,34 @@ fn kind_of(node: &Map<String, Value>, kind: &str, at: &str) -> Result<NodeKind, 
     })
 }
 
-pub(crate) fn definition(document: &Value) -> Result<WorkflowDefinition, IrError> {
-    let name = document
-        .pointer("/metadata/name")
-        .and_then(Value::as_str)
-        .ok_or_else(|| issue("/metadata/name".into(), "expected a string"))?;
-    let name = Slug::parse(name).map_err(|e| issue("/metadata/name".into(), e.to_string()))?;
-    let entrypoint = document
-        .get("entrypoint")
-        .and_then(Value::as_str)
-        .ok_or_else(|| issue("/entrypoint".into(), "expected a string"))?;
-    let entrypoint = node_id(entrypoint, "/entrypoint")?;
-    let raw_nodes = document
-        .get("nodes")
-        .and_then(Value::as_array)
-        .ok_or_else(|| issue("/nodes".into(), "expected an array"))?;
-
+fn nodes(raw_nodes: &[Value], at: &str, structured: bool) -> Result<Vec<Node>, IrError> {
     let mut nodes = Vec::with_capacity(raw_nodes.len());
     for (index, raw) in raw_nodes.iter().enumerate() {
-        let at = format!("/nodes/{index}");
+        let at = format!("{at}/{index}");
         let node = raw
             .as_object()
             .ok_or_else(|| issue(at.clone(), "expected an object"))?;
         let id = text(node, "id", &at)?;
         let kind = text(node, "type", &at)?;
-        if let Some(reason) = unsupported(kind) {
+        let unsupported = if structured {
+            unsupported_structured(kind)
+        } else {
+            unsupported(kind)
+        };
+        if let Some(reason) = unsupported {
             return Err(IrError::Unsupported {
                 node: id.chars().take(64).collect(),
                 kind: kind.to_owned(),
                 reason,
             });
         }
-        let mut built = Node::new(node_id(id, &format!("{at}/id"))?, kind_of(node, kind, &at)?);
+        let id = node_id(id, &format!("{at}/id"))?;
+        let mut built = if kind == "database" {
+            Node::database(id, crate::database::operation(node, &at)?)
+        } else {
+            let kind = kind_of(node, kind, &at, &id, structured)?;
+            Node::new(id, kind)
+        };
         if let Some(next) = reference(node, "next", &at)? {
             built = built.with_next(next);
         }
@@ -395,7 +541,549 @@ pub(crate) fn definition(document: &Value) -> Result<WorkflowDefinition, IrError
         }
         nodes.push(built);
     }
-    WorkflowDefinition::new(name, entrypoint, nodes)
+    Ok(nodes)
+}
+
+fn identity(document: &Value) -> Result<(Slug, NodeId), IrError> {
+    let name = document
+        .pointer("/metadata/name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| issue("/metadata/name".into(), "expected a string"))?;
+    let name = Slug::parse(name).map_err(|e| issue("/metadata/name".into(), e.to_string()))?;
+    let entrypoint = document
+        .get("entrypoint")
+        .and_then(Value::as_str)
+        .ok_or_else(|| issue("/entrypoint".into(), "expected a string"))?;
+    Ok((name, node_id(entrypoint, "/entrypoint")?))
+}
+
+fn root_nodes(document: &Value, structured: bool) -> Result<Vec<Node>, IrError> {
+    let raw = document
+        .get("nodes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| issue("/nodes".into(), "expected an array"))?;
+    nodes(raw, "/nodes", structured)
+}
+
+pub(crate) fn definition(document: &Value) -> Result<WorkflowDefinition, IrError> {
+    for field in ["bodies", "state", "chainPolicy"] {
+        if document.get(field).is_some() {
+            return Err(IrError::UnsupportedDeclaration {
+                field,
+                reason: "this workflow capability is not enabled by the runtime",
+            });
+        }
+    }
+    root_graph_definition(document)
+}
+
+/// The root graph of a document without bodies: the legacy graph, or the structured one when an
+/// approval is declared. An approval and a `parallel` stay apart; every other primitive is gated by
+/// the caller.
+fn root_graph_definition(document: &Value) -> Result<WorkflowDefinition, IrError> {
+    let limits = document_limits(document)?;
+    let (name, entrypoint) = identity(document)?;
+    let nodes = root_nodes(document, false)?;
+    let has_approval = nodes
+        .iter()
+        .any(|node| matches!(node.kind(), NodeKind::Approval { .. }));
+    if has_approval
+        && let Some(parallel) = nodes
+            .iter()
+            .find(|node| matches!(node.kind(), NodeKind::Parallel { .. }))
+    {
+        return Err(IrError::Unsupported {
+            node: parallel.id().as_str().into(),
+            kind: "parallel".into(),
+            reason: "approval and parallel execution are not enabled together",
+        });
+    }
+    let definition = if has_approval {
+        WorkflowDefinition::new_structured(name, entrypoint, nodes, Vec::new(), limits)
+    } else {
+        WorkflowDefinition::new(name, entrypoint, nodes)
+            .and_then(|definition| definition.with_limits(limits))
+    };
+    definition
+        .and_then(|definition| definition.with_triggers(triggers(document)?))
+        .map_err(IrError::Invalid)
+}
+
+/// A published document with declared state. An approval may be declared beside the state
+/// (decision D295): the state is read and updated by the declared operations while the request is
+/// open, and neither the decision nor its route reads or writes it.
+pub(crate) fn published_declared_state_definition(
+    document: &Value,
+) -> Result<WorkflowDefinition, IrError> {
+    for field in ["bodies", "chainPolicy"] {
+        if document.get(field).is_some() {
+            return Err(IrError::UnsupportedDeclaration {
+                field,
+                reason: "this workflow capability is not enabled by the runtime",
+            });
+        }
+    }
+    root_graph_definition(document)
+}
+
+pub(crate) fn structured_definition(document: &Value) -> Result<WorkflowDefinition, IrError> {
+    for field in ["state", "chainPolicy"] {
+        if document.get(field).is_some() {
+            return Err(IrError::UnsupportedDeclaration {
+                field,
+                reason: "this workflow capability has no validated domain mapping",
+            });
+        }
+    }
+    structured_definition_inner(document)
+}
+
+/// The longest chain of activities a published collection or loop body may have. A chain is what makes the
+/// compensation order inside one iteration observable at runtime (the later activities are undone
+/// first); the bound is the largest the runtime tests exercise, and can be raised with them.
+const MAX_BODY_CHAIN: usize = 8;
+
+/// Whether the body is one to `limit` activities in sequence and then its return: each activity
+/// routes to the next, has no `onError` edge, and may declare `compensateWith`, `reconcileWith`,
+/// `irreversible` and `highRisk` (their derived companions are not nodes of the chain). Nothing
+/// else (branches, timers, children, sagas, nested scopes) is routed by the scoped planner.
+fn is_activity_chain(body: &sagat_domain::workflow::BodyDefinition, limit: usize) -> bool {
+    let declared = body.nodes().count();
+    let mut current = body.entrypoint();
+    let mut activities = 0_usize;
+    loop {
+        let Some(node) = body.node(current) else {
+            return false;
+        };
+        match node.kind() {
+            NodeKind::Activity { .. } if node.on_error().is_none() => {
+                activities += 1;
+                if activities > limit {
+                    return false;
+                }
+                let Some(next) = node.next() else {
+                    return false;
+                };
+                current = next;
+            }
+            NodeKind::Return { .. } => break,
+            _ => return false,
+        }
+    }
+    activities >= 1 && activities + 1 == declared
+}
+
+/// The first approval a document declares inside a named body, if any. An approval in an iteration
+/// needs the iteration's scoped compensation to settle (decision D295), so publication names that
+/// dependency before it looks at the body's shape.
+fn approval_in_a_body(document: &Value) -> Option<IrError> {
+    let bodies = document.get("bodies")?.as_object()?;
+    bodies.values().find_map(|body| {
+        body.get("nodes")?.as_array()?.iter().find_map(|node| {
+            (node.get("type").and_then(Value::as_str) == Some("approval")).then(|| {
+                IrError::Pending {
+                    node: node
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("approval")
+                        .chars()
+                        .take(64)
+                        .collect(),
+                    kind: "approval".into(),
+                    dependency: "SCOPED_COMPENSATION",
+                    reason: "approvals inside collection and loop bodies wait for scoped compensation (D295)",
+                }
+            })
+        })
+    })
+}
+
+pub(crate) fn published_collection_definition(
+    document: &Value,
+) -> Result<WorkflowDefinition, IrError> {
+    if document.get("chainPolicy").is_some() {
+        return Err(IrError::UnsupportedDeclaration {
+            field: "chainPolicy",
+            reason: "collection continuation has not passed its transactional runtime gate",
+        });
+    }
+    if document.get("triggers").is_some() {
+        return Err(IrError::UnsupportedDeclaration {
+            field: "triggers",
+            reason: "triggered collections are not enabled by the runtime",
+        });
+    }
+    if let Some(pending) = approval_in_a_body(document) {
+        return Err(pending);
+    }
+    let definition = structured_definition(document)?;
+    let source_activities = collection_source_activities(&definition)?;
+    if !definition
+        .node(definition.entrypoint())
+        .is_some_and(|node| {
+            matches!(node.kind(), NodeKind::ForEach { .. }) || source_activities.contains(node.id())
+        })
+    {
+        return Err(IrError::UnsupportedDeclaration {
+            field: "entrypoint",
+            reason: "a published collection workflow starts at its collection owner",
+        });
+    }
+    if let Some(node) = definition.nodes().find(|node| {
+        !matches!(node.kind(), NodeKind::ForEach { .. } | NodeKind::End { .. })
+            && !source_activities.contains(node.id())
+    }) {
+        return Err(IrError::Unsupported {
+            node: node.id().as_str().to_owned(),
+            kind: node.kind().label().to_owned(),
+            reason: "the public collection subset is a collection chain ending at end",
+        });
+    }
+    let referenced_bodies = definition
+        .nodes()
+        .filter_map(|node| match node.kind() {
+            NodeKind::ForEach { body, .. } => Some(body),
+            NodeKind::While { .. }
+            | NodeKind::RepeatUntil { .. }
+            | NodeKind::Approval { .. }
+            | NodeKind::ContinueAsNew { .. }
+            | NodeKind::Return { .. } => None,
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if referenced_bodies.is_empty() {
+        return Err(IrError::UnsupportedDeclaration {
+            field: "bodies",
+            reason: "published bodies require a collection owner",
+        });
+    }
+    if let Some(node) = definition.nodes().find(|node| {
+        matches!(
+            node.kind(),
+            NodeKind::While { .. }
+                | NodeKind::RepeatUntil { .. }
+                | NodeKind::Approval { .. }
+                | NodeKind::ContinueAsNew { .. }
+                | NodeKind::Return { .. }
+        )
+    }) {
+        return Err(IrError::Unsupported {
+            node: node.id().as_str().to_owned(),
+            kind: node.kind().label().to_owned(),
+            reason: "this combination with a collection is not enabled by the runtime",
+        });
+    }
+    for body in definition.bodies() {
+        if !referenced_bodies.contains(&body.name()) {
+            return Err(IrError::Unsupported {
+                node: body.name().as_str().to_owned(),
+                kind: "body".to_owned(),
+                reason: "published collection bodies must be referenced by a collection owner",
+            });
+        }
+        if !is_activity_chain(body, MAX_BODY_CHAIN) {
+            return Err(IrError::Unsupported {
+                node: body.name().as_str().to_owned(),
+                kind: "body".to_owned(),
+                reason: "the runtime supports a collection body of one to eight activities in sequence followed by one return",
+            });
+        }
+    }
+    Ok(definition)
+}
+
+/// Ordinary source activities may precede the existing root collection chain. Only the prefix is
+/// enabled: unrelated/successor activities and unproven error/effect-policy combinations stay closed.
+fn collection_source_activities(
+    definition: &WorkflowDefinition,
+) -> Result<std::collections::BTreeSet<NodeId>, IrError> {
+    let mut sources = std::collections::BTreeSet::new();
+    let mut current = definition.node(definition.entrypoint());
+    while let Some(node) = current {
+        let NodeKind::Activity {
+            compensate_with,
+            reconcile_with,
+            ..
+        } = node.kind()
+        else {
+            break;
+        };
+        if node.on_error().is_some()
+            || compensate_with.is_some()
+            || reconcile_with.is_some()
+            || node.effect().irreversible
+            || node.effect().high_risk
+            || node.database_operation().is_some()
+        {
+            return Err(IrError::Unsupported {
+                node: node.id().as_str().to_owned(),
+                kind: node.kind().label().to_owned(),
+                reason: "collection source activities have no onError edge, compensation, reconciliation, effect policy or managed database operation",
+            });
+        }
+        if !sources.insert(node.id().clone()) {
+            return Err(IrError::UnsupportedDeclaration {
+                field: "entrypoint",
+                reason: "collection source activities must lead to a collection owner",
+            });
+        }
+        current = node.next().and_then(|next| definition.node(next));
+    }
+    if !sources.is_empty()
+        && !current.is_some_and(|node| matches!(node.kind(), NodeKind::ForEach { .. }))
+    {
+        return Err(IrError::UnsupportedDeclaration {
+            field: "entrypoint",
+            reason: "collection source activities must lead to a collection owner",
+        });
+    }
+    Ok(sources)
+}
+
+/// The root activities a loop's `onError` edge recovers with (G340): the target of the edge and the
+/// activities it chains to, ending at `end`. Such an activity is an ordinary root activity that the
+/// loop's failure finish makes ready, so it is kept as plain as the runtime proves: it has no
+/// `onError` edge of its own and declares no compensation, reconciliation or effect policy. An
+/// activity after a loop's success edge, or anywhere else in the root graph, stays unsupported.
+fn loop_recovery_activities(
+    definition: &WorkflowDefinition,
+) -> Result<std::collections::BTreeSet<NodeId>, IrError> {
+    let unsupported =
+        |node: &sagat_domain::workflow::Node, reason: &'static str| IrError::Unsupported {
+            node: node.id().as_str().to_owned(),
+            kind: node.kind().label().to_owned(),
+            reason,
+        };
+    let mut recovery = std::collections::BTreeSet::new();
+    for owner in definition.nodes().filter(|node| {
+        matches!(
+            node.kind(),
+            NodeKind::While { .. } | NodeKind::RepeatUntil { .. }
+        )
+    }) {
+        if let Some(next) = owner
+            .next()
+            .and_then(|next| definition.node(next))
+            .filter(|next| matches!(next.kind(), NodeKind::Activity { .. }))
+        {
+            return Err(unsupported(
+                next,
+                "an activity after a loop's success edge is not enabled by the runtime; only an onError recovery activity is",
+            ));
+        }
+        let mut current = owner.on_error().and_then(|target| definition.node(target));
+        while let Some(node) = current {
+            let NodeKind::Activity {
+                compensate_with,
+                reconcile_with,
+                ..
+            } = node.kind()
+            else {
+                break;
+            };
+            if node.on_error().is_some()
+                || compensate_with.is_some()
+                || reconcile_with.is_some()
+                || node.effect().irreversible
+                || node.effect().high_risk
+            {
+                return Err(unsupported(
+                    node,
+                    "a loop recovery activity has no onError edge, compensation, reconciliation or effect policy",
+                ));
+            }
+            if !recovery.insert(node.id().clone()) {
+                break;
+            }
+            let next = node.next().and_then(|next| definition.node(next));
+            if !next.is_some_and(|next| {
+                matches!(
+                    next.kind(),
+                    NodeKind::Activity { .. } | NodeKind::End { .. }
+                )
+            }) {
+                return Err(unsupported(
+                    node,
+                    "a loop recovery activity chain ends at end",
+                ));
+            }
+            current = next;
+        }
+    }
+    Ok(recovery)
+}
+
+pub(crate) fn published_loop_definition(document: &Value) -> Result<WorkflowDefinition, IrError> {
+    if document.get("chainPolicy").is_some() {
+        return Err(IrError::UnsupportedDeclaration {
+            field: "chainPolicy",
+            reason: "loop continuation has not passed its combined runtime gate",
+        });
+    }
+    if document.get("triggers").is_some() {
+        return Err(IrError::UnsupportedDeclaration {
+            field: "triggers",
+            reason: "triggered loops are not enabled by the runtime",
+        });
+    }
+    if let Some(pending) = approval_in_a_body(document) {
+        return Err(pending);
+    }
+    let definition = structured_definition(document)?;
+    if !definition
+        .node(definition.entrypoint())
+        .is_some_and(|node| {
+            matches!(
+                node.kind(),
+                NodeKind::While { .. } | NodeKind::RepeatUntil { .. }
+            )
+        })
+    {
+        return Err(IrError::UnsupportedDeclaration {
+            field: "entrypoint",
+            reason: "a published loop workflow starts at its loop owner",
+        });
+    }
+    let recovery = loop_recovery_activities(&definition)?;
+    if let Some(node) = definition.nodes().find(|node| match node.kind() {
+        NodeKind::While { .. } | NodeKind::RepeatUntil { .. } | NodeKind::End { .. } => false,
+        NodeKind::Activity { .. } => !recovery.contains(node.id()),
+        _ => true,
+    }) {
+        return Err(IrError::Unsupported {
+            node: node.id().as_str().to_owned(),
+            kind: node.kind().label().to_owned(),
+            reason: "the public loop subset is a loop chain ending at end, plus the activities a loop's onError edge recovers with",
+        });
+    }
+    let referenced_bodies = definition
+        .nodes()
+        .filter_map(|node| match node.kind() {
+            NodeKind::While { body, .. } | NodeKind::RepeatUntil { body, .. } => Some(body),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if referenced_bodies.is_empty() {
+        return Err(IrError::UnsupportedDeclaration {
+            field: "bodies",
+            reason: "published bodies require a loop owner",
+        });
+    }
+    for body in definition.bodies() {
+        if !referenced_bodies.contains(&body.name()) {
+            return Err(IrError::Unsupported {
+                node: body.name().as_str().to_owned(),
+                kind: "body".to_owned(),
+                reason: "published loop bodies must be referenced by a loop owner",
+            });
+        }
+        if !is_activity_chain(body, MAX_BODY_CHAIN) {
+            return Err(IrError::Unsupported {
+                node: body.name().as_str().to_owned(),
+                kind: "body".to_owned(),
+                reason: "the runtime supports a loop body of one to eight activities in sequence followed by one return",
+            });
+        }
+    }
+    Ok(definition)
+}
+
+pub(crate) fn declared_state_definition(document: &Value) -> Result<WorkflowDefinition, IrError> {
+    if document.get("chainPolicy").is_some() {
+        return Err(IrError::UnsupportedDeclaration {
+            field: "chainPolicy",
+            reason: "this workflow capability has no validated domain mapping",
+        });
+    }
+    structured_definition_inner(document)
+}
+
+fn structured_definition_inner(document: &Value) -> Result<WorkflowDefinition, IrError> {
+    structured_definition_with_policy(document, None)
+}
+
+pub(crate) fn continuation_definition(
+    document: &Value,
+    policy: ContinuationPolicy,
+) -> Result<WorkflowDefinition, IrError> {
+    structured_definition_with_policy(document, Some(policy))
+}
+
+/// The author's `limits` block: each omitted field keeps its platform ceiling (100000 instances,
+/// depth 8) and a value outside `1..=100000` / `1..=8` is refused, so a document can only lower
+/// the ceilings.
+fn document_limits(document: &Value) -> Result<WorkflowLimits, IrError> {
+    let defaults = WorkflowLimits::default();
+    match document.get("limits") {
+        None => Ok(defaults),
+        Some(Value::Object(raw)) => {
+            let max_instances = match raw.get("maxInstances") {
+                None => defaults.max_instances(),
+                Some(value) => value
+                    .as_u64()
+                    .and_then(|value| u32::try_from(value).ok())
+                    .ok_or_else(|| {
+                        issue("/limits/maxInstances".into(), "expected a positive integer")
+                    })?,
+            };
+            let max_depth = match raw.get("maxDepth") {
+                None => defaults.max_depth(),
+                Some(value) => value
+                    .as_u64()
+                    .and_then(|value| u8::try_from(value).ok())
+                    .ok_or_else(|| {
+                        issue("/limits/maxDepth".into(), "expected a positive integer")
+                    })?,
+            };
+            WorkflowLimits::new(max_instances, max_depth).map_err(IrError::Invalid)
+        }
+        Some(_) => Err(issue("/limits".into(), "expected an object")),
+    }
+}
+
+fn structured_definition_with_policy(
+    document: &Value,
+    continuation_policy: Option<ContinuationPolicy>,
+) -> Result<WorkflowDefinition, IrError> {
+    let (name, entrypoint) = identity(document)?;
+    let root = root_nodes(document, true)?;
+    let mut bodies = Vec::new();
+    if let Some(raw_bodies) = document.get("bodies").and_then(Value::as_object) {
+        bodies.reserve(raw_bodies.len());
+        for (body_name, raw_body) in raw_bodies {
+            let at = format!("/bodies/{body_name}");
+            let body = raw_body
+                .as_object()
+                .ok_or_else(|| issue(at.clone(), "expected an object"))?;
+            let name = node_id(body_name, &at)?;
+            let entrypoint = node_id(text(body, "entrypoint", &at)?, &format!("{at}/entrypoint"))?;
+            let raw_nodes = body
+                .get("nodes")
+                .and_then(Value::as_array)
+                .ok_or_else(|| issue(format!("{at}/nodes"), "expected an array"))?;
+            let nodes = nodes(raw_nodes, &format!("{at}/nodes"), true)?;
+            bodies.push(
+                BodyDefinition::new(name.clone(), entrypoint, nodes).map_err(
+                    |error| match error {
+                        WorkflowError::UnknownTarget { from, to } => IrError::EscapingBodyEdge {
+                            body: name,
+                            from,
+                            to,
+                        },
+                        other => IrError::Invalid(other),
+                    },
+                )?,
+            );
+        }
+    }
+    let limits = document_limits(document)?;
+    let definition = match continuation_policy {
+        Some(policy) => WorkflowDefinition::new_structured_with_continuation(
+            name, entrypoint, root, bodies, limits, policy,
+        ),
+        None => WorkflowDefinition::new_structured(name, entrypoint, root, bodies, limits),
+    };
+    definition
         .and_then(|definition| definition.with_triggers(triggers(document)?))
         .map_err(IrError::Invalid)
 }

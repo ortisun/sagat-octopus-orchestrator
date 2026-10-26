@@ -137,7 +137,8 @@ async fn retries_are_divided_by_the_shard_of_the_run() {
     // The attempts fail and their back-off elapses.
     for task in &tasks {
         w.fail(&session, task, true).await.expect("fail");
-        w.age_retry(task.run_id, task.node.as_str()).await;
+        w.age_retry(task.run_id, task.instance.node().as_str())
+            .await;
     }
     let runs: Vec<RunId> = tasks.iter().map(|t| t.run_id).collect();
     divided(&w, &runs, same, |r| r.retries_released, "retries").await;
@@ -149,7 +150,8 @@ async fn lost_leases_are_divided_by_the_shard_of_the_run() {
     let (_session, tasks) = leased(&w, "split-leases").await;
     // The workers are gone: the leases run out.
     for task in &tasks {
-        w.age_lease(task.run_id, task.node.as_str()).await;
+        w.age_lease(task.run_id, task.instance.node().as_str())
+            .await;
     }
     let runs: Vec<RunId> = tasks.iter().map(|t| t.run_id).collect();
     divided(&w, &runs, same, |r| r.leases_expired, "lost leases").await;
@@ -253,7 +255,7 @@ async fn a_child_that_ended_is_told_to_its_parent_by_the_replica_that_holds_the_
     let mut done = 0;
     while done < parents.len() {
         for task in w.poll(&session, 16).await {
-            if task.node.as_str() == "kid" {
+            if task.instance.node().as_str() == "kid" {
                 w.complete(&session, &task, &json!({}))
                     .await
                     .expect("complete");

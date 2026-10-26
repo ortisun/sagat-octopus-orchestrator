@@ -40,4 +40,4 @@ and `sagat workflow inspect <run>` shows the journal: the same one whatever the 
 - A real effect (a payment, an e-mail) sends `context.IdempotencyKey` to its provider: it is the same
   for every attempt of the step, so a repeat does not do it twice.
 - `HelloWorld.csproj` points at the SDK in this checkout (`ProjectReference`); once the SDK is published,
-  replace that line with `<PackageReference Include="SagatOctopusOrchestrator.Sdk" Version="0.1.0" />`.
+  replace that line with `<PackageReference Include="SagatOctopusOrchestrator.Sdk" Version="0.2.0" />`.

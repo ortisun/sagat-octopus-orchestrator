@@ -1,0 +1,43 @@
+[package]
+name = "sagat-infra-database"
+description = "Bounded PostgreSQL target execution for the isolated managed database runner."
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+base64 = "0.23"
+bytes.workspace = true
+futures-util.workspace = true
+ipnet = "2"
+metrics.workspace = true
+rustls.workspace = true
+rustls-native-certs = "0.8"
+sagat-domain.workspace = true
+sagat-application.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlparser = { version = "=0.63.0", features = ["visitor"] }
+thiserror.workspace = true
+time = { workspace = true, features = ["formatting", "parsing", "macros"] }
+tokio = { workspace = true, features = ["net", "time", "rt", "sync", "io-util"] }
+tokio-postgres = { version = "=0.7.18", features = ["with-time-0_3", "with-serde_json-1"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tracing.workspace = true
+zeroize = { version = "1", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+rcgen = "0.13"
+sagat-telemetry.workspace = true
+tracing-subscriber.workspace = true
+tracing-log = "0.2"
+log = "0.4"
+testcontainers-modules.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

@@ -7,7 +7,8 @@ use sagat_application::telemetry::{
     AttemptOutcome, CONTEXT_EVENTS, JournalEntry, Observation, RunFacts, attempts, derive,
 };
 use sagat_domain::execution::{
-    FailureCode, Fence, ReviewOutcome, RunEvent, RunId, RunStatus, StopReason,
+    ExecutionInstanceId, FailureCode, Fence, InstancePath, ReviewOutcome, RunEvent, RunId,
+    RunStatus, StopReason,
 };
 use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_domain::workflow::NodeId;
@@ -43,6 +44,7 @@ impl Journal {
         self.entries.push(JournalEntry {
             seq,
             event,
+            instance_path: InstancePath::root(),
             actor: actor.to_owned(),
             occurred_at: self.clock,
         });
@@ -63,9 +65,102 @@ fn facts(steps: &[&str]) -> RunFacts {
         created_at: OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("time"),
         steps: steps
             .iter()
-            .map(|s| ((*s).to_owned(), Uuid::new_v4()))
+            .map(|s| (ExecutionInstanceId::root(node(s)), Uuid::new_v4()))
             .collect(),
     }
+}
+
+#[test]
+fn equal_local_nodes_in_two_iterations_have_distinct_attempt_spans() {
+    let mut facts = facts(&[]);
+    let scope = node("items");
+    let work = node("work");
+    let first = ExecutionInstanceId::in_path(
+        InstancePath::root()
+            .child(scope.clone(), 0)
+            .expect("first path"),
+        work.clone(),
+    );
+    let second = ExecutionInstanceId::in_path(
+        InstancePath::root().child(scope, 1).expect("second path"),
+        work.clone(),
+    );
+    let first_step = Uuid::from_u128(1);
+    let second_step = Uuid::from_u128(2);
+    facts.steps.insert(first.clone(), first_step);
+    facts.steps.insert(second.clone(), second_step);
+    let leased_at = facts.created_at + Duration::seconds(1);
+    let completed_at = leased_at + Duration::seconds(2);
+    let entries = [
+        JournalEntry {
+            seq: 1,
+            event: RunEvent::StepLeased {
+                node: work.clone(),
+                attempt: 1,
+                generation: 1,
+            },
+            instance_path: first.path().clone(),
+            actor: "worker:w1".into(),
+            occurred_at: leased_at,
+        },
+        JournalEntry {
+            seq: 2,
+            event: RunEvent::StepLeased {
+                node: work.clone(),
+                attempt: 1,
+                generation: 1,
+            },
+            instance_path: second.path().clone(),
+            actor: "worker:w2".into(),
+            occurred_at: leased_at,
+        },
+        JournalEntry {
+            seq: 3,
+            event: RunEvent::StepCompleted {
+                node: work.clone(),
+                attempt: 1,
+                generation: 1,
+            },
+            instance_path: first.path().clone(),
+            actor: "worker:w1".into(),
+            occurred_at: completed_at,
+        },
+        JournalEntry {
+            seq: 4,
+            event: RunEvent::StepCompleted {
+                node: work,
+                attempt: 1,
+                generation: 1,
+            },
+            instance_path: second.path().clone(),
+            actor: "worker:w2".into(),
+            occurred_at: completed_at,
+        },
+    ];
+
+    let attempts = attempts(&facts, &entries);
+    assert_eq!(attempts.len(), 2);
+    assert_eq!(attempts[0].instance, first);
+    assert_eq!(attempts[1].instance, second);
+    assert_eq!(attempts[0].span, attempt_span_id(first_step, 1));
+    assert_eq!(attempts[1].span, attempt_span_id(second_step, 1));
+    assert_ne!(attempts[0].span, attempts[1].span);
+
+    let spans = derive(&facts, &entries, 0).spans;
+    assert_eq!(spans.len(), 2);
+    assert_eq!(
+        attr(&spans[0], "sagat.instance.path"),
+        Some(&AttrValue::from("items[0]"))
+    );
+    assert_eq!(
+        attr(&spans[1], "sagat.instance.path"),
+        Some(&AttrValue::from("items[1]"))
+    );
+    assert!(
+        spans
+            .iter()
+            .all(|span| { attr(span, "sagat.scope.depth") == Some(&AttrValue::from(1_u32)) })
+    );
 }
 
 /// `charge` is leased and fails twice, then succeeds: three attempts.
@@ -156,7 +251,7 @@ fn a_run_with_three_attempts_has_three_attempt_spans_and_a_run_span() {
 
     let attempts_spans = named(&derived.spans, "step.attempt");
     assert_eq!(attempts_spans.len(), 3);
-    let step = facts.steps["charge"];
+    let step = facts.steps[&ExecutionInstanceId::root(node("charge"))];
     for (n, span) in attempts_spans.iter().enumerate() {
         let attempt = u32::try_from(n + 1).expect("small");
         assert_eq!(
@@ -216,7 +311,7 @@ fn the_duration_of_an_attempt_is_from_its_lease_to_its_end() {
         .iter()
         .filter_map(|o| match o {
             Observation::AttemptEnded { seconds, .. } => Some(*seconds),
-            Observation::RunFinished { .. } => None,
+            Observation::RunFinished { .. } | Observation::PrimitiveTransition { .. } => None,
         })
         .collect();
     assert_eq!(measured.len(), 3);
@@ -237,7 +332,7 @@ fn the_wait_between_ready_and_leased_is_the_schedule_latency_of_each_attempt() {
             Observation::AttemptEnded {
                 schedule_latency, ..
             } => Some(*schedule_latency),
-            Observation::RunFinished { .. } => None,
+            Observation::RunFinished { .. } | Observation::PrimitiveTransition { .. } => None,
         })
         .collect();
     // The first: released 5 ms after the start, leased 20 ms later. The others: from retry_due.
@@ -503,6 +598,100 @@ fn timers_and_waits_are_spans_of_the_time_a_run_spent_not_working() {
 }
 
 #[test]
+fn equal_local_timers_in_two_scopes_project_independently() {
+    let facts = facts(&[]);
+    let scope = node("items");
+    let timer = node("pause");
+    let first = InstancePath::root()
+        .child(scope.clone(), 0)
+        .expect("first timer scope");
+    let second = InstancePath::root()
+        .child(scope, 1)
+        .expect("second timer scope");
+    let started = facts.created_at + Duration::seconds(1);
+    let entries = [
+        JournalEntry {
+            seq: 1,
+            event: RunEvent::TimerStarted {
+                node: timer.clone(),
+                due_at: started + Duration::seconds(1),
+            },
+            instance_path: first.clone(),
+            actor: "system:engine".into(),
+            occurred_at: started,
+        },
+        JournalEntry {
+            seq: 2,
+            event: RunEvent::TimerStarted {
+                node: timer.clone(),
+                due_at: started + Duration::seconds(2),
+            },
+            instance_path: second.clone(),
+            actor: "system:engine".into(),
+            occurred_at: started,
+        },
+        JournalEntry {
+            seq: 3,
+            event: RunEvent::TimerFired {
+                node: timer.clone(),
+            },
+            instance_path: first,
+            actor: "system:scheduler".into(),
+            occurred_at: started + Duration::seconds(1),
+        },
+        JournalEntry {
+            seq: 4,
+            event: RunEvent::TimerFired { node: timer },
+            instance_path: second,
+            actor: "system:scheduler".into(),
+            occurred_at: started + Duration::seconds(2),
+        },
+    ];
+
+    let derived = derive(&facts, &entries, 0);
+    let spans = named(&derived.spans, "timer");
+    assert_eq!(spans.len(), 2);
+    assert_eq!(
+        attr(spans[0], "sagat.instance.path"),
+        Some(&AttrValue::from("items[0]"))
+    );
+    assert_eq!(
+        attr(spans[1], "sagat.instance.path"),
+        Some(&AttrValue::from("items[1]"))
+    );
+    assert_ne!(spans[0].span_id, spans[1].span_id);
+}
+
+#[test]
+fn scoped_switch_selection_carries_its_instance_identity() {
+    let facts = facts(&[]);
+    let path = InstancePath::root()
+        .child(node("items"), 7)
+        .expect("switch scope");
+    let entries = [JournalEntry {
+        seq: 1,
+        event: RunEvent::SwitchEvaluated {
+            node: node("choose"),
+            selection: sagat_domain::execution::SwitchSelection::Default,
+        },
+        instance_path: path,
+        actor: "system:engine".into(),
+        occurred_at: facts.created_at,
+    }];
+
+    let derived = derive(&facts, &entries, 0);
+    let span = named(&derived.spans, "workflow.switch.evaluate")[0];
+    assert_eq!(
+        attr(span, "sagat.instance.path"),
+        Some(&AttrValue::from("items[7]"))
+    );
+    assert_eq!(
+        attr(span, "sagat.scope.depth"),
+        Some(&AttrValue::from(1_u32))
+    );
+}
+
+#[test]
 fn the_run_span_hangs_from_the_request_the_parent_run_or_nothing() {
     let mut j = Journal::new();
     j.push(
@@ -624,7 +813,7 @@ fn a_run_finished_is_counted_with_its_duration() {
         .iter()
         .filter_map(|o| match o {
             Observation::RunFinished { status, seconds } => Some((*status, *seconds)),
-            Observation::AttemptEnded { .. } => None,
+            Observation::AttemptEnded { .. } | Observation::PrimitiveTransition { .. } => None,
         })
         .collect();
     assert_eq!(finished.len(), 1);
@@ -844,6 +1033,7 @@ impl TelemetryStore for Paged {
         Ok(Some(ToProject {
             facts: self.facts.clone(),
             entries,
+            unsupported: Vec::new(),
             head_seq: head,
             applied_seq: pending.applied_seq,
         }))

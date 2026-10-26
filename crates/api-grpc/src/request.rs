@@ -4,7 +4,7 @@
 //! in a log through a validation message).
 
 use sagat_application::worker::TaskRef;
-use sagat_domain::execution::{Fence, RunId};
+use sagat_domain::execution::{ExecutionInstanceId, Fence, RunId};
 use sagat_domain::workflow::NodeId;
 use tonic::Status;
 use uuid::Uuid;
@@ -17,7 +17,7 @@ const MAX_TOKEN: usize = 128;
 /// An attempt the worker reports on, parsed from the message fields.
 pub struct Attempt {
     pub run_id: RunId,
-    pub node: NodeId,
+    pub instance: ExecutionInstanceId,
     pub step_id: Option<Uuid>,
     pub fence: Fence,
     pub lease_token: String,
@@ -121,7 +121,7 @@ impl Attempt {
         }
         Ok(Self {
             run_id: task_run,
-            node,
+            instance: ExecutionInstanceId::root(node),
             step_id,
             fence: Fence {
                 attempt,
@@ -135,7 +135,7 @@ impl Attempt {
     pub fn task_ref(&self) -> TaskRef<'_> {
         TaskRef {
             run_id: self.run_id,
-            node: &self.node,
+            instance: &self.instance,
             step_id: self.step_id,
             fence: self.fence,
             lease_token: &self.lease_token,
@@ -171,7 +171,7 @@ mod tests {
     #[test]
     fn a_consistent_attempt_is_accepted() {
         let attempt = parse(&format!("{RUN}/charge/3"), RUN, 2, 3).expect("valid");
-        assert_eq!(attempt.node.as_str(), "charge");
+        assert_eq!(attempt.instance.node().as_str(), "charge");
         assert_eq!(attempt.fence.generation, 3);
         assert_eq!(attempt.fence.attempt, 2);
     }

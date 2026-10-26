@@ -541,6 +541,271 @@ class SagatClientTest {
     }
 
     @Test
+    void rerunAsNewNamesTheNewRunAndTheNewRunNamesItsOrigin() {
+        String started = "0190aaaa-0000-7000-8000-000000000021";
+        server.prepare((req, reply) -> reply.send(req.path().endsWith("/operations") ? 202 : 200,
+                req.path().endsWith("/operations")
+                        ? "{\"operationId\":\"op-2\",\"accepted\":true,\"runStatus\":\"SUCCEEDED\",\"runVersion\":9,"
+                                + "\"newRunId\":\"" + started + "\"}"
+                        : run("runId", "\"" + started + "\"", "rerunOf", "\"" + RUN + "\"")));
+        OperationResult rerun = client().rerunAsNew(
+                RUN, "run it again after the fix", OperateOptions.create().idempotencyKey("rerun-key-001"));
+        assertEquals("op-2", rerun.operationId());
+        assertTrue(rerun.accepted());
+        assertEquals("SUCCEEDED", rerun.runStatus());
+        assertEquals(9L, rerun.runVersion());
+        assertEquals(started, rerun.newRunId());
+        assertEquals("/v1/runs/" + RUN + "/operations", server.seen.get(0).path());
+        assertEquals("{\"action\":\"RERUN_AS_NEW\",\"reason\":\"run it again after the fix\"}", server.seen.get(0).rawBody());
+        assertEquals("rerun-key-001", server.seen.get(0).header("idempotency-key"));
+        assertEquals(RUN, client().get(started).rerunOf());
+
+        server.prepare((req, reply) -> reply.send(200, run()));
+        assertEquals(null, client().get(RUN).rerunOf());
+        server.prepare((req, reply) -> reply.send(202, "{\"operationId\":\"op-3\",\"accepted\":true,\"runStatus\":\"CANCELLING\"}"));
+        assertEquals(null, client().cancel(RUN, "no longer needed", null).newRunId());
+    }
+
+    @Test
+    void anApprovalDecisionUsesItsBodyKeyAndReturnsATypedReceipt() {
+        String approvalId = "0190aaaa-0000-7000-8000-000000000099";
+        server.prepare((req, reply) -> reply.send(200,
+                "{\"receiptId\":\"0190aaaa-0000-7000-8000-000000000100\",\"approvalId\":\"" + approvalId
+                        + "\",\"decisionKey\":\"review-1\",\"decision\":\"APPROVE\",\"reasonCode\":\"POLICY_OK\","
+                        + "\"actor\":\"alice\",\"decidedAt\":\"2026-10-15T10:00:00Z\",\"outcomeSequence\":7,"
+                        + "\"replayed\":false,\"futureField\":\"kept\"}"));
+        ApprovalDecisionReceipt receipt = client().decideApproval(
+                approvalId,
+                ApprovalDecision.APPROVE,
+                ApprovalDecisionOptions.create("review-1").reasonCode("POLICY_OK").traceparent(TRACE));
+        FakeRestServer.Seen request = server.seen.get(0);
+        assertEquals("/v1/approvals/" + approvalId + "/decisions", request.path());
+        assertEquals("{\"decisionKey\":\"review-1\",\"decision\":\"APPROVE\",\"reasonCode\":\"POLICY_OK\"}", request.rawBody());
+        assertEquals(null, request.header("idempotency-key"));
+        assertEquals(Instant.parse("2026-10-15T10:00:00Z"), receipt.decidedAt());
+        assertEquals(7L, receipt.outcomeSequence());
+        assertEquals("kept", receipt.raw().path("futureField").textValue());
+    }
+
+    @Test
+    void approvalPagesAreTypedAndListAllFollowsTheOpaqueCursor() {
+        List<String> ids = List.of("0190aaaa-0000-7000-8000-000000000099", "0190aaaa-0000-7000-8000-000000000100");
+        server.prepare((req, reply) -> {
+            boolean second = req.uri().contains("cursor=next");
+            int index = second ? 1 : 0;
+            reply.send(200, "{\"items\":[{\"approvalId\":\"" + ids.get(index) + "\",\"runId\":\"" + RUN
+                    + "\",\"nodeId\":\"review\",\"instancePath\":[{\"scopeNodeId\":\"items\",\"iterationIndex\":3}],"
+                    + "\"status\":\"" + (second ? "APPROVED" : "PENDING") + "\",\"deadline\":\"2026-10-16T10:00:00Z\","
+                    + "\"settledAt\":" + (second ? "\"2026-10-15T10:00:00Z\"" : "null") + "}],\"nextCursor\":"
+                    + (second ? "null" : "\"next\"") + "}");
+        });
+        SagatClient c = client();
+        ApprovalPage page = c.listApprovals(RUN, ApprovalListOptions.create().cursor("from").limit(1).traceparent(TRACE));
+        assertEquals(ApprovalStatus.PENDING, page.items().get(0).status());
+        assertEquals(3, page.items().get(0).instancePath().get(0).iterationIndex());
+        try (var items = c.listAllApprovals(RUN, ApprovalListOptions.create().limit(1))) {
+            assertEquals(ids, items.map(ApprovalListItem::approvalId).toList());
+        }
+    }
+
+    @Test
+    void anApprovalDecisionSurfacesAuthorizationAndIdempotencyFailures() {
+        String approvalId = "0190aaaa-0000-7000-8000-000000000099";
+        Object[][] failures = {{403, ErrorCode.FORBIDDEN, "NOT_ELIGIBLE"}, {409, ErrorCode.CONFLICT, "IDEMPOTENCY_KEY_REUSED"}};
+        for (Object[] failure : failures) {
+            int status = (Integer) failure[0];
+            ErrorCode code = (ErrorCode) failure[1];
+            String reason = (String) failure[2];
+            server.prepare((req, reply) -> reply.send(status,
+                    "{\"code\":\"" + code + "\",\"message\":\"refused\",\"retryable\":false,\"details\":{\"reason\":\"" + reason + "\"}}"));
+            SagatException error = assertThrows(SagatException.class, () -> client().decideApproval(
+                    approvalId, ApprovalDecision.REJECT, ApprovalDecisionOptions.create("review-1")));
+            assertEquals(code, error.code());
+            assertEquals(status, error.httpStatus().getAsInt());
+            assertEquals(reason, error.reason().orElseThrow());
+        }
+    }
+
+    @Test
+    void malformedApprovalDecisionInputIsRejectedBeforeAnythingIsSent() {
+        server.prepare((req, reply) -> reply.send(500, ""));
+        SagatClient c = client();
+        assertThrows(SagatException.class, () -> c.decideApproval(
+                "../other", ApprovalDecision.APPROVE, ApprovalDecisionOptions.create("review-1")));
+        assertThrows(SagatException.class, () -> c.decideApproval(
+                "0190aaaa-0000-7000-8000-000000000099", ApprovalDecision.APPROVE, ApprovalDecisionOptions.create("bad key")));
+        assertEquals(0, server.seen.size());
+    }
+
+    @Test
+    void declaredQueryAndUpdatePreserveRevisionsResultAndUpdateKey() {
+        server.prepare((req, reply) -> reply.send(200, req.path().contains("/queries/")
+                ? "{\"runId\":\"" + RUN + "\",\"runVersion\":4,\"stateRevision\":1,\"result\":{\"balance\":12}}"
+                : "{\"runId\":\"" + RUN + "\",\"operation\":\"account.credit\",\"updateKey\":\"credit-1\","
+                        + "\"status\":\"APPLIED\",\"result\":{\"balance\":15},\"beforeStateRevision\":1,"
+                        + "\"afterStateRevision\":2,\"runVersion\":5,\"replayed\":false,\"future\":true}"));
+        SagatClient c = client();
+        QueryResult queried = c.query(RUN, "account.balance", Map.of("currency", "BRL"), null);
+        UpdateReceipt updated = c.update(RUN, "account.credit", Map.of("amount", 3),
+                UpdateOptions.create("credit-1").expectedStateRevision(1L).traceparent(TRACE));
+        assertEquals("/v1/runs/" + RUN + "/queries/account.balance", server.seen.get(0).path());
+        assertEquals("/v1/runs/" + RUN + "/updates/account.credit", server.seen.get(1).path());
+        assertEquals("{\"args\":{\"currency\":\"BRL\"}}", server.seen.get(0).rawBody());
+        assertEquals("{\"updateKey\":\"credit-1\",\"args\":{\"amount\":3},\"expectedStateRevision\":1}", server.seen.get(1).rawBody());
+        assertEquals(null, server.seen.get(1).header("idempotency-key"));
+        assertEquals(12, queried.result().path("balance").intValue());
+        assertEquals(2, updated.afterStateRevision());
+        assertTrue(updated.raw().path("future").booleanValue());
+    }
+
+    @Test
+    void malformedDeclaredOperationInputIsRejectedBeforeAnythingIsSent() {
+        server.prepare((req, reply) -> reply.send(500, ""));
+        SagatClient c = client();
+        assertThrows(SagatException.class, () -> c.query(RUN, "bad operation", Map.of(), null));
+        assertThrows(SagatException.class, () -> c.update(RUN, "credit", Map.of(), UpdateOptions.create("bad key")));
+        assertThrows(SagatException.class, () -> c.update(
+                RUN, "credit", Map.of(), UpdateOptions.create("credit-2").expectedStateRevision(-1L)));
+        assertEquals(0, server.seen.size());
+    }
+
+    @Test
+    void declaredUpdateRetriesWithTheSameBodyKey() {
+        AtomicInteger attempts = new AtomicInteger();
+        server.prepare((req, reply) -> {
+            if (attempts.incrementAndGet() == 1) {
+                reply.send(503, "{\"code\":\"UNAVAILABLE\",\"message\":\"busy\",\"retryable\":true}");
+            } else {
+                reply.send(200, "{\"runId\":\"" + RUN + "\",\"operation\":\"account.credit\","
+                        + "\"updateKey\":\"credit-1\",\"status\":\"APPLIED\",\"result\":15,"
+                        + "\"beforeStateRevision\":1,\"afterStateRevision\":2,\"runVersion\":5,\"replayed\":false}");
+            }
+        });
+        client().update(RUN, "account.credit", Map.of("amount", 3), UpdateOptions.create("credit-1"));
+        assertEquals(2, server.seen.size());
+        assertEquals(server.seen.get(0).rawBody(), server.seen.get(1).rawBody());
+    }
+
+    @Test
+    void chainInspectionAndCommandsUseExpectedHeadAndDurableKeys() {
+        String namespaceId = "0190aaaa-0000-7000-8000-000000000010";
+        String chainId = "0190aaaa-0000-7000-8000-000000000011";
+        String head = "0190aaaa-0000-7000-8000-000000000012";
+        server.prepare((req, reply) -> reply.send(req.path().contains("/signals/") || req.path().endsWith("/cancel") ? 202 : 200,
+                req.path().contains("/signals/") ? "{\"deliveredTo\":[\"wait\"]}" : req.path().endsWith("/cancel") ? "" :
+                        "{\"chainId\":\"" + chainId + "\",\"currentRunId\":\"" + head + "\",\"revision\":2,"
+                                + "\"cancelRequested\":false,\"finalOutcome\":null,\"segments\":["
+                                + "{\"index\":0,\"runId\":\"" + chainId + "\",\"predecessorRunId\":null,\"successorRunId\":\"" + head + "\"},"
+                                + "{\"index\":1,\"runId\":\"" + head + "\",\"predecessorRunId\":\"" + chainId + "\",\"successorRunId\":null}]}"));
+        SagatClient c = client();
+        ChainInspection inspection = c.inspectChain(namespaceId, chainId, null);
+        SignalResult signal = c.signalChain(namespaceId, chainId, "chain.release", Map.of("ok", true),
+                ChainCommandOptions.create(head).idempotencyKey("chain-signal-1"));
+        c.cancelChain(namespaceId, chainId, "operator requested cancellation",
+                ChainCommandOptions.create(head).idempotencyKey("chain-cancel-1"));
+        assertEquals(chainId, inspection.segments().get(1).predecessorRunId());
+        assertEquals(List.of("wait"), signal.deliveredTo());
+        assertEquals("chain-signal-1", server.seen.get(1).header("idempotency-key"));
+        assertEquals(head, server.seen.get(1).body().path("expectedRunId").asText());
+    }
+
+    @Test
+    void aRunInAChainNamesItsSegmentAndARunOutsideOneHasNone() {
+        String chain = "0190aaaa-0000-7000-8000-000000000011";
+        String successor = "0190aaaa-0000-7000-8000-000000000012";
+        server.prepare((req, reply) -> reply.send(200, run("status", "\"SUCCEEDED\"", "chain",
+                "{\"chainId\":\"" + chain + "\",\"segmentIndex\":0,\"completionKind\":\"CONTINUED\",\"successorRunId\":\"" + successor + "\"}")));
+        Run continued = client().get(RUN);
+        assertEquals("SUCCEEDED", continued.statusText());
+        assertEquals(new Run.ChainSegmentOfRun(chain, 0, "CONTINUED", successor), continued.chain());
+
+        server.prepare((req, reply) -> reply.send(200, run("chain",
+                "{\"chainId\":\"" + chain + "\",\"segmentIndex\":2,\"completionKind\":null,\"successorRunId\":null}")));
+        assertEquals(new Run.ChainSegmentOfRun(chain, 2, null, null), client().get(RUN).chain());
+
+        server.prepare((req, reply) -> reply.send(200, run()));
+        assertEquals(null, client().get(RUN).chain());
+
+        server.prepare((req, reply) -> reply.send(200, run("chain",
+                "{\"chainId\":\"" + chain + "\",\"segmentIndex\":0,\"completionKind\":\"SOMEDAY\",\"successorRunId\":null}")));
+        SagatException bad = assertThrows(SagatException.class, () -> client().get(RUN));
+        assertEquals(ErrorCode.PROTOCOL, bad.code());
+    }
+
+    @Test
+    void theRunsOfAChainArePagedInSegmentOrderFollowingTheServerCursor() {
+        String namespaceId = "0190aaaa-0000-7000-8000-000000000010";
+        String chainId = "0190aaaa-0000-7000-8000-000000000011";
+        String[] ids = {chainId, "0190aaaa-0000-7000-8000-000000000012", "0190aaaa-0000-7000-8000-000000000013"};
+        java.util.function.IntFunction<String> item = index -> "{\"index\":" + index + ",\"runId\":\"" + ids[index] + "\",\"status\":\""
+                + (index < 2 ? "SUCCEEDED" : "RUNNING") + "\",\"completionKind\":" + (index < 2 ? "\"CONTINUED\"" : "null")
+                + ",\"predecessorRunId\":" + (index == 0 ? "null" : "\"" + ids[index - 1] + "\"")
+                + ",\"successorRunId\":" + (index < 2 ? "\"" + ids[index + 1] + "\"" : "null")
+                + ",\"createdAt\":\"2026-10-10T10:00:00Z\",\"finishedAt\":" + (index < 2 ? "\"2026-10-10T10:00:01Z\"" : "null") + "}";
+        server.prepare((req, reply) -> reply.send(200, req.uri().contains("cursor=AAE")
+                ? "{\"items\":[" + item.apply(2) + "],\"nextCursor\":null}"
+                : "{\"items\":[" + item.apply(0) + "," + item.apply(1) + "],\"nextCursor\":\"AAE\"}"));
+        SagatClient c = client();
+        List<Integer> collected;
+        try (java.util.stream.Stream<ChainRun> runs = c.listAllChainRuns(namespaceId, chainId, ChainRunListOptions.create().limit(2))) {
+            collected = runs.map(ChainRun::index).toList();
+        }
+        assertEquals(List.of(0, 1, 2), collected);
+        assertEquals("/v1/namespaces/" + namespaceId + "/chains/" + chainId + "/runs?limit=2", server.seen.get(0).uri());
+        assertEquals("/v1/namespaces/" + namespaceId + "/chains/" + chainId + "/runs?cursor=AAE&limit=2", server.seen.get(1).uri());
+        ChainRunPage page = c.listChainRuns(namespaceId, chainId, null);
+        assertEquals("CONTINUED", page.items().get(0).completionKind());
+        assertEquals(ids[2], page.items().get(1).successorRunId());
+        assertEquals("AAE", page.nextCursor());
+        assertEquals(2026, page.items().get(0).createdAt().atZone(java.time.ZoneOffset.UTC).getYear());
+
+        server.prepare((req, reply) -> reply.send(200, "{\"items\":[" + item.apply(0).replace("\"index\":0", "\"index\":10000") + "],\"nextCursor\":null}"));
+        SagatException bad = assertThrows(SagatException.class, () -> c.listChainRuns(namespaceId, chainId, null));
+        assertEquals(ErrorCode.PROTOCOL, bad.code());
+        assertThrows(SagatException.class, () -> c.listChainRuns("not-an-id", chainId, null));
+    }
+
+    @Test
+    void chainQueryCarriesExpectedHeadAndReturnsResolvedRevisions() {
+        String namespaceId = "0190aaaa-0000-7000-8000-000000000010";
+        String chainId = "0190aaaa-0000-7000-8000-000000000011";
+        String head = "0190aaaa-0000-7000-8000-000000000012";
+        server.prepare((req, reply) -> reply.send(200,
+                "{\"runId\":\"" + head + "\",\"runVersion\":7,\"stateRevision\":3,"
+                        + "\"result\":{\"amount\":\"19.99\",\"occurredAt\":\"2026-10-15T15:34:56.789Z\"}}"));
+        QueryResult result = client().queryChain(namespaceId, chainId, "account.snapshot", Map.of(),
+                ChainQueryOptions.create().expectedRunId(head));
+        assertEquals("/v1/namespaces/" + namespaceId + "/chains/" + chainId + "/queries/account.snapshot",
+                server.seen.get(0).path());
+        assertEquals(head, server.seen.get(0).body().path("expectedRunId").asText());
+        assertEquals(head, result.runId());
+        assertEquals("19.99", result.result().path("amount").asText());
+        assertEquals("2026-10-15T15:34:56.789Z", result.result().path("occurredAt").asText());
+    }
+
+    @Test
+    void cancellingADeclaredUpdateStopsTheCallWithoutRetrying() throws Exception {
+        server.prepare((req, reply) -> {
+            try {
+                Thread.sleep(300);
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+            }
+            reply.send(200, "{}");
+        });
+        try (SagatClient c = client()) {
+            CompletableFuture<UpdateReceipt> call = c.updateAsync(
+                    RUN, "account.credit", Map.of("amount", "19.99"), UpdateOptions.create("credit-1"));
+            for (int attempt = 0; server.seen.isEmpty() && attempt < 100; attempt++) {
+                Thread.sleep(2);
+            }
+            assertTrue(call.cancel(true));
+            Thread.sleep(500);
+            assertEquals(1, server.seen.size());
+        }
+    }
+
+    @Test
     void waitingForCompletionPollsUntilTheRunIsTerminal() {
         AtomicInteger polls = new AtomicInteger();
         server.prepare((req, reply) -> reply.send(200, run("status", polls.incrementAndGet() < 3 ? "\"RUNNING\"" : "\"SUCCEEDED\"")));

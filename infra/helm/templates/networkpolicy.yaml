@@ -41,6 +41,11 @@ spec:
       from:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if .Values.databaseRunner.enabled }}
+        - podSelector:
+            matchLabels:
+              {{- include "sagat.selector" (dict "root" . "component" "database-runner") | nindent 14 }}
+      {{- end }}
     - ports: [{port: 9091, protocol: TCP}]
       from:
         {{- toYaml .Values.networkPolicy.metricsFrom | nindent 8 }}

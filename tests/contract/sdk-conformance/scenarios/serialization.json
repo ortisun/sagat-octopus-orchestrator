@@ -31,6 +31,7 @@
   "workers": {
     "w1": {
       "workerName": "ser-worker",
+      "protocolVersion": "1.4",
       "maxInflight": 1,
       "autostart": false,
       "heartbeatIntervalMs": 200,

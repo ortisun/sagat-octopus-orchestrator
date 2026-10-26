@@ -190,6 +190,11 @@ Owner correction (T007-052): **Namespaces** is a dedicated navigation menu and `
 page, listing namespaces and hosting **New namespace**. The sidebar selector remains for
 switching context; creation is not a sidebar button. Reuse identity contracts and permissions.
 
+Owner correction (T007-058): the menu follows the hierarchy. **Namespaces** is the tenant's own entry; the selector
+comes next and, under it, only while a namespace is chosen, its destinations: Workflows, Runs, Operations, Scripts and Integrations.
+The Studio does not choose a namespace for the person; a remembered choice the tenant no longer lists is forgotten. A page of a
+namespace reached without one says *Choose a namespace*. No wire, permission or execution change.
+
 Integrations acceptance (T007-053, owner request): a dedicated **Integrations** menu lists the
 current namespace's inbound broker connectors and provides create/edit forms for NATS, Kafka and
 SQS. Type-specific connection and authentication fields use the existing connector/secret APIs.
@@ -202,3 +207,19 @@ cursor. A later-page error or cancellation must not publish a partial list as a 
 Send signal acceptance (T007-056/G167): [`signal-completion.md`](./signal-completion.md) defines
 the authorized confirmation, bounded JSON input, retry identity and context-disposal behavior.
 It uses the existing durable feature 002 signal API; no execution or audit semantics change.
+
+
+## Approved workflow-primitives dependency (2026-10-14)
+
+[ADR-0030](../../docs/adr/ADR-0030-structured-instances-and-continuation-chains.md) and
+[ADR-0031](../../docs/adr/ADR-0031-declared-operation-result-disclosure.md) accept the feature-014
+architecture and separate declared-result disclosure policy.
+[ADR-0032](../../docs/adr/ADR-0032-additive-workflow-ir.md) keeps the workflow IR at v1 and
+supersedes the earlier separate-revision allocation. The journal-derived graph may project scoped instances/routes/chain links and unknown revisions must degrade safely. This dependency does not authorize full new-node visual authoring or a raw-value viewer; structural payload inspection retains ADR-0028.
+
+This approves the described dependency for implementation, not a runtime guarantee. Canonical
+contracts, migration/replay, tenant/fault tests and applicable five-SDK evidence remain the
+feature-014 release gates; existing feature behavior stays supported.
+## Approved dependent delivery: database connections
+
+Feature [017](../017-database-connections/spec.md) and [ADR-0035](../../docs/adr/ADR-0035-database-connections-and-managed-execution.md) were approved on 2026-10-16. Its [plan](../017-database-connections/plan.md) defines the bounded extension to shared contracts, admission/leases, effects, SDKs, Studio, telemetry, secret-provider/security and immutable revisions. Existing transactional, tenant and general payload-inspection guarantees remain binding. Track implementation and new runtime evidence in feature 017; this dependency note does not mark its requirements complete.

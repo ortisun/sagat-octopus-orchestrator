@@ -1,0 +1,34 @@
+{
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "kind": "Workflow",
+  "metadata": {
+    "name": "legacy-annotation-extension"
+  },
+  "entrypoint": "work",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "reference": {
+        "type": "string",
+        "maxLength": 128,
+        "x-sagat-classification": "pre-016-note"
+      }
+    },
+    "required": [
+      "reference"
+    ],
+    "additionalProperties": false
+  },
+  "nodes": [
+    {
+      "id": "work",
+      "type": "activity",
+      "activity": "compat.work",
+      "next": "done"
+    },
+    {
+      "id": "done",
+      "type": "end"
+    }
+  ]
+}

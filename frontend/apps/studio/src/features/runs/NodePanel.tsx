@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import { Link } from 'react-router';
 import type { RuntimeEdge, RuntimeNode } from '../../api/types';
 import type { RunModel } from '../../model/runGraph';
-import { kindOf } from '../../model/registry';
 import { nodeStatus } from '../../model/status';
 import { Banner } from '../../ui/Banner';
 import { ErrorState } from '../../ui/ErrorState';
@@ -19,11 +18,13 @@ import { OperationList } from './Operations';
 import type { Operation } from './ops';
 import { childPath, sagaWords } from './RunNodeCard';
 import { clip, formatDuration } from './time';
+import { DatabaseResultViewer } from '../database/DatabaseResultViewer';
 import { PayloadInspector } from './PayloadInspection';
+import { PayloadDisclosureView } from './PayloadDisclosure';
 
 function detailedKind(node: RuntimeNode): string {
   const summary = kindView(node);
-  if (summary.variant === 'forward') return kindOf(node.type)?.label ?? node.type;
+  if (summary.variant === 'forward') return summary.label;
   const suffix = summary.variant === 'undo' ? /~c$/ : /~r$/;
   const forward = node.forward ?? node.id.replace(suffix, '');
   return summary.variant === 'undo' ? `Undo of ${forward}` : `Lookup for ${forward}`;
@@ -150,7 +151,8 @@ function Links({ edges, model, id, onSelect }: { edges: readonly RuntimeEdge[]; 
 /**
  * What the Studio knows of one step: its state, its attempts and their durations (told from the
  * journal), how it connects to the others, the decisions made about it, and the actions an
- * operator may take. It shows no data of the step: the journal has none (G144).
+ * operator may take. Journal entries carry only payload references; retained values are fetched
+ * separately through the classified disclosure operation.
  */
 export function NodePanel({
   node,
@@ -279,21 +281,30 @@ export function NodePanel({
           ) : (
             <p className="hint">Trace ids come with the journal events, which are not read yet.</p>
           )}
-          <p className="hint">The journal keeps no input or output of a step, only a digest: the payload is redacted.</p>
+          <p className="hint">The journal event holds only a payload digest. Retained values are read separately under the workflow&apos;s classification policy.</p>
           {retainedPayloads.length > 0 ? (
             <div className="rn-payload-events">
               <h3>Retained payloads</h3>
               {retainedPayloads.map((entry) => (
-                <PayloadInspector
-                  key={entry.seq}
-                  runId={runId}
-                  selector={{ source: 'journal', sequence: entry.seq }}
-                  label={`Inspect redacted payload from event ${entry.seq}`}
-                  compact
-                />
+                <div key={entry.seq}>
+                  <PayloadDisclosureView
+                    runId={runId}
+                    selector={{ source: 'journal', sequence: entry.seq }}
+                    label={`View permitted values from event ${entry.seq}`}
+                    compact
+                  />
+                  <PayloadInspector
+                    runId={runId}
+                    selector={{ source: 'journal', sequence: entry.seq }}
+                    label={`Inspect redacted payload from event ${entry.seq}`}
+                    compact
+                  />
+                </div>
               ))}
             </div>
           ) : null}
+
+          {node.type === 'database' && node.status === 'SUCCEEDED' ? <DatabaseResultViewer runId={runId} nodeId={selectedId} /> : null}
 
           <h3>Structure</h3>
           <Links edges={model.edges} model={model} id={selectedId} onSelect={onSelect} />

@@ -10,8 +10,8 @@
 use std::future::Future;
 use std::time::Duration;
 
-use sagat_domain::execution::{Fence, RunId, RunStatus};
-use sagat_domain::identity::TenantId;
+use sagat_domain::execution::{ExecutionInstanceId, Fence, InstancePath, RunId, RunStatus};
+use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_domain::sharding::ShardSet;
 use sagat_domain::workflow::NodeId;
 use time::OffsetDateTime;
@@ -45,6 +45,24 @@ impl Window {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepRef {
     pub tenant_id: TenantId,
+    pub run_id: RunId,
+    pub node: NodeId,
+    pub instance_path: InstancePath,
+}
+
+impl StepRef {
+    #[must_use]
+    pub fn instance(&self) -> ExecutionInstanceId {
+        ExecutionInstanceId::in_path(self.instance_path.clone(), self.node.clone())
+    }
+}
+
+/// A pending top-level continuation boundary tied to its serialized chain head.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingContinuation {
+    pub tenant_id: TenantId,
+    pub namespace_id: NamespaceId,
+    pub chain_id: RunId,
     pub run_id: RunId,
     pub node: NodeId,
 }
@@ -97,6 +115,19 @@ pub struct LostLease {
 /// Candidate queries and housekeeping. Implemented by `sagat-infra-postgres`; every time
 /// comparison uses the database clock, so instances with skewed clocks agree.
 pub trait MaintenanceStore: Send + Sync {
+    /// Pending continuation boundaries whose run is still the current chain head.
+    fn continuation_candidates(
+        &self,
+        window: &Window,
+    ) -> impl Future<Output = Result<Vec<PendingContinuation>, StoreError>> + Send;
+
+    /// Collection owners that can enter, admit, checkpoint or finish without waiting for worker
+    /// progress. The query only discovers candidates; the fenced transition revalidates them.
+    fn collection_candidates(
+        &self,
+        window: &Window,
+    ) -> impl Future<Output = Result<Vec<StepRef>, StoreError>> + Send;
+
     /// Timers whose due time has passed, oldest first.
     fn due_timers(
         &self,
@@ -127,6 +158,14 @@ pub trait MaintenanceStore: Send + Sync {
         window: &Window,
     ) -> impl Future<Output = Result<Vec<RunRef>, StoreError>> + Send;
 
+    /// Runs that were told to stop by a durable transaction of their own (a loop that reached its
+    /// iteration limit) and that no attempt holds any more: the planner still has to drain and end
+    /// them, and no later event would.
+    fn stopped_runs(
+        &self,
+        window: &Window,
+    ) -> impl Future<Output = Result<Vec<RunRef>, StoreError>> + Send;
+
     /// `READY` steps that nobody was notified about for `older_than` (the notification may have
     /// been lost with the broker; claiming does not depend on it, but latency does).
     fn stale_hints(
@@ -146,6 +185,14 @@ pub trait MaintenanceStore: Send + Sync {
         &self,
         window: &Window,
     ) -> impl Future<Output = Result<Vec<EndedChild>, StoreError>> + Send;
+
+    /// The result of a run that ended (G21): the output of the `end` step that finished it, or
+    /// `None` when that `end` declares no `outputExpr`.
+    fn run_result(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+    ) -> impl Future<Output = Result<Option<Vec<u8>>, StoreError>> + Send;
 
     /// Running child runs whose parent was stopped under a policy that cancels them and that have
     /// not been asked to stop yet.

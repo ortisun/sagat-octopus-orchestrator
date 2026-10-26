@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -244,6 +245,276 @@ func TestAnEventWithoutAnIDGetsOnePerCallKeptAcrossRetriesSoARepetitionIsADuplic
 	first, second := requests[0].json(t)["eventId"], requests[1].json(t)["eventId"]
 	if first != second || !uuidText.MatchString(fmt.Sprint(first)) {
 		t.Errorf("event ids %v %v", first, second)
+	}
+}
+
+func TestAnApprovalDecisionUsesItsBodyKeyAndReturnsATypedReceipt(t *testing.T) {
+	f := newFake(t)
+	approvalID := "0190aaaa-0000-7000-8000-000000000099"
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 200, map[string]any{
+			"receiptId": "0190aaaa-0000-7000-8000-000000000100", "approvalId": approvalID,
+			"decisionKey": "review-1", "decision": "APPROVE", "reasonCode": "POLICY_OK", "actor": "alice",
+			"decidedAt": "2026-10-15T10:00:00Z", "outcomeSequence": 7, "replayed": false, "futureField": "kept",
+		})
+	})
+	receipt, err := newClient(t, f).DecideApproval(context.Background(), approvalID, client.ApprovalDecisionRequest{
+		DecisionKey: "review-1", Decision: client.ApprovalApprove, ReasonCode: "POLICY_OK",
+	}, client.WithTraceparent("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := f.requests()[0]
+	if request.url != "/v1/approvals/"+approvalID+"/decisions" || request.headers.Get("Idempotency-Key") != "" {
+		t.Errorf("%s headers=%v", request.url, request.headers)
+	}
+	if body := request.json(t); body["decisionKey"] != "review-1" || body["decision"] != "APPROVE" || body["reasonCode"] != "POLICY_OK" {
+		t.Errorf("%v", body)
+	}
+	if receipt.OutcomeSequence != 7 || receipt.DecidedAt.UTC().Format(time.RFC3339) != "2026-10-15T10:00:00Z" || string(receipt.Raw["futureField"]) != `"kept"` {
+		t.Errorf("%+v", receipt)
+	}
+}
+
+func TestApprovalPagesAreTypedAndListAllFollowsOpaqueCursor(t *testing.T) {
+	f := newFake(t)
+	ids := []string{"0190aaaa-0000-7000-8000-000000000099", "0190aaaa-0000-7000-8000-000000000100"}
+	for call := 0; call < 3; call++ {
+		f.answer(func(request seen, w http.ResponseWriter) {
+			second := strings.Contains(request.url, "cursor=next")
+			index := 0
+			if second {
+				index = 1
+			}
+			status := "PENDING"
+			var settled any
+			var cursor any = "next"
+			if second {
+				status, settled, cursor = "APPROVED", "2026-10-15T10:00:00Z", nil
+			}
+			reply(w, 200, map[string]any{"items": []any{map[string]any{
+				"approvalId": ids[index], "runId": runUUID, "nodeId": "review",
+				"instancePath": []any{map[string]any{"scopeNodeId": "items", "iterationIndex": 3}},
+				"status":       status, "deadline": "2026-10-16T10:00:00Z", "settledAt": settled,
+			}}, "nextCursor": cursor})
+		})
+	}
+	c := newClient(t, f)
+	page, err := c.ListApprovals(context.Background(), runUUID, client.ApprovalListOptions{Cursor: "from", Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Items[0].Status != client.ApprovalPending || page.Items[0].InstancePath[0].IterationIndex != 3 {
+		t.Fatalf("%+v", page.Items[0])
+	}
+	var got []string
+	for item, err := range c.ListAllApprovals(context.Background(), runUUID, client.ApprovalListOptions{Limit: 1}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, item.ApprovalID)
+	}
+	if !reflect.DeepEqual(got, ids) {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestAnApprovalDecisionSurfacesAuthorizationAndIdempotencyFailuresAndRejectsMalformedInputLocally(t *testing.T) {
+	f := newFake(t)
+	approvalID := "0190aaaa-0000-7000-8000-000000000099"
+	c := newClient(t, f)
+	for _, failure := range []struct {
+		status int
+		code   sagat.Code
+		reason string
+	}{{403, sagat.CodeForbidden, "NOT_ELIGIBLE"}, {409, sagat.CodeConflict, "IDEMPOTENCY_KEY_REUSED"}} {
+		f.answer(func(_ seen, w http.ResponseWriter) {
+			reply(w, failure.status, map[string]any{"code": string(failure.code), "message": "refused", "retryable": false, "details": map[string]any{"reason": failure.reason}})
+		})
+		_, err := c.DecideApproval(context.Background(), approvalID, client.ApprovalDecisionRequest{DecisionKey: "review-1", Decision: client.ApprovalReject})
+		if se := asSagat(t, err); se.Code != failure.code || se.HTTPStatus != failure.status || se.Reason != failure.reason {
+			t.Errorf("%+v", se)
+		}
+	}
+	f.answer(func(_ seen, w http.ResponseWriter) { reply(w, 500, nil) })
+	for _, request := range []struct {
+		id   string
+		body client.ApprovalDecisionRequest
+	}{
+		{"../other", client.ApprovalDecisionRequest{DecisionKey: "review-1", Decision: client.ApprovalApprove}},
+		{approvalID, client.ApprovalDecisionRequest{DecisionKey: "bad key", Decision: client.ApprovalApprove}},
+	} {
+		if _, err := c.DecideApproval(context.Background(), request.id, request.body); !sagat.IsCode(err, sagat.CodeValidationFailed) {
+			t.Errorf("%v", err)
+		}
+	}
+	if len(f.requests()) != 0 {
+		t.Errorf("malformed decisions sent %d requests", len(f.requests()))
+	}
+}
+
+func TestDeclaredQueryAndUpdatePreserveRevisionsResultAndUpdateKey(t *testing.T) {
+	f := newFake(t)
+	f.answer(func(request seen, w http.ResponseWriter) {
+		if strings.Contains(request.url, "/queries/") {
+			reply(w, 200, map[string]any{"runId": runUUID, "runVersion": 4, "stateRevision": 1, "result": map[string]any{"balance": 12}})
+			return
+		}
+		reply(w, 200, map[string]any{"runId": runUUID, "operation": "account.credit", "updateKey": "credit-1", "status": "APPLIED", "result": map[string]any{"balance": 15}, "beforeStateRevision": 1, "afterStateRevision": 2, "runVersion": 5, "replayed": false, "future": true})
+	})
+	c := newClient(t, f)
+	query, err := c.Query(context.Background(), runUUID, "account.balance", map[string]any{"currency": "BRL"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := int64(1)
+	expectedTrace := "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+	updated, err := c.Update(context.Background(), runUUID, "account.credit", client.UpdateRequest{UpdateKey: "credit-1", Args: map[string]any{"amount": 3}, ExpectedStateRevision: &expected}, client.WithTraceparent(expectedTrace))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := f.requests()
+	if requests[0].url != "/v1/runs/"+runUUID+"/queries/account.balance" || requests[1].url != "/v1/runs/"+runUUID+"/updates/account.credit" {
+		t.Errorf("paths: %s %s", requests[0].url, requests[1].url)
+	}
+	if requests[1].headers.Get("Idempotency-Key") != "" || requests[1].headers.Get("traceparent") != expectedTrace || requests[1].json(t)["updateKey"] != "credit-1" {
+		t.Errorf("update request: %+v", requests[1])
+	}
+	if query.StateRevision != 1 || query.Result.(map[string]any)["balance"] != float64(12) || updated.AfterStateRevision != 2 || string(updated.Raw["future"]) != "true" {
+		t.Errorf("query=%+v update=%+v", query, updated)
+	}
+}
+
+func TestDeclaredUpdateRetriesKeepTheBodyKeyAndInvalidInputIsLocal(t *testing.T) {
+	f := newFake(t)
+	attempts := 0
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		attempts++
+		if attempts == 1 {
+			reply(w, 503, map[string]any{"code": "UNAVAILABLE", "message": "busy", "retryable": true})
+			return
+		}
+		reply(w, 200, map[string]any{"runId": runUUID, "operation": "account.credit", "updateKey": "credit-1", "status": "APPLIED", "result": 15, "beforeStateRevision": 1, "afterStateRevision": 2, "runVersion": 5, "replayed": false})
+	})
+	c := newClient(t, f)
+	if _, err := c.Update(context.Background(), runUUID, "account.credit", client.UpdateRequest{UpdateKey: "credit-1", Args: map[string]any{"amount": 3}}); err != nil {
+		t.Fatal(err)
+	}
+	requests := f.requests()
+	if len(requests) != 2 || !reflect.DeepEqual(requests[0].json(t), requests[1].json(t)) {
+		t.Fatalf("retry bodies differ: %+v", requests)
+	}
+	badRevision := int64(-1)
+	for _, invoke := range []func() error{
+		func() error { _, err := c.Query(context.Background(), runUUID, "bad operation", nil); return err },
+		func() error {
+			_, err := c.Update(context.Background(), runUUID, "credit", client.UpdateRequest{UpdateKey: "bad key"})
+			return err
+		},
+		func() error {
+			_, err := c.Update(context.Background(), runUUID, "credit", client.UpdateRequest{UpdateKey: "credit-2", ExpectedStateRevision: &badRevision})
+			return err
+		},
+	} {
+		if err := invoke(); !sagat.IsCode(err, sagat.CodeValidationFailed) {
+			t.Errorf("%v", err)
+		}
+	}
+	if len(f.requests()) != 2 {
+		t.Errorf("invalid calls sent requests")
+	}
+}
+
+func TestChainInspectionSignalAndCancelUseExpectedHeadAndKeys(t *testing.T) {
+	f := newFake(t)
+	namespaceID := "0190aaaa-0000-7000-8000-000000000010"
+	chainID := "0190aaaa-0000-7000-8000-000000000011"
+	head := "0190aaaa-0000-7000-8000-000000000012"
+	f.answer(func(request seen, w http.ResponseWriter) {
+		switch {
+		case strings.Contains(request.url, "/signals/"):
+			reply(w, 202, map[string]any{"deliveredTo": []string{"wait"}})
+		case strings.HasSuffix(request.url, "/cancel"):
+			reply(w, 202, nil)
+		default:
+			reply(w, 200, map[string]any{"chainId": chainID, "currentRunId": head, "revision": 2, "cancelRequested": false, "finalOutcome": nil, "segments": []any{map[string]any{"index": 0, "runId": chainID, "predecessorRunId": nil, "successorRunId": head}, map[string]any{"index": 1, "runId": head, "predecessorRunId": chainID, "successorRunId": nil}}})
+		}
+	})
+	c := newClient(t, f)
+	inspection, err := c.InspectChain(context.Background(), namespaceID, chainID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signal, err := c.SignalChain(context.Background(), namespaceID, chainID, "chain.release", map[string]any{"ok": true}, client.ChainCommand{ExpectedRunID: head}, client.WithIdempotencyKey("chain-signal-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.CancelChain(context.Background(), namespaceID, chainID, "operator requested cancellation", client.ChainCommand{ExpectedRunID: head}, client.WithIdempotencyKey("chain-cancel-1")); err != nil {
+		t.Fatal(err)
+	}
+	requests := f.requests()
+	if inspection.Segments[1].PredecessorRunID != chainID || len(signal.DeliveredTo) != 1 {
+		t.Fatalf("inspection=%+v signal=%+v", inspection, signal)
+	}
+	if requests[1].json(t)["expectedRunId"] != head || requests[1].headers.Get("Idempotency-Key") != "chain-signal-1" {
+		t.Fatalf("signal request: %+v", requests[1])
+	}
+	if requests[2].json(t)["reason"] != "operator requested cancellation" {
+		t.Fatalf("cancel request: %+v", requests[2])
+	}
+}
+
+func TestChainQueryCarriesExpectedHeadAndReturnsResolvedRevisions(t *testing.T) {
+	f := newFake(t)
+	namespaceID := "0190aaaa-0000-7000-8000-000000000010"
+	chainID := "0190aaaa-0000-7000-8000-000000000011"
+	head := "0190aaaa-0000-7000-8000-000000000012"
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 200, map[string]any{
+			"runId": head, "runVersion": 7, "stateRevision": 3,
+			"result": map[string]any{"amount": "19.99", "occurredAt": "2026-10-15T15:34:56.789Z"},
+		})
+	})
+	result, err := newClient(t, f).QueryChain(context.Background(), namespaceID, chainID, "account.snapshot", client.ChainQueryRequest{
+		Args: map[string]any{}, ExpectedRunID: head,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := f.requests()[0]
+	if request.url != "/v1/namespaces/"+namespaceID+"/chains/"+chainID+"/queries/account.snapshot" {
+		t.Fatalf("path = %s", request.url)
+	}
+	if request.json(t)["expectedRunId"] != head || result.RunID != head || result.StateRevision != 3 {
+		t.Fatalf("request=%+v result=%+v", request.json(t), result)
+	}
+	value := result.Result.(map[string]any)
+	if value["amount"] != "19.99" || value["occurredAt"] != "2026-10-15T15:34:56.789Z" {
+		t.Fatalf("result = %+v", value)
+	}
+}
+
+func TestCancellingADeclaredUpdateStopsTheCallWithoutRetrying(t *testing.T) {
+	f := newFake(t)
+	started := make(chan struct{})
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		close(started)
+		time.Sleep(time.Second)
+		reply(w, 200, map[string]any{})
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-started
+		cancel()
+	}()
+	_, err := newClient(t, f).Update(ctx, runUUID, "account.credit", client.UpdateRequest{
+		UpdateKey: "credit-1", Args: map[string]any{"amount": "19.99"},
+	})
+	if !sagat.IsCode(err, sagat.CodeCancelled) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v", err)
+	}
+	if len(f.requests()) != 1 {
+		t.Fatalf("cancelled update attempts = %d", len(f.requests()))
 	}
 }
 
@@ -651,6 +922,58 @@ func TestCancelAndSignalAreOperationsWithAReasonAndAPayloadAndTheResultIsTyped(t
 	}
 }
 
+func TestRerunAsNewNamesTheNewRunAndTheNewRunNamesItsOrigin(t *testing.T) {
+	const started = "0190aaaa-0000-7000-8000-000000000021"
+	f := newFake(t)
+	f.answer(func(r seen, w http.ResponseWriter) {
+		if strings.HasSuffix(r.url, "/operations") {
+			reply(w, 202, map[string]any{"operationId": "op-2", "accepted": true, "runStatus": "SUCCEEDED", "runVersion": 9, "newRunId": started})
+			return
+		}
+		reply(w, 200, run(map[string]any{"runId": started, "rerunOf": runUUID}))
+	})
+	c := newClient(t, f)
+	rerun, err := c.RerunAsNew(context.Background(), runUUID, "run it again after the fix", client.WithIdempotencyKey("rerun-key-001"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rerun.OperationID != "op-2" || !rerun.Accepted || rerun.RunStatus != client.StatusSucceeded || rerun.RunVersion != 9 || rerun.NewRunID != started {
+		t.Errorf("%+v", rerun)
+	}
+	first := f.requests()[0]
+	if first.url != "/v1/runs/"+runUUID+"/operations" || fmt.Sprint(first.json(t)) != "map[action:RERUN_AS_NEW reason:run it again after the fix]" {
+		t.Errorf("%s %s", first.url, first.body)
+	}
+	if first.headers.Get("Idempotency-Key") != "rerun-key-001" {
+		t.Errorf("%q", first.headers.Get("Idempotency-Key"))
+	}
+	again, err := c.Get(context.Background(), started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.RerunOf != runUUID {
+		t.Errorf("RerunOf %q", again.RerunOf)
+	}
+	f.answer(func(_ seen, w http.ResponseWriter) { reply(w, 200, run(nil)) })
+	plain, err := c.Get(context.Background(), runUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.RerunOf != "" {
+		t.Errorf("a run that is not a rerun has no origin: %q", plain.RerunOf)
+	}
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 202, map[string]any{"operationId": "op-3", "accepted": true, "runStatus": "CANCELLING"})
+	})
+	cancelled, err := c.Cancel(context.Background(), runUUID, "no longer needed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cancelled.NewRunID != "" {
+		t.Errorf("only a rerun starts a run: %q", cancelled.NewRunID)
+	}
+}
+
 func TestWaitingForCompletionPollsUntilTheRunIsTerminal(t *testing.T) {
 	f := newFake(t)
 	polls := 0
@@ -935,5 +1258,110 @@ func TestTheFieldsOfAnEventAreSentAsTheAPINamesThemAndTheAbsentOnesAreLeftOut(t 
 	}
 	if bare := f.requests()[0].json(t); fmt.Sprint(bare) != "map[data:map[] eventId:evt-bare-0001 type:t]" {
 		t.Errorf("an event with only a type: %v", bare)
+	}
+}
+
+func TestARunInAChainNamesItsSegmentAndARunOutsideOneHasNone(t *testing.T) {
+	f := newFake(t)
+	chain := "0190aaaa-0000-7000-8000-000000000011"
+	successor := "0190aaaa-0000-7000-8000-000000000012"
+	c := newClient(t, f)
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 200, run(map[string]any{"status": "SUCCEEDED", "chain": map[string]any{
+			"chainId": chain, "segmentIndex": 0, "completionKind": "CONTINUED", "successorRunId": successor,
+		}}))
+	})
+	continued, err := c.Get(context.Background(), runUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := &client.RunChainSegment{ChainID: chain, SegmentIndex: 0, CompletionKind: client.SegmentContinued, SuccessorRunID: successor}
+	if continued.Status != "SUCCEEDED" || !reflect.DeepEqual(continued.Chain, want) {
+		t.Fatalf("%+v %+v", continued, continued.Chain)
+	}
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 200, run(map[string]any{"chain": map[string]any{"chainId": chain, "segmentIndex": 2, "completionKind": nil, "successorRunId": nil}}))
+	})
+	open, err := c.Get(context.Background(), runUUID)
+	if err != nil || open.Chain == nil || open.Chain.CompletionKind != "" || open.Chain.SuccessorRunID != "" {
+		t.Fatalf("%+v %v", open, err)
+	}
+	f.answer(func(_ seen, w http.ResponseWriter) { reply(w, 200, run(nil)) })
+	plain, err := c.Get(context.Background(), runUUID)
+	if err != nil || plain.Chain != nil {
+		t.Fatalf("%+v %v", plain, err)
+	}
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 200, run(map[string]any{"chain": map[string]any{"chainId": chain, "segmentIndex": 0, "completionKind": "SOMEDAY"}}))
+	})
+	if _, err := c.Get(context.Background(), runUUID); asSagat(t, err).Code != sagat.CodeProtocol {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestTheRunsOfAChainArePagedInSegmentOrderFollowingTheServerCursor(t *testing.T) {
+	f := newFake(t)
+	namespace := "0190aaaa-0000-7000-8000-000000000010"
+	chain := "0190aaaa-0000-7000-8000-000000000011"
+	ids := []string{chain, "0190aaaa-0000-7000-8000-000000000012", "0190aaaa-0000-7000-8000-000000000013"}
+	item := func(index int) map[string]any {
+		var predecessor, successor, kind, finished any
+		if index > 0 {
+			predecessor = ids[index-1]
+		}
+		if index < 2 {
+			successor, kind, finished = ids[index+1], "CONTINUED", "2026-10-10T10:00:01Z"
+		}
+		status := "RUNNING"
+		if index < 2 {
+			status = "SUCCEEDED"
+		}
+		return map[string]any{
+			"index": index, "runId": ids[index], "status": status, "completionKind": kind,
+			"predecessorRunId": predecessor, "successorRunId": successor,
+			"createdAt": "2026-10-10T10:00:00Z", "finishedAt": finished,
+		}
+	}
+	f.answer(func(request seen, w http.ResponseWriter) {
+		if strings.Contains(request.url, "cursor=AAE") {
+			reply(w, 200, map[string]any{"items": []any{item(2)}, "nextCursor": nil})
+			return
+		}
+		reply(w, 200, map[string]any{"items": []any{item(0), item(1)}, "nextCursor": "AAE"})
+	})
+	c := newClient(t, f)
+	var got []int
+	for segment, err := range c.ListAllChainRuns(context.Background(), namespace, chain, client.ChainRunListOptions{Limit: 2}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, segment.Index)
+	}
+	if !reflect.DeepEqual(got, []int{0, 1, 2}) {
+		t.Fatalf("got %v", got)
+	}
+	f.mu.Lock()
+	first, second := f.seen[0], f.seen[1]
+	f.mu.Unlock()
+	if first.method != "GET" || first.url != "/v1/namespaces/"+namespace+"/chains/"+chain+"/runs?limit=2" {
+		t.Fatalf("%+v", first)
+	}
+	if second.url != "/v1/namespaces/"+namespace+"/chains/"+chain+"/runs?cursor=AAE&limit=2" {
+		t.Fatalf("%+v", second)
+	}
+	page, err := c.ListChainRuns(context.Background(), namespace, chain, client.ChainRunListOptions{})
+	if err != nil || page.NextCursor != "AAE" || page.Items[0].CompletionKind != client.SegmentContinued || page.Items[1].SuccessorRunID != ids[2] || page.Items[0].CreatedAt.IsZero() {
+		t.Fatalf("%+v %v", page, err)
+	}
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		bad := item(0)
+		bad["index"] = 10_000
+		reply(w, 200, map[string]any{"items": []any{bad}, "nextCursor": nil})
+	})
+	if _, err := c.ListChainRuns(context.Background(), namespace, chain, client.ChainRunListOptions{}); asSagat(t, err).Code != sagat.CodeProtocol {
+		t.Fatalf("%v", err)
+	}
+	if _, err := c.ListChainRuns(context.Background(), "nope", chain, client.ChainRunListOptions{}); err == nil {
+		t.Fatal("a namespace id is a UUID")
 	}
 }

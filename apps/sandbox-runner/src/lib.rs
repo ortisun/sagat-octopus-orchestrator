@@ -976,6 +976,7 @@ impl<S: Sandbox + 'static> Runner<S> {
                 generation: lease.generation,
                 lease_token: lease.lease_token.clone(),
                 traceparent: lease.traceparent.clone(),
+                instance: lease.instance.clone(),
             })
             .await
             .map_err(|_| SecretsFailure::Unavailable)?;
@@ -1029,6 +1030,7 @@ impl<S: Sandbox + 'static> Runner<S> {
                 run_id: lease.run_id.clone(),
                 step_id: lease.step_id.clone(),
                 attempt: lease.attempt,
+                instance: lease.instance.clone(),
             })
             .await?;
         let mut client = self.client().await?;
@@ -1106,6 +1108,7 @@ impl<S: Sandbox + 'static> Runner<S> {
                     output_blob_ref: String::new(),
                     output_sha256: String::new(),
                     traceparent: lease.traceparent.clone(),
+                    instance: lease.instance.clone(),
                 })
                 .await?;
             let mut client = self.client().await?;
@@ -1168,6 +1171,7 @@ impl<S: Sandbox + 'static> Runner<S> {
                     safe_message: message.to_owned(),
                     retryable,
                     traceparent: lease.traceparent.clone(),
+                    instance: lease.instance.clone(),
                 })
                 .await?;
             let mut client = self.client().await?;

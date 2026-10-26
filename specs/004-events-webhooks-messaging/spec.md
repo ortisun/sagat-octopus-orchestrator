@@ -127,3 +127,16 @@ Requirements `FR-004-###` and criteria `SC-004-###` must be mapped to tasks and 
 ## Webhook identity profile acceptance
 
 An OIDC endpoint pins a deployment-approved verifier and subject; an mTLS endpoint pins the verified leaf certificate fingerprint. Unknown profiles and missing/mismatching credentials fail closed. Timestamp, event-ID dedupe, body bounds, tenant ownership and audit remain mandatory for all profiles. See ADR-0026 and T004-037.
+
+
+## Approved workflow-primitives dependency (2026-10-14)
+
+[ADR-0030](../../docs/adr/ADR-0030-structured-instances-and-continuation-chains.md) and
+[ADR-0031](../../docs/adr/ADR-0031-declared-operation-result-disclosure.md) accept the feature-014
+architecture and separate declared-result disclosure policy.
+[ADR-0032](../../docs/adr/ADR-0032-additive-workflow-ir.md) keeps the workflow IR at v1 and
+supersedes the earlier separate-revision allocation. Inbox consumers, subscriptions, timers and outbox references may carry full scoped instance identity. Signals remain accepted only by a waiting step and consumed in the same transaction, with no buffering or implicit forwarding across continuation.
+
+This approves the described dependency for implementation, not a runtime guarantee. Canonical
+contracts, migration/replay, tenant/fault tests and applicable five-SDK evidence remain the
+feature-014 release gates; existing feature behavior stays supported.

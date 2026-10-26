@@ -16,6 +16,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
+use sagat_domain::binding::PoolError;
 use sagat_domain::identity::{NamespaceId, Permission, Principal, Role, Subject, TenantId};
 use sagat_domain::quota::QuotaResource;
 use sagat_domain::secrets::{
@@ -34,7 +35,75 @@ use crate::quotas::QuotaLookup;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredSecret {
     pub meta: SecretMeta,
-    pub sealed: SealedSecret,
+    pub value: StoredValue,
+}
+
+/// The authoritative representation of a retained version. No remote reference is a ciphertext.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoredValue {
+    Local(SealedSecret),
+    OpenBao(crate::secret_provider::ProviderReference),
+}
+
+/// Async resolution shared by workers, webhook signing and broker credentials. This does not
+/// grant access: callers must authorize the scope/lease first and audit the use.
+#[derive(Clone, Default)]
+pub struct SecretReader {
+    cipher: Option<Arc<dyn SecretCipher>>,
+    provider: Option<Arc<dyn crate::secret_provider::SecretProvider>>,
+}
+
+impl SecretReader {
+    pub fn local(cipher: Arc<dyn SecretCipher>) -> Self {
+        Self {
+            cipher: Some(cipher),
+            provider: None,
+        }
+    }
+    pub fn with_cipher(mut self, cipher: Arc<dyn SecretCipher>) -> Self {
+        self.cipher = Some(cipher);
+        self
+    }
+    pub fn with_provider(
+        mut self,
+        provider: Arc<dyn crate::secret_provider::SecretProvider>,
+    ) -> Self {
+        self.provider = Some(provider);
+        self
+    }
+    pub async fn resolve(&self, stored: &StoredSecret) -> Result<SecretValue, AppError> {
+        match &stored.value {
+            StoredValue::Local(sealed) => {
+                let cipher = self.cipher.as_ref().ok_or(AppError::Unavailable)?;
+                let meta = &stored.meta;
+                let aad = associated_data(
+                    meta.tenant_id,
+                    meta.namespace_id,
+                    &meta.name,
+                    meta.id,
+                    &sealed.key_id,
+                );
+                cipher.open(sealed, &aad).map_err(|_| AppError::Internal)
+            }
+            StoredValue::OpenBao(reference) => {
+                if reference.tenant != stored.meta.tenant_id
+                    || reference.namespace != stored.meta.namespace_id
+                    || reference.operation != stored.meta.id
+                {
+                    return Err(AppError::Internal);
+                }
+                self.provider
+                    .as_ref()
+                    .ok_or(AppError::Unavailable)?
+                    .read(reference)
+                    .await
+                    .map_err(crate::managed_secrets::provider_error)?
+                    .ok_or_else(|| AppError::SecretUnavailable {
+                        name: stored.meta.name.to_string(),
+                    })
+            }
+        }
+    }
 }
 
 /// What a secret looks like from outside: never the value, never the ciphertext.
@@ -42,9 +111,14 @@ pub struct StoredSecret {
 pub struct SecretView {
     pub name: String,
     pub version: u32,
-    pub key_id: String,
+    pub key_id: Option<String>,
+    pub provider: &'static str,
     pub created_by: String,
     pub updated_at: OffsetDateTime,
+    /// The worker pools allowed to receive the secret (empty: every worker bound to the activity,
+    /// G48). `None` when the caller may not see them: only those who manage secrets are told which
+    /// fleets are trusted with one.
+    pub pools: Option<Vec<String>>,
 }
 
 impl From<&SecretMeta> for SecretView {
@@ -53,8 +127,14 @@ impl From<&SecretMeta> for SecretView {
             name: meta.name.to_string(),
             version: meta.version,
             key_id: meta.key_id.clone(),
+            provider: if meta.key_id.is_some() {
+                "local"
+            } else {
+                "openbao"
+            },
             created_by: meta.created_by.clone(),
             updated_at: meta.created_at,
+            pools: None,
         }
     }
 }
@@ -108,7 +188,7 @@ pub fn check_usable(
 }
 
 /// One secret a step declares, as the store found it for the publisher of the workflow.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecretInput {
     pub name: SecretName,
     /// `None` when the secret does not exist (any more).
@@ -118,7 +198,7 @@ pub struct SecretInput {
 }
 
 /// What a step's declared secrets resolve to, read in the step's own transaction.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecretInputs {
     /// Who published the version of the workflow the run is pinned to.
     pub publisher: String,
@@ -134,6 +214,9 @@ pub struct NewVersion {
     pub row_id: Uuid,
     pub sealed: SealedSecret,
     pub created_by: String,
+    /// Replaces the worker pools allowed to receive the secret in the same transaction (an empty
+    /// list lifts the restriction); `None` leaves them as they are, or none on a new secret.
+    pub pools: Option<Vec<String>>,
 }
 
 /// Storage port of the secrets. Implemented by `sagat-infra-postgres`.
@@ -196,6 +279,35 @@ pub trait SecretStore: NamespaceDirectory + QuotaLookup {
         name: &SecretName,
     ) -> impl Future<Output = Result<Option<Vec<String>>, StoreError>> + Send;
 
+    /// The worker pools allowed to receive the secret (empty: no restriction); `None` when the
+    /// secret does not exist.
+    fn secret_pools(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        name: &SecretName,
+    ) -> impl Future<Output = Result<Option<Vec<String>>, StoreError>> + Send;
+
+    /// The pools of every restricted secret of a namespace, by secret name. A secret with no
+    /// restriction is absent.
+    fn restricted_secrets(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+    ) -> impl Future<Output = Result<Vec<(String, Vec<String>)>, StoreError>> + Send;
+
+    /// Replaces the pools allowed to receive the secret (`pools` empty lifts the restriction), with
+    /// its audit record, in one transaction. `false` when the secret does not exist.
+    fn replace_secret_pools(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        name: &SecretName,
+        pools: &[String],
+        changed_by: &str,
+        audit: &AuditRecord,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
     /// The names of the secrets of the namespace whose access list holds `subject`.
     fn names_usable_by(
         &self,
@@ -240,7 +352,7 @@ pub struct ResealBatch {
 pub struct SecretService<S, C> {
     store: S,
     clock: C,
-    cipher: Arc<dyn SecretCipher>,
+    cipher: Option<Arc<dyn SecretCipher>>,
 }
 
 impl<S, C> SecretService<S, C>
@@ -253,7 +365,15 @@ where
         Self {
             store,
             clock,
-            cipher,
+            cipher: Some(cipher),
+        }
+    }
+
+    pub fn metadata_only(store: S, clock: C) -> Self {
+        Self {
+            store,
+            clock,
+            cipher: None,
         }
     }
 
@@ -271,7 +391,29 @@ where
         value: Vec<u8>,
         ctx: &RequestContext,
     ) -> Result<SecretView, AppError> {
+        self.put_with_pools(principal, namespace, name, value, None, ctx)
+            .await
+    }
+
+    /// As [`Self::put`], and sets the worker pools allowed to receive the secret in the same
+    /// transaction as the version: `Some(&[])` lifts the restriction, `None` leaves it as it is (a
+    /// new secret then has none). A secret created with `pools` is never delivered unrestricted,
+    /// not even for the instant between creating it and restricting it; deleting a secret deletes
+    /// its restriction, so recreating one that must stay restricted names the pools again.
+    ///
+    /// # Errors
+    /// As [`Self::put`], and [`AppError::NotAllowed`] for a pool name that cannot be used.
+    pub async fn put_with_pools(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        name: &str,
+        value: Vec<u8>,
+        pools: Option<&[String]>,
+        ctx: &RequestContext,
+    ) -> Result<SecretView, AppError> {
         principal.authorize(Permission::SecretManage)?;
+        let pools = pools.map(parse_pool_texts).transpose()?;
         let name = SecretName::parse(name).map_err(|_| AppError::NotAllowed(NAME_RULE))?;
         let value = SecretValue::new(value)
             .map_err(|_| AppError::NotAllowed("a secret value is 1 to 16384 bytes"))?;
@@ -279,12 +421,13 @@ where
 
         let tenant = principal.tenant_id();
         let row_id = Uuid::now_v7();
-        let key_id = self.cipher.active_key_id().to_owned();
-        let aad = associated_data(tenant, namespace, &name, row_id, &key_id);
-        let sealed = self
+        let cipher = self
             .cipher
-            .seal(&value, &aad)
-            .map_err(|_| AppError::Internal)?;
+            .as_ref()
+            .ok_or(AppError::NotAllowed("local secret writes are disabled"))?;
+        let key_id = cipher.active_key_id().to_owned();
+        let aad = associated_data(tenant, namespace, &name, row_id, &key_id);
+        let sealed = cipher.seal(&value, &aad).map_err(|_| AppError::Internal)?;
         if sealed.key_id != key_id {
             // The key the associated data names is not the one that sealed: it would never open.
             return Err(AppError::Internal);
@@ -293,7 +436,7 @@ where
             .store
             .effective_limit(tenant, Some(namespace), QuotaResource::Secrets)
             .await?;
-        let audit = AuditRecord::by(
+        let mut audit = AuditRecord::by(
             principal,
             AuditAction::SecretStored,
             ResourceType::Secret,
@@ -301,6 +444,9 @@ where
             ctx.trace_id.clone(),
             self.clock.now(),
         );
+        if let Some(pools) = &pools {
+            audit = audit.with_reason(pools_reason(pools));
+        }
         let meta = self
             .store
             .put_version(
@@ -311,12 +457,20 @@ where
                     row_id,
                     sealed,
                     created_by: principal.subject().as_str().to_owned(),
+                    pools,
                 },
                 limit,
                 &audit,
             )
             .await?;
-        Ok(SecretView::from(&meta))
+        let mut view = SecretView::from(&meta);
+        view.pools = Some(
+            self.store
+                .secret_pools(tenant, namespace, &name)
+                .await?
+                .unwrap_or_default(),
+        );
+        Ok(view)
     }
 
     /// The secrets of a namespace, by name, without values. An administrator sees all of them;
@@ -338,7 +492,21 @@ where
         let tenant = principal.tenant_id();
         let all = self.store.list_secrets(tenant, namespace).await?;
         if principal.authorize(Permission::SecretManage).is_ok() {
-            return Ok(all.iter().map(SecretView::from).collect());
+            let restricted = self.store.restricted_secrets(tenant, namespace).await?;
+            return Ok(all
+                .iter()
+                .map(|secret| {
+                    let mut view = SecretView::from(secret);
+                    view.pools = Some(
+                        restricted
+                            .iter()
+                            .find(|(n, _)| n == secret.name.as_str())
+                            .map(|(_, pools)| pools.clone())
+                            .unwrap_or_default(),
+                    );
+                    view
+                })
+                .collect());
         }
         let usable = self
             .store
@@ -489,6 +657,73 @@ where
             .ok_or(AppError::NotFound)
     }
 
+    /// The worker pools allowed to receive the secret; empty when it is not restricted.
+    ///
+    /// # Errors
+    /// As [`Self::delete`].
+    pub async fn pools(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        name: &str,
+        ctx: &RequestContext,
+    ) -> Result<Vec<String>, AppError> {
+        principal.authorize(Permission::SecretManage)?;
+        let name = SecretName::parse(name).map_err(|_| AppError::NotFound)?;
+        require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
+        self.store
+            .secret_pools(principal.tenant_id(), namespace, &name)
+            .await?
+            .ok_or(AppError::NotFound)
+    }
+
+    /// Restricts delivery of the secret to workers granted one of `pools` (an empty list lifts the
+    /// restriction). A step that declares the secret is not leased to a worker outside them, and
+    /// such a worker is refused its value even with a lease it already holds (G48). Replaces the
+    /// list; audited.
+    ///
+    /// # Errors
+    /// As [`Self::delete`], and [`AppError::NotAllowed`] for a pool name that cannot be used.
+    pub async fn set_pools(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        name: &str,
+        pools: &[String],
+        ctx: &RequestContext,
+    ) -> Result<Vec<String>, AppError> {
+        principal.authorize(Permission::SecretManage)?;
+        let name = SecretName::parse(name).map_err(|_| AppError::NotFound)?;
+        let texts = parse_pool_texts(pools)?;
+        require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
+        let audit = self
+            .audit(
+                principal,
+                AuditAction::SecretPoolsChanged,
+                namespace,
+                &name,
+                None,
+                ctx,
+            )
+            .with_reason(pools_reason(&texts));
+        if self
+            .store
+            .replace_secret_pools(
+                principal.tenant_id(),
+                namespace,
+                &name,
+                &texts,
+                principal.subject().as_str(),
+                &audit,
+            )
+            .await?
+        {
+            Ok(texts)
+        } else {
+            Err(AppError::NotFound)
+        }
+    }
+
     /// Re-seals up to `limit` versions, after the cursor `after`, that are sealed under a key other
     /// than the active one, so a retired key can be removed from the ring. Run by the operator after
     /// rotating the key ring; safe to repeat and to run from several instances.
@@ -501,7 +736,11 @@ where
     /// [`AppError::Unavailable`] and [`AppError::Internal`] when the store fails; what was moved
     /// before stays moved.
     pub async fn reseal(&self, after: Option<Uuid>, limit: u32) -> Result<ResealBatch, AppError> {
-        let active = self.cipher.active_key_id().to_owned();
+        let cipher = self
+            .cipher
+            .as_ref()
+            .ok_or(AppError::NotAllowed("local secret re-sealing is disabled"))?;
+        let active = cipher.active_key_id().to_owned();
         let stale = self
             .store
             .versions_not_sealed_under(&active, after, limit)
@@ -514,16 +753,19 @@ where
         let (mut moved, mut failed) = (0, 0);
         for old in stale {
             let meta = &old.meta;
+            let StoredValue::Local(old_sealed) = &old.value else {
+                return Err(AppError::Internal);
+            };
             let aad = associated_data(
                 meta.tenant_id,
                 meta.namespace_id,
                 &meta.name,
                 meta.id,
-                &old.sealed.key_id,
+                &old_sealed.key_id,
             );
-            let Ok(value) = self.cipher.open(&old.sealed, &aad) else {
+            let Ok(value) = cipher.open(old_sealed, &aad) else {
                 tracing::error!(
-                    key = %old.sealed.key_id,
+                    key = %old_sealed.key_id,
                     version = %meta.id,
                     "a stored secret cannot be opened with the key ring; it is left as it is"
                 );
@@ -537,8 +779,7 @@ where
                 meta.id,
                 &active,
             );
-            let sealed = self
-                .cipher
+            let sealed = cipher
                 .seal(&value, &new_aad)
                 .map_err(|_| AppError::Internal)?;
             let audit = AuditRecord::engine(
@@ -552,7 +793,7 @@ where
             );
             if self
                 .store
-                .replace_sealed(meta.id, &old.sealed.key_id, &sealed, &audit)
+                .replace_sealed(meta.id, &old_sealed.key_id, &sealed, &audit)
                 .await?
             {
                 moved += 1;
@@ -586,6 +827,26 @@ where
             Some(subject) => record.with_reason(format!("subject {subject}")),
             None => record,
         }
+    }
+}
+
+/// Validated, sorted and without repeats, as the canonical texts that are stored.
+pub(crate) fn parse_pool_texts(pools: &[String]) -> Result<Vec<String>, AppError> {
+    sagat_domain::binding::parse_pools(pools)
+        .map(|parsed| parsed.iter().map(ToString::to_string).collect())
+        .map_err(|error| {
+            AppError::NotAllowed(match error {
+                PoolError::Count => "a secret lists at most 16 pools",
+                PoolError::InvalidName => "a pool name is 1 to 64 letters, digits or . _ - : +",
+            })
+        })
+}
+
+fn pools_reason(pools: &[String]) -> String {
+    if pools.is_empty() {
+        "pools: none (not restricted)".to_owned()
+    } else {
+        format!("pools: {}", pools.join(", "))
     }
 }
 

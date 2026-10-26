@@ -23,6 +23,7 @@ export interface HttpRequest {
   /** Present on a POST that may be repeated: the call is retried because the server deduplicates it. */
   idempotencyKey?: string;
   traceparent?: string;
+  signal?: AbortSignal;
   /** True for a call whose repetition cannot do harm (GET, or a POST that carries a key). */
   safeToRepeat: boolean;
 }
@@ -72,7 +73,7 @@ export class HttpTransport {
         if (!isRetriable(error) || n + 1 >= attempts) throw error;
         const wait = delayAfter(this.retry, n, error);
         this.logger.warn('retrying a request', { method: req.method, path: req.path, code: error.code, attempt: n + 1, waitMs: wait });
-        await sleep(wait);
+        await sleep(wait, req.signal);
       }
     }
     throw last ?? new SagatError({ code: 'INTERNAL', message: 'no attempt was made' });
@@ -101,8 +102,12 @@ export class HttpTransport {
       headers['content-type'] = req.contentType ?? 'application/octet-stream';
     }
 
+    if (req.signal?.aborted) {
+      throw new SagatError({ code: 'CANCELLED', message: 'the caller cancelled the request', status: null });
+    }
     let response: Response;
     try {
+      const timeout = AbortSignal.timeout(this.timeoutMs);
       response = await this.fetchImpl(url, {
         method: req.method,
         headers,
@@ -110,10 +115,13 @@ export class HttpTransport {
         ...(req.rawBody !== undefined ? { duplex: 'half' } : {}),
         // A redirect would carry the credential to a place the caller did not name: it is never followed.
         redirect: 'manual',
-        signal: AbortSignal.timeout(this.timeoutMs),
+        signal: req.signal ? AbortSignal.any([req.signal, timeout]) : timeout,
       } as unknown as RequestInit);
     } catch (error) {
       if (error instanceof SagatError) throw error;
+      if (req.signal?.aborted) {
+        throw new SagatError({ code: 'CANCELLED', message: 'the caller cancelled the request', status: null });
+      }
       const timedOut = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
       throw new SagatError({
         code: 'TRANSPORT',
@@ -128,6 +136,9 @@ export class HttpTransport {
       text = await readCapped(response, MAX_BODY_BYTES);
     } catch (error) {
       if (error instanceof SagatError) throw error;
+      if (req.signal?.aborted) {
+        throw new SagatError({ code: 'CANCELLED', message: 'the caller cancelled the request', status: response.status, traceId });
+      }
       throw new SagatError({ code: 'TRANSPORT', message: 'the answer was cut off', status: response.status, traceId });
     }
     if (response.status >= 300 && response.status < 400) {

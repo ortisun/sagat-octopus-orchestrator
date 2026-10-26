@@ -58,17 +58,32 @@ It writes a table the runtime role cannot, so it is run with the owner role from
 
 ## 3. Upgrade
 
-The current chart and application are version `0.1.0`, following the maintainer’s release-number
-reset. The `v0.1.0` tag replaces the older `v0.4.0` tag. Required, fail-closed NetworkPolicy peers remain
-mandatory; when moving from an older checkout, populate `networkPolicy.apiFrom`, `workersFrom` and
-`egress.{dnsTo,postgres.to,oidc.to}`; also populate `egress.nats.to` when `nats.url` is set. Render the
-release first. The chart refuses the upgrade if a peer is missing, empty or global.
+The current chart/application version is `0.2.0`. The earlier numbering reset is documented in
+[0.1.0](../releases/0.1.0.md); it did not revert code or schema. Required, fail-closed NetworkPolicy
+peers remain mandatory: populate `networkPolicy.apiFrom`, `workersFrom`, `metricsFrom` and
+`egress.{dnsTo,postgres.to,oidc.to}`, plus `egress.nats.to` when `nats.url` is set. Render the release
+first; missing, empty or global peers are refused.
 
-1. Run the migrations as the database owner, once, **before** any new engine starts: `control-plane migrate` (a Job in Kubernetes; the chart does not run it, so that a rolling upgrade never races its own schema change). The migrations of feature 010 only add tables, triggers and indexes; the old indexes stay, so engines of the previous version keep working while the upgrade rolls. Two things to know on a large database: the eleven shard indexes are built inside the migration (build them `CONCURRENTLY` first, same names, and check none is invalid: `data-model.md`), and the migration that adds the counters of active runs takes a `SHARE ROW EXCLUSIVE` lock on `runs` while it counts the unfinished ones (reads go on, writes wait for the count: a few seconds for a million runs; run it in a quiet moment). Engines of the previous version go on counting the runs for their quota, which is correct and slow; the counters are read by the new ones.
-2. Roll the engines (the chart surges one at a time, `maxUnavailable: 0`). A new replica announces itself and takes shards as the old ones give theirs back or lose them with their pods. During the roll, old and new replicas work on the same shards: that is redundant and correct.
-3. Roll the control plane.
+1. Back up PostgreSQL and the associated blob/provider state and keys. Rehearse on a restored copy.
+   Stop admissions and drain or stop control-plane, engine and runner writers; mixed old/new
+   writers are unsupported by the coordinated security upgrade.
+2. Run migrations as the database owner once, before new writers: `control-plane migrate`.
+   The chart does not run this command. Migration/index/backfill locks can block writers, so
+   budget a maintenance window rather than assuming all additive changes are nonblocking.
+3. Deploy compatible engines, control plane, runners, workers and Studio. Hold new-capability
+   publication and starts until their engines and readers are available, then resume admissions.
+   Engine pods still use `maxUnavailable: 0`; that placement policy does not authorize mixed
+   application writers during an incompatible schema/protocol transition.
+4. For rollback, stop new starts and retain compatible readers/workers until runs using new
+   capabilities drain. Keep their additive schema and history; do not automatically run down
+   migrations. Old-process compatibility covers its named root-run/read cases, not arbitrary
+   writes of new scoped workflows.
 
-To go back, roll the engines back. The previous version does not use the new tables and the old indexes are still there, so leave the schema as it is: the down migration exists and is tested, but no command runs it, and undoing a schema is a decision to take with whoever owns the database.
+Follow [security upgrade/rollback](security-governance.md#upgrade-and-rollback),
+[workflow boundaries](workflow-primitives.md) and the current [release notes](../releases/0.2.0.md).
+After OpenBao cutover, application rollback alone does not restore credential authority; use the
+[coordinated database/provider recovery](database-recovery.md) procedure, preserving references,
+Raft state/tombstones and the intent-binding key, with cleanup stopped until references are checked.
 
 ## 4. On Kubernetes: the chart
 

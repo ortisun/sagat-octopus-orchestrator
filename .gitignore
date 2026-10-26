@@ -30,3 +30,10 @@
 # Isolated .NET runner build output
 /runners/dotnet/**/bin/
 /runners/dotnet/**/obj/
+
+# Personal agent preferences and settings (never committed)
+CLAUDE.local.md
+AGENTS.local.md
+.claude/settings.local.json
+# Private database/OpenBao development fixture
+/.local/

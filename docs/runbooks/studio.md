@@ -50,12 +50,22 @@ memory until restart). A browser-cache purge cannot correct that old server beha
 
 ## 3. Using it (short)
 
+The menu follows the hierarchy: **Namespaces** (the tenant's page) and the namespace selector come first, and Workflows, Runs, Operations,
+Scripts and Integrations appear under the selector only once a namespace is chosen. On a first visit nothing is chosen (the Studio opens the
+namespace list): choose one in the selector or with **Use namespace**. The choice is remembered in the browser as a slug (`studio.namespace`) and
+dropped if the tenant does not list it.
+
+
 - **Sign in**: paste a token, or use your organisation's single sign-on. The header shows who you are and your role; what you cannot do is not hidden but explained.
 - **Build a workflow**: add steps from the palette (or the *Add node* menu with the keyboard), connect them (drag, or choose in the inspector), set their fields. The checks of the
   platform run as you work and are listed with the node each is about; advice the platform does not give is listed apart. The draft is saved by itself; if someone else saved first you are
   shown the difference and nothing is overwritten without it. *Publish…* shows what changes against the active version and which changes can break callers.
 - **Watch a run**: on wide screens the filtered Runs list stays beside the detail; selecting another run preserves its filters,
-  loaded rows and scroll position. On narrow screens, use the separate Runs list and detail routes. The graph shows each step's
+  loaded rows and scroll position. The filters are in the address (`/runs?status=FAILED&workflow=<id>`), so a link carries them;
+  *Open a run by id* takes a pasted id. Below 74rem the list is cards, and on narrow screens use the separate Runs list and detail
+  routes. Where the page area is 62rem or wider the selected step opens beside the graph, not under it; the *Overview map* toggle
+  shows a map of the graph. *Start run…* (Workflows list, Runs page; needs `run:start`) starts a run of a published workflow
+  from a JSON input you type; the platform checks it against the workflow's input schema and says what is wrong. The graph shows each step's
   identity, type, state and the way the run took. Select a step for attempts, failure/wait details,
   saga information and child-run links; the *Table* tab has the same data as a list; the *Timeline* is the journal. A banner
   tells how the view is kept current (live, polling, reconnecting). Missing finish times stay unknown rather than counting through now.

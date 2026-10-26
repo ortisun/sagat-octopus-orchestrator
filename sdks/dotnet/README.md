@@ -1,6 +1,6 @@
 # SagatOctopusOrchestrator.Sdk (C# / .NET)
 
-The .NET SDK of the Sagat Octopus Orchestrator, version **0.1.0**. It is three things in one package and nothing else
+The .NET SDK of the Sagat Octopus Orchestrator, version **0.2.0**. It is three things in one package and nothing else
 (`sdks/SPEC.md`):
 
 1. a **client** for the REST API: start, read, list, operate, cancel and signal runs, publish events, wait for a run;
@@ -16,7 +16,7 @@ every state and every retry decision. It integrates with `Microsoft.Extensions.D
 ## Install
 
 ```text
-dotnet add package SagatOctopusOrchestrator.Sdk --version 0.1.0
+dotnet add package SagatOctopusOrchestrator.Sdk --version 0.2.0
 ```
 
 The package is not published to a feed yet. `dotnet pack src/SagatOctopusOrchestrator.Sdk -c Release -o ./nupkg` makes it
@@ -114,6 +114,10 @@ Without the generic host: `new WorkerHost(options)`, then `RegisterActivity` / `
   ends a task). The host is restartable (`StopAsync` then `StartAsync` on the same object); `StopAsync` also ends a pause the poll loop is parked in.
 - A session the server drops (`UNAUTHENTICATED` to a poll) is registered again at once; if the next poll is refused too, the registrations back off (SPEC
   section 5) until a poll succeeds. The same task leased again while it runs is another task in flight (`StopAsync` waits for and cancels both).
+- At protocol 1.5, `ActivityExecutionContext.Instance` is a typed copy of the lease identity with its ordered scope path and definition node. It is
+  `null` at protocol 1.4 or older; reports continue to use the original lease identity.
+- For a collection body, `ActivityExecutionContext.Item` is the captured JSON item and `Index` is its stable input index. Both are
+  `null` for root and non-collection work; the handler input remains the run input.
 
 ## Build a workflow
 
@@ -181,7 +185,7 @@ answer with more tasks than the host asked for runs the first ones and leaves th
 | `Token` / `TokenProvider` | a bearer token, or a provider called before every request | one is required |
 | `Timeout` | deadline of one REST call or unary RPC | 30 s |
 | `Retry` | `MaxAttempts`, `InitialDelay`, `MaxDelay` | 4, 200 ms, 5 s |
-| `UserAgent` | suffix appended to `sagat-sdk-csharp/0.1.0` | none |
+| `UserAgent` | suffix appended to `sagat-sdk-csharp/0.2.0` | none |
 | `Tls` | `TrustedRoots`, `ServerName`, `ClientCertificate` | system roots, the host of the URL, no client certificate |
 | `Json` | `JsonSerializerOptions` for typed payloads | camel case, case-insensitive on read |
 | `HttpMessageHandler` | the transport of the client (a proxy, a test, fault injection); the caller owns it and must turn redirects off | a pooled `SocketsHttpHandler` |
@@ -263,7 +267,8 @@ duration that is not a whole number of milliseconds (`TimeSpan.FromTicks(15_000)
 SemVer. Before 1.0 a minor version may change the .NET API; the **wire** contract does not move with it: REST is additive within
 `/v1` and the worker protocol is additive within `1.x` (the host negotiates; a newer SDK against an older server runs at the
 server's version, an older SDK ignores fields it does not know). After 1.0 a breaking change of the API is a major version.
-`SdkInfo.Version` is the version, `SdkInfo.ProtocolVersion` (`1.4`) the newest worker protocol minor the SDK speaks.
+`SdkInfo.Version` is the version, `SdkInfo.ProtocolVersion` (`1.5`) the newest worker protocol minor the SDK speaks.
+When the server negotiates `1.4` or older, lease-bound requests omit scoped identity.
 
 ## Runtime version matrix
 
@@ -318,3 +323,10 @@ plus plain HTTP for the control endpoint), `proto/worker.proto` (a copy). The ge
 ## License
 
 MIT. `LICENSE.txt` is included in the NuGet package.
+
+## Managed PostgreSQL connections
+
+Use the database builder with a logical connection created in Sagat. See the
+[five-language guide](../../docs/guides/managed-database-sdk.md) for typed parameters,
+result consumption, permissions and the shared real-service scenario. Credentials
+are resolved by the separate managed executor.

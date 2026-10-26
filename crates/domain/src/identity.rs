@@ -282,8 +282,20 @@ pub enum Permission {
     RunStart,
     /// Read runs, their journal and runtime graph.
     RunRead,
+    /// Read a declared, explicitly disclosed business query result.
+    RunQuery,
+    /// Submit a declared atomic business-state update.
+    RunUpdate,
+    /// Read a pending human approval and its redacted decision metadata.
+    ApprovalRead,
+    /// Decide a pending approval after current eligibility and initiator checks.
+    ApprovalDecide,
     /// Inspect only the redacted structure of a run input or retained journal payload.
     RunPayloadInspect,
+    /// Read payload values classified as `internal`.
+    PayloadReadInternal,
+    /// Reveal payload values classified as `pii`; granted per subject and namespace, never by role.
+    PayloadRevealPii,
     /// Cancel, pause or resume a run.
     RunOperate,
     /// Deliver a signal to a run.
@@ -339,11 +351,18 @@ pub enum Permission {
     /// Point new runs of a workflow at another version that was published already: a rollback, or
     /// the way forward again (`FR-011-002`). Not publishing: nothing new is made.
     VersionActivate,
+    DatabaseManage,
+    DatabaseUse,
+    DatabaseAdHoc,
+    DatabaseWrite,
+    DatabaseResultRead,
+    /// Resolve only a leased managed database capability; additionally requires the machine role.
+    DatabaseExecute,
 }
 
 impl Permission {
     /// Every permission, used to grant the admin role and to test the full matrix.
-    pub const ALL: [Self; 36] = [
+    pub const ALL: [Self; 48] = [
         Self::WorkspaceRead,
         Self::WorkspaceCreate,
         Self::NamespaceRead,
@@ -355,7 +374,13 @@ impl Permission {
         Self::AuditRead,
         Self::RunStart,
         Self::RunRead,
+        Self::RunQuery,
+        Self::RunUpdate,
+        Self::ApprovalRead,
+        Self::ApprovalDecide,
         Self::RunPayloadInspect,
+        Self::PayloadReadInternal,
+        Self::PayloadRevealPii,
         Self::RunOperate,
         Self::RunSignal,
         Self::WorkerExecute,
@@ -380,6 +405,12 @@ impl Permission {
         Self::PublicationApprove,
         Self::PublicationManage,
         Self::VersionActivate,
+        Self::DatabaseManage,
+        Self::DatabaseUse,
+        Self::DatabaseAdHoc,
+        Self::DatabaseWrite,
+        Self::DatabaseResultRead,
+        Self::DatabaseExecute,
     ];
 
     #[must_use]
@@ -396,7 +427,13 @@ impl Permission {
             Self::AuditRead => "audit:read",
             Self::RunStart => "run:start",
             Self::RunRead => "run:read",
+            Self::RunQuery => "run:query",
+            Self::RunUpdate => "run:update",
+            Self::ApprovalRead => "approval:read",
+            Self::ApprovalDecide => "approval:decide",
             Self::RunPayloadInspect => "run:payload:inspect",
+            Self::PayloadReadInternal => "payload:read-internal",
+            Self::PayloadRevealPii => "payload:reveal-pii",
             Self::RunOperate => "run:operate",
             Self::RunSignal => "run:signal",
             Self::WorkerExecute => "worker:execute",
@@ -421,6 +458,12 @@ impl Permission {
             Self::PublicationApprove => "publication:approve",
             Self::PublicationManage => "publication:manage",
             Self::VersionActivate => "version:activate",
+            Self::DatabaseManage => "database:manage",
+            Self::DatabaseUse => "database:use",
+            Self::DatabaseAdHoc => "database:adhoc",
+            Self::DatabaseWrite => "database:write",
+            Self::DatabaseResultRead => "database:result:read",
+            Self::DatabaseExecute => "database:execute",
         }
     }
 }
@@ -444,9 +487,62 @@ pub enum Role {
     /// nothing else. Kept apart from [`Self::Worker`] so that a worker that serves activities
     /// never reads the source of a script.
     Runner,
+    /// Isolated executor for managed database operations. No catalog or general secret access.
+    DatabaseRunner,
 }
 
 impl Role {
+    /// Every decided catalog permission except PII reveal, which always needs a namespace grant.
+    pub const ADMIN_PERMISSIONS: &'static [Permission] = &[
+        Permission::WorkspaceRead,
+        Permission::WorkspaceCreate,
+        Permission::NamespaceRead,
+        Permission::NamespaceCreate,
+        Permission::MembershipManage,
+        Permission::DefinitionRead,
+        Permission::DefinitionWrite,
+        Permission::DefinitionPublish,
+        Permission::AuditRead,
+        Permission::RunStart,
+        Permission::RunRead,
+        Permission::RunQuery,
+        Permission::RunUpdate,
+        Permission::ApprovalRead,
+        Permission::ApprovalDecide,
+        Permission::RunPayloadInspect,
+        Permission::PayloadReadInternal,
+        Permission::RunOperate,
+        Permission::RunSignal,
+        Permission::WorkerExecute,
+        Permission::QuotaRead,
+        Permission::QuotaManage,
+        Permission::SecretRead,
+        Permission::SecretManage,
+        Permission::SecretUse,
+        Permission::EgressManage,
+        Permission::WorkerBind,
+        Permission::SagaOverride,
+        Permission::EventPublish,
+        Permission::EventRead,
+        Permission::EventManage,
+        Permission::ScriptRead,
+        Permission::ScriptWrite,
+        Permission::ScriptPublish,
+        Permission::ScriptBuild,
+        Permission::ScriptExecute,
+        Permission::OpsRead,
+        Permission::WorkerManage,
+        Permission::PublicationApprove,
+        Permission::PublicationManage,
+        Permission::VersionActivate,
+        Permission::DatabaseManage,
+        Permission::DatabaseUse,
+        Permission::DatabaseAdHoc,
+        Permission::DatabaseWrite,
+        Permission::DatabaseResultRead,
+        Permission::DatabaseExecute,
+    ];
+
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -456,6 +552,7 @@ impl Role {
             Self::Viewer => "viewer",
             Self::Worker => "worker",
             Self::Runner => "runner",
+            Self::DatabaseRunner => "database-runner",
         }
     }
 
@@ -463,15 +560,18 @@ impl Role {
     #[must_use]
     pub const fn permissions(self) -> &'static [Permission] {
         use Permission::{
-            DefinitionPublish, DefinitionRead, DefinitionWrite, EventManage, EventPublish,
-            EventRead, NamespaceRead, OpsRead, PublicationApprove, QuotaRead, RunOperate,
-            RunPayloadInspect, RunRead, RunSignal, RunStart, ScriptBuild, ScriptExecute,
-            ScriptPublish, ScriptRead, ScriptWrite, SecretRead, SecretUse, VersionActivate,
-            WorkerExecute, WorkerManage, WorkspaceRead,
+            ApprovalDecide, ApprovalRead, DatabaseAdHoc, DatabaseUse, DefinitionPublish,
+            DefinitionRead, DefinitionWrite, EventManage, EventPublish, EventRead, NamespaceRead,
+            OpsRead, PayloadReadInternal, PublicationApprove, QuotaRead, RunOperate,
+            RunPayloadInspect, RunQuery, RunRead, RunSignal, RunStart, RunUpdate, ScriptBuild,
+            ScriptExecute, ScriptPublish, ScriptRead, ScriptWrite, SecretRead, SecretUse,
+            VersionActivate, WorkerExecute, WorkerManage, WorkspaceRead,
         };
         match self {
-            Self::Admin => &Permission::ALL,
+            Self::Admin => Self::ADMIN_PERMISSIONS,
             Self::Developer => &[
+                DatabaseUse,
+                DatabaseAdHoc,
                 WorkspaceRead,
                 NamespaceRead,
                 DefinitionRead,
@@ -479,6 +579,11 @@ impl Role {
                 DefinitionPublish,
                 RunStart,
                 RunRead,
+                RunQuery,
+                RunUpdate,
+                PayloadReadInternal,
+                ApprovalRead,
+                ApprovalDecide,
                 SecretRead,
                 SecretUse,
                 QuotaRead,
@@ -497,6 +602,11 @@ impl Role {
                 DefinitionRead,
                 RunStart,
                 RunRead,
+                RunQuery,
+                RunUpdate,
+                PayloadReadInternal,
+                ApprovalRead,
+                ApprovalDecide,
                 RunPayloadInspect,
                 RunOperate,
                 RunSignal,
@@ -514,6 +624,7 @@ impl Role {
                 NamespaceRead,
                 DefinitionRead,
                 RunRead,
+                ApprovalRead,
                 QuotaRead,
                 EventRead,
                 ScriptRead,
@@ -521,6 +632,7 @@ impl Role {
             ],
             Self::Worker => &[WorkerExecute],
             Self::Runner => &[WorkerExecute, ScriptBuild, ScriptExecute],
+            Self::DatabaseRunner => &[WorkerExecute, Permission::DatabaseExecute],
         }
     }
 
@@ -548,6 +660,7 @@ impl FromStr for Role {
             "viewer" => Ok(Self::Viewer),
             "worker" => Ok(Self::Worker),
             "runner" => Ok(Self::Runner),
+            "database-runner" => Ok(Self::DatabaseRunner),
             other => Err(IdentityError::UnknownRole(clip(other))),
         }
     }

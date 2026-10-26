@@ -6,4 +6,51 @@ ignore = [
   # VERIFIES signatures with public keys (jsonwebtoken, feature `rust_crypto`, for RS256 tokens), and
   # never signs or decrypts with RSA. See research.md, gap G16.
   "RUSTSEC-2023-0071",
+  # rustls 0.23.45, four advisories published 2026-10-14 and fixed in 0.23.46, which is younger than
+  # the two-week rule for dependencies until 2026-10-28. Only `ring`, `std`, `tls12` and `log` are
+  # enabled: no ECH (0347), no brotli certificate decompression (0348), no post-quantum hybrid key
+  # exchange to downgrade (0349), and no rustls session value is ever formatted with `Debug` (0346).
+  # Remove all four and upgrade on or after 2026-10-28. See research.md, gap G271.
+  "RUSTSEC-2026-0346",
+  "RUSTSEC-2026-0347",
+  "RUSTSEC-2026-0348",
+  "RUSTSEC-2026-0349",
+
+  # 2026-10-24 advisories (published 2026-10-13 to 2026-10-23). Every fix is younger than the two-week
+  # rule for dependencies, so each one is a time-boxed ignore, the same precedent as G271. Each entry
+  # says when its fix passes the rule (the release date plus 14 days) and the date by which the ignore
+  # must be gone. See research.md, gap G700 and decision D700.
+
+  # tokio 1.53.2, "unsound" (informational): `AsyncFd::new` and its siblings accept any `AsRawFd`. The
+  # workspace calls none of the four constructors (grep over crates, apps and tests). Fixed in 1.53.3
+  # (2026-10-13); eligible on 2026-10-27. Upgrade together with rustls on or after 2026-10-28.
+  "RUSTSEC-2026-0386",
+
+  # rustls-webpki 0.103.15 accepts paths through the distrusted emSign intermediates. Fixed in 0.103.16
+  # (2026-10-20); eligible on 2026-11-03. Inbound mTLS (webhooks) trusts only the operator's own CA
+  # file, so the emSign roots are not anchors there. Outbound clients (Kafka connector, egress) do
+  # anchor on public roots, so this is the entry to take early if the owner decides so. Expires 2026-11-03.
+  "RUSTSEC-2026-0382",
+
+  # webpki-roots 1.0.9 (used by the Kafka connector and sqlx) and webpki-root-certs 1.0.9 (used by
+  # rustls-platform-verifier): the bundled roots allow the same emSign intermediates. Fixed in 1.0.10
+  # (2026-10-19); eligible on 2026-11-02. Expires 2026-11-02.
+  "RUSTSEC-2026-0381",
+  "RUSTSEC-2026-0383",
+
+  # ctutils 0.4.3 (through aes-gcm 0.11, digest 0.11 and universal-hash 0.6): `Choice` mask generation
+  # and u128 comparison could branch on a secret. Fixed in 0.4.4 (2026-10-23), a lock-only update;
+  # eligible on 2026-11-06. The secrets in this code base are held in memory by `sagat-infra-secrets`
+  # and are not exposed to a timing oracle: an attacker would need to time AES-GCM operations on the
+  # control-plane host. Expires 2026-11-06.
+  "RUSTSEC-2026-0385",
+
+  # crypto-bigint 0.5.5 (timing variability in operations meant to be constant-time), reached only
+  # through elliptic-curve 0.13.8, which p256 0.13 and p384 0.13 pull in for jsonwebtoken 11.1.0.
+  # The fix (0.7.6, 2026-10-23) needs elliptic-curve 0.14, a major bump that jsonwebtoken has not
+  # taken (no release after 11.1.0, 2026-09-16), and `[patch]` cannot cross a major version. The
+  # control plane only VERIFIES ES256 tokens, with public keys and public inputs; the one signing path
+  # is the development identity provider (apps/dev-idp) with a throwaway key. Expires 2026-11-06,
+  # when it is re-evaluated (see research.md, gap G700).
+  "RUSTSEC-2026-0387",
 ]

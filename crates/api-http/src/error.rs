@@ -8,9 +8,13 @@
 use axum::body::Body;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use sagat_application::approval_progress::ApprovalProgressError;
+use sagat_application::classification::FindingSeverity;
 use sagat_application::definitions::IrError;
-use sagat_application::error::{AppError, ConflictKind};
+use sagat_application::error::{AccessDenial, AppError, ConflictKind};
+use sagat_domain::execution::ApprovalError;
 use sagat_domain::scripts::ScriptError;
+use sagat_domain::workflow::WorkflowError;
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -78,6 +82,45 @@ impl ErrorCode {
             (Self::Forbidden, "NOT_THE_AUTHOR") => "Only the author of a request takes it back.",
             (Self::Conflict, "STATE_CONFLICT") => {
                 "Read the resource again: someone else may have already done this, or it is in a state that does not allow it."
+            }
+            (Self::ValidationFailed, "CLASSIFICATION") => {
+                "Use the reported schema paths to correct classification levels and keep annotations inside supported carriers."
+            }
+            (Self::ValidationFailed, "INVALID_SCOPE") => {
+                "Keep the referenced node inside its declared body and remove recursive or overlapping scope paths."
+            }
+            (Self::ValidationFailed, "INVALID_OPERATION_STATE") => {
+                "Use the declared bounded state schema and return a value that matches it."
+            }
+            (Self::ValidationFailed, "UPDATE_REJECTED") => {
+                "Change the update arguments so they satisfy the declared business validator."
+            }
+            (Self::ValidationFailed, "INVALID_ARGUMENTS") => {
+                "Send arguments that match the argument schema the operation declares."
+            }
+            (Self::ValidationFailed, "INVALID_UPDATE_KEY") => {
+                "Use an update key of 1 to 128 printable ASCII characters without spaces, and keep it for retries."
+            }
+            (Self::ValidationFailed, "INVALID_DECISION_KEY") => {
+                "Use a decision key of 1 to 128 permitted ASCII characters, and keep it for retries."
+            }
+            (Self::ValidationFailed, "INVALID_REASON_CODE") => {
+                "Send a reason code of 1 to 64 machine characters, or none; free text is not accepted."
+            }
+            (Self::Forbidden, "NOT_ELIGIBLE") => {
+                "Ask an eligible decision maker with the approval permission to decide this request."
+            }
+            (Self::Forbidden, "INITIATOR_CANNOT_DECIDE") => {
+                "Ask a different eligible person to decide this approval request."
+            }
+            (Self::Conflict, "CHAIN_HEAD_CHANGED") => {
+                "Read the chain head again and retry only if that run is still the intended target."
+            }
+            (Self::Conflict, "RUN_NOT_MUTABLE") => {
+                "Read the run status and submit the update only while it is running or waiting."
+            }
+            (Self::Conflict, "RUN_CONTINUED") => {
+                "Address the current chain head explicitly if the update is meant for its successor."
             }
             (Self::NotFound, "ROUTE_NOT_FOUND") | (Self::BadRequest, "METHOD_NOT_ALLOWED") => {
                 "This server does not have that call: check the path and method, and the version of the API it speaks."
@@ -168,6 +211,8 @@ pub struct ApiError {
     parts: ErrorParts,
     retry_after: Option<u32>,
     www_authenticate: Option<&'static str>,
+    /// Why the call was refused with `403`, for the audit of the denial (gap G9). Never shown.
+    denial: Option<AccessDenial>,
 }
 
 impl ApiError {
@@ -182,6 +227,7 @@ impl ApiError {
             },
             retry_after: None,
             www_authenticate: None,
+            denial: None,
         }
     }
 
@@ -224,6 +270,12 @@ impl ApiError {
     #[must_use]
     pub fn bad_request(message: &'static str) -> Self {
         Self::new(StatusCode::BAD_REQUEST, ErrorCode::BadRequest, message)
+    }
+
+    /// The request is well formed but conflicts with the current state of the resource (409).
+    #[must_use]
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::CONFLICT, ErrorCode::Conflict, message)
     }
 
     #[must_use]
@@ -306,11 +358,48 @@ impl ApiError {
         self
     }
 
+    /// Attaches a handler-owned structured detail object. Callers must keep it free of request or
+    /// workflow values unless the endpoint explicitly authorizes their disclosure.
+    #[must_use]
+    pub fn with_details(mut self, details: Value) -> Self {
+        self.parts.details = Some(details);
+        self
+    }
+
     /// The error as it will be reported, for transports other than HTTP (the gRPC adapter maps the
     /// same classification onto its own status codes, so both agree on what an error means).
     #[must_use]
     pub fn parts(&self) -> &ErrorParts {
         &self.parts
+    }
+
+    /// The closed rejection code of a refusal that has one: a `details.reason` of the contract's
+    /// table, or the rate and quota codes. Any other failure is not a rejection, so a reason can
+    /// never widen the metric label set.
+    #[must_use]
+    pub fn primitive_rejection(&self) -> Option<sagat_telemetry::WorkflowPrimitiveRejectionCode> {
+        use sagat_telemetry::WorkflowPrimitiveRejectionCode as Code;
+        self.parts
+            .details
+            .as_ref()
+            .and_then(|details| details.get("reason"))
+            .and_then(Value::as_str)
+            .and_then(Code::from_reason)
+            .or(match self.parts.code {
+                ErrorCode::RateLimited => Some(Code::RateLimited),
+                ErrorCode::QuotaExceeded => Some(Code::QuotaExceeded),
+                _ => None,
+            })
+    }
+
+    /// Why the caller was refused, when the answer is a `403` / `PERMISSION_DENIED`: what the audit
+    /// of the denial records. Any `403` has one, so a refusal added later is audited too.
+    #[must_use]
+    pub fn access_denial(&self) -> Option<AccessDenial> {
+        self.denial.or_else(|| {
+            (self.parts.status == StatusCode::FORBIDDEN)
+                .then_some(AccessDenial::Refused("FORBIDDEN"))
+        })
     }
 
     /// Whole seconds after which the caller may retry, when the error says so.
@@ -415,6 +504,15 @@ impl From<sagat_application::error::Refusal> for ApiError {
 
 impl From<AppError> for ApiError {
     fn from(error: AppError) -> Self {
+        let denial = error.denial();
+        let mut api = Self::from_app(error);
+        api.denial = denial;
+        api
+    }
+}
+
+impl ApiError {
+    fn from_app(error: AppError) -> Self {
         match error {
             AppError::Unauthenticated => Self::invalid_credentials(),
             AppError::Forbidden { permission } => {
@@ -585,6 +683,72 @@ impl From<AppError> for ApiError {
     }
 }
 
+impl From<ApprovalProgressError> for ApiError {
+    fn from(error: ApprovalProgressError) -> Self {
+        match error {
+            ApprovalProgressError::NotFound => Self::not_found(),
+            ApprovalProgressError::Approval(error) => Self::from(error),
+            ApprovalProgressError::Storage(error) => Self::from(AppError::from(error)),
+            ApprovalProgressError::RuntimeUnavailable => Self::unavailable(),
+            ApprovalProgressError::AuditMismatch
+            | ApprovalProgressError::CorruptProjection
+            | ApprovalProgressError::SchedulerFenceLost => {
+                tracing::error!(%error, "workflow approval operation failed internally");
+                Self::from(AppError::Internal)
+            }
+        }
+    }
+}
+
+impl From<ApprovalError> for ApiError {
+    fn from(error: ApprovalError) -> Self {
+        match error {
+            ApprovalError::InvalidDecisionKey => Self::validation(
+                "decisionKey must be 1..128 printable ASCII characters without spaces",
+            )
+            .with_reason("INVALID_DECISION_KEY"),
+            ApprovalError::InvalidReasonCode => {
+                Self::validation("reasonCode must be a 1..64 character machine code")
+                    .with_reason("INVALID_REASON_CODE")
+            }
+            ApprovalError::Forbidden => Self::new(
+                StatusCode::FORBIDDEN,
+                ErrorCode::Forbidden,
+                "the caller is not eligible to decide this approval",
+            )
+            .with_reason("NOT_ELIGIBLE"),
+            ApprovalError::InitiatorCannotDecide => Self::new(
+                StatusCode::FORBIDDEN,
+                ErrorCode::Forbidden,
+                "the initiating identity cannot decide this approval",
+            )
+            .with_reason("INITIATOR_CANNOT_DECIDE"),
+            ApprovalError::IdempotencyKeyReused => Self::new(
+                StatusCode::CONFLICT,
+                ErrorCode::Conflict,
+                "this decision key was already used for different request content",
+            )
+            .with_reason("IDEMPOTENCY_KEY_REUSED"),
+            ApprovalError::AlreadyDecided => Self::new(
+                StatusCode::CONFLICT,
+                ErrorCode::Conflict,
+                "the approval already has a committed outcome",
+            )
+            .with_reason("ALREADY_DECIDED"),
+            ApprovalError::EmptyPolicy
+            | ApprovalError::TooManyPolicyEntries
+            | ApprovalError::DuplicateEligibleSubject
+            | ApprovalError::DuplicateEligibleRole
+            | ApprovalError::IneligiblePolicyRole(_)
+            | ApprovalError::ExpiryNotDue
+            | ApprovalError::InvalidStoredApproval => {
+                tracing::error!(%error, "workflow approval operation failed internally");
+                Self::from(AppError::Internal)
+            }
+        }
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let mut response = Response::new(Body::empty());
@@ -599,6 +763,14 @@ impl IntoResponse for ApiError {
             response
                 .headers_mut()
                 .insert(header::RETRY_AFTER, HeaderValue::from(seconds));
+        }
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        if let Some(denial) = self.access_denial() {
+            response
+                .extensions_mut()
+                .insert(crate::denial::Denied(denial));
         }
         response.extensions_mut().insert(self.parts);
         response
@@ -631,6 +803,28 @@ const fn script_reason(error: ScriptError) -> &'static str {
 /// beyond the clipped fragments the codec already limited.
 fn definition_details(error: &IrError) -> Value {
     match error {
+        IrError::Classification(findings) => {
+            // Only the errors that refused the document: warnings belong to the validate report.
+            let mut issues: Vec<Value> = findings
+                .iter()
+                .filter(|finding| finding.code.severity() == FindingSeverity::Error)
+                .take(20)
+                .map(|finding| {
+                    json!({
+                        "code": finding.code.as_str(), "path": finding.path.as_str(),
+                        "message": finding.code.message(),
+                    })
+                })
+                .collect();
+            if issues.is_empty() {
+                // The findings were capped before any error fit: say what `problems_of` says.
+                issues.push(json!({
+                    "code": "CLASSIFICATION_TOO_COMPLEX",
+                    "message": "classification carrier exceeds a fixed complexity bound",
+                }));
+            }
+            json!({ "reason": "CLASSIFICATION", "issues": issues })
+        }
         IrError::Schema(issues) => json!({
             "reason": "SCHEMA",
             "issues": issues
@@ -641,6 +835,17 @@ fn definition_details(error: &IrError) -> Value {
         IrError::Unsupported { node, kind, .. } => {
             json!({ "reason": "UNSUPPORTED_NODE", "node": node, "kind": kind })
         }
+        IrError::Pending {
+            node,
+            kind,
+            dependency,
+            ..
+        } => {
+            json!({ "reason": "UNSUPPORTED_NODE", "node": node, "kind": kind, "dependency": dependency })
+        }
+        IrError::UnsupportedDeclaration { field, .. } => {
+            json!({ "reason": "UNSUPPORTED_NODE", "path": format!("/{field}") })
+        }
         IrError::Expression { node, field, .. } => {
             json!({ "reason": "EXPRESSION", "node": node, "field": field })
         }
@@ -650,6 +855,24 @@ fn definition_details(error: &IrError) -> Value {
         }
         IrError::TooLarge => json!({ "reason": "TOO_LARGE" }),
         IrError::Malformed => json!({ "reason": "MALFORMED" }),
+        IrError::EscapingBodyEdge { body, from, .. } => {
+            json!({ "reason": "INVALID_SCOPE", "body": body.as_str(), "node": from.as_str() })
+        }
+        IrError::Invalid(WorkflowError::ExpressionByteLimit { node, limit }) => {
+            json!({ "reason": "EXPRESSION", "node": node.as_str(), "limit": limit })
+        }
+        IrError::Invalid(
+            WorkflowError::InvalidScope { .. }
+            | WorkflowError::RecursiveBody(_)
+            | WorkflowError::UnknownBody { .. }
+            | WorkflowError::Cycle(_)
+            | WorkflowError::BranchOverlap { .. }
+            | WorkflowError::BranchBoundary { .. }
+            | WorkflowError::SagaBoundary { .. }
+            | WorkflowError::EndInsideBranch { .. }
+            | WorkflowError::EndInsideSaga { .. }
+            | WorkflowError::BodyDepthExceeded(_),
+        ) => json!({ "reason": "INVALID_SCOPE" }),
         IrError::Invalid(_) => json!({ "reason": "GRAPH" }),
     }
 }

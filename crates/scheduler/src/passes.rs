@@ -1,30 +1,64 @@
 use std::future::Future;
 use std::hash::Hash;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use futures_util::stream;
+use sagat_application::approval_scheduler::{
+    ApprovalAdvance, ApprovalAdvanceError, ApprovalScheduler, ApprovalSchedulerStore, DueApproval,
+};
+use sagat_application::blobs::BlobAccess;
+use sagat_application::chain_progress::{
+    ChainCommandStore, ChainHandoffCommand, ChainHandoffWrite, ChainProgressError,
+    ChainProgressStore, ChainRunTx, ContinuationPreparationError, ContinuationSelection,
+    LockedChainHead,
+};
+use sagat_application::collection_source::{
+    CollectionItemSource, CollectionSource, CollectionSourceError, CollectionSourceRequest,
+};
 use sagat_application::definitions::{Applied, DefinitionStore, Idempotency};
 use sagat_application::entropy::Entropy;
 use sagat_application::error::StoreError;
 use sagat_application::execution::{
-    Actor, DefinitionCache, Effects, Engine, EngineError, ExpressionEvaluator, ParentLink, RunInfo,
-    RunTx,
+    Actor, DefinitionCache, Effects, Engine, EngineError, ExpressionEvaluator, MAX_PAYLOAD_BYTES,
+    MAX_RUN_OUTPUT_BYTES, ParentLink, PathExecutionStore, PathExecutionTx, RunInfo, RunTx,
+    ScopeInput,
+};
+use sagat_application::loop_progress::{
+    LoopCandidate, LoopCheckpointCommand, LoopDelayElapsedCommand, LoopDrainCommand,
+    LoopDrainFinishCommand, LoopEntryCommand, LoopInputError, LoopIterationDrainCommand,
+    LoopNextActivity, LoopProgressError, LoopProgressStore, LoopTransition,
 };
 use sagat_application::maintenance::{
-    EndedChild, LeaseLoss, MaintenanceStore, PendingChild, RunRef, StepRef, Window,
+    EndedChild, LeaseLoss, MaintenanceStore, PendingChild, PendingContinuation, RunRef, StepRef,
+    Window,
+};
+use sagat_application::primitives::{
+    CollectionAdmission, CollectionCheckpoint, CollectionDataLimitEvidence, CollectionDrain,
+    CollectionDrainFinish, CollectionEntry, CollectionFinish, CollectionIterationDrain,
+    CollectionLimits, CollectionScopeId, CollectionStore, CollectionTransition,
+    PrimitiveInputError, PrimitiveStoreError, SchedulerAuthority,
 };
 use sagat_application::quotas::RunLimits;
 use sagat_application::runs::{Lock, NewRun, RunStore};
+use sagat_application::scope_frontier::{
+    CollectionFrontier, LoopFrontier, ScopeFrontierStore, ScopeMember,
+};
 use sagat_application::shards::Lease;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::execution::RunId;
 use sagat_domain::execution::{
-    self, ChildOutcome, ExecutionError, Expiry, FailureCode, Progress, RunStatus, StopReason,
+    self, AddressedProgress, ChildOutcome, CollectionOutcome, ExecutionError, ExecutionInstanceId,
+    Expiry, FailureCode, LoopContinuation, LoopKind, LoopPhase, PathExecutionState, Progress,
+    RunEvent, RunStatus, StopReason,
 };
-use sagat_domain::identity::TenantId;
+use sagat_domain::identity::{NamespaceId, Subject, TenantId};
 use sagat_domain::sharding::{Shard, ShardSet};
-use sagat_domain::workflow::{NodeKind, WorkflowDefinition};
+use sagat_domain::workflow::{NodeId, NodeKind, WorkflowDefinition};
+use sagat_telemetry::{
+    WorkflowPrimitiveKind, WorkflowPrimitiveMetric, WorkflowPrimitiveRejectionCode,
+};
 use time::OffsetDateTime;
 use tracing::Instrument;
 
@@ -81,6 +115,16 @@ impl Default for SchedulerSettings {
 /// What one tick did.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Report {
+    pub collections_advanced: u32,
+    pub loops_advanced: u32,
+    pub continuations_advanced: u32,
+    /// Continuation boundaries that were examined and are waiting for open work to settle (D296).
+    /// Waiting is not work: it is left out of [`Report::did_work`].
+    pub continuations_waiting: u32,
+    pub approvals_opened: u32,
+    pub approvals_expired: u32,
+    pub approval_routes_released: u32,
+    pub stopped_runs_settled: u32,
     pub timers_fired: u32,
     pub waits_timed_out: u32,
     pub retries_released: u32,
@@ -100,11 +144,155 @@ pub struct Report {
     pub fenced: u32,
 }
 
+/// One durable collection transition committed by an explicitly fenced scheduler invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollectionAdvance {
+    Entered,
+    Admitted {
+        index: u32,
+    },
+    Checkpointed {
+        index: u32,
+    },
+    DrainStarted,
+    Drained {
+        index: u32,
+    },
+    DrainFinished,
+    Finished,
+    /// A compensating scope planned, released or ended its compensation (feature 014, D380).
+    Compensated,
+    /// The attempted transition retained no value and the run began its durable quota drain.
+    QuotaStopped,
+    /// A declared hard budget (`ITERATION_LIMIT`, `INSTANCE_LIMIT`) was exceeded before the
+    /// collection was entered, and the run was stopped with that durable failure code.
+    LimitStopped,
+    Waiting,
+    AlreadyFinished,
+}
+
+/// A collection could not advance without weakening its durable invariants.
+#[derive(Debug, thiserror::Error)]
+pub enum CollectionAdvanceError {
+    #[error("the run does not exist")]
+    MissingRun,
+    #[error("the scheduler does not hold the run shard")]
+    FenceUnavailable,
+    #[error("the logical instance is not a collection")]
+    NotCollection,
+    #[error("durable collection progress does not match the run projection")]
+    InvalidProgress,
+    #[error(transparent)]
+    Store(#[from] StoreError),
+    #[error(transparent)]
+    Engine(#[from] EngineError),
+    #[error(transparent)]
+    Primitive(#[from] PrimitiveStoreError),
+    #[error(transparent)]
+    Input(#[from] PrimitiveInputError),
+    #[error(transparent)]
+    Execution(#[from] ExecutionError),
+    #[error("collection expression evaluation failed")]
+    Expression,
+    /// The items live in a blob this replica cannot read right now (no blob source configured, or
+    /// the store or catalog is unavailable). The run is left alone and the next pass tries again.
+    #[error("the collection item source is not available")]
+    SourceUnavailable,
+}
+
+/// One durable sequential-loop transition committed by the scheduler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopAdvance {
+    Entered,
+    Checkpointed {
+        index: u32,
+    },
+    DelayElapsed {
+        index: u32,
+    },
+    DrainStarted,
+    Drained {
+        index: u32,
+    },
+    DrainFinished,
+    /// A compensating scope planned, released or ended its compensation (feature 014, D380).
+    Compensated,
+    ExpressionStopped,
+    /// Entry retained no value and the run was stopped for its durable-content quota.
+    QuotaStopped,
+    /// The loop could not be entered within a declared hard budget and the run was stopped with
+    /// that durable failure code.
+    LimitStopped,
+    Waiting,
+    AlreadyFinished,
+}
+
+/// A sequential loop could not advance without weakening its durable invariants.
+#[derive(Debug, thiserror::Error)]
+pub enum LoopAdvanceError {
+    #[error("the run does not exist")]
+    MissingRun,
+    #[error("the scheduler does not hold the run shard")]
+    FenceUnavailable,
+    #[error("the logical instance is not a sequential loop")]
+    NotLoop,
+    #[error("durable loop progress does not match the run projection")]
+    InvalidProgress,
+    #[error(transparent)]
+    Store(#[from] StoreError),
+    #[error(transparent)]
+    Engine(#[from] EngineError),
+    #[error(transparent)]
+    Progress(#[from] LoopProgressError),
+    #[error(transparent)]
+    Input(#[from] LoopInputError),
+    #[error(transparent)]
+    Execution(#[from] ExecutionError),
+    #[error("loop expression evaluation failed")]
+    Expression,
+}
+
+/// A prepared continuation could not be committed without weakening its serialized snapshot.
+#[derive(Debug, thiserror::Error)]
+pub enum ContinuationAdvanceError {
+    #[error("the execution chain does not exist")]
+    MissingChain,
+    #[error("the scheduler does not hold the current head shard")]
+    FenceUnavailable,
+    #[error("the requested node is not a pending continuation boundary")]
+    NotContinuation,
+    /// Open work (`{0:?}`) keeps the boundary pending. It is not a failure: the boundary is tried
+    /// again and the run's original deadline still ends it (D296).
+    #[error("the continuation boundary waits for open work: {0:?}")]
+    Waiting(sagat_domain::execution::QuiescenceBlocker),
+    #[error("continuation expression evaluation failed")]
+    Expression,
+    #[error("the continuation expression failed and finalized the chain")]
+    ExpressionFinalized,
+    #[error("the continuation boundary exhausted its segment limit and finalized the chain")]
+    ChainLimitFinalized,
+    #[error(transparent)]
+    Preparation(#[from] ContinuationPreparationError),
+    #[error(transparent)]
+    Progress(#[from] ChainProgressError),
+    #[error(transparent)]
+    Store(#[from] StoreError),
+    #[error(transparent)]
+    Engine(#[from] EngineError),
+}
+
 impl Report {
     /// Whether anything at all changed.
     #[must_use]
     pub const fn did_work(&self) -> bool {
         self.timers_fired
+            + self.collections_advanced
+            + self.loops_advanced
+            + self.continuations_advanced
+            + self.approvals_opened
+            + self.approvals_expired
+            + self.approval_routes_released
+            + self.stopped_runs_settled
             + self.waits_timed_out
             + self.retries_released
             + self.leases_expired
@@ -125,24 +313,41 @@ enum Condition<'a> {
     /// The attempt on `node` is still over: its lease expired (or its own deadline passed) *now*, by
     /// the database clock, not merely when the candidate query ran.
     LeaseLost {
-        node: &'a sagat_domain::workflow::NodeId,
+        instance: &'a ExecutionInstanceId,
         cause: LeaseLoss,
+    },
+    /// The run can keep `bytes` more of step output within what a run may retain (every lease
+    /// carries it), checked under the run's lock.
+    RetainedFits {
+        bytes: usize,
     },
 }
 
 impl Condition<'_> {
+    /// What a pass reports when the condition does not hold.
+    const fn refused(&self) -> Outcome {
+        match self {
+            Self::RetainedFits { .. } => Outcome::DoesNotFit,
+            Self::Always | Self::LeaseLost { .. } => Outcome::Skipped,
+        }
+    }
+
     async fn holds<Tx: RunTx>(&self, tx: &mut Tx) -> Result<bool, StoreError> {
         match self {
             Self::Always => Ok(true),
-            Self::LeaseLost { node, cause } => {
+            Self::LeaseLost { instance, cause } => {
                 let now = tx.now();
                 Ok(tx
-                    .lease_deadlines(node)
+                    .lease_deadlines_instance(instance)
                     .await?
                     .is_some_and(|d| match cause {
                         LeaseLoss::Expired => d.expires_at <= now,
                         LeaseLoss::TimedOut => d.attempt_deadline_at.is_some_and(|at| at <= now),
                     }))
+            }
+            Self::RetainedFits { bytes } => {
+                let retained = tx.logical_output_bytes().await?;
+                Ok(!output_increment_exceeds_limit(retained, *bytes))
             }
         }
     }
@@ -157,6 +362,8 @@ enum Outcome {
     Fenced,
     /// The attempted transition rolled back and the same run was stopped for retained storage.
     QuotaStopped,
+    /// The run cannot keep the output this transition would give it (`RetainedFits`).
+    DoesNotFit,
 }
 
 impl Outcome {
@@ -167,6 +374,7 @@ impl Outcome {
             Self::Failed => "failed",
             Self::Fenced => "fenced",
             Self::QuotaStopped => "quota_stopped",
+            Self::DoesNotFit => "does_not_fit",
         }
     }
 }
@@ -184,6 +392,42 @@ fn content_store_quota(error: &StoreError) -> bool {
         StoreError::QuotaExceeded { what }
             if *what == sagat_domain::quota::QuotaResource::TenantContentBytes.limit_name()
     )
+}
+
+fn collection_content_quota(error: &PrimitiveStoreError) -> bool {
+    matches!(error, PrimitiveStoreError::Storage(error) if content_store_quota(error))
+}
+
+fn retained_outputs_exceed_limit(retained: u64) -> bool {
+    let Ok(limit) = u64::try_from(MAX_RUN_OUTPUT_BYTES) else {
+        return true;
+    };
+    retained > limit
+}
+
+fn output_increment_exceeds_limit(retained: u64, additional: usize) -> bool {
+    let Ok(additional) = u64::try_from(additional) else {
+        return true;
+    };
+    let Ok(limit) = u64::try_from(MAX_RUN_OUTPUT_BYTES) else {
+        return true;
+    };
+    retained
+        .checked_add(additional)
+        .is_none_or(|total| total > limit)
+}
+
+fn loop_content_quota(error: &LoopProgressError) -> bool {
+    matches!(error, LoopProgressError::Storage(error) if content_store_quota(error))
+}
+
+fn loop_discovery_error(error: LoopProgressError) -> StoreError {
+    match error {
+        LoopProgressError::Storage(error) => error,
+        other => StoreError::Internal {
+            detail: format!("loop discovery failed: {other}"),
+        },
+    }
 }
 
 fn recovery_guard(
@@ -239,6 +483,30 @@ impl View {
             Hold::Lost => Ok(false),
         }
     }
+
+    async fn holds_path<Tx: PathExecutionTx>(
+        &self,
+        tx: &mut Tx,
+        hold: &Hold,
+    ) -> Result<bool, StoreError> {
+        match hold {
+            Hold::Nothing => Ok(true),
+            Hold::Lease(lease) => tx.holds_shard(&self.owner, *lease).await,
+            Hold::Lost => Ok(false),
+        }
+    }
+
+    async fn holds_child_start<Tx: RunTx>(
+        &self,
+        tx: &mut Tx,
+        hold: &Hold,
+    ) -> Result<bool, StoreError> {
+        match hold {
+            Hold::Nothing => Ok(true),
+            Hold::Lease(lease) => tx.holds_parent_shard(&self.owner, *lease).await,
+            Hold::Lost => Ok(false),
+        }
+    }
 }
 
 /// The scheduler over a store, an evaluator and a source of jitter.
@@ -252,6 +520,9 @@ pub struct Scheduler<S, E, R> {
     definitions: Option<DefinitionCache>,
     /// Which shards this replica works on; without it the scheduler is the only replica.
     placement: Option<Placement>,
+    /// Reads the array of a collection whose `items` expression yields a blob reference; without
+    /// it such a collection waits (it is never failed for a replica that cannot read blobs).
+    item_source: Option<Arc<dyn CollectionItemSource>>,
     /// Until when each pass rests its search for other tenants (see [`SchedulerSettings::discovery_rest`]).
     rests: std::sync::Mutex<std::collections::BTreeMap<&'static str, Instant>>,
 }
@@ -264,7 +535,13 @@ impl<S, E, R> std::fmt::Debug for Scheduler<S, E, R> {
 
 impl<S, E, R> Scheduler<S, E, R>
 where
-    S: RunStore + MaintenanceStore + DefinitionStore,
+    S: RunStore
+        + MaintenanceStore
+        + DefinitionStore
+        + CollectionStore
+        + LoopProgressStore
+        + ScopeFrontierStore
+        + ApprovalSchedulerStore,
     E: ExpressionEvaluator,
     R: Entropy,
 {
@@ -276,8 +553,16 @@ where
             settings,
             definitions: None,
             placement: None,
+            item_source: None,
             rests: std::sync::Mutex::new(std::collections::BTreeMap::new()),
         }
+    }
+
+    /// Lets the scheduler materialize collection items from blob references (T014-016).
+    #[must_use]
+    pub fn with_item_source(mut self, source: Arc<dyn CollectionItemSource>) -> Self {
+        self.item_source = Some(source);
+        self
     }
 
     /// Makes the scheduler one of several replicas: it works only on the shards the placement says
@@ -316,7 +601,11 @@ where
     }
 
     /// Runs every pass once, over the shards this replica holds (all of them when it is alone).
-    pub async fn tick(&self) -> Report {
+    pub async fn tick(&self) -> Report
+    where
+        S: ChainCommandStore + ChainProgressStore + PathExecutionStore,
+        <S as RunStore>::Tx: ChainRunTx,
+    {
         let mut report = Report::default();
         if self.view().shards.is_empty() {
             // A replica that holds nothing (it has not got its share yet, or it cannot reach the
@@ -326,16 +615,2609 @@ where
         // A view for each pass, read when the pass begins: a tick that runs long must go on with the
         // leases the keeper has renewed since, not keep acting on the snapshot it began with until
         // that runs out (every later action would be counted as fenced and the later passes starved).
+        self.collections(&self.view(), &mut report).await;
+        self.loops(&self.view(), &mut report).await;
+        self.continuations(&self.view(), &mut report).await;
+        self.approvals_expire(&self.view(), &mut report).await;
+        self.approvals_open(&self.view(), &mut report).await;
+        self.approval_routes(&self.view(), &mut report).await;
         self.timers(&self.view(), &mut report).await;
         self.wait_deadlines(&self.view(), &mut report).await;
         self.retries(&self.view(), &mut report).await;
         self.leases(&self.view(), &mut report).await;
         self.deadlines(&self.view(), &mut report).await;
+        self.stopped_runs(&self.view(), &mut report).await;
         self.hints(&self.view(), &mut report).await;
         self.children_start(&self.view(), &mut report).await;
         self.children_finish(&self.view(), &mut report).await;
         self.children_cancel(&self.view(), &mut report).await;
         report
+    }
+
+    /// Advances one collection by one durable transition under the scheduler's current shard
+    /// lease. The automatic pass uses the same operation; callers may also request an immediate
+    /// transition while worker completions interleave safely.
+    ///
+    /// The transition reads the scope's frontier (its counters and the iterations in flight), not
+    /// the whole run, so its cost does not grow with the progress of the scope (G461, D520).
+    ///
+    /// # Errors
+    /// Returns an error when ownership, projection data, the definition or an expression cannot be
+    /// proven consistent.
+    pub async fn advance_collection(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+        owner: &ExecutionInstanceId,
+    ) -> Result<CollectionAdvance, CollectionAdvanceError>
+    where
+        S: CollectionStore,
+    {
+        let view = self.view();
+        self.advance_collection_in_view(&view, tenant, run, owner)
+            .await
+    }
+
+    /// The same transition decided from the whole restored run. It is how a scope is entered, how
+    /// the last checkpoint and the finish are produced, and how a compensating scope is advanced
+    /// (their cost is proportional to the scope by nature, once per scope). Kept public so a test
+    /// can drive one scope through both paths and compare their journals (D521).
+    ///
+    /// # Errors
+    /// The errors of [`Self::advance_collection`].
+    pub async fn advance_collection_from_run(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+        owner: &ExecutionInstanceId,
+    ) -> Result<CollectionAdvance, CollectionAdvanceError>
+    where
+        S: CollectionStore,
+    {
+        let view = self.view();
+        self.advance_collection_from_run_in_view(&view, tenant, run, owner)
+            .await
+    }
+
+    /// Advances one sequential loop by one fenced durable transition.
+    ///
+    /// `timer_id` is present only when discovery found the current durable delay. It is rechecked
+    /// by the transaction before the next body is admitted. Like a collection, a loop reads its
+    /// frontier (the counters and the iteration in flight), not the whole run (G461, D520).
+    ///
+    /// # Errors
+    /// Returns a typed error when the definition, projection, fence or expression snapshot cannot
+    /// be proven consistent.
+    pub async fn advance_loop(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+        owner: &ExecutionInstanceId,
+        timer_id: Option<uuid::Uuid>,
+    ) -> Result<LoopAdvance, LoopAdvanceError> {
+        let view = self.view();
+        self.advance_loop_in_view(&view, tenant, run, owner, timer_id)
+            .await
+    }
+
+    /// The same transition decided from the whole restored run (see
+    /// [`Self::advance_collection_from_run`]).
+    ///
+    /// # Errors
+    /// The errors of [`Self::advance_loop`].
+    pub async fn advance_loop_from_run(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+        owner: &ExecutionInstanceId,
+        timer_id: Option<uuid::Uuid>,
+    ) -> Result<LoopAdvance, LoopAdvanceError> {
+        let view = self.view();
+        self.advance_loop_from_run_in_view(&view, tenant, run, owner, timer_id)
+            .await
+    }
+
+    /// Evaluates one pending continuation against a locked snapshot, then commits it only if the
+    /// chain, journal and declared-state revisions still match when the write locks are reacquired.
+    ///
+    /// # Errors
+    /// Returns a typed error when the chain is missing, this replica lost its fence, the boundary
+    /// is no longer pending, expression evaluation fails, or the atomic write rejects the snapshot.
+    pub async fn advance_continuation(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        chain_id: RunId,
+        boundary: &NodeId,
+    ) -> Result<ChainHandoffWrite, ContinuationAdvanceError>
+    where
+        S: ChainCommandStore + ChainProgressStore,
+        S::Tx: ChainRunTx,
+    {
+        let view = self.view();
+        self.advance_continuation_in_view(&view, tenant, namespace, chain_id, boundary)
+            .await
+    }
+
+    async fn advance_continuation_in_view(
+        &self,
+        view: &View,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        chain_id: RunId,
+        boundary: &NodeId,
+    ) -> Result<ChainHandoffWrite, ContinuationAdvanceError>
+    where
+        S: ChainCommandStore + ChainProgressStore,
+        S::Tx: ChainRunTx,
+    {
+        let scope = execution::ChainScope::new(tenant, namespace);
+        let Some(mut tx) = self.store.begin_chain_head(scope, chain_id).await? else {
+            return Err(ContinuationAdvanceError::MissingChain);
+        };
+        let chain = *tx.locked_chain()?;
+        let lease = match view.hold_for(chain.head()) {
+            Hold::Lease(lease) => lease,
+            Hold::Nothing | Hold::Lost => {
+                return Err(ContinuationAdvanceError::FenceUnavailable);
+            }
+        };
+        let info = tx.info().clone();
+        let occurred_at = tx.now();
+        let data = tx.data().await?.clone();
+        let (input_expression, state_expression, entry_correlation, expected_run_version) = {
+            let (definition, state) = tx.parts();
+            let step = state
+                .step(boundary)
+                .ok_or(ContinuationAdvanceError::NotContinuation)?;
+            let Some(NodeKind::ContinueAsNew { input, state: next }) =
+                definition.node(boundary).map(|node| node.kind())
+            else {
+                return Err(ContinuationAdvanceError::NotContinuation);
+            };
+            if step.status() != execution::StepStatus::Pending {
+                return Err(ContinuationAdvanceError::NotContinuation);
+            }
+            if let Some(blocker) = execution::Quiescence::of_run(state, boundary).blocker() {
+                return Err(ContinuationAdvanceError::Waiting(blocker));
+            }
+            // A successor that starts with an event wait needs the key it subscribes with.
+            let entry_correlation = match definition
+                .node(definition.entrypoint())
+                .map(|node| node.kind())
+            {
+                Some(NodeKind::WaitEvent { correlation, .. }) => Some(correlation.clone()),
+                _ => None,
+            };
+            (
+                input.clone(),
+                next.clone(),
+                entry_correlation,
+                state.version(),
+            )
+        };
+        tx.commit().await?;
+
+        let evaluated = (|| {
+            let input = self
+                .engine
+                .evaluator()
+                .child_input(Some(&input_expression), &data)
+                .map_err(|_| ContinuationAdvanceError::Expression)?;
+            let state = state_expression
+                .as_ref()
+                .map(|expression| {
+                    self.engine
+                        .evaluator()
+                        .continuation_value(expression, &data)
+                        .map_err(|_| ContinuationAdvanceError::Expression)
+                })
+                .transpose()?;
+            // The successor's data is its input and its transferred state: nothing has run yet.
+            let correlation = entry_correlation
+                .as_ref()
+                .map(|expression| {
+                    let successor_data = sagat_application::execution::RunData {
+                        input: input.clone(),
+                        state: state.clone(),
+                        state_revision: data.state_revision,
+                        ..Default::default()
+                    };
+                    self.engine
+                        .evaluator()
+                        .correlation_key(expression, &successor_data)
+                        .map_err(|_| ContinuationAdvanceError::Expression)
+                })
+                .transpose()?;
+            Ok::<_, ContinuationAdvanceError>((input, state, correlation))
+        })();
+        let (input, state, correlation) = match evaluated {
+            Ok(values) => values,
+            Err(ContinuationAdvanceError::Expression) => {
+                self.finalize_continuation_expression(
+                    view,
+                    chain,
+                    lease,
+                    expected_run_version,
+                    &info,
+                )
+                .await?;
+                return Err(ContinuationAdvanceError::ExpressionFinalized);
+            }
+            Err(error) => return Err(error),
+        };
+        if state.is_some() != data.state_revision.is_some() {
+            return Err(ContinuationAdvanceError::NotContinuation);
+        }
+        let mut selection =
+            ContinuationSelection::new(boundary.clone(), input, state, data.state_revision)?;
+        if let Some(key) = correlation {
+            selection = selection.with_correlation_key(key);
+        }
+        let transfer = selection.transfer();
+        let successor = RunId::generate();
+        let audit = AuditRecord::engine(
+            tenant,
+            AuditAction::RunContinued,
+            ResourceType::Run,
+            chain.head().to_string(),
+            "continuation selected",
+            info.trace_id.clone(),
+            occurred_at,
+        );
+        let handoff = ChainHandoffCommand::new(
+            scope,
+            chain_id,
+            chain.head(),
+            chain.revision(),
+            expected_run_version,
+            successor,
+            transfer,
+            SchedulerAuthority::new(view.owner.clone(), lease),
+            Subject::engine(),
+            info.trace_id.clone(),
+            occurred_at,
+            audit,
+            uuid::Uuid::now_v7(),
+            uuid::Uuid::now_v7(),
+        );
+        match self
+            .store
+            .continue_evaluated(&selection.into_command(handoff)?)
+            .await
+        {
+            Ok(write) => Ok(write),
+            Err(ChainProgressError::Chain(
+                limit @ (sagat_domain::execution::ChainError::SegmentLimitExceeded
+                | sagat_domain::execution::ChainError::TreeBudgetExhausted),
+            )) => {
+                let Some(mut tx) = self.store.begin_chain_head(scope, chain_id).await? else {
+                    return Err(ContinuationAdvanceError::MissingChain);
+                };
+                let current = *tx.locked_chain()?;
+                if current.head() != chain.head() || current.revision() != chain.revision() {
+                    return Err(ContinuationAdvanceError::NotContinuation);
+                }
+                if !view.holds(&mut tx, &Hold::Lease(lease)).await? {
+                    return Err(ContinuationAdvanceError::FenceUnavailable);
+                }
+                let mut effects = Effects::by(Actor::System("continuation"), info.trace_id.clone());
+                effects.audit = Some(AuditRecord::engine(
+                    tenant,
+                    AuditAction::RunFinished,
+                    ResourceType::Run,
+                    chain.head().to_string(),
+                    match limit {
+                        sagat_domain::execution::ChainError::TreeBudgetExhausted => {
+                            "run tree budget exhausted"
+                        }
+                        _ => "chain segment limit exhausted",
+                    },
+                    info.trace_id,
+                    tx.now(),
+                ));
+                self.engine
+                    .run(&mut tx, effects, |definition, state, now| {
+                        let code = FailureCode::parse("CHAIN_LIMIT")?;
+                        Ok((
+                            (),
+                            execution::stop_run(
+                                definition,
+                                state,
+                                StopReason::Failed,
+                                Some(code),
+                                now,
+                            )?,
+                        ))
+                    })
+                    .await?;
+                tx.commit().await?;
+                Err(ContinuationAdvanceError::ChainLimitFinalized)
+            }
+            Err(ChainProgressError::Chain(error)) if error.awaited_blocker().is_some() => {
+                // Work appeared between the evaluation and the write locks: wait, do not fail.
+                Err(ContinuationAdvanceError::Waiting(
+                    error
+                        .awaited_blocker()
+                        .unwrap_or(sagat_domain::execution::QuiescenceBlocker::SiblingWork),
+                ))
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    async fn finalize_continuation_expression(
+        &self,
+        view: &View,
+        observed: LockedChainHead,
+        lease: Lease,
+        expected_run_version: u64,
+        info: &RunInfo,
+    ) -> Result<(), ContinuationAdvanceError>
+    where
+        S: ChainCommandStore + ChainProgressStore,
+        S::Tx: ChainRunTx,
+    {
+        let Some(mut tx) = self
+            .store
+            .begin_chain_head(observed.scope(), observed.chain_id())
+            .await?
+        else {
+            return Err(ContinuationAdvanceError::MissingChain);
+        };
+        let current = *tx.locked_chain()?;
+        if current.head() != observed.head()
+            || current.revision() != observed.revision()
+            || tx.parts().1.version() != expected_run_version
+        {
+            return Err(ContinuationAdvanceError::NotContinuation);
+        }
+        if !view.holds(&mut tx, &Hold::Lease(lease)).await? {
+            return Err(ContinuationAdvanceError::FenceUnavailable);
+        }
+        let mut effects = Effects::by(Actor::System("continuation"), info.trace_id.clone());
+        effects.audit = Some(AuditRecord::engine(
+            observed.scope().tenant_id(),
+            AuditAction::RunFinished,
+            ResourceType::Run,
+            observed.head().to_string(),
+            "continuation expression failed",
+            info.trace_id.clone(),
+            tx.now(),
+        ));
+        self.engine
+            .run(&mut tx, effects, |definition, state, now| {
+                Ok((
+                    (),
+                    execution::stop_run(
+                        definition,
+                        state,
+                        StopReason::Failed,
+                        Some(FailureCode::expression_error()),
+                        now,
+                    )?,
+                ))
+            })
+            .await?;
+        tx.commit().await?;
+        metrics::counter!("scheduler_continuation_expression_failures_total").increment(1);
+        Ok(())
+    }
+
+    async fn advance_collection_from_run_in_view(
+        &self,
+        view: &View,
+        tenant: TenantId,
+        run: RunId,
+        owner: &ExecutionInstanceId,
+    ) -> Result<CollectionAdvance, CollectionAdvanceError>
+    where
+        S: CollectionStore,
+    {
+        let hold = view.hold_for(run);
+        let lease = match &hold {
+            Hold::Lease(lease) => *lease,
+            Hold::Nothing | Hold::Lost => return Err(CollectionAdvanceError::FenceUnavailable),
+        };
+        let mut tx = self
+            .store
+            .begin(tenant, run, Lock::Wait)
+            .await?
+            .ok_or(CollectionAdvanceError::MissingRun)?;
+        let info = tx.info().clone();
+        let occurred_at = tx.now();
+        let (definition, state) = tx.parts();
+        let definition = definition.clone();
+        let state = state.clone();
+
+        let collection_node = definition
+            .node_for_instance(owner)
+            .ok_or(CollectionAdvanceError::NotCollection)?;
+        let NodeKind::ForEach {
+            items,
+            body,
+            result,
+            max_items,
+            max_concurrency,
+        } = collection_node.kind()
+        else {
+            return Err(CollectionAdvanceError::NotCollection);
+        };
+        let body = definition
+            .body(body)
+            .ok_or(CollectionAdvanceError::NotCollection)?;
+        let authority = SchedulerAuthority::new(view.owner.clone(), lease);
+        let audited = |expected_run_version, audit: Option<AuditRecord>| {
+            CollectionTransition::new(
+                tenant,
+                info.namespace_id,
+                run,
+                expected_run_version,
+                owner.clone(),
+                authority.clone(),
+                Subject::engine(),
+                info.trace_id.clone(),
+                occurred_at,
+                audit,
+            )
+        };
+        let transition = |expected_run_version| audited(expected_run_version, None);
+
+        let Some(collection) = state.collection(owner) else {
+            let effective_output_bytes = tx.logical_output_bytes().await?;
+            if retained_outputs_exceed_limit(effective_output_bytes) {
+                let version = state.version();
+                drop(tx);
+                return self
+                    .stop_collection_for_limit(
+                        view,
+                        &hold,
+                        tenant,
+                        run,
+                        version,
+                        FailureCode::run_data_limit(),
+                    )
+                    .await;
+            }
+            let data = tx.data().await?.clone();
+            drop(tx);
+            let limits = CollectionLimits::new(
+                *max_items,
+                *max_concurrency,
+                definition.limits().max_instances(),
+                definition.limits().max_depth(),
+            )?;
+            let source = match self.engine.evaluator().collection_source(items, &data) {
+                Ok(source) => source,
+                // The expression is deterministic over immutable run data: it will fail the same
+                // way again, so the run fails with a typed code instead of retrying for ever.
+                Err(_) => {
+                    return self
+                        .stop_collection_for_source(
+                            view,
+                            &hold,
+                            tenant,
+                            run,
+                            state.version(),
+                            FailureCode::expression_error(),
+                            "expression",
+                        )
+                        .await;
+                }
+            };
+            let iteration_charge = u32::try_from(body.all_nodes().count())
+                .map_err(|_| CollectionAdvanceError::InvalidProgress)?;
+            let built = match source {
+                CollectionSource::Items(item_values) => {
+                    let json_items = item_values
+                        .iter()
+                        .map(|item| serde_json::from_slice::<serde_json::Value>(item))
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|_| CollectionAdvanceError::Expression)?;
+                    let snapshot = serde_json::to_vec(&json_items)
+                        .map_err(|_| CollectionAdvanceError::Expression)?;
+                    // The captured membership is one value: over the ceiling nothing of it is
+                    // retained.
+                    if snapshot.len() > MAX_PAYLOAD_BYTES {
+                        return self
+                            .stop_collection_for_limit(
+                                view,
+                                &hold,
+                                tenant,
+                                run,
+                                state.version(),
+                                FailureCode::run_data_limit(),
+                            )
+                            .await;
+                    }
+                    CollectionEntry::from_snapshot(
+                        transition(state.version()),
+                        CollectionScopeId::generate(),
+                        u32::try_from(item_values.len())
+                            .map_err(|_| CollectionAdvanceError::InvalidProgress)?,
+                        snapshot,
+                        limits,
+                    )
+                }
+                CollectionSource::Blob(descriptor) => {
+                    let Some(reader) = &self.item_source else {
+                        return Err(CollectionAdvanceError::SourceUnavailable);
+                    };
+                    let request = CollectionSourceRequest {
+                        access: BlobAccess {
+                            tenant_id: tenant,
+                            namespace_id: info.namespace_id,
+                        },
+                        run_id: run,
+                        run_input: data.input_blob,
+                        descriptor,
+                        max_items: *max_items,
+                    };
+                    match reader.materialize(&request).await {
+                        Ok(materialized) => {
+                            let audit = AuditRecord::engine(
+                                tenant,
+                                AuditAction::BlobRead,
+                                ResourceType::Blob,
+                                request.descriptor.id().to_string(),
+                                "collection items materialized",
+                                info.trace_id.clone(),
+                                occurred_at,
+                            );
+                            CollectionEntry::from_blob_source(
+                                audited(state.version(), Some(audit)),
+                                CollectionScopeId::generate(),
+                                materialized,
+                                limits,
+                            )
+                        }
+                        Err(CollectionSourceError::Unavailable) => {
+                            return Err(CollectionAdvanceError::SourceUnavailable);
+                        }
+                        Err(error) => {
+                            let (code, reason) = match error {
+                                CollectionSourceError::NotFound | CollectionSourceError::Lost => {
+                                    (FailureCode::blob_unavailable(), "unavailable")
+                                }
+                                CollectionSourceError::Corrupt => {
+                                    (FailureCode::blob_corrupt(), "corrupt")
+                                }
+                                CollectionSourceError::NotAnArray => {
+                                    (FailureCode::expression_error(), "not_an_array")
+                                }
+                                CollectionSourceError::TooManyItems => {
+                                    (FailureCode::iteration_limit(), "too_many_items")
+                                }
+                                CollectionSourceError::TooLarge
+                                | CollectionSourceError::Unavailable => {
+                                    (FailureCode::run_data_limit(), "too_large")
+                                }
+                            };
+                            return self
+                                .stop_collection_for_source(
+                                    view,
+                                    &hold,
+                                    tenant,
+                                    run,
+                                    state.version(),
+                                    code,
+                                    reason,
+                                )
+                                .await;
+                        }
+                    }
+                }
+            };
+            let entry = match built {
+                Ok(entry) => entry.with_iteration_charge(iteration_charge),
+                // More items than the node declared it would iterate over: a hard budget, so the
+                // run fails with a durable typed code instead of retrying an entry that cannot
+                // succeed.
+                Err(PrimitiveInputError::ItemCount) => {
+                    return self
+                        .stop_collection_for_limit(
+                            view,
+                            &hold,
+                            tenant,
+                            run,
+                            state.version(),
+                            FailureCode::iteration_limit(),
+                        )
+                        .await;
+                }
+                Err(error) => return Err(error.into()),
+            };
+            match self.store.enter_collection(&entry).await {
+                Ok(_) => {}
+                Err(PrimitiveStoreError::InstanceBudgetExceeded) => {
+                    return self
+                        .stop_collection_for_limit(
+                            view,
+                            &hold,
+                            tenant,
+                            run,
+                            state.version(),
+                            FailureCode::instance_limit(),
+                        )
+                        .await;
+                }
+                Err(error) if collection_content_quota(&error) => {
+                    return match self
+                        .stop_for_storage_quota(
+                            view,
+                            &hold,
+                            RunRef {
+                                tenant_id: tenant,
+                                run_id: run,
+                            },
+                            "collection",
+                            Condition::Always,
+                            state.version(),
+                        )
+                        .await?
+                    {
+                        Outcome::QuotaStopped => Ok(CollectionAdvance::QuotaStopped),
+                        Outcome::Skipped | Outcome::DoesNotFit => Ok(CollectionAdvance::Waiting),
+                        Outcome::Fenced => Err(CollectionAdvanceError::FenceUnavailable),
+                        Outcome::Done | Outcome::Failed => Err(CollectionAdvanceError::Engine(
+                            EngineError::Store(StoreError::Internal {
+                                detail: "unexpected collection quota recovery outcome".to_owned(),
+                            }),
+                        )),
+                    };
+                }
+                Err(error) => return Err(error.into()),
+            }
+            return Ok(CollectionAdvance::Entered);
+        };
+
+        if matches!(
+            collection.phase(),
+            execution::CollectionPhase::Succeeded
+                | execution::CollectionPhase::Failed
+                | execution::CollectionPhase::Cancelled
+        ) {
+            drop(tx);
+            return Ok(CollectionAdvance::AlreadyFinished);
+        }
+        if collection.phase() == execution::CollectionPhase::Draining {
+            let transition = transition(state.version());
+            drop(tx);
+            return self
+                .advance_draining_collection_from_run(
+                    view,
+                    tenant,
+                    run,
+                    owner,
+                    transition,
+                    &definition,
+                    &state,
+                    collection,
+                )
+                .await;
+        }
+        if collection.phase() != execution::CollectionPhase::Open {
+            return Err(CollectionAdvanceError::InvalidProgress);
+        }
+
+        // Find the first failed active member once. A durable Run stop is considered before this
+        // failure and may only reuse it when the stored code is the same.
+        let mut failed: std::collections::HashMap<
+            &sagat_domain::execution::InstancePath,
+            &FailureCode,
+        > = std::collections::HashMap::new();
+        for (instance, step) in state.instances() {
+            if step.status() == execution::StepStatus::Failed
+                && let Some(code) = step.failure()
+            {
+                failed.entry(instance.path()).or_insert(code);
+            }
+        }
+        let active_failure = collection.active_iterations().find_map(|index| {
+            let path = collection.entry_instance(index)?.path();
+            failed.get(path).map(|code| (index, (*code).clone()))
+        });
+
+        if state.stop_reason() == Some(StopReason::Cancelled) {
+            let version = state.version();
+            drop(tx);
+            let scope_id = self
+                .store
+                .collection_scope(tenant, run, owner)
+                .await?
+                .ok_or(CollectionAdvanceError::InvalidProgress)?
+                .scope_id;
+            self.store
+                .start_collection_drain(&CollectionDrain::new(
+                    transition(version),
+                    scope_id,
+                    execution::CollectionDrainReason::Cancelled,
+                    uuid::Uuid::now_v7(),
+                ))
+                .await?;
+            return Ok(CollectionAdvance::DrainStarted);
+        }
+        if state.stop_reason() == Some(StopReason::Failed)
+            && state
+                .stop_code()
+                .is_some_and(|code| code == &FailureCode::run_data_limit())
+        {
+            let version = state.version();
+            drop(tx);
+            let scope_id = self
+                .store
+                .collection_scope(tenant, run, owner)
+                .await?
+                .ok_or(CollectionAdvanceError::InvalidProgress)?
+                .scope_id;
+            return self
+                .drain_collection_for_data_limit(
+                    transition(version),
+                    scope_id,
+                    CollectionDataLimitEvidence::stopped_for_run_data_limit(),
+                )
+                .await;
+        }
+        if state.stop_reason().is_some() {
+            if state.stop_reason() != Some(StopReason::Failed) {
+                drop(tx);
+                return Err(CollectionAdvanceError::InvalidProgress);
+            }
+            let Some((index, code)) = active_failure
+                .as_ref()
+                .filter(|(_, code)| state.stop_code() == Some(code))
+            else {
+                drop(tx);
+                return Err(CollectionAdvanceError::InvalidProgress);
+            };
+            let version = state.version();
+            let index = *index;
+            let code = code.clone();
+            drop(tx);
+            let scope_id = self
+                .store
+                .collection_scope(tenant, run, owner)
+                .await?
+                .ok_or(CollectionAdvanceError::InvalidProgress)?
+                .scope_id;
+            return self
+                .fail_collection_iteration(transition(version), scope_id, index, code)
+                .await;
+        }
+        if let Some((index, code)) = active_failure {
+            let version = state.version();
+            drop(tx);
+            let scope_id = self
+                .store
+                .collection_scope(tenant, run, owner)
+                .await?
+                .ok_or(CollectionAdvanceError::InvalidProgress)?
+                .scope_id;
+            return self
+                .fail_collection_iteration(transition(version), scope_id, index, code)
+                .await;
+        }
+
+        let effective_output_bytes = tx.logical_output_bytes().await?;
+        if retained_outputs_exceed_limit(effective_output_bytes) {
+            let version = state.version();
+            drop(tx);
+            let scope_id = self
+                .store
+                .collection_scope(tenant, run, owner)
+                .await?
+                .ok_or(CollectionAdvanceError::InvalidProgress)?
+                .scope_id;
+            return self
+                .drain_collection_for_data_limit(
+                    transition(version),
+                    scope_id,
+                    CollectionDataLimitEvidence::existing_outputs(),
+                )
+                .await;
+        }
+        let terminal_ready = collection.next_admission() == collection.item_count()
+            && collection.active_count() == 0;
+        if terminal_ready && state.is_paused() {
+            drop(tx);
+            return Ok(CollectionAdvance::Waiting);
+        }
+        let mut data = tx.data().await?.clone();
+        drop(tx);
+        // Only the identity of the scope is read for every transition; the content of one item is
+        // read to admit it and the content of all of them only to produce the aggregate, so a large
+        // collection does not pay for its whole membership at each step.
+        let progress = self
+            .store
+            .collection_scope(tenant, run, owner)
+            .await?
+            .ok_or(CollectionAdvanceError::InvalidProgress)?;
+        if progress.item_count != collection.item_count() {
+            return Err(CollectionAdvanceError::InvalidProgress);
+        }
+
+        // The body returns that have not been checkpointed yet, by the path of their iteration,
+        // found in one pass over the run's instances (the first in instance order for each).
+        let mut pending_returns: std::collections::HashMap<
+            &sagat_domain::execution::InstancePath,
+            &ExecutionInstanceId,
+        > = std::collections::HashMap::new();
+        for (instance, step) in state.instances() {
+            if step.status() == execution::StepStatus::Pending
+                && !instance.path().is_root()
+                && matches!(
+                    definition
+                        .node_for_instance(instance)
+                        .map(|node| node.kind()),
+                    Some(NodeKind::Return { .. })
+                )
+            {
+                pending_returns.entry(instance.path()).or_insert(instance);
+            }
+        }
+        for index in 0..collection.next_admission() {
+            let entry = collection
+                .entry_instance(index)
+                .ok_or(CollectionAdvanceError::InvalidProgress)?;
+            let path = entry.path();
+            let Some(return_instance) = pending_returns.get(path).copied() else {
+                continue;
+            };
+            let NodeKind::Return {
+                result: return_expression,
+            } = definition
+                .node_for_instance(return_instance)
+                .ok_or(CollectionAdvanceError::InvalidProgress)?
+                .kind()
+            else {
+                return Err(CollectionAdvanceError::InvalidProgress);
+            };
+            let returned = match self.engine.evaluator().collection_return(
+                return_expression,
+                &data,
+                return_instance,
+            ) {
+                Ok(returned) => returned,
+                // A result that cannot be computed fails this iteration, typed, the way a failed
+                // member does; the scope drains instead of being retried forever.
+                Err(_) => {
+                    return self
+                        .fail_collection_iteration(
+                            transition(state.version()),
+                            progress.scope_id,
+                            index,
+                            FailureCode::expression_error(),
+                        )
+                        .await;
+                }
+            };
+            // The iteration's result and, when this is the last one, the aggregate that the
+            // finish will store are values too: over 256 KiB, or past what the run may retain,
+            // the scope fails here, while the iteration can still fail, and nothing oversize is
+            // written. An aggregate that cannot be computed fails the same way, as an expression
+            // error, instead of being retried at the finish for ever.
+            let refusal = if returned.len() > MAX_PAYLOAD_BYTES {
+                Some(FailureCode::run_data_limit())
+            } else if collection.ordered_results().count() + 1
+                == usize::try_from(collection.item_count())
+                    .map_err(|_| CollectionAdvanceError::InvalidProgress)?
+            {
+                let everything = self
+                    .store
+                    .collection_progress(tenant, run, owner)
+                    .await?
+                    .ok_or(CollectionAdvanceError::InvalidProgress)?;
+                self.aggregate_refusal(
+                    result,
+                    &data,
+                    effective_output_bytes,
+                    &everything.items,
+                    collection
+                        .ordered_results()
+                        .map(|(position, reference)| (position, reference.return_instance()))
+                        .zip(everything.results.iter().map(|(_, bytes)| bytes.as_slice()))
+                        .map(|((position, instance), bytes)| (position, instance, bytes)),
+                    (index, return_instance, returned.as_slice()),
+                )
+            } else {
+                None
+            };
+            if let Some(code) = refusal {
+                return self
+                    .fail_collection_iteration(
+                        transition(state.version()),
+                        progress.scope_id,
+                        index,
+                        code,
+                    )
+                    .await;
+            }
+            return self
+                .checkpoint_collection(
+                    transition(state.version()),
+                    progress.scope_id,
+                    index,
+                    return_instance,
+                    returned,
+                )
+                .await;
+        }
+
+        if collection.next_admission() < collection.item_count()
+            && collection.active_count() < usize::from(collection.max_concurrency())
+        {
+            return self
+                .admit_collection(
+                    transition(state.version()),
+                    (tenant, run, owner),
+                    progress.scope_id,
+                    body,
+                    collection.next_admission(),
+                )
+                .await;
+        }
+
+        if terminal_ready {
+            let progress = self
+                .store
+                .collection_progress(tenant, run, owner)
+                .await?
+                .ok_or(CollectionAdvanceError::InvalidProgress)?;
+            let mut mapped = Vec::with_capacity(progress.results.len());
+            for (index, return_ref) in collection.ordered_results() {
+                let (stored_index, body_result) = progress
+                    .results
+                    .get(mapped.len())
+                    .ok_or(CollectionAdvanceError::InvalidProgress)?;
+                if *stored_index != index {
+                    return Err(CollectionAdvanceError::InvalidProgress);
+                }
+                // The iteration ended, so the run data no longer carries its input; the snapshot does.
+                // The result expression reads `item` and `index` as the body did.
+                let item = progress
+                    .items
+                    .get(
+                        usize::try_from(index)
+                            .map_err(|_| CollectionAdvanceError::InvalidProgress)?,
+                    )
+                    .ok_or(CollectionAdvanceError::InvalidProgress)?;
+                data.scope_inputs.insert(
+                    return_ref.return_instance().path().clone(),
+                    ScopeInput::Collection {
+                        index,
+                        item: item.clone(),
+                    },
+                );
+                let value = self
+                    .engine
+                    .evaluator()
+                    .collection_member_result(
+                        result,
+                        &data,
+                        return_ref.return_instance(),
+                        body_result,
+                    )
+                    .map_err(|_| CollectionAdvanceError::Expression)?;
+                mapped.push(
+                    serde_json::from_slice::<serde_json::Value>(&value)
+                        .map_err(|_| CollectionAdvanceError::Expression)?,
+                );
+            }
+            if mapped.len()
+                != usize::try_from(collection.item_count())
+                    .map_err(|_| CollectionAdvanceError::InvalidProgress)?
+            {
+                return Err(CollectionAdvanceError::InvalidProgress);
+            }
+            let aggregate =
+                serde_json::to_vec(&mapped).map_err(|_| CollectionAdvanceError::Expression)?;
+            if aggregate.len() > MAX_PAYLOAD_BYTES
+                || output_increment_exceeds_limit(effective_output_bytes, aggregate.len())
+            {
+                let evidence =
+                    CollectionDataLimitEvidence::aggregate(&aggregate, &progress.results)?;
+                return self
+                    .drain_collection_for_data_limit(
+                        transition(state.version()),
+                        progress.scope_id,
+                        evidence,
+                    )
+                    .await;
+            }
+            let mut finish = CollectionFinish::from_evaluated_result(
+                transition(state.version()),
+                progress.scope_id,
+                aggregate.clone(),
+                &progress.results,
+                uuid::Uuid::now_v7(),
+            );
+            if owner.path().is_root() {
+                let successor = collection_node
+                    .next()
+                    .cloned()
+                    .ok_or(CollectionAdvanceError::InvalidProgress)?;
+                let successor = ExecutionInstanceId::root(successor);
+                if matches!(
+                    definition
+                        .node_for_instance(&successor)
+                        .map(|node| node.kind()),
+                    Some(NodeKind::End { .. })
+                ) {
+                    let finished = RunEvent::CollectionFinished {
+                        node: owner.node().clone(),
+                        outcome: CollectionOutcome::Succeeded,
+                        result_digest: Some(finish.result_digest),
+                    };
+                    let mut prepared = state.clone();
+                    prepared.apply(&finished)?;
+                    data.insert_output(owner.clone(), aggregate);
+                    let reduction =
+                        execution::release_pending(&definition, &mut prepared, occurred_at)?;
+                    if !matches!(
+                        reduction.events.first(),
+                        Some(RunEvent::StepRouted { node, activated })
+                            if node == owner.node()
+                                && activated == std::slice::from_ref(successor.node())
+                    ) {
+                        return Err(CollectionAdvanceError::InvalidProgress);
+                    }
+                    match reduction.pending {
+                        Some(execution::Evaluation::Output { node, expression })
+                            if node == *successor.node() =>
+                        {
+                            finish = finish.with_end_answer(self.engine.evaluate_run_result(
+                                &node,
+                                &expression,
+                                &data,
+                            ));
+                        }
+                        None => {}
+                        Some(_) => return Err(CollectionAdvanceError::InvalidProgress),
+                    }
+                }
+            }
+            match self.store.finish_collection(&finish).await {
+                Ok(_) => {}
+                Err(error) if collection_content_quota(&error) => {
+                    return self
+                        .drain_collection_for_storage_quota(
+                            transition(state.version()),
+                            progress.scope_id,
+                        )
+                        .await;
+                }
+                Err(error) => return Err(error.into()),
+            }
+            return Ok(CollectionAdvance::Finished);
+        }
+
+        Ok(CollectionAdvance::Waiting)
+    }
+
+    /// Continues an already-entered drain without loading the Run's retained output bodies.
+    #[allow(clippy::too_many_arguments)]
+    async fn advance_draining_collection_from_run(
+        &self,
+        view: &View,
+        tenant: TenantId,
+        run: RunId,
+        owner: &ExecutionInstanceId,
+        transition: CollectionTransition,
+        definition: &WorkflowDefinition,
+        state: &execution::RunState,
+        collection: &execution::CollectionState,
+    ) -> Result<CollectionAdvance, CollectionAdvanceError>
+    where
+        S: CollectionStore,
+    {
+        let progress = self
+            .store
+            .collection_scope(tenant, run, owner)
+            .await?
+            .ok_or(CollectionAdvanceError::InvalidProgress)?;
+        if let Some(index) = collection.active_iterations().next() {
+            let path = collection
+                .entry_instance(index)
+                .ok_or(CollectionAdvanceError::InvalidProgress)?
+                .path();
+            let safe = state
+                .instances()
+                .filter(|(instance, _)| instance.path() == path)
+                .all(|(instance, step)| {
+                    let settled_derived = instance.node().is_derived()
+                        && matches!(
+                            step.status(),
+                            execution::StepStatus::Succeeded | execution::StepStatus::Skipped
+                        );
+                    // Nothing is in flight: a step that has not started, or that waits to retry (or
+                    // is ready to) in a run that is stopping and cannot lease it.
+                    let safe_unstarted = (step.attempt() == 0
+                        && matches!(
+                            step.status(),
+                            execution::StepStatus::Pending | execution::StepStatus::Ready
+                        ))
+                        || matches!(
+                            step.status(),
+                            execution::StepStatus::Ready | execution::StepStatus::RetryWait
+                        );
+                    step.status().is_terminal() && !instance.node().is_derived()
+                        || settled_derived
+                        || safe_unstarted
+                });
+            if !safe {
+                return Ok(CollectionAdvance::Waiting);
+            }
+            self.store
+                .drain_collection_iteration(&CollectionIterationDrain::new(
+                    transition,
+                    progress.scope_id,
+                    index,
+                    uuid::Uuid::now_v7(),
+                ))
+                .await?;
+            return Ok(CollectionAdvance::Drained { index });
+        }
+        if state.instances().any(|(instance, step)| {
+            instance != owner && instance.path().is_root() && !step.status().is_terminal()
+        }) {
+            return Ok(CollectionAdvance::Waiting);
+        }
+        // A scope that can be compensated undoes what its iterations completed before it ends
+        // (D380): the pure planner says what is next, and the commit is the scheduler's own, under
+        // its fence, like every other transition of the run.
+        if definition.scope_compensates(owner) {
+            let finished = state
+                .scope_saga(owner)
+                .is_some_and(|saga| saga.phase() == execution::SagaPhase::Done);
+            if !finished {
+                if !matches!(
+                    execution::plan_scope_compensation(definition, state)?,
+                    execution::AddressedPlan::Emit(_)
+                ) {
+                    return Ok(CollectionAdvance::Waiting);
+                }
+                return match self
+                    .apply_addressed(
+                        view,
+                        tenant,
+                        run,
+                        "scope_compensation",
+                        self.effects(),
+                        |def, state, _| {
+                            Ok(((), execution::advance_scope_compensation(def, state)?))
+                        },
+                    )
+                    .await
+                {
+                    Outcome::Done => Ok(CollectionAdvance::Compensated),
+                    Outcome::Skipped | Outcome::DoesNotFit => Ok(CollectionAdvance::Waiting),
+                    Outcome::Fenced => Err(CollectionAdvanceError::FenceUnavailable),
+                    Outcome::Failed | Outcome::QuotaStopped => Err(CollectionAdvanceError::Engine(
+                        EngineError::Store(StoreError::Internal {
+                            detail: "scope compensation could not be committed".to_owned(),
+                        }),
+                    )),
+                };
+            }
+        }
+        self.store
+            .finish_collection_drain(&CollectionDrainFinish::new(
+                transition,
+                progress.scope_id,
+                uuid::Uuid::now_v7(),
+            ))
+            .await?;
+        Ok(CollectionAdvance::DrainFinished)
+    }
+
+    /// Decides one collection transition from the scope's frontier (G461, D520). When the frontier
+    /// shows a transition whose cost is proportional to the scope by nature (entering it, the last
+    /// checkpoint, the finish, compensating it), the whole-run path decides it instead.
+    async fn advance_collection_in_view(
+        &self,
+        view: &View,
+        tenant: TenantId,
+        run: RunId,
+        owner: &ExecutionInstanceId,
+    ) -> Result<CollectionAdvance, CollectionAdvanceError>
+    where
+        S: CollectionStore,
+    {
+        let lease = match view.hold_for(run) {
+            Hold::Lease(lease) => lease,
+            Hold::Nothing | Hold::Lost => return Err(CollectionAdvanceError::FenceUnavailable),
+        };
+        if let Some(frontier) = self.store.collection_frontier(tenant, run, owner).await?
+            && let Some(advance) = self
+                .advance_collection_frontier(view, lease, tenant, run, owner, &frontier)
+                .await?
+        {
+            return Ok(advance);
+        }
+        self.advance_collection_from_run_in_view(view, tenant, run, owner)
+            .await
+    }
+
+    /// `None`: this transition needs the whole run.
+    #[allow(clippy::too_many_lines)]
+    async fn advance_collection_frontier(
+        &self,
+        view: &View,
+        lease: Lease,
+        tenant: TenantId,
+        run: RunId,
+        owner: &ExecutionInstanceId,
+        frontier: &CollectionFrontier,
+    ) -> Result<Option<CollectionAdvance>, CollectionAdvanceError>
+    where
+        S: CollectionStore,
+    {
+        let definition = &frontier.run.definition;
+        let NodeKind::ForEach { body, .. } = definition
+            .node_for_instance(owner)
+            .ok_or(CollectionAdvanceError::NotCollection)?
+            .kind()
+        else {
+            return Err(CollectionAdvanceError::NotCollection);
+        };
+        let body = definition
+            .body(body)
+            .ok_or(CollectionAdvanceError::NotCollection)?;
+        let authority = SchedulerAuthority::new(view.owner.clone(), lease);
+        let transition = || {
+            CollectionTransition::new(
+                tenant,
+                frontier.run.info.namespace_id,
+                run,
+                frontier.run.version,
+                owner.clone(),
+                authority.clone(),
+                Subject::engine(),
+                frontier.run.info.trace_id.clone(),
+                frontier.run.now,
+                None,
+            )
+        };
+        let scope_id = frontier.scope_id;
+        match frontier.phase {
+            execution::CollectionPhase::Succeeded
+            | execution::CollectionPhase::Failed
+            | execution::CollectionPhase::Cancelled => {
+                return Ok(Some(CollectionAdvance::AlreadyFinished));
+            }
+            execution::CollectionPhase::Open => {
+                let active_failure = frontier
+                    .active
+                    .iter()
+                    .find_map(|member| member.first_failure().map(|code| (member.index, code)));
+                if frontier.run.stop_reason == Some(StopReason::Cancelled) {
+                    self.store
+                        .start_collection_drain(&CollectionDrain::new(
+                            transition(),
+                            scope_id,
+                            execution::CollectionDrainReason::Cancelled,
+                            uuid::Uuid::now_v7(),
+                        ))
+                        .await?;
+                    return Ok(Some(CollectionAdvance::DrainStarted));
+                }
+                if frontier.run.stop_reason == Some(StopReason::Failed)
+                    && frontier
+                        .run
+                        .stop_code
+                        .as_ref()
+                        .is_some_and(|code| code == &FailureCode::run_data_limit())
+                {
+                    return self
+                        .drain_collection_for_data_limit(
+                            transition(),
+                            scope_id,
+                            CollectionDataLimitEvidence::stopped_for_run_data_limit(),
+                        )
+                        .await
+                        .map(Some);
+                }
+                if frontier.run.stop_reason.is_some() {
+                    if frontier.run.stop_reason != Some(StopReason::Failed) {
+                        return Err(CollectionAdvanceError::InvalidProgress);
+                    }
+                    let Some((index, code)) = active_failure
+                        .filter(|(_, code)| frontier.run.stop_code.as_ref() == Some(*code))
+                    else {
+                        return Err(CollectionAdvanceError::InvalidProgress);
+                    };
+                    return self
+                        .fail_collection_iteration(transition(), scope_id, index, code.clone())
+                        .await
+                        .map(Some);
+                }
+                if let Some((index, code)) = active_failure {
+                    return self
+                        .fail_collection_iteration(transition(), scope_id, index, code.clone())
+                        .await
+                        .map(Some);
+                }
+                if retained_outputs_exceed_limit(frontier.run.effective_output_bytes) {
+                    return self
+                        .drain_collection_for_data_limit(
+                            transition(),
+                            scope_id,
+                            CollectionDataLimitEvidence::existing_outputs(),
+                        )
+                        .await
+                        .map(Some);
+                }
+            }
+            execution::CollectionPhase::Draining => {
+                if let Some(member) = frontier.active.first() {
+                    if !member_is_safe_to_drain(member, true) {
+                        return Ok(Some(CollectionAdvance::Waiting));
+                    }
+                    self.store
+                        .drain_collection_iteration(&CollectionIterationDrain::new(
+                            transition(),
+                            scope_id,
+                            member.index,
+                            uuid::Uuid::now_v7(),
+                        ))
+                        .await?;
+                    return Ok(Some(CollectionAdvance::Drained {
+                        index: member.index,
+                    }));
+                }
+                if frontier.other_root_work {
+                    return Ok(Some(CollectionAdvance::Waiting));
+                }
+                // Undoing what the iterations completed reads all of them (D380).
+                if definition.scope_compensates(owner) {
+                    return Ok(None);
+                }
+                self.store
+                    .finish_collection_drain(&CollectionDrainFinish::new(
+                        transition(),
+                        scope_id,
+                        uuid::Uuid::now_v7(),
+                    ))
+                    .await?;
+                return Ok(Some(CollectionAdvance::DrainFinished));
+            }
+        }
+
+        // The body returns that have not been checkpointed yet are those of the iterations in
+        // flight, in index order.
+        for member in &frontier.active {
+            let Some(return_instance) = member.pending_return(definition) else {
+                continue;
+            };
+            // The last result also produces the aggregate, which is checked against the ceilings
+            // over every result: that read is proportional to the scope, once (D521).
+            if frontier.completed.saturating_add(1) == frontier.item_count {
+                return Ok(None);
+            }
+            let NodeKind::Return {
+                result: return_expression,
+            } = definition
+                .node_for_instance(return_instance)
+                .ok_or(CollectionAdvanceError::InvalidProgress)?
+                .kind()
+            else {
+                return Err(CollectionAdvanceError::InvalidProgress);
+            };
+            let returned = match self.engine.evaluator().collection_return(
+                return_expression,
+                &frontier.data,
+                return_instance,
+            ) {
+                Ok(returned) => returned,
+                Err(_) => {
+                    return self
+                        .fail_collection_iteration(
+                            transition(),
+                            scope_id,
+                            member.index,
+                            FailureCode::expression_error(),
+                        )
+                        .await
+                        .map(Some);
+                }
+            };
+            if returned.len() > MAX_PAYLOAD_BYTES {
+                return self
+                    .fail_collection_iteration(
+                        transition(),
+                        scope_id,
+                        member.index,
+                        FailureCode::run_data_limit(),
+                    )
+                    .await
+                    .map(Some);
+            }
+            return self
+                .checkpoint_collection(
+                    transition(),
+                    scope_id,
+                    member.index,
+                    return_instance,
+                    returned,
+                )
+                .await
+                .map(Some);
+        }
+
+        if frontier.next_admission < frontier.item_count
+            && frontier.active.len() < usize::from(frontier.max_concurrency)
+        {
+            return self
+                .admit_collection(
+                    transition(),
+                    (tenant, run, owner),
+                    scope_id,
+                    body,
+                    frontier.next_admission,
+                )
+                .await
+                .map(Some);
+        }
+        if frontier.next_admission == frontier.item_count && frontier.active.is_empty() {
+            // The finish produces the ordered aggregate over every result (D521).
+            return Ok(None);
+        }
+        Ok(Some(CollectionAdvance::Waiting))
+    }
+
+    /// Commits the checkpoint of one iteration; a quota refusal drains the scope instead.
+    async fn checkpoint_collection(
+        &self,
+        transition: CollectionTransition,
+        scope_id: CollectionScopeId,
+        index: u32,
+        return_instance: &ExecutionInstanceId,
+        returned: Vec<u8>,
+    ) -> Result<CollectionAdvance, CollectionAdvanceError> {
+        let checkpoint = CollectionCheckpoint::from_result(
+            transition.clone(),
+            scope_id,
+            index,
+            return_instance.clone(),
+            returned,
+            uuid::Uuid::now_v7(),
+        )?;
+        match self
+            .store
+            .checkpoint_collection_iteration(&checkpoint)
+            .await
+        {
+            Ok(_) => {}
+            Err(error) if collection_content_quota(&error) => {
+                return self
+                    .drain_collection_for_storage_quota(transition, scope_id)
+                    .await;
+            }
+            Err(error) => return Err(error.into()),
+        }
+        Ok(CollectionAdvance::Checkpointed { index })
+    }
+
+    /// Admits iteration `index` of a collection: its entry activity, its slot and its reservation.
+    async fn admit_collection(
+        &self,
+        transition: CollectionTransition,
+        (tenant, run, owner): (TenantId, RunId, &ExecutionInstanceId),
+        scope_id: CollectionScopeId,
+        body: &sagat_domain::workflow::BodyDefinition,
+        index: u32,
+    ) -> Result<CollectionAdvance, CollectionAdvanceError> {
+        let entry = ExecutionInstanceId::in_path(
+            owner
+                .path()
+                .child(owner.node().clone(), index)
+                .map_err(|_| CollectionAdvanceError::InvalidProgress)?,
+            body.entrypoint().clone(),
+        );
+        let NodeKind::Activity { activity, .. } = body
+            .node(body.entrypoint())
+            .ok_or(CollectionAdvanceError::InvalidProgress)?
+            .kind()
+        else {
+            return Err(CollectionAdvanceError::InvalidProgress);
+        };
+        // The iteration reserves every other node of its body, the compensations and lookups
+        // of its activities included, so the budget cannot stop them (D384).
+        let reserved_instances = u16::try_from(body.all_nodes().count().saturating_sub(1))
+            .map_err(|_| CollectionAdvanceError::InvalidProgress)?;
+        let item = self
+            .store
+            .collection_item(tenant, run, scope_id, index)
+            .await?
+            .ok_or(CollectionAdvanceError::InvalidProgress)?;
+        let admission = CollectionAdmission::from_item(
+            transition.clone(),
+            scope_id,
+            index,
+            entry,
+            activity.clone(),
+            item,
+            reserved_instances,
+            uuid::Uuid::now_v7(),
+        )?;
+        match self.store.admit_collection_activity(&admission).await {
+            Ok(_) => {}
+            // Entry proved the whole collection fits, so only a later reduction of the run's
+            // budget (tenant policy) or other work spending it lands here. Accepted work is
+            // kept and no further iteration is admitted until the budget allows it again.
+            Err(PrimitiveStoreError::InstanceBudgetExceeded) => {
+                metrics::counter!(
+                    "scheduler_admission_paused_total",
+                    "kind" => "collection",
+                    "reason" => "instance_budget",
+                )
+                .increment(1);
+                return Ok(CollectionAdvance::Waiting);
+            }
+            Err(error) if collection_content_quota(&error) => {
+                return self
+                    .drain_collection_for_storage_quota(transition, scope_id)
+                    .await;
+            }
+            Err(error) => return Err(error.into()),
+        }
+        Ok(CollectionAdvance::Admitted { index })
+    }
+
+    /// Fails one admitted iteration whose result cannot be produced or retained: the scope drains
+    /// with that iteration's typed failure, as it does for a failed member.
+    async fn fail_collection_iteration(
+        &self,
+        transition: CollectionTransition,
+        scope_id: CollectionScopeId,
+        index: u32,
+        code: FailureCode,
+    ) -> Result<CollectionAdvance, CollectionAdvanceError> {
+        self.store
+            .start_collection_drain(&CollectionDrain::new(
+                transition,
+                scope_id,
+                execution::CollectionDrainReason::Failed {
+                    iteration: index,
+                    code,
+                },
+                uuid::Uuid::now_v7(),
+            ))
+            .await?;
+        Ok(CollectionAdvance::DrainStarted)
+    }
+
+    /// Starts the closed native data-limit drain and counts only its first committed write.
+    async fn drain_collection_for_data_limit(
+        &self,
+        transition: CollectionTransition,
+        scope_id: CollectionScopeId,
+        evidence: CollectionDataLimitEvidence,
+    ) -> Result<CollectionAdvance, CollectionAdvanceError> {
+        let audit = AuditRecord::engine(
+            transition.tenant_id(),
+            AuditAction::RunDataLimitExceeded,
+            ResourceType::Run,
+            transition.run_id().to_string(),
+            evidence.required_audit_reason().as_str(),
+            transition.trace_id().map(str::to_owned),
+            transition.occurred_at(),
+        );
+        let drain = CollectionDrain::for_data_limit(
+            transition.with_audit(audit),
+            scope_id,
+            evidence,
+            uuid::Uuid::now_v7(),
+        )?;
+        let write = self.store.start_collection_drain(&drain).await?;
+        if write.applied
+            && let Some(rejection) = WorkflowPrimitiveRejectionCode::from_reason("RUN_DATA_LIMIT")
+        {
+            metrics::counter!(
+                WorkflowPrimitiveMetric::Rejections.as_str(),
+                "kind" => WorkflowPrimitiveKind::Collection.as_str(),
+                "code" => rejection.as_str(),
+            )
+            .increment(1);
+        }
+        Ok(CollectionAdvance::DrainStarted)
+    }
+
+    /// Why the aggregate the collection would store, given the results so far and the one being
+    /// checkpointed, must not be stored: it cannot be computed (an expression error), it is over
+    /// the 256 KiB value ceiling, or it would push the run's retained outputs past 4 MiB (both
+    /// `RUN_DATA_LIMIT`). `None` when it fits.
+    fn aggregate_refusal<'a>(
+        &self,
+        result: &sagat_domain::workflow::Expression,
+        data: &sagat_application::execution::RunData,
+        effective_output_bytes: u64,
+        items: &[Vec<u8>],
+        stored: impl Iterator<Item = (u32, &'a ExecutionInstanceId, &'a [u8])>,
+        current: (u32, &'a ExecutionInstanceId, &'a [u8]),
+    ) -> Option<FailureCode> {
+        let mut members: Vec<_> = stored.collect();
+        members.push(current);
+        members.sort_by_key(|(position, _, _)| *position);
+        // The iterations that already ended no longer carry their input in the run data; the
+        // snapshot does, and the result expression reads `item` and `index` as the body did.
+        let mut data = data.clone();
+        for (position, instance, _) in &members {
+            // A position the snapshot does not hold is an inconsistent progress record: refuse it
+            // as an expression error instead of letting the aggregate pass unchecked.
+            let Some(item) = usize::try_from(*position)
+                .ok()
+                .and_then(|position| items.get(position))
+            else {
+                return Some(FailureCode::expression_error());
+            };
+            data.scope_inputs.insert(
+                instance.path().clone(),
+                ScopeInput::Collection {
+                    index: *position,
+                    item: item.clone(),
+                },
+            );
+        }
+        let mut mapped = Vec::with_capacity(members.len());
+        for (_, instance, body_result) in members {
+            let value = self
+                .engine
+                .evaluator()
+                .collection_member_result(result, &data, instance, body_result)
+                .ok()
+                .and_then(|value| serde_json::from_slice::<serde_json::Value>(&value).ok());
+            let Some(value) = value else {
+                return Some(FailureCode::expression_error());
+            };
+            mapped.push(value);
+        }
+        let Ok(aggregate) = serde_json::to_vec(&mapped) else {
+            return Some(FailureCode::expression_error());
+        };
+        (aggregate.len() > MAX_PAYLOAD_BYTES
+            || output_increment_exceeds_limit(effective_output_bytes, aggregate.len()))
+        .then(FailureCode::run_data_limit)
+    }
+
+    /// Stops the run before its collection starts because a declared hard budget does not allow
+    /// it: the run fails with `code`, journaled and typed, and nothing was admitted.
+    async fn stop_collection_for_limit(
+        &self,
+        view: &View,
+        hold: &Hold,
+        tenant: TenantId,
+        run: RunId,
+        version: u64,
+        code: FailureCode,
+    ) -> Result<CollectionAdvance, CollectionAdvanceError> {
+        match self
+            .stop_for_limit(
+                view,
+                hold,
+                RunRef {
+                    tenant_id: tenant,
+                    run_id: run,
+                },
+                WorkflowPrimitiveKind::Collection,
+                code,
+                version,
+            )
+            .await?
+        {
+            Outcome::Done => Ok(CollectionAdvance::LimitStopped),
+            Outcome::Skipped | Outcome::DoesNotFit => Ok(CollectionAdvance::Waiting),
+            Outcome::Fenced => Err(CollectionAdvanceError::FenceUnavailable),
+            Outcome::Failed | Outcome::QuotaStopped => Err(CollectionAdvanceError::Engine(
+                EngineError::Store(StoreError::Internal {
+                    detail: "unexpected collection limit recovery outcome".to_owned(),
+                }),
+            )),
+        }
+    }
+
+    /// Fails the run before its collection starts because the items it was to iterate over cannot
+    /// be used: a typed, journaled failure and a bounded-label counter, with nothing admitted.
+    #[allow(clippy::too_many_arguments)]
+    async fn stop_collection_for_source(
+        &self,
+        view: &View,
+        hold: &Hold,
+        tenant: TenantId,
+        run: RunId,
+        version: u64,
+        code: FailureCode,
+        reason: &'static str,
+    ) -> Result<CollectionAdvance, CollectionAdvanceError> {
+        tracing::warn!(%run, code = code.as_str(), reason, "a collection source was refused");
+        match self
+            .stop_with_code(
+                view,
+                hold,
+                RunRef {
+                    tenant_id: tenant,
+                    run_id: run,
+                },
+                version,
+                code,
+            )
+            .await?
+        {
+            Outcome::Done => {
+                metrics::counter!("scheduler_collection_source_failures_total", "reason" => reason)
+                    .increment(1);
+                Ok(CollectionAdvance::LimitStopped)
+            }
+            Outcome::Skipped | Outcome::DoesNotFit => Ok(CollectionAdvance::Waiting),
+            Outcome::Fenced => Err(CollectionAdvanceError::FenceUnavailable),
+            Outcome::Failed | Outcome::QuotaStopped => Err(CollectionAdvanceError::Engine(
+                EngineError::Store(StoreError::Internal {
+                    detail: "unexpected collection source recovery outcome".to_owned(),
+                }),
+            )),
+        }
+    }
+
+    async fn drain_collection_for_storage_quota(
+        &self,
+        transition: CollectionTransition,
+        scope_id: CollectionScopeId,
+    ) -> Result<CollectionAdvance, CollectionAdvanceError> {
+        let audit = AuditRecord::engine(
+            transition.tenant_id(),
+            AuditAction::RunStorageQuotaExceeded,
+            ResourceType::Run,
+            transition.run_id().to_string(),
+            "collection storage quota exceeded",
+            transition.trace_id().map(str::to_owned),
+            transition.occurred_at(),
+        );
+        self.store
+            .start_collection_drain(&CollectionDrain::new(
+                transition.with_audit(audit),
+                scope_id,
+                execution::CollectionDrainReason::StorageQuotaExceeded,
+                uuid::Uuid::now_v7(),
+            ))
+            .await?;
+        metrics::counter!(
+            "scheduler_quota_stops_total",
+            "limit" => sagat_domain::quota::QuotaResource::TenantContentBytes.limit_name(),
+            "kind" => "collection",
+        )
+        .increment(1);
+        Ok(CollectionAdvance::QuotaStopped)
+    }
+
+    async fn advance_loop_from_run_in_view(
+        &self,
+        view: &View,
+        tenant: TenantId,
+        run: RunId,
+        owner: &ExecutionInstanceId,
+        timer_id: Option<uuid::Uuid>,
+    ) -> Result<LoopAdvance, LoopAdvanceError> {
+        let hold = view.hold_for(run);
+        let lease = match &hold {
+            Hold::Lease(lease) => *lease,
+            Hold::Nothing | Hold::Lost => return Err(LoopAdvanceError::FenceUnavailable),
+        };
+        let mut tx = self
+            .store
+            .begin(tenant, run, Lock::Wait)
+            .await?
+            .ok_or(LoopAdvanceError::MissingRun)?;
+        let info = tx.info().clone();
+        let occurred_at = tx.now();
+        let data = tx.data().await?.clone();
+        let (definition, state) = tx.parts();
+        let definition = definition.clone();
+        let state = state.clone();
+        drop(tx);
+
+        let ctx = LoopCtx::new(
+            &definition,
+            owner,
+            (tenant, run),
+            &info,
+            occurred_at,
+            SchedulerAuthority::new(view.owner.clone(), lease),
+        )?;
+        let (kind, condition, initial, carry, max_iterations, timeout) = (
+            ctx.kind,
+            ctx.condition,
+            ctx.initial,
+            ctx.carry,
+            ctx.max_iterations,
+            ctx.timeout,
+        );
+        let next_activity = |index| ctx.next_activity(index);
+        let transition = |expected_run_version| ctx.transition(expected_run_version);
+        let Some(loop_state) = state.loop_state(owner) else {
+            let evaluated = match self.engine.evaluator().loop_entry(
+                initial,
+                (kind == LoopKind::While).then_some(condition),
+                &data,
+            ) {
+                Ok(evaluated) => evaluated,
+                Err(_) => {
+                    return match self
+                        .stop_loop_for_expression(
+                            view,
+                            &hold,
+                            RunRef {
+                                tenant_id: tenant,
+                                run_id: run,
+                            },
+                            owner.node(),
+                            state.version(),
+                        )
+                        .await?
+                    {
+                        Outcome::Done => Ok(LoopAdvance::ExpressionStopped),
+                        Outcome::Skipped | Outcome::DoesNotFit => Ok(LoopAdvance::Waiting),
+                        Outcome::Fenced => Err(LoopAdvanceError::FenceUnavailable),
+                        Outcome::Failed | Outcome::QuotaStopped => {
+                            Err(LoopAdvanceError::Expression)
+                        }
+                    };
+                }
+            };
+            // The initial carry is a value: over the ceiling nothing of it is retained.
+            if evaluated.carry.len() > MAX_PAYLOAD_BYTES {
+                return match self
+                    .stop_for_limit(
+                        view,
+                        &hold,
+                        RunRef {
+                            tenant_id: tenant,
+                            run_id: run,
+                        },
+                        WorkflowPrimitiveKind::Loop,
+                        FailureCode::run_data_limit(),
+                        state.version(),
+                    )
+                    .await?
+                {
+                    Outcome::Done => Ok(LoopAdvance::LimitStopped),
+                    Outcome::Skipped | Outcome::DoesNotFit => Ok(LoopAdvance::Waiting),
+                    Outcome::Fenced => Err(LoopAdvanceError::FenceUnavailable),
+                    Outcome::Failed | Outcome::QuotaStopped => Err(LoopAdvanceError::Engine(
+                        EngineError::Store(StoreError::Internal {
+                            detail: "unexpected loop limit recovery outcome".to_owned(),
+                        }),
+                    )),
+                };
+            }
+            let needs_body = kind == LoopKind::RepeatUntil || evaluated.condition == Some(true);
+            let first_activity = needs_body.then(|| next_activity(0)).transpose()?;
+            let entry = LoopEntryCommand::from_carry(
+                transition(state.version()),
+                kind,
+                max_iterations,
+                occurred_at + timeout,
+                evaluated.carry,
+                evaluated.condition,
+                first_activity,
+                uuid::Uuid::now_v7(),
+            )?;
+            match self.store.enter_loop(&entry).await {
+                Ok(_) => {}
+                // The owner, the first body and what follows the loop do not fit the run's
+                // lifetime instance budget: nothing was entered, and the run fails typed.
+                Err(LoopProgressError::InstanceBudgetExceeded) => {
+                    return match self
+                        .stop_for_limit(
+                            view,
+                            &hold,
+                            RunRef {
+                                tenant_id: tenant,
+                                run_id: run,
+                            },
+                            WorkflowPrimitiveKind::Loop,
+                            FailureCode::instance_limit(),
+                            state.version(),
+                        )
+                        .await?
+                    {
+                        Outcome::Done => Ok(LoopAdvance::LimitStopped),
+                        Outcome::Skipped | Outcome::DoesNotFit => Ok(LoopAdvance::Waiting),
+                        Outcome::Fenced => Err(LoopAdvanceError::FenceUnavailable),
+                        Outcome::Failed | Outcome::QuotaStopped => Err(LoopAdvanceError::Engine(
+                            EngineError::Store(StoreError::Internal {
+                                detail: "unexpected loop limit recovery outcome".to_owned(),
+                            }),
+                        )),
+                    };
+                }
+                Err(error) if loop_content_quota(&error) => {
+                    return match self
+                        .stop_for_storage_quota(
+                            view,
+                            &hold,
+                            RunRef {
+                                tenant_id: tenant,
+                                run_id: run,
+                            },
+                            "loop",
+                            Condition::Always,
+                            state.version(),
+                        )
+                        .await?
+                    {
+                        Outcome::QuotaStopped => Ok(LoopAdvance::QuotaStopped),
+                        Outcome::Skipped | Outcome::DoesNotFit => Ok(LoopAdvance::Waiting),
+                        Outcome::Fenced => Err(LoopAdvanceError::FenceUnavailable),
+                        Outcome::Done | Outcome::Failed => Err(LoopAdvanceError::Engine(
+                            EngineError::Store(StoreError::Internal {
+                                detail: "unexpected loop quota recovery outcome".to_owned(),
+                            }),
+                        )),
+                    };
+                }
+                Err(error) => return Err(error.into()),
+            }
+            return Ok(LoopAdvance::Entered);
+        };
+
+        if matches!(
+            loop_state.phase(),
+            LoopPhase::Succeeded | LoopPhase::Failed | LoopPhase::Cancelled
+        ) {
+            return Ok(LoopAdvance::AlreadyFinished);
+        }
+        if loop_state.phase() == LoopPhase::Draining {
+            if let Some(index) = loop_state.active_iteration() {
+                let path = owner
+                    .path()
+                    .child(owner.node().clone(), index)
+                    .map_err(|_| LoopAdvanceError::InvalidProgress)?;
+                let safe = state
+                    .instances()
+                    .filter(|(instance, _)| instance.path() == &path)
+                    .all(|(instance, step)| {
+                        let settled_derived = instance.node().is_derived()
+                            && matches!(
+                                step.status(),
+                                execution::StepStatus::Succeeded | execution::StepStatus::Skipped
+                            );
+                        // Nothing is in flight: a step that has not started, or one that waits
+                        // to retry.
+                        let safe_unstarted = (step.attempt() == 0
+                            && matches!(
+                                step.status(),
+                                execution::StepStatus::Pending | execution::StepStatus::Ready
+                            ))
+                            || step.status() == execution::StepStatus::RetryWait;
+                        step.status().is_terminal() && !instance.node().is_derived()
+                            || settled_derived
+                            || safe_unstarted
+                    });
+                if !safe {
+                    return Ok(LoopAdvance::Waiting);
+                }
+                self.store
+                    .drain_iteration(&LoopIterationDrainCommand::new(
+                        transition(state.version()),
+                        index,
+                        uuid::Uuid::now_v7(),
+                    )?)
+                    .await?;
+                return Ok(LoopAdvance::Drained { index });
+            }
+            if state.instances().any(|(instance, step)| {
+                instance != owner && instance.path().is_root() && !step.status().is_terminal()
+            }) {
+                return Ok(LoopAdvance::Waiting);
+            }
+            // A loop that can be compensated undoes what its iterations completed before it ends,
+            // last iteration first (D380, D383).
+            if definition.scope_compensates(owner) {
+                let finished = state
+                    .scope_saga(owner)
+                    .is_some_and(|saga| saga.phase() == execution::SagaPhase::Done);
+                if !finished {
+                    if !matches!(
+                        execution::plan_scope_compensation(&definition, &state)?,
+                        execution::AddressedPlan::Emit(_)
+                    ) {
+                        return Ok(LoopAdvance::Waiting);
+                    }
+                    return match self
+                        .apply_addressed(
+                            view,
+                            tenant,
+                            run,
+                            "scope_compensation",
+                            self.effects(),
+                            |def, state, _| {
+                                Ok(((), execution::advance_scope_compensation(def, state)?))
+                            },
+                        )
+                        .await
+                    {
+                        Outcome::Done => Ok(LoopAdvance::Compensated),
+                        Outcome::Skipped | Outcome::DoesNotFit => Ok(LoopAdvance::Waiting),
+                        Outcome::Fenced => Err(LoopAdvanceError::FenceUnavailable),
+                        Outcome::Failed | Outcome::QuotaStopped => Err(LoopAdvanceError::Engine(
+                            EngineError::Store(StoreError::Internal {
+                                detail: "scope compensation could not be committed".to_owned(),
+                            }),
+                        )),
+                    };
+                }
+            }
+            self.store
+                .finish_drain(&LoopDrainFinishCommand::new(
+                    transition(state.version()),
+                    uuid::Uuid::now_v7(),
+                ))
+                .await?;
+            return Ok(LoopAdvance::DrainFinished);
+        }
+        if state.stop_reason() == Some(StopReason::Cancelled) {
+            self.store
+                .start_drain(&LoopDrainCommand::new(
+                    transition(state.version()),
+                    execution::LoopDrainReason::Cancelled,
+                    uuid::Uuid::now_v7(),
+                )?)
+                .await?;
+            return Ok(LoopAdvance::DrainStarted);
+        }
+        if occurred_at >= loop_state.deadline() {
+            self.store
+                .start_drain(&LoopDrainCommand::new(
+                    transition(state.version()),
+                    execution::LoopDrainReason::TimedOut,
+                    uuid::Uuid::now_v7(),
+                )?)
+                .await?;
+            return Ok(LoopAdvance::DrainStarted);
+        }
+
+        if loop_state.phase() == LoopPhase::Delaying {
+            let due_at = loop_state
+                .delay_until()
+                .ok_or(LoopAdvanceError::InvalidProgress)?;
+            if due_at > occurred_at {
+                return Ok(LoopAdvance::Waiting);
+            }
+            let timer_id = timer_id.ok_or(LoopAdvanceError::InvalidProgress)?;
+            let index = loop_state.next_iteration();
+            match self
+                .store
+                .fire_delay(&LoopDelayElapsedCommand::new(
+                    transition(state.version()),
+                    timer_id,
+                    index,
+                    next_activity(index)?,
+                    uuid::Uuid::now_v7(),
+                )?)
+                .await
+            {
+                Ok(_) => {}
+                // The budget was reduced while the loop waited: admission pauses, accepted work
+                // is kept, and the loop's own deadline still bounds the wait.
+                Err(LoopProgressError::InstanceBudgetExceeded) => {
+                    metrics::counter!(
+                        "scheduler_admission_paused_total",
+                        "kind" => "loop",
+                        "reason" => "instance_budget",
+                    )
+                    .increment(1);
+                    return Ok(LoopAdvance::Waiting);
+                }
+                Err(error) => return Err(error.into()),
+            }
+            return Ok(LoopAdvance::DelayElapsed { index });
+        }
+
+        if loop_state.phase() != LoopPhase::Running {
+            return Err(LoopAdvanceError::InvalidProgress);
+        }
+        let index = loop_state
+            .active_iteration()
+            .ok_or(LoopAdvanceError::InvalidProgress)?;
+        let member_path = owner
+            .path()
+            .child(owner.node().clone(), index)
+            .map_err(|_| LoopAdvanceError::InvalidProgress)?;
+        if let Some(code) = state.instances().find_map(|(instance, step)| {
+            (instance.path() == &member_path && step.status() == execution::StepStatus::Failed)
+                .then(|| step.failure().cloned())
+                .flatten()
+        }) {
+            self.store
+                .start_drain(&LoopDrainCommand::new(
+                    transition(state.version()),
+                    execution::LoopDrainReason::Failed {
+                        iteration: index,
+                        code,
+                    },
+                    uuid::Uuid::now_v7(),
+                )?)
+                .await?;
+            return Ok(LoopAdvance::DrainStarted);
+        }
+        let return_instance = state.instances().find_map(|(instance, step)| {
+            (instance.path() == &member_path
+                && step.status() == execution::StepStatus::Pending
+                && matches!(
+                    definition
+                        .node_for_instance(instance)
+                        .map(sagat_domain::workflow::Node::kind),
+                    Some(NodeKind::Return { .. })
+                ))
+            .then_some(instance.clone())
+        });
+        let Some(return_instance) = return_instance else {
+            return Ok(LoopAdvance::Waiting);
+        };
+        let NodeKind::Return { result } = definition
+            .node_for_instance(&return_instance)
+            .ok_or(LoopAdvanceError::InvalidProgress)?
+            .kind()
+        else {
+            return Err(LoopAdvanceError::InvalidProgress);
+        };
+        let evaluated = match self.engine.evaluator().loop_checkpoint(
+            result,
+            carry,
+            condition,
+            &data,
+            &return_instance,
+        ) {
+            Ok(evaluated) => evaluated,
+            Err(_) => {
+                self.store
+                    .start_drain(&LoopDrainCommand::new(
+                        transition(state.version()),
+                        execution::LoopDrainReason::Failed {
+                            iteration: index,
+                            code: FailureCode::expression_error(),
+                        },
+                        uuid::Uuid::now_v7(),
+                    )?)
+                    .await?;
+                return Ok(LoopAdvance::DrainStarted);
+            }
+        };
+        self.commit_loop_checkpoint(
+            &ctx,
+            view,
+            &hold,
+            LoopSnapshot {
+                version: state.version(),
+                charged: state.charged_instances(),
+                deadline: loop_state.deadline(),
+            },
+            Retained::Known(data.outputs.values().map(Vec::len).sum()),
+            index,
+            return_instance,
+            evaluated,
+        )
+        .await
+    }
+
+    /// Decides one loop transition from the scope's frontier (G461, D520). Entering the loop and
+    /// compensating it are decided from the whole run.
+    async fn advance_loop_in_view(
+        &self,
+        view: &View,
+        tenant: TenantId,
+        run: RunId,
+        owner: &ExecutionInstanceId,
+        timer_id: Option<uuid::Uuid>,
+    ) -> Result<LoopAdvance, LoopAdvanceError> {
+        let hold = view.hold_for(run);
+        if !matches!(hold, Hold::Lease(_)) {
+            return Err(LoopAdvanceError::FenceUnavailable);
+        }
+        if let Some(frontier) = self.store.loop_frontier(tenant, run, owner).await?
+            && let Some(advance) = self
+                .advance_loop_frontier(view, &hold, (tenant, run, owner), timer_id, &frontier)
+                .await?
+        {
+            return Ok(advance);
+        }
+        self.advance_loop_from_run_in_view(view, tenant, run, owner, timer_id)
+            .await
+    }
+
+    /// `None`: this transition needs the whole run.
+    #[allow(clippy::too_many_lines)]
+    async fn advance_loop_frontier(
+        &self,
+        view: &View,
+        hold: &Hold,
+        (tenant, run, owner): (TenantId, RunId, &ExecutionInstanceId),
+        timer_id: Option<uuid::Uuid>,
+        frontier: &LoopFrontier,
+    ) -> Result<Option<LoopAdvance>, LoopAdvanceError> {
+        let Hold::Lease(lease) = hold else {
+            return Err(LoopAdvanceError::FenceUnavailable);
+        };
+        let definition = &frontier.run.definition;
+        let ctx = LoopCtx::new(
+            definition,
+            owner,
+            (tenant, run),
+            &frontier.run.info,
+            frontier.run.now,
+            SchedulerAuthority::new(view.owner.clone(), *lease),
+        )?;
+        let version = frontier.run.version;
+        let occurred_at = frontier.run.now;
+        match frontier.phase {
+            LoopPhase::Succeeded | LoopPhase::Failed | LoopPhase::Cancelled => {
+                return Ok(Some(LoopAdvance::AlreadyFinished));
+            }
+            LoopPhase::Draining => {
+                if let Some(member) = &frontier.member {
+                    if !member_is_safe_to_drain(member, false) {
+                        return Ok(Some(LoopAdvance::Waiting));
+                    }
+                    self.store
+                        .drain_iteration(&LoopIterationDrainCommand::new(
+                            ctx.transition(version),
+                            member.index,
+                            uuid::Uuid::now_v7(),
+                        )?)
+                        .await?;
+                    return Ok(Some(LoopAdvance::Drained {
+                        index: member.index,
+                    }));
+                }
+                if frontier.other_root_work {
+                    return Ok(Some(LoopAdvance::Waiting));
+                }
+                // Undoing what the iterations completed reads all of them (D380, D383).
+                if definition.scope_compensates(owner) {
+                    return Ok(None);
+                }
+                self.store
+                    .finish_drain(&LoopDrainFinishCommand::new(
+                        ctx.transition(version),
+                        uuid::Uuid::now_v7(),
+                    ))
+                    .await?;
+                return Ok(Some(LoopAdvance::DrainFinished));
+            }
+            LoopPhase::Ready | LoopPhase::Running | LoopPhase::Delaying => {}
+        }
+        if frontier.run.stop_reason == Some(StopReason::Cancelled) {
+            self.store
+                .start_drain(&LoopDrainCommand::new(
+                    ctx.transition(version),
+                    execution::LoopDrainReason::Cancelled,
+                    uuid::Uuid::now_v7(),
+                )?)
+                .await?;
+            return Ok(Some(LoopAdvance::DrainStarted));
+        }
+        if occurred_at >= frontier.deadline {
+            self.store
+                .start_drain(&LoopDrainCommand::new(
+                    ctx.transition(version),
+                    execution::LoopDrainReason::TimedOut,
+                    uuid::Uuid::now_v7(),
+                )?)
+                .await?;
+            return Ok(Some(LoopAdvance::DrainStarted));
+        }
+
+        if frontier.phase == LoopPhase::Delaying {
+            let due_at = frontier
+                .delay_until
+                .ok_or(LoopAdvanceError::InvalidProgress)?;
+            if due_at > occurred_at {
+                return Ok(Some(LoopAdvance::Waiting));
+            }
+            let timer_id = timer_id.ok_or(LoopAdvanceError::InvalidProgress)?;
+            let index = frontier.next_iteration;
+            return match self
+                .store
+                .fire_delay(&LoopDelayElapsedCommand::new(
+                    ctx.transition(version),
+                    timer_id,
+                    index,
+                    ctx.next_activity(index)?,
+                    uuid::Uuid::now_v7(),
+                )?)
+                .await
+            {
+                Ok(_) => Ok(Some(LoopAdvance::DelayElapsed { index })),
+                // The budget was reduced while the loop waited: admission pauses, accepted work
+                // is kept, and the loop's own deadline still bounds the wait.
+                Err(LoopProgressError::InstanceBudgetExceeded) => {
+                    metrics::counter!(
+                        "scheduler_admission_paused_total",
+                        "kind" => "loop",
+                        "reason" => "instance_budget",
+                    )
+                    .increment(1);
+                    Ok(Some(LoopAdvance::Waiting))
+                }
+                Err(error) => Err(error.into()),
+            };
+        }
+
+        if frontier.phase != LoopPhase::Running {
+            return Err(LoopAdvanceError::InvalidProgress);
+        }
+        let member = frontier
+            .member
+            .as_ref()
+            .ok_or(LoopAdvanceError::InvalidProgress)?;
+        let index = member.index;
+        if let Some(code) = member.first_failure() {
+            self.store
+                .start_drain(&LoopDrainCommand::new(
+                    ctx.transition(version),
+                    execution::LoopDrainReason::Failed {
+                        iteration: index,
+                        code: code.clone(),
+                    },
+                    uuid::Uuid::now_v7(),
+                )?)
+                .await?;
+            return Ok(Some(LoopAdvance::DrainStarted));
+        }
+        let Some(return_instance) = member.pending_return(definition) else {
+            return Ok(Some(LoopAdvance::Waiting));
+        };
+        let NodeKind::Return { result } = definition
+            .node_for_instance(return_instance)
+            .ok_or(LoopAdvanceError::InvalidProgress)?
+            .kind()
+        else {
+            return Err(LoopAdvanceError::InvalidProgress);
+        };
+        let evaluated = match self.engine.evaluator().loop_checkpoint(
+            result,
+            ctx.carry,
+            ctx.condition,
+            &frontier.data,
+            return_instance,
+        ) {
+            Ok(evaluated) => evaluated,
+            Err(_) => {
+                self.store
+                    .start_drain(&LoopDrainCommand::new(
+                        ctx.transition(version),
+                        execution::LoopDrainReason::Failed {
+                            iteration: index,
+                            code: FailureCode::expression_error(),
+                        },
+                        uuid::Uuid::now_v7(),
+                    )?)
+                    .await?;
+                return Ok(Some(LoopAdvance::DrainStarted));
+            }
+        };
+        self.commit_loop_checkpoint(
+            &ctx,
+            view,
+            hold,
+            LoopSnapshot {
+                version,
+                charged: frontier.run.charged_instances,
+                deadline: frontier.deadline,
+            },
+            Retained::Lookup,
+            index,
+            return_instance.clone(),
+            evaluated,
+        )
+        .await
+        .map(Some)
+    }
+
+    /// Commits the checkpoint of the iteration in flight with the continuation its result calls for:
+    /// the next body, a delay, the end of the loop, or a typed stop at a limit.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    async fn commit_loop_checkpoint(
+        &self,
+        ctx: &LoopCtx<'_>,
+        view: &View,
+        hold: &Hold,
+        snapshot: LoopSnapshot,
+        retained: Retained,
+        index: u32,
+        return_instance: ExecutionInstanceId,
+        evaluated: sagat_application::loop_progress::LoopCheckpointEvaluation,
+    ) -> Result<LoopAdvance, LoopAdvanceError> {
+        let (tenant, run, owner, occurred_at) = (ctx.tenant, ctx.run, ctx.owner, ctx.occurred_at);
+        let (definition, kind, body, delay, max_iterations) = (
+            ctx.definition,
+            ctx.kind,
+            ctx.body,
+            ctx.delay,
+            ctx.max_iterations,
+        );
+        let next_index = index
+            .checked_add(1)
+            .ok_or(LoopAdvanceError::InvalidProgress)?;
+        let continues = match kind {
+            LoopKind::While => evaluated.condition,
+            LoopKind::RepeatUntil => !evaluated.condition,
+        };
+        // The result and the carry are values: over 256 KiB nothing is retained and the loop fails
+        // at this iteration's result boundary, as it does for an expression that cannot be
+        // computed. The carry that ends the loop becomes its output, which the run must be able to
+        // retain beside every other output.
+        let within_values = evaluated.result.len() <= MAX_PAYLOAD_BYTES
+            && evaluated.carry.len() <= MAX_PAYLOAD_BYTES;
+        let over_run_output = if continues || !within_values {
+            false
+        } else {
+            let retained = match retained {
+                Retained::Known(bytes) => bytes,
+                Retained::Lookup => {
+                    usize::try_from(self.store.retained_output_bytes(tenant, run).await?)
+                        .map_err(|_| LoopAdvanceError::InvalidProgress)?
+                }
+            };
+            retained.saturating_add(evaluated.carry.len()) > MAX_RUN_OUTPUT_BYTES
+        };
+        if !within_values || over_run_output {
+            self.store
+                .start_drain(&LoopDrainCommand::new(
+                    ctx.transition(snapshot.version),
+                    execution::LoopDrainReason::Failed {
+                        iteration: index,
+                        code: FailureCode::run_data_limit(),
+                    },
+                    uuid::Uuid::now_v7(),
+                )?)
+                .await?;
+            return Ok(LoopAdvance::DrainStarted);
+        }
+        // What the next body would charge: one instance per node (the compensations and lookups it may
+        // need included), charged when it is admitted.
+        let budget = definition.limits().max_instances();
+        let next_charge = body.all_nodes().count();
+        let affordable = snapshot
+            .charged
+            .checked_add(next_charge)
+            .and_then(|total| u32::try_from(total).ok())
+            .is_some_and(|total| total <= budget);
+        let successor_affordable = snapshot
+            .charged
+            .checked_add(1)
+            .and_then(|total| u32::try_from(total).ok())
+            .is_some_and(|total| total <= budget);
+        let (continuation, next, delay_timer) = if !continues {
+            if successor_affordable {
+                (LoopContinuation::Complete, None, None)
+            } else {
+                (LoopContinuation::InstanceLimit, None, None)
+            }
+        } else if next_index >= max_iterations {
+            (LoopContinuation::IterationLimit, None, None)
+        } else if !affordable {
+            // Needing another body the author's instance limit cannot pay for is a durable,
+            // typed stop, decided before any delay is scheduled for work that can never run.
+            (LoopContinuation::InstanceLimit, None, None)
+        } else if let Some(delay) = delay {
+            let due_at = occurred_at + delay;
+            if due_at > snapshot.deadline {
+                // The delay cannot end inside the loop's budget, so it is never scheduled. The
+                // timeout code means the deadline was reached, which the store insists on before it
+                // accepts a timed-out drain (it refused the early one this branch used to ask for on
+                // every tick): the returned iteration waits and the deadline check above ends the
+                // loop when it is reached.
+                return Ok(LoopAdvance::Waiting);
+            }
+            (
+                LoopContinuation::DelayUntil(due_at),
+                None,
+                Some(uuid::Uuid::now_v7()),
+            )
+        } else {
+            (
+                LoopContinuation::Continue,
+                Some(ctx.next_activity(next_index)?),
+                None,
+            )
+        };
+        // A loop whose completed iterations must be undone does not end at a limit checkpoint: that
+        // would fail the loop with nothing compensated. The iteration that met the limit is stopped at
+        // its result boundary instead, as for an expression that cannot be computed, and the loop
+        // drains, compensates last iteration first and then fails with the limit's code (D390).
+        if let Some(code) = continuation.limit_failure()
+            && definition.scope_compensates(owner)
+        {
+            self.store
+                .start_drain(&LoopDrainCommand::new(
+                    ctx.transition(snapshot.version),
+                    execution::LoopDrainReason::Failed {
+                        iteration: index,
+                        code,
+                    },
+                    uuid::Uuid::now_v7(),
+                )?)
+                .await?;
+            return Ok(LoopAdvance::DrainStarted);
+        }
+        let checkpoint = LoopCheckpointCommand::from_evaluation(
+            ctx.transition(snapshot.version),
+            index,
+            return_instance.clone(),
+            evaluated.clone(),
+            occurred_at,
+            continuation,
+            next,
+            delay_timer,
+            uuid::Uuid::now_v7(),
+        )?;
+        let mut committed = self.store.checkpoint(&checkpoint).await;
+        // The store knows the run's real budget, which tenant policy may have lowered below the
+        // author's: when it cannot admit what the checkpoint needs next, the same checkpoint is
+        // committed as the typed stop instead, which it re-proves against that budget.
+        if matches!(committed, Err(LoopProgressError::InstanceBudgetExceeded))
+            && matches!(
+                continuation,
+                LoopContinuation::Continue | LoopContinuation::Complete
+            )
+        {
+            if definition.scope_compensates(owner) {
+                self.store
+                    .start_drain(&LoopDrainCommand::new(
+                        ctx.transition(snapshot.version),
+                        execution::LoopDrainReason::Failed {
+                            iteration: index,
+                            code: FailureCode::instance_limit(),
+                        },
+                        uuid::Uuid::now_v7(),
+                    )?)
+                    .await?;
+                return Ok(LoopAdvance::DrainStarted);
+            }
+            let refused = LoopCheckpointCommand::from_evaluation(
+                ctx.transition(snapshot.version),
+                index,
+                return_instance,
+                evaluated,
+                occurred_at,
+                LoopContinuation::InstanceLimit,
+                None,
+                None,
+                uuid::Uuid::now_v7(),
+            )?;
+            committed = self.store.checkpoint(&refused).await;
+        }
+        match committed {
+            Ok(_) => {}
+            Err(error) if loop_content_quota(&error) => {
+                return match self
+                    .stop_for_storage_quota(
+                        view,
+                        hold,
+                        RunRef {
+                            tenant_id: tenant,
+                            run_id: run,
+                        },
+                        "loop",
+                        Condition::Always,
+                        snapshot.version,
+                    )
+                    .await?
+                {
+                    Outcome::QuotaStopped => Ok(LoopAdvance::QuotaStopped),
+                    Outcome::Skipped | Outcome::DoesNotFit => Ok(LoopAdvance::Waiting),
+                    Outcome::Fenced => Err(LoopAdvanceError::FenceUnavailable),
+                    Outcome::Done | Outcome::Failed => Err(LoopAdvanceError::Engine(
+                        EngineError::Store(StoreError::Internal {
+                            detail: "unexpected loop quota recovery outcome".to_owned(),
+                        }),
+                    )),
+                };
+            }
+            Err(error) => return Err(error.into()),
+        }
+        Ok(LoopAdvance::Checkpointed { index })
     }
 
     /// Purges expired idempotency records and worker sessions. Run it rarely.
@@ -461,7 +3343,7 @@ where
                     return Ok(Outcome::Fenced);
                 }
                 if !condition.holds(&mut tx).await.map_err(EngineError::Store)? {
-                    return Ok(Outcome::Skipped);
+                    return Ok(condition.refused());
                 }
                 let version = tx.parts().1.version();
                 match self.engine.run(&mut tx, effects, command).await {
@@ -485,6 +3367,235 @@ where
                     },
                     // The domain refused: the state moved since the candidate query (a worker
                     // answered, a signal arrived, the run was cancelled). Dropping `tx` rolls back.
+                    Err(EngineError::Execution(error))
+                        if !matches!(error, ExecutionError::Invariant(_)) =>
+                    {
+                        Ok(Outcome::Skipped)
+                    }
+                    Err(error) if content_quota(&error) => {
+                        drop(tx);
+                        self.stop_for_storage_quota(
+                            view,
+                            &hold,
+                            RunRef {
+                                tenant_id: tenant,
+                                run_id: run,
+                            },
+                            kind,
+                            condition,
+                            version,
+                        )
+                        .await
+                    }
+                    Err(other) => Err(other),
+                }
+            }
+            .instrument(span)
+            .await
+        }
+        .await;
+        let outcome = outcome.unwrap_or_else(|error: EngineError| {
+            tracing::error!(%error, %run, kind, "a scheduler action failed");
+            Outcome::Failed
+        });
+        metrics::counter!("scheduler_actions_total", "kind" => kind, "outcome" => outcome.label())
+            .increment(1);
+        if outcome == Outcome::Fenced {
+            metrics::counter!("scheduler_fenced_total", "kind" => kind).increment(1);
+        }
+        outcome
+    }
+
+    /// Retry/expiry decisions need one path, its ancestor fences and current lease clocks. Read
+    /// those before taking the write lock and compare the run revision when acquiring it; a race
+    /// is a skipped candidate, never a reason to reopen the whole run's iteration history.
+    async fn apply_path_if<F>(
+        &self,
+        view: &View,
+        run: RunRef,
+        instance: &ExecutionInstanceId,
+        kind: &'static str,
+        lease_loss: Option<LeaseLoss>,
+        command: F,
+    ) -> Outcome
+    where
+        S: PathExecutionStore,
+        F: FnOnce(
+            &WorkflowDefinition,
+            &mut PathExecutionState,
+            OffsetDateTime,
+        ) -> Result<AddressedProgress, ExecutionError>,
+    {
+        let tenant = run.tenant_id;
+        let run_id = run.run_id;
+        let hold = view.hold_for(run_id);
+        let outcome = async {
+            if matches!(hold, Hold::Lost) {
+                return Ok(Outcome::Fenced);
+            }
+            let Some(snapshot) = self
+                .store
+                .load_path(tenant, run_id, instance.path().clone())
+                .await?
+            else {
+                return Ok(Outcome::Skipped);
+            };
+            let version = snapshot.state.global().version();
+            let trace = snapshot.info.trace_id.clone();
+            let span = tracing::info_span!(
+                "scheduler.action",
+                kind,
+                run_id = %run_id,
+                tenant_id = %tenant,
+                trace_id = trace.as_deref(),
+                parent_span_id = %sagat_telemetry::run_span_id(run_id.as_uuid()),
+            );
+            async {
+                let mut tx = match self.store.begin_path(snapshot, Lock::Wait).await {
+                    Ok(Some(tx)) => tx,
+                    Ok(None) | Err(StoreError::RevisionConflict { .. }) => {
+                        return Ok(Outcome::Skipped);
+                    }
+                    Err(error) => return Err(EngineError::Store(error)),
+                };
+                if !view.holds_path(&mut tx, &hold).await? {
+                    return Ok(Outcome::Fenced);
+                }
+                let now = tx.now();
+                if let Some(cause) = lease_loss {
+                    let due = tx
+                        .lease_deadlines(instance)
+                        .await?
+                        .is_some_and(|d| match cause {
+                            LeaseLoss::Expired => d.expires_at <= now,
+                            LeaseLoss::TimedOut => {
+                                d.attempt_deadline_at.is_some_and(|at| at <= now)
+                            }
+                        });
+                    if !due {
+                        return Ok(Outcome::Skipped);
+                    }
+                }
+                let change = async {
+                    let snapshot = tx.snapshot();
+                    let progress = command(&snapshot.definition, &mut snapshot.state, now)?;
+                    tx.persist_addressed(&progress.events, &[], self.effects())
+                        .await?;
+                    tx.commit().await?;
+                    Ok::<(), EngineError>(())
+                }
+                .await;
+                match change {
+                    Ok(()) => Ok(Outcome::Done),
+                    Err(EngineError::Execution(error))
+                        if !matches!(error, ExecutionError::Invariant(_)) =>
+                    {
+                        Ok(Outcome::Skipped)
+                    }
+                    Err(error) if content_quota(&error) => {
+                        // The failed bounded transaction has been dropped. The exceptional quota
+                        // drain keeps the existing full-run revision/fence/condition guard.
+                        let condition = lease_loss.map_or(Condition::Always, |cause| {
+                            Condition::LeaseLost { instance, cause }
+                        });
+                        self.stop_for_storage_quota(view, &hold, run, kind, condition, version)
+                            .await
+                    }
+                    Err(error) => Err(error),
+                }
+            }
+            .instrument(span)
+            .await
+        }
+        .await;
+        let outcome = outcome.unwrap_or_else(|error: EngineError| {
+            tracing::error!(%error, run = %run_id, kind, "a scheduler action failed");
+            Outcome::Failed
+        });
+        metrics::counter!("scheduler_actions_total", "kind" => kind, "outcome" => outcome.label())
+            .increment(1);
+        if outcome == Outcome::Fenced {
+            metrics::counter!("scheduler_fenced_total", "kind" => kind).increment(1);
+        }
+        outcome
+    }
+
+    async fn apply_addressed_if<F>(
+        &self,
+        view: &View,
+        RunRef {
+            tenant_id: tenant,
+            run_id: run,
+        }: RunRef,
+        kind: &'static str,
+        condition: Condition<'_>,
+        effects: Effects,
+        command: F,
+    ) -> Outcome
+    where
+        F: FnOnce(
+            &sagat_domain::workflow::WorkflowDefinition,
+            &mut sagat_domain::execution::RunState,
+            OffsetDateTime,
+        ) -> Result<((), AddressedProgress), ExecutionError>,
+    {
+        let hold = view.hold_for(run);
+        let outcome = async {
+            if matches!(hold, Hold::Lost) {
+                return Ok(Outcome::Fenced);
+            }
+            let Some(mut tx) = self
+                .store
+                .begin(tenant, run, Lock::Wait)
+                .await
+                .map_err(EngineError::Store)?
+            else {
+                return Ok(Outcome::Skipped);
+            };
+            let trace = tx.info().trace_id.clone();
+            let span = tracing::info_span!(
+                "scheduler.action",
+                kind,
+                run_id = %run,
+                tenant_id = %tenant,
+                trace_id = trace.as_deref(),
+                parent_span_id = %sagat_telemetry::run_span_id(run.as_uuid()),
+            );
+            async {
+                if !view
+                    .holds(&mut tx, &hold)
+                    .await
+                    .map_err(EngineError::Store)?
+                {
+                    return Ok(Outcome::Fenced);
+                }
+                if !condition.holds(&mut tx).await.map_err(EngineError::Store)? {
+                    return Ok(Outcome::Skipped);
+                }
+                let version = tx.parts().1.version();
+                match self
+                    .engine
+                    .run_addressed(&mut tx, Vec::new(), effects, command)
+                    .await
+                {
+                    Ok(()) => match tx.commit().await.map_err(EngineError::Store) {
+                        Ok(()) => Ok(Outcome::Done),
+                        Err(error) if content_quota(&error) => {
+                            self.stop_for_storage_quota(
+                                view,
+                                &hold,
+                                RunRef {
+                                    tenant_id: tenant,
+                                    run_id: run,
+                                },
+                                kind,
+                                condition,
+                                version,
+                            )
+                            .await
+                        }
+                        Err(error) => Err(error),
+                    },
                     Err(EngineError::Execution(error))
                         if !matches!(error, ExecutionError::Invariant(_)) =>
                     {
@@ -552,10 +3663,22 @@ where
             return Ok(outcome);
         }
         if !condition.holds(&mut tx).await.map_err(EngineError::Store)? {
-            return Ok(Outcome::Skipped);
+            return Ok(condition.refused());
+        }
+        let mut effects = self.effects();
+        if tx.parts().1.stop_reason().is_none() {
+            effects.audit = Some(AuditRecord::engine(
+                tenant,
+                AuditAction::RunStorageQuotaExceeded,
+                ResourceType::Run,
+                run.to_string(),
+                "storage quota exceeded",
+                tx.info().trace_id.clone(),
+                tx.now(),
+            ));
         }
         self.engine
-            .run(&mut tx, self.effects(), |def, state, now| {
+            .run(&mut tx, effects, |def, state, now| {
                 Ok(((), execution::stop_for_storage_quota(def, state, now)?))
             })
             .await?;
@@ -567,6 +3690,121 @@ where
         )
         .increment(1);
         Ok(Outcome::QuotaStopped)
+    }
+
+    async fn stop_loop_for_expression(
+        &self,
+        view: &View,
+        hold: &Hold,
+        run: RunRef,
+        owner: &NodeId,
+        version: u64,
+    ) -> Result<Outcome, EngineError> {
+        self.stop_with_code_routing(
+            view,
+            hold,
+            run,
+            version,
+            FailureCode::expression_error(),
+            Some(owner),
+        )
+        .await
+    }
+
+    /// Fails the run with a declared hard budget's durable code, counting the refusal under the
+    /// closed `workflow_primitive_rejections_total{kind,code}` labels.
+    async fn stop_for_limit(
+        &self,
+        view: &View,
+        hold: &Hold,
+        run: RunRef,
+        kind: WorkflowPrimitiveKind,
+        code: FailureCode,
+        version: u64,
+    ) -> Result<Outcome, EngineError> {
+        let rejection = WorkflowPrimitiveRejectionCode::from_reason(code.as_str());
+        let outcome = self.stop_with_code(view, hold, run, version, code).await?;
+        if outcome == Outcome::Done
+            && let Some(rejection) = rejection
+        {
+            metrics::counter!(
+                WorkflowPrimitiveMetric::Rejections.as_str(),
+                "kind" => kind.as_str(),
+                "code" => rejection.as_str(),
+            )
+            .increment(1);
+        }
+        Ok(outcome)
+    }
+
+    async fn stop_with_code(
+        &self,
+        view: &View,
+        hold: &Hold,
+        run: RunRef,
+        version: u64,
+        code: FailureCode,
+    ) -> Result<Outcome, EngineError> {
+        self.stop_with_code_routing(view, hold, run, version, code, None)
+            .await
+    }
+
+    /// Stops the run with `code`, unless `unentered_loop` names a loop that declares `onError`: its
+    /// pending owner then fails with `code` and the edge is taken, since no scope or iteration
+    /// exists to drain (G341). The run is only stopped when nothing handles the failure.
+    async fn stop_with_code_routing(
+        &self,
+        view: &View,
+        hold: &Hold,
+        RunRef {
+            tenant_id: tenant,
+            run_id: run,
+        }: RunRef,
+        version: u64,
+        code: FailureCode,
+        unentered_loop: Option<&NodeId>,
+    ) -> Result<Outcome, EngineError> {
+        let Some(mut tx) = self
+            .store
+            .begin(tenant, run, Lock::Wait)
+            .await
+            .map_err(EngineError::Store)?
+        else {
+            return Ok(Outcome::Skipped);
+        };
+        let shard_held = view
+            .holds(&mut tx, hold)
+            .await
+            .map_err(EngineError::Store)?;
+        if let Err(outcome) = recovery_guard(shard_held, version, tx.parts().1.version()) {
+            return Ok(outcome);
+        }
+        self.engine
+            .run(&mut tx, self.effects(), |definition, state, now| {
+                let routed = unentered_loop.filter(|owner| {
+                    definition
+                        .node(owner)
+                        .is_some_and(|n| n.on_error().is_some())
+                });
+                Ok((
+                    (),
+                    match routed {
+                        Some(owner) => {
+                            execution::fail_unentered_loop(definition, state, owner, code, now)?
+                        }
+                        None => execution::stop_run(
+                            definition,
+                            state,
+                            StopReason::Failed,
+                            Some(code),
+                            now,
+                        )?,
+                    },
+                ))
+            })
+            .await?;
+        tx.commit().await.map_err(EngineError::Store)?;
+        Ok(Outcome::Done)
     }
 
     /// [`Self::apply_if`] with nothing to re-check: the domain command itself refuses what is stale.
@@ -600,6 +3838,36 @@ where
         .await
     }
 
+    async fn apply_addressed<F>(
+        &self,
+        view: &View,
+        tenant: TenantId,
+        run: RunId,
+        kind: &'static str,
+        effects: Effects,
+        command: F,
+    ) -> Outcome
+    where
+        F: FnOnce(
+            &sagat_domain::workflow::WorkflowDefinition,
+            &mut sagat_domain::execution::RunState,
+            OffsetDateTime,
+        ) -> Result<((), AddressedProgress), ExecutionError>,
+    {
+        self.apply_addressed_if(
+            view,
+            RunRef {
+                tenant_id: tenant,
+                run_id: run,
+            },
+            kind,
+            Condition::Always,
+            effects,
+            command,
+        )
+        .await
+    }
+
     fn effects(&self) -> Effects {
         Effects::by(Actor::System("scheduler"), None)
     }
@@ -607,7 +3875,7 @@ where
     fn tally(report: &mut Report, outcome: Outcome, done: impl FnOnce(&mut Report)) {
         match outcome {
             Outcome::Done => done(report),
-            Outcome::Skipped => report.skipped += 1,
+            Outcome::Skipped | Outcome::DoesNotFit => report.skipped += 1,
             Outcome::Failed => report.failed += 1,
             Outcome::Fenced => report.fenced += 1,
             Outcome::QuotaStopped => report.quota_stops += 1,
@@ -706,6 +3974,411 @@ where
             .await
     }
 
+    async fn collections(&self, view: &View, report: &mut Report) {
+        if view.snapshot.is_none() {
+            return;
+        }
+        let candidates = self
+            .pick(
+                view,
+                "collections",
+                report,
+                |step: &StepRef| step.tenant_id,
+                |step| (step.run_id, step.instance()),
+                |store, window| async move { store.collection_candidates(&window).await },
+            )
+            .await;
+        let outcomes = self
+            .each(candidates, |candidate| async move {
+                let run = candidate.run_id;
+                let instance = candidate.instance();
+                let outcome = match self
+                    .advance_collection_in_view(
+                        view,
+                        candidate.tenant_id,
+                        candidate.run_id,
+                        &instance,
+                    )
+                    .await
+                {
+                    Ok(
+                        CollectionAdvance::Entered
+                        | CollectionAdvance::Admitted { .. }
+                        | CollectionAdvance::Checkpointed { .. }
+                        | CollectionAdvance::DrainStarted
+                        | CollectionAdvance::Drained { .. }
+                        | CollectionAdvance::DrainFinished
+                        | CollectionAdvance::Compensated
+                        | CollectionAdvance::Finished,
+                    ) => Outcome::Done,
+                    Ok(CollectionAdvance::QuotaStopped) => Outcome::QuotaStopped,
+                    Ok(CollectionAdvance::LimitStopped) => Outcome::Done,
+                    Ok(CollectionAdvance::Waiting | CollectionAdvance::AlreadyFinished)
+                    | Err(CollectionAdvanceError::NotCollection)
+                    | Err(CollectionAdvanceError::Primitive(
+                        PrimitiveStoreError::AtCapacity
+                        | PrimitiveStoreError::RevisionConflict { .. },
+                    )) => Outcome::Skipped,
+                    Err(CollectionAdvanceError::FenceUnavailable)
+                    | Err(CollectionAdvanceError::Primitive(
+                        PrimitiveStoreError::SchedulerFenceLost,
+                    )) => Outcome::Fenced,
+                    Err(error) => {
+                        tracing::error!(%error, %run, ?instance, "a collection scheduler action failed");
+                        Outcome::Failed
+                    }
+                };
+                metrics::counter!(
+                    "scheduler_actions_total",
+                    "kind" => "collection",
+                    "outcome" => outcome.label()
+                )
+                .increment(1);
+                if outcome == Outcome::Fenced {
+                    metrics::counter!("scheduler_fenced_total", "kind" => "collection")
+                        .increment(1);
+                }
+                outcome
+            })
+            .await;
+        for outcome in outcomes {
+            Self::tally(report, outcome, |value| value.collections_advanced += 1);
+        }
+    }
+
+    async fn loops(&self, view: &View, report: &mut Report) {
+        if view.snapshot.is_none() {
+            return;
+        }
+        let candidates = self
+            .pick(
+                view,
+                "loops",
+                report,
+                |candidate: &LoopCandidate| candidate.step.tenant_id,
+                |candidate| (candidate.step.run_id, candidate.step.instance()),
+                |store, window| async move {
+                    store
+                        .loop_candidates(&window)
+                        .await
+                        .map_err(loop_discovery_error)
+                },
+            )
+            .await;
+        let outcomes = self
+            .each(candidates, |candidate| async move {
+                let run = candidate.step.run_id;
+                let instance = candidate.step.instance();
+                let outcome = match self
+                    .advance_loop_in_view(
+                        view,
+                        candidate.step.tenant_id,
+                        run,
+                        &instance,
+                        candidate.timer_id,
+                    )
+                    .await
+                {
+                    Ok(
+                        LoopAdvance::Entered
+                        | LoopAdvance::Checkpointed { .. }
+                        | LoopAdvance::DelayElapsed { .. }
+                        | LoopAdvance::DrainStarted
+                        | LoopAdvance::Drained { .. }
+                        | LoopAdvance::DrainFinished
+                        | LoopAdvance::Compensated
+                        | LoopAdvance::ExpressionStopped,
+                    ) => Outcome::Done,
+                    Ok(LoopAdvance::QuotaStopped) => Outcome::QuotaStopped,
+                    Ok(LoopAdvance::LimitStopped) => Outcome::Done,
+                    Ok(LoopAdvance::Waiting | LoopAdvance::AlreadyFinished)
+                    | Err(LoopAdvanceError::NotLoop)
+                    | Err(LoopAdvanceError::Progress(
+                        LoopProgressError::AtCapacity | LoopProgressError::RevisionConflict { .. },
+                    )) => Outcome::Skipped,
+                    Err(LoopAdvanceError::FenceUnavailable)
+                    | Err(LoopAdvanceError::Progress(LoopProgressError::SchedulerFenceLost)) => {
+                        Outcome::Fenced
+                    }
+                    Err(error) => {
+                        tracing::error!(%error, %run, ?instance, "a loop scheduler action failed");
+                        Outcome::Failed
+                    }
+                };
+                metrics::counter!(
+                    "scheduler_actions_total",
+                    "kind" => "loop",
+                    "outcome" => outcome.label()
+                )
+                .increment(1);
+                if outcome == Outcome::Fenced {
+                    metrics::counter!("scheduler_fenced_total", "kind" => "loop").increment(1);
+                }
+                outcome
+            })
+            .await;
+        for outcome in outcomes {
+            Self::tally(report, outcome, |value| value.loops_advanced += 1);
+        }
+    }
+
+    async fn continuations(&self, view: &View, report: &mut Report)
+    where
+        S: ChainCommandStore + ChainProgressStore,
+        S::Tx: ChainRunTx,
+    {
+        if view.snapshot.is_none() {
+            return;
+        }
+        let candidates = self
+            .pick(
+                view,
+                "continuations",
+                report,
+                |candidate: &PendingContinuation| candidate.tenant_id,
+                |candidate| (candidate.chain_id, candidate.run_id, candidate.node.clone()),
+                |store, window| async move { store.continuation_candidates(&window).await },
+            )
+            .await;
+        let outcomes = self
+            .each(candidates, |candidate| async move {
+                let mut waiting = false;
+                let outcome = match self
+                    .advance_continuation_in_view(
+                        view,
+                        candidate.tenant_id,
+                        candidate.namespace_id,
+                        candidate.chain_id,
+                        &candidate.node,
+                    )
+                    .await
+                {
+                    Ok(_)
+                    | Err(
+                        ContinuationAdvanceError::ChainLimitFinalized
+                        | ContinuationAdvanceError::ExpressionFinalized,
+                    ) => Outcome::Done,
+                    Err(ContinuationAdvanceError::Waiting(blocker)) => {
+                        metrics::counter!(
+                            "scheduler_continuation_waits_total",
+                            "blocker" => blocker.label()
+                        )
+                        .increment(1);
+                        // Not an error and not skipped work: the boundary is examined again.
+                        waiting = true;
+                        Outcome::Skipped
+                    }
+                    // A full namespace or tenant is a reason to wait for room, not a failure: the
+                    // successor replaces the predecessor and never takes room it does not have.
+                    Err(ContinuationAdvanceError::Progress(ChainProgressError::AtCapacity)) => {
+                        metrics::counter!(
+                            "scheduler_continuation_waits_total",
+                            "blocker" => "capacity"
+                        )
+                        .increment(1);
+                        waiting = true;
+                        Outcome::Skipped
+                    }
+                    Err(
+                        ContinuationAdvanceError::MissingChain
+                        | ContinuationAdvanceError::NotContinuation
+                        | ContinuationAdvanceError::Progress(ChainProgressError::Chain(
+                            sagat_domain::execution::ChainError::ContinuationConflict
+                            // The deadline pass ends this run and its chain `TIMED_OUT` (D296).
+                            | sagat_domain::execution::ChainError::DeadlineElapsed,
+                        )),
+                    ) => Outcome::Skipped,
+                    Err(ContinuationAdvanceError::FenceUnavailable)
+                    | Err(ContinuationAdvanceError::Progress(
+                        ChainProgressError::SchedulerFenceLost,
+                    )) => Outcome::Fenced,
+                    Err(error) => {
+                        tracing::error!(
+                            %error,
+                            run_id = %candidate.run_id,
+                            chain_id = %candidate.chain_id,
+                            node = %candidate.node,
+                            "a continuation scheduler action failed"
+                        );
+                        Outcome::Failed
+                    }
+                };
+                metrics::counter!(
+                    "scheduler_actions_total",
+                    "kind" => "continuation",
+                    "outcome" => if waiting { "waiting" } else { outcome.label() }
+                )
+                .increment(1);
+                if outcome == Outcome::Fenced {
+                    metrics::counter!("scheduler_fenced_total", "kind" => "continuation")
+                        .increment(1);
+                }
+                (outcome, waiting)
+            })
+            .await;
+        for (outcome, waiting) in outcomes {
+            if waiting {
+                report.continuations_waiting += 1;
+            } else {
+                Self::tally(report, outcome, |value| value.continuations_advanced += 1);
+            }
+        }
+    }
+
+    async fn approvals_open(&self, view: &View, report: &mut Report) {
+        if view.snapshot.is_none() {
+            return;
+        }
+        let candidates = self
+            .pick(
+                view,
+                "approval_open",
+                report,
+                |step: &StepRef| step.tenant_id,
+                |step| (step.run_id, step.instance()),
+                |store, window| async move { store.approval_candidates(&window).await },
+            )
+            .await;
+        let outcomes = self
+            .each(candidates, |candidate| {
+                let approvals = ApprovalScheduler::new(&self.store);
+                async move {
+                    let run = candidate.run_id;
+                    let instance = candidate.instance();
+                    let outcome = match view.hold_for(run) {
+                        Hold::Lease(lease) => {
+                            let authority = SchedulerAuthority::new(view.owner.clone(), lease);
+                            match approvals
+                                .open(candidate.tenant_id, run, &instance, authority)
+                                .await
+                            {
+                                Ok(ApprovalAdvance::Opened { .. }) => Outcome::Done,
+                                Ok(ApprovalAdvance::Skipped) | Err(ApprovalAdvanceError::NotApproval) => {
+                                    Outcome::Skipped
+                                }
+                                Ok(ApprovalAdvance::Expired) => Outcome::Failed,
+                                Err(error) if error.scheduler_fence_lost() => Outcome::Fenced,
+                                Err(error) => {
+                                    tracing::error!(%error, %run, ?instance, "an approval open action failed");
+                                    Outcome::Failed
+                                }
+                            }
+                        }
+                        Hold::Lost => Outcome::Fenced,
+                        Hold::Nothing => Outcome::Skipped,
+                    };
+                    metrics::counter!(
+                        "scheduler_actions_total",
+                        "kind" => "approval_open",
+                        "outcome" => outcome.label()
+                    )
+                    .increment(1);
+                    if outcome == Outcome::Fenced {
+                        metrics::counter!("scheduler_fenced_total", "kind" => "approval_open")
+                            .increment(1);
+                    }
+                    outcome
+                }
+            })
+            .await;
+        for outcome in outcomes {
+            Self::tally(report, outcome, |value| value.approvals_opened += 1);
+        }
+    }
+
+    async fn approvals_expire(&self, view: &View, report: &mut Report) {
+        if view.snapshot.is_none() {
+            return;
+        }
+        let candidates = self
+            .pick(
+                view,
+                "approval_expire",
+                report,
+                |approval: &DueApproval| approval.address().tenant_id(),
+                |approval| (approval.run_id(), approval.address().request_id()),
+                |store, window| async move { store.due_approvals(&window).await },
+            )
+            .await;
+        let outcomes = self
+            .each(candidates, |candidate| {
+                let approvals = ApprovalScheduler::new(&self.store);
+                async move {
+                    let run = candidate.run_id();
+                    let outcome = match view.hold_for(run) {
+                        Hold::Lease(lease) => {
+                            let authority = SchedulerAuthority::new(view.owner.clone(), lease);
+                            match approvals.expire(&candidate, authority).await {
+                                Ok(ApprovalAdvance::Expired) => Outcome::Done,
+                                Ok(ApprovalAdvance::Skipped) => Outcome::Skipped,
+                                Ok(ApprovalAdvance::Opened { .. }) => Outcome::Failed,
+                                Err(error) if error.scheduler_fence_lost() => Outcome::Fenced,
+                                Err(error) => {
+                                    tracing::error!(%error, %run, "an approval expiry action failed");
+                                    Outcome::Failed
+                                }
+                            }
+                        }
+                        Hold::Lost => Outcome::Fenced,
+                        Hold::Nothing => Outcome::Skipped,
+                    };
+                    metrics::counter!(
+                        "scheduler_actions_total",
+                        "kind" => "approval_expire",
+                        "outcome" => outcome.label()
+                    )
+                    .increment(1);
+                    if outcome == Outcome::Fenced {
+                        metrics::counter!("scheduler_fenced_total", "kind" => "approval_expire")
+                            .increment(1);
+                    }
+                    outcome
+                }
+            })
+            .await;
+        for outcome in outcomes {
+            Self::tally(report, outcome, |value| value.approvals_expired += 1);
+        }
+    }
+
+    /// Continues the runs whose approval has an outcome: the transaction that settled the request
+    /// activated the chosen route and committed; this pass releases it, once, under the shard lease.
+    async fn approval_routes(&self, view: &View, report: &mut Report) {
+        if view.snapshot.is_none() {
+            return;
+        }
+        let pending = self
+            .pick(
+                view,
+                "approval_routes",
+                report,
+                |step: &StepRef| step.tenant_id,
+                |step| (step.run_id, step.instance()),
+                |store, window| async move { store.approval_routes(&window).await },
+            )
+            .await;
+        let outcomes = self
+            .each(
+                pending,
+                |StepRef {
+                     tenant_id, run_id, ..
+                 }| {
+                    self.apply(
+                        view,
+                        tenant_id,
+                        run_id,
+                        "approval_route",
+                        self.effects(),
+                        |def, state, now| Ok(((), execution::release_pending(def, state, now)?)),
+                    )
+                },
+            )
+            .await;
+        for outcome in outcomes {
+            Self::tally(report, outcome, |r| r.approval_routes_released += 1);
+        }
+    }
+
     async fn timers(&self, view: &View, report: &mut Report) {
         let due = self
             .pick(
@@ -724,6 +4397,7 @@ where
                      tenant_id,
                      run_id,
                      node,
+                     ..
                  }| {
                     self.apply(
                         view,
@@ -761,6 +4435,7 @@ where
                      tenant_id,
                      run_id,
                      node,
+                     ..
                  }| {
                     self.apply(
                         view,
@@ -780,14 +4455,17 @@ where
         }
     }
 
-    async fn retries(&self, view: &View, report: &mut Report) {
+    async fn retries(&self, view: &View, report: &mut Report)
+    where
+        S: PathExecutionStore,
+    {
         let due = self
             .pick(
                 view,
                 "retries",
                 report,
                 |s: &StepRef| s.tenant_id,
-                |s| (s.run_id, s.node.clone()),
+                |s| (s.run_id, s.instance()),
                 |store, window| async move { store.due_retries(&window).await },
             )
             .await;
@@ -798,17 +4476,45 @@ where
                      tenant_id,
                      run_id,
                      node,
+                     instance_path,
                  }| {
-                    self.apply(
-                        view,
-                        tenant_id,
-                        run_id,
-                        "retry",
-                        self.effects(),
-                        move |def, state, now| {
-                            Ok(((), execution::retry_due(def, state, &node, now)?))
-                        },
-                    )
+                    async move {
+                        let instance = ExecutionInstanceId::in_path(instance_path, node);
+                        if instance.path().is_root() {
+                            self.apply(
+                                view,
+                                tenant_id,
+                                run_id,
+                                "retry",
+                                self.effects(),
+                                move |def, state, now| {
+                                    Ok((
+                                        (),
+                                        execution::retry_due(def, state, instance.node(), now)?,
+                                    ))
+                                },
+                            )
+                            .await
+                        } else {
+                            let command_instance = instance.clone();
+                            self.apply_path_if(
+                                view,
+                                RunRef { tenant_id, run_id },
+                                &instance,
+                                "retry",
+                                None,
+                                move |def, state, now| {
+                                    execution::retry_due_path_instance(
+                                        def,
+                                        state,
+                                        &command_instance,
+                                        now,
+                                    )
+                                },
+                            )
+                            .await
+                        }
+                    }
                 },
             )
             .await;
@@ -817,14 +4523,17 @@ where
         }
     }
 
-    async fn leases(&self, view: &View, report: &mut Report) {
+    async fn leases(&self, view: &View, report: &mut Report)
+    where
+        S: PathExecutionStore,
+    {
         let lost = self
             .pick(
                 view,
                 "leases",
                 report,
                 |l: &sagat_application::maintenance::LostLease| l.step.tenant_id,
-                |l| (l.step.run_id, l.step.node.clone()),
+                |l| (l.step.run_id, l.step.instance()),
                 |store, window| async move { store.lost_leases(&window).await },
             )
             .await;
@@ -835,29 +4544,61 @@ where
                     LeaseLoss::Expired => Expiry::LeaseExpired,
                     LeaseLoss::TimedOut => Expiry::AttemptTimeout,
                 };
-                let (node, fence) = (lost.step.node.clone(), lost.fence);
-                self.apply_if(
-                    view,
-                    RunRef {
-                        tenant_id: lost.step.tenant_id,
-                        run_id: lost.step.run_id,
-                    },
-                    "lease",
-                    Condition::LeaseLost {
-                        node: &lost.step.node,
-                        cause: lost.cause,
-                    },
-                    self.effects(),
-                    move |def, state, now| {
-                        Ok((
-                            (),
-                            execution::expire_attempt(
-                                def, state, &node, fence, cause, jitter, now,
-                            )?,
-                        ))
-                    },
-                )
-                .await
+                let fence = lost.fence;
+                let instance = lost.step.instance();
+                let command_instance = instance.clone();
+                let run = RunRef {
+                    tenant_id: lost.step.tenant_id,
+                    run_id: lost.step.run_id,
+                };
+                let condition = Condition::LeaseLost {
+                    instance: &instance,
+                    cause: lost.cause,
+                };
+                if instance.path().is_root() {
+                    self.apply_if(
+                        view,
+                        run,
+                        "lease",
+                        condition,
+                        self.effects(),
+                        move |def, state, now| {
+                            Ok((
+                                (),
+                                execution::expire_attempt(
+                                    def,
+                                    state,
+                                    command_instance.node(),
+                                    fence,
+                                    cause,
+                                    jitter,
+                                    now,
+                                )?,
+                            ))
+                        },
+                    )
+                    .await
+                } else {
+                    self.apply_path_if(
+                        view,
+                        run,
+                        &instance,
+                        "lease",
+                        Some(lost.cause),
+                        move |def, state, now| {
+                            execution::expire_path_instance(
+                                def,
+                                state,
+                                &command_instance,
+                                fence,
+                                cause,
+                                jitter,
+                                now,
+                            )
+                        },
+                    )
+                    .await
+                }
             })
             .await;
         for outcome in outcomes {
@@ -898,6 +4639,36 @@ where
         }
     }
 
+    /// Ends the runs that a transaction of their own stopped (a loop at its iteration limit): the
+    /// planner drains what is left and finishes them, which no worker report or timer would do.
+    async fn stopped_runs(&self, view: &View, report: &mut Report) {
+        let stopped = self
+            .pick(
+                view,
+                "stopped_runs",
+                report,
+                |r: &RunRef| r.tenant_id,
+                |r| r.run_id,
+                |store, window| async move { store.stopped_runs(&window).await },
+            )
+            .await;
+        let outcomes = self
+            .each(stopped, |RunRef { tenant_id, run_id }| {
+                self.apply(
+                    view,
+                    tenant_id,
+                    run_id,
+                    "stopped_run",
+                    self.effects(),
+                    |def, state, now| Ok(((), execution::release_pending(def, state, now)?)),
+                )
+            })
+            .await;
+        for outcome in outcomes {
+            Self::tally(report, outcome, |r| r.stopped_runs_settled += 1);
+        }
+    }
+
     async fn hints(&self, view: &View, report: &mut Report) {
         let older_than = self.settings.rehint_after;
         let stale = self
@@ -906,7 +4677,7 @@ where
                 "hints",
                 report,
                 |s: &StepRef| s.tenant_id,
-                |s| (s.run_id, s.node.clone()),
+                |s| (s.run_id, s.instance()),
                 |store, window| async move { store.stale_hints(older_than, &window).await },
             )
             .await;
@@ -917,18 +4688,34 @@ where
                      tenant_id,
                      run_id,
                      node,
-                 }| {
+                     instance_path,
+                 }| async move {
                     let mut effects = self.effects();
-                    effects.rehint = vec![node];
-                    self.apply(view, tenant_id, run_id, "rehint", effects, |_, _, _| {
-                        Ok((
-                            (),
-                            Progress {
-                                events: Vec::new(),
-                                pending: None,
-                            },
-                        ))
-                    })
+                    if instance_path.is_root() {
+                        effects.rehint = vec![node];
+                        self.apply(view, tenant_id, run_id, "rehint", effects, |_, _, _| {
+                            Ok((
+                                (),
+                                Progress {
+                                    events: Vec::new(),
+                                    pending: None,
+                                },
+                            ))
+                        })
+                        .await
+                    } else {
+                        effects.rehint_instances =
+                            vec![ExecutionInstanceId::in_path(instance_path, node)];
+                        self.apply_addressed(
+                            view,
+                            tenant_id,
+                            run_id,
+                            "rehint",
+                            effects,
+                            |_, _, _| Ok(((), AddressedProgress { events: Vec::new() })),
+                        )
+                        .await
+                    }
                 },
             )
             .await;
@@ -1079,12 +4866,20 @@ where
             .timeout()
             .and_then(|t| time::Duration::try_from(t).ok())
             .and_then(|t| pending.as_of.checked_add(t));
-        let deadline_at = match (parent.info.deadline_at, own) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
+        // A continuation chain carries its own required timeout, counted from the first run: it can
+        // only shorten the child's deadline, and the chain keeps the result as its original one.
+        let chain_deadline = definition.continuation_policy().and_then(|policy| {
+            time::Duration::try_from(policy.timeout())
+                .ok()
+                .and_then(|timeout| pending.as_of.checked_add(timeout))
+        });
+        let deadline_at = [parent.info.deadline_at, own, chain_deadline]
+            .into_iter()
+            .flatten()
+            .min();
         let child_id = pending.child;
         let info = RunInfo {
+            origin: None,
             run_id: child_id,
             tenant_id: tenant,
             namespace_id: parent.info.namespace_id,
@@ -1118,6 +4913,7 @@ where
         );
         let limits = RunLimits::of(&self.store, tenant, parent.info.namespace_id).await?;
         let new = NewRun {
+            retained: None,
             limits,
             info,
             definition: std::sync::Arc::clone(&definition),
@@ -1137,6 +4933,30 @@ where
             Ok(Applied::Replayed(_)) => Ok((Outcome::Skipped, false)),
             // The parent step no longer waits for this run (cancelled, or created by a peer).
             Err(StoreError::MissingReference) => Ok((Outcome::Skipped, false)),
+            Err(StoreError::DatabaseUnavailable | StoreError::DatabaseLimit) => {
+                let audit = AuditRecord::engine(
+                    tenant,
+                    AuditAction::DatabaseDenied,
+                    ResourceType::Run,
+                    parent_id.to_string(),
+                    format!("database child admission refused: {node}"),
+                    parent.info.trace_id.clone(),
+                    OffsetDateTime::now_utc(),
+                );
+                RunStore::record_denial(&self.store, &audit).await?;
+                Ok((
+                    self.finish_with(
+                        view,
+                        tenant,
+                        parent_id,
+                        node.clone(),
+                        pending.child,
+                        ChildOutcome::Failed(FailureCode::database_unavailable()),
+                    )
+                    .await,
+                    true,
+                ))
+            }
             // Either way the step fails instead of waiting. Waiting for room would leave the
             // blocked reservations at the head of the oldest-first queue, where a full namespace of
             // one tenant would keep every other tenant's children from starting (G32, feature
@@ -1166,7 +4986,7 @@ where
             Ok(Applied::Done(mut tx)) => {
                 // The fence, before anything is committed: a replica that lost the parent's shard
                 // while it was reading must not leave a child run behind (dropping rolls it back).
-                if !view.holds(&mut tx, &hold).await? {
+                if !view.holds_child_start(&mut tx, &hold).await? {
                     return Ok((Outcome::Fenced, false));
                 }
                 let effects = Effects::by(Actor::System("scheduler"), parent.info.trace_id.clone());
@@ -1245,6 +5065,60 @@ where
         .await
     }
 
+    /// Reports a child that succeeded with a result (G21): the parent step's output is the child's
+    /// result. A parent that cannot keep it fails that step with `RUN_DATA_LIMIT` instead.
+    async fn finish_with_result(
+        &self,
+        view: &View,
+        tenant: TenantId,
+        parent: RunId,
+        node: sagat_domain::workflow::NodeId,
+        child: RunId,
+        result: Vec<u8>,
+    ) -> Outcome {
+        let bytes = result.len();
+        let mut effects = self.effects();
+        effects.outputs = vec![(node.clone(), result)];
+        let target = node.clone();
+        let outcome = self
+            .apply_if(
+                view,
+                RunRef {
+                    tenant_id: tenant,
+                    run_id: parent,
+                },
+                "child_finish",
+                Condition::RetainedFits { bytes },
+                effects,
+                move |def, state, now| {
+                    Ok((
+                        (),
+                        execution::finish_child(
+                            def,
+                            state,
+                            &target,
+                            child,
+                            ChildOutcome::Succeeded,
+                            now,
+                        )?,
+                    ))
+                },
+            )
+            .await;
+        if outcome != Outcome::DoesNotFit {
+            return outcome;
+        }
+        self.finish_with(
+            view,
+            tenant,
+            parent,
+            node,
+            child,
+            ChildOutcome::Failed(FailureCode::run_data_limit()),
+        )
+        .await
+    }
+
     /// Tells parents that the child they wait for has ended.
     async fn children_finish(&self, view: &View, report: &mut Report) {
         let ended = self
@@ -1293,9 +5167,32 @@ where
                         | RunStatus::Compensating
                         | RunStatus::ManualReview => return None,
                     };
-                    let result = self
-                        .finish_with(view, tenant_id, parent, node.clone(), child, outcome)
-                        .await;
+                    let result = if outcome == ChildOutcome::Succeeded {
+                        match self.store.run_result(tenant_id, child).await {
+                            Ok(Some(result)) => {
+                                self.finish_with_result(
+                                    view,
+                                    tenant_id,
+                                    parent,
+                                    node.clone(),
+                                    child,
+                                    result,
+                                )
+                                .await
+                            }
+                            Ok(None) => {
+                                self.finish_with(view, tenant_id, parent, node.clone(), child, outcome)
+                                    .await
+                            }
+                            Err(error) => {
+                                tracing::warn!(%parent, %child, %error, "the result of an ended child could not be read");
+                                Outcome::Failed
+                            }
+                        }
+                    } else {
+                        self.finish_with(view, tenant_id, parent, node.clone(), child, outcome)
+                            .await
+                    };
                     if result == Outcome::Skipped {
                         tracing::warn!(%parent, %node, %child, "an ended child could not be reported to its parent step");
                     }
@@ -1345,7 +5242,12 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{Outcome, recovery_guard};
+    use sagat_application::error::StoreError;
+    use sagat_application::loop_progress::LoopProgressError;
+    use sagat_application::primitives::PrimitiveStoreError;
+    use sagat_domain::quota::QuotaResource;
+
+    use super::{Outcome, collection_content_quota, loop_content_quota, recovery_guard};
 
     #[test]
     fn quota_recovery_does_not_mutate_after_version_change_or_shard_loss() {
@@ -1363,5 +5265,208 @@ mod tests {
             assert_eq!(mutations, 0);
         }
         assert_eq!(recovery_guard(true, 7, 7), Ok(()));
+    }
+
+    #[test]
+    fn only_the_retained_content_limit_enters_the_terminal_recovery_path() {
+        let content = StoreError::QuotaExceeded {
+            what: QuotaResource::TenantContentBytes.limit_name(),
+        };
+        assert!(collection_content_quota(&PrimitiveStoreError::Storage(
+            content.clone()
+        )));
+        assert!(loop_content_quota(&LoopProgressError::Storage(content)));
+
+        let capacity = StoreError::QuotaExceeded {
+            what: QuotaResource::IterationConcurrency.limit_name(),
+        };
+        assert!(!collection_content_quota(&PrimitiveStoreError::Storage(
+            capacity.clone()
+        )));
+        assert!(!loop_content_quota(&LoopProgressError::Storage(capacity)));
+        assert!(!collection_content_quota(&PrimitiveStoreError::AtCapacity));
+        assert!(!loop_content_quota(&LoopProgressError::AtCapacity));
+    }
+}
+
+/// Whether nothing of a draining iteration is in flight, so the scope may drain it: every
+/// non-derived step ended, every derived one settled, or the step has not started (or, for a
+/// collection, waits to retry or is ready, in a run that is stopping and cannot lease it).
+///
+/// `ready_is_safe` is the collection's wider reading (D380): a `Ready` step is safe at any attempt.
+fn member_is_safe_to_drain(member: &ScopeMember, ready_is_safe: bool) -> bool {
+    member.steps.iter().all(|(instance, step)| {
+        let settled_derived = instance.node().is_derived()
+            && matches!(
+                step.status(),
+                execution::StepStatus::Succeeded | execution::StepStatus::Skipped
+            );
+        // Nothing is in flight: a step that has not started, or that waits to retry.
+        let safe_unstarted = (step.attempt() == 0
+            && matches!(
+                step.status(),
+                execution::StepStatus::Pending | execution::StepStatus::Ready
+            ))
+            || (ready_is_safe && step.status() == execution::StepStatus::Ready)
+            || step.status() == execution::StepStatus::RetryWait;
+        step.status().is_terminal() && !instance.node().is_derived()
+            || settled_derived
+            || safe_unstarted
+    })
+}
+
+/// What a loop transition needs from the definition and the run, however the scope was read.
+struct LoopCtx<'a> {
+    tenant: TenantId,
+    run: RunId,
+    owner: &'a ExecutionInstanceId,
+    info: &'a RunInfo,
+    occurred_at: OffsetDateTime,
+    authority: SchedulerAuthority,
+    definition: &'a WorkflowDefinition,
+    kind: LoopKind,
+    condition: &'a sagat_domain::workflow::Expression,
+    body: &'a sagat_domain::workflow::BodyDefinition,
+    initial: &'a sagat_domain::workflow::Expression,
+    carry: &'a sagat_domain::workflow::Expression,
+    max_iterations: u32,
+    delay: Option<Duration>,
+    timeout: Duration,
+}
+
+/// The run-level values a loop checkpoint is decided from.
+#[derive(Clone, Copy)]
+struct LoopSnapshot {
+    version: u64,
+    charged: usize,
+    deadline: OffsetDateTime,
+}
+
+/// Where the bytes the run retains come from when a loop ends.
+enum Retained {
+    /// Already summed over a whole restored run.
+    Known(usize),
+    /// Read from the store, only if the loop ends.
+    Lookup,
+}
+
+impl<'a> LoopCtx<'a> {
+    fn new(
+        definition: &'a WorkflowDefinition,
+        owner: &'a ExecutionInstanceId,
+        (tenant, run): (TenantId, RunId),
+        info: &'a RunInfo,
+        occurred_at: OffsetDateTime,
+        authority: SchedulerAuthority,
+    ) -> Result<Self, LoopAdvanceError> {
+        let loop_node = definition
+            .node_for_instance(owner)
+            .ok_or(LoopAdvanceError::NotLoop)?;
+        let (kind, condition, body_name, initial, carry, max_iterations, delay) =
+            match loop_node.kind() {
+                NodeKind::While {
+                    condition,
+                    body,
+                    initial,
+                    carry,
+                    max_iterations,
+                    delay,
+                } => (
+                    LoopKind::While,
+                    condition,
+                    body,
+                    initial,
+                    carry,
+                    *max_iterations,
+                    *delay,
+                ),
+                NodeKind::RepeatUntil {
+                    condition,
+                    body,
+                    initial,
+                    carry,
+                    max_iterations,
+                    delay,
+                } => (
+                    LoopKind::RepeatUntil,
+                    condition,
+                    body,
+                    initial,
+                    carry,
+                    *max_iterations,
+                    *delay,
+                ),
+                _ => return Err(LoopAdvanceError::NotLoop),
+            };
+        let timeout = loop_node.timeout().ok_or(LoopAdvanceError::NotLoop)?;
+        let body = definition
+            .body(body_name)
+            .ok_or(LoopAdvanceError::NotLoop)?;
+        Ok(Self {
+            tenant,
+            run,
+            owner,
+            info,
+            occurred_at,
+            authority,
+            definition,
+            kind,
+            condition,
+            body,
+            initial,
+            carry,
+            max_iterations,
+            delay,
+            timeout,
+        })
+    }
+
+    fn next_activity(&self, index: u32) -> Result<LoopNextActivity, LoopAdvanceError> {
+        let body = self.body;
+        let entry = body
+            .node(body.entrypoint())
+            .ok_or(LoopAdvanceError::InvalidProgress)?;
+        let NodeKind::Activity { activity, .. } = entry.kind() else {
+            return Err(LoopAdvanceError::InvalidProgress);
+        };
+        let path = self
+            .owner
+            .path()
+            .child(self.owner.node().clone(), index)
+            .map_err(|_| LoopAdvanceError::InvalidProgress)?;
+        let reserved_instances = body
+            .all_nodes()
+            .count()
+            .checked_sub(1)
+            .and_then(|count| u16::try_from(count).ok())
+            .ok_or(LoopAdvanceError::InvalidProgress)?;
+        Ok(LoopNextActivity::new(
+            ExecutionInstanceId::in_path(path, body.entrypoint().clone()),
+            activity.clone(),
+            reserved_instances,
+        )?)
+    }
+
+    fn transition(&self, expected_run_version: u64) -> LoopTransition {
+        LoopTransition::new(
+            self.tenant,
+            self.info.namespace_id,
+            self.run,
+            expected_run_version,
+            self.owner.clone(),
+            self.authority.clone(),
+            Subject::engine(),
+            self.info.trace_id.clone(),
+            self.occurred_at,
+            AuditRecord::engine(
+                self.tenant,
+                AuditAction::RunUpdated,
+                ResourceType::Run,
+                self.run.to_string(),
+                "sequential loop advanced",
+                self.info.trace_id.clone(),
+                self.occurred_at,
+            ),
+        )
     }
 }

@@ -1,17 +1,19 @@
-//! The IR codec against the repository's own example and against hostile documents
-//! (T002-002, T002-009; FR-001-002, FR-002-001, NFR-002-SEC).
+//! The IR codec against the repository's own example and hostile documents.
 #![allow(clippy::expect_used, clippy::panic)]
 
 use std::time::Duration;
 
 use proptest::prelude::*;
 use sagat_application::definitions::{IrCodec, IrError, MAX_IR_BYTES, ParsedDefinition};
+use sagat_domain::execution::{ExecutionInstanceId, InstancePath};
 use sagat_domain::saga::{OnCompensationFailure, SagaCancelPolicy};
 use sagat_domain::workflow::{NodeId, NodeKind, RetryPolicy, WorkflowError};
 use sagat_infra_ir::JsonIrCodec;
 use serde_json::{Value, json};
 
 const EXAMPLE: &str = include_str!("../../../examples/payment-saga.workflow.json");
+const LOOP_BUILDERS_GOLDEN: &str =
+    include_str!("../../../tests/contract/sdk-conformance/expected/loop-builders.workflows.json");
 
 fn parse(doc: &Value) -> Result<ParsedDefinition, IrError> {
     JsonIrCodec.parse(doc.to_string().as_bytes())
@@ -40,6 +42,524 @@ fn issues_of(doc: &Value) -> Vec<(String, String)> {
         Err(IrError::Schema(issues)) => issues.into_iter().map(|i| (i.path, i.message)).collect(),
         other => panic!("expected schema issues, got {other:?}"),
     }
+}
+
+#[test]
+fn unsupported_additive_declarations_remain_unpublishable() {
+    let mut document = minimal(json!([{"id": "done", "type": "end"}]), "done");
+    // The block is publishable (D297); `crates/infra-ir/tests/limits.rs` covers it.
+    document["limits"] = json!({"maxInstances": 100, "maxDepth": 2});
+    parse(&document).expect("lowered limits are publishable");
+
+    document.as_object_mut().expect("document").remove("limits");
+    document["state"] = json!({"schema": {"type": "integer"}, "initial": "0"});
+    parse(&document).expect("basic declared state is supported");
+    document.as_object_mut().expect("document").remove("state");
+    document["chainPolicy"] = json!({"maxSegments": 2, "timeoutMs": 1_000});
+    assert!(matches!(
+        parse(&document),
+        Err(IrError::UnsupportedDeclaration {
+            field: "chainPolicy",
+            ..
+        })
+    ));
+
+    let mut collection = minimal(
+        json!([
+            {"id": "lines", "type": "forEach", "items": "input.items", "body": "line",
+             "result": "bodyResult", "maxItems": 17, "maxConcurrency": 3, "next": "done"},
+            {"id": "done", "type": "end"}
+        ]),
+        "lines",
+    );
+    collection["bodies"] = json!({"line": {"entrypoint": "return", "nodes": [
+        {"id": "return", "type": "return", "result": "input.item"}
+    ]}});
+    assert!(matches!(
+        parse(&collection),
+        Err(IrError::Unsupported { kind, .. }) if kind == "body"
+    ));
+    collection
+        .as_object_mut()
+        .expect("document")
+        .remove("bodies");
+    assert!(matches!(
+        parse(&collection),
+        Err(IrError::Invalid(WorkflowError::UnknownBody { .. }))
+    ));
+}
+
+#[test]
+fn native_approval_is_publishable_beside_declared_state_and_apart_from_parallel() {
+    let document = minimal(
+        json!([
+            {
+                "id": "review",
+                "type": "approval",
+                "policy": {"roles": ["operator"], "excludeInitiator": true},
+                "timeoutMs": 60_000,
+                "onApprove": "approved",
+                "onReject": "rejected",
+                "onExpire": "expired"
+            },
+            {"id": "approved", "type": "end"},
+            {"id": "rejected", "type": "end"},
+            {"id": "expired", "type": "end"}
+        ]),
+        "review",
+    );
+    let parsed = parse(&document).expect("native approval is publishable");
+    assert!(matches!(
+        parsed
+            .definition
+            .node(&NodeId::parse("review").expect("approval node"))
+            .map(|node| node.kind()),
+        Some(NodeKind::Approval { .. })
+    ));
+
+    let mut combined = document.clone();
+    combined["state"] = json!({"schema": {"type": "integer"}, "initial": "0"});
+    parse(&combined).expect("an approval and declared state publish together (D295)");
+
+    let mut parallel = document.clone();
+    parallel["nodes"]
+        .as_array_mut()
+        .expect("nodes")
+        .push(json!({"id": "fork", "type": "parallel", "branches": ["approved", "rejected"], "join": "all", "next": "expired"}));
+    assert!(matches!(
+        parse(&parallel),
+        Err(IrError::Unsupported { kind, .. }) if kind == "parallel"
+    ));
+}
+
+#[test]
+fn structured_collection_can_be_validated_canonicalized_and_published() {
+    let mut document = minimal(
+        json!([
+            {"id": "lines", "type": "forEach", "items": "input.items", "body": "line",
+             "result": "bodyResult", "maxItems": 17, "maxConcurrency": 3, "next": "done"},
+            {"id": "done", "type": "end", "outputExpr": "steps.lines.output"}
+        ]),
+        "lines",
+    );
+    document["limits"] = json!({"maxInstances": 200, "maxDepth": 2});
+    document["bodies"] = json!({"line": {"entrypoint": "work", "nodes": [
+        {"id": "work", "type": "activity", "activity": "line.process", "next": "return"},
+        {"id": "return", "type": "return", "result": "steps.work.output"}
+    ]}});
+
+    let parsed = JsonIrCodec
+        .parse_structured(document.to_string().as_bytes())
+        .expect("structured validation succeeds");
+    assert!(parsed.definition.is_structured());
+    assert_eq!(parsed.definition.limits().max_instances(), 200);
+    assert_eq!(parsed.definition.limits().max_depth(), 2);
+    let lines = parsed
+        .definition
+        .node(&NodeId::parse("lines").expect("node id"))
+        .expect("collection node");
+    assert!(matches!(
+        lines.kind(),
+        NodeKind::ForEach {
+            max_items: 17,
+            max_concurrency: 3,
+            ..
+        }
+    ));
+    let body = parsed
+        .definition
+        .body(&NodeId::parse("line").expect("body id"))
+        .expect("named body");
+    assert_eq!(body.entrypoint().as_str(), "work");
+    assert!(matches!(
+        body.node(&NodeId::parse("return").expect("return id"))
+            .expect("return node")
+            .kind(),
+        NodeKind::Return { .. }
+    ));
+
+    let canonical: Value = serde_json::from_slice(&parsed.canonical).expect("canonical JSON");
+    assert_eq!(canonical["apiVersion"], "sagat-octopus-orchestrator.io/v1");
+    let reparsed = JsonIrCodec
+        .parse_structured(&parsed.canonical)
+        .expect("canonical structured document reparses");
+    assert_eq!(reparsed.canonical, parsed.canonical);
+    assert_eq!(reparsed.digest, parsed.digest);
+
+    let published = JsonIrCodec
+        .parse(document.to_string().as_bytes())
+        .expect("proven collection is publishable");
+    assert_eq!(published.canonical, parsed.canonical);
+    assert_eq!(published.digest, parsed.digest);
+}
+
+#[test]
+fn structured_validation_compiles_collection_and_body_expressions() {
+    let mut document = minimal(
+        json!([
+            {"id": "lines", "type": "forEach", "items": "input.items[", "body": "line",
+             "result": "bodyResult", "maxItems": 17, "maxConcurrency": 3, "next": "done"},
+            {"id": "done", "type": "end"}
+        ]),
+        "lines",
+    );
+    document["bodies"] = json!({"line": {"entrypoint": "return", "nodes": [
+        {"id": "return", "type": "return", "result": "input.item"}
+    ]}});
+
+    assert!(matches!(
+        JsonIrCodec.parse_structured(document.to_string().as_bytes()),
+        Err(IrError::Expression { field: "items", .. })
+    ));
+
+    document["nodes"][0]["items"] = json!("input.items");
+    document["bodies"]["line"]["nodes"][0]["result"] = json!("input.item[");
+    assert!(matches!(
+        JsonIrCodec.parse_structured(document.to_string().as_bytes()),
+        Err(IrError::Expression {
+            node,
+            field: "result",
+            ..
+        }) if node == "return"
+    ));
+}
+
+#[test]
+fn structured_validation_enforces_closed_bodies_and_capability_boundaries() {
+    let mut document = minimal(
+        json!([
+            {"id": "lines", "type": "forEach", "items": "input.items", "body": "line",
+             "result": "bodyResult", "maxItems": 17, "maxConcurrency": 3, "next": "done"},
+            {"id": "done", "type": "end"}
+        ]),
+        "lines",
+    );
+    document["bodies"] = json!({"line": {"entrypoint": "work", "nodes": [
+        {"id": "work", "type": "activity", "activity": "line.process", "next": "done"},
+        {"id": "return", "type": "return", "result": "steps.work.output"}
+    ]}});
+
+    assert!(matches!(
+        JsonIrCodec.parse_structured(document.to_string().as_bytes()),
+        Err(IrError::EscapingBodyEdge { body, from, to })
+            if body.as_str() == "line" && from.as_str() == "work" && to.as_str() == "done"
+    ));
+
+    document["bodies"]["line"]["nodes"] = json!([
+        {"id": "nested", "type": "forEach", "items": "input.items", "body": "line",
+         "result": "bodyResult", "maxItems": 2, "maxConcurrency": 1, "next": "return"},
+        {"id": "return", "type": "return", "result": "steps.nested.output"}
+    ]);
+    document["bodies"]["line"]["entrypoint"] = json!("nested");
+    assert!(matches!(
+        JsonIrCodec.parse_structured(document.to_string().as_bytes()),
+        Err(IrError::Invalid(WorkflowError::RecursiveBody(body))) if body.as_str() == "line"
+    ));
+
+    document["nodes"][0] = json!({
+        "id": "lines", "type": "while", "condition": "true", "body": "line",
+        "initial": "0", "carry": "carry + 1", "maxIterations": 2,
+        "timeoutMs": 1_000, "next": "done"
+    });
+    assert!(matches!(
+        JsonIrCodec.parse_structured(document.to_string().as_bytes()),
+        Err(IrError::Invalid(WorkflowError::RecursiveBody(body))) if body.as_str() == "line"
+    ));
+}
+
+#[test]
+fn structured_loops_match_the_reviewed_sdk_golden_and_publish() {
+    let golden: Value = serde_json::from_str(LOOP_BUILDERS_GOLDEN).expect("loop golden is JSON");
+    let document = &golden["workflows"]["pre-and-post-test"];
+    let expected = golden["canonical"]["pre-and-post-test"]
+        .as_str()
+        .expect("canonical loop document");
+
+    let parsed = JsonIrCodec
+        .parse_structured(document.to_string().as_bytes())
+        .expect("structured loops validate");
+    assert_eq!(parsed.canonical, expected.as_bytes());
+    let pre = parsed
+        .definition
+        .node(&NodeId::parse("pre").expect("node id"))
+        .expect("while node");
+    assert!(matches!(
+        pre.kind(),
+        NodeKind::While {
+            condition,
+            body,
+            initial,
+            carry,
+            max_iterations: 3,
+            delay: Some(delay),
+        } if condition.as_str() == "carry < 3"
+            && body.as_str() == "iteration"
+            && initial.as_str() == "input.start"
+            && carry.as_str() == "bodyResult"
+            && *delay == Duration::from_millis(250)
+    ));
+    assert_eq!(pre.timeout(), Some(Duration::from_millis(60_000)));
+
+    let post = parsed
+        .definition
+        .node(&NodeId::parse("post").expect("node id"))
+        .expect("repeatUntil node");
+    assert!(matches!(
+        post.kind(),
+        NodeKind::RepeatUntil {
+            max_iterations: 10_000,
+            delay: None,
+            ..
+        }
+    ));
+    assert_eq!(post.timeout(), Some(Duration::from_millis(31_622_400_000)));
+
+    let pre_path = InstancePath::root()
+        .child(NodeId::parse("pre").expect("scope id"), 2)
+        .expect("bounded loop path");
+    let iteration = ExecutionInstanceId::in_path(
+        pre_path.clone(),
+        NodeId::parse("increment").expect("body node id"),
+    );
+    assert!(matches!(
+        parsed
+            .definition
+            .node_for_instance(&iteration)
+            .map(|node| node.kind()),
+        Some(NodeKind::Activity { .. })
+    ));
+    let outside_budget = ExecutionInstanceId::in_path(
+        InstancePath::root()
+            .child(NodeId::parse("pre").expect("scope id"), 3)
+            .expect("bounded loop path"),
+        NodeId::parse("increment").expect("body node id"),
+    );
+    assert!(
+        parsed
+            .definition
+            .node_for_instance(&outside_budget)
+            .is_none()
+    );
+
+    let reparsed = JsonIrCodec
+        .parse_structured(&parsed.canonical)
+        .expect("canonical loops reparse");
+    assert_eq!(reparsed.canonical, parsed.canonical);
+    assert_eq!(reparsed.digest, parsed.digest);
+    let published = JsonIrCodec
+        .parse(document.to_string().as_bytes())
+        .expect("restricted loop golden is publishable");
+    assert_eq!(published.digest, parsed.digest);
+}
+
+#[test]
+fn structured_loops_compile_all_expressions_and_validate_their_body() {
+    let mut document = minimal(
+        json!([
+            {"id": "poll", "type": "while", "condition": "carry < 3", "body": "iteration",
+             "initial": "input.start", "carry": "bodyResult", "maxIterations": 3,
+             "timeoutMs": 60_000, "next": "done"},
+            {"id": "done", "type": "end"}
+        ]),
+        "poll",
+    );
+    document["bodies"] = json!({"iteration": {"entrypoint": "returned", "nodes": [
+        {"id": "returned", "type": "return", "result": "carry"}
+    ]}});
+
+    for (field, invalid) in [
+        ("condition", "carry <"),
+        ("initial", "input["),
+        ("carry", "bodyResult["),
+    ] {
+        let mut invalid_document = document.clone();
+        invalid_document["nodes"][0][field] = json!(invalid);
+        assert!(matches!(
+            JsonIrCodec.parse_structured(invalid_document.to_string().as_bytes()),
+            Err(IrError::Expression {
+                node,
+                field: actual,
+                ..
+            }) if node == "poll" && actual == field
+        ));
+    }
+
+    document["nodes"][0]["body"] = json!("missing");
+    assert!(matches!(
+        JsonIrCodec.parse_structured(document.to_string().as_bytes()),
+        Err(IrError::Invalid(WorkflowError::UnknownBody { node, body }))
+            if node.as_str() == "poll" && body.as_str() == "missing"
+    ));
+
+    document["nodes"][0]["body"] = json!("iteration");
+    document["bodies"]["iteration"]["nodes"] = json!([
+        {"id": "again", "type": "repeatUntil", "condition": "carry >= 3",
+         "body": "iteration", "initial": "carry", "carry": "bodyResult",
+         "maxIterations": 3, "timeoutMs": 60_000, "next": "returned"},
+        {"id": "returned", "type": "return", "result": "carry"}
+    ]);
+    document["bodies"]["iteration"]["entrypoint"] = json!("again");
+    assert!(matches!(
+        JsonIrCodec.parse_structured(document.to_string().as_bytes()),
+        Err(IrError::Invalid(WorkflowError::RecursiveBody(body)))
+            if body.as_str() == "iteration"
+    ));
+}
+
+#[test]
+fn structured_loop_limits_and_body_boundaries_fail_before_runtime() {
+    let base = || {
+        let mut document = minimal(
+            json!([
+                {"id": "poll", "type": "repeatUntil", "condition": "carry >= 3",
+                 "body": "iteration", "initial": "0", "carry": "bodyResult",
+                 "maxIterations": 3, "timeoutMs": 60_000, "next": "done"},
+                {"id": "done", "type": "end"}
+            ]),
+            "poll",
+        );
+        document["bodies"] = json!({"iteration": {"entrypoint": "returned", "nodes": [
+            {"id": "returned", "type": "return", "result": "carry"}
+        ]}});
+        document
+    };
+
+    for (field, value) in [
+        ("maxIterations", json!(0)),
+        ("maxIterations", json!(10_001)),
+        ("timeoutMs", json!(0)),
+        ("timeoutMs", json!(31_622_400_001_u64)),
+        ("delayMs", json!(0)),
+        ("delayMs", json!(31_622_400_001_u64)),
+    ] {
+        let mut document = base();
+        document["nodes"][0][field] = value;
+        let issues = match JsonIrCodec.parse_structured(document.to_string().as_bytes()) {
+            Err(IrError::Schema(issues)) => issues,
+            other => panic!("expected {field} schema issue, got {other:?}"),
+        };
+        assert!(
+            issues.iter().any(|issue| issue.path.ends_with(field)),
+            "{issues:?}"
+        );
+    }
+
+    let mut terminal = base();
+    terminal["nodes"][0]
+        .as_object_mut()
+        .expect("loop node")
+        .remove("next");
+    assert!(matches!(
+        JsonIrCodec.parse_structured(terminal.to_string().as_bytes()),
+        Err(IrError::Schema(_))
+    ));
+
+    let mut body_end = base();
+    body_end["bodies"]["iteration"]["nodes"] = json!([
+        {"id": "finished", "type": "end"},
+        {"id": "returned", "type": "return", "result": "carry"}
+    ]);
+    body_end["bodies"]["iteration"]["entrypoint"] = json!("finished");
+    assert!(matches!(
+        JsonIrCodec.parse_structured(body_end.to_string().as_bytes()),
+        Err(IrError::Schema(_))
+    ));
+
+    let mut body_continuation = base();
+    body_continuation["bodies"]["iteration"]["nodes"] = json!([
+        {"id": "continued", "type": "continueAsNew", "input": "carry"},
+        {"id": "returned", "type": "return", "result": "carry"}
+    ]);
+    body_continuation["bodies"]["iteration"]["entrypoint"] = json!("continued");
+    assert!(matches!(
+        JsonIrCodec.parse_structured(body_continuation.to_string().as_bytes()),
+        Err(IrError::Schema(_))
+    ));
+
+    let mut oversized_expression = base();
+    oversized_expression["nodes"][0]["condition"] = json!("é".repeat(513));
+    assert!(matches!(
+        JsonIrCodec.parse_structured(oversized_expression.to_string().as_bytes()),
+        Err(IrError::Invalid(WorkflowError::ExpressionByteLimit { node, limit: 1024 }))
+            if node.as_str() == "poll"
+    ));
+}
+
+#[test]
+fn structured_schema_errors_identify_the_offending_fields() {
+    let mut document = minimal(
+        json!([
+            {"id": "lines", "type": "forEach", "items": "input.items", "body": "line",
+             "result": "bodyResult", "maxItems": 17, "next": "done"},
+            {"id": "done", "type": "end"}
+        ]),
+        "lines",
+    );
+    document["bodies"] = json!({"line": {"entrypoint": "work", "nodes": [
+        {"id": "work", "type": "activity", "next": "return"},
+        {"id": "return", "type": "return", "result": "steps.work.output"}
+    ]}});
+
+    let issues = match JsonIrCodec.parse_structured(document.to_string().as_bytes()) {
+        Err(IrError::Schema(issues)) => issues,
+        other => panic!("expected schema errors, got {other:?}"),
+    };
+    assert!(
+        issues
+            .iter()
+            .any(|issue| { issue.path == "/nodes/0" && issue.message.contains("maxConcurrency") }),
+        "{issues:?}"
+    );
+    assert!(
+        issues.iter().any(|issue| {
+            issue.path == "/bodies/line/nodes/0" && issue.message.contains("activity")
+        }),
+        "{issues:?}"
+    );
+}
+
+#[test]
+fn switch_cases_keep_declaration_order_and_reject_an_undefined_target() {
+    let mut document = minimal(
+        json!([
+            {"id": "choose", "type": "switch", "cases": [
+                {"id": "first", "when": "input.amount > 0", "target": "accept"},
+                {"id": "second", "when": "input.amount >= 0", "target": "review"}
+            ], "default": "reject"},
+            {"id": "accept", "type": "end"},
+            {"id": "review", "type": "end"},
+            {"id": "reject", "type": "end"}
+        ]),
+        "choose",
+    );
+    let parsed = parse(&document).expect("switch parses");
+    let node = parsed
+        .definition
+        .node(&NodeId::parse("choose").unwrap())
+        .unwrap();
+    let NodeKind::Switch { cases, default } = node.kind() else {
+        panic!("switch kind");
+    };
+    assert_eq!(
+        cases
+            .iter()
+            .map(|case| case.id().as_str())
+            .collect::<Vec<_>>(),
+        ["first", "second"]
+    );
+    assert_eq!(default.as_str(), "reject");
+
+    document["nodes"][0]["cases"][1]["target"] = json!("missing");
+    assert!(matches!(
+        parse(&document),
+        Err(IrError::Invalid(WorkflowError::UnknownTarget { .. }))
+    ));
+    document["nodes"][0]["cases"][1]["target"] = json!("review");
+    document["nodes"][0]["cases"][1]["when"] = json!("input.amount >");
+    assert!(matches!(
+        parse(&document),
+        Err(IrError::Expression { field: "when", .. })
+    ));
 }
 
 // ------------------------------------------------------------------ the shipped example
@@ -378,12 +898,12 @@ fn node_kinds_without_an_engine_are_refused_with_the_reason() {
         (
             "foreach",
             json!({"id": "c", "type": "foreach", "collectionExpr": "input.items", "itemKeyExpr": "item.id", "body": "x", "maxItems": 10}),
-            "any planned feature",
+            "legacy collection placeholder",
         ),
         (
             "humanApproval",
             json!({"id": "c", "type": "humanApproval", "approverPolicy": "p", "timeoutMs": 1000, "formSchema": {}}),
-            "any planned feature",
+            "legacy approval placeholder",
         ),
     ];
     for (kind, node, feature) in cases {
@@ -1121,5 +1641,40 @@ fn a_hostile_node_cannot_make_the_message_long() {
             "{} chars",
             message.chars().count()
         );
+    }
+}
+
+#[test]
+fn an_approval_in_a_collection_or_loop_body_waits_for_scoped_compensation() {
+    let gated = json!([
+        {"id": "gate", "type": "approval", "policy": {"roles": ["operator"]}, "timeoutMs": 60_000,
+         "onApprove": "work", "onReject": "work", "onExpire": "work"},
+        {"id": "work", "type": "activity", "activity": "gate.work", "next": "out"},
+        {"id": "out", "type": "return", "result": "steps.work.output"}
+    ]);
+    for owner in [
+        json!({"id": "owner", "type": "forEach", "items": "input.items", "body": "iteration",
+               "result": "bodyResult", "maxItems": 4, "maxConcurrency": 1, "next": "done"}),
+        json!({"id": "owner", "type": "while", "condition": "carry < 1", "body": "iteration",
+               "initial": "0", "carry": "bodyResult", "maxIterations": 3, "timeoutMs": 60_000,
+               "next": "done"}),
+    ] {
+        let mut document = minimal(json!([owner, {"id": "done", "type": "end"}]), "owner");
+        document["bodies"] = json!({"iteration": {"entrypoint": "gate", "nodes": gated}});
+        match parse(&document) {
+            Err(IrError::Pending {
+                node,
+                kind,
+                dependency,
+                reason,
+            }) => {
+                assert_eq!(
+                    (node.as_str(), kind.as_str(), dependency),
+                    ("gate", "approval", "SCOPED_COMPENSATION")
+                );
+                assert!(reason.contains("scoped compensation"), "{reason}");
+            }
+            other => panic!("expected the pending dependency, got {other:?}"),
+        }
     }
 }

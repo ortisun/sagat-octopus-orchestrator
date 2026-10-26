@@ -23,18 +23,27 @@ spec:
       labels:
         {{- include "sagat.labels" . | nindent 8 }}
         app.kubernetes.io/component: control-plane
-      {{- with .Values.podAnnotations }}
+      {{- if or .Values.podAnnotations .Values.openbao.enabled }}
       annotations:
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.openbao.enabled }}
+        checksum/openbao-agent: {{ include (print .Template.BasePath "/openbao-agent.yaml") . | sha256sum }}
+        {{- end }}
       {{- end }}
     spec:
-      serviceAccountName: {{ include "sagat.fullname" . }}
+      serviceAccountName: {{ include "sagat.openbao.serviceAccount" $ctx }}
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 40
       securityContext: {runAsNonRoot: true, fsGroup: 10001, fsGroupChangePolicy: OnRootMismatch, seccompProfile: {type: RuntimeDefault}}
       {{- with .Values.image.pullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.openbao.enabled }}
+      initContainers:
+        {{- include "sagat.openbao.agent" $ctx | nindent 8 }}
       {{- end }}
       containers:
         - name: control-plane
@@ -43,6 +52,7 @@ spec:
           args: [serve]
           env:
             {{- include "sagat.oidcEnv" . | nindent 12 }}
+            {{- include "sagat.openbao.env" $ctx | nindent 12 }}
             - {name: SAGAT_BIND_ADDR, value: "0.0.0.0:8080"}
             # Metrics: unauthenticated, so the NetworkPolicy keeps them to the monitoring namespace. The probes are
             # the API's own, on its port: /v1/health touches nothing (a database outage must not restart pods) and
@@ -88,6 +98,7 @@ spec:
             {{- toYaml $cp.resources | nindent 12 }}
           {{- include "sagat.containerSecurity" . | nindent 10 }}
           volumeMounts:
+            {{- include "sagat.openbao.mounts" $ctx | nindent 12 }}
             - {name: tmp, mountPath: /tmp}
             {{- if $nativeTls }}
             - {name: http-tls, mountPath: /etc/sagat/http-tls, readOnly: true}
@@ -100,6 +111,7 @@ spec:
             - {name: webhook-oidc, mountPath: /etc/sagat/webhook-oidc, readOnly: true}
             {{- end }}
       volumes:
+        {{- include "sagat.openbao.volumes" $ctx | nindent 8 }}
         - {name: tmp, emptyDir: {sizeLimit: 64Mi}}
         {{- if $nativeTls }}
         - name: http-tls

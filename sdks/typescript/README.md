@@ -76,6 +76,13 @@ a key that is the same on every retry. A handler fails on purpose with `Activity
 `ActivityFailure.permanent(...)` or `ActivityFailure.outcomeUnknown(...)`; any other error is reported as
 `ACTIVITY_ERROR` with only its type name, never its text.
 
+When worker protocol 1.5 is accepted, `ctx.instance` is a typed copy of the lease identity: its
+`instancePath` holds ordered `{scopeNodeId, iterationIndex}` segments and `definitionNodeId` names the
+activated node. It is `undefined` at protocol 1.4 or older. The host reports with the original lease
+identity, so changing the context value cannot change authorization or fencing.
+For a collection body, `ctx.item` is the captured JSON item and `ctx.index` is its stable input index;
+both are absent from root and non-collection work. The handler's ordinary `input` remains the run input.
+
 Platform guarantees stay at-least-once for external effects: the SDK gives you the idempotency key and the
 reconciliation hook, it cannot make a provider exactly-once.
 
@@ -125,7 +132,7 @@ a saga without a body). `build()` returns the document; `toJson()` its canonical
 
 **SemVer.** `0.x` is pre-release: a minor may change the public API and says so in the changelog. From `1.0`
 the public API follows SemVer. The SDK's version is independent of the platform's. The **worker protocol** has
-its own version, negotiated at registration: this SDK offers `1.4`; a server that speaks an older minor
+its own version, negotiated at registration: this SDK offers `1.5`; a server that speaks an older minor
 serves it at that minor, a server of another major refuses with `UNSUPPORTED_PROTOCOL`
 ([ADR-0015](../../docs/adr/ADR-0015-sdks-meet-the-server-by-minor-version-and-are-held-to-one-conformance-suite.md)).
 
@@ -149,3 +156,10 @@ cargo test -p sagat-tests --test sdk_conformance -- --ignored   # the conformanc
 ```
 
 License: MIT. The package includes the license text in `LICENSE`.
+
+## Managed PostgreSQL connections
+
+Use the database builder with a logical connection created in Sagat. See the
+[five-language guide](../../docs/guides/managed-database-sdk.md) for typed parameters,
+result consumption, permissions and the shared real-service scenario. Credentials
+are resolved by the separate managed executor.

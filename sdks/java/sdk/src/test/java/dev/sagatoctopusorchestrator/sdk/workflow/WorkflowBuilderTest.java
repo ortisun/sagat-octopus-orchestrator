@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import dev.sagatoctopusorchestrator.sdk.ErrorCode;
 import dev.sagatoctopusorchestrator.sdk.Json;
 import dev.sagatoctopusorchestrator.sdk.SagatException;
@@ -28,6 +29,18 @@ class WorkflowBuilderTest {
 
     private static WorkflowBuilder workflow(String name) {
         return WorkflowBuilder.named(name);
+    }
+
+    @Test
+    void classifiedResultSchemasAndWorkflowLimitsUseTheirTypedCarriers() {
+        JsonNode schema = json("{\"type\":\"object\",\"x-sagat-classification\":\"internal\",\"properties\":{\"value\":{\"type\":\"string\"}}}");
+        JsonNode document = workflow("classified-flow").limits(new WorkflowLimits(23, 4)).outputSchema(schema)
+                .step("a", "act.a", StepOptions.create().outputSchema(schema))
+                .script("s", "sha256:" + "0".repeat(64), ScriptOptions.create().outputSchema(schema))
+                .waitForEvent("w", WaitForEventOptions.of("done", "input.id", 10).outputSchema(schema))
+                .invokeChild("c", "child-flow", ChildOptions.create().outputSchema(schema)).end("done").build();
+        same(json("{\"maxInstances\":23,\"maxDepth\":4}"), document.get("limits"));
+        for (int i = 0; i < 4; i++) same(schema, document.get("nodes").get(i).get("outputSchema"));
     }
 
     @Test
@@ -125,6 +138,82 @@ class WorkflowBuilderTest {
     }
 
     @Test
+    void aSwitchKeepsCaseOrderCopiesItsCasesAndHasNoImplicitNext() {
+        List<SwitchCase> cases = new java.util.ArrayList<>(List.of(
+                new SwitchCase("nonnegative", "input.amount >= 0", "positive"),
+                new SwitchCase("one", "input.amount == 1", "also-positive")));
+        WorkflowBuilder builder = workflow("switch-flow")
+                .switchCase("route", cases, "fallback")
+                .step("positive", "amount.positive")
+                .step("also-positive", "amount.also-positive")
+                .step("fallback", "amount.fallback");
+        cases.set(0, new SwitchCase("tampered", "false", "tampered"));
+
+        JsonNode node = builder.build().path("nodes").get(0);
+        same(json("{" +
+                        "\"id\":\"route\",\"type\":\"switch\",\"cases\":[" +
+                        "{\"id\":\"nonnegative\",\"when\":\"input.amount >= 0\",\"target\":\"positive\"}," +
+                        "{\"id\":\"one\",\"when\":\"input.amount == 1\",\"target\":\"also-positive\"}]," +
+                        "\"default\":\"fallback\"}"), node);
+        assertFalse(node.has("next"));
+        workflow("local-case-ids")
+                .switchCase("first", List.of(new SwitchCase("same", "true", "done")), "done")
+                .switchCase("second", List.of(new SwitchCase("same", "false", "done")), "done")
+                .end("done")
+                .build();
+    }
+
+    @Test
+    void collectionsUseNamedBodiesAndMapWritesTheSameForEachNode() throws Exception {
+        Flow line = Flow.body().step("price", "line.price").returnValue("return", "steps.price.output");
+        Flow tax = Flow.body().step("price", "tax.price").returnValue("return", "steps.price.output");
+        ObjectNode document = WorkflowBuilder.named("collection-flow")
+                .body("line", line)
+                .body("tax", tax)
+                .forEach("notify-lines", "input.lines", "line", "bodyResult", CollectionOptions.of(17, 3))
+                .map("prices", "input.lines", "tax", "bodyResult.amount", CollectionOptions.of(17, 2))
+                .end("done", "steps.prices.output")
+                .build();
+
+        assertEquals(
+                "[{\"body\":\"line\",\"id\":\"notify-lines\",\"items\":\"input.lines\",\"maxConcurrency\":3,\"maxItems\":17,\"next\":\"prices\",\"result\":\"bodyResult\",\"type\":\"forEach\"},{\"body\":\"tax\",\"id\":\"prices\",\"items\":\"input.lines\",\"maxConcurrency\":2,\"maxItems\":17,\"next\":\"done\",\"result\":\"bodyResult.amount\",\"type\":\"forEach\"},{\"id\":\"done\",\"outputExpr\":\"steps.prices.output\",\"type\":\"end\"}]",
+                Json.canonical(document.get("nodes")));
+        assertEquals(
+                "{\"line\":{\"entrypoint\":\"price\",\"nodes\":[{\"activity\":\"line.price\",\"id\":\"price\",\"next\":\"return\",\"type\":\"activity\"},{\"id\":\"return\",\"result\":\"steps.price.output\",\"type\":\"return\"}]},\"tax\":{\"entrypoint\":\"price\",\"nodes\":[{\"activity\":\"tax.price\",\"id\":\"price\",\"next\":\"return\",\"type\":\"activity\"},{\"id\":\"return\",\"result\":\"steps.price.output\",\"type\":\"return\"}]}}",
+                Json.canonical(document.get("bodies")));
+    }
+
+    @Test
+    void namedBodiesCannotReferenceThemselves() {
+        Flow recursive = Flow.body()
+                .forEach("nested", "input.items", "line", "bodyResult", CollectionOptions.of(2, 1))
+                .returnValue("return", "steps.nested.output");
+        refused(() -> workflow("recursive-body")
+                .body("line", recursive)
+                .forEach("lines", "input.items", "line", "bodyResult", CollectionOptions.of(2, 1))
+                .end("done")
+                .build(), "body reference cycle");
+    }
+
+    @Test
+    void whileAndRepeatUntilWriteBoundedPreTestAndPostTestLoopNodes() {
+        Flow iteration = Flow.body().step("increment", "counter.increment").returnValue("return", "steps.increment.output");
+        ObjectNode document = workflow("loop-flow")
+                .body("iteration", iteration)
+                .whileLoop("pre", "carry < 3", "iteration", "input.start", "bodyResult",
+                        LoopOptions.of(3, Duration.ofMinutes(1)).withDelay(Duration.ofMillis(250)).withOnError("failed"))
+                .repeatUntil("post", "carry >= 5", "iteration", "steps.pre.output", "bodyResult",
+                        LoopOptions.of(5, Duration.ofMinutes(2)))
+                .end("done")
+                .end("failed")
+                .build();
+
+        assertEquals(
+                "[{\"body\":\"iteration\",\"carry\":\"bodyResult\",\"condition\":\"carry < 3\",\"delayMs\":250,\"id\":\"pre\",\"initial\":\"input.start\",\"maxIterations\":3,\"next\":\"post\",\"onError\":\"failed\",\"timeoutMs\":60000,\"type\":\"while\"},{\"body\":\"iteration\",\"carry\":\"bodyResult\",\"condition\":\"carry >= 5\",\"id\":\"post\",\"initial\":\"steps.pre.output\",\"maxIterations\":5,\"next\":\"done\",\"timeoutMs\":120000,\"type\":\"repeatUntil\"},{\"id\":\"done\",\"type\":\"end\"},{\"id\":\"failed\",\"type\":\"end\"}]",
+                Json.canonical(document.get("nodes")));
+    }
+
+    @Test
     void theNodeBeforeAnEndLinksToItAndTheEndNeverLinksOn() {
         JsonNode doc = workflow("ending-flow").step("a", "act.a").end("done").step("b", "act.b").build();
         assertEquals("done", doc.get("nodes").get(0).get("next").textValue());
@@ -179,6 +268,19 @@ class WorkflowBuilderTest {
         refused(() -> workflow("bad-timer").sleepMs("t", 0), "duration");
         refused(() -> workflow("bad-timer-2").sleep("t", Duration.ofNanos(1500)), "whole number of milliseconds");
         refused(() -> workflow("dangling").condition("c", "true", "nowhere", "a").step("a", "x").build(), "not a node");
+        refused(() -> workflow("no-switch-cases").switchCase("s", List.of(), "a"), "between 1 and 32 cases");
+        refused(() -> workflow("too-many-cases").switchCase("s", java.util.stream.IntStream.range(0, 33)
+                .mapToObj(i -> new SwitchCase("case-" + i, "true", "a")).toList(), "a"), "between 1 and 32 cases");
+        refused(() -> workflow("duplicate-cases").switchCase("s", List.of(
+                new SwitchCase("same", "true", "a"), new SwitchCase("same", "false", "b")), "a"), "case id");
+        refused(() -> workflow("empty-case-id").switchCase("s", List.of(new SwitchCase("", "true", "a")), "a"), "without an id");
+        refused(() -> workflow("empty-case-when").switchCase("s", List.of(new SwitchCase("one", "", "a")), "a"), "when expression");
+        refused(() -> workflow("empty-case-target").switchCase("s", List.of(new SwitchCase("one", "true", "")), "a"), "needs a target");
+        refused(() -> workflow("empty-switch-default").switchCase("s", List.of(new SwitchCase("one", "true", "a")), ""), "default target");
+        refused(() -> workflow("dangling-switch-case").switchCase("s", List.of(
+                new SwitchCase("one", "true", "nowhere")), "a").step("a", "x").build(), "not a node");
+        refused(() -> workflow("dangling-switch-default").switchCase("s", List.of(
+                new SwitchCase("one", "true", "a")), "nowhere").step("a", "x").build(), "not a node");
         refused(() -> workflow("dangling-timeout").waitForEvent("w", WaitForEventOptions.of("e", "x", 1).onTimeout("nowhere")).build(), "not a node");
         refused(() -> workflow("no-activity").step("a", ""), "activity name");
         refused(() -> workflow("no-id").step("", "x"), "needs an id");

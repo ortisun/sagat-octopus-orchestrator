@@ -4,8 +4,8 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll};
 use std::time::Duration;
 use std::time::Instant;
@@ -16,11 +16,18 @@ use sagat_application::blobs::BlobService;
 use sagat_application::clock::Clock;
 use sagat_application::definitions::DefinitionStore;
 use sagat_application::entropy::Entropy;
-use sagat_application::error::AppError;
-use sagat_application::execution::{ExpressionEvaluator, MAX_PAYLOAD_BYTES};
+use sagat_application::error::{AccessDenial, AppError};
+use sagat_application::execution::{ExpressionEvaluator, MAX_PAYLOAD_BYTES, PathExecutionStore};
+use sagat_application::identity::RequestContext;
 use sagat_application::runs::RunStore;
-use sagat_application::worker::{Capabilities, ClaimedTask, StepAck, WorkerService, WorkerStore};
+use sagat_application::worker::{
+    BlobCompletionTarget, BlobOutput, Capabilities, ClaimedTask, StepAck, WorkerService,
+    WorkerStore,
+};
 use sagat_domain::blobs::BlobId;
+use sagat_domain::execution::{ExecutionInstanceId, InstancePath};
+use sagat_domain::identity::Principal;
+use sagat_domain::workflow::NodeId;
 use sagat_telemetry::TraceContext;
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
@@ -212,11 +219,34 @@ impl Drop for TaskBody {
 }
 
 fn app(error: AppError) -> Status {
-    to_status(&ApiError::from(error))
+    api(&ApiError::from(error))
 }
 
 fn api(error: &ApiError) -> Status {
+    if let Some(denial) = error.access_denial() {
+        // Leaves the denial for `observe`, which knows the call and, once the call authenticated,
+        // the caller (gap G9).
+        let _ = DENIAL.try_with(|slot| {
+            *slot.denial.lock().unwrap_or_else(PoisonError::into_inner) = Some(denial);
+        });
+    }
     to_status(error)
+}
+
+/// What a call learns about itself on the way, for the audit of a denial.
+#[derive(Default)]
+struct DenialNote {
+    principal: Mutex<Option<Principal>>,
+    denial: Mutex<Option<AccessDenial>>,
+}
+
+tokio::task_local! {
+    static DENIAL: Arc<DenialNote>;
+}
+
+/// The RPC as named in the audit trail: the service and the method, never the request.
+fn rpc_name(method: &str) -> String {
+    format!("grpc WorkerService/{method}")
 }
 
 fn trace_of<T>(request: &Request<T>) -> TraceContext {
@@ -252,7 +282,8 @@ const fn code_label(code: Code) -> &'static str {
 
 /// Runs one call under a span carrying the trace id, and counts and times it. The `method` label
 /// comes from a fixed set of RPC names, so the metric cardinality is fixed.
-async fn observe<T>(
+async fn observe<St: Core, T>(
+    core: &St,
     method: &'static str,
     trace: TraceContext,
     call: impl Future<Output = Result<T, Status>>,
@@ -273,7 +304,39 @@ async fn observe<T>(
         grpc.status_code = tracing::field::Empty,
         otel.status_code = tracing::field::Empty,
     );
-    let result = call.instrument(span.clone()).await;
+    let note = Arc::new(DenialNote::default());
+    let result = DENIAL
+        .scope(Arc::clone(&note), call.instrument(span.clone()))
+        .await;
+    let denied = note
+        .denial
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take();
+    let caller = note
+        .principal
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take();
+    let refused = result
+        .as_ref()
+        .err()
+        .is_some_and(|status| status.code() == Code::PermissionDenied);
+    if let (true, Some(denial), Some(principal)) = (refused, denied, caller) {
+        let ctx = RequestContext {
+            trace_id: Some(trace.trace_id().to_string()),
+            span_id: None,
+        };
+        let _ = sagat_api_http::denial::spawn_audit_access_denied(
+            core,
+            &principal,
+            &rpc_name(method),
+            denial,
+            &ctx,
+        )
+        .instrument(span.clone())
+        .await;
+    }
     let code = result.as_ref().err().map_or(Code::Ok, Status::code);
     span.record("grpc.status_code", code_label(code));
     if code == Code::Internal || code == Code::Unknown {
@@ -297,9 +360,17 @@ where
     /// member of a tenant. The returned value holds the tenant's concurrency slot until dropped.
     async fn authenticate<T>(&self, request: &Request<T>) -> Result<Authenticated, Status> {
         let token = self.bearer(request)?;
-        authenticate_bearer(&self.core, token)
+        let authenticated = authenticate_bearer(&self.core, token)
             .await
-            .map_err(|e| api(&e))
+            .map_err(|e| api(&e))?;
+        let _ = DENIAL.try_with(|note| {
+            *note
+                .principal
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) =
+                Some(authenticated.session.principal.clone());
+        });
+        Ok(authenticated)
     }
 
     fn bearer<'a, T>(&self, request: &'a Request<T>) -> Result<&'a str, Status> {
@@ -318,7 +389,7 @@ where
 impl<St, S, C, E, R> pb::worker_service_server::WorkerService for WorkerGrpc<St, S, C, E, R>
 where
     St: Core,
-    S: RunStore + WorkerStore + DefinitionStore + 'static,
+    S: RunStore + WorkerStore + DefinitionStore + PathExecutionStore + 'static,
     C: Clock + 'static,
     E: ExpressionEvaluator + 'static,
     R: Entropy + 'static,
@@ -330,7 +401,7 @@ where
         &self,
         request: Request<pb::RegisterWorkerRequest>,
     ) -> Result<Response<pb::RegisterWorkerResponse>, Status> {
-        observe("RegisterWorker", trace_of(&request), async {
+        observe(&self.core, "RegisterWorker", trace_of(&request), async {
             let auth = self.authenticate(&request).await?;
             let message = request.get_ref();
             let wanted = message
@@ -382,7 +453,7 @@ where
         let request_trace = trace
             .is_continuation()
             .then(|| trace.trace_id().to_string());
-        observe("PollTasks", trace, async {
+        observe(&self.core, "PollTasks", trace, async {
             let auth = self.authenticate(&request).await?;
             let message = request.get_ref();
             let worker = worker_id(&message.worker_id)?;
@@ -420,7 +491,7 @@ where
         let request_trace = trace
             .is_continuation()
             .then(|| trace.trace_id().to_string());
-        observe("StreamTasks", trace, async {
+        observe(&self.core, "StreamTasks", trace, async {
             let message = request.get_ref();
             let max_tasks = u32::try_from(message.max_tasks)
                 .map_err(|_| invalid("max_tasks must be between 1 and 64"))?;
@@ -593,7 +664,25 @@ where
                     let tasks = match tokio::time::timeout_at(producer_end, claim).await {
                         Ok(Ok(tasks)) => tasks,
                         Ok(Err(error)) => {
-                            let status = app(error);
+                            // The role may have been lowered since the stream opened: the
+                            // refusal is a denial like any other, but this task is outside the
+                            // call that `observe` watches.
+                            let refusal = ApiError::from(error);
+                            if let Some(denial) = refusal.access_denial() {
+                                let ctx = RequestContext {
+                                    trace_id: request_trace.clone(),
+                                    span_id: None,
+                                };
+                                let _ = sagat_api_http::denial::spawn_audit_access_denied(
+                                    &core,
+                                    &authenticated.session.principal,
+                                    &rpc_name("StreamTasks"),
+                                    denial,
+                                    &ctx,
+                                )
+                                .await;
+                            }
+                            let status = api(&refusal);
                             producer_reason.store(
                                 match status.code() {
                                     Code::Unauthenticated | Code::PermissionDenied => 5,
@@ -673,16 +762,21 @@ where
         request: Request<pb::ResolveSecretsRequest>,
     ) -> Result<Response<pb::ResolveSecretsResponse>, Status> {
         let trace = trace_of(&request);
-        observe("ResolveSecrets", trace, async {
+        observe(&self.core, "ResolveSecrets", trace, async {
             let auth = self.authenticate(&request).await?;
             let message = request.get_ref();
-            let attempt = Attempt::parse(
+            let mut attempt = Attempt::parse(
                 &message.task_id,
                 &message.run_id,
                 &message.step_id,
                 message.attempt,
                 message.generation,
                 &message.lease_token,
+            )?;
+            attach_instance(
+                &mut attempt,
+                message.instance.as_ref(),
+                self.workers.supports_scoped_worker_protocol(),
             )?;
             let resolved = self
                 .workers
@@ -707,17 +801,52 @@ where
         .await
     }
 
+    async fn resolve_database(
+        &self,
+        request: Request<pb::ResolveSecretsRequest>,
+    ) -> Result<Response<pb::ResolvedDatabase>, Status> {
+        let trace = trace_of(&request);
+        observe(&self.core, "ResolveDatabase", trace, async {
+            let auth = self.authenticate(&request).await?;
+            let m = request.get_ref();
+            let mut attempt = Attempt::parse(
+                &m.task_id,
+                &m.run_id,
+                &m.step_id,
+                m.attempt,
+                m.generation,
+                &m.lease_token,
+            )?;
+            attach_instance(
+                &mut attempt,
+                m.instance.as_ref(),
+                self.workers.supports_scoped_worker_protocol(),
+            )?;
+            let resolved = self
+                .workers
+                .resolve_database(
+                    &auth.session.principal,
+                    &attempt.task_ref(),
+                    Some(&trace.trace_id().to_string()),
+                )
+                .await
+                .map_err(app)?;
+            crate::database::response(resolved).map_err(app)
+        })
+        .await
+    }
+
     async fn heartbeat(
         &self,
         request: Request<pb::HeartbeatRequest>,
     ) -> Result<Response<pb::HeartbeatResponse>, Status> {
-        observe("Heartbeat", trace_of(&request), async {
+        observe(&self.core, "Heartbeat", trace_of(&request), async {
             let auth = self.authenticate(&request).await?;
             let message = request.get_ref();
             if !message.worker_id.is_empty() {
                 worker_id(&message.worker_id)?;
             }
-            let attempt = Attempt::parse_heartbeat(
+            let mut attempt = Attempt::parse_heartbeat(
                 &message.task_id,
                 &message.run_id,
                 &message.step_id,
@@ -725,13 +854,19 @@ where
                 message.generation,
                 &message.lease_token,
             )?;
+            attach_instance(
+                &mut attempt,
+                message.instance.as_ref(),
+                self.workers.supports_scoped_worker_protocol(),
+            )?;
             let ack = self
                 .workers
                 .heartbeat(&auth.session.principal, &attempt.task_ref())
                 .await
                 .map_err(app)?;
             Ok(pb::HeartbeatResponse {
-                lease_expires_at_epoch_ms: epoch_ms(ack.lease_expires_at),
+                // `0` when this lease already reported the attempt (G141, SDK SPEC §6.4).
+                lease_expires_at_epoch_ms: ack.lease_expires_at.map_or(0, epoch_ms),
                 cancel_requested: ack.cancel_requested,
             })
         })
@@ -742,16 +877,21 @@ where
         &self,
         request: Request<pb::CompleteStepRequest>,
     ) -> Result<Response<pb::StepCommandResponse>, Status> {
-        observe("CompleteStep", trace_of(&request), async {
+        observe(&self.core, "CompleteStep", trace_of(&request), async {
             let auth = self.authenticate(&request).await?;
             let message = request.get_ref();
-            let attempt = Attempt::parse(
+            let mut attempt = Attempt::parse(
                 &message.task_id,
                 &message.run_id,
                 &message.step_id,
                 message.attempt,
                 message.generation,
                 &message.lease_token,
+            )?;
+            attach_instance(
+                &mut attempt,
+                message.instance.as_ref(),
+                self.workers.supports_scoped_worker_protocol(),
             )?;
             let key = idempotency_key(&message.idempotency_key)?;
             if !message.output_blob_ref.is_empty() {
@@ -764,9 +904,9 @@ where
                     .parse::<BlobId>()
                     .map_err(|_| invalid("output_blob_ref is not a blob id"))?;
                 let principal = &auth.session.principal;
-                if let Some(ack) = self
+                let scope = match self
                     .workers
-                    .replay_blob_completion(
+                    .prepare_blob_completion(
                         principal,
                         &attempt.task_ref(),
                         id,
@@ -776,13 +916,9 @@ where
                     .await
                     .map_err(app)?
                 {
-                    return Ok(step_response(&ack));
-                }
-                let scope = self
-                    .workers
-                    .blob_report_scope(principal, &attempt.task_ref())
-                    .await
-                    .map_err(app)?;
+                    BlobCompletionTarget::Replayed(ack) => return Ok(step_response(&ack)),
+                    BlobCompletionTarget::Ready(scope) => scope,
+                };
                 let described = blobs
                     .service
                     .describe_for_commit(scope, id)
@@ -795,13 +931,39 @@ where
                 {
                     return Err(invalid("output_sha256 does not match the blob"));
                 }
+                let limit = self
+                    .workers
+                    .database_blob_limit(principal, &attempt.task_ref())
+                    .await
+                    .map_err(app)?;
+                let mut _place = None;
+                let content = if let Some(limit) = limit {
+                    if described.size() > limit as u64 {
+                        return Err(invalid("managed database result is too large"));
+                    }
+                    _place = Some(blobs.permit()?);
+                    let (actual, body) = blobs
+                        .service
+                        .read(scope.access, id)
+                        .await
+                        .map_err(read_failure)?;
+                    if actual != described {
+                        return Err(invalid("managed blob descriptor changed"));
+                    }
+                    Some(blob_failures::collect_database_result(body, limit, blobs.timeout).await?)
+                } else {
+                    None
+                };
                 let ack = self
                     .workers
                     .complete_with_blob(
                         principal,
                         &attempt.task_ref(),
-                        &described,
-                        &message.output_sha256,
+                        BlobOutput {
+                            descriptor: &described,
+                            expected_digest: &message.output_sha256,
+                            content: content.as_ref().map(|bytes| bytes.as_slice()),
+                        },
                         key,
                     )
                     .await
@@ -824,7 +986,7 @@ where
         request: Request<tonic::Streaming<pb::WriteBlobRequest>>,
     ) -> Result<Response<pb::WriteBlobResponse>, Status> {
         let trace = trace_of(&request);
-        observe("WriteBlob", trace, async {
+        observe(&self.core, "WriteBlob", trace, async {
             let started = Instant::now();
             let auth = self.authenticate(&request).await?;
             let blobs = self.blob_access()?;
@@ -843,7 +1005,7 @@ where
             else {
                 return Err(invalid("the first message of an upload must be the header"));
             };
-            let attempt = Attempt::parse(
+            let mut attempt = Attempt::parse(
                 &header.task_id,
                 &header.run_id,
                 &header.step_id,
@@ -851,20 +1013,90 @@ where
                 header.generation,
                 &header.lease_token,
             )?;
+            attach_instance(
+                &mut attempt,
+                header.instance.as_ref(),
+                self.workers.supports_scoped_worker_protocol(),
+            )?;
             let principal = &auth.session.principal;
-            let scope = self
+            let write = write_request(&header)?;
+            let limit = self
                 .workers
-                .check_blob_upload(principal, &attempt.task_ref())
+                .database_blob_limit(principal, &attempt.task_ref())
                 .await
                 .map_err(app)?;
-            let write = write_request(&header)?;
-
-            let (body, flags) =
+            if limit.is_some() && write.content_type.as_str() != "application/json" {
+                return Err(invalid("managed database results require application/json"));
+            }
+            let scope = if limit.is_none() {
+                Some(
+                    self.workers
+                        .check_blob_upload(principal, &attempt.task_ref())
+                        .await
+                        .map_err(app)?,
+                )
+            } else {
+                None
+            };
+            if limit
+                .is_some_and(|limit| write.expected_size.is_some_and(|size| size > limit as u64))
+            {
+                return Err(invalid("managed database result is too large"));
+            }
+            let (mut body, flags) =
                 upload_body(stream, blobs.timeout.saturating_sub(started.elapsed()));
-            let stored = blobs
-                .service
-                .write(scope, principal.subject().as_str(), write, body)
+            let scope = if let Some(limit) = limit {
+                let collected = blob_failures::collect_database_result(
+                    body,
+                    limit,
+                    blobs.timeout.saturating_sub(started.elapsed()),
+                )
                 .await;
+                if flags.timed_out() {
+                    return Err(to_status(&ApiError::request_timeout()));
+                }
+                if flags.violation() {
+                    return Err(invalid(
+                        "after the header an upload carries only chunks of at most 256 KiB",
+                    ));
+                }
+                let content = collected?;
+                if started.elapsed() >= blobs.timeout {
+                    return Err(to_status(&ApiError::request_timeout()));
+                }
+                let scope = tokio::time::timeout(
+                    blobs.timeout.saturating_sub(started.elapsed()),
+                    self.workers.check_database_blob_upload(
+                        principal,
+                        &attempt.task_ref(),
+                        &content,
+                    ),
+                )
+                .await
+                .map_err(|_| to_status(&ApiError::request_timeout()))?
+                .map_err(app)?;
+                body = Box::pin(tokio_stream::iter([Ok(bytes::Bytes::copy_from_slice(
+                    &content,
+                ))]));
+                scope
+            } else {
+                scope.ok_or_else(|| app(AppError::Internal))?
+            };
+            let storing = blobs
+                .service
+                .write(scope, principal.subject().as_str(), write, body);
+            let stored = if limit.is_some() {
+                if started.elapsed() >= blobs.timeout {
+                    return Err(to_status(&ApiError::request_timeout()));
+                }
+                // A cancelled PUT can have an unknown outcome. The existing durable reservation
+                // and abandoned-upload sweep reconcile it; unconfirmed bytes are never usable.
+                tokio::time::timeout(blobs.timeout.saturating_sub(started.elapsed()), storing)
+                    .await
+                    .map_err(|_| to_status(&ApiError::request_timeout()))?
+            } else {
+                storing.await
+            };
             // Why the body ended early is told by the body; the use case only knows it was cut.
             if flags.timed_out() {
                 return Err(to_status(&ApiError::request_timeout()));
@@ -892,18 +1124,23 @@ where
         request: Request<pb::ReadBlobRequest>,
     ) -> Result<Response<Self::ReadBlobStream>, Status> {
         let trace = trace_of(&request);
-        observe("ReadBlob", trace, async {
+        observe(&self.core, "ReadBlob", trace, async {
             let auth = self.authenticate(&request).await?;
             let blobs = self.blob_access()?;
             let place = blobs.permit()?;
             let message = request.get_ref();
-            let attempt = Attempt::parse(
+            let mut attempt = Attempt::parse(
                 &message.task_id,
                 &message.run_id,
                 &message.step_id,
                 message.attempt,
                 message.generation,
                 &message.lease_token,
+            )?;
+            attach_instance(
+                &mut attempt,
+                message.instance.as_ref(),
+                self.workers.supports_scoped_worker_protocol(),
             )?;
             let id = message
                 .blob_id
@@ -946,16 +1183,21 @@ where
         &self,
         request: Request<pb::FailStepRequest>,
     ) -> Result<Response<pb::StepCommandResponse>, Status> {
-        observe("FailStep", trace_of(&request), async {
+        observe(&self.core, "FailStep", trace_of(&request), async {
             let auth = self.authenticate(&request).await?;
             let message = request.get_ref();
-            let attempt = Attempt::parse(
+            let mut attempt = Attempt::parse(
                 &message.task_id,
                 &message.run_id,
                 &message.step_id,
                 message.attempt,
                 message.generation,
                 &message.lease_token,
+            )?;
+            attach_instance(
+                &mut attempt,
+                message.instance.as_ref(),
+                self.workers.supports_scoped_worker_protocol(),
             )?;
             let key = idempotency_key(&message.idempotency_key)?;
             if message.error_code.len() > 128 || message.safe_message.len() > 2048 {
@@ -1013,7 +1255,186 @@ fn step_response(ack: &StepAck) -> pb::StepCommandResponse {
     }
 }
 
+fn instance_identity(instance: &ExecutionInstanceId) -> pb::ExecutionInstanceIdentity {
+    pb::ExecutionInstanceIdentity {
+        instance_path: instance
+            .path()
+            .segments()
+            .iter()
+            .map(|segment| pb::ScopePathSegment {
+                scope_node_id: segment.scope_node().to_string(),
+                iteration_index: segment.iteration_index(),
+            })
+            .collect(),
+        definition_node_id: instance.node().to_string(),
+    }
+}
+
+#[cfg(test)]
+fn root_identity(node: &NodeId) -> pb::ExecutionInstanceIdentity {
+    instance_identity(&ExecutionInstanceId::root(node.clone()))
+}
+
+fn parse_instance_identity(
+    identity: Option<&pb::ExecutionInstanceIdentity>,
+    expected_node: &NodeId,
+) -> Result<ExecutionInstanceId, Status> {
+    let Some(identity) = identity else {
+        return Ok(ExecutionInstanceId::root(expected_node.clone()));
+    };
+    if identity.definition_node_id != expected_node.as_str() {
+        return Err(invalid(
+            "instance.definition_node_id does not match task_id",
+        ));
+    }
+    let mut path = InstancePath::root();
+    for segment in &identity.instance_path {
+        let scope_node = NodeId::parse(&segment.scope_node_id)
+            .map_err(|_| invalid("instance.instance_path has a malformed scope_node_id"))?;
+        path = path
+            .child(scope_node, segment.iteration_index)
+            .map_err(|_| invalid("instance.instance_path exceeds its bounds"))?;
+    }
+    Ok(ExecutionInstanceId::in_path(path, expected_node.clone()))
+}
+
+fn require_supported_identity(
+    identity: &ExecutionInstanceId,
+    supports_scoped_identity: bool,
+) -> Result<(), Status> {
+    if identity.path().is_root() || supports_scoped_identity {
+        Ok(())
+    } else {
+        Err(Status::unimplemented(
+            "scoped execution identity requires worker protocol 1.5 support",
+        ))
+    }
+}
+
+fn attach_instance(
+    attempt: &mut Attempt,
+    identity: Option<&pb::ExecutionInstanceIdentity>,
+    supports_scoped_identity: bool,
+) -> Result<(), Status> {
+    let parsed = parse_instance_identity(identity, attempt.instance.node())?;
+    require_supported_identity(&parsed, supports_scoped_identity)?;
+    attempt.instance = parsed;
+    Ok(())
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn old_and_explicit_root_reports_are_accepted() {
+        let node = NodeId::parse("charge").expect("node");
+        assert!(parse_instance_identity(None, &node).is_ok());
+        assert!(parse_instance_identity(Some(&root_identity(&node)), &node).is_ok());
+    }
+
+    #[test]
+    fn an_unimplemented_scope_or_mismatched_root_is_rejected() {
+        let node = NodeId::parse("charge").expect("node");
+        let other = NodeId::parse("refund").expect("node");
+        assert!(parse_instance_identity(Some(&root_identity(&other)), &node).is_err());
+
+        let scoped = pb::ExecutionInstanceIdentity {
+            instance_path: vec![pb::ScopePathSegment {
+                scope_node_id: "lines".into(),
+                iteration_index: 0,
+            }],
+            definition_node_id: node.to_string(),
+        };
+        let parsed = parse_instance_identity(Some(&scoped), &node).expect("valid scoped identity");
+        let error = require_supported_identity(&parsed, false)
+            .expect_err("scoped execution remains disabled");
+        assert_eq!(error.code(), Code::Unimplemented);
+        assert!(require_supported_identity(&parsed, true).is_ok());
+    }
+
+    #[test]
+    fn a_wire_path_is_bounded_and_round_trips_structurally() {
+        let node = NodeId::parse("charge").expect("node");
+        let identity = pb::ExecutionInstanceIdentity {
+            instance_path: (0..8)
+                .map(|index| pb::ScopePathSegment {
+                    scope_node_id: format!("scope{index}"),
+                    iteration_index: 9_999,
+                })
+                .collect(),
+            definition_node_id: node.to_string(),
+        };
+        let parsed = parse_instance_identity(Some(&identity), &node).expect("bounded identity");
+        assert_eq!(parsed.path().depth(), 8);
+        assert_eq!(instance_identity(&parsed), identity);
+
+        let mut too_deep = identity;
+        too_deep.instance_path.push(pb::ScopePathSegment {
+            scope_node_id: "overflow".into(),
+            iteration_index: 0,
+        });
+        assert!(parse_instance_identity(Some(&too_deep), &node).is_err());
+
+        let bad_index = pb::ExecutionInstanceIdentity {
+            instance_path: vec![pb::ScopePathSegment {
+                scope_node_id: "lines".into(),
+                iteration_index: 10_000,
+            }],
+            definition_node_id: node.to_string(),
+        };
+        assert!(parse_instance_identity(Some(&bad_index), &node).is_err());
+    }
+
+    #[test]
+    fn an_absent_identity_keeps_the_legacy_root() {
+        let node = NodeId::parse("charge").expect("node");
+        let parsed = parse_instance_identity(None, &node).expect("legacy root");
+        assert!(parsed.path().is_root());
+        assert_eq!(parsed.node(), &node);
+    }
+
+    #[test]
+    fn a_scoped_lease_carries_the_exact_instance_identity() {
+        let run_id = sagat_domain::execution::RunId::new(uuid::Uuid::from_u128(1));
+        let node = NodeId::parse("charge").expect("node");
+        let scope = NodeId::parse("lines").expect("scope");
+        let instance =
+            ExecutionInstanceId::in_path(InstancePath::root().child(scope, 7).expect("path"), node);
+        let task = ClaimedTask {
+            run_id,
+            instance: instance.clone(),
+            step_id: uuid::Uuid::from_u128(2),
+            fence: sagat_domain::execution::Fence {
+                attempt: 3,
+                generation: 4,
+            },
+            lease_token: sagat_application::entropy::Token::from_bytes([1; 32]).expect("token"),
+            expires_at: OffsetDateTime::UNIX_EPOCH,
+            activity: sagat_domain::workflow::ActivityName::parse("payments.charge")
+                .expect("activity"),
+            input: b"{}".to_vec(),
+            input_blob: None,
+            idempotency_key: "scoped-charge".into(),
+            trace_id: None,
+            kind: sagat_application::worker::TaskKind::Forward,
+            target: None,
+        };
+
+        let encoded = lease(&task);
+        assert_eq!(encoded.instance, Some(instance_identity(&instance)));
+        assert_eq!(encoded.step_id, task.step_id.to_string());
+        assert_eq!(encoded.attempt, 3);
+        assert_eq!(encoded.generation, 4);
+    }
+}
+
 fn lease(task: &ClaimedTask) -> pb::TaskLease {
+    let instance = Some(instance_identity(&task.instance));
+    let target_instance = task
+        .target
+        .as_ref()
+        .map(|target| instance_identity(&target.instance));
     pb::TaskLease {
         task_id: task.task_id(),
         run_id: task.run_id.to_string(),
@@ -1034,13 +1455,15 @@ fn lease(task: &ClaimedTask) -> pb::TaskLease {
         target_node: task
             .target
             .as_ref()
-            .map(|t| t.node.to_string())
+            .map(|t| t.instance.node().to_string())
             .unwrap_or_default(),
         target_idempotency_key: task
             .target
             .as_ref()
             .map(|t| t.idempotency_key.clone())
             .unwrap_or_default(),
+        instance,
+        target_instance,
     }
 }
 

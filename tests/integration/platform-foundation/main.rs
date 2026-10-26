@@ -8,6 +8,7 @@ mod constraints;
 mod flows;
 mod least_privilege;
 mod migrations;
+mod runtime_privileges;
 mod runtime_role;
 mod store;
 

@@ -20,6 +20,7 @@ pub mod manifest;
 pub mod mocks;
 pub mod new;
 mod remote;
+mod reveal;
 mod script;
 mod sync;
 pub mod telemetry;
@@ -417,9 +418,37 @@ async fn run_with(
         Command::WorkflowRuns { name, limit } => {
             workflow::runs(&common, env, &name, limit, &mut io).await
         }
-        Command::WorkflowInspect { run } => workflow::inspect(&common, env, &run, &mut io).await,
+        Command::WorkflowInspect {
+            run,
+            values,
+            reveal_pii,
+            sequence,
+        } => {
+            workflow::inspect(
+                &common,
+                env,
+                &workflow::InspectAsk {
+                    run: &run,
+                    values,
+                    reveal_pii,
+                    sequence,
+                },
+                &mut io,
+            )
+            .await
+        }
         Command::WorkflowCancel { run, reason } => {
             workflow::cancel(&common, env, &run, &reason, &mut io).await
+        }
+        Command::WorkflowRerun { run, reason } => {
+            workflow::rerun(&common, env, &run, &reason, &mut io).await
+        }
+        Command::RevealGrantsList => reveal::list(&common, env, &mut io).await,
+        Command::RevealGrant { subject } => {
+            reveal::grant_subject(&common, env, &subject, &mut io).await
+        }
+        Command::RevealRevoke { subject } => {
+            reveal::revoke_subject(&common, env, &subject, &mut io).await
         }
         Command::Doctor { json, nats } => {
             doctor::run(&common, env, json, nats.as_deref(), &mut io).await

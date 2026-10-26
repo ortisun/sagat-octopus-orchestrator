@@ -94,7 +94,7 @@ async fn many_workers_and_many_tasks_never_assign_a_step_twice() {
     let all: Vec<_> = claimed.iter().flatten().collect();
     let unique: BTreeSet<_> = all
         .iter()
-        .map(|t| (t.run_id, t.node.clone(), t.fence.generation))
+        .map(|t| (t.run_id, t.instance.clone(), t.fence.generation))
         .collect();
     assert_eq!(all.len(), unique.len(), "a step was handed out twice");
     assert_eq!(
@@ -495,7 +495,7 @@ async fn a_worker_only_receives_the_activities_it_advertised() {
     let wrong = w.session(&["act.other"]).await;
     assert!(w.poll(&wrong, 10).await.is_empty());
     let right = w.session(&["act.a"]).await;
-    assert_eq!(w.one_task(&right).await.node.as_str(), "a");
+    assert_eq!(w.one_task(&right).await.instance.node().as_str(), "a");
     assert_eq!(w.run_status(run).await, RunStatus::Running);
 }
 

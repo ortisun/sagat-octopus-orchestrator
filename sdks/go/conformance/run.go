@@ -41,12 +41,32 @@ func runJSON(run *client.Run) object {
 	if run.Parent != nil {
 		parent = object{"runId": run.Parent.RunID, "node": run.Parent.Node, "cancelPolicy": run.Parent.CancelPolicy}
 	}
-	return object{
+	observed := object{
 		"runId": run.RunID, "workflowId": run.WorkflowID, "versionId": run.VersionID, "status": string(run.Status), "version": run.Version,
 		"paused": run.Paused, "startedBy": orNull(run.StartedBy), "createdAt": iso(run.CreatedAt), "updatedAt": iso(run.UpdatedAt),
 		"finishedAt": iso(run.FinishedAt), "deadline": iso(run.Deadline), "traceId": orNull(run.TraceID),
 		"correlationId": orNull(run.CorrelationID), "depth": run.Depth, "parent": parent,
 	}
+	// Present only for a run in a chain, so the observations of every other run stay as they were.
+	if run.Chain != nil {
+		observed["chain"] = object{
+			"chainId": run.Chain.ChainID, "segmentIndex": run.Chain.SegmentIndex,
+			"completionKind": orNull(string(run.Chain.CompletionKind)), "successorRunId": orNull(run.Chain.SuccessorRunID),
+		}
+	}
+	// Present only for a run started again from an ended one.
+	if run.RerunOf != "" {
+		observed["rerunOf"] = run.RerunOf
+	}
+	return observed
+}
+
+func chainJSON(chain *client.ChainInspection) object {
+	segments := make([]any, 0, len(chain.Segments))
+	for _, item := range chain.Segments {
+		segments = append(segments, object{"index": item.Index, "runId": item.RunID, "predecessorRunId": orNull(item.PredecessorRunID), "successorRunId": orNull(item.SuccessorRunID)})
+	}
+	return object{"chainId": chain.ChainID, "currentRunId": chain.CurrentRunID, "revision": chain.Revision, "cancelRequested": chain.CancelRequested, "finalOutcome": orNull(chain.FinalOutcome), "segments": segments}
 }
 
 func errorJSON(err error) object {
@@ -98,7 +118,11 @@ func run(scenario, config object) (object, error) {
 			client.WithRetry(sagat.RetryPolicy{InitialDelay: 20 * time.Millisecond, MaxDelay: 200 * time.Millisecond}))
 	}
 	clients := map[string]*client.Client{}
-	for name, key := range map[string]string{"default": "clientToken", "bad": "badToken", "other": "otherTenantToken"} {
+	for name, key := range map[string]string{
+		"default": "clientToken", "bad": "badToken", "other": "otherTenantToken",
+		// Members of the tenant with one role each, the worker identity, and an operator the scenario revokes.
+		"worker": "workerToken", "operator": "operatorToken", "viewer": "viewerToken", "runner": "runnerToken", "revoked": "revokedToken",
+	} {
 		if clients[name], err = clientFor(asString(config[key])); err != nil {
 			return nil, err
 		}
@@ -134,11 +158,35 @@ func run(scenario, config object) (object, error) {
 
 	results := map[string]object{}
 	runOf := func(step object) (string, error) {
-		id, _ := results[asString(step["run"])]["runId"].(string)
+		if page := asString(step["page"]); page != "" {
+			// A segment of a page of listChainRuns, by position.
+			items := asList(results[page]["items"])
+			index := asCount(step["index"])
+			if index < 0 || index >= len(items) || asString(asObject(items[index])["runId"]) == "" {
+				return "", fmt.Errorf("step %s has no segment %d", page, index)
+			}
+			return asString(asObject(items[index])["runId"]), nil
+		}
+		// A rerun answers "newRunId" and no "runId": the step then names the run it started.
+		named := results[asString(step["run"])]
+		id, _ := named["runId"].(string)
+		if id == "" {
+			id, _ = named["newRunId"].(string)
+		}
 		if id == "" {
 			return "", fmt.Errorf("step %s has no run", asString(step["run"]))
 		}
 		return id, nil
+	}
+	approvalOf := func(step object) (string, error) {
+		if id := asString(step["approvalId"]); id != "" {
+			return id, nil
+		}
+		items := asList(results[asString(step["approval"])]["items"])
+		if len(items) == 0 || asString(asObject(items[0])["approvalId"]) == "" {
+			return "", fmt.Errorf("step %s has no approval", asString(step["approval"]))
+		}
+		return asString(asObject(items[0])["approvalId"]), nil
 	}
 
 	for _, key := range sortedHostKeys(hosts) {
@@ -164,7 +212,7 @@ func run(scenario, config object) (object, error) {
 			return nil, fmt.Errorf("step %s: unknown token %q", id, tokenName)
 		}
 		observation := object{"id": id, "op": op}
-		result, err := playStep(ctx, step, op, c, config, unique, p, hosts, startWorker, stopWorker, runOf)
+		result, err := playStep(ctx, step, op, c, config, unique, p, hosts, startWorker, stopWorker, runOf, approvalOf, results)
 		if err != nil {
 			var unexpected *runnerError
 			if errors.As(err, &unexpected) {
@@ -213,10 +261,31 @@ func broken(format string, args ...any) error { return &runnerError{fmt.Sprintf(
 
 func playStep(ctx context.Context, step object, op string, c *client.Client, config object, unique string, p *plan,
 	hosts map[string]*hostEntry, startWorker func(string) (object, error), stopWorker func(*hostEntry, time.Duration),
-	runOf func(object) (string, error)) (object, error) {
+	runOf func(object) (string, error), approvalOf func(object) (string, error), results map[string]object) (object, error) {
 	workflowOf := func(key string) (name, id string) {
 		w := asObject(asObject(config["workflows"])[key])
 		return asString(w["name"]), asString(w["workflowId"])
+	}
+	chainRef := func(value any) (string, error) {
+		text := asString(value)
+		if text == "{{namespaceId}}" {
+			return asString(config["namespaceId"]), nil
+		}
+		field := ""
+		ref := ""
+		if strings.HasPrefix(text, "{{chainId:") && strings.HasSuffix(text, "}}") {
+			field, ref = "runId", strings.TrimSuffix(strings.TrimPrefix(text, "{{chainId:"), "}}")
+		} else if strings.HasPrefix(text, "{{currentRunId:") && strings.HasSuffix(text, "}}") {
+			field, ref = "currentRunId", strings.TrimSuffix(strings.TrimPrefix(text, "{{currentRunId:"), "}}")
+		}
+		if field == "" {
+			return text, nil
+		}
+		resolved := asString(results[ref][field])
+		if resolved == "" {
+			return "", broken("step %s has no %s", ref, field)
+		}
+		return resolved, nil
 	}
 	var callOpts []client.CallOption
 	if key := asString(step["idempotencyKey"]); key != "" {
@@ -252,7 +321,12 @@ func playStep(ctx context.Context, step object, op string, c *client.Client, con
 		if v, ok := step["deadlineInMs"]; ok {
 			opts = append(opts, client.WithDeadlineIn(asMillis(v)))
 		}
-		body := bytes.Repeat([]byte("i"), asInt(step["inputBlobBytes"]))
+		var body []byte
+		if text, ok := step["inputBlobText"].(string); ok {
+			body = []byte(text)
+		} else {
+			body = bytes.Repeat([]byte("i"), asInt(step["inputBlobBytes"]))
+		}
 		digest := sha256.Sum256(body)
 		size := int64(len(body))
 		descriptor, err := c.UploadRunInput(ctx, bytes.NewReader(body), client.UploadRunInputOptions{
@@ -297,16 +371,63 @@ func playStep(ctx context.Context, step object, op string, c *client.Client, con
 				ids = append(ids, run.RunID)
 			}
 		} else {
-			page, err := c.List(ctx, options)
+			// "waitForCount": the runs of a chain are made by the scheduler, so a scenario that needs a hand-off
+			// to have happened waits for it by the count of runs in a status.
+			for attempt := 0; ; attempt++ {
+				page, err := c.List(ctx, options)
+				if err != nil {
+					return nil, err
+				}
+				ids = ids[:0]
+				for _, run := range page.Items {
+					ids = append(ids, run.RunID)
+				}
+				if len(ids) >= asInt(step["waitForCount"]) || attempt >= 100 {
+					break
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+		}
+		// In the order the server gave (newest first): the SDK keeps it, also across pages. "countOnly" answers
+		// the number alone, for runs whose ids are derived from their parent's and so sort anywhere.
+		if only, _ := step["countOnly"].(bool); only {
+			return object{"count": len(ids)}, nil
+		}
+		return object{"items": ids}, nil
+	case "listApprovals":
+		id, err := runOf(step)
+		if err != nil {
+			return nil, broken("%v", err)
+		}
+		var listOpts []client.CallOption
+		if v := asString(step["traceparent"]); v != "" {
+			listOpts = append(listOpts, client.WithTraceparent(v))
+		}
+		page, err := c.ListApprovals(ctx, id, client.ApprovalListOptions{Cursor: asString(step["cursor"]), Limit: asInt(step["limit"])}, listOpts...)
+		if err != nil {
+			return nil, err
+		}
+		for attempt := 0; step["waitForItem"] == true && len(page.Items) == 0 && attempt < 100; attempt++ {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(50 * time.Millisecond):
+			}
+			page, err = c.ListApprovals(ctx, id, client.ApprovalListOptions{Cursor: asString(step["cursor"]), Limit: asInt(step["limit"])}, listOpts...)
 			if err != nil {
 				return nil, err
 			}
-			for _, run := range page.Items {
-				ids = append(ids, run.RunID)
-			}
 		}
-		// In the order the server gave (newest first): the SDK keeps it, also across pages.
-		return object{"items": ids}, nil
+		items := make([]any, 0, len(page.Items))
+		for _, item := range page.Items {
+			path := make([]any, 0, len(item.InstancePath))
+			for _, scope := range item.InstancePath {
+				path = append(path, object{"scopeNodeId": scope.ScopeNodeID, "iterationIndex": scope.IterationIndex})
+			}
+			items = append(items, object{"approvalId": item.ApprovalID, "runId": item.RunID, "nodeId": item.NodeID,
+				"instancePath": path, "status": string(item.Status), "deadline": iso(item.Deadline), "settledAt": iso(item.SettledAt)})
+		}
+		return object{"items": items, "nextCursor": orNull(page.NextCursor)}, nil
 	case "cancel", "operate":
 		id, err := runOf(step)
 		if err != nil {
@@ -335,7 +456,245 @@ func playStep(ctx context.Context, step object, op string, c *client.Client, con
 		if err != nil {
 			return nil, err
 		}
-		return object{"accepted": result.Accepted, "runStatus": orNull(string(result.RunStatus))}, nil
+		observed := object{"accepted": result.Accepted, "runStatus": orNull(string(result.RunStatus))}
+		// "newRunId" only for the action that starts a run, so the other operations observe as they did.
+		if result.NewRunID != "" {
+			observed["newRunId"] = result.NewRunID
+		}
+		return observed, nil
+	case "decideApproval":
+		approvalID, err := approvalOf(step)
+		if err != nil {
+			return nil, broken("%v", err)
+		}
+		request := client.ApprovalDecisionRequest{
+			DecisionKey: asString(step["decisionKey"]), Decision: client.ApprovalDecision(asString(step["decision"])), ReasonCode: asString(step["reasonCode"]),
+		}
+		opts := []client.CallOption{}
+		if value := asString(step["traceparent"]); value != "" {
+			opts = append(opts, client.WithTraceparent(value))
+		}
+		receipt, err := c.DecideApproval(ctx, approvalID, request, opts...)
+		if err != nil {
+			return nil, err
+		}
+		return object{
+			"receiptId": receipt.ReceiptID, "approvalId": receipt.ApprovalID, "decisionKey": receipt.DecisionKey,
+			"decision": string(receipt.Decision), "reasonCode": orNull(receipt.ReasonCode), "actor": receipt.Actor,
+			"decidedAt": iso(receipt.DecidedAt), "outcomeSequence": receipt.OutcomeSequence, "replayed": receipt.Replayed,
+		}, nil
+	case "query":
+		id, err := runOf(step)
+		if err != nil {
+			return nil, broken("%v", err)
+		}
+		opts := callOpts
+		if value := asString(step["traceparent"]); value != "" {
+			opts = append(opts, client.WithTraceparent(value))
+		}
+		result, err := c.Query(ctx, id, asString(step["name"]), payloadOf(step["args"]), opts...)
+		if err != nil {
+			return nil, err
+		}
+		return object{"runVersion": result.RunVersion, "stateRevision": result.StateRevision, "result": result.Result}, nil
+	case "queryChain":
+		query := client.ChainQueryRequest{Args: payloadOf(step["args"])}
+		if value := asString(step["expectedRunId"]); value != "" {
+			expectedRunID, err := chainRef(value)
+			if err != nil {
+				return nil, broken("%v", err)
+			}
+			query.ExpectedRunID = expectedRunID
+		}
+		namespaceID, err := chainRef(step["namespaceId"])
+		if err != nil {
+			return nil, broken("%v", err)
+		}
+		chainID, err := chainRef(step["chainId"])
+		if err != nil {
+			return nil, broken("%v", err)
+		}
+		opts := callOpts
+		if value := asString(step["traceparent"]); value != "" {
+			opts = append(opts, client.WithTraceparent(value))
+		}
+		result, err := c.QueryChain(ctx, namespaceID, chainID, asString(step["name"]), query, opts...)
+		if err != nil {
+			return nil, err
+		}
+		return object{"runId": result.RunID, "runVersion": result.RunVersion, "stateRevision": result.StateRevision, "result": result.Result}, nil
+	case "update":
+		id, err := runOf(step)
+		if err != nil {
+			return nil, broken("%v", err)
+		}
+		request := client.UpdateRequest{UpdateKey: asString(step["updateKey"]), Args: payloadOf(step["args"])}
+		if value, ok := step["expectedStateRevision"]; ok {
+			revision := int64(asInt(value))
+			request.ExpectedStateRevision = &revision
+		}
+		opts := callOpts
+		if value := asString(step["traceparent"]); value != "" {
+			opts = append(opts, client.WithTraceparent(value))
+		}
+		result, err := c.Update(ctx, id, asString(step["name"]), request, opts...)
+		if err != nil {
+			return nil, err
+		}
+		return object{
+			"operation": result.Operation, "updateKey": result.UpdateKey, "status": result.Status, "result": result.Result,
+			"beforeStateRevision": result.BeforeStateRevision, "afterStateRevision": result.AfterStateRevision,
+			"runVersion": result.RunVersion, "replayed": result.Replayed,
+		}, nil
+	case "updateChain":
+		namespaceID, err := chainRef(step["namespaceId"])
+		if err != nil {
+			return nil, broken("%v", err)
+		}
+		chainID, err := chainRef(step["chainId"])
+		if err != nil {
+			return nil, broken("%v", err)
+		}
+		request := client.ChainUpdateRequest{UpdateKey: asString(step["updateKey"]), Args: payloadOf(step["args"])}
+		if value := asString(step["expectedRunId"]); value != "" {
+			request.ExpectedRunID, err = chainRef(value)
+			if err != nil {
+				return nil, broken("%v", err)
+			}
+		}
+		if value, ok := step["expectedStateRevision"]; ok {
+			revision := int64(asInt(value))
+			request.ExpectedStateRevision = &revision
+		}
+		opts := callOpts
+		if value := asString(step["traceparent"]); value != "" {
+			opts = append(opts, client.WithTraceparent(value))
+		}
+		result, err := c.UpdateChain(ctx, namespaceID, chainID, asString(step["name"]), request, opts...)
+		if err != nil {
+			return nil, err
+		}
+		return object{
+			"runId": result.RunID, "operation": result.Operation, "updateKey": result.UpdateKey,
+			"status": result.Status, "result": result.Result,
+			"beforeStateRevision": result.BeforeStateRevision, "afterStateRevision": result.AfterStateRevision,
+			"runVersion": result.RunVersion, "replayed": result.Replayed,
+		}, nil
+	case "listChainRuns":
+		namespaceID, err := chainRef(step["namespaceId"])
+		if err != nil {
+			return nil, err
+		}
+		chainID, err := chainRef(step["chainId"])
+		if err != nil {
+			return nil, err
+		}
+		options := client.ChainRunListOptions{}
+		options.Limit = asCount(step["limit"])
+		options.Cursor = asString(step["cursor"])
+		if strings.HasPrefix(options.Cursor, "{{nextCursor:") && strings.HasSuffix(options.Cursor, "}}") {
+			ref := strings.TrimSuffix(strings.TrimPrefix(options.Cursor, "{{nextCursor:"), "}}")
+			options.Cursor = asString(results[ref]["nextCursor"])
+			if options.Cursor == "" {
+				return nil, broken("step %s has no next page", ref)
+			}
+		}
+		opts := callOpts
+		if value := asString(step["traceparent"]); value != "" {
+			opts = append(opts, client.WithTraceparent(value))
+		}
+		page, err := c.ListChainRuns(ctx, namespaceID, chainID, options, opts...)
+		if err != nil {
+			return nil, err
+		}
+		items := make([]any, 0, len(page.Items))
+		for _, item := range page.Items {
+			items = append(items, object{
+				"index": item.Index, "runId": item.RunID, "status": string(item.Status),
+				"completionKind": orNull(string(item.CompletionKind)), "predecessorRunId": orNull(item.PredecessorRunID),
+				"successorRunId": orNull(item.SuccessorRunID), "createdAt": iso(item.CreatedAt), "finishedAt": iso(item.FinishedAt),
+			})
+		}
+		return object{"items": items, "nextCursor": orNull(page.NextCursor)}, nil
+	case "inspectChain":
+		namespaceID, err := chainRef(step["namespaceId"])
+		if err != nil {
+			return nil, err
+		}
+		chainID, err := chainRef(step["chainId"])
+		if err != nil {
+			return nil, err
+		}
+		opts := callOpts
+		if value := asString(step["traceparent"]); value != "" {
+			opts = append(opts, client.WithTraceparent(value))
+		}
+		result, err := c.InspectChain(ctx, namespaceID, chainID, opts...)
+		if err != nil {
+			return nil, err
+		}
+		if wait := asString(step["waitForHeadChange"]); wait != "" {
+			previous, err := chainRef(wait)
+			if err != nil {
+				return nil, err
+			}
+			for attempt := 0; result.CurrentRunID == previous && attempt < 100; attempt++ {
+				time.Sleep(50 * time.Millisecond)
+				result, err = c.InspectChain(ctx, namespaceID, chainID, opts...)
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+		return chainJSON(result), nil
+	case "signalChain":
+		namespaceID, err := chainRef(step["namespaceId"])
+		if err != nil {
+			return nil, err
+		}
+		chainID, err := chainRef(step["chainId"])
+		if err != nil {
+			return nil, err
+		}
+		expectedRunID, err := chainRef(step["expectedRunId"])
+		if err != nil {
+			return nil, err
+		}
+		opts := callOpts
+		if value := asString(step["traceparent"]); value != "" {
+			opts = append(opts, client.WithTraceparent(value))
+		}
+		result, err := c.SignalChain(ctx, namespaceID, chainID, asString(step["name"]), payloadOf(step["payload"]), client.ChainCommand{ExpectedRunID: expectedRunID}, opts...)
+		if err != nil {
+			return nil, err
+		}
+		delivered := make([]any, len(result.DeliveredTo))
+		for i, value := range result.DeliveredTo {
+			delivered[i] = value
+		}
+		return object{"deliveredTo": delivered}, nil
+	case "cancelChain":
+		namespaceID, err := chainRef(step["namespaceId"])
+		if err != nil {
+			return nil, err
+		}
+		chainID, err := chainRef(step["chainId"])
+		if err != nil {
+			return nil, err
+		}
+		expectedRunID, err := chainRef(step["expectedRunId"])
+		if err != nil {
+			return nil, err
+		}
+		opts := callOpts
+		if value := asString(step["traceparent"]); value != "" {
+			opts = append(opts, client.WithTraceparent(value))
+		}
+		err = c.CancelChain(ctx, namespaceID, chainID, asString(step["reason"]), client.ChainCommand{ExpectedRunID: expectedRunID}, opts...)
+		if err != nil {
+			return nil, err
+		}
+		return object{"accepted": true}, nil
 	case "signal":
 		id, err := runOf(step)
 		if err != nil {
@@ -372,6 +731,24 @@ func playStep(ctx context.Context, step object, op string, c *client.Client, con
 			return nil, err
 		}
 		return runJSON(run), nil
+	case "waitForChainCompletion":
+		namespaceID, err := chainRef(step["namespaceId"])
+		if err != nil {
+			return nil, err
+		}
+		chainID, err := chainRef(step["chainId"])
+		if err != nil {
+			return nil, err
+		}
+		timeout := 60 * time.Second
+		if v, ok := step["timeoutMs"]; ok {
+			timeout = asMillis(v)
+		}
+		chain, err := c.WaitForChainCompletion(ctx, namespaceID, chainID, client.WaitTimeout(timeout), client.PollInterval(100*time.Millisecond))
+		if err != nil {
+			return nil, err
+		}
+		return chainJSON(chain), nil
 	case "events":
 		id, err := runOf(step)
 		if err != nil {

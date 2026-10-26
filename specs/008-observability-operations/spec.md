@@ -88,7 +88,7 @@ Diagnose and operate runs, steps, external integration, resources and Sagas from
 
 ## Success Criteria (measurable)
 
-- **SC-008-001:** Operator diagnoses a failure in fewer than N interactions during a UX test, with run journal and trace correlated.
+- **SC-008-001:** Operator diagnoses a failure in fewer than N interactions during a UX test, with run journal and trace correlated. **N = 10** (owner decision 2026-10-16; about twice the shortest path), so a pass needs at most 9 counted interactions.
 - **SC-008-002:** 100% of scenarios US01..US04 pass in a reproducible automated suite.
 - **SC-008-003:** no violation of the Constitution's gates and no silent loss of persisted state.
 - **SC-008-004:** critical errors expose `code`, `trace_id` and remediation without leaking payload/secrets.
@@ -126,3 +126,19 @@ reads; `worker:manage` additionally gates drain/resume. Confirmation must explai
 applies to every session of that identity in this namespace and prevents new claims without
 cancelling current attempts. Require the existing audited justification. Namespace/session changes
 must discard forms and stale results; failures must remain actionable without fabricated health.
+
+
+## Approved workflow-primitives dependency (2026-10-14)
+
+[ADR-0030](../../docs/adr/ADR-0030-structured-instances-and-continuation-chains.md) and
+[ADR-0031](../../docs/adr/ADR-0031-declared-operation-result-disclosure.md) accept the feature-014
+architecture and separate declared-result disclosure policy.
+[ADR-0032](../../docs/adr/ADR-0032-additive-workflow-ir.md) keeps the workflow IR at v1 and
+supersedes the earlier separate-revision allocation. Journal-derived projections may include scoped instance metadata, routes and chain links, with lag and bounded primitive metrics. Payload/state/argument/result values remain absent from logs, audit, spans, graph and SSE; runtime truth never comes from ephemeral telemetry.
+
+This approves the described dependency for implementation, not a runtime guarantee. Canonical
+contracts, migration/replay, tenant/fault tests and applicable five-SDK evidence remain the
+feature-014 release gates; existing feature behavior stays supported.
+## Approved dependent delivery: database connections
+
+Feature [017](../017-database-connections/spec.md) and [ADR-0035](../../docs/adr/ADR-0035-database-connections-and-managed-execution.md) were approved on 2026-10-16. Its [plan](../017-database-connections/plan.md) defines the bounded extension to shared contracts, admission/leases, effects, SDKs, Studio, telemetry, secret-provider/security and immutable revisions. Existing transactional, tenant and general payload-inspection guarantees remain binding. Track implementation and new runtime evidence in feature 017; this dependency note does not mark its requirements complete.

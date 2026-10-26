@@ -1,9 +1,9 @@
 //! Blobs over the worker protocol (FR-002-008, ADR-0023): the streams, the limits on transfers and
 //! the way a blob failure reaches a worker.
 //!
-//! A blob is never held in memory by the server: an upload is a stream of chunks that goes straight
-//! to the store while the use case counts and hashes it, a download is the store's stream cut into
-//! chunks. What bounds the work is the number of transfers at once and the time one may take.
+//! Ordinary uploads stream to storage while the use case counts and hashes bytes. Managed database
+//! results have a separate hard bound (4 MiB maximum) and are collected for pre-storage credential
+//! scanning. Both paths hold a transfer permit and enforce a finite deadline.
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -181,6 +181,37 @@ pub(crate) fn upload_body(
     (Box::pin(body), flags)
 }
 
+/// Bounded exception for managed results: no unscanned prefix can enter object storage.
+/// Reading through EOF is mandatory so the blob service's digest verifier can reject corruption.
+pub(crate) async fn collect_database_result(
+    mut body: ByteStream,
+    limit: usize,
+    timeout: Duration,
+) -> Result<zeroize::Zeroizing<Vec<u8>>, Status> {
+    if limit == 0 || limit > sagat_domain::database::DatabaseLimits::MAX.max_result_bytes as usize {
+        return Err(invalid_upload("invalid managed result limit"));
+    }
+    tokio::time::timeout(timeout, async {
+        let mut content = zeroize::Zeroizing::new(Vec::new());
+        while let Some(chunk) = body.next().await {
+            let chunk = chunk.map_err(|error| match error {
+                BlobIoError::Corrupt => data_loss(),
+                BlobIoError::TooLarge => invalid_upload("managed database result is too large"),
+                BlobIoError::Interrupted => {
+                    invalid_upload("managed result transfer was interrupted")
+                }
+            })?;
+            if chunk.len() > limit.saturating_sub(content.len()) {
+                return Err(invalid_upload("managed database result is too large"));
+            }
+            content.extend_from_slice(&chunk);
+        }
+        Ok(content)
+    })
+    .await
+    .map_err(|_| to_status(&ApiError::request_timeout()))?
+}
+
 // -------------------------------------------------------------------------------- downloading
 
 /// A download: the header, then the store's stream in chunks of at most [`BLOB_CHUNK_BYTES`]. It
@@ -355,6 +386,55 @@ pub(crate) fn not_configured() -> Status {
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn managed_collection_requires_bounded_verified_eof_before_returning_bytes() {
+        let parts = [Ok(Bytes::from_static(b"ab")), Ok(Bytes::from_static(b"cd"))];
+        let content = collect_database_result(
+            Box::pin(tokio_stream::iter(parts)),
+            4,
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("exact bound");
+        assert_eq!(content.as_slice(), b"abcd");
+        let parts = [
+            Ok(Bytes::from_static(b"ab")),
+            Ok(Bytes::from_static(b"cde")),
+        ];
+        assert!(
+            collect_database_result(
+                Box::pin(tokio_stream::iter(parts)),
+                4,
+                Duration::from_secs(1)
+            )
+            .await
+            .is_err()
+        );
+        let parts = [Ok(Bytes::from_static(b"abcd")), Err(BlobIoError::Corrupt)];
+        assert_eq!(
+            collect_database_result(
+                Box::pin(tokio_stream::iter(parts)),
+                4,
+                Duration::from_secs(1)
+            )
+            .await
+            .expect_err("must consume digest verdict")
+            .code(),
+            tonic::Code::DataLoss
+        );
+        assert_eq!(
+            collect_database_result(
+                Box::pin(tokio_stream::pending()),
+                4,
+                Duration::from_millis(1)
+            )
+            .await
+            .expect_err("stalled producer")
+            .code(),
+            tonic::Code::Unavailable
+        );
+    }
 
     #[tokio::test]
     async fn a_panicked_download_producer_cannot_look_like_verified_eof() {

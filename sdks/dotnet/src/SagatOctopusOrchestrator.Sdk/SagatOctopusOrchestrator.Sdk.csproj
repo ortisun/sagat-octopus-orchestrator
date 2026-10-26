@@ -8,7 +8,7 @@
 
     <!-- NuGet package -->
     <PackageId>SagatOctopusOrchestrator.Sdk</PackageId>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <Authors>Sagat Octopus Orchestrator</Authors>
     <Description>C#/.NET SDK for the Sagat Octopus Orchestrator: a client for runs and events, a worker host for activities, sagas and reconciliations (gRPC), typed builders of the workflow IR, and Microsoft.Extensions.DependencyInjection / Hosting integration.</Description>
     <PackageTags>workflow;saga;orchestration;durable;grpc;sdk</PackageTags>

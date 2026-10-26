@@ -1,11 +1,12 @@
 //! Workflow definitions: the typed form of the IR (`workflow.schema.json`).
 //!
-//! A [`WorkflowDefinition`] can only be built through [`WorkflowDefinition::new`], which proves the
-//! properties the engine relies on instead of re-checking them at run time:
+//! The validating constructors of [`WorkflowDefinition`] prove structural properties before a
+//! definition can reach execution. Structured definitions additionally validate named bodies;
+//! constructing one does not advertise that its runtime capabilities are available:
 //!
 //! * every node id is unique and every reference points at an existing node;
-//! * the graph is acyclic (loops are a separate, bounded construct that is not part of this
-//!   version) and every node is reachable from the entrypoint;
+//! * every local graph is acyclic and reachable, and named-body references are nonrecursive;
+//! * bodies have one explicit return, stay closed and share the definition/nesting budgets;
 //! * the branches of a `parallel` node are single-entry regions that do not overlap, do not leave
 //!   the region and do not contain a workflow `end`, so a join is well defined;
 //! * a `saga` node owns a closed region like a `parallel` node does, so the steps that a failure
@@ -19,10 +20,17 @@
 //! Wire formats (JSON) are an adapter concern: this module holds no serialization, and expressions
 //! are opaque text evaluated by an adapter (`FR-002-001`, ADR-0003).
 
+mod collection_shape;
+pub use collection_shape::{CollectionSuccessShapeError, LeafCollectionSuccessShape};
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::time::Duration;
 
+use crate::database::{
+    DatabaseOperation, MANAGED_DATABASE_ACTIVITY, MANAGED_DATABASE_PREFIX, OperationKind,
+};
+use crate::execution::{ApprovalPolicy, ExecutionInstanceId};
 use crate::identity::{Slug, clip};
 use crate::saga::{EffectPolicy, NodeOrigin, OnCompensationFailure, SagaCancelPolicy};
 use crate::secrets::{MAX_DECLARED_SECRETS, SecretName};
@@ -32,6 +40,8 @@ use crate::triggers::{MAX_TRIGGERS, Trigger};
 pub const MAX_NODES: usize = 10_000;
 /// A `parallel` node may fan out to at most this many branches.
 pub const MAX_BRANCHES: usize = 256;
+/// A switch evaluates no more than this many predicates in declaration order.
+pub const MAX_SWITCH_CASES: usize = 32;
 /// A workflow may contain at most this many `parallel` nodes. Validating one costs time and memory
 /// proportional to its size, so this bounds the cost of a definition to this many times the size of
 /// the graph (a document of 650 KB with 5000 nested parallels once cost 17 s and 1.1 GB).
@@ -55,6 +65,8 @@ const MAX_EXPRESSION_LEN: usize = 2048;
 /// Typed errors of the definition model. Messages echo at most a clipped fragment of the input.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum WorkflowError {
+    #[error("invalid managed database node or reserved activity name")]
+    InvalidDatabaseNode,
     #[error("invalid node id '{0}'")]
     InvalidNodeId(String),
     #[error("invalid activity name '{0}'")]
@@ -63,6 +75,8 @@ pub enum WorkflowError {
     InvalidEventType(String),
     #[error("invalid expression: {0}")]
     InvalidExpression(ExpressionViolation),
+    #[error("node '{node}': expression exceeds the supported limit of {limit} UTF-8 bytes")]
+    ExpressionByteLimit { node: NodeId, limit: usize },
     #[error("a workflow needs at least one node")]
     NoNodes,
     #[error("a workflow may have at most {MAX_NODES} nodes, found {0}")]
@@ -125,6 +139,24 @@ pub enum WorkflowError {
     TooManyTriggers(usize),
     #[error("the workflow declares the same trigger twice")]
     DuplicateTrigger,
+    #[error("node '{node}': invalid structured scope ({reason})")]
+    InvalidScope { node: NodeId, reason: &'static str },
+    #[error("body '{0}' is defined more than once")]
+    DuplicateBody(NodeId),
+    #[error("node '{node}' refers to unknown body '{body}'")]
+    UnknownBody { node: NodeId, body: NodeId },
+    #[error("body '{0}' is not referenced by the workflow")]
+    UnreachableBody(NodeId),
+    #[error("body references contain a cycle through '{0}'")]
+    RecursiveBody(NodeId),
+    #[error("body nesting exceeds the configured depth of {0}")]
+    BodyDepthExceeded(u8),
+    #[error("invalid workflow limit: {0}")]
+    InvalidWorkflowLimit(&'static str),
+    #[error("invalid continuation policy: {0}")]
+    InvalidContinuationPolicy(&'static str),
+    #[error("switch node '{node}': {reason}")]
+    InvalidSwitch { node: NodeId, reason: &'static str },
 }
 
 /// Why an expression was rejected.
@@ -564,7 +596,37 @@ impl std::str::FromStr for CancelPolicy {
     }
 }
 
-/// What a node does (the node kinds of version 1 that this engine executes).
+/// A named, ordered predicate and its target within one switch node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitchCase {
+    id: NodeId,
+    when: Expression,
+    target: NodeId,
+}
+
+impl SwitchCase {
+    #[must_use]
+    pub const fn new(id: NodeId, when: Expression, target: NodeId) -> Self {
+        Self { id, when, target }
+    }
+
+    #[must_use]
+    pub const fn id(&self) -> &NodeId {
+        &self.id
+    }
+
+    #[must_use]
+    pub const fn when(&self) -> &Expression {
+        &self.when
+    }
+
+    #[must_use]
+    pub const fn target(&self) -> &NodeId {
+        &self.target
+    }
+}
+
+/// What a definition node does. Some kinds require a closed body and runtime support.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeKind {
     /// Durable external task executed by a worker.
@@ -600,6 +662,18 @@ pub enum NodeKind {
         if_true: NodeId,
         if_false: NodeId,
     },
+    /// Chooses the first true case or its mandatory default.
+    Switch {
+        cases: Vec<SwitchCase>,
+        default: NodeId,
+    },
+    /// Requests one authorized human decision, then follows its recorded outcome.
+    Approval {
+        policy: ApprovalPolicy,
+        on_approve: NodeId,
+        on_reject: NodeId,
+        on_expire: NodeId,
+    },
     /// Fans out to `branches` and joins them according to `join`.
     Parallel {
         branches: Vec<NodeId>,
@@ -626,6 +700,40 @@ pub enum NodeKind {
         /// What a cancellation or a deadline does to the saga.
         cancel_policy: SagaCancelPolicy,
     },
+    /// Invokes one closed body for each captured collection element.
+    ForEach {
+        items: Expression,
+        body: NodeId,
+        result: Expression,
+        max_items: u32,
+        max_concurrency: u16,
+    },
+    /// Evaluates the condition before each sequential body iteration.
+    While {
+        condition: Expression,
+        body: NodeId,
+        initial: Expression,
+        carry: Expression,
+        max_iterations: u32,
+        delay: Option<Duration>,
+    },
+    /// Executes one sequential body iteration before evaluating the stop condition.
+    RepeatUntil {
+        condition: Expression,
+        body: NodeId,
+        initial: Expression,
+        carry: Expression,
+        max_iterations: u32,
+        delay: Option<Duration>,
+    },
+    /// Returns a value from a named body; never a workflow terminal.
+    Return { result: Expression },
+    /// Ends this segment and selects the immutable input and optional declared state of its
+    /// same-version successor.
+    ContinueAsNew {
+        input: Expression,
+        state: Option<Expression>,
+    },
     /// Closes the workflow successfully.
     End { output: Option<Expression> },
 }
@@ -639,10 +747,17 @@ impl NodeKind {
             Self::Timer { .. } => "timer",
             Self::WaitEvent { .. } => "waitEvent",
             Self::Condition { .. } => "condition",
+            Self::Switch { .. } => "switch",
+            Self::Approval { .. } => "approval",
             Self::Parallel { .. } => "parallel",
             Self::Child { .. } => "child",
             Self::Saga { .. } => "saga",
             Self::End { .. } => "end",
+            Self::ForEach { .. } => "forEach",
+            Self::While { .. } => "while",
+            Self::RepeatUntil { .. } => "repeatUntil",
+            Self::Return { .. } => "return",
+            Self::ContinueAsNew { .. } => "continueAsNew",
         }
     }
 }
@@ -657,6 +772,7 @@ pub struct Node {
     timeout: Option<Duration>,
     effect: EffectPolicy,
     origin: NodeOrigin,
+    database: Option<DatabaseOperation>,
 }
 
 impl Node {
@@ -670,7 +786,41 @@ impl Node {
             timeout: None,
             effect: EffectPolicy::NONE,
             origin: NodeOrigin::Declared,
+            database: None,
         }
+    }
+
+    /// Managed operations always use one attempt. An ambiguous write requires manual review.
+    #[must_use]
+    pub fn database(id: NodeId, operation: DatabaseOperation) -> Self {
+        let effect = if operation.kind == OperationKind::Execute {
+            EffectPolicy {
+                high_risk: true,
+                irreversible: true,
+                ..EffectPolicy::NONE
+            }
+        } else {
+            EffectPolicy::NONE
+        };
+        let mut node = Self::new(
+            id,
+            NodeKind::Activity {
+                activity: ActivityName(MANAGED_DATABASE_ACTIVITY.to_owned()),
+                retry: RetryPolicy::no_retry(),
+                compensate_with: None,
+                reconcile_with: None,
+                idempotency_template: None,
+                secrets: Vec::new(),
+            },
+        )
+        .with_effect(effect);
+        node.database = Some(operation);
+        node
+    }
+
+    #[must_use]
+    pub const fn database_operation(&self) -> Option<&DatabaseOperation> {
+        self.database.as_ref()
     }
 
     /// What the author says about the effect of this activity (irreversible, high risk, how its
@@ -768,6 +918,20 @@ impl Node {
                 out.push(if_true);
                 out.push(if_false);
             }
+            NodeKind::Switch { cases, default } => {
+                out.extend(cases.iter().map(SwitchCase::target));
+                out.push(default);
+            }
+            NodeKind::Approval {
+                on_approve,
+                on_reject,
+                on_expire,
+                ..
+            } => {
+                out.push(on_approve);
+                out.push(on_reject);
+                out.push(on_expire);
+            }
             NodeKind::Parallel { branches, .. } => out.extend(branches.iter()),
             NodeKind::Saga { begin, .. } => out.push(begin),
             NodeKind::WaitEvent { on_timeout, .. } => out.extend(on_timeout.iter()),
@@ -805,21 +969,178 @@ impl fmt::Display for DefinitionWarning {
     }
 }
 
-/// A validated, immutable workflow graph.
+/// Shared lifetime admission and structural nesting ceilings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkflowLimits {
+    max_instances: u32,
+    max_depth: u8,
+}
+
+/// Finite lifetime bounds captured by every run in a continuation chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContinuationPolicy {
+    max_segments: u16,
+    timeout: Duration,
+}
+
+impl ContinuationPolicy {
+    /// # Errors
+    /// Rejects a segment limit outside 1..=10000 or a timeout outside 1 ms..=366 days.
+    pub fn new(max_segments: u16, timeout: Duration) -> Result<Self, WorkflowError> {
+        if !(1..=10_000).contains(&max_segments) {
+            return Err(WorkflowError::InvalidContinuationPolicy(
+                "maxSegments must be in 1..=10000",
+            ));
+        }
+        if timeout < Duration::from_millis(1) || timeout > MAX_WAIT {
+            return Err(WorkflowError::InvalidContinuationPolicy(
+                "timeout must be in 1..=31622400000 milliseconds",
+            ));
+        }
+        Ok(Self {
+            max_segments,
+            timeout,
+        })
+    }
+
+    #[must_use]
+    pub const fn max_segments(self) -> u16 {
+        self.max_segments
+    }
+
+    #[must_use]
+    pub const fn timeout(self) -> Duration {
+        self.timeout
+    }
+}
+
+impl WorkflowLimits {
+    /// # Errors
+    /// Rejects an instance ceiling outside 1..=100000 or depth outside 1..=8.
+    pub fn new(max_instances: u32, max_depth: u8) -> Result<Self, WorkflowError> {
+        if !(1..=100_000).contains(&max_instances) {
+            return Err(WorkflowError::InvalidWorkflowLimit(
+                "maxInstances must be in 1..=100000",
+            ));
+        }
+        if !(1..=8).contains(&max_depth) {
+            return Err(WorkflowError::InvalidWorkflowLimit(
+                "maxDepth must be in 1..=8",
+            ));
+        }
+        Ok(Self {
+            max_instances,
+            max_depth,
+        })
+    }
+
+    #[must_use]
+    pub const fn max_instances(self) -> u32 {
+        self.max_instances
+    }
+
+    #[must_use]
+    pub const fn max_depth(self) -> u8 {
+        self.max_depth
+    }
+}
+
+impl Default for WorkflowLimits {
+    fn default() -> Self {
+        Self {
+            max_instances: 100_000,
+            max_depth: 8,
+        }
+    }
+}
+
+/// A locally validated closed body. References to other bodies are checked with the workflow.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BodyDefinition {
+    name: NodeId,
+    graph: DefinitionGraph,
+}
+
+impl BodyDefinition {
+    /// # Errors
+    /// Rejects graph cycles/escapes, workflow ends and missing/multiple or nonterminal returns.
+    pub fn new(name: NodeId, entrypoint: NodeId, nodes: Vec<Node>) -> Result<Self, WorkflowError> {
+        Ok(Self {
+            name,
+            graph: DefinitionGraph::new(entrypoint, nodes, GraphKind::Body)?,
+        })
+    }
+
+    #[must_use]
+    pub const fn name(&self) -> &NodeId {
+        &self.name
+    }
+
+    #[must_use]
+    pub const fn entrypoint(&self) -> &NodeId {
+        &self.graph.entrypoint
+    }
+
+    #[must_use]
+    pub fn node(&self, id: &NodeId) -> Option<&Node> {
+        self.graph.nodes.get(id)
+    }
+
+    pub fn nodes(&self) -> impl Iterator<Item = &Node> {
+        self.graph
+            .nodes
+            .values()
+            .filter(|node| node.origin == NodeOrigin::Declared)
+    }
+
+    pub fn all_nodes(&self) -> impl Iterator<Item = &Node> {
+        self.graph.nodes.values()
+    }
+
+    #[must_use]
+    pub fn enclosing_scope(&self, node: &NodeId) -> Option<&Scope> {
+        self.graph.scopes.get(node)
+    }
+
+    /// Every region around `node` in this body, innermost first.
+    pub fn scope_chain<'a>(&'a self, node: &NodeId) -> impl Iterator<Item = &'a Scope> + use<'a> {
+        let mut current = self.graph.scopes.get(node);
+        std::iter::from_fn(move || {
+            let scope = current?;
+            current = self.graph.scopes.get(scope.owner());
+            Some(scope)
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DefinitionGraph {
+    entrypoint: NodeId,
+    nodes: BTreeMap<NodeId, Node>,
+    declared: usize,
+    regions: BTreeMap<NodeId, Vec<BTreeSet<NodeId>>>,
+    saga_regions: BTreeMap<NodeId, BTreeSet<NodeId>>,
+    scopes: BTreeMap<NodeId, Scope>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GraphKind {
+    Legacy,
+    Structured,
+    StructuredContinuation,
+    Body,
+}
+
+/// An immutable workflow graph and, for a structured revision, its closed named bodies.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowDefinition {
     name: Slug,
-    entrypoint: NodeId,
-    nodes: BTreeMap<NodeId, Node>,
-    /// How many of `nodes` the author wrote (the rest are derived).
+    graph: DefinitionGraph,
     declared: usize,
-    /// For every `parallel` node, the node set of each branch (index-aligned with `branches`).
-    regions: BTreeMap<NodeId, Vec<BTreeSet<NodeId>>>,
-    /// For every `saga` node, the node set of its scope.
-    saga_regions: BTreeMap<NodeId, BTreeSet<NodeId>>,
-    /// The innermost region (of a `parallel` or a `saga` node) that contains a node.
-    scopes: BTreeMap<NodeId, Scope>,
-    /// What starts a run other than somebody asking (feature 004).
+    bodies: BTreeMap<NodeId, BodyDefinition>,
+    limits: WorkflowLimits,
+    structured: bool,
+    continuation_policy: Option<ContinuationPolicy>,
     triggers: Vec<Trigger>,
 }
 
@@ -843,82 +1164,189 @@ impl Scope {
 }
 
 impl WorkflowDefinition {
-    /// Validates `nodes` and builds the definition.
+    /// Validates an existing root-only definition without changing its accepted forms.
     ///
     /// # Errors
-    /// The first violated rule, as a [`WorkflowError`].
+    /// Returns the first violated graph rule or a structured kind in a legacy definition.
     pub fn new(name: Slug, entrypoint: NodeId, nodes: Vec<Node>) -> Result<Self, WorkflowError> {
-        if nodes.is_empty() {
-            return Err(WorkflowError::NoNodes);
+        let graph = DefinitionGraph::new(entrypoint, nodes, GraphKind::Legacy)?;
+        Ok(Self {
+            name,
+            declared: graph.declared,
+            graph,
+            bodies: BTreeMap::new(),
+            limits: WorkflowLimits::default(),
+            structured: false,
+            continuation_policy: None,
+            triggers: Vec::new(),
+        })
+    }
+
+    /// Validates a structured definition without enabling its execution or publication.
+    ///
+    /// # Errors
+    /// Rejects invalid graphs, missing/recursive/unreachable bodies, depth or aggregate ceilings.
+    pub fn new_structured(
+        name: Slug,
+        entrypoint: NodeId,
+        nodes: Vec<Node>,
+        bodies: Vec<BodyDefinition>,
+        limits: WorkflowLimits,
+    ) -> Result<Self, WorkflowError> {
+        Self::new_structured_inner(
+            name,
+            entrypoint,
+            nodes,
+            bodies,
+            limits,
+            GraphKind::Structured,
+            None,
+        )
+    }
+
+    /// Validates a structured definition containing a top-level continuation boundary.
+    ///
+    /// # Errors
+    /// Rejects an invalid graph, a continuation in a nested region, or a policy without a
+    /// continuation boundary.
+    pub fn new_structured_with_continuation(
+        name: Slug,
+        entrypoint: NodeId,
+        nodes: Vec<Node>,
+        bodies: Vec<BodyDefinition>,
+        limits: WorkflowLimits,
+        policy: ContinuationPolicy,
+    ) -> Result<Self, WorkflowError> {
+        Self::new_structured_inner(
+            name,
+            entrypoint,
+            nodes,
+            bodies,
+            limits,
+            GraphKind::StructuredContinuation,
+            Some(policy),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_structured_inner(
+        name: Slug,
+        entrypoint: NodeId,
+        nodes: Vec<Node>,
+        bodies: Vec<BodyDefinition>,
+        limits: WorkflowLimits,
+        kind: GraphKind,
+        continuation_policy: Option<ContinuationPolicy>,
+    ) -> Result<Self, WorkflowError> {
+        // Attempt credential pins and managed executor authorization are root-only. A typed
+        // caller must obey the same composition boundary as the public IR codec (ADR-0036).
+        let managed_root = nodes.iter().any(|node| node.database_operation().is_some());
+        let managed_body = bodies
+            .iter()
+            .any(|body| body.nodes().any(|node| node.database_operation().is_some()));
+        let scoped_root = nodes.iter().any(|node| {
+            matches!(
+                node.kind(),
+                NodeKind::ForEach { .. } | NodeKind::While { .. } | NodeKind::RepeatUntil { .. }
+            )
+        });
+        if managed_body || (managed_root && (scoped_root || continuation_policy.is_some())) {
+            return Err(WorkflowError::InvalidDatabaseNode);
         }
-        if nodes.len() > MAX_NODES {
-            return Err(WorkflowError::TooManyNodes(nodes.len()));
+        let graph = DefinitionGraph::new(entrypoint, nodes, kind)?;
+        if kind == GraphKind::StructuredContinuation
+            && !graph
+                .nodes
+                .values()
+                .any(|node| matches!(node.kind(), NodeKind::ContinueAsNew { .. }))
+        {
+            return Err(WorkflowError::InvalidContinuationPolicy(
+                "chainPolicy requires a continueAsNew node",
+            ));
         }
-        let mut map = BTreeMap::new();
-        for node in nodes {
-            let id = node.id.clone();
-            if map.insert(id.clone(), node).is_some() {
-                return Err(WorkflowError::DuplicateNode(id));
+        let mut named = BTreeMap::new();
+        let mut total = graph.declared;
+        for body in bodies {
+            total = total.saturating_add(body.graph.declared);
+            if total > MAX_NODES {
+                return Err(WorkflowError::TooManyNodes(total));
+            }
+            let name = body.name.clone();
+            if named.insert(name.clone(), body).is_some() {
+                return Err(WorkflowError::DuplicateBody(name));
             }
         }
-        if !map.contains_key(&entrypoint) {
-            return Err(WorkflowError::UnknownEntrypoint(entrypoint));
-        }
-        for node in map.values() {
-            check_node(node)?;
-            for target in node.successors() {
-                if !map.contains_key(target) {
-                    return Err(WorkflowError::UnknownTarget {
-                        from: node.id.clone(),
-                        to: target.clone(),
-                    });
-                }
-            }
-        }
-        // Before anything proportional to (parallels x nodes) is computed.
-        let parallels = map
-            .values()
-            .filter(|n| matches!(n.kind(), NodeKind::Parallel { .. }))
-            .count();
+        check_body_references(&graph, &named, limits)?;
+        let definition = Self {
+            name,
+            graph,
+            declared: total,
+            bodies: named,
+            limits,
+            structured: true,
+            continuation_policy,
+            triggers: Vec::new(),
+        };
+        definition.check_aggregate_limits()?;
+        Ok(definition)
+    }
+
+    /// The definition with the author's lowered instance and depth ceilings (`limits`).
+    ///
+    /// Both bounds are validated by [`WorkflowLimits::new`], so an author can only lower the
+    /// platform ceilings. A depth below the nesting the bodies already need is refused.
+    ///
+    /// # Errors
+    /// [`WorkflowError::BodyDepthExceeded`] when a body reference graph nests deeper than
+    /// `limits.max_depth()`.
+    pub fn with_limits(mut self, limits: WorkflowLimits) -> Result<Self, WorkflowError> {
+        check_body_references(&self.graph, &self.bodies, limits)?;
+        self.limits = limits;
+        Ok(self)
+    }
+
+    #[must_use]
+    pub const fn is_structured(&self) -> bool {
+        self.structured
+    }
+
+    #[must_use]
+    pub const fn limits(&self) -> WorkflowLimits {
+        self.limits
+    }
+
+    #[must_use]
+    pub const fn continuation_policy(&self) -> Option<ContinuationPolicy> {
+        self.continuation_policy
+    }
+
+    #[must_use]
+    pub fn body(&self, name: &NodeId) -> Option<&BodyDefinition> {
+        self.bodies.get(name)
+    }
+
+    pub fn bodies(&self) -> impl Iterator<Item = &BodyDefinition> {
+        self.bodies.values()
+    }
+
+    fn graphs(&self) -> impl Iterator<Item = &DefinitionGraph> {
+        std::iter::once(&self.graph).chain(self.bodies.values().map(|body| &body.graph))
+    }
+
+    fn check_aggregate_limits(&self) -> Result<(), WorkflowError> {
+        let parallels: usize = self.graphs().map(|graph| graph.regions.len()).sum();
         if parallels > MAX_PARALLELS {
             return Err(WorkflowError::TooManyParallels(parallels));
         }
-        let sagas = map
-            .values()
-            .filter(|n| matches!(n.kind(), NodeKind::Saga { .. }))
-            .count();
+        let sagas: usize = self.graphs().map(|graph| graph.saga_regions.len()).sum();
         if sagas > MAX_SAGAS {
             return Err(WorkflowError::TooManySagas(sagas));
         }
-        let declared = map
-            .values()
-            .flat_map(|node| node.secrets())
-            .collect::<BTreeSet<_>>()
-            .len();
-        if declared > MAX_DECLARED_SECRETS {
-            return Err(WorkflowError::TooManySecrets(declared));
+        let secrets = self.declared_secrets().len();
+        if secrets > MAX_DECLARED_SECRETS {
+            return Err(WorkflowError::TooManySecrets(secrets));
         }
-        check_acyclic(&map)?;
-        check_reachable(&map, &entrypoint)?;
-        let regions = parallel_regions(&map)?;
-        let saga_regions = saga_regions(&map)?;
-        let scopes = innermost_scopes(&regions, &saga_regions);
-        let declared = map.len();
-        // Only now, so that nothing above had to know about them: the nodes that run compensations
-        // and reconciliations.
-        for derived in derive_companions(&map) {
-            map.insert(derived.id.clone(), derived);
-        }
-        Ok(Self {
-            name,
-            entrypoint,
-            nodes: map,
-            declared,
-            regions,
-            saga_regions,
-            scopes,
-            triggers: Vec::new(),
-        })
+        Ok(())
     }
 
     /// The definition with `triggers` (feature 004): each must be well formed, there are at most
@@ -957,38 +1385,110 @@ impl WorkflowDefinition {
 
     #[must_use]
     pub const fn entrypoint(&self) -> &NodeId {
-        &self.entrypoint
+        &self.graph.entrypoint
     }
 
     #[must_use]
     pub fn node(&self, id: &NodeId) -> Option<&Node> {
-        self.nodes.get(id)
+        self.graph.nodes.get(id)
     }
 
-    /// The nodes the author wrote, ordered by id.
+    /// Resolves a logical execution through its declared collection bodies. Local node names
+    /// may repeat in different bodies; each scope owner selects the next graph.
+    #[must_use]
+    pub fn node_for_instance(&self, instance: &ExecutionInstanceId) -> Option<&Node> {
+        let mut graph = &self.graph;
+        for segment in instance.path().segments() {
+            let owner = graph.nodes.get(segment.scope_node())?;
+            let (body, max_iterations) = match owner.kind() {
+                NodeKind::ForEach {
+                    body, max_items, ..
+                } => (body, *max_items),
+                NodeKind::While {
+                    body,
+                    max_iterations,
+                    ..
+                }
+                | NodeKind::RepeatUntil {
+                    body,
+                    max_iterations,
+                    ..
+                } => (body, *max_iterations),
+                _ => return None,
+            };
+            if segment.iteration_index() >= max_iterations {
+                return None;
+            }
+            graph = &self.bodies.get(body)?.graph;
+        }
+        graph.nodes.get(instance.node())
+    }
+
+    /// The closed body that the collection or loop instance `owner` runs for each of its
+    /// iterations, resolved through the owner's own scope path.
+    #[must_use]
+    pub fn scope_body(&self, owner: &ExecutionInstanceId) -> Option<&BodyDefinition> {
+        match self.node_for_instance(owner)?.kind() {
+            NodeKind::ForEach { body, .. }
+            | NodeKind::While { body, .. }
+            | NodeKind::RepeatUntil { body, .. } => self.bodies.get(body),
+            _ => None,
+        }
+    }
+
+    /// Whether the scope `owner` compensates the iterations it completed (feature 014): its body
+    /// has an activity that can be undone (`compensateWith`), cannot be undone (`irreversible`) or
+    /// must not be repeated or compensated blindly (`highRisk`). A scope with none of the three
+    /// has nothing to plan when it fails and behaves as it did before compensation existed.
+    #[must_use]
+    pub fn scope_compensates(&self, owner: &ExecutionInstanceId) -> bool {
+        self.scope_body(owner).is_some_and(|body| {
+            body.all_nodes().any(|node| {
+                (node.origin() == &NodeOrigin::Declared
+                    && matches!(
+                        node.kind(),
+                        NodeKind::Activity {
+                            compensate_with: Some(_),
+                            ..
+                        }
+                    ))
+                    || node.effect().irreversible
+                    || node.effect().high_risk
+            })
+        })
+    }
+
+    /// The root graph's authored nodes, ordered by local id; bodies have separate local graphs.
     pub fn nodes(&self) -> impl Iterator<Item = &Node> {
-        self.nodes
+        self.graph
+            .nodes
             .values()
             .filter(|node| node.origin == NodeOrigin::Declared)
     }
 
-    /// Every node the engine can run: the declared ones and the compensations and reconciliations
-    /// derived from them, ordered by id.
+    /// Root graph nodes, including derived companions, ordered by local id.
+    /// Body nodes are obtained from their named body so equal local ids never collide.
     pub fn all_nodes(&self) -> impl Iterator<Item = &Node> {
-        self.nodes.values()
+        self.graph.nodes.values()
     }
 
     /// Every secret any activity of the definition declares, once each, in name order.
     #[must_use]
     pub fn declared_secrets(&self) -> BTreeSet<&SecretName> {
-        self.nodes().flat_map(|node| node.secrets()).collect()
+        self.graphs()
+            .flat_map(|graph| graph.nodes.values())
+            .filter(|node| node.origin == NodeOrigin::Declared)
+            .flat_map(Node::secrets)
+            .collect()
     }
 
     /// The artifact of every script any node runs, once each: the digest in the name of the
     /// activity a `script` node becomes.
     #[must_use]
     pub fn script_digests(&self) -> BTreeSet<crate::scripts::Digest> {
-        self.nodes()
+        self.graphs()
+            .flat_map(|graph| graph.nodes.values())
+            .filter(|node| node.origin == NodeOrigin::Declared)
             .filter_map(|node| match &node.kind {
                 NodeKind::Activity { activity, .. } => {
                     crate::scripts::digest_of_activity(activity.as_str())
@@ -1008,7 +1508,7 @@ impl WorkflowDefinition {
     /// from them.
     #[must_use]
     pub fn total_len(&self) -> usize {
-        self.nodes.len()
+        self.graphs().map(|graph| graph.nodes.len()).sum()
     }
 
     /// A conservative estimate of the memory this definition occupies, in bytes, so caches can be
@@ -1020,24 +1520,56 @@ impl WorkflowDefinition {
         // A region entry: a `NodeId` (a `String`) in a tree set.
         const PER_REGION_ENTRY: usize = 96;
         let region_entries: usize = self
+            .graph
             .regions
             .values()
             .map(|branches| branches.iter().map(BTreeSet::len).sum::<usize>())
             .sum();
-        let saga_entries: usize = self.saga_regions.values().map(BTreeSet::len).sum();
-        4096 + self.nodes.len() * PER_NODE
-            + (region_entries + saga_entries + self.scopes.len()) * PER_REGION_ENTRY
+        let saga_entries: usize = self.graph.saga_regions.values().map(BTreeSet::len).sum();
+        let body_regions: usize = self
+            .bodies
+            .values()
+            .map(|body| {
+                body.graph
+                    .regions
+                    .values()
+                    .map(|branches| branches.iter().map(BTreeSet::len).sum::<usize>())
+                    .sum::<usize>()
+                    + body
+                        .graph
+                        .saga_regions
+                        .values()
+                        .map(BTreeSet::len)
+                        .sum::<usize>()
+                    + body.graph.scopes.len()
+            })
+            .sum();
+        4096 + self.total_len() * PER_NODE
+            + (region_entries + saga_entries + self.graph.scopes.len() + body_regions)
+                * PER_REGION_ENTRY
+            + self
+                .nodes()
+                .filter_map(Node::database_operation)
+                .map(DatabaseOperation::footprint)
+                .sum::<usize>()
+            + self
+                .bodies
+                .values()
+                .flat_map(|body| body.nodes())
+                .filter_map(Node::database_operation)
+                .map(DatabaseOperation::footprint)
+                .sum::<usize>()
     }
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.nodes.is_empty()
+        self.graph.nodes.is_empty()
     }
 
     /// The node sets of the branches of a `parallel` node, aligned with its `branches`.
     #[must_use]
     pub fn branch_regions(&self, parallel: &NodeId) -> Option<&[BTreeSet<NodeId>]> {
-        self.regions.get(parallel).map(Vec::as_slice)
+        self.graph.regions.get(parallel).map(Vec::as_slice)
     }
 
     /// The `parallel` node whose branch directly contains `node`: the one whose join decides what
@@ -1045,7 +1577,7 @@ impl WorkflowDefinition {
     /// there is none.
     #[must_use]
     pub fn enclosing_parallel(&self, node: &NodeId) -> Option<&NodeId> {
-        match self.scopes.get(node) {
+        match self.graph.scopes.get(node) {
             Some(Scope::Parallel(parallel)) => Some(parallel),
             _ => None,
         }
@@ -1054,15 +1586,15 @@ impl WorkflowDefinition {
     /// The innermost region (branch of a `parallel` node, or body of a `saga` node) around `node`.
     #[must_use]
     pub fn enclosing_scope(&self, node: &NodeId) -> Option<&Scope> {
-        self.scopes.get(node)
+        self.graph.scopes.get(node)
     }
 
     /// Every region around `node`, innermost first.
     pub fn scope_chain<'a>(&'a self, node: &NodeId) -> impl Iterator<Item = &'a Scope> + use<'a> {
-        let mut current = self.scopes.get(node);
+        let mut current = self.graph.scopes.get(node);
         std::iter::from_fn(move || {
             let scope = current?;
-            current = self.scopes.get(scope.owner());
+            current = self.graph.scopes.get(scope.owner());
             Some(scope)
         })
     }
@@ -1070,12 +1602,12 @@ impl WorkflowDefinition {
     /// The node set of the body of a `saga` node.
     #[must_use]
     pub fn saga_region(&self, saga: &NodeId) -> Option<&BTreeSet<NodeId>> {
-        self.saga_regions.get(saga)
+        self.graph.saga_regions.get(saga)
     }
 
     /// The `saga` nodes, ordered by id.
     pub fn sagas(&self) -> impl Iterator<Item = &NodeId> {
-        self.saga_regions.keys()
+        self.graph.saga_regions.keys()
     }
 
     /// Observations for the author; none of them makes the definition invalid.
@@ -1107,6 +1639,84 @@ impl WorkflowDefinition {
     }
 }
 
+impl DefinitionGraph {
+    fn new(entrypoint: NodeId, nodes: Vec<Node>, kind: GraphKind) -> Result<Self, WorkflowError> {
+        if nodes.is_empty() {
+            return Err(WorkflowError::NoNodes);
+        }
+        if nodes.len() > MAX_NODES {
+            return Err(WorkflowError::TooManyNodes(nodes.len()));
+        }
+        let mut map = BTreeMap::new();
+        for node in nodes {
+            let id = node.id.clone();
+            if map.insert(id.clone(), node).is_some() {
+                return Err(WorkflowError::DuplicateNode(id));
+            }
+        }
+        if !map.contains_key(&entrypoint) {
+            return Err(WorkflowError::UnknownEntrypoint(entrypoint));
+        }
+        for node in map.values() {
+            check_node(node)?;
+            check_graph_kind(node, kind)?;
+            for target in node.successors() {
+                if !map.contains_key(target) {
+                    return Err(WorkflowError::UnknownTarget {
+                        from: node.id.clone(),
+                        to: target.clone(),
+                    });
+                }
+            }
+        }
+        // Before anything proportional to (parallels x nodes) is computed.
+        let parallels = map
+            .values()
+            .filter(|n| matches!(n.kind(), NodeKind::Parallel { .. }))
+            .count();
+        if parallels > MAX_PARALLELS {
+            return Err(WorkflowError::TooManyParallels(parallels));
+        }
+        let sagas = map
+            .values()
+            .filter(|n| matches!(n.kind(), NodeKind::Saga { .. }))
+            .count();
+        if sagas > MAX_SAGAS {
+            return Err(WorkflowError::TooManySagas(sagas));
+        }
+        let declared = map
+            .values()
+            .flat_map(|node| node.secrets())
+            .collect::<BTreeSet<_>>()
+            .len();
+        if declared > MAX_DECLARED_SECRETS {
+            return Err(WorkflowError::TooManySecrets(declared));
+        }
+        check_acyclic(&map)?;
+        check_reachable(&map, &entrypoint)?;
+        let regions = parallel_regions(&map)?;
+        let saga_regions = saga_regions(&map)?;
+        let scopes = innermost_scopes(&regions, &saga_regions);
+        if kind == GraphKind::Body {
+            check_body_return(&map, &entrypoint, &scopes)?;
+        }
+        let declared = map.len();
+        // Only now, so that nothing above had to know about them: the nodes that run compensations
+        // and reconciliations.
+        for derived in derive_companions(&map) {
+            map.insert(derived.id.clone(), derived);
+        }
+        Ok(Self {
+            entrypoint,
+            nodes: map,
+            declared,
+            regions,
+            saga_regions,
+            scopes,
+        })
+    }
+}
+
 fn duration_in_range(
     node: &NodeId,
     what: &'static str,
@@ -1123,7 +1733,353 @@ fn duration_in_range(
     Ok(())
 }
 
+fn scope_error(node: &NodeId, reason: &'static str) -> WorkflowError {
+    WorkflowError::InvalidScope {
+        node: node.clone(),
+        reason,
+    }
+}
+
+fn check_graph_kind(node: &Node, kind: GraphKind) -> Result<(), WorkflowError> {
+    match node.kind() {
+        NodeKind::Switch { cases, .. } => {
+            let invalid = |reason| WorkflowError::InvalidSwitch {
+                node: node.id().clone(),
+                reason,
+            };
+            if cases.is_empty() || cases.len() > MAX_SWITCH_CASES {
+                return Err(invalid("case count must be in 1..=32"));
+            }
+            if cases
+                .iter()
+                .map(SwitchCase::id)
+                .collect::<BTreeSet<_>>()
+                .len()
+                != cases.len()
+            {
+                return Err(invalid("case ids must be unique"));
+            }
+            if node.next().is_some() || node.on_error().is_some() || node.timeout().is_some() {
+                return Err(invalid("switch cannot declare next, onError or timeout"));
+            }
+            if cases.iter().any(|case| case.when().as_str().len() > 1024) {
+                return Err(WorkflowError::ExpressionByteLimit {
+                    node: node.id().clone(),
+                    limit: 1024,
+                });
+            }
+        }
+        NodeKind::Approval { .. } => {
+            if kind == GraphKind::Legacy {
+                return Err(scope_error(
+                    node.id(),
+                    "approval requires a structured definition",
+                ));
+            }
+            if node.timeout().is_none() || node.next().is_some() {
+                return Err(scope_error(
+                    node.id(),
+                    "approval requires a timeout and outcome routes",
+                ));
+            }
+        }
+        NodeKind::ForEach {
+            max_items,
+            max_concurrency,
+            ..
+        } => {
+            if kind == GraphKind::Legacy {
+                return Err(scope_error(
+                    node.id(),
+                    "collection requires a structured definition",
+                ));
+            }
+            if !(1..=10_000).contains(max_items) || !(1..=256).contains(max_concurrency) {
+                return Err(scope_error(
+                    node.id(),
+                    "collection item/concurrency limit is out of range",
+                ));
+            }
+            if node.next().is_none() {
+                return Err(scope_error(node.id(), "collection requires a successor"));
+            }
+        }
+        NodeKind::While {
+            max_iterations,
+            delay,
+            ..
+        }
+        | NodeKind::RepeatUntil {
+            max_iterations,
+            delay,
+            ..
+        } => {
+            if kind == GraphKind::Legacy {
+                return Err(scope_error(
+                    node.id(),
+                    "loop requires a structured definition",
+                ));
+            }
+            if !(1..=10_000).contains(max_iterations) {
+                return Err(scope_error(
+                    node.id(),
+                    "loop iteration limit is out of range",
+                ));
+            }
+            if node.timeout().is_none() {
+                return Err(scope_error(node.id(), "loop requires a timeout"));
+            }
+            if node.next().is_none() {
+                return Err(scope_error(node.id(), "loop requires a successor"));
+            }
+            if let Some(delay) = delay {
+                duration_in_range(node.id(), "loop delay", *delay)?;
+            }
+        }
+        NodeKind::Return { .. } => {
+            if kind != GraphKind::Body {
+                return Err(scope_error(
+                    node.id(),
+                    "return is only legal in a named body",
+                ));
+            }
+            if node.next().is_some() || node.on_error().is_some() || node.timeout().is_some() {
+                return Err(scope_error(
+                    node.id(),
+                    "return cannot route or own an attempt timeout",
+                ));
+            }
+        }
+        NodeKind::ContinueAsNew { .. } => {
+            if kind != GraphKind::StructuredContinuation {
+                return Err(scope_error(
+                    node.id(),
+                    "continueAsNew requires a continuation policy and is forbidden in bodies",
+                ));
+            }
+            if node.next().is_some() || node.on_error().is_some() || node.timeout().is_some() {
+                return Err(scope_error(
+                    node.id(),
+                    "continueAsNew cannot route or own an attempt timeout",
+                ));
+            }
+        }
+        NodeKind::End { .. } if kind == GraphKind::Body => {
+            return Err(scope_error(
+                node.id(),
+                "workflow end is forbidden inside a body",
+            ));
+        }
+        _ => {}
+    }
+    if kind != GraphKind::Legacy {
+        let expressions: Vec<&Expression> = match node.kind() {
+            NodeKind::Activity {
+                idempotency_template,
+                ..
+            } => idempotency_template.iter().collect(),
+            NodeKind::WaitEvent { correlation, .. } => vec![correlation],
+            NodeKind::Condition { expression, .. } => vec![expression],
+            NodeKind::Switch { cases, .. } => cases.iter().map(SwitchCase::when).collect(),
+            NodeKind::Child { input, .. } => input.iter().collect(),
+            NodeKind::End { output } => output.iter().collect(),
+            NodeKind::ForEach { items, result, .. } => vec![items, result],
+            NodeKind::While {
+                condition,
+                initial,
+                carry,
+                ..
+            }
+            | NodeKind::RepeatUntil {
+                condition,
+                initial,
+                carry,
+                ..
+            } => vec![condition, initial, carry],
+            NodeKind::Return { result } => vec![result],
+            NodeKind::ContinueAsNew { input, state } => {
+                std::iter::once(input).chain(state.iter()).collect()
+            }
+            _ => Vec::new(),
+        };
+        if expressions
+            .iter()
+            .any(|expression| expression.as_str().len() > 1024)
+        {
+            return Err(WorkflowError::ExpressionByteLimit {
+                node: node.id().clone(),
+                limit: 1024,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn check_body_return(
+    nodes: &BTreeMap<NodeId, Node>,
+    entrypoint: &NodeId,
+    scopes: &BTreeMap<NodeId, Scope>,
+) -> Result<(), WorkflowError> {
+    if nodes
+        .values()
+        .filter(|node| matches!(node.kind(), NodeKind::Return { .. }))
+        .count()
+        != 1
+    {
+        return Err(scope_error(entrypoint, "a body needs exactly one return"));
+    }
+    for node in nodes.values() {
+        let explicit_route = matches!(
+            node.kind(),
+            NodeKind::Condition { .. } | NodeKind::Return { .. }
+        ) || node.next().is_some();
+        if !explicit_route && !scopes.contains_key(node.id()) {
+            return Err(scope_error(
+                node.id(),
+                "a successful body path cannot end before return",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn body_dependencies(
+    graph: &DefinitionGraph,
+    bodies: &BTreeMap<NodeId, BodyDefinition>,
+) -> Result<BTreeSet<NodeId>, WorkflowError> {
+    let mut dependencies = BTreeSet::new();
+    for node in graph.nodes.values() {
+        let body = match node.kind() {
+            NodeKind::ForEach { body, .. }
+            | NodeKind::While { body, .. }
+            | NodeKind::RepeatUntil { body, .. } => Some(body),
+            _ => None,
+        };
+        let Some(body) = body else { continue };
+        if !bodies.contains_key(body) {
+            return Err(WorkflowError::UnknownBody {
+                node: node.id.clone(),
+                body: body.clone(),
+            });
+        }
+        dependencies.insert(body.clone());
+    }
+    Ok(dependencies)
+}
+
+fn check_body_references(
+    root: &DefinitionGraph,
+    bodies: &BTreeMap<NodeId, BodyDefinition>,
+    limits: WorkflowLimits,
+) -> Result<(), WorkflowError> {
+    let root_dependencies = body_dependencies(root, bodies)?;
+    let mut dependencies = BTreeMap::new();
+    let mut dependants: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
+    for (name, body) in bodies {
+        let children = body_dependencies(&body.graph, bodies)?;
+        for child in &children {
+            dependants
+                .entry(child.clone())
+                .or_default()
+                .push(name.clone());
+        }
+        dependencies.insert(name.clone(), children);
+    }
+    let mut reached = BTreeSet::new();
+    let mut pending: Vec<_> = root_dependencies.iter().cloned().collect();
+    while let Some(name) = pending.pop() {
+        if reached.insert(name.clone()) {
+            pending.extend(dependencies[&name].iter().cloned());
+        }
+    }
+    if let Some(unreachable) = bodies.keys().find(|name| !reached.contains(*name)) {
+        return Err(WorkflowError::UnreachableBody(unreachable.clone()));
+    }
+    // Resolve leaves before owners. Each reference is visited once, even when many scopes share a body.
+    let mut remaining: BTreeMap<_, _> = dependencies
+        .iter()
+        .map(|(name, children)| (name.clone(), children.len()))
+        .collect();
+    let mut ready: Vec<_> = remaining
+        .iter()
+        .filter(|(_, count)| **count == 0)
+        .map(|(name, _)| name.clone())
+        .collect();
+    let mut depths: BTreeMap<NodeId, usize> = bodies.keys().map(|name| (name.clone(), 1)).collect();
+    let mut completed = 0;
+    while let Some(name) = ready.pop() {
+        completed += 1;
+        let next_depth = depths[&name] + 1;
+        for parent in dependants.get(&name).into_iter().flatten() {
+            if let Some(depth) = depths.get_mut(parent) {
+                *depth = (*depth).max(next_depth);
+            }
+            if let Some(count) = remaining.get_mut(parent) {
+                *count -= 1;
+                if *count == 0 {
+                    ready.push(parent.clone());
+                }
+            }
+        }
+    }
+    if completed != bodies.len()
+        && let Some((name, _)) = remaining.iter().find(|(_, count)| **count != 0)
+    {
+        return Err(WorkflowError::RecursiveBody(name.clone()));
+    }
+    if root_dependencies
+        .iter()
+        .any(|name| depths[name] > usize::from(limits.max_depth))
+    {
+        return Err(WorkflowError::BodyDepthExceeded(limits.max_depth));
+    }
+    Ok(())
+}
+
 fn check_node(node: &Node) -> Result<(), WorkflowError> {
+    if let NodeKind::Activity {
+        activity,
+        compensate_with,
+        reconcile_with,
+        retry,
+        secrets,
+        idempotency_template,
+    } = &node.kind
+    {
+        let reserved = |a: &ActivityName| a.as_str().starts_with(MANAGED_DATABASE_PREFIX);
+        if compensate_with.as_ref().is_some_and(reserved)
+            || reconcile_with.as_ref().is_some_and(reserved)
+            || (reserved(activity) && node.database.is_none())
+        {
+            return Err(WorkflowError::InvalidDatabaseNode);
+        }
+        if let Some(operation) = &node.database {
+            operation
+                .validate()
+                .map_err(|_| WorkflowError::InvalidDatabaseNode)?;
+            let expected = if operation.kind == OperationKind::Execute {
+                EffectPolicy {
+                    high_risk: true,
+                    irreversible: true,
+                    ..EffectPolicy::NONE
+                }
+            } else {
+                EffectPolicy::NONE
+            };
+            if activity.as_str() != MANAGED_DATABASE_ACTIVITY
+                || *retry != RetryPolicy::no_retry()
+                || !secrets.is_empty()
+                || compensate_with.is_some()
+                || reconcile_with.is_some()
+                || idempotency_template.is_some()
+                || node.effect != expected
+            {
+                return Err(WorkflowError::InvalidDatabaseNode);
+            }
+        }
+    } else if node.database.is_some() {
+        return Err(WorkflowError::InvalidDatabaseNode);
+    }
     if let Some(timeout) = node.timeout {
         duration_in_range(&node.id, "timeout", timeout)?;
     }
@@ -1257,11 +2213,20 @@ fn parallel_regions(map: &BTreeMap<NodeId, Node>) -> Result<Regions, WorkflowErr
                 }
             }
             for &member in region {
-                if matches!(map[member].kind(), NodeKind::End { .. }) {
+                if matches!(
+                    map[member].kind(),
+                    NodeKind::End { .. } | NodeKind::Return { .. }
+                ) {
                     return Err(WorkflowError::EndInsideBranch {
                         parallel: node.id().clone(),
                         node: member.clone(),
                     });
+                }
+                if matches!(map[member].kind(), NodeKind::ContinueAsNew { .. }) {
+                    return Err(scope_error(
+                        member,
+                        "continueAsNew is forbidden inside a parallel branch",
+                    ));
                 }
                 let entered_only_from_inside = preds.get(member).is_none_or(|p| {
                     p.iter().all(|&q| {
@@ -1305,11 +2270,20 @@ fn saga_regions(
         };
         let region = reach(map, begin);
         for &member in &region {
-            if matches!(map[member].kind(), NodeKind::End { .. }) {
+            if matches!(
+                map[member].kind(),
+                NodeKind::End { .. } | NodeKind::Return { .. }
+            ) {
                 return Err(WorkflowError::EndInsideSaga {
                     saga: node.id().clone(),
                     node: member.clone(),
                 });
+            }
+            if matches!(map[member].kind(), NodeKind::ContinueAsNew { .. }) {
+                return Err(scope_error(
+                    member,
+                    "continueAsNew is forbidden inside a saga",
+                ));
             }
             let entered_only_from_inside = preds.get(member).is_none_or(|p| {
                 p.iter()

@@ -6,6 +6,7 @@
 //! across round trips.
 
 use crate::pool::BeginSafely;
+use sagat_application::declared_operations::PublishedDeclaredState;
 use sagat_application::definitions::{
     Applied, DefinitionStore, Idempotency, PublishContext, StoredPlan, StoredPlanEntry,
     VersionRecord, WorkflowRecord,
@@ -14,10 +15,11 @@ use sagat_application::dispatch::TriggerRegistration;
 use sagat_application::error::StoreError;
 use sagat_application::execution::compensation_id;
 use sagat_domain::audit::AuditRecord;
+use sagat_domain::classification::ClassificationRules;
 use sagat_domain::definition::{Workflow, WorkflowId, WorkflowVersion, WorkflowVersionId};
 use sagat_domain::identity::{Namespace, NamespaceId, Principal, Slug, Subject, TenantId};
 use sagat_domain::saga::SagaPlan;
-use sagat_domain::workflow::{ActivityName, Digest, NodeId};
+use sagat_domain::workflow::{ActivityName, Digest, NodeId, WorkflowDefinition};
 use sha2::{Digest as _, Sha256};
 use sqlx::postgres::PgRow;
 use sqlx::{PgConnection, PgPool};
@@ -58,8 +60,9 @@ macro_rules! select_workflow {
             "SELECT w.id, w.tenant_id, w.namespace_id, w.name, w.draft_revision, w.draft, ",
             "w.active_version_id, w.created_at, w.updated_at, ",
             "v.id AS v_id, v.version_number AS v_number, v.digest AS v_digest, ",
-            "v.published_by AS v_published_by, v.published_at AS v_published_at ",
-            "FROM workflows w ",
+            "v.published_by AS v_published_by, v.published_at AS v_published_at, ",
+            "v.classification_rules AS v_classification_rules ",
+            "FROM (SELECT * FROM workflows WHERE NOT internal) w ",
             "LEFT JOIN workflow_versions v ON v.tenant_id = w.tenant_id AND v.id = w.active_version_id ",
             $tail
         )
@@ -113,7 +116,118 @@ pub(crate) async fn register_triggers(
     Ok(())
 }
 
+async fn persist_declared_operations(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    version: WorkflowVersionId,
+    state: &PublishedDeclaredState,
+    now: OffsetDateTime,
+) -> Result<(), StoreError> {
+    for operation in state.operations() {
+        sqlx::query(
+            "INSERT INTO declared_operation_definitions \
+             (tenant_id, namespace_id, workflow_version_id, operation_kind, operation_name, \
+              declaration_digest, state_schema_digest, result_schema_digest, disclosure, \
+              created_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+        )
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(version.as_uuid())
+        .bind(operation.kind().as_str())
+        .bind(operation.name().as_str())
+        .bind(operation.declaration_digest().as_bytes().as_slice())
+        .bind(state.state_schema_digest().as_bytes().as_slice())
+        .bind(operation.result_schema_digest().as_bytes().as_slice())
+        .bind(operation.disclosure().as_str())
+        .bind(now)
+        .execute(&mut **tx)
+        .await
+        .map_err(store_error)?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn verify_declared_operations(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    version: WorkflowVersionId,
+    state: Option<&PublishedDeclaredState>,
+) -> Result<(), StoreError> {
+    let Some(state) = state else {
+        return Ok(());
+    };
+    let expected = state.operations().count();
+    let actual: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM declared_operation_definitions \
+         WHERE tenant_id = $1 AND namespace_id = $2 AND workflow_version_id = $3",
+    )
+    .bind(tenant.as_uuid())
+    .bind(namespace.as_uuid())
+    .bind(version.as_uuid())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    if usize::try_from(actual).ok() != Some(expected) {
+        return Err(StoreError::Internal {
+            detail: "published declared-operation metadata is incomplete".to_owned(),
+        });
+    }
+    for operation in state.operations() {
+        let matches: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM declared_operation_definitions \
+             WHERE tenant_id = $1 AND namespace_id = $2 AND workflow_version_id = $3 \
+               AND operation_kind = $4 AND operation_name = $5 \
+               AND declaration_digest = $6 AND state_schema_digest = $7 \
+               AND result_schema_digest = $8 AND disclosure = $9)",
+        )
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(version.as_uuid())
+        .bind(operation.kind().as_str())
+        .bind(operation.name().as_str())
+        .bind(operation.declaration_digest().as_bytes().as_slice())
+        .bind(state.state_schema_digest().as_bytes().as_slice())
+        .bind(operation.result_schema_digest().as_bytes().as_slice())
+        .bind(operation.disclosure().as_str())
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(store_error)?;
+        if !matches {
+            return Err(StoreError::Internal {
+                detail: "published declared-operation metadata does not match its version"
+                    .to_owned(),
+            });
+        }
+    }
+    Ok(())
+}
+
 impl DefinitionStore for PgDefinitionStore {
+    async fn check_database_access(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        definition: &WorkflowDefinition,
+    ) -> Result<(), StoreError> {
+        if !definition.nodes().any(|n| n.database_operation().is_some()) {
+            return Ok(());
+        }
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        crate::database::admit_definition(
+            &mut tx,
+            principal.tenant_id(),
+            namespace,
+            &[principal.subject().as_str()],
+            definition,
+            None,
+            None,
+        )
+        .await?;
+        tx.commit().await.map_err(store_error)
+    }
     async fn find_namespace_by_slug(
         &self,
         tenant: TenantId,
@@ -263,7 +377,7 @@ impl DefinitionStore for PgDefinitionStore {
         let updated = sqlx::query(
             "UPDATE workflows SET draft = $4, draft_revision = draft_revision + 1, updated_at = $5, \
                     draft_edited_by = $6 \
-             WHERE tenant_id = $1 AND id = $2 AND draft_revision = $3",
+             WHERE tenant_id = $1 AND id = $2 AND NOT internal AND draft_revision = $3",
         )
         .bind(tenant.as_uuid())
         .bind(id.as_uuid())
@@ -277,7 +391,7 @@ impl DefinitionStore for PgDefinitionStore {
         .rows_affected();
         if updated == 0 {
             let current: Option<i64> = sqlx::query_scalar(
-                "SELECT draft_revision FROM workflows WHERE tenant_id = $1 AND id = $2",
+                "SELECT draft_revision FROM workflows WHERE tenant_id = $1 AND id = $2 AND NOT internal",
             )
             .bind(tenant.as_uuid())
             .bind(id.as_uuid())
@@ -329,6 +443,8 @@ impl DefinitionStore for PgDefinitionStore {
         version_id: WorkflowVersionId,
         digest: Digest,
         document: &[u8],
+        declared_state: Option<&PublishedDeclaredState>,
+        definition: &WorkflowDefinition,
         release_notes: Option<&str>,
         plans: &[SagaPlan],
         triggers: &[TriggerRegistration],
@@ -341,14 +457,11 @@ impl DefinitionStore for PgDefinitionStore {
         let hash = hash(&idempotency.fingerprint);
         for _ in 0..2 {
             let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
-            if let Some(resource) = replay(&mut tx, tenant, idempotency, &hash).await? {
-                return Ok(Some(Applied::Replayed(resource)));
-            }
             // The row lock serialises publishers of one workflow, so version numbers are gapless.
             let Some(locked) = sqlx::query(
                 "SELECT id, tenant_id, namespace_id, name, draft_revision, active_version_id, \
                         created_at, updated_at \
-                 FROM workflows WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
+                 FROM workflows WHERE tenant_id = $1 AND id = $2 AND NOT internal FOR UPDATE",
             )
             .bind(tenant.as_uuid())
             .bind(id.as_uuid())
@@ -358,20 +471,31 @@ impl DefinitionStore for PgDefinitionStore {
             else {
                 return Ok(None);
             };
+            let workflow = bare_workflow(&locked)?;
+            crate::database::admit_definition(
+                &mut tx,
+                tenant,
+                workflow.namespace_id(),
+                &[principal.subject().as_str()],
+                definition,
+                None,
+                None,
+            )
+            .await?;
             // The same publication, made by a request that committed while this one waited for the
             // lock, is this one: answered as it was, whatever it left behind (a request that is
             // published now, a draft that has moved on).
             if let Some(resource) = replay(&mut tx, tenant, idempotency, &hash).await? {
                 return Ok(Some(Applied::Replayed(resource)));
             }
-            let workflow = bare_workflow(&locked)?;
             if workflow.draft_revision() != draft_revision {
                 return Err(StoreError::RevisionConflict {
                     current: workflow.draft_revision(),
                 });
             }
             let existing = sqlx::query(
-                "SELECT id, version_number, published_by, published_at FROM workflow_versions \
+                "SELECT id, version_number, published_by, published_at, classification_rules \
+                 FROM workflow_versions \
                  WHERE tenant_id = $1 AND workflow_id = $2 AND digest = $3",
             )
             .bind(tenant.as_uuid())
@@ -399,8 +523,8 @@ impl DefinitionStore for PgDefinitionStore {
                 sqlx::query(
                     "INSERT INTO workflow_versions \
                      (id, tenant_id, workflow_id, version_number, digest, document, release_notes, \
-                      published_by, published_at) \
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                      published_by, published_at, classification_rules) \
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1)",
                 )
                 .bind(version.id().as_uuid())
                 .bind(tenant.as_uuid())
@@ -418,8 +542,27 @@ impl DefinitionStore for PgDefinitionStore {
                 for plan in plans {
                     insert_saga_plan(&mut tx, tenant, version.id(), plan).await?;
                 }
+                if let Some(state) = declared_state {
+                    persist_declared_operations(
+                        &mut tx,
+                        tenant,
+                        workflow.namespace_id(),
+                        version.id(),
+                        state,
+                        now,
+                    )
+                    .await?;
+                }
                 (version, true)
             };
+            verify_declared_operations(
+                &mut tx,
+                tenant,
+                workflow.namespace_id(),
+                version.id(),
+                declared_state,
+            )
+            .await?;
             crate::versioning::record_publication(
                 &mut tx,
                 &crate::versioning::Published {
@@ -562,8 +705,8 @@ impl DefinitionStore for PgDefinitionStore {
     ) -> Result<Option<VersionRecord>, StoreError> {
         sqlx::query(
             "SELECT id, tenant_id, workflow_id, version_number, digest, document, release_notes, \
-                    published_by, published_at \
-             FROM workflow_versions WHERE tenant_id = $1 AND id = $2",
+                    published_by, published_at, classification_rules \
+             FROM workflow_versions WHERE tenant_id = $1 AND id = $2 AND workflow_id IN (SELECT id FROM workflows WHERE tenant_id=$1 AND NOT internal)",
         )
         .bind(tenant.as_uuid())
         .bind(id.as_uuid())
@@ -583,9 +726,9 @@ impl DefinitionStore for PgDefinitionStore {
     ) -> Result<Vec<VersionRecord>, StoreError> {
         sqlx::query(
             "SELECT id, tenant_id, workflow_id, version_number, digest, document, release_notes, \
-                    published_by, published_at \
+                    published_by, published_at, classification_rules \
              FROM workflow_versions \
-             WHERE tenant_id = $1 AND workflow_id = $2 AND version_number > $3 \
+             WHERE tenant_id = $1 AND workflow_id = $2 AND workflow_id IN (SELECT id FROM workflows WHERE tenant_id=$1 AND NOT internal) AND version_number > $3 \
              ORDER BY version_number LIMIT $4",
         )
         .bind(tenant.as_uuid())
@@ -622,8 +765,8 @@ impl DefinitionStore for PgDefinitionStore {
 }
 
 const VERSION_SELECT_ONE: &str = "SELECT id, tenant_id, workflow_id, version_number, digest, \
-     document, release_notes, published_by, published_at \
-     FROM workflow_versions WHERE tenant_id = $1 AND workflow_id = $2 AND version_number = $3";
+     document, release_notes, published_by, published_at, classification_rules \
+     FROM workflow_versions WHERE tenant_id = $1 AND workflow_id = $2 AND workflow_id IN (SELECT id FROM workflows WHERE tenant_id=$1 AND NOT internal) AND version_number = $3";
 
 // ----------------------------------------------------------------------------- idempotency
 
@@ -750,6 +893,7 @@ fn workflow_from_row(row: &PgRow) -> Result<WorkflowRecord, StoreError> {
                 Digest::from_hex(&digest).ok_or_else(|| corrupt("digest"))?,
                 Subject::parse(&published_by).map_err(|_| corrupt("subject"))?,
                 col::<OffsetDateTime>(row, "v_published_at")?,
+                rules_from(col::<i16>(row, "v_classification_rules")?)?,
             ))
         }
     };
@@ -776,7 +920,16 @@ fn version_from_parts(
         digest,
         Subject::parse(&published_by).map_err(|_| corrupt("subject"))?,
         col::<OffsetDateTime>(row, "published_at")?,
+        rules_from(col::<i16>(row, "classification_rules")?)?,
     ))
+}
+
+/// The classification rules a version was published under, as stored.
+fn rules_from(stored: i16) -> Result<ClassificationRules, StoreError> {
+    u8::try_from(stored)
+        .ok()
+        .and_then(|rules| ClassificationRules::try_from(rules).ok())
+        .ok_or_else(|| corrupt("classification rules"))
 }
 
 fn version_record(row: &PgRow) -> Result<VersionRecord, StoreError> {

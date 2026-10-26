@@ -279,6 +279,15 @@ async fn the_breaker_belongs_to_one_tenant() {
     let mut names = effect_activities(&["reserve", "submit"]);
     names.push("act.notify".to_owned());
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    sagat_infra_postgres::PgIdentityStore::new(w.db.pool.clone())
+        .insert_membership(&sagat_domain::identity::Membership::restore(
+            their_worker.tenant_id(),
+            their_worker.subject().clone(),
+            Role::Worker,
+            crate::support::now(),
+        ))
+        .await
+        .expect("other tenant's compensation worker membership");
     let session = w.session_as(&their_worker, &names, 100).await;
     let run = w
         .start_as_other_tenant(theirs, &json!({}))
@@ -725,6 +734,7 @@ async fn the_claim_does_not_walk_the_compensations_an_open_breaker_holds_back() 
             .replace("$3::text[]", "ARRAY['undo.reserve']::text[]")
             .replace("$4", "8")
             .replace("$5", "3")
+            .replace("$6", "'some-worker'")
     );
     let plan: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
         .fetch_all(&w.db.pool)

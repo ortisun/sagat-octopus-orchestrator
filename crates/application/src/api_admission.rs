@@ -17,7 +17,7 @@ use std::future::Future;
 
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::definition::WorkflowId;
-use sagat_domain::execution::RunId;
+use sagat_domain::execution::{ApprovalRequestId, RunId};
 use sagat_domain::identity::{NamespaceId, Permission, Principal, Slug, TenantId};
 use sagat_domain::versioning::RequestId;
 
@@ -36,15 +36,23 @@ pub enum ApiOperation {
     DefinitionPublish,
     RunStart,
     RunRead,
+    RunQuery,
+    RunUpdate,
     PayloadInspect,
+    PayloadDisclose,
+    DatabaseResultRead,
     RunOperate,
     RunRerun,
     RunSignal,
+    ApprovalRead,
+    ApprovalDecide,
     SagaOverride,
     QuotaRead,
     QuotaManage,
     SecretRead,
     SecretManage,
+    DatabaseManage,
+    DatabaseAdHoc,
     EgressManage,
     WorkerBind,
     EventPublish,
@@ -64,11 +72,12 @@ pub enum ApiOperation {
 impl ApiOperation {
     const fn permissions(self) -> &'static [Permission] {
         use Permission::{
-            DefinitionPublish, DefinitionRead, DefinitionWrite, EgressManage, EventManage,
-            EventPublish, EventRead, NamespaceRead, OpsRead, PublicationApprove, PublicationManage,
-            QuotaManage, QuotaRead, RunOperate, RunPayloadInspect, RunRead, RunSignal, RunStart,
-            SagaOverride, ScriptPublish, ScriptRead, ScriptWrite, SecretManage, SecretRead,
-            VersionActivate, WorkerBind, WorkerManage,
+            ApprovalDecide, ApprovalRead, DefinitionPublish, DefinitionRead, DefinitionWrite,
+            EgressManage, EventManage, EventPublish, EventRead, NamespaceRead, OpsRead,
+            PublicationApprove, PublicationManage, QuotaManage, QuotaRead, RunOperate,
+            RunPayloadInspect, RunQuery, RunRead, RunSignal, RunStart, RunUpdate, SagaOverride,
+            ScriptPublish, ScriptRead, ScriptWrite, SecretManage, SecretRead, VersionActivate,
+            WorkerBind, WorkerManage,
         };
         match self {
             Self::NamespaceRead => &[NamespaceRead],
@@ -77,15 +86,23 @@ impl ApiOperation {
             Self::DefinitionPublish => &[DefinitionPublish],
             Self::RunStart => &[RunStart],
             Self::RunRead => &[RunRead],
+            Self::RunQuery => &[RunRead, RunQuery],
+            Self::RunUpdate => &[RunUpdate],
             Self::PayloadInspect => &[RunRead, RunPayloadInspect],
+            Self::PayloadDisclose => &[RunRead],
+            Self::DatabaseResultRead => &[RunRead, Permission::DatabaseResultRead],
             Self::RunOperate => &[RunOperate],
             Self::RunRerun => &[RunOperate, RunStart],
             Self::RunSignal => &[RunSignal],
+            Self::ApprovalRead => &[RunRead, ApprovalRead],
+            Self::ApprovalDecide => &[ApprovalDecide],
             Self::SagaOverride => &[SagaOverride],
             Self::QuotaRead => &[QuotaRead],
             Self::QuotaManage => &[QuotaManage],
             Self::SecretRead => &[SecretRead],
             Self::SecretManage => &[SecretManage],
+            Self::DatabaseAdHoc => &[RunStart, Permission::DatabaseAdHoc, Permission::DatabaseUse],
+            Self::DatabaseManage => &[Permission::DatabaseManage],
             Self::EgressManage => &[EgressManage],
             Self::WorkerBind => &[WorkerBind],
             Self::EventPublish => &[EventPublish],
@@ -112,6 +129,7 @@ pub enum ApiTarget {
     Workflow(WorkflowId),
     Run(RunId),
     PublicationRequest(RequestId),
+    ApprovalRequest(ApprovalRequestId),
     /// Both sides are authorized in the tenant; only the destination bucket is charged.
     Promotion {
         source: WorkflowId,
@@ -121,6 +139,12 @@ pub enum ApiTarget {
 
 /// Canonical, tenant-filtered namespace lookups needed before durable admission.
 pub trait ApiAdmissionStore: NamespaceDirectory + NamespaceApiAdmission {
+    /// Durably records a same-tenant runtime approval denial before it is returned to the caller.
+    fn record_approval_denial(
+        &self,
+        audit: &AuditRecord,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
     fn namespace_id_by_slug(
         &self,
         tenant: TenantId,
@@ -162,6 +186,18 @@ pub trait ApiAdmissionStore: NamespaceDirectory + NamespaceApiAdmission {
         tenant: TenantId,
         request: RequestId,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    fn approval_request_namespace(
+        &self,
+        tenant: TenantId,
+        request: ApprovalRequestId,
+    ) -> impl Future<Output = Result<Option<NamespaceId>, StoreError>> + Send;
+
+    fn approval_request_exists_outside(
+        &self,
+        tenant: TenantId,
+        request: ApprovalRequestId,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 }
 
 #[derive(Debug, Clone)]
@@ -190,8 +226,37 @@ where
         target: ApiTarget,
         ctx: &RequestContext,
     ) -> Result<NamespaceId, AppError> {
+        if let ApiTarget::ApprovalRequest(request) = &target {
+            let namespace = self
+                .resolve_approval_request(principal, *request, ctx)
+                .await?;
+            for permission in operation.permissions() {
+                if let Err(error) = principal.authorize(*permission) {
+                    self.audit_approval_denial(principal, *request, ctx).await?;
+                    return Err(error.into());
+                }
+            }
+            self.admit_resolved_namespace(principal.tenant_id(), namespace)
+                .await?;
+            return Ok(namespace);
+        }
+
         for permission in operation.permissions() {
-            principal.authorize(*permission)?;
+            if let Err(error) = principal.authorize(*permission) {
+                if operation == ApiOperation::DatabaseAdHoc
+                    && let ApiTarget::Namespace(namespace) = &target
+                {
+                    crate::runs::audit_database_execution_denied(
+                        &self.store,
+                        &self.clock,
+                        principal,
+                        *namespace,
+                        ctx,
+                    )
+                    .await;
+                }
+                return Err(error.into());
+            }
         }
 
         let tenant = principal.tenant_id();
@@ -212,6 +277,10 @@ where
             ApiTarget::PublicationRequest(request) => {
                 self.resolve_request(principal, request, ctx).await?
             }
+            ApiTarget::ApprovalRequest(request) => {
+                self.resolve_approval_request(principal, request, ctx)
+                    .await?
+            }
             ApiTarget::Promotion {
                 source,
                 destination,
@@ -228,7 +297,8 @@ where
 
     /// Consumes one token for a namespace already authorized and canonically resolved by another
     /// application use case. This narrow entry point exists for payload inspection, whose prepare
-    /// phase must resolve the run without reading its payload before admission.
+    /// phase resolves the run before admission. Database result disclosure uses the same entry
+    /// point after validating the retained scope; external content is read only after admission.
     pub async fn admit_resolved_namespace(
         &self,
         tenant: TenantId,
@@ -325,6 +395,35 @@ where
         Err(AppError::NotFound)
     }
 
+    async fn resolve_approval_request(
+        &self,
+        principal: &Principal,
+        request: ApprovalRequestId,
+        ctx: &RequestContext,
+    ) -> Result<NamespaceId, AppError> {
+        if let Some(namespace) = self
+            .store
+            .approval_request_namespace(principal.tenant_id(), request)
+            .await?
+        {
+            return Ok(namespace);
+        }
+        if let Ok(true) = self
+            .store
+            .approval_request_exists_outside(principal.tenant_id(), request)
+            .await
+        {
+            self.record_cross_tenant(
+                principal,
+                ResourceType::ApprovalRequest,
+                request.to_string(),
+                ctx,
+            )
+            .await;
+        }
+        Err(AppError::NotFound)
+    }
+
     async fn record_cross_tenant(
         &self,
         principal: &Principal,
@@ -348,6 +447,25 @@ where
             );
         }
     }
+
+    async fn audit_approval_denial(
+        &self,
+        principal: &Principal,
+        request: ApprovalRequestId,
+        ctx: &RequestContext,
+    ) -> Result<(), AppError> {
+        let record = AuditRecord::by(
+            principal,
+            AuditAction::ApprovalDenied,
+            ResourceType::ApprovalRequest,
+            request.to_string(),
+            ctx.trace_id.clone(),
+            self.clock.now(),
+        )
+        .with_reason("NOT_ELIGIBLE");
+        self.store.record_approval_denial(&record).await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -356,7 +474,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use sagat_domain::definition::WorkflowId;
-    use sagat_domain::execution::RunId;
+    use sagat_domain::execution::{ApprovalRequestId, RunId};
     use sagat_domain::identity::{Permission, Role, Subject};
     use sagat_domain::versioning::RequestId;
     use time::OffsetDateTime;
@@ -373,7 +491,9 @@ mod tests {
         workflow: Option<(TenantId, WorkflowId, NamespaceId)>,
         run: Option<(TenantId, RunId, NamespaceId)>,
         request: Option<(TenantId, RequestId, NamespaceId)>,
+        approval: Option<(TenantId, ApprovalRequestId, NamespaceId)>,
         decision: Result<RateDecision, StoreError>,
+        approval_denial: Result<(), StoreError>,
         charges: Vec<(TenantId, NamespaceId)>,
         denials: usize,
     }
@@ -386,7 +506,9 @@ mod tests {
                 workflow: None,
                 run: None,
                 request: None,
+                approval: None,
                 decision: Ok(RateDecision::Admitted),
+                approval_denial: Ok(()),
                 charges: Vec::new(),
                 denials: 0,
             }
@@ -440,6 +562,12 @@ mod tests {
     }
 
     impl ApiAdmissionStore for Store {
+        async fn record_approval_denial(&self, _audit: &AuditRecord) -> Result<(), StoreError> {
+            let mut state = self.0.lock().unwrap();
+            state.denials += 1;
+            state.approval_denial.clone()
+        }
+
         async fn namespace_id_by_slug(
             &self,
             tenant: TenantId,
@@ -535,6 +663,33 @@ mod tests {
                 .request
                 .is_some_and(|entry| entry.0 != tenant && entry.1 == request))
         }
+
+        async fn approval_request_namespace(
+            &self,
+            tenant: TenantId,
+            request: ApprovalRequestId,
+        ) -> Result<Option<NamespaceId>, StoreError> {
+            Ok(self
+                .0
+                .lock()
+                .unwrap()
+                .approval
+                .filter(|entry| entry.0 == tenant && entry.1 == request)
+                .map(|entry| entry.2))
+        }
+
+        async fn approval_request_exists_outside(
+            &self,
+            tenant: TenantId,
+            request: ApprovalRequestId,
+        ) -> Result<bool, StoreError> {
+            Ok(self
+                .0
+                .lock()
+                .unwrap()
+                .approval
+                .is_some_and(|entry| entry.0 != tenant && entry.1 == request))
+        }
     }
 
     #[derive(Debug, Clone, Copy)]
@@ -590,6 +745,89 @@ mod tests {
                 &principal(caller_tenant, Role::Viewer),
                 ApiOperation::DefinitionRead,
                 ApiTarget::Workflow(workflow),
+                &RequestContext::default(),
+            )
+            .await;
+
+        assert_eq!(result, Err(AppError::NotFound));
+        let state = store.0.lock().unwrap();
+        assert!(state.charges.is_empty());
+        assert_eq!(state.denials, 1);
+    }
+
+    #[tokio::test]
+    async fn approval_permission_denial_is_audited_without_charging() {
+        let store = Store::default();
+        let tenant = TenantId::generate();
+        let namespace = NamespaceId::generate();
+        let request = ApprovalRequestId::generate();
+        store.0.lock().unwrap().approval = Some((tenant, request, namespace));
+        let service = ApiAdmissionService::new(store.clone(), FixedClock);
+
+        let result = service
+            .admit(
+                &principal(tenant, Role::Viewer),
+                ApiOperation::ApprovalDecide,
+                ApiTarget::ApprovalRequest(request),
+                &RequestContext::default(),
+            )
+            .await;
+
+        assert_eq!(
+            result,
+            Err(AppError::Forbidden {
+                permission: Permission::ApprovalDecide
+            })
+        );
+        let state = store.0.lock().unwrap();
+        assert!(state.charges.is_empty());
+        assert_eq!(state.denials, 1);
+    }
+
+    #[tokio::test]
+    async fn approval_permission_denial_fails_closed_when_audit_cannot_commit() {
+        let store = Store::default();
+        let tenant = TenantId::generate();
+        let namespace = NamespaceId::generate();
+        let request = ApprovalRequestId::generate();
+        {
+            let mut state = store.0.lock().unwrap();
+            state.approval = Some((tenant, request, namespace));
+            state.approval_denial = Err(StoreError::Unavailable {
+                detail: "audit storage unavailable".to_owned(),
+            });
+        }
+        let service = ApiAdmissionService::new(store.clone(), FixedClock);
+
+        let result = service
+            .admit(
+                &principal(tenant, Role::Viewer),
+                ApiOperation::ApprovalDecide,
+                ApiTarget::ApprovalRequest(request),
+                &RequestContext::default(),
+            )
+            .await;
+
+        assert_eq!(result, Err(AppError::Unavailable));
+        let state = store.0.lock().unwrap();
+        assert!(state.charges.is_empty());
+        assert_eq!(state.denials, 1);
+    }
+
+    #[tokio::test]
+    async fn foreign_approval_is_not_disclosed_to_a_caller_without_permission() {
+        let store = Store::default();
+        let tenant = TenantId::generate();
+        let request = ApprovalRequestId::generate();
+        store.0.lock().unwrap().approval =
+            Some((TenantId::generate(), request, NamespaceId::generate()));
+        let service = ApiAdmissionService::new(store.clone(), FixedClock);
+
+        let result = service
+            .admit(
+                &principal(tenant, Role::Viewer),
+                ApiOperation::ApprovalDecide,
+                ApiTarget::ApprovalRequest(request),
                 &RequestContext::default(),
             )
             .await;

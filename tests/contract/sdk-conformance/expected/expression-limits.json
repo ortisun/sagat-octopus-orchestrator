@@ -1,0 +1,178 @@
+{
+  "faultsApplied": [],
+  "observations": [
+    {
+      "id": "start",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "bytes-limit",
+      "ok": true,
+      "op": "query",
+      "result": {
+        "result": 508,
+        "runVersion": 2,
+        "stateRevision": 0
+      }
+    },
+    {
+      "id": "literal-limit",
+      "ok": true,
+      "op": "query",
+      "result": {
+        "result": 64,
+        "runVersion": 2,
+        "stateRevision": 0
+      }
+    },
+    {
+      "id": "constructed-limit",
+      "ok": true,
+      "op": "query",
+      "result": {
+        "result": 4096,
+        "runVersion": 2,
+        "stateRevision": 0
+      }
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": "OPERATION_EVALUATION_FAILED",
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:2>"
+      },
+      "id": "constructed-excess",
+      "ok": false,
+      "op": "query"
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": "INVALID_OPERATION_STATE",
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:3>"
+      },
+      "id": "schema-refusal",
+      "ok": false,
+      "op": "query"
+    },
+    {
+      "id": "after-refusal",
+      "ok": true,
+      "op": "query",
+      "result": {
+        "result": 64,
+        "runVersion": 2,
+        "stateRevision": 0
+      }
+    },
+    {
+      "id": "stop",
+      "ok": true,
+      "op": "cancel",
+      "result": {
+        "accepted": true,
+        "runStatus": "CANCELLED"
+      }
+    },
+    {
+      "id": "stopped",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "CANCELLED",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    }
+  ],
+  "publicationEvidence": [
+    {
+      "activeVersion": null,
+      "code": "VALIDATION_FAILED",
+      "publishedVersions": 0,
+      "reason": "EXPRESSION",
+      "retryable": false,
+      "status": 422,
+      "workflow": "bytes-excess"
+    },
+    {
+      "activeVersion": null,
+      "code": "VALIDATION_FAILED",
+      "publishedVersions": 0,
+      "reason": "EXPRESSION",
+      "retryable": false,
+      "status": 422,
+      "workflow": "literal-excess"
+    },
+    {
+      "activeVersion": null,
+      "code": "VALIDATION_FAILED",
+      "publishedVersions": 0,
+      "reason": "EXPRESSION",
+      "retryable": false,
+      "status": 422,
+      "workflow": "object-literal"
+    }
+  ],
+  "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "hold",
+          "kind": "FORWARD",
+          "status": "CANCELLED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:1>",
+      "status": "CANCELLED"
+    }
+  ],
+  "workerLog": {}
+}

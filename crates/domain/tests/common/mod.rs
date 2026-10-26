@@ -1,5 +1,5 @@
 //! Shared fixtures for the execution tests: definition builders and a journaling driver.
-#![allow(dead_code, clippy::expect_used)]
+#![allow(dead_code, clippy::expect_used, clippy::panic)]
 
 use std::time::Duration;
 
@@ -186,6 +186,16 @@ pub fn with_effect(node: Node, effect: EffectPolicy) -> Node {
 
 pub fn end(node: &str) -> Node {
     Node::new(id(node), NodeKind::End { output: None })
+}
+
+/// An `end` whose `outputExpr` is the run's result (G21).
+pub fn end_with(node: &str, output: &str) -> Node {
+    Node::new(
+        id(node),
+        NodeKind::End {
+            output: Some(expr(output)),
+        },
+    )
 }
 
 pub fn build(entry: &str, nodes: Vec<Node>) -> WorkflowDefinition {
@@ -460,6 +470,7 @@ impl Harness {
                 node,
                 outcome: Ok(truth),
             },
+            Evaluation::Switch { .. } => panic!("resolve switches with an explicit selection"),
             Evaluation::Correlation { node, .. } => Resolution::Correlation {
                 node,
                 key: Ok(execution::CorrelationKey::parse(key).expect("key")),
@@ -467,6 +478,10 @@ impl Harness {
             Evaluation::Child { node, .. } => Resolution::Child {
                 node,
                 child: Ok(RunId::generate()),
+            },
+            Evaluation::Output { node, .. } => Resolution::Output {
+                node,
+                outcome: Ok(()),
             },
         };
         self.resolve(resolution).expect("resolution applies");

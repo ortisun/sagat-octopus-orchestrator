@@ -21,12 +21,11 @@ use std::time::Duration;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::events::{
     EndpointId, EndpointLimits, EndpointStatus, EventEnvelope, EventError, EventId, EventKey,
-    InboxStatus,
 };
 use sagat_domain::execution::{CorrelationKey, RunId};
 use sagat_domain::identity::{Namespace, NamespaceId, Permission, Principal, Slug, TenantId};
 use sagat_domain::quota::QuotaResource;
-use sagat_domain::secrets::{SecretCipher, SecretName, associated_data};
+use sagat_domain::secrets::{SecretCipher, SecretName};
 use sagat_domain::workflow::EventType;
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
@@ -214,24 +213,6 @@ impl WebhookAdmissionAudits {
     }
 }
 
-/// An event as the API shows it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StoredEvent {
-    pub tenant_id: TenantId,
-    pub namespace_id: NamespaceId,
-    pub envelope: EventEnvelope,
-    pub occurred_at: Option<OffsetDateTime>,
-    pub payload: Vec<u8>,
-    pub received_at: OffsetDateTime,
-    pub expires_at: OffsetDateTime,
-    pub status: InboxStatus,
-    pub attempts: u32,
-    pub last_error: Option<String>,
-    pub dispatched_at: Option<OffsetDateTime>,
-    /// What the event woke or started.
-    pub deliveries: Vec<Delivery>,
-}
-
 /// One consumer an event reached: the evidence that it was delivered, once.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Delivery {
@@ -327,13 +308,6 @@ pub trait EventStore: NamespaceDirectory + QuotaLookup + SecretAccessLookup {
         backlog_limit: u64,
         audits: &WebhookAdmissionAudits,
     ) -> impl Future<Output = Result<WebhookAdmission, StoreError>> + Send;
-
-    fn event(
-        &self,
-        tenant: TenantId,
-        namespace: NamespaceId,
-        key: &EventKey,
-    ) -> impl Future<Output = Result<Option<StoredEvent>, StoreError>> + Send;
 }
 
 /// A request to a webhook endpoint, as the HTTP adapter read it. Nothing here is trusted.
@@ -499,7 +473,7 @@ impl WebhookIdentityVerifier for NoWebhookIdentities {
 pub struct EventService<S, C> {
     store: S,
     clock: C,
-    cipher: Arc<dyn SecretCipher>,
+    cipher: crate::secrets::SecretReader,
     evaluator: Arc<dyn ExpressionEvaluator>,
     gate: Gate,
     identities: Arc<dyn WebhookIdentityVerifier>,
@@ -517,14 +491,36 @@ where
         cipher: Arc<dyn SecretCipher>,
         evaluator: Arc<dyn ExpressionEvaluator>,
     ) -> Self {
+        Self::with_reader(
+            store,
+            clock,
+            crate::secrets::SecretReader::local(cipher),
+            evaluator,
+        )
+    }
+
+    pub fn with_reader(
+        store: S,
+        clock: C,
+        reader: crate::secrets::SecretReader,
+        evaluator: Arc<dyn ExpressionEvaluator>,
+    ) -> Self {
         Self {
             store,
             clock,
-            cipher,
+            cipher: reader,
             evaluator,
             gate: Gate::default(),
             identities: Arc::new(NoWebhookIdentities),
         }
+    }
+
+    pub fn with_secret_provider(
+        mut self,
+        provider: Arc<dyn crate::secret_provider::SecretProvider>,
+    ) -> Self {
+        self.cipher = self.cipher.with_provider(provider);
+        self
     }
 
     #[must_use]
@@ -832,25 +828,6 @@ where
         }
     }
 
-    /// An event of the inbox, with what it reached.
-    ///
-    /// # Errors
-    /// [`AppError::Forbidden`] without `event:read`; [`AppError::NotFound`].
-    pub async fn event(
-        &self,
-        principal: &Principal,
-        namespace: NamespaceId,
-        key: &EventKey,
-        ctx: &RequestContext,
-    ) -> Result<StoredEvent, AppError> {
-        principal.authorize(Permission::EventRead)?;
-        require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
-        self.store
-            .event(principal.tenant_id(), namespace, key)
-            .await?
-            .ok_or(AppError::NotFound)
-    }
-
     /// Receives a request on the public URL of an endpoint.
     ///
     /// The caller has no tenant, no token and no say in the order of the checks: unknown endpoint,
@@ -1029,18 +1006,16 @@ where
             })?;
         let mut values = Vec::with_capacity(versions.len());
         for stored in &versions {
-            let aad = associated_data(
-                record.tenant_id,
-                record.namespace_id,
-                &stored.meta.name,
-                stored.meta.id,
-                &stored.meta.key_id,
-            );
-            // A version no key opens is skipped, and so is one too short to mean anything: the
-            // others may still verify the request.
-            if let Ok(value) = self.cipher.open(&stored.sealed, &aad)
-                && signing::usable(value.expose())
-            {
+            let value = match self.cipher.resolve(stored).await {
+                Ok(value) => value,
+                // Migration grace must never turn an unavailable provider into local authority.
+                Err(_) if matches!(stored.value, crate::secrets::StoredValue::OpenBao(_)) => {
+                    return Err(Unverified::Store(AppError::Unavailable));
+                }
+                // Preserve the legacy key-ring grace behavior for local-only versions.
+                Err(_) => continue,
+            };
+            if signing::usable(value.expose()) {
                 values.push(value);
             }
         }

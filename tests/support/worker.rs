@@ -291,7 +291,10 @@ impl Platform {
     pub async fn connect_at(&self, url: String, sub: &str, tenant: &str) -> Worker<'_> {
         let client = WorkerServiceClient::connect(url)
             .await
-            .expect("connect to the worker service");
+            .expect("connect to the worker service")
+            // Match the public SDK transports: one bounded poll can carry 8 MiB of input plus
+            // protobuf metadata, exceeding Tonic's default 4 MiB receive limit.
+            .max_decoding_message_size(16 * 1024 * 1024);
         Worker {
             platform: self,
             subject: sub.to_owned(),
@@ -413,6 +416,7 @@ impl Worker<'_> {
             generation: lease.generation,
             lease_token: lease.lease_token.clone(),
             traceparent: String::new(),
+            instance: lease.instance.clone(),
         }
     }
 
@@ -443,6 +447,7 @@ impl Worker<'_> {
             attempt: lease.attempt,
             generation: lease.generation,
             lease_token: lease.lease_token.clone(),
+            instance: lease.instance.clone(),
             ..header
         };
         let mut messages = vec![WriteBlobRequest {
@@ -477,6 +482,7 @@ impl Worker<'_> {
             generation: lease.generation,
             lease_token: lease.lease_token.clone(),
             blob_id: blob_id.to_owned(),
+            instance: lease.instance.clone(),
         }
     }
 
@@ -538,6 +544,7 @@ impl Worker<'_> {
             run_id: lease.run_id.clone(),
             step_id: lease.step_id.clone(),
             attempt: lease.attempt,
+            instance: lease.instance.clone(),
         }
     }
 
@@ -554,6 +561,7 @@ impl Worker<'_> {
             output_blob_ref: String::new(),
             output_sha256: String::new(),
             traceparent: String::new(),
+            instance: lease.instance.clone(),
         }
     }
 
@@ -570,6 +578,7 @@ impl Worker<'_> {
             safe_message: "declined by the issuer".into(),
             retryable,
             traceparent: String::new(),
+            instance: lease.instance.clone(),
         }
     }
 

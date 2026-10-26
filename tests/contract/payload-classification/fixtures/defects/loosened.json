@@ -1,0 +1,12 @@
+{
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "unsafe": {
+        "type": "string",
+        "x-sagat-classification": "public"
+      }
+    },
+    "x-sagat-classification": "pii"
+  }
+}

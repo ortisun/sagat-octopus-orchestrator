@@ -9,12 +9,16 @@
 use time::OffsetDateTime;
 
 use super::error::ExecutionError;
-use super::event::{JoinOutcome, RunEvent, StopReason};
+use super::event::{
+    AddressedRunEvent, FailureCode, JoinOutcome, RunEvent, StopReason, SwitchSelection,
+};
+use super::instance::InstancePath;
 use super::sagas;
 use super::state::{RunState, SagaPhase, StepState, StepStatus, WaitingOn};
 use crate::saga::{NodeOrigin, SagaOutcome};
 use crate::workflow::{
-    CancelPolicy, Expression, JoinPolicy, NodeId, NodeKind, Scope, WorkflowDefinition,
+    CancelPolicy, Expression, JoinPolicy, NodeId, NodeKind, Scope, SwitchCase, WorkflowDefinition,
+    WorkflowLimits,
 };
 
 /// What the engine needs to know before it can continue.
@@ -24,6 +28,11 @@ pub enum Evaluation {
     Condition {
         node: NodeId,
         expression: Expression,
+    },
+    /// Evaluate ordered predicates until one is true, or choose the default.
+    Switch {
+        node: NodeId,
+        cases: Vec<SwitchCase>,
     },
     /// Evaluate the correlation expression of a `waitEvent` node to a string key.
     Correlation {
@@ -36,6 +45,12 @@ pub enum Evaluation {
         node: NodeId,
         input: Option<Expression>,
     },
+    /// Evaluate the `outputExpr` of the `end` node that finishes the run: its value is the run's
+    /// result (G21), kept as the output of that step.
+    Output {
+        node: NodeId,
+        expression: Expression,
+    },
 }
 
 /// One planning decision.
@@ -47,6 +62,183 @@ pub enum Plan {
     Evaluate(Evaluation),
     /// Nothing more can happen without an external event (a worker, a timer, a signal).
     Idle,
+}
+
+/// One deterministic planning decision within an already admitted execution path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AddressedPlan {
+    Emit(AddressedRunEvent),
+    Idle,
+}
+
+/// Advances activity routing within one admitted structured path.
+///
+/// Structured control nodes keep their own transactional owners. This planner releases activities
+/// and routes their recorded success or failure while leaving a pending structured node idle for
+/// its dedicated transition.
+pub fn plan_addressed(
+    def: &WorkflowDefinition,
+    state: &RunState,
+    path: &InstancePath,
+) -> Result<AddressedPlan, ExecutionError> {
+    if path.is_root() {
+        return Err(ExecutionError::Invariant(
+            "addressed planning requires a scoped path",
+        ));
+    }
+    if state.is_finished() {
+        return Ok(AddressedPlan::Idle);
+    }
+    let forward = !state.is_paused() && state.stop_reason().is_none();
+    for (instance, step) in state
+        .instances()
+        .filter(|(instance, _)| instance.path() == path)
+    {
+        if !matches!(
+            step.status(),
+            StepStatus::Succeeded | StepStatus::Failed | StepStatus::Skipped
+        ) || step.routed()
+        {
+            continue;
+        }
+        let declared = def
+            .node_for_instance(instance)
+            .ok_or_else(|| ExecutionError::UnknownStep(instance.node().clone()))?;
+        // Derived completions always retain their empty routing event. This closes the recorded
+        // step without activating forward work when a pause, stop or draining owner fences it.
+        if !forward && declared.origin() == &NodeOrigin::Declared {
+            continue;
+        }
+        let activated = if declared.origin() != &NodeOrigin::Declared {
+            Vec::new()
+        } else if step.status() == StepStatus::Failed {
+            declared.on_error().cloned().into_iter().collect()
+        } else {
+            declared.next().cloned().into_iter().collect()
+        };
+        return addressed(
+            path,
+            RunEvent::StepRouted {
+                node: instance.node().clone(),
+                activated,
+            },
+        );
+    }
+    if !forward {
+        return Ok(AddressedPlan::Idle);
+    }
+    for (instance, step) in state
+        .instances()
+        .filter(|(instance, _)| instance.path() == path)
+    {
+        if step.status() == StepStatus::Pending {
+            let declared = def
+                .node_for_instance(instance)
+                .ok_or_else(|| ExecutionError::UnknownStep(instance.node().clone()))?;
+            // A compensation is released by its scope, when everything it waits for has finished.
+            if matches!(declared.origin(), NodeOrigin::Compensation(_)) {
+                continue;
+            }
+            return match declared.kind() {
+                NodeKind::Activity { .. } => addressed(
+                    path,
+                    RunEvent::StepReleased {
+                        node: instance.node().clone(),
+                    },
+                ),
+                NodeKind::ForEach { .. }
+                | NodeKind::Approval { .. }
+                | NodeKind::While { .. }
+                | NodeKind::RepeatUntil { .. }
+                | NodeKind::Return { .. } => Ok(AddressedPlan::Idle),
+                _ => Err(ExecutionError::UnsupportedScopedEvent(
+                    "scoped non-activity planning",
+                )),
+            };
+        }
+    }
+    Ok(AddressedPlan::Idle)
+}
+
+/// Advances one complete local path without inspecting sibling paths or historical iterations.
+/// Global and ancestor fences are part of the snapshot, so a stale or draining owner cannot
+/// release new forward work.
+pub fn plan_path(
+    def: &WorkflowDefinition,
+    state: &super::PathExecutionState,
+) -> Result<AddressedPlan, ExecutionError> {
+    if state.global().status().is_terminal() {
+        return Ok(AddressedPlan::Idle);
+    }
+    let forward = state.allows_forward_progress();
+    let path = state.path();
+    for (node, step) in state.local_instances() {
+        if !matches!(
+            step.status(),
+            StepStatus::Succeeded | StepStatus::Failed | StepStatus::Skipped
+        ) || step.routed()
+        {
+            continue;
+        }
+        let instance = super::ExecutionInstanceId::in_path(path.clone(), node.clone());
+        let declared = def
+            .node_for_instance(&instance)
+            .ok_or_else(|| ExecutionError::UnknownStep(node.clone()))?;
+        // Derived completions always retain their empty routing event. This closes the recorded
+        // step without activating forward work when a pause, stop or draining owner fences it.
+        if !forward && declared.origin() == &NodeOrigin::Declared {
+            continue;
+        }
+        let activated = if declared.origin() != &NodeOrigin::Declared {
+            Vec::new()
+        } else if step.status() == StepStatus::Failed {
+            declared.on_error().cloned().into_iter().collect()
+        } else {
+            declared.next().cloned().into_iter().collect()
+        };
+        return addressed(
+            path,
+            RunEvent::StepRouted {
+                node: node.clone(),
+                activated,
+            },
+        );
+    }
+    if !forward {
+        return Ok(AddressedPlan::Idle);
+    }
+    for (node, step) in state.local_instances() {
+        if step.status() != StepStatus::Pending {
+            continue;
+        }
+        let instance = super::ExecutionInstanceId::in_path(path.clone(), node.clone());
+        let declared = def
+            .node_for_instance(&instance)
+            .ok_or_else(|| ExecutionError::UnknownStep(node.clone()))?;
+        if matches!(declared.origin(), NodeOrigin::Compensation(_)) {
+            continue;
+        }
+        return match declared.kind() {
+            NodeKind::Activity { .. } => {
+                addressed(path, RunEvent::StepReleased { node: node.clone() })
+            }
+            NodeKind::ForEach { .. }
+            | NodeKind::Approval { .. }
+            | NodeKind::While { .. }
+            | NodeKind::RepeatUntil { .. }
+            | NodeKind::Return { .. } => Ok(AddressedPlan::Idle),
+            _ => Err(ExecutionError::UnsupportedScopedEvent(
+                "scoped non-activity planning",
+            )),
+        };
+    }
+    Ok(AddressedPlan::Idle)
+}
+
+fn addressed(path: &InstancePath, event: RunEvent) -> Result<AddressedPlan, ExecutionError> {
+    AddressedRunEvent::in_path(path.clone(), event)
+        .map(AddressedPlan::Emit)
+        .map_err(|_| ExecutionError::Invariant("an addressed plan lost its instance path"))
 }
 
 pub(super) fn after(
@@ -95,7 +287,7 @@ pub fn plan(
     }
     let all_done = state.has_started()
         && state
-            .steps()
+            .instances()
             .all(|(_, step)| step.status().is_terminal() && step.routed());
     Ok(if all_done {
         Plan::Emit(RunEvent::RunFinished {
@@ -129,6 +321,54 @@ fn drain(
         // the end whatever stopped the run.
         if sagas::owned(def, state, node, true) {
             continue;
+        }
+        if matches!(step.waiting_on(), Some(WaitingOn::Collection)) {
+            let collection = state
+                .collection(&super::ExecutionInstanceId::root(node.clone()))
+                .ok_or(ExecutionError::Invariant(
+                    "a collection wait has no durable scope",
+                ))?;
+            match collection.phase() {
+                super::CollectionPhase::Open if reason == StopReason::Cancelled => {
+                    continue;
+                }
+                super::CollectionPhase::Draining => continue,
+                super::CollectionPhase::Open => {
+                    return Err(ExecutionError::UnsupportedStructuredNode(node.clone()));
+                }
+                super::CollectionPhase::Succeeded
+                | super::CollectionPhase::Failed
+                | super::CollectionPhase::Cancelled => {}
+            }
+        }
+        if matches!(step.waiting_on(), Some(WaitingOn::Loop)) {
+            let loop_state = state
+                .loop_state(&super::ExecutionInstanceId::root(node.clone()))
+                .ok_or(ExecutionError::Invariant(
+                    "a loop wait has no durable scope",
+                ))?;
+            match loop_state.phase() {
+                // A cancelled loop is drained by the scheduler under its own fence, as a collection
+                // is; the run's deadline over a running loop stays unsupported (O382).
+                super::LoopPhase::Ready
+                | super::LoopPhase::Running
+                | super::LoopPhase::Delaying
+                    if reason == StopReason::Cancelled =>
+                {
+                    continue;
+                }
+                super::LoopPhase::Ready
+                | super::LoopPhase::Running
+                | super::LoopPhase::Delaying => {
+                    return Err(ExecutionError::UnsupportedStructuredNode(node.clone()));
+                }
+                // The scheduler drains the active iteration and settles the owner under its own
+                // fence; cancelling the owner here would take the drain out from under it.
+                super::LoopPhase::Draining => continue,
+                super::LoopPhase::Succeeded
+                | super::LoopPhase::Failed
+                | super::LoopPhase::Cancelled => {}
+            }
         }
         match step.status() {
             // A step parked on a child that the policy asks to be cancelled *and awaited* is asked
@@ -182,6 +422,13 @@ pub(super) fn waits_for_cancelled_child(
         )
 }
 
+/// The run's instance ceiling when its author lowered it; `None` while it is the platform's, which
+/// no acyclic root graph can reach and which the store alone guards.
+fn lowered_instance_limit(def: &WorkflowDefinition) -> Option<usize> {
+    let limit = usize::try_from(def.limits().max_instances()).ok()?;
+    (limit < usize::try_from(WorkflowLimits::default().max_instances()).ok()?).then_some(limit)
+}
+
 /// Gives a freshly routed step whatever it needs to make progress.
 fn start_pending(
     def: &WorkflowDefinition,
@@ -196,6 +443,14 @@ fn start_pending(
         // A compensation is released by its saga, when everything it waits for has finished.
         if matches!(declared.origin(), NodeOrigin::Compensation(_)) {
             continue;
+        }
+        // Activating this step would be one instance beyond the author's lowered ceiling: the run
+        // stops with a durable, typed failure instead of the store refusing the step at commit.
+        if lowered_instance_limit(def).is_some_and(|limit| state.charged_instances() >= limit) {
+            return Ok(Some(Plan::Emit(RunEvent::RunStopRequested {
+                reason: StopReason::Failed,
+                code: Some(FailureCode::instance_limit()),
+            })));
         }
         let action = match declared.kind() {
             NodeKind::Activity { .. } => Plan::Emit(RunEvent::StepReleased { node: node.clone() }),
@@ -215,6 +470,10 @@ fn start_pending(
                 node: node.clone(),
                 expression: expression.clone(),
             }),
+            NodeKind::Switch { cases, .. } => Plan::Evaluate(Evaluation::Switch {
+                node: node.clone(),
+                cases: cases.clone(),
+            }),
             NodeKind::Parallel { branches, .. } => Plan::Emit(RunEvent::ParallelForked {
                 node: node.clone(),
                 branches: branches.clone(),
@@ -223,7 +482,23 @@ fn start_pending(
                 node: node.clone(),
                 input: input.clone(),
             }),
-            NodeKind::End { .. } => Plan::Emit(RunEvent::EndReached { node: node.clone() }),
+            NodeKind::End { output: None } => {
+                Plan::Emit(RunEvent::EndReached { node: node.clone() })
+            }
+            NodeKind::End {
+                output: Some(expression),
+            } => Plan::Evaluate(Evaluation::Output {
+                node: node.clone(),
+                expression: expression.clone(),
+            }),
+            NodeKind::Approval { .. }
+            | NodeKind::ContinueAsNew { .. }
+            | NodeKind::ForEach { .. }
+            | NodeKind::While { .. }
+            | NodeKind::RepeatUntil { .. } => Plan::Idle,
+            NodeKind::Return { .. } => {
+                return Err(ExecutionError::UnsupportedStructuredNode(node.clone()));
+            }
         };
         return Ok(Some(action));
     }
@@ -374,6 +649,23 @@ fn successors_after(
         } else {
             if_false.clone()
         }],
+        NodeKind::Switch { cases, default } => match step.switch_selection() {
+            Some(SwitchSelection::Case(id)) => {
+                let target = cases
+                    .iter()
+                    .find(|case| case.id() == id)
+                    .ok_or(ExecutionError::Invariant("switch selected an unknown case"))?
+                    .target()
+                    .clone();
+                vec![target]
+            }
+            Some(SwitchSelection::Default) => vec![default.clone()],
+            None => {
+                return Err(ExecutionError::Invariant(
+                    "switch has no recorded selection",
+                ));
+            }
+        },
         NodeKind::WaitEvent { on_timeout, .. } if step.timed_out() => {
             on_timeout.iter().cloned().collect()
         }

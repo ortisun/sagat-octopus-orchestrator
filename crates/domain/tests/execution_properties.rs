@@ -332,6 +332,16 @@ fn perform(h: &mut Harness, action: &Action) -> Result<(), ExecutionError> {
                         _ => Err(()),
                     },
                 },
+                Evaluation::Switch { node, cases } => Resolution::Switch {
+                    node,
+                    selection: match mode {
+                        0 => Ok(sagat_domain::execution::SwitchSelection::Case(
+                            cases.first().expect("switch has a case").id().clone(),
+                        )),
+                        1 => Ok(sagat_domain::execution::SwitchSelection::Default),
+                        _ => Err(()),
+                    },
+                },
                 Evaluation::Correlation { node, .. } => Resolution::Correlation {
                     node,
                     key: match mode {
@@ -344,6 +354,13 @@ fn perform(h: &mut Harness, action: &Action) -> Result<(), ExecutionError> {
                     child: match mode {
                         2 => Err(FailureCode::child_depth_exceeded()),
                         _ => Ok(RunId::generate()),
+                    },
+                },
+                Evaluation::Output { node, .. } => Resolution::Output {
+                    node,
+                    outcome: match mode {
+                        2 => Err(FailureCode::run_data_limit()),
+                        _ => Ok(()),
                     },
                 },
             };

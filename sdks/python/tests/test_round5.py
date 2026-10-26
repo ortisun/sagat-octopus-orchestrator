@@ -216,7 +216,7 @@ async def test_the_optional_fields_of_a_request_are_sent(http: FakeHttpServer) -
         "occurredAt": "2026-10-10T15:30:15.250Z", "correlationKey": "ord-42", "dedupeTtlSeconds": 3600,
     }  # fmt: skip
     for seen in http.seen:
-        assert seen.headers["user-agent"] == "sagat-sdk-python/0.1.0 my-app/2.1 (test)"
+        assert seen.headers["user-agent"] == "sagat-sdk-python/0.2.0 my-app/2.1 (test)"
     await client.aclose()
 
 
@@ -227,7 +227,7 @@ async def test_the_optional_fields_that_are_absent_are_not_sent(http: FakeHttpSe
     await client.operate(RUN, "PAUSE", "maintenance window")
     assert http.seen[0].body == {"workflowId": WORKFLOW, "input": {}}
     assert http.seen[1].body == {"action": "PAUSE", "reason": "maintenance window"}
-    assert http.seen[0].headers["user-agent"] == "sagat-sdk-python/0.1.0"
+    assert http.seen[0].headers["user-agent"] == "sagat-sdk-python/0.2.0"
 
 
 async def test_the_list_filters_are_sent(http: FakeHttpServer, make_client: MakeClient) -> None:

@@ -72,6 +72,27 @@ fn unknown_commands_are_a_usage_error() {
 }
 
 #[test]
+fn cleanup_requires_provider_configuration_and_bounds_its_batch() {
+    let missing = control_plane(&["cleanup-secrets"], &[("DATABASE_URL", SECRET_URL)]);
+    assert_eq!(missing.status.code(), Some(2));
+    assert!(text(&missing.stderr).contains("SAGAT_OPENBAO_ADDRESS"));
+    for value in ["0", "129", "secret-canary"] {
+        let invalid = control_plane(
+            &["cleanup-secrets"],
+            &[
+                ("DATABASE_URL", SECRET_URL),
+                ("SAGAT_SECRET_CLEANUP_BATCH", value),
+            ],
+        );
+        assert_eq!(invalid.status.code(), Some(2));
+        assert!(text(&invalid.stderr).contains("SAGAT_SECRET_CLEANUP_BATCH"));
+        assert!(!text(&invalid.stderr).contains("secret-canary"));
+        assert!(!text(&invalid.stderr).contains("hunter2-password"));
+    }
+    assert!(text(&control_plane(&["--help"], &[]).stdout).contains("cleanup-secrets"));
+}
+
+#[test]
 fn a_missing_database_url_is_reported_without_guessing() {
     for command in ["serve", "migrate", "seed-dev"] {
         let output = control_plane(&[command], &[("SAGAT_ENV", "dev")]);

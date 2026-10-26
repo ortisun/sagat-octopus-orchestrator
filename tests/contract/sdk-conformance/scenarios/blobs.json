@@ -24,8 +24,9 @@
   "workers": {
     "w1": {
       "workerName": "blob-worker",
+      "protocolVersion": "1.4",
       "maxInflight": 2,
-      "heartbeatIntervalMs": 200,
+      "heartbeatIntervalMs": 60000,
       "activities": {
         "blob.round-trip": { "behavior": { "blobRoundTripBytes": 300000 } },
         "blob.output": { "behavior": { "blobOutputBytes": 300000 } },

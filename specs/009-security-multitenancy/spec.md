@@ -134,3 +134,47 @@ terminal evidence. Log exhaustion truncates with persisted evidence. Rejected as
 ends with a fenced typed failure and repeatable acknowledgement. Lowering retention policy does not
 rewrite existing expiry or authorize deletion. These are conservative engineering limits; quota
 tiers and regulatory retention classification remain the open product questions above.
+
+
+## Approved workflow-primitives dependency (2026-10-14)
+
+[ADR-0030](../../docs/adr/ADR-0030-structured-instances-and-continuation-chains.md) and
+[ADR-0031](../../docs/adr/ADR-0031-declared-operation-result-disclosure.md) accept the feature-014
+architecture and separate declared-result disclosure policy.
+[ADR-0032](../../docs/adr/ADR-0032-additive-workflow-ir.md) keeps the workflow IR at v1 and
+supersedes the earlier separate-revision allocation. Add the accepted built-in approval/read/decision and run/query/update grants, current authorization on receipt replay, tenant-scoped instance/chain references and atomic quotas/audit. ADR-0031 permits only explicitly declared bounded business results; ordinary structural inspection retains ADR-0028 and no custom/per-operation roles are invented.
+
+This approves the described dependency for implementation, not a runtime guarantee. Canonical
+contracts, migration/replay, tenant/fault tests and applicable five-SDK evidence remain the
+feature-014 release gates; existing feature behavior stays supported.
+## Approved dependent delivery: database connections
+
+Feature [017](../017-database-connections/spec.md) and [ADR-0035](../../docs/adr/ADR-0035-database-connections-and-managed-execution.md) were approved on 2026-10-16. Its [plan](../017-database-connections/plan.md) defines the bounded extension to shared contracts, admission/leases, effects, SDKs, Studio, telemetry, secret-provider/security and immutable revisions. Existing transactional, tenant and general payload-inspection guarantees remain binding. Track implementation and new runtime evidence in feature 017; this dependency note does not mark its requirements complete.
+
+
+## Production incident serialization refinement (2026-10-18)
+
+ADR-0038 refines only ADR-0022's production lock prefix to applicable scoped member chain→
+exact own run→binding EXCLUSIVE→own step→audit deduplication, matching ordinary report entry.
+Both production attribution and actual report/heartbeat storage prefixes are exercised under
+real PostgreSQL runtime-role locks; the prior counterexample incremented PostgreSQL deadlocks
+0→1. A separate real public script+continuation fixture proves chain-before-run ordering.
+No incident wire, authorization/fence, category/redaction, test branch or commit-before-ACK
+guarantee changes. This is an existing 009 writer dependency of 014's B0 inventory, not a
+new security feature or acceptance of complete nested/group order. Source/tests/evidence:
+tasks/project-completion/evidence/incident-lock-order-20261018/.
+
+
+## Worker session renewal after lock waits (2026-10-18)
+
+The existing009 WorkerStore renewal acquires its matching tenant/id/token session row before
+sampling the database clock, then renews in the same transaction only if still live. A session
+that expires during an unchanged-row wait returns the existing unauthenticated outcome without
+changing expiry, leases, run version, journal or outbox. Fresh registration remains supported.
+This is post-lock freshness, not continuous validity through commit; TTL/wire policy is unchanged.
+Full/path claim-room checks now share a transaction-typed post-lock clock check: expired
+authority supplies zero room without renewal, retaining the guard through count/claim commit.
+Managed-database ownership separately retains its session SHARE guard and samples time after
+acquisition; the complete B0/group lock graph remains pending.
+Runtime-role public-poll RED/GREEN and exact source/commands are retained under
+`tasks/project-completion/evidence/session-renewal-postwait-20261018/`. No canonical task closes.

@@ -320,6 +320,6 @@ async fn the_command_line_and_the_platform_are_compared_by_release() {
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["service"], "sagat-octopus-orchestrator");
     assert_eq!(body["apiVersion"], "v1");
-    assert_eq!(body["workerProtocol"]["maximum"], "1.4");
+    assert_eq!(body["workerProtocol"]["maximum"], "1.6");
     let _ = cli;
 }

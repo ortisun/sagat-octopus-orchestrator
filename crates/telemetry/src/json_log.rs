@@ -154,6 +154,23 @@ where
     }
 
     fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
+        // The PostgreSQL client/parser log query text at DEBUG and server notices at INFO. Neither
+        // target is safe even when an operator enables RUST_LOG=trace. Normalize bridged `log`
+        // records before checking the target; their static tracing target may just be `log`.
+        use tracing_log::NormalizeEvent as _;
+        let normalized = event.normalized_metadata();
+        let target = normalized
+            .as_ref()
+            .unwrap_or_else(|| event.metadata())
+            .target();
+        if ["tokio_postgres", "sqlparser"].iter().any(|crate_name| {
+            target == *crate_name
+                || target
+                    .strip_prefix(crate_name)
+                    .is_some_and(|suffix| suffix.starts_with("::"))
+        }) {
+            return;
+        }
         let mut line = Map::new();
         // Outermost span first, so that the innermost wins.
         if let Some(scope) = ctx.event_scope(event) {

@@ -1,0 +1,82 @@
+{
+  "canonical": {
+    "pre-and-post": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"first\":{\"entrypoint\":\"work\",\"nodes\":[{\"activity\":\"counter.first\",\"id\":\"work\",\"next\":\"returned\",\"type\":\"activity\"},{\"id\":\"returned\",\"result\":\"steps.work.output\",\"type\":\"return\"}]},\"second\":{\"entrypoint\":\"work\",\"nodes\":[{\"activity\":\"counter.second\",\"id\":\"work\",\"next\":\"returned\",\"type\":\"activity\"},{\"id\":\"returned\",\"result\":\"steps.work.output\",\"type\":\"return\"}]}},\"entrypoint\":\"pre\",\"kind\":\"Workflow\",\"limits\":{\"maxDepth\":1,\"maxInstances\":12},\"metadata\":{\"name\":\"loop-pre-post-runtime\"},\"nodes\":[{\"body\":\"first\",\"carry\":\"bodyResult\",\"condition\":\"carry < 1\",\"id\":\"pre\",\"initial\":\"0\",\"maxIterations\":3,\"next\":\"post\",\"timeoutMs\":60000,\"type\":\"while\"},{\"body\":\"second\",\"carry\":\"bodyResult\",\"condition\":\"carry >= 2\",\"id\":\"post\",\"initial\":\"0\",\"maxIterations\":3,\"next\":\"done\",\"timeoutMs\":60000,\"type\":\"repeatUntil\"},{\"id\":\"done\",\"outputExpr\":\"steps.post.output\",\"type\":\"end\"}]}"
+  },
+  "workflows": {
+    "pre-and-post": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "first": {
+          "entrypoint": "work",
+          "nodes": [
+            {
+              "activity": "counter.first",
+              "id": "work",
+              "next": "returned",
+              "type": "activity"
+            },
+            {
+              "id": "returned",
+              "result": "steps.work.output",
+              "type": "return"
+            }
+          ]
+        },
+        "second": {
+          "entrypoint": "work",
+          "nodes": [
+            {
+              "activity": "counter.second",
+              "id": "work",
+              "next": "returned",
+              "type": "activity"
+            },
+            {
+              "id": "returned",
+              "result": "steps.work.output",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "pre",
+      "kind": "Workflow",
+      "limits": {
+        "maxDepth": 1,
+        "maxInstances": 12
+      },
+      "metadata": {
+        "name": "loop-pre-post-runtime"
+      },
+      "nodes": [
+        {
+          "body": "first",
+          "carry": "bodyResult",
+          "condition": "carry < 1",
+          "id": "pre",
+          "initial": "0",
+          "maxIterations": 3,
+          "next": "post",
+          "timeoutMs": 60000,
+          "type": "while"
+        },
+        {
+          "body": "second",
+          "carry": "bodyResult",
+          "condition": "carry >= 2",
+          "id": "post",
+          "initial": "0",
+          "maxIterations": 3,
+          "next": "done",
+          "timeoutMs": 60000,
+          "type": "repeatUntil"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.post.output",
+          "type": "end"
+        }
+      ]
+    }
+  }
+}

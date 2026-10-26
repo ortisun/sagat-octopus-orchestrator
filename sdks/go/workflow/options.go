@@ -132,6 +132,39 @@ func HighRisk(on bool) StepOption { return func(s *stepSpec) { s.fields["highRis
 // OnError names the node the flow goes to when the step fails for good.
 func OnError(node string) StepOption { return func(s *stepSpec) { s.fields["onError"] = node } }
 
+// OutputSchema sets the JSON Schema of the node result carried by journal completion events.
+// It is valid for activity steps.
+func OutputSchema(schema map[string]any) StepOption {
+	return func(s *stepSpec) { s.fields["outputSchema"] = schema }
+}
+
+// ScriptOption sets one optional field of a pinned script node.
+type ScriptOption func(map[string]any)
+
+func ScriptLanguage(value string) ScriptOption {
+	return func(m map[string]any) { m["language"] = value }
+}
+func ScriptRetry(opts ...RetryOption) ScriptOption {
+	return func(m map[string]any) { m["retry"] = retryOf(opts) }
+}
+func ScriptCompensateWith(value string) ScriptOption {
+	return func(m map[string]any) { m["compensateWith"] = value }
+}
+func ScriptOnError(value string) ScriptOption { return func(m map[string]any) { m["onError"] = value } }
+func ScriptOutputSchema(schema map[string]any) ScriptOption {
+	return func(m map[string]any) { m["outputSchema"] = schema }
+}
+
+func ScriptSecrets(names ...string) ScriptOption {
+	return func(m map[string]any) {
+		list := make([]any, 0, len(names))
+		for _, name := range names {
+			list = append(list, name)
+		}
+		m["secrets"] = list
+	}
+}
+
 // ---- wait for an event
 
 // WaitOption sets an option of WaitForEvent.
@@ -143,6 +176,36 @@ func OnTimeout(node string) WaitOption { return func(m map[string]any) { m["onTi
 // Lookback lets an event that arrived up to d before the wait started wake it (once).
 func Lookback(d time.Duration) WaitOption {
 	return func(m map[string]any) { m["lookbackMs"] = millis(d) }
+}
+
+// WaitOutputSchema sets the JSON Schema of the event payload carried by a satisfied wait.
+func WaitOutputSchema(schema map[string]any) WaitOption {
+	return func(m map[string]any) { m["outputSchema"] = schema }
+}
+
+// ---- sequential loops
+
+// LoopOption sets an optional member of While or RepeatUntil.
+type LoopOption func(map[string]any)
+
+// LoopDelay waits on a durable timer between iterations that are still needed.
+func LoopDelay(d time.Duration) LoopOption {
+	return func(m map[string]any) { m["delayMs"] = millis(d) }
+}
+
+// LoopOnError names the node the flow follows when a loop fails.
+func LoopOnError(node string) LoopOption {
+	return func(m map[string]any) { m["onError"] = node }
+}
+
+// ---- continuation
+
+// ContinuationOption sets an optional member of ContinueAsNew.
+type ContinuationOption func(map[string]any)
+
+// ContinuationState explicitly selects the declared state transferred to the successor.
+func ContinuationState(expression string) ContinuationOption {
+	return func(m map[string]any) { m["state"] = expression }
 }
 
 // ---- child
@@ -173,6 +236,24 @@ func ChildInput(expression string) ChildOption {
 // ChildCancelPolicy sets what happens to the child when the parent is cancelled.
 func ChildCancelPolicy(p CancelPolicy) ChildOption {
 	return func(m map[string]any) { m["cancelPolicy"] = string(p) }
+}
+
+// ChildOutputSchema sets the JSON Schema of the child result carried by the completed node.
+func ChildOutputSchema(schema map[string]any) ChildOption {
+	return func(m map[string]any) { m["outputSchema"] = schema }
+}
+
+// LimitOption sets one optional workflow-wide execution ceiling.
+type LimitOption func(map[string]any)
+
+// MaxInstances lowers the maximum number of node instances admitted during one run.
+func MaxInstances(value int) LimitOption {
+	return func(m map[string]any) { m["maxInstances"] = int64(value) }
+}
+
+// MaxDepth lowers the maximum nesting depth of structured workflow nodes.
+func MaxDepth(value int) LimitOption {
+	return func(m map[string]any) { m["maxDepth"] = int64(value) }
 }
 
 // ---- saga

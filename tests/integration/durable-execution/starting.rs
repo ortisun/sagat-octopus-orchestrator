@@ -110,7 +110,7 @@ async fn a_run_stays_bound_to_the_version_it_started_on() {
     );
     let session = w.session(&["act.a", "act.b", "act.x"]).await;
     assert_eq!(
-        w.one_task(&session).await.node.as_str(),
+        w.one_task(&session).await.instance.node().as_str(),
         "a",
         "it keeps executing the graph it started with"
     );
@@ -329,6 +329,7 @@ async fn runs_are_listed_newest_first_with_filters_and_stable_pages() {
 
     assert_eq!(
         w.runs_of(&RunFilter {
+            origin: None,
             workflow: Some(other),
             status: None
         })
@@ -337,6 +338,7 @@ async fn runs_are_listed_newest_first_with_filters_and_stable_pages() {
     );
     let cancelled = w
         .runs_of(&RunFilter {
+            origin: None,
             workflow: None,
             status: Some(RunStatus::Cancelled),
         })

@@ -79,10 +79,58 @@ public sealed class WorkerHostTests : IAsyncLifetime
         Assert.Equal(["a.undo", "b.second", "c.lookup"], request.Capabilities.Activities);
         Assert.Empty(request.Capabilities.Pools);
         Assert.Equal(7, request.Capabilities.MaxInflight);
-        Assert.Equal("1.4", request.Capabilities.ProtocolVersion);
+        Assert.Equal("1.5", request.Capabilities.ProtocolVersion);
         Assert.Equal("Bearer tok", register.Headers.GetValue("authorization"));
         Assert.Equal("1.2", host.ProtocolVersion);
         Assert.True(host.IsRunning);
+    }
+
+    [Fact]
+    public async Task Protocol15EchoesScopedIdentityAndProtocol14OmitsIt()
+    {
+        var instance = new SagatOctopusOrchestrator.Protocol.V1.ExecutionInstanceIdentity { DefinitionNodeId = "charge" };
+        instance.InstancePath.Add(new SagatOctopusOrchestrator.Protocol.V1.ScopePathSegment { ScopeNodeId = "lines", IterationIndex = 7 });
+        State.AcceptVersions("1.5", "1.4");
+
+        var current = Host();
+        ActivityExecutionContext? currentContext = null;
+        current.RegisterActivity<JsonNode?, int>("charge", (_, context, _) =>
+        {
+            currentContext = context;
+            return Task.FromResult(1);
+        });
+        State.Lease(Lease(lease =>
+        {
+            lease.Instance = instance;
+            lease.InputJson = """{"input":{"order":7},"item":{"sku":"one"},"index":7,"steps":{}}""";
+        }));
+        await current.StartAsync();
+        await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 1, "the scoped completion");
+        Assert.Equal(instance, ((CompleteStepRequest)State.Of("CompleteStep")[0].Request).Instance);
+        Assert.Equal("charge", currentContext?.Instance?.DefinitionNodeId);
+        Assert.Equal(new ExecutionScope("lines", 7), Assert.Single(currentContext!.Instance!.InstancePath));
+        Assert.Equal("one", currentContext.Item?.GetProperty("sku").GetString());
+        Assert.Equal((uint)7, currentContext.Index);
+        await current.StopAsync();
+
+        var legacy = Host(options => options.Worker.ProtocolVersion = "1.4");
+        ActivityExecutionContext? legacyContext = null;
+        legacy.RegisterActivity<JsonNode?, int>("charge", (_, context, _) =>
+        {
+            legacyContext = context;
+            return Task.FromResult(1);
+        });
+        State.Lease(Lease(lease =>
+        {
+            lease.Instance = instance;
+            lease.InputJson = """{"input":{"order":7},"item":{"sku":"one"},"index":7,"steps":{}}""";
+        }));
+        await legacy.StartAsync();
+        await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 2, "the legacy completion");
+        Assert.Null(((CompleteStepRequest)State.Of("CompleteStep")[1].Request).Instance);
+        Assert.Null(legacyContext?.Instance);
+        Assert.Null(legacyContext?.Item);
+        Assert.Null(legacyContext?.Index);
     }
 
     [Fact]
@@ -567,7 +615,7 @@ public sealed class WorkerHostTests : IAsyncLifetime
         var clock = System.Diagnostics.Stopwatch.StartNew();
         await host.StopAsync(TimeSpan.FromSeconds(1));
         Assert.True(clock.Elapsed < TimeSpan.FromSeconds(2), $"stop took {clock.Elapsed}");
-        Assert.True(State.StreamCancelled);
+        await Eventually.UntilAsync(() => State.StreamCancelled, "the server observes stream cancellation");
     }
 
     [Fact]

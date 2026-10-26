@@ -148,9 +148,81 @@ class WorkerHostTest {
         assertEquals(List.of("a.undo", "b.second", "c.lookup"), request.getCapabilities().getActivitiesList());
         assertEquals(List.of("gpu"), request.getCapabilities().getPoolsList());
         assertEquals(7, request.getCapabilities().getMaxInflight());
-        assertEquals("1.4", request.getCapabilities().getProtocolVersion());
+        assertEquals("1.5", request.getCapabilities().getProtocolVersion());
         assertEquals("Bearer tok", register.header("authorization"));
         assertEquals("1.2", h.protocolVersion());
+    }
+
+    @Test
+    void protocol15EchoesScopedIdentityAndProtocol14OmitsIt() {
+        Worker.ExecutionInstanceIdentity instance = Worker.ExecutionInstanceIdentity.newBuilder()
+                .addInstancePath(Worker.ScopePathSegment.newBuilder().setScopeNodeId("lines").setIterationIndex(7))
+                .setDefinitionNodeId("charge")
+                .build();
+        fake.acceptVersions("1.5", "1.4");
+
+        WorkerHost current = host();
+        AtomicReference<ActivityContext> currentContext = new AtomicReference<>();
+        current.registerActivity("charge", (in, ctx) -> {
+            currentContext.set(ctx);
+            return 1;
+        });
+        fake.addLeases(lease(builder -> builder.setInstance(instance)
+                .setInputJson("{\"input\":{\"order\":7},\"item\":{\"sku\":\"one\"},\"index\":7,\"steps\":{}}")));
+        current.start();
+        until(() -> fake.of("CompleteStep").size() == 1, "the scoped completion");
+        assertEquals(instance, completed(0).getInstance());
+        assertEquals(
+                new ExecutionInstanceIdentity(List.of(new ExecutionScope("lines", 7)), "charge"),
+                currentContext.get().instance());
+        assertEquals("one", currentContext.get().item().path("sku").asText());
+        assertEquals(7, currentContext.get().index());
+        current.stop(Duration.ofSeconds(1));
+
+        WorkerHost legacy = host(builder -> builder.workerName("legacy").protocolVersion("1.4"));
+        AtomicReference<ActivityContext> legacyContext = new AtomicReference<>();
+        legacy.registerActivity("charge", (in, ctx) -> {
+            legacyContext.set(ctx);
+            return 1;
+        });
+        fake.addLeases(lease(builder -> builder.setInstance(instance)
+                .setInputJson("{\"input\":{\"order\":7},\"item\":{\"sku\":\"one\"},\"index\":7,\"steps\":{}}")));
+        legacy.start();
+        until(() -> fake.of("CompleteStep").size() == 2, "the legacy completion");
+        assertFalse(completed(1).hasInstance());
+        assertEquals(null, legacyContext.get().instance());
+        assertEquals(null, legacyContext.get().item());
+        assertEquals(null, legacyContext.get().index());
+    }
+
+    @Test
+    void scopedInstancesThatShareALegacyTaskIdAreRunConcurrently() throws Exception {
+        // The legacy task id is run/node/generation, so two iterations of one scope that are leased
+        // together carry the same one: the instance identity is what tells them apart.
+        fake.acceptVersions("1.5");
+        WorkerHost h = host();
+        java.util.concurrent.CountDownLatch together = new java.util.concurrent.CountDownLatch(2);
+        h.registerActivity("charge", (in, ctx) -> {
+            together.countDown();
+            if (!together.await(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                throw new AssertionError("the second iteration never ran beside the first");
+            }
+            return ctx.index();
+        });
+        for (int index = 0; index < 2; index++) {
+            int iteration = index;
+            fake.addLeases(lease(builder -> builder
+                    .setInstance(Worker.ExecutionInstanceIdentity.newBuilder()
+                            .addInstancePath(Worker.ScopePathSegment.newBuilder()
+                                    .setScopeNodeId("lines")
+                                    .setIterationIndex(iteration))
+                            .setDefinitionNodeId("charge"))
+                    .setInputJson("{\"input\":{},\"item\":{\"n\":" + iteration + "},\"index\":" + iteration + ",\"steps\":{}}")));
+        }
+        h.start();
+        until(() -> fake.of("CompleteStep").size() == 2, "both iterations to complete");
+        assertEquals(2, fake.of("CompleteStep").size());
+        assertEquals(0, fake.of("FailStep").size());
     }
 
     @Test

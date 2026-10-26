@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { useParams } from 'react-router';
+import { Link, useParams } from 'react-router';
 import { followRun, isTerminal } from '../../api/follow';
 import type { RuntimeNode } from '../../api/types';
 import { useApp, useCan, useNamespace, useSession } from '../../app/context';
@@ -21,6 +21,7 @@ import { NowProvider, Relative } from './Now';
 import { OperationDialog } from './OperationDialog';
 import type { Decision } from './OperationDialog';
 import { PayloadInspector } from './PayloadInspection';
+import { PayloadDisclosureView } from './PayloadDisclosure';
 import { runOperations, stepOperations } from './ops';
 import type { Operation, RunFacts } from './ops';
 import { useVersions, versionLabel } from './queries';
@@ -120,7 +121,7 @@ function RunDetail({ runId }: { runId: string }) {
   const { model } = snapshot;
 
   const run = useQuery({ queryKey: ['run', runId], queryFn: ({ signal }) => ep.getRun(runId, signal) });
-  const workflowId = run.data?.workflowId;
+  const workflowId = run.data?.origin ? undefined : run.data?.workflowId;
   const workflow = useQuery({ queryKey: ['workflow', workflowId], enabled: workflowId !== undefined, staleTime: 60_000, queryFn: ({ signal }) => ep.getWorkflow(workflowId as string, signal) });
   const versions = useVersions(workflowId);
   const status = model?.status ?? run.data?.status;
@@ -260,9 +261,20 @@ function RunDetail({ runId }: { runId: string }) {
           refreshing={snapshot.reloading}
         />
 
+        {model?.chain ? (
+          <Banner tone="info" title={`Execution chain · segment ${model.chain.segmentIndex + 1} of ${model.chain.segmentCount}`}>
+            <span>Chain <code>{model.chain.chainId}</code>.</span>{' '}
+            {model.chain.predecessorRunId ? <Link to={`/runs/${model.chain.predecessorRunId}`}>Previous run</Link> : null}{' '}
+            {model.chain.successorRunId ? <Link to={`/runs/${model.chain.successorRunId}`}>Next run</Link> : null}{' '}
+            {model.chain.currentRunId !== runId ? <Link to={`/runs/${model.chain.currentRunId}`}>Current run</Link> : null}
+          </Banner>
+        ) : null}
+
         <div className="rn-run-context">
           <SendSignal runId={runId} status={status} onSent={refresh} />
+          <PayloadDisclosureView runId={runId} selector={{ source: 'input' }} label="View permitted run input values" />
           <PayloadInspector runId={runId} selector={{ source: 'input' }} label="Inspect redacted run input" />
+          {finished ? <PayloadDisclosureView runId={runId} selector={{ source: 'result' }} label="View permitted run result values" /> : null}
           {finished ? (
             <p className="hint">
               {run.data.finishedAt ? <>The run finished <Relative at={run.data.finishedAt} past />.</> : 'The run is over.'} Its graph and journal stay as they were.

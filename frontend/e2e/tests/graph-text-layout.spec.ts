@@ -152,23 +152,43 @@ async function textOverlapFailures(root: Locator, groups: readonly string[], whe
 
 async function blockBundledFonts(page: Page): Promise<() => Promise<void>> {
   let blocked = 0;
-  await page.route(/\.woff2?(?:\?|$)/, async (route) => {
+  await page.route(/\/geist(?:-mono)?-latin-(?:400|500|600)-normal(?:\.[^/?]+)?\.woff2?(?:\?|$)/, async (route) => {
     blocked += 1;
     await route.abort();
   });
   return async () => {
-    await page.evaluate(() => document.fonts.ready.then(() => undefined));
+    // Force every bundled text weight to finish its intentional failure before strict console
+    // checks. Monaco's independently bundled codicon face is allowed to load: it is not a text
+    // fallback and its .ttf request is deliberately outside the blocked Geist paths.
+    const fontState = await page.evaluate(async (bundledFamilies) => {
+      const normalizeFamily = (family: string): string => {
+        const quote = family.at(0);
+        return (quote === '"' || quote === "'") && family.at(-1) === quote ? family.slice(1, -1) : family;
+      };
+      const allFaces: FontFace[] = [];
+      document.fonts.forEach((font) => allFaces.push(font));
+      const bundledFaces = allFaces.filter((font) => bundledFamilies.includes(normalizeFamily(font.family)));
+      await Promise.allSettled(bundledFaces.map((font) => font.load()));
+      await document.fonts.ready;
+      const describe = (font: FontFace): string => `${normalizeFamily(font.family)} ${font.style} ${font.weight} (${font.status})`;
+      return {
+        registeredBundledFaces: bundledFaces.map(describe).sort(),
+        loadedBundledFaces: bundledFaces.filter((font) => font.status === 'loaded').map(describe).sort(),
+        loadedOtherFaces: allFaces
+          .filter((font) => !bundledFamilies.includes(normalizeFamily(font.family)) && font.status === 'loaded')
+          .map(describe)
+          .sort(),
+      };
+    }, ['Geist', 'Geist Mono']);
     expect(blocked, 'the bundled Geist fonts were requested and blocked').toBeGreaterThan(0);
     expect(
-      await page.evaluate(() => {
-        let loaded = 0;
-        document.fonts.forEach((font) => {
-          if (font.status === 'loaded') loaded += 1;
-        });
-        return loaded;
-      }),
-      'the browser is exercising the system-font fallback',
-    ).toBe(0);
+      fontState.registeredBundledFaces.length,
+      `the page registered a known bundled text face; registered: ${fontState.registeredBundledFaces.join(', ') || 'none'}`,
+    ).toBeGreaterThan(0);
+    expect(
+      fontState.loadedBundledFaces,
+      `the browser is exercising the system-font fallback; other loaded faces: ${fontState.loadedOtherFaces.join(', ') || 'none'}`,
+    ).toEqual([]);
   };
 }
 

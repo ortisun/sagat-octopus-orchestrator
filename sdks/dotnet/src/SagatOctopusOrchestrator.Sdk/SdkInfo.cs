@@ -6,10 +6,10 @@ namespace SagatOctopusOrchestrator.Sdk;
 public static class SdkInfo
 {
     /// <summary>The version of the SDK, sent in <c>User-Agent</c> (<c>sagat-sdk-csharp/&lt;version&gt;</c>).</summary>
-    public const string Version = "0.1.0";
+    public const string Version = "0.2.0";
 
     /// <summary>The newest minor version of worker protocol 1 this SDK speaks (SPEC section 6.1).</summary>
-    public const string ProtocolVersion = "1.4";
+    public const string ProtocolVersion = "1.5";
 
     /// <summary>The <c>languages</c> capability a worker host announces.</summary>
     public const string Language = "csharp";

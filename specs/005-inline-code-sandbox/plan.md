@@ -100,3 +100,16 @@ tests/performance/inline-code-sandbox/         the benchmark; report in tests/pe
 ## Delivery Gate
 
 TS/Python/C#/Go/Java script goes from the editor to execution; malformed v3 and v1/v2 regression tests pass; escape and CPU/memory/network limits are verified. Every advertised Go target has a native startup-probe and CI proof. ARM64 proof does not enable AMD64.
+
+
+## Approved workflow-primitives dependency (2026-10-14)
+
+[ADR-0030](../../docs/adr/ADR-0030-structured-instances-and-continuation-chains.md) and
+[ADR-0031](../../docs/adr/ADR-0031-declared-operation-result-disclosure.md) accept the feature-014
+architecture and separate declared-result disclosure policy.
+[ADR-0032](../../docs/adr/ADR-0032-additive-workflow-ir.md) keeps the workflow IR at v1 and
+supersedes the earlier separate-revision allocation. Script attempt uniqueness, retention pins and capability addressing must distinguish scoped execution instances while preserving root identities. Structured bodies do not permit inline customer code, broader secrets/egress or a new sandbox execution path.
+
+This approves the described dependency for implementation, not a runtime guarantee. Canonical
+contracts, migration/replay, tenant/fault tests and applicable five-SDK evidence remain the
+feature-014 release gates; existing feature behavior stays supported.

@@ -11,6 +11,19 @@ public class WorkflowBuilderTests
     private static JsonNode? Nodes(JsonObject document) => document["nodes"];
 
     [Fact]
+    public void ClassifiedResultSchemasAndWorkflowLimitsUseTheirTypedCarriers()
+    {
+        var schema = JsonNode.Parse("""{"type":"object","x-sagat-classification":"internal","properties":{"value":{"type":"string"}}}""")!.AsObject();
+        var document = Workflow.Create("classified-flow").Limits(new WorkflowLimitsOptions { MaxInstances = 23, MaxDepth = 4 })
+            .OutputSchema(schema).Step("a", "act.a", new StepOptions { OutputSchema = schema })
+            .Script("s", "sha256:" + new string('0', 64), new ScriptOptions { OutputSchema = schema })
+            .WaitForEvent("w", new WaitForEventOptions { EventType = "done", CorrelationExpr = "input.id", Timeout = TimeSpan.FromMilliseconds(10), OutputSchema = schema })
+            .InvokeChild("c", "child-flow", new ChildOptions { OutputSchema = schema }).End("done").Build();
+        Assert.Equal("""{"maxDepth":4,"maxInstances":23}""", Canon(document["limits"]));
+        Assert.All(document["nodes"]!.AsArray().Take(4), node => Assert.Equal(Canon(schema), Canon(node!["outputSchema"])));
+    }
+
+    [Fact]
     public void AChainOfStepsIsLinkedInOrderAndStartsAtTheFirst()
     {
         var document = Workflow.Create("order-flow")
@@ -131,6 +144,96 @@ public class WorkflowBuilderTests
     }
 
     [Fact]
+    public void ASwitchKeepsCaseOrderCopiesItsCasesAndHasNoImplicitNext()
+    {
+        var cases = new List<SwitchCase>
+        {
+            new("nonnegative", "input.amount >= 0", "positive"),
+            new("one", "input.amount == 1", "also-positive"),
+        };
+        var builder = Workflow.Create("switch-flow")
+            .Switch("route", cases, "fallback")
+            .Step("positive", "amount.positive")
+            .Step("also-positive", "amount.also-positive")
+            .Step("fallback", "amount.fallback");
+        cases[0] = new SwitchCase("tampered", "false", "tampered");
+
+        var node = builder.Build()["nodes"]!.AsArray()[0]!;
+        Assert.Equal(
+            """{"cases":[{"id":"nonnegative","target":"positive","when":"input.amount >= 0"},{"id":"one","target":"also-positive","when":"input.amount == 1"}],"default":"fallback","id":"route","type":"switch"}""",
+            Canon(node));
+        Assert.Null(node["next"]);
+        Workflow.Create("local-case-ids")
+            .Switch("first", [new SwitchCase("same", "true", "done")], "done")
+            .Switch("second", [new SwitchCase("same", "false", "done")], "done")
+            .End("done")
+            .Build();
+    }
+
+    [Fact]
+    public void CollectionsUseNamedBodiesAndMapWritesTheSameForEachNode()
+    {
+        var line = Workflow.Body().Step("price", "line.price").Return("return", "steps.price.output");
+        var tax = Workflow.Body().Step("price", "tax.price").Return("return", "steps.price.output");
+        var document = Workflow.Create("collection-flow")
+            .Body("line", line)
+            .Body("tax", tax)
+            .ForEach("notify-lines", "input.lines", "line", "bodyResult", new CollectionOptions { MaxItems = 17, MaxConcurrency = 3 })
+            .Map("prices", "input.lines", "tax", "bodyResult.amount", new CollectionOptions { MaxItems = 17, MaxConcurrency = 2 })
+            .End("done", "steps.prices.output")
+            .Build();
+
+        Assert.Equal(
+            """[{"body":"line","id":"notify-lines","items":"input.lines","maxConcurrency":3,"maxItems":17,"next":"prices","result":"bodyResult","type":"forEach"},{"body":"tax","id":"prices","items":"input.lines","maxConcurrency":2,"maxItems":17,"next":"done","result":"bodyResult.amount","type":"forEach"},{"id":"done","outputExpr":"steps.prices.output","type":"end"}]""",
+            Canon(document["nodes"]));
+        Assert.Equal(
+            """{"line":{"entrypoint":"price","nodes":[{"activity":"line.price","id":"price","next":"return","type":"activity"},{"id":"return","result":"steps.price.output","type":"return"}]},"tax":{"entrypoint":"price","nodes":[{"activity":"tax.price","id":"price","next":"return","type":"activity"},{"id":"return","result":"steps.price.output","type":"return"}]}}""",
+            Canon(document["bodies"]));
+    }
+
+    [Fact]
+    public void NamedBodiesCannotReferenceThemselves()
+    {
+        var recursive = Workflow.Body()
+            .ForEach("nested", "input.items", "line", "bodyResult", new CollectionOptions { MaxItems = 2, MaxConcurrency = 1 })
+            .Return("return", "steps.nested.output");
+        var error = Assert.Throws<SagatException>(() => Workflow.Create("recursive-body")
+            .Body("line", recursive)
+            .ForEach("lines", "input.items", "line", "bodyResult", new CollectionOptions { MaxItems = 2, MaxConcurrency = 1 })
+            .End("done")
+            .Build());
+        Assert.Equal(SagatErrorCode.ValidationFailed, error.Code);
+        Assert.Contains("body reference cycle", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void WhileAndRepeatUntilWriteBoundedPreTestAndPostTestLoopNodes()
+    {
+        var iteration = Workflow.Body().Step("increment", "counter.increment").Return("return", "steps.increment.output");
+        var document = Workflow.Create("loop-flow")
+            .Body("iteration", iteration)
+            .While("pre", "carry < 3", "iteration", "input.start", "bodyResult", new LoopOptions
+            {
+                MaxIterations = 3,
+                Timeout = TimeSpan.FromMinutes(1),
+                Delay = TimeSpan.FromMilliseconds(250),
+                OnError = "failed",
+            })
+            .RepeatUntil("post", "carry >= 5", "iteration", "steps.pre.output", "bodyResult", new LoopOptions
+            {
+                MaxIterations = 5,
+                Timeout = TimeSpan.FromMinutes(2),
+            })
+            .End("done")
+            .End("failed")
+            .Build();
+
+        Assert.Equal(
+            """[{"body":"iteration","carry":"bodyResult","condition":"carry < 3","delayMs":250,"id":"pre","initial":"input.start","maxIterations":3,"next":"post","onError":"failed","timeoutMs":60000,"type":"while"},{"body":"iteration","carry":"bodyResult","condition":"carry >= 5","id":"post","initial":"steps.pre.output","maxIterations":5,"next":"done","timeoutMs":120000,"type":"repeatUntil"},{"id":"done","type":"end"},{"id":"failed","type":"end"}]""",
+            Canon(document["nodes"]));
+    }
+
+    [Fact]
     public void ALookbackOfZeroIsWrittenAndAnAbsentOneIsNot()
     {
         var zero = Workflow.Create("zero-look").WaitForEvent("w", new WaitForEventOptions { EventType = "e", CorrelationExpr = "x", Timeout = TimeSpan.FromSeconds(1), Lookback = TimeSpan.Zero }).Build();
@@ -184,6 +287,15 @@ public class WorkflowBuilderTests
         { "duration", () => Workflow.Create("bad-timer").Sleep("t", TimeSpan.Zero) },
         { "timeout", () => Workflow.Create("bad-timeout").WaitForEvent("w", new WaitForEventOptions { EventType = "e", CorrelationExpr = "x", Timeout = TimeSpan.Zero }) },
         { "not a node", () => Workflow.Create("dangling").Condition("c", "true", "nowhere", "a").Step("a", "x").Build() },
+        { "between 1 and 32 cases", () => Workflow.Create("no-switch-cases").Switch("s", [], "a") },
+        { "between 1 and 32 cases", () => Workflow.Create("too-many-cases").Switch("s", Enumerable.Range(0, 33).Select(i => new SwitchCase($"case-{i}", "true", "a")), "a") },
+        { "case id", () => Workflow.Create("duplicate-cases").Switch("s", [new SwitchCase("same", "true", "a"), new SwitchCase("same", "false", "b")], "a") },
+        { "without an id", () => Workflow.Create("empty-case-id").Switch("s", [new SwitchCase(string.Empty, "true", "a")], "a") },
+        { "when expression", () => Workflow.Create("empty-case-when").Switch("s", [new SwitchCase("one", string.Empty, "a")], "a") },
+        { "needs a target", () => Workflow.Create("empty-case-target").Switch("s", [new SwitchCase("one", "true", string.Empty)], "a") },
+        { "default target", () => Workflow.Create("empty-switch-default").Switch("s", [new SwitchCase("one", "true", "a")], string.Empty) },
+        { "not a node", () => Workflow.Create("dangling-switch-case").Switch("s", [new SwitchCase("one", "true", "nowhere")], "a").Step("a", "x").Build() },
+        { "not a node", () => Workflow.Create("dangling-switch-default").Switch("s", [new SwitchCase("one", "true", "a")], "nowhere").Step("a", "x").Build() },
         { "not a node", () => Workflow.Create("dangling-timeout").WaitForEvent("w", new WaitForEventOptions { EventType = "e", CorrelationExpr = "x", Timeout = TimeSpan.FromMilliseconds(1), OnTimeout = "nowhere" }).Build() },
         { "activity name", () => Workflow.Create("no-activity").Step("a", string.Empty) },
         { "needs an id", () => Workflow.Create("no-id").Step(string.Empty, "x") },

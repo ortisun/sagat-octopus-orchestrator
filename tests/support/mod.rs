@@ -11,6 +11,9 @@
 #![allow(dead_code, clippy::expect_used, clippy::panic)]
 
 pub mod api;
+pub mod approval_flow;
+pub mod blob_collections;
+pub mod bounded;
 pub mod brokers;
 pub mod collector;
 pub mod contract;
@@ -21,9 +24,21 @@ pub mod nats;
 pub mod oidc;
 pub mod receiver;
 pub mod scale;
+pub mod scope_flow;
 pub mod scripts;
 pub mod signed;
 pub mod worker;
+
+/// A sibling Cargo binary from the same target and profile as the running integration test.
+/// This also works with an external CARGO_TARGET_DIR or a target triple directory.
+pub fn built_binary(name: &str) -> std::path::PathBuf {
+    std::env::current_exe()
+        .expect("test executable")
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("Cargo test profile directory")
+        .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+}
 
 use std::sync::{Arc, LazyLock, Mutex, Weak};
 
@@ -91,11 +106,30 @@ async fn start_server() -> Server {
             admin_url,
         };
     }
-    let container = Postgres::default()
+    // `pg_stat_statements` is preloaded so that a test can count the rows and buffers a statement
+    // touched (the work-per-transition assertions of the performance target, G461). It records
+    // nothing until a database creates the extension.
+    let started = Postgres::default()
         .with_tag("16-alpine")
-        .start()
-        .await
-        .expect("start PostgreSQL (is Docker running? or set SAGAT_TEST_DATABASE_URL)");
+        // Docker's 64 MiB default cannot hold concurrent parallel-query shared memory. Keep the
+        // query settings intact and budget the test database explicitly, as the Compose profile does.
+        .with_shm_size(1024 * 1024 * 1024)
+        .with_cmd([
+            "-c",
+            "shared_preload_libraries=pg_stat_statements",
+            "-c",
+            "pg_stat_statements.track=all",
+            "-c",
+            "pg_stat_statements.max=10000",
+        ])
+        .start();
+    let container = bounded::within(
+        "pull and start postgres:16-alpine",
+        bounded::START_LIMIT,
+        started,
+    )
+    .await
+    .expect("start PostgreSQL (is Docker running? or set SAGAT_TEST_DATABASE_URL)");
     let port = container
         .get_host_port_ipv4(5432)
         .await
@@ -119,18 +153,22 @@ async fn start_server() -> Server {
 async fn wait_until_queryable(url: &str) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
+        // One attempt is bounded too: a proxy that accepts the connection and never answers would
+        // otherwise outlive the deadline.
         let attempt = async {
             let mut conn = PgConnection::connect(url).await?;
             sqlx::query("SELECT 1").execute(&mut conn).await?;
             conn.close().await
         };
-        match attempt.await {
-            Ok(()) => return,
-            Err(error) if std::time::Instant::now() < deadline => {
-                let _ = error; // not ready yet; keep polling
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(10), attempt).await;
+        match outcome {
+            Ok(Ok(())) => return,
+            Ok(Err(_)) | Err(_) if std::time::Instant::now() < deadline => {
+                // not ready yet; keep polling
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
-            Err(error) => panic!("PostgreSQL never became queryable: {error}"),
+            Ok(Err(error)) => panic!("PostgreSQL never became queryable: {error}"),
+            Err(_) => panic!("PostgreSQL never answered a query within 60 s (connection stalled)"),
         }
     }
 }
@@ -179,6 +217,52 @@ pub async fn migrated_db() -> TestDb {
     let db = fresh_db().await;
     migrate(&db.pool).await.expect("migrate");
     db
+}
+
+/// Connects to an existing database previously created by this test harness.
+///
+/// This does not create or migrate a database, provision a role, or start a fallback server. The
+/// caller must keep the server that owns this database alive for the returned handle's lifetime.
+pub async fn attach_existing_db(admin_url: &str, database_name: &str) -> TestDb {
+    let owned_name = database_name.strip_prefix("t_").is_some_and(|suffix| {
+        suffix.len() == 32
+            && suffix
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    });
+    assert!(
+        owned_name,
+        "only a database identity owned by this test harness may be attached"
+    );
+
+    let base = admin_url
+        .rsplit_once('/')
+        .expect("admin URL with database")
+        .0;
+    let url = format!("{base}/{database_name}");
+    let pool = match PgPoolOptions::new().max_connections(8).connect(&url).await {
+        Ok(pool) => pool,
+        Err(_) => panic!("could not connect to the existing owned database"),
+    };
+    let actual: String = sqlx::query_scalar("SELECT current_database()::text")
+        .fetch_one(&pool)
+        .await
+        .expect("read existing database identity");
+    assert_eq!(
+        actual, database_name,
+        "connection must resolve to the exact requested database"
+    );
+
+    TestDb {
+        _server: Arc::new(Server {
+            _container: None,
+            admin_url: admin_url.to_owned(),
+        }),
+        pool,
+        url,
+        admin_url: admin_url.to_owned(),
+        name: database_name.to_owned(),
+    }
 }
 
 /// Current time truncated to microseconds, the precision PostgreSQL stores.
@@ -268,6 +352,13 @@ where
 pub const RUNTIME_ROLE: &str = "sagat_app";
 pub const RUNTIME_ROLE_PASSWORD: &str = "runtime-role-test-password";
 
+/// Whether the suites were asked to run the services under test as the runtime role
+/// (`SAGAT_TEST_AS_RUNTIME_ROLE=1`): a sweep for privilege gaps the owner-connected suites cannot
+/// see (G294). The fixtures are still seeded by the owner.
+pub fn as_runtime_role() -> bool {
+    std::env::var_os("SAGAT_TEST_AS_RUNTIME_ROLE").is_some()
+}
+
 /// Creates the runtime role once per cluster. It must exist before migrations run so they can grant
 /// to it, exactly as an operator would provision it.
 async fn ensure_runtime_role(admin_url: &str) {
@@ -275,7 +366,9 @@ async fn ensure_runtime_role(admin_url: &str) {
         .await
         .expect("admin connection");
     sqlx::query(sqlx::AssertSqlSafe(format!(
-        "DO $$ BEGIN CREATE ROLE {RUNTIME_ROLE} LOGIN PASSWORD '{RUNTIME_ROLE_PASSWORD}' \
+        "DO $$ BEGIN \
+         PERFORM pg_advisory_xact_lock(hashtextextended('sagat:test:runtime-role',0)); \
+         CREATE ROLE {RUNTIME_ROLE} LOGIN PASSWORD '{RUNTIME_ROLE_PASSWORD}' \
          NOSUPERUSER NOCREATEDB NOCREATEROLE; EXCEPTION WHEN duplicate_object THEN NULL; END $$"
     )))
     .execute(&mut conn)
@@ -284,6 +377,23 @@ async fn ensure_runtime_role(admin_url: &str) {
 }
 
 impl TestDb {
+    /// A pool connected as the least-privilege runtime role (`sagat_app`), the role the control
+    /// plane and the engine are required to run as. Seed with `pool` (the owner), run the code under
+    /// test on this one: the owner can do anything, so a statement the runtime role may not run
+    /// passes every test that connects as the owner (G294).
+    pub async fn runtime_pool(&self) -> PgPool {
+        self.runtime_pool_with(2).await
+    }
+
+    /// [`Self::runtime_pool`] with room for `max_connections`.
+    pub async fn runtime_pool_with(&self, max_connections: u32) -> PgPool {
+        PgPoolOptions::new()
+            .max_connections(max_connections)
+            .connect(&self.url_for(RUNTIME_ROLE, RUNTIME_ROLE_PASSWORD))
+            .await
+            .expect("connect as the runtime role")
+    }
+
     /// The connection URL of this database for another user.
     pub fn url_for(&self, user: &str, password: &str) -> String {
         let (_, rest) = self.url.split_once('@').expect("credentials in url");

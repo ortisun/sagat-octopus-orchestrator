@@ -1,0 +1,982 @@
+{
+  "canonical": {
+    "bytes-excess": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"tax\":{\"entrypoint\":\"price\",\"nodes\":[{\"activity\":\"tax.price\",\"id\":\"price\",\"next\":\"returned\",\"type\":\"activity\"},{\"id\":\"returned\",\"result\":\"steps.price.output\",\"type\":\"return\"}]}},\"entrypoint\":\"taxes\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"expression-bytes-excess\"},\"nodes\":[{\"body\":\"tax\",\"id\":\"taxes\",\"items\":\"['éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé'] \",\"maxConcurrency\":1,\"maxItems\":2,\"next\":\"done\",\"result\":\"bodyResult.amount\",\"type\":\"forEach\"},{\"id\":\"done\",\"outputExpr\":\"steps.taxes.output\",\"type\":\"end\"}]}",
+    "literal-excess": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"tax\":{\"entrypoint\":\"price\",\"nodes\":[{\"activity\":\"tax.price\",\"id\":\"price\",\"next\":\"returned\",\"type\":\"activity\"},{\"id\":\"returned\",\"result\":\"steps.price.output\",\"type\":\"return\"}]}},\"entrypoint\":\"taxes\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"expression-literal-excess\"},\"nodes\":[{\"body\":\"tax\",\"id\":\"taxes\",\"items\":\"[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]\",\"maxConcurrency\":1,\"maxItems\":2,\"next\":\"done\",\"result\":\"bodyResult.amount\",\"type\":\"forEach\"},{\"id\":\"done\",\"outputExpr\":\"steps.taxes.output\",\"type\":\"end\"}]}",
+    "object-literal": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"tax\":{\"entrypoint\":\"price\",\"nodes\":[{\"activity\":\"tax.price\",\"id\":\"price\",\"next\":\"returned\",\"type\":\"activity\"},{\"id\":\"returned\",\"result\":\"steps.price.output\",\"type\":\"return\"}]}},\"entrypoint\":\"taxes\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"expression-object-literal\"},\"nodes\":[{\"body\":\"tax\",\"id\":\"taxes\",\"items\":\"[{'value':1}]\",\"maxConcurrency\":1,\"maxItems\":2,\"next\":\"done\",\"result\":\"bodyResult.amount\",\"type\":\"forEach\"},{\"id\":\"done\",\"outputExpr\":\"steps.taxes.output\",\"type\":\"end\"}]}",
+    "queries": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"hold\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"expression-limit-queries\"},\"nodes\":[{\"activity\":\"operations.unserved\",\"id\":\"hold\",\"type\":\"activity\"}],\"state\":{\"initial\":\"input.balance\",\"queries\":{\"bytes.read\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"size('éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé')\",\"resultSchema\":{\"maximum\":4096,\"minimum\":0,\"type\":\"integer\"}},\"constructed.read\":{\"argsSchema\":{\"additionalProperties\":false,\"properties\":{\"left\":{\"items\":{\"type\":\"integer\"},\"maxItems\":2049,\"type\":\"array\"},\"right\":{\"items\":{\"type\":\"integer\"},\"maxItems\":2049,\"type\":\"array\"}},\"required\":[\"left\",\"right\"],\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"(args.left + args.right).size()\",\"resultSchema\":{\"maximum\":4096,\"minimum\":0,\"type\":\"integer\"}},\"limits.query-05\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()\",\"resultSchema\":{\"maximum\":4096,\"minimum\":0,\"type\":\"integer\"}},\"limits.query-06\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()\",\"resultSchema\":{\"maximum\":4096,\"minimum\":0,\"type\":\"integer\"}},\"limits.query-07\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()\",\"resultSchema\":{\"maximum\":4096,\"minimum\":0,\"type\":\"integer\"}},\"limits.query-08\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()\",\"resultSchema\":{\"maximum\":4096,\"minimum\":0,\"type\":\"integer\"}},\"limits.query-09\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()\",\"resultSchema\":{\"maximum\":4096,\"minimum\":0,\"type\":\"integer\"}},\"limits.query-10\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()\",\"resultSchema\":{\"maximum\":4096,\"minimum\":0,\"type\":\"integer\"}},\"limits.query-11\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()\",\"resultSchema\":{\"maximum\":4096,\"minimum\":0,\"type\":\"integer\"}},\"limits.query-12\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()\",\"resultSchema\":{\"maximum\":4096,\"minimum\":0,\"type\":\"integer\"}},\"limits.query-13\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()\",\"resultSchema\":{\"maximum\":4096,\"minimum\":0,\"type\":\"integer\"}},\"limits.query-14\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()\",\"resultSchema\":{\"maximum\":4096,\"minimum\":0,\"type\":\"integer\"}},\"limits.query-15\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()\",\"resultSchema\":{\"maximum\":4096,\"minimum\":0,\"type\":\"integer\"}},\"limits.query-16\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()\",\"resultSchema\":{\"maximum\":4096,\"minimum\":0,\"type\":\"integer\"}},\"limits.query-17\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()\",\"resultSchema\":{\"maximum\":4096,\"minimum\":0,\"type\":\"integer\"}},\"limits.query-18\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()\",\"resultSchema\":{\"maximum\":4096,\"minimum\":0,\"type\":\"integer\"}},\"limits.query-19\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()\",\"resultSchema\":{\"maximum\":4096,\"minimum\":0,\"type\":\"integer\"}},\"limits.query-20\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()\",\"resultSchema\":{\"maximum\":4096,\"minimum\":0,\"type\":\"integer\"}},\"limits.query-21\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()\",\"resultSchema\":{\"maximum\":4096,\"minimum\":0,\"type\":\"integer\"}},\"limits.query-22\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()\",\"resultSchema\":{\"maximum\":4096,\"minimum\":0,\"type\":\"integer\"}},\"limits.query-23\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()\",\"resultSchema\":{\"maximum\":4096,\"minimum\":0,\"type\":\"integer\"}},\"limits.query-24\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()\",\"resultSchema\":{\"maximum\":4096,\"minimum\":0,\"type\":\"integer\"}},\"limits.query-25\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()\",\"resultSchema\":{\"maximum\":4096,\"minimum\":0,\"type\":\"integer\"}},\"limits.query-26\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()\",\"resultSchema\":{\"maximum\":4096,\"minimum\":0,\"type\":\"integer\"}},\"limits.query-27\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()\",\"resultSchema\":{\"maximum\":4096,\"minimum\":0,\"type\":\"integer\"}},\"limits.query-28\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()\",\"resultSchema\":{\"maximum\":4096,\"minimum\":0,\"type\":\"integer\"}},\"limits.query-29\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()\",\"resultSchema\":{\"maximum\":4096,\"minimum\":0,\"type\":\"integer\"}},\"limits.query-30\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()\",\"resultSchema\":{\"maximum\":4096,\"minimum\":0,\"type\":\"integer\"}},\"limits.query-31\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()\",\"resultSchema\":{\"maximum\":4096,\"minimum\":0,\"type\":\"integer\"}},\"limits.query-32\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()\",\"resultSchema\":{\"maximum\":4096,\"minimum\":0,\"type\":\"integer\"}},\"literal.read\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()\",\"resultSchema\":{\"maximum\":4096,\"minimum\":0,\"type\":\"integer\"}},\"schema.read\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"'SCHEMA_RESULT_MUST_NOT_LEAK_014'\",\"resultSchema\":{\"type\":\"integer\"}}},\"schema\":{\"type\":\"integer\"},\"updates\":{\"limits.update-01\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"},\"limits.update-02\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"},\"limits.update-03\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"},\"limits.update-04\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"},\"limits.update-05\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"},\"limits.update-06\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"},\"limits.update-07\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"},\"limits.update-08\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"},\"limits.update-09\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"},\"limits.update-10\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"},\"limits.update-11\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"},\"limits.update-12\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"},\"limits.update-13\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"},\"limits.update-14\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"},\"limits.update-15\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"},\"limits.update-16\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"},\"limits.update-17\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"},\"limits.update-18\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"},\"limits.update-19\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"},\"limits.update-20\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"},\"limits.update-21\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"},\"limits.update-22\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"},\"limits.update-23\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"},\"limits.update-24\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"},\"limits.update-25\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"},\"limits.update-26\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"},\"limits.update-27\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"},\"limits.update-28\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"},\"limits.update-29\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"},\"limits.update-30\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"},\"limits.update-31\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"},\"limits.update-32\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"type\":\"integer\"},\"state\":\"state\"}}}}"
+  },
+  "workflows": {
+    "bytes-excess": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "tax": {
+          "entrypoint": "price",
+          "nodes": [
+            {
+              "activity": "tax.price",
+              "id": "price",
+              "next": "returned",
+              "type": "activity"
+            },
+            {
+              "id": "returned",
+              "result": "steps.price.output",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "taxes",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "expression-bytes-excess"
+      },
+      "nodes": [
+        {
+          "body": "tax",
+          "id": "taxes",
+          "items": "['éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé'] ",
+          "maxConcurrency": 1,
+          "maxItems": 2,
+          "next": "done",
+          "result": "bodyResult.amount",
+          "type": "forEach"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.taxes.output",
+          "type": "end"
+        }
+      ]
+    },
+    "literal-excess": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "tax": {
+          "entrypoint": "price",
+          "nodes": [
+            {
+              "activity": "tax.price",
+              "id": "price",
+              "next": "returned",
+              "type": "activity"
+            },
+            {
+              "id": "returned",
+              "result": "steps.price.output",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "taxes",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "expression-literal-excess"
+      },
+      "nodes": [
+        {
+          "body": "tax",
+          "id": "taxes",
+          "items": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]",
+          "maxConcurrency": 1,
+          "maxItems": 2,
+          "next": "done",
+          "result": "bodyResult.amount",
+          "type": "forEach"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.taxes.output",
+          "type": "end"
+        }
+      ]
+    },
+    "object-literal": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "tax": {
+          "entrypoint": "price",
+          "nodes": [
+            {
+              "activity": "tax.price",
+              "id": "price",
+              "next": "returned",
+              "type": "activity"
+            },
+            {
+              "id": "returned",
+              "result": "steps.price.output",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "taxes",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "expression-object-literal"
+      },
+      "nodes": [
+        {
+          "body": "tax",
+          "id": "taxes",
+          "items": "[{'value':1}]",
+          "maxConcurrency": 1,
+          "maxItems": 2,
+          "next": "done",
+          "result": "bodyResult.amount",
+          "type": "forEach"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.taxes.output",
+          "type": "end"
+        }
+      ]
+    },
+    "queries": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "hold",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "expression-limit-queries"
+      },
+      "nodes": [
+        {
+          "activity": "operations.unserved",
+          "id": "hold",
+          "type": "activity"
+        }
+      ],
+      "state": {
+        "initial": "input.balance",
+        "queries": {
+          "bytes.read": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "size('éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé')",
+            "resultSchema": {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "constructed.read": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "left": {
+                  "items": {
+                    "type": "integer"
+                  },
+                  "maxItems": 2049,
+                  "type": "array"
+                },
+                "right": {
+                  "items": {
+                    "type": "integer"
+                  },
+                  "maxItems": 2049,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "left",
+                "right"
+              ],
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "(args.left + args.right).size()",
+            "resultSchema": {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "limits.query-05": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()",
+            "resultSchema": {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "limits.query-06": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()",
+            "resultSchema": {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "limits.query-07": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()",
+            "resultSchema": {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "limits.query-08": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()",
+            "resultSchema": {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "limits.query-09": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()",
+            "resultSchema": {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "limits.query-10": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()",
+            "resultSchema": {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "limits.query-11": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()",
+            "resultSchema": {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "limits.query-12": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()",
+            "resultSchema": {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "limits.query-13": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()",
+            "resultSchema": {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "limits.query-14": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()",
+            "resultSchema": {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "limits.query-15": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()",
+            "resultSchema": {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "limits.query-16": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()",
+            "resultSchema": {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "limits.query-17": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()",
+            "resultSchema": {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "limits.query-18": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()",
+            "resultSchema": {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "limits.query-19": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()",
+            "resultSchema": {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "limits.query-20": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()",
+            "resultSchema": {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "limits.query-21": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()",
+            "resultSchema": {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "limits.query-22": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()",
+            "resultSchema": {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "limits.query-23": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()",
+            "resultSchema": {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "limits.query-24": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()",
+            "resultSchema": {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "limits.query-25": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()",
+            "resultSchema": {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "limits.query-26": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()",
+            "resultSchema": {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "limits.query-27": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()",
+            "resultSchema": {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "limits.query-28": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()",
+            "resultSchema": {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "limits.query-29": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()",
+            "resultSchema": {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "limits.query-30": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()",
+            "resultSchema": {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "limits.query-31": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()",
+            "resultSchema": {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "limits.query-32": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()",
+            "resultSchema": {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "literal.read": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0].size()",
+            "resultSchema": {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "schema.read": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "'SCHEMA_RESULT_MUST_NOT_LEAK_014'",
+            "resultSchema": {
+              "type": "integer"
+            }
+          }
+        },
+        "schema": {
+          "type": "integer"
+        },
+        "updates": {
+          "limits.update-01": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          },
+          "limits.update-02": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          },
+          "limits.update-03": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          },
+          "limits.update-04": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          },
+          "limits.update-05": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          },
+          "limits.update-06": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          },
+          "limits.update-07": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          },
+          "limits.update-08": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          },
+          "limits.update-09": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          },
+          "limits.update-10": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          },
+          "limits.update-11": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          },
+          "limits.update-12": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          },
+          "limits.update-13": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          },
+          "limits.update-14": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          },
+          "limits.update-15": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          },
+          "limits.update-16": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          },
+          "limits.update-17": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          },
+          "limits.update-18": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          },
+          "limits.update-19": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          },
+          "limits.update-20": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          },
+          "limits.update-21": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          },
+          "limits.update-22": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          },
+          "limits.update-23": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          },
+          "limits.update-24": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          },
+          "limits.update-25": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          },
+          "limits.update-26": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          },
+          "limits.update-27": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          },
+          "limits.update-28": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          },
+          "limits.update-29": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          },
+          "limits.update-30": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          },
+          "limits.update-31": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          },
+          "limits.update-32": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "state": "state"
+          }
+        }
+      }
+    }
+  }
+}

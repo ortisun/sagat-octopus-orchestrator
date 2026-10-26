@@ -1,0 +1,229 @@
+{
+  "name": "workflow-instance-limits",
+  "description": "WP-12: all five public builders retain explicit instance/depth limits and reject 0/excess values. A two-activity/end workflow succeeds at maxInstances=3; maxInstances=2 accepts both activity results then fails with INSTANCE_LIMIT before its end can execute. Depth1/8 authoring is exercised; no nested depth8 execution is claimed.",
+  "sourceEvidence": true,
+  "workflows": {
+    "boundary": {
+      "name": "workflow-limit-boundary",
+      "limits": {
+        "maxInstances": 3,
+        "maxDepth": 1
+      },
+      "program": [
+        {
+          "op": "step",
+          "id": "a",
+          "activity": "workflow.limit.a"
+        },
+        {
+          "op": "step",
+          "id": "b",
+          "activity": "workflow.limit.b"
+        },
+        {
+          "op": "end",
+          "id": "done"
+        }
+      ]
+    },
+    "excess": {
+      "name": "workflow-limit-excess",
+      "limits": {
+        "maxInstances": 2,
+        "maxDepth": 8
+      },
+      "program": [
+        {
+          "op": "step",
+          "id": "a",
+          "activity": "workflow.limit.a"
+        },
+        {
+          "op": "step",
+          "id": "b",
+          "activity": "workflow.limit.b"
+        },
+        {
+          "op": "end",
+          "id": "done"
+        }
+      ]
+    }
+  },
+  "invalidWorkflows": {
+    "instances-zero": {
+      "contains": "maxInstances",
+      "workflow": {
+        "name": "workflow-limit-instances-zero",
+        "limits": {
+          "maxInstances": 0
+        },
+        "program": [
+          {
+            "op": "step",
+            "id": "work",
+            "activity": "workflow.limit.a"
+          }
+        ]
+      }
+    },
+    "instances-excess": {
+      "contains": "maxInstances",
+      "workflow": {
+        "name": "workflow-limit-instances-excess",
+        "limits": {
+          "maxInstances": 100001
+        },
+        "program": [
+          {
+            "op": "step",
+            "id": "work",
+            "activity": "workflow.limit.a"
+          }
+        ]
+      }
+    },
+    "depth-zero": {
+      "contains": "maxDepth",
+      "workflow": {
+        "name": "workflow-limit-depth-zero",
+        "limits": {
+          "maxDepth": 0
+        },
+        "program": [
+          {
+            "op": "step",
+            "id": "work",
+            "activity": "workflow.limit.a"
+          }
+        ]
+      }
+    },
+    "depth-excess": {
+      "contains": "maxDepth",
+      "workflow": {
+        "name": "workflow-limit-depth-excess",
+        "limits": {
+          "maxDepth": 9
+        },
+        "program": [
+          {
+            "op": "step",
+            "id": "work",
+            "activity": "workflow.limit.a"
+          }
+        ]
+      }
+    }
+  },
+  "workers": {
+    "boundary": {
+      "workerName": "workflow-limit-boundary",
+      "protocolVersion": "1.5",
+      "transport": "poll",
+      "maxInflight": 1,
+      "heartbeatIntervalMs": 60000,
+      "autostart": false,
+      "activities": {
+        "workflow.limit.a": {
+          "behavior": {
+            "returns": {
+              "ok": true
+            }
+          }
+        },
+        "workflow.limit.b": {
+          "behavior": {
+            "returns": {
+              "ok": true
+            }
+          }
+        }
+      }
+    },
+    "excess": {
+      "workerName": "workflow-limit-excess",
+      "protocolVersion": "1.5",
+      "transport": "poll",
+      "maxInflight": 1,
+      "heartbeatIntervalMs": 60000,
+      "autostart": false,
+      "activities": {
+        "workflow.limit.a": {
+          "behavior": {
+            "returns": {
+              "ok": true
+            }
+          }
+        },
+        "workflow.limit.b": {
+          "behavior": {
+            "returns": {
+              "ok": true
+            }
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "start-boundary",
+      "op": "start",
+      "workflow": "boundary",
+      "input": {}
+    },
+    {
+      "id": "start-worker-boundary",
+      "op": "startWorker",
+      "worker": "boundary"
+    },
+    {
+      "id": "wait-boundary",
+      "op": "waitForCompletion",
+      "run": "start-boundary",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "two-boundary-completions",
+      "op": "awaitWorkerLog",
+      "worker": "boundary",
+      "count": 2,
+      "timeoutMs": 30000
+    },
+    {
+      "id": "stop-worker-boundary",
+      "op": "stopWorker",
+      "worker": "boundary"
+    },
+    {
+      "id": "start-excess",
+      "op": "start",
+      "workflow": "excess",
+      "input": {}
+    },
+    {
+      "id": "start-worker-excess",
+      "op": "startWorker",
+      "worker": "excess"
+    },
+    {
+      "id": "wait-excess",
+      "op": "waitForCompletion",
+      "run": "start-excess",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "two-excess-completions",
+      "op": "awaitWorkerLog",
+      "worker": "excess",
+      "count": 2,
+      "timeoutMs": 30000
+    },
+    {
+      "id": "stop-worker-excess",
+      "op": "stopWorker",
+      "worker": "excess"
+    }
+  ]
+}

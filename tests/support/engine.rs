@@ -64,6 +64,8 @@ pub type DeliveryLoop = DeliveryWorker<PgRunStore, super::receiver::LoopbackSend
 
 pub struct World {
     pub db: TestDb,
+    /// The actual pool shared by execution services, distinct from owner setup/observation.
+    pub execution_pool: PgPool,
     pub store: PgRunStore,
     pub defs: Defs,
     pub publishing: Publishing,
@@ -141,7 +143,14 @@ pub async fn world_with_breaker(
     let other_namespace = namespace_in(&t.store, &t.admin_b, "payments", Environment::Dev).await;
     let codec = Arc::new(JsonIrCodec);
     let cache = DefinitionCache::new(codec, 64);
-    let store = PgRunStore::new(db.pool.clone(), cache.clone()).with_breaker(breaker);
+    // `SAGAT_TEST_AS_RUNTIME_ROLE=1` runs the services of the world (engine, workers, schedulers,
+    // dispatchers) as the least-privilege runtime role, the role the engine is required to run as.
+    let store_pool = if super::as_runtime_role() {
+        db.runtime_pool_with(16).await
+    } else {
+        db.pool.clone()
+    };
+    let store = PgRunStore::new(store_pool.clone(), cache.clone()).with_breaker(breaker);
     let engine = Engine::new(JsonEvaluator);
     let key_k1 = sagat_infra_secrets::generate_key().expect("a key");
     let keys =
@@ -150,6 +159,7 @@ pub async fn world_with_breaker(
         Signer::from_pkcs8(&Signer::generate_pkcs8().expect("a signing key")).expect("a signer");
     let signing_key = signer.public_key();
     let world = World {
+        execution_pool: store_pool,
         defs: DefinitionService::new(store.clone(), SystemClock, JsonIrCodec),
         publishing: Publishing::new(store.clone(), SystemClock, JsonIrCodec),
         runs: RunService::new(store.clone(), SystemClock, engine.clone(), cache.clone()),
@@ -231,6 +241,11 @@ pub async fn world_with_breaker(
         store,
         db,
     };
+    // Real authentication requires current tenant membership for machine identities. Persist the
+    // default fixture identities too, so capability tests exercise that authority rather than a
+    // synthetic Principal with no membership row.
+    world.member("worker-1", Role::Worker).await;
+    world.member("runner-1", Role::Runner).await;
     // The worker identity of the first tenant is bound to its namespace, as an operator would.
     world.bind_everything(&world.worker).await;
     world
@@ -659,13 +674,19 @@ impl World {
     /// A replica whose pool holds at most `max_connections`, to show that no call needs a second
     /// connection while it holds one.
     pub async fn replica_with_pool(&self, max_connections: u32) -> Replica {
-        let mut config = PoolConfig::new(self.db.url.clone());
+        let mut config = PoolConfig::new(if super::as_runtime_role() {
+            self.db
+                .url_for(super::RUNTIME_ROLE, super::RUNTIME_ROLE_PASSWORD)
+        } else {
+            self.db.url.clone()
+        });
         config.max_connections = max_connections;
         config.acquire_timeout = std::time::Duration::from_secs(2);
         let pool = connect(&config).await.expect("a second pool");
         let cache = DefinitionCache::new(Arc::new(JsonIrCodec), 64);
-        let store = PgRunStore::new(pool, cache.clone());
+        let store = PgRunStore::new(pool.clone(), cache.clone());
         Replica {
+            execution_pool: pool,
             runs: RunService::new(
                 store.clone(),
                 SystemClock,
@@ -1025,6 +1046,7 @@ async fn exec(pool: &PgPool, sql: &'static str, run: RunId, node: &str) {
 
 /// A second process over the same database (see [`World::replica`]).
 pub struct Replica {
+    pub execution_pool: PgPool,
     pub store: PgRunStore,
     pub runs: Runs,
     pub workers: Workers,
@@ -1039,7 +1061,7 @@ pub struct Session {
 pub fn task_ref(task: &ClaimedTask) -> TaskRef<'_> {
     TaskRef {
         run_id: task.run_id,
-        node: &task.node,
+        instance: &task.instance,
         step_id: Some(task.step_id),
         fence: task.fence,
         lease_token: task.lease_token.expose(),

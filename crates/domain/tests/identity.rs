@@ -10,6 +10,30 @@ use time::OffsetDateTime;
 
 const NOW: OffsetDateTime = OffsetDateTime::UNIX_EPOCH;
 
+#[test]
+fn database_executor_is_a_separate_machine_identity() {
+    let role = "database-runner"
+        .parse::<Role>()
+        .expect("managed database role");
+    assert!(role.grants(Permission::WorkerExecute));
+    assert!(role.grants(Permission::DatabaseExecute));
+    assert_ne!(role, Role::Worker);
+    assert_ne!(role, Role::Runner);
+    for permission in [
+        Permission::DatabaseManage,
+        Permission::DatabaseUse,
+        Permission::DatabaseAdHoc,
+        Permission::DatabaseWrite,
+        Permission::DatabaseResultRead,
+        Permission::SecretManage,
+        Permission::SecretUse,
+        Permission::DefinitionWrite,
+        Permission::RunStart,
+    ] {
+        assert!(!role.grants(permission), "{permission}");
+    }
+}
+
 fn slug(s: &str) -> Slug {
     Slug::parse(s).expect("valid slug")
 }
@@ -160,28 +184,32 @@ fn a_reserved_subject_violation_explains_itself() {
 
 // ------------------------------------------------------------------ RBAC
 
-const ALL_ROLES: [Role; 6] = [
+const ALL_ROLES: [Role; 7] = [
     Role::Admin,
     Role::Developer,
     Role::Operator,
     Role::Viewer,
     Role::Worker,
     Role::Runner,
+    Role::DatabaseRunner,
 ];
 
 /// The authoritative matrix, written out by hand (not derived from `Role::permissions`).
 fn expected(role: Role) -> Vec<Permission> {
     use Permission::{
-        DefinitionPublish, DefinitionRead, DefinitionWrite, EventManage, EventPublish, EventRead,
-        NamespaceRead, OpsRead, PublicationApprove, QuotaRead, RunOperate, RunPayloadInspect,
-        RunRead, RunSignal, RunStart, ScriptBuild, ScriptExecute, ScriptPublish, ScriptRead,
-        ScriptWrite, SecretRead, SecretUse, VersionActivate, WorkerExecute, WorkerManage,
-        WorkspaceRead,
+        ApprovalDecide, ApprovalRead, DatabaseAdHoc, DatabaseUse, DefinitionPublish,
+        DefinitionRead, DefinitionWrite, EventManage, EventPublish, EventRead, NamespaceRead,
+        OpsRead, PayloadReadInternal, PublicationApprove, QuotaRead, RunOperate, RunPayloadInspect,
+        RunQuery, RunRead, RunSignal, RunStart, RunUpdate, ScriptBuild, ScriptExecute,
+        ScriptPublish, ScriptRead, ScriptWrite, SecretRead, SecretUse, VersionActivate,
+        WorkerExecute, WorkerManage, WorkspaceRead,
     };
     match role {
-        Role::Admin => Permission::ALL.to_vec(),
+        Role::Admin => Role::ADMIN_PERMISSIONS.to_vec(),
         Role::Developer => {
             vec![
+                DatabaseUse,
+                DatabaseAdHoc,
                 WorkspaceRead,
                 NamespaceRead,
                 DefinitionRead,
@@ -189,6 +217,11 @@ fn expected(role: Role) -> Vec<Permission> {
                 DefinitionPublish,
                 RunStart,
                 RunRead,
+                RunQuery,
+                RunUpdate,
+                PayloadReadInternal,
+                ApprovalRead,
+                ApprovalDecide,
                 SecretRead,
                 SecretUse,
                 QuotaRead,
@@ -208,6 +241,11 @@ fn expected(role: Role) -> Vec<Permission> {
             DefinitionRead,
             RunStart,
             RunRead,
+            RunQuery,
+            RunUpdate,
+            PayloadReadInternal,
+            ApprovalRead,
+            ApprovalDecide,
             RunPayloadInspect,
             RunOperate,
             RunSignal,
@@ -225,6 +263,7 @@ fn expected(role: Role) -> Vec<Permission> {
             NamespaceRead,
             DefinitionRead,
             RunRead,
+            ApprovalRead,
             QuotaRead,
             EventRead,
             ScriptRead,
@@ -232,7 +271,41 @@ fn expected(role: Role) -> Vec<Permission> {
         ],
         Role::Worker => vec![WorkerExecute],
         Role::Runner => vec![WorkerExecute, ScriptBuild, ScriptExecute],
+        Role::DatabaseRunner => vec![WorkerExecute, Permission::DatabaseExecute],
     }
+}
+
+#[test]
+fn payload_permissions_are_fail_closed_for_builtin_roles() {
+    assert_eq!(Permission::ALL.len(), 48);
+    assert_eq!(
+        Permission::PayloadReadInternal.as_str(),
+        "payload:read-internal"
+    );
+    assert_eq!(Permission::PayloadRevealPii.as_str(), "payload:reveal-pii");
+
+    for role in ALL_ROLES {
+        assert_eq!(
+            role.grants(Permission::PayloadReadInternal),
+            matches!(role, Role::Admin | Role::Developer | Role::Operator),
+            "{role} internal payload access"
+        );
+        assert!(
+            !role.grants(Permission::PayloadRevealPii),
+            "{role} must receive PII access only through an explicit namespace grant"
+        );
+    }
+}
+
+#[test]
+fn admin_permissions_decide_every_catalog_entry_except_pii_reveal() {
+    let expected: Vec<_> = Permission::ALL
+        .into_iter()
+        .filter(|permission| *permission != Permission::PayloadRevealPii)
+        .collect();
+
+    assert_eq!(Role::ADMIN_PERMISSIONS, expected.as_slice());
+    assert_eq!(Role::Admin.permissions(), Role::ADMIN_PERMISSIONS);
 }
 
 #[test]

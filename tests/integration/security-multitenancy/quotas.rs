@@ -378,7 +378,7 @@ async fn a_tenant_holds_a_bounded_number_of_worker_sessions_and_a_reconnect_is_n
         max_inflight: 4,
         protocol_version: "1".into(),
     };
-    let other_identity = Principal::new(w.admin.tenant_id(), subject_of("worker-2"), Role::Worker);
+    let other_identity = w.member("worker-2", Role::Worker).await;
     w.bind_everything(&other_identity).await;
     w.workers
         .register(&w.worker, "payments", "first", &caps)
@@ -512,6 +512,7 @@ async fn the_tenant_view_has_no_single_usage_for_a_per_namespace_resource() {
             (QuotaResource::Workflows, false),
             (QuotaResource::WorkerSessions, true),
             (QuotaResource::ActivityConcurrency, false),
+            (QuotaResource::IterationConcurrency, true),
             (QuotaResource::Secrets, false),
             (QuotaResource::EventEndpoints, false),
             (QuotaResource::WebhookSubscriptions, false),
@@ -525,6 +526,19 @@ async fn the_tenant_view_has_no_single_usage_for_a_per_namespace_resource() {
             (QuotaResource::EventsPerSecond, false),
             (QuotaResource::EventRetentionSeconds, false),
             (QuotaResource::ScriptRetentionDays, false),
+            (QuotaResource::DatabaseStatementBytes, false),
+            (QuotaResource::DatabaseParameters, false),
+            (QuotaResource::DatabaseParameterBytes, false),
+            (QuotaResource::DatabaseRows, false),
+            (QuotaResource::DatabaseResultBytes, false),
+            (QuotaResource::DatabaseTimeoutMs, false),
+            (QuotaResource::DatabaseConnectTimeoutMs, false),
+            (QuotaResource::DatabasePoolSize, false),
+            (QuotaResource::DatabaseIdleTimeoutMs, false),
+            (QuotaResource::DatabaseConnections, false),
+            (QuotaResource::DatabaseConcurrency, false),
+            (QuotaResource::TenantDatabaseConcurrency, true),
+            (QuotaResource::SecretProviderOperations, false),
         ]
     );
     let used = tenant_view
@@ -560,6 +574,18 @@ async fn the_tenant_view_has_no_single_usage_for_a_per_namespace_resource() {
             (QuotaResource::EventsPerSecond, None),
             (QuotaResource::EventRetentionSeconds, None),
             (QuotaResource::ScriptRetentionDays, None),
+            (QuotaResource::DatabaseStatementBytes, None),
+            (QuotaResource::DatabaseParameters, None),
+            (QuotaResource::DatabaseParameterBytes, None),
+            (QuotaResource::DatabaseRows, None),
+            (QuotaResource::DatabaseResultBytes, None),
+            (QuotaResource::DatabaseTimeoutMs, None),
+            (QuotaResource::DatabaseConnectTimeoutMs, None),
+            (QuotaResource::DatabasePoolSize, None),
+            (QuotaResource::DatabaseIdleTimeoutMs, None),
+            (QuotaResource::DatabaseConnections, Some(0)),
+            (QuotaResource::DatabaseConcurrency, Some(0)),
+            (QuotaResource::SecretProviderOperations, Some(0)),
         ]
     );
 }
@@ -738,7 +764,7 @@ async fn a_tenant_administrator_cannot_raise_any_limit_above_the_ceiling_the_pla
     let w = world().await;
     for resource in QuotaResource::ALL {
         let level = level_of(&w, resource);
-        let ceiling = resource.default_limit();
+        let ceiling = resource.default_ceiling();
 
         if ceiling < resource.maximum() {
             let refused = w
@@ -777,6 +803,7 @@ async fn a_tenant_administrator_cannot_raise_any_limit_above_the_ceiling_the_pla
     let expected: Vec<(String, i64)> = {
         let mut rows: Vec<_> = QuotaResource::ALL
             .iter()
+            .filter(|resource| **resource != QuotaResource::IterationConcurrency)
             .map(|r| {
                 (
                     r.as_str().to_owned(),
@@ -788,6 +815,17 @@ async fn a_tenant_administrator_cannot_raise_any_limit_above_the_ceiling_the_pla
         rows
     };
     assert_eq!(stored, expected);
+    let iteration_capacity: i32 = sqlx::query_scalar(
+        "SELECT max_active_iterations FROM tenant_collection_policies WHERE tenant_id = $1",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("iteration capacity");
+    assert_eq!(
+        u64::try_from(iteration_capacity).expect("positive"),
+        QuotaResource::IterationConcurrency.default_ceiling()
+    );
 }
 
 #[tokio::test]

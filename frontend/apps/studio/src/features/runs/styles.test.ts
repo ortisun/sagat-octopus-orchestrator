@@ -82,5 +82,51 @@ describe('runs.css', () => {
     expect(block(css, '@media (max-width: 48rem)')).toMatch(/\.rn-selected-step\s*{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/);
   });
 
+  it('gives the canvas a length for a height, and the details a place beside it where the page area has the room (UX review 2026-10-14)', () => {
+    const canvas = block(css, '.rn-canvas {');
+    // A percentage inside a canvas needs a height that is a length: with a flex 1 the graph was 0 px tall beside the details.
+    expect(canvas).toMatch(/height:\s*clamp\(22rem, 68vh, 46rem\)/);
+    expect(canvas).toMatch(/flex:\s*none/);
+    expect(canvas).not.toMatch(/max-height/);
+    expect(css).toMatch(/\n\.rn-run\s*{[^}]*container:\s*run \/ inline-size/);
+    const beside = block(css, '@container run (min-width: 62rem)');
+    expect(beside).toMatch(/\.rn-body\.with-panel\s*{[^}]*display:\s*grid/);
+    expect(beside).toMatch(/\.rn-panel\s*{[^}]*position:\s*sticky/);
+  });
+
+  it('themes the controls, the overview map and the credit with the Studio tokens, so none stays light in the dark theme', () => {
+    const themed = block(css, '.rn-canvas .react-flow {');
+    for (const name of ['controls-button-background-color', 'minimap-background-color', 'minimap-mask-background-color', 'minimap-node-background-color', 'attribution-background-color']) {
+      expect(themed).toMatch(new RegExp(`--xy-${name}-default:\\s*var\\(--`));
+    }
+  });
+
+  it('gives every column of a fixed table a width of its own: nine columns of the journal had eight widths, and Payload got what was left', () => {
+    const sources: [string, string][] = [
+      ['rn-journal', 'TimelineView.tsx'],
+      ['rn-steps', 'TableView.tsx'],
+      ['rn-runs', 'RunsPage.tsx'],
+    ];
+    for (const [table, file] of sources) {
+      const source = readFileSync(resolve(process.cwd(), 'src/features/runs', file), 'utf8');
+      const start = source.indexOf(`rn-fixed ${table}`);
+      const head = source.slice(start, source.indexOf('</thead>', start));
+      const columns = (head.match(/<th /g) ?? []).length;
+      const widths = new Set([...css.matchAll(new RegExp(`\\.${table} th:nth-child\\((\\d+)\\)`, 'g'))].map((match) => Number(match[1])));
+      expect({ table, widths: [...widths].sort((a, b) => a - b) }).toEqual({ table, widths: Array.from({ length: columns }, (_, i) => i + 1) });
+    }
+  });
+
   // Run summary/canvas layout is measured in the real browser by visual-layout.spec.ts.
+});
+
+describe('base.css: the shell on a phone', () => {
+  const base = readFileSync(resolve(process.cwd(), 'src/styles/base.css'), 'utf8');
+
+  it('lets the navigation, the top bar and the page scroll together below 45rem, instead of pinning 40% of a 640 px screen', () => {
+    const phone = block(base, '@media (max-width: 45rem)');
+    expect(phone).toMatch(/\.shell\s*{[^}]*display:\s*block/);
+    expect(phone).toMatch(/\.shell-frame\s*{[^}]*display:\s*block/);
+    expect(phone).toMatch(/\.shell-frame > main\s*{[^}]*overflow-x:\s*auto;[^}]*overflow-y:\s*visible/);
+  });
 });

@@ -28,7 +28,7 @@ and `sagat workflow inspect <run>` shows the journal. The same program in each o
 the same journal and the same outputs, byte for byte, which the end-to-end test of the examples checks.
 
 `HelloWorld.csproj` references the SDK project in this checkout (`ProjectReference`); once the package is published, replace that line with
-`<PackageReference Include="SagatOctopusOrchestrator.Sdk" Version="0.1.0" />`. In an ASP.NET application you would register the worker with
+`<PackageReference Include="SagatOctopusOrchestrator.Sdk" Version="0.2.0" />`. In an ASP.NET application you would register the worker with
 `AddSagatOctopusOrchestrator(...).AddActivity<...>(...)` instead (see the SDK README); the example uses `WorkerHost` directly so that it is one file.
 
 ## The worker

@@ -4,9 +4,11 @@ use std::sync::Arc;
 
 use sagat_application::api_admission::{ApiAdmissionService, ApiAdmissionStore};
 use sagat_application::clock::Clock;
+use sagat_application::database_results::DatabaseResultUseCase;
 use sagat_application::definitions::{DefinitionService, DefinitionStore, IrCodec};
 use sagat_application::execution::ExpressionEvaluator;
 use sagat_application::identity::IdentityStore;
+use sagat_application::payload_disclosure::PayloadDisclosureUseCase;
 use sagat_application::payloads::PayloadInspectionUseCase;
 use sagat_application::publishing::{PublishingService, PublishingStore};
 use sagat_application::runs::{RunService, RunStore};
@@ -25,7 +27,7 @@ pub trait Exec: Core + Admission {
     type Store: DefinitionStore + RunStore + PublishingStore + Clone + 'static;
     type Clock: Clock + Clone + 'static;
     type Codec: IrCodec + Clone + 'static;
-    type Eval: ExpressionEvaluator + 'static;
+    type Eval: ExpressionEvaluator + Clone + 'static;
 
     fn definitions(&self) -> &DefinitionService<Self::Store, Self::Clock, Self::Codec>;
     fn runs(&self) -> &RunService<Self::Store, Self::Clock, Self::Eval>;
@@ -38,6 +40,10 @@ pub trait Exec: Core + Admission {
     fn streams(&self) -> &Arc<StreamRegistry>;
     fn blob_transfers(&self) -> &Arc<BlobTransfers>;
     fn payload_inspections(&self) -> Option<&Arc<dyn PayloadInspectionUseCase>>;
+    fn database_results(&self) -> Option<&Arc<dyn DatabaseResultUseCase>>;
+    fn payload_disclosures(&self) -> Option<&Arc<dyn PayloadDisclosureUseCase>> {
+        None
+    }
 }
 
 /// The identity state plus the definition and run services.
@@ -50,6 +56,8 @@ pub struct ExecState<S, C, P, X, E> {
     streams: Arc<StreamRegistry>,
     blob_transfers: Arc<BlobTransfers>,
     payload_inspections: Option<Arc<dyn PayloadInspectionUseCase>>,
+    payload_disclosures: Option<Arc<dyn PayloadDisclosureUseCase>>,
+    database_results: Option<Arc<dyn DatabaseResultUseCase>>,
 }
 
 impl<S, C, P, X, E> ExecState<S, C, P, X, E> {
@@ -69,7 +77,21 @@ impl<S, C, P, X, E> ExecState<S, C, P, X, E> {
             streams: StreamRegistry::new(StreamLimits::default()),
             blob_transfers: BlobTransfers::new(HttpBlobTransfer::default()),
             payload_inspections: None,
+            payload_disclosures: None,
+            database_results: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_database_results(mut self, results: Arc<dyn DatabaseResultUseCase>) -> Self {
+        self.database_results = Some(results);
+        self
+    }
+
+    #[must_use]
+    pub fn with_payload_disclosures(mut self, service: Arc<dyn PayloadDisclosureUseCase>) -> Self {
+        self.payload_disclosures = Some(service);
+        self
     }
 
     /// Serves the approval, active-version and promotion routes, backed by `publishing`.
@@ -113,6 +135,8 @@ impl<S, C, P, X, E> Clone for ExecState<S, C, P, X, E> {
             streams: Arc::clone(&self.streams),
             blob_transfers: Arc::clone(&self.blob_transfers),
             payload_inspections: self.payload_inspections.clone(),
+            payload_disclosures: self.payload_disclosures.clone(),
+            database_results: self.database_results.clone(),
         }
     }
 }
@@ -164,6 +188,18 @@ where
     ) -> Result<sagat_application::identity::Session, sagat_application::error::AppError> {
         self.core.authenticate(tenant, subject).await
     }
+
+    async fn record_access_denied(
+        &self,
+        principal: &sagat_domain::identity::Principal,
+        call: &str,
+        denial: sagat_application::error::AccessDenial,
+        ctx: &sagat_application::identity::RequestContext,
+    ) -> Result<(), sagat_application::error::StoreError> {
+        self.core
+            .record_access_denied(principal, call, denial, ctx)
+            .await
+    }
 }
 
 impl<S, C, P, X, E> Exec for ExecState<S, C, P, X, E>
@@ -173,7 +209,7 @@ where
     C: Clone,
     P: DefinitionStore + RunStore + PublishingStore + ApiAdmissionStore + Clone + 'static,
     X: IrCodec + Clone + 'static,
-    E: ExpressionEvaluator + 'static,
+    E: ExpressionEvaluator + Clone + 'static,
 {
     type Store = P;
     type Clock = C;
@@ -200,7 +236,15 @@ where
         &self.blob_transfers
     }
 
+    fn database_results(&self) -> Option<&Arc<dyn DatabaseResultUseCase>> {
+        self.database_results.as_ref()
+    }
+
     fn payload_inspections(&self) -> Option<&Arc<dyn PayloadInspectionUseCase>> {
         self.payload_inspections.as_ref()
+    }
+
+    fn payload_disclosures(&self) -> Option<&Arc<dyn PayloadDisclosureUseCase>> {
+        self.payload_disclosures.as_ref()
     }
 }

@@ -19,7 +19,9 @@ package workflow
 
 import (
 	"regexp"
+	"strings"
 	"time"
+	"unicode"
 
 	sagat "github.com/ortisun/sagat-octopus-orchestrator/sdks/go"
 	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/jsonx"
@@ -27,7 +29,31 @@ import (
 
 type node = map[string]any
 
+// SwitchCase is one ordered branch of a switch decision.
+type SwitchCase struct {
+	ID     string
+	When   string
+	Target string
+}
+
+// ApprovalRole is a built-in namespace role that may decide an approval.
+type ApprovalRole string
+
+const (
+	ApprovalAdmin     ApprovalRole = "admin"
+	ApprovalDeveloper ApprovalRole = "developer"
+	ApprovalOperator  ApprovalRole = "operator"
+)
+
+// ApprovalPolicy pins the subjects and built-in roles eligible to decide an approval.
+type ApprovalPolicy struct {
+	Subjects         []string
+	Roles            []ApprovalRole
+	ExcludeInitiator *bool
+}
+
 var namePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{2,63}$`)
+var artifactDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 // Builder builds a workflow, or a nested flow (see Flow).
 type Builder struct {
@@ -37,6 +63,10 @@ type Builder struct {
 	triggers    []Trigger
 	input       map[string]any
 	output      map[string]any
+	state       map[string]any
+	limits      map[string]any
+	chainPolicy map[string]any
+	bodies      map[string]*Builder
 
 	nodes    []node
 	embedded []*Builder
@@ -50,7 +80,7 @@ type Builder struct {
 // New starts a workflow definition. The name is lower case letters, digits and dashes, 3 to 64,
 // starting with a letter.
 func New(name string) *Builder {
-	b := &Builder{name: name, labels: map[string]string{}, ids: map[string]struct{}{}}
+	b := &Builder{name: name, labels: map[string]string{}, bodies: map[string]*Builder{}, ids: map[string]struct{}{}}
 	if !namePattern.MatchString(name) {
 		b.fail(sagat.Invalid("a workflow name is lower case letters, digits and dashes, 3 to 64: %q", name))
 	}
@@ -123,6 +153,50 @@ func (b *Builder) OutputSchema(schema map[string]any) *Builder {
 	return b
 }
 
+// Limits lowers the workflow instance and nesting ceilings. Omitted fields keep the platform default.
+func (b *Builder) Limits(opts ...LimitOption) *Builder {
+	if b.err != nil {
+		return b
+	}
+	limits := map[string]any{}
+	for _, opt := range opts {
+		opt(limits)
+	}
+	if value, present := limits["maxInstances"]; present {
+		n := value.(int64)
+		if n < 1 || n > 100000 {
+			return b.fail(sagat.Invalid("limits maxInstances must be between 1 and 100000"))
+		}
+	}
+	if value, present := limits["maxDepth"]; present {
+		n := value.(int64)
+		if n < 1 || n > 8 {
+			return b.fail(sagat.Invalid("limits maxDepth must be between 1 and 8"))
+		}
+	}
+	b.limits = limits
+	return b
+}
+
+// ChainPolicy sets the finite lifetime shared by every run in a continuation chain.
+func (b *Builder) ChainPolicy(maxSegments int, timeout time.Duration) *Builder {
+	if b.err != nil {
+		return b
+	}
+	if maxSegments < 1 || maxSegments > 10000 {
+		return b.fail(sagat.Invalid("chainPolicy maxSegments must be between 1 and 10000"))
+	}
+	if timeout%time.Millisecond != 0 {
+		return b.fail(sagat.Invalid("chainPolicy timeoutMs must be a whole number of milliseconds"))
+	}
+	timeoutMs := millis(timeout)
+	if timeoutMs < 1 || timeoutMs > 31622400000 {
+		return b.fail(sagat.Invalid("chainPolicy timeoutMs must be between 1 and 31622400000"))
+	}
+	b.chainPolicy = map[string]any{"maxSegments": maxSegments, "timeoutMs": timeoutMs}
+	return b
+}
+
 // ---- the nodes
 
 // Step adds an activity executed by a worker.
@@ -146,6 +220,28 @@ func (b *Builder) Step(id, activity string, opts ...StepOption) *Builder {
 	n := node{"id": id, "type": "activity", "activity": activity}
 	for key, value := range spec.fields {
 		n[key] = value
+	}
+	return b.push(n)
+}
+
+// Script adds a pinned script artifact executed by an isolated runner.
+func (b *Builder) Script(id, artifactDigest string, opts ...ScriptOption) *Builder {
+	if b.err != nil {
+		return b
+	}
+	if !artifactDigestPattern.MatchString(artifactDigest) {
+		return b.fail(sagat.Invalid("script %s needs a sha256 artifact digest", id))
+	}
+	n := node{"id": id, "type": "script", "artifactDigest": artifactDigest}
+	for _, opt := range opts {
+		opt(n)
+	}
+	if secrets, ok := n["secrets"].([]any); ok {
+		for _, value := range secrets {
+			if name, ok := value.(string); !ok || !secretName.MatchString(name) {
+				return b.fail(sagat.Invalid("script %s names a secret that is not a name", id))
+			}
+		}
 	}
 	return b.push(n)
 }
@@ -206,6 +302,182 @@ func (b *Builder) Condition(id, expression, ifTrue, ifFalse string) *Builder {
 		return b.fail(sagat.Invalid("condition %s needs an expression", id))
 	}
 	return b.push(node{"id": id, "type": "condition", "expression": expression, "ifTrue": ifTrue, "ifFalse": ifFalse})
+}
+
+// Switch adds an ordered decision that follows the first matching case, or its default target. It
+// has no next node.
+func (b *Builder) Switch(id string, cases []SwitchCase, defaultTarget string) *Builder {
+	if b.err != nil {
+		return b
+	}
+	if len(cases) < 1 || len(cases) > 32 {
+		return b.fail(sagat.Invalid("switch %s needs between 1 and 32 cases", id))
+	}
+	if defaultTarget == "" {
+		return b.fail(sagat.Invalid("switch %s needs a default target", id))
+	}
+	caseIDs := make(map[string]struct{}, len(cases))
+	copied := make([]any, 0, len(cases))
+	for _, item := range cases {
+		if item.ID == "" {
+			return b.fail(sagat.Invalid("switch %s has a case without an id", id))
+		}
+		if _, exists := caseIDs[item.ID]; exists {
+			return b.fail(sagat.Invalid("switch %s uses case id %q twice", id, item.ID))
+		}
+		if item.When == "" {
+			return b.fail(sagat.Invalid("switch %s case %q needs a when expression", id, item.ID))
+		}
+		if item.Target == "" {
+			return b.fail(sagat.Invalid("switch %s case %q needs a target", id, item.ID))
+		}
+		caseIDs[item.ID] = struct{}{}
+		copied = append(copied, map[string]any{"id": item.ID, "when": item.When, "target": item.Target})
+	}
+	return b.push(node{"id": id, "type": "switch", "cases": copied, "default": defaultTarget})
+}
+
+// ForEach invokes a named body once for every item captured from items.
+func (b *Builder) ForEach(id, items, body, result string, maxItems, maxConcurrency int) *Builder {
+	if b.err != nil {
+		return b
+	}
+	if items == "" || body == "" || result == "" {
+		return b.fail(sagat.Invalid("forEach %s needs items, body and result expressions", id))
+	}
+	if maxItems < 1 || maxItems > 10000 {
+		return b.fail(sagat.Invalid("forEach %s maxItems must be between 1 and 10000", id))
+	}
+	if maxConcurrency < 1 || maxConcurrency > 256 {
+		return b.fail(sagat.Invalid("forEach %s maxConcurrency must be between 1 and 256", id))
+	}
+	return b.push(node{"id": id, "type": "forEach", "items": items, "body": body, "result": result, "maxItems": maxItems, "maxConcurrency": maxConcurrency})
+}
+
+// Map is value-returning collection authoring; it emits the same durable forEach node.
+func (b *Builder) Map(id, items, body, result string, maxItems, maxConcurrency int) *Builder {
+	return b.ForEach(id, items, body, result, maxItems, maxConcurrency)
+}
+
+// While invokes a named body sequentially while a pre-test condition is true.
+func (b *Builder) While(id, condition, body, initial, carry string, maxIterations int, timeout time.Duration, opts ...LoopOption) *Builder {
+	return b.loop("while", id, condition, body, initial, carry, maxIterations, timeout, opts...)
+}
+
+// RepeatUntil invokes a named body once, then repeats it until a post-test condition is true.
+func (b *Builder) RepeatUntil(id, condition, body, initial, carry string, maxIterations int, timeout time.Duration, opts ...LoopOption) *Builder {
+	return b.loop("repeatUntil", id, condition, body, initial, carry, maxIterations, timeout, opts...)
+}
+
+// Approval waits for one authorized decision or for its deadline.
+func (b *Builder) Approval(id string, policy ApprovalPolicy, timeout time.Duration, onApprove, onReject, onExpire string) *Builder {
+	if b.err != nil {
+		return b
+	}
+	principals := len(policy.Subjects) + len(policy.Roles)
+	if principals < 1 || principals > 32 {
+		return b.fail(sagat.Invalid("approval %s policy needs between 1 and 32 subjects and roles", id))
+	}
+	subjects := make([]any, 0, len(policy.Subjects))
+	seenSubjects := make(map[string]struct{}, len(policy.Subjects))
+	for _, subject := range policy.Subjects {
+		if _, duplicate := seenSubjects[subject]; duplicate {
+			return b.fail(sagat.Invalid("approval %s policy has a duplicate subject", id))
+		}
+		if strings.TrimSpace(subject) == "" || len(subject) > 255 ||
+			strings.HasPrefix(strings.ToLower(subject), "system:") || strings.IndexFunc(subject, unicode.IsControl) >= 0 {
+			return b.fail(sagat.Invalid("approval %s policy has an invalid subject", id))
+		}
+		seenSubjects[subject] = struct{}{}
+		subjects = append(subjects, subject)
+	}
+	roles := make([]any, 0, len(policy.Roles))
+	seenRoles := make(map[ApprovalRole]struct{}, len(policy.Roles))
+	for _, role := range policy.Roles {
+		if _, duplicate := seenRoles[role]; duplicate {
+			return b.fail(sagat.Invalid("approval %s policy has a duplicate role", id))
+		}
+		if role != ApprovalAdmin && role != ApprovalDeveloper && role != ApprovalOperator {
+			return b.fail(sagat.Invalid("approval %s policy has an unsupported role", id))
+		}
+		seenRoles[role] = struct{}{}
+		roles = append(roles, string(role))
+	}
+	timeoutMs := millis(timeout)
+	if timeoutMs < 1 || timeoutMs > 31622400000 {
+		return b.fail(sagat.Invalid("approval %s timeoutMs must be between 1 and 31622400000", id))
+	}
+	if onApprove == "" {
+		return b.fail(sagat.Invalid("approval %s needs onApprove", id))
+	}
+	if onReject == "" {
+		return b.fail(sagat.Invalid("approval %s needs onReject", id))
+	}
+	if onExpire == "" {
+		return b.fail(sagat.Invalid("approval %s needs onExpire", id))
+	}
+	policyNode := map[string]any{}
+	if policy.Subjects != nil {
+		policyNode["subjects"] = subjects
+	}
+	if policy.Roles != nil {
+		policyNode["roles"] = roles
+	}
+	if policy.ExcludeInitiator != nil {
+		policyNode["excludeInitiator"] = *policy.ExcludeInitiator
+	}
+	return b.push(node{
+		"id": id, "type": "approval", "policy": policyNode, "timeoutMs": timeoutMs,
+		"onApprove": onApprove, "onReject": onReject, "onExpire": onExpire,
+	})
+}
+
+// ContinueAsNew closes this run and transfers explicitly selected values to its successor.
+func (b *Builder) ContinueAsNew(id, input string, opts ...ContinuationOption) *Builder {
+	if b.err != nil {
+		return b
+	}
+	if input == "" {
+		return b.fail(sagat.Invalid("continueAsNew %s needs an input expression", id))
+	}
+	n := node{"id": id, "type": "continueAsNew", "input": input}
+	for _, opt := range opts {
+		opt(n)
+	}
+	if state, present := n["state"]; present && state == "" {
+		return b.fail(sagat.Invalid("continueAsNew %s state must be a non-empty expression", id))
+	}
+	return b.push(n)
+}
+
+func (b *Builder) loop(kind, id, condition, body, initial, carry string, maxIterations int, timeout time.Duration, opts ...LoopOption) *Builder {
+	if b.err != nil {
+		return b
+	}
+	if condition == "" || body == "" || initial == "" || carry == "" {
+		return b.fail(sagat.Invalid("%s %s needs condition, body, initial and carry expressions", kind, id))
+	}
+	if maxIterations < 1 || maxIterations > 10000 {
+		return b.fail(sagat.Invalid("%s %s maxIterations must be between 1 and 10000", kind, id))
+	}
+	timeoutMs := millis(timeout)
+	if timeoutMs < 1 || timeoutMs > 31622400000 {
+		return b.fail(sagat.Invalid("%s %s timeoutMs must be between 1 and 31622400000", kind, id))
+	}
+	n := node{
+		"id": id, "type": kind, "condition": condition, "body": body, "initial": initial,
+		"carry": carry, "maxIterations": maxIterations, "timeoutMs": timeoutMs,
+	}
+	for _, opt := range opts {
+		opt(n)
+	}
+	if delay, present := n["delayMs"]; present {
+		delayMs, valid := delay.(int64)
+		if !valid || delayMs < 1 || delayMs > 31622400000 {
+			return b.fail(sagat.Invalid("%s %s delayMs must be between 1 and 31622400000", kind, id))
+		}
+	}
+	return b.push(n)
 }
 
 // Parallel adds branches that run at once: JoinAll waits for every one, JoinAny for the first. There
@@ -281,10 +553,39 @@ func (b *Builder) End(id string, opts ...EndOption) *Builder {
 	return b.push(n)
 }
 
+// Return closes a named body with its result. It is not a workflow terminal.
+func (b *Builder) Return(id, result string) *Builder {
+	if result == "" {
+		return b.fail(sagat.Invalid("return %s needs a result expression", id))
+	}
+	return b.push(node{"id": id, "type": "return", "result": result})
+}
+
+// Body registers a closed body by name. The body is read when Build runs.
+func (b *Builder) Body(name string, body *Builder) *Builder {
+	if b.err != nil {
+		return b
+	}
+	if name == "" {
+		return b.fail(sagat.Invalid("a body needs a name"))
+	}
+	if body == nil {
+		return b.fail(sagat.Invalid("body %q is empty", name))
+	}
+	if b.bodies == nil {
+		b.bodies = map[string]*Builder{}
+	}
+	if _, exists := b.bodies[name]; exists {
+		return b.fail(sagat.Invalid("the body %q is defined twice", name))
+	}
+	b.bodies[name] = body
+	return b
+}
+
 // ---- the document
 
 // flatten returns every node of the flow and of the flows inside it, in order, with next set: node i
-// gets next = id of node i+1, except a condition (it names its two branches) and an end (it ends);
+// gets next = id of node i+1, except a branching node and an end (it ends);
 // the last node of a flow has none.
 func (b *Builder) flatten() []node {
 	out := make([]node, 0, len(b.nodes))
@@ -293,7 +594,7 @@ func (b *Builder) flatten() []node {
 		for key, value := range n {
 			linked[key] = value
 		}
-		if i+1 < len(b.nodes) && linked["type"] != "condition" && linked["type"] != "end" {
+		if i+1 < len(b.nodes) && linked["type"] != "condition" && linked["type"] != "switch" && linked["type"] != "approval" && linked["type"] != "continueAsNew" && linked["type"] != "end" && linked["type"] != "return" {
 			if _, set := linked["next"]; !set {
 				linked["next"] = b.nodes[i+1]["id"]
 			}
@@ -321,35 +622,142 @@ func (b *Builder) Build() (map[string]any, error) {
 		return nil, sagat.Invalid("a workflow needs at least one node")
 	}
 	nodes := b.flatten()
-	ids := make(map[string]struct{}, len(nodes))
-	for _, n := range nodes {
-		id := n["id"].(string)
-		if _, seen := ids[id]; seen {
-			return nil, sagat.Invalid("the node id %q is used twice", id)
+	for _, inner := range b.embedded {
+		for _, n := range inner.flatten() {
+			if n["type"] == "continueAsNew" {
+				return nil, sagat.Invalid("continueAsNew is valid only in the top-level workflow")
+			}
 		}
-		ids[id] = struct{}{}
 	}
-	reference := func(from, field string, target any) error {
-		if name, ok := target.(string); ok {
-			if _, found := ids[name]; !found {
-				return sagat.Invalid("%s.%s points at %q, which is not a node", from, field, name)
+	hasContinuation := false
+	for _, n := range b.nodes {
+		hasContinuation = hasContinuation || n["type"] == "continueAsNew"
+	}
+	if hasContinuation && b.chainPolicy == nil {
+		return nil, sagat.Invalid("a workflow with continueAsNew needs chainPolicy")
+	}
+	for _, n := range nodes {
+		if n["type"] == "return" {
+			return nil, sagat.Invalid("return is only valid in a named body")
+		}
+	}
+	bodyNodes := make(map[string][]node, len(b.bodies))
+	for name, body := range b.bodies {
+		if body.err != nil {
+			return nil, body.err
+		}
+		nested := body.flatten()
+		if len(nested) == 0 {
+			return nil, sagat.Invalid("body %q is empty", name)
+		}
+		returns := 0
+		for _, n := range nested {
+			if n["type"] == "end" {
+				return nil, sagat.Invalid("body %q cannot hold an end node", name)
+			}
+			if n["type"] == "continueAsNew" {
+				return nil, sagat.Invalid("continueAsNew is valid only in the top-level workflow")
+			}
+			if n["type"] == "return" {
+				returns++
+			}
+		}
+		if returns != 1 {
+			return nil, sagat.Invalid("body %q needs exactly one return node", name)
+		}
+		bodyNodes[name] = nested
+	}
+	visiting := make(map[string]bool, len(bodyNodes))
+	visited := make(map[string]bool, len(bodyNodes))
+	var visitBody func(string) error
+	visitBody = func(name string) error {
+		if visiting[name] {
+			return sagat.Invalid("body reference cycle is not allowed")
+		}
+		if visited[name] {
+			return nil
+		}
+		visiting[name] = true
+		for _, n := range bodyNodes[name] {
+			kind, _ := n["type"].(string)
+			if kind == "forEach" || kind == "while" || kind == "repeatUntil" {
+				target, _ := n["body"].(string)
+				if _, found := bodyNodes[target]; found {
+					if err := visitBody(target); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		visiting[name] = false
+		visited[name] = true
+		return nil
+	}
+	for name := range bodyNodes {
+		if err := visitBody(name); err != nil {
+			return nil, err
+		}
+	}
+	validateScope := func(scope []node) error {
+		local := make(map[string]struct{}, len(scope))
+		for _, n := range scope {
+			id := n["id"].(string)
+			if _, seen := local[id]; seen {
+				return sagat.Invalid("the node id %q is used twice", id)
+			}
+			local[id] = struct{}{}
+		}
+		reference := func(from, field string, target any) error {
+			if name, ok := target.(string); ok {
+				if _, found := local[name]; !found {
+					return sagat.Invalid("%s.%s points at %q, which is not a node", from, field, name)
+				}
+			}
+			return nil
+		}
+		for _, n := range scope {
+			id := n["id"].(string)
+			for _, field := range []string{"next", "onError", "onTimeout", "ifTrue", "ifFalse", "begin", "onApprove", "onReject", "onExpire"} {
+				if err := reference(id, field, n[field]); err != nil {
+					return err
+				}
+			}
+			if branches, ok := n["branches"].([]any); ok {
+				for _, branch := range branches {
+					if err := reference(id, "branches", branch); err != nil {
+						return err
+					}
+				}
+			}
+			if cases, ok := n["cases"].([]any); ok {
+				for _, item := range cases {
+					if err := reference(id, "cases", item.(map[string]any)["target"]); err != nil {
+						return err
+					}
+				}
+			}
+			if err := reference(id, "default", n["default"]); err != nil {
+				return err
+			}
+			kind, _ := n["type"].(string)
+			if kind == "forEach" || kind == "while" || kind == "repeatUntil" {
+				name, _ := n["body"].(string)
+				if _, found := b.bodies[name]; !found {
+					return sagat.Invalid("%s %s points at %q, which is not a body", kind, id, name)
+				}
+				if _, found := n["next"].(string); !found {
+					return sagat.Invalid("%s %s needs a next node", kind, id)
+				}
 			}
 		}
 		return nil
 	}
-	for _, n := range nodes {
-		id := n["id"].(string)
-		for _, field := range []string{"next", "onError", "onTimeout", "ifTrue", "ifFalse", "begin"} {
-			if err := reference(id, field, n[field]); err != nil {
-				return nil, err
-			}
-		}
-		if branches, ok := n["branches"].([]any); ok {
-			for _, branch := range branches {
-				if err := reference(id, "branches", branch); err != nil {
-					return nil, err
-				}
-			}
+	if err := validateScope(nodes); err != nil {
+		return nil, err
+	}
+	for _, nested := range bodyNodes {
+		if err := validateScope(nested); err != nil {
+			return nil, err
 		}
 	}
 	metadata := map[string]any{"name": b.name}
@@ -387,6 +795,29 @@ func (b *Builder) Build() (map[string]any, error) {
 	if b.output != nil {
 		document["outputSchema"] = b.output
 	}
+	if b.limits != nil {
+		document["limits"] = b.limits
+	}
+	if b.state != nil {
+		document["state"] = clone(b.state)
+	}
+	if b.chainPolicy != nil {
+		document["chainPolicy"] = map[string]any{
+			"maxSegments": b.chainPolicy["maxSegments"],
+			"timeoutMs":   b.chainPolicy["timeoutMs"],
+		}
+	}
+	if len(bodyNodes) > 0 {
+		bodies := make(map[string]any, len(bodyNodes))
+		for name, nested := range bodyNodes {
+			list := make([]any, len(nested))
+			for i, n := range nested {
+				list[i] = n
+			}
+			bodies[name] = map[string]any{"entrypoint": nested[0]["id"], "nodes": list}
+		}
+		document["bodies"] = bodies
+	}
 	// What cannot be written as JSON (a NaN in a schema, say) is refused here, not by the server.
 	if _, err := jsonx.Encode(document); err != nil {
 		return nil, err
@@ -408,6 +839,14 @@ func (b *Builder) joinedErr() error {
 			}
 		}
 		if err := inner.joinedErr(); err != nil {
+			return err
+		}
+	}
+	for _, body := range b.bodies {
+		if body.err != nil {
+			return body.err
+		}
+		if err := body.joinedErr(); err != nil {
 			return err
 		}
 	}

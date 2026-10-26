@@ -22,7 +22,8 @@ describe('autosave (D146)', () => {
   it('saves the draft after a quiet moment, on the revision it opened, with an idempotency key, and takes the new revision from the answer', async () => {
     const { user, platform } = await opened();
     await removeDone(user);
-    expect(state()).toHaveTextContent('Unsaved changes');
+    // The "Unsaved changes" state is transient here (the harness saves after a few milliseconds, which a
+    // loaded machine can outrun); the deterministic test below asserts it under fake timers.
     await waitFor(() => expect(state()).toHaveTextContent('Saved · revision 2'));
     const [put] = putsOf(platform);
     expect(putsOf(platform)).toHaveLength(1);

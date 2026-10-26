@@ -1,0 +1,30 @@
+{
+  "name": "chain-root-wait",
+  "description": "G372: a continuation whose entrypoint is a waitEvent. The successor is created already waiting, so a signal sent to the new head right after the hand-off is delivered, a stale-head command is rejected, and the chain is cancelled on its third segment.",
+  "workflows": {
+    "chain": {
+      "name": "chain-root-wait-runtime",
+      "chainPolicy": { "maxSegments": 3, "timeoutMs": 86400000 },
+      "program": [
+        { "op": "waitForEvent", "id": "release", "options": { "eventType": "chain.release", "correlationExpr": "input.key", "timeoutMs": 600000 } },
+        { "op": "continueAsNew", "id": "next", "input": "input" }
+      ]
+    }
+  },
+  "steps": [
+    { "id": "start", "op": "start", "workflow": "chain", "input": { "key": "order-{{unique}}" } },
+    { "id": "inspect", "op": "inspectChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}" },
+    { "id": "foreign", "op": "inspectChain", "token": "other", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}" },
+    { "id": "signal", "op": "signalChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:inspect}}", "name": "chain.release", "payload": { "released": true }, "idempotencyKey": "chain-signal-{{unique}}" },
+    { "id": "signal-replay", "op": "signalChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:inspect}}", "name": "chain.release", "payload": { "released": true }, "idempotencyKey": "chain-signal-{{unique}}" },
+    { "id": "inspect-second", "op": "inspectChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "waitForHeadChange": "{{currentRunId:inspect}}" },
+    { "id": "stale-signal", "op": "signalChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:inspect}}", "name": "chain.release", "payload": { "released": false }, "idempotencyKey": "chain-stale-signal-{{unique}}" },
+    { "id": "stale-cancel", "op": "cancelChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:inspect}}", "reason": "stale caller", "idempotencyKey": "chain-stale-{{unique}}" },
+    { "id": "signal-second", "op": "signalChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:inspect-second}}", "name": "chain.release", "payload": { "released": true }, "idempotencyKey": "chain-signal-second-{{unique}}" },
+    { "id": "inspect-third", "op": "inspectChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "waitForHeadChange": "{{currentRunId:inspect-second}}" },
+    { "id": "cancel", "op": "cancelChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:inspect-third}}", "reason": "operator requested cancellation", "idempotencyKey": "chain-cancel-{{unique}}" },
+    { "id": "cancel-replay", "op": "cancelChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:inspect-third}}", "reason": "operator requested cancellation", "idempotencyKey": "chain-cancel-{{unique}}" },
+    { "id": "chain-done", "op": "waitForChainCompletion", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "timeoutMs": 10000 },
+    { "id": "segments", "op": "listChainRuns", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}" }
+  ]
+}

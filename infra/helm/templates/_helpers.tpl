@@ -33,6 +33,7 @@ app.kubernetes.io/component: {{ .component }}
 
 {{/* Fails the render for a value the platform would refuse at start, so that it fails here instead. */}}
 {{- define "sagat.validate" -}}
+{{- include "sagat.openbao.validate" . -}}
 {{- if not (has .Values.environment (list "dev" "staging" "prod")) -}}
 {{- fail "environment must be dev, staging or prod" -}}
 {{- end -}}
@@ -78,6 +79,9 @@ app.kubernetes.io/component: {{ .component }}
 {{- if .Values.engine.autoscaling.keda.enabled -}}{{- $engine = max $engine (int .Values.engine.autoscaling.keda.maxReplicaCount) -}}{{- end -}}
 {{- if .Values.engine.autoscaling.hpa.enabled -}}{{- $engine = max $engine (int .Values.engine.autoscaling.hpa.maxReplicas) -}}{{- end -}}
 {{- $peak := mul (add (int .Values.controlPlane.replicas) $engine) (int .Values.database.maxConnections) -}}
+{{- if and .Values.openbao.enabled .Values.openbao.cleanup.enabled -}}
+{{- $peak = add $peak 2 -}}
+{{- end -}}
 {{- if gt $peak (int .Values.database.serverMaxConnections) -}}
 {{- fail (printf "the control plane (%d) and the engine (up to %d) with %d connections each would hold up to %d connections, and the server allows %d (database.serverMaxConnections): lower database.maxConnections or the ceiling of the autoscaler, or put a pooler in front of the server" (int .Values.controlPlane.replicas) $engine (int .Values.database.maxConnections) $peak (int .Values.database.serverMaxConnections)) -}}
 {{- end -}}
@@ -97,7 +101,7 @@ app.kubernetes.io/component: {{ .component }}
 {{- if or (lt (int .Values.engine.shardLeaseSeconds) 3) (gt (int .Values.engine.shardLeaseSeconds) 600) -}}
 {{- fail "engine.shardLeaseSeconds must be between 3 and 600" -}}
 {{- end -}}
-{{- if and .Values.secrets.existingSecret (ne .Values.environment "dev") -}}
+{{- if and (or .Values.secrets.existingSecret .Values.openbao.enabled) (ne .Values.environment "dev") -}}
 {{- if not (or $cpTls .Values.controlPlane.allowPlaintextSecrets) -}}
 {{- fail "secrets.existingSecret is set, so configure controlPlane.nativeTls or set controlPlane.allowPlaintextSecrets=true to state that TLS is terminated in front of the API" -}}
 {{- end -}}

@@ -7,14 +7,19 @@
 //! and commits them together (`FR-002-002`, `FR-002-003`). If the transaction is dropped without a
 //! commit, nothing happened.
 
+mod collection_plan;
+#[cfg(test)]
+mod instance_port_tests;
+
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Arc;
 
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::execution::{
-    CorrelationKey, Evaluation, ExecutionError, FailureCode, Progress, Resolution, RunEvent, RunId,
-    RunState, RunStatus, StopReason,
+    AddressedRunEvent, CorrelationKey, Evaluation, ExecutionError, ExecutionInstanceId,
+    FailureCode, InstancePath, PathExecutionState, Progress, Resolution, RunEvent, RunId, RunState,
+    RunStatus, StopReason,
 };
 use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_domain::workflow::{ActivityName, CancelPolicy, Expression, NodeId, WorkflowDefinition};
@@ -25,6 +30,7 @@ use sagat_domain::audit::AuditRecord;
 use crate::blobs::BlobCommit;
 use crate::definitions::{Idempotency, IrCodec, IrError};
 use crate::error::StoreError;
+use crate::loop_progress::{LoopCheckpointEvaluation, LoopEntryEvaluation};
 use crate::secrets::{SecretInputs, StoredSecret};
 use sagat_domain::secrets::SecretName;
 
@@ -34,7 +40,7 @@ pub const MAX_PAYLOAD_BYTES: usize = 256 * 1024;
 
 /// Most runs one tree may hold: a root run and all its descendants. Depth alone does not bound a
 /// tree (a parallel node can start hundreds of children per level), so the whole tree has a budget.
-pub const MAX_TREE_RUNS: usize = 1024;
+pub const MAX_TREE_RUNS: usize = sagat_domain::execution::MAX_TREE_RUNS;
 
 /// What the refusal names when a tree is full (`StoreError::QuotaExceeded::what`); the scheduler
 /// tells it apart from the quotas of a namespace or a tenant, which fail the child differently.
@@ -51,6 +57,9 @@ pub const MAX_RUN_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 /// Deepest nesting of child runs: a run started by the API is at depth 0, its children at 1, and so
 /// on. A recursive workflow therefore ends in a failed step, never in an unbounded tree.
 pub const MAX_CHILD_DEPTH: u8 = 8;
+
+const SCOPED_EXECUTION_ADAPTER_REQUIRED: &str =
+    "the storage adapter does not support scoped execution identities";
 
 /// The id of the child run a `child` step of `parent` reserves. Derived, not random, so a retried
 /// reservation names the same run and a crash between journaling it and creating it is repaired by
@@ -80,6 +89,42 @@ pub fn step_id(version: WorkflowVersionId, run: RunId, node: &NodeId) -> uuid::U
     uuid::Uuid::from_bytes(bytes)
 }
 
+/// Stable opaque id of a logical step in a nested scope. Root work retains its historical id
+/// byte-for-byte. The nonroot encoding is domain-separated and length-delimited, so a path cannot
+/// collide by concatenating user-controlled node names. Attempts never enter this derivation.
+#[must_use]
+pub fn instance_step_id(
+    version: WorkflowVersionId,
+    run: RunId,
+    instance: &ExecutionInstanceId,
+) -> uuid::Uuid {
+    use sha2::{Digest, Sha256};
+
+    if instance.path().is_root() {
+        return step_id(version, run, instance.node());
+    }
+    let mut digest = Sha256::new();
+    digest.update(b"sagat.step.instance.scoped.v1\0");
+    digest.update(version.as_uuid().as_bytes());
+    digest.update(run.as_uuid().as_bytes());
+    digest.update([instance.path().depth() as u8]);
+    for segment in instance.path().segments() {
+        let name = segment.scope_node().as_str().as_bytes();
+        digest.update([name.len() as u8]);
+        digest.update(name);
+        digest.update((segment.iteration_index() as u16).to_be_bytes());
+    }
+    let name = instance.node().as_str().as_bytes();
+    digest.update([name.len() as u8]);
+    digest.update(name);
+    let hash = digest.finalize();
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&hash[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x80;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    uuid::Uuid::from_bytes(bytes)
+}
+
 /// The stable identity of the compensation of `forward` in a workflow version: the same for every run
 /// of that version, so a provider that is asked to undo `reserve` can recognise the request, and the
 /// plan stored with the version names the same ids a run uses. With the run id it makes the
@@ -101,6 +146,76 @@ pub fn compensation_id(version: WorkflowVersionId, forward: &NodeId) -> uuid::Uu
 #[must_use]
 pub fn compensation_key(version: WorkflowVersionId, run: RunId, forward: &NodeId) -> String {
     format!("compensation:{}:{run}", compensation_id(version, forward))
+}
+
+/// The stable identity of the compensation of the forward instance `forward` in a workflow version
+/// (D382). For a root instance it is [`compensation_id`], byte for byte. For an instance in a scope
+/// it is a domain-separated, length-delimited derivation over the version, the path of scope
+/// segments and the node, so two iterations of one body node never share the id of their
+/// compensation and a path cannot collide by concatenating user-controlled names. An attempt or
+/// generation never enters it: a retry, a lost response and a restart ask the provider for the same
+/// thing.
+#[must_use]
+pub fn instance_compensation_id(
+    version: WorkflowVersionId,
+    forward: &ExecutionInstanceId,
+) -> uuid::Uuid {
+    use sha2::{Digest, Sha256};
+
+    if forward.path().is_root() {
+        return compensation_id(version, forward.node());
+    }
+    let mut digest = Sha256::new();
+    digest.update(b"sagat.compensation.instance.v1\0");
+    digest.update(version.as_uuid().as_bytes());
+    digest.update([forward.path().depth() as u8]);
+    for segment in forward.path().segments() {
+        let name = segment.scope_node().as_str().as_bytes();
+        digest.update([name.len() as u8]);
+        digest.update(name);
+        digest.update((segment.iteration_index() as u16).to_be_bytes());
+    }
+    let name = forward.node().as_str().as_bytes();
+    digest.update([name.len() as u8]);
+    digest.update(name);
+    let hash = digest.finalize();
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&hash[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x80;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    uuid::Uuid::from_bytes(bytes)
+}
+
+/// The idempotency key of the compensation of the forward instance `forward` in one run:
+/// `compensation:{id}:{run}`, stable per run, instance and action.
+#[must_use]
+pub fn instance_compensation_key(
+    version: WorkflowVersionId,
+    run: RunId,
+    forward: &ExecutionInstanceId,
+) -> String {
+    format!(
+        "compensation:{}:{run}",
+        instance_compensation_id(version, forward)
+    )
+}
+
+/// The idempotency key of the lookup of the forward instance `forward` in one run. A root lookup
+/// keeps `reconciliation:{run}:{node}`; a scoped one names the instance by its step id.
+#[must_use]
+pub fn instance_reconciliation_key(
+    version: WorkflowVersionId,
+    run: RunId,
+    forward: &ExecutionInstanceId,
+) -> String {
+    if forward.path().is_root() {
+        format!("reconciliation:{run}:{}", forward.node())
+    } else {
+        format!(
+            "reconciliation:{run}:{}",
+            instance_step_id(version, run, forward)
+        )
+    }
 }
 
 /// When the compensations of one provider operation stop being asked for (FR-003-003).
@@ -144,8 +259,72 @@ pub struct RunData {
     pub input: Vec<u8>,
     /// Catalog-backed run input only; a caller-provided JSON lookalike never sets this identity.
     pub input_blob: Option<sagat_domain::blobs::BlobId>,
-    /// Outputs of the steps that succeeded, by node id.
-    pub outputs: BTreeMap<NodeId, Vec<u8>>,
+    /// Current declared workflow state, when this version defines one.
+    pub state: Option<Vec<u8>>,
+    /// Revision of `state`; absent exactly when no declared state exists.
+    pub state_revision: Option<u64>,
+    /// Outputs of the step instances that succeeded.
+    pub outputs: BTreeMap<ExecutionInstanceId, Vec<u8>>,
+    /// Input owned by an admitted collection or loop iteration, keyed by its exact scope path.
+    pub scope_inputs: BTreeMap<InstancePath, ScopeInput>,
+}
+
+/// The immutable input made available to one admitted iteration body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScopeInput {
+    Collection { index: u32, item: Vec<u8> },
+    Loop { iteration: u32, carry: Vec<u8> },
+}
+
+impl RunData {
+    /// The output retained for one logical instance.
+    #[must_use]
+    pub fn output(&self, instance: &ExecutionInstanceId) -> Option<&[u8]> {
+        self.outputs.get(instance).map(Vec::as_slice)
+    }
+
+    /// Retains an output under its full run-local identity.
+    pub fn insert_output(
+        &mut self,
+        instance: ExecutionInstanceId,
+        output: Vec<u8>,
+    ) -> Option<Vec<u8>> {
+        self.outputs.insert(instance, output)
+    }
+
+    /// The output of an existing root node.
+    #[must_use]
+    pub fn root_output(&self, node: &NodeId) -> Option<&[u8]> {
+        self.output(&ExecutionInstanceId::root(node.clone()))
+    }
+
+    /// Retains an output produced by the existing root-only execution path.
+    pub fn insert_root_output(&mut self, node: NodeId, output: Vec<u8>) -> Option<Vec<u8>> {
+        self.insert_output(ExecutionInstanceId::root(node), output)
+    }
+
+    /// Root outputs in definition-node order, for the existing public expression context.
+    pub fn root_outputs(&self) -> impl Iterator<Item = (&NodeId, &[u8])> {
+        self.outputs.iter().filter_map(|(instance, output)| {
+            instance
+                .path()
+                .is_root()
+                .then_some((instance.node(), output.as_slice()))
+        })
+    }
+
+    /// Outputs visible within one exact execution scope.
+    pub fn outputs_in(&self, path: &InstancePath) -> impl Iterator<Item = (&NodeId, &[u8])> {
+        self.outputs.iter().filter_map(move |(instance, output)| {
+            (instance.path() == path).then_some((instance.node(), output.as_slice()))
+        })
+    }
+
+    /// Input owned by one exact admitted scope.
+    #[must_use]
+    pub fn scope_input(&self, path: &InstancePath) -> Option<&ScopeInput> {
+        self.scope_inputs.get(path)
+    }
 }
 
 /// An expression failed to evaluate. The detail is for logs; it never reaches clients.
@@ -190,6 +369,24 @@ pub trait ExpressionEvaluator: Send + Sync {
         node: &NodeId,
     ) -> Result<String, ExpressionFailure>;
 
+    /// Renders an idempotency-key template using the exact execution scope.
+    ///
+    /// # Errors
+    /// [`ExpressionFailure`] when scoped data is not supported or the template fails.
+    fn idempotency_key_instance(
+        &self,
+        template: &Expression,
+        data: &RunData,
+        instance: &ExecutionInstanceId,
+    ) -> Result<String, ExpressionFailure> {
+        if !instance.path().is_root() {
+            return Err(ExpressionFailure(
+                "scoped idempotency context is unavailable".to_owned(),
+            ));
+        }
+        self.idempotency_key(template, data, instance.node())
+    }
+
     /// The input of a child run: `expression` evaluated over the parent's data, or the parent's own
     /// input when the node defines none. It must be a JSON object, like every run input.
     ///
@@ -201,8 +398,119 @@ pub trait ExpressionEvaluator: Send + Sync {
         data: &RunData,
     ) -> Result<Vec<u8>, ExpressionFailure>;
 
+    /// The result of a run: the `outputExpr` of the `end` node that finishes it, evaluated over the
+    /// run's data (G21). Any JSON value.
+    ///
+    /// # Errors
+    /// [`ExpressionFailure`] when the expression fails.
+    fn run_result(
+        &self,
+        expression: &Expression,
+        data: &RunData,
+    ) -> Result<Vec<u8>, ExpressionFailure>;
+
+    /// Evaluates an expression as a canonical JSON value selected for continuation: the same
+    /// evaluation as [`Self::run_result`].
+    ///
+    /// # Errors
+    /// [`ExpressionFailure`] when the expression cannot be evaluated or serialized.
+    fn continuation_value(
+        &self,
+        expression: &Expression,
+        data: &RunData,
+    ) -> Result<Vec<u8>, ExpressionFailure>;
+    /// Evaluates a typed database parameter with the same bounded expression semantics as the
+    /// workflow. Integer/decimal inputs must be strings so SDK numeric coercion cannot lose bits.
+    fn database_parameter(
+        &self,
+        parameter: &sagat_domain::database::Parameter,
+        _data: &RunData,
+    ) -> Result<sagat_domain::database::TypedValue, ExpressionFailure> {
+        match parameter {
+            sagat_domain::database::Parameter::Literal(value) => Ok(value.clone()),
+            sagat_domain::database::Parameter::Expression { .. } => Err(ExpressionFailure(
+                "database parameter evaluation unavailable".into(),
+            )),
+        }
+    }
+
     /// The JSON document a worker receives as the input of `node`.
     fn task_input(&self, data: &RunData, node: &NodeId) -> Vec<u8>;
+
+    /// The JSON document a worker receives for one exact execution instance.
+    ///
+    /// # Errors
+    /// [`ExpressionFailure`] when scoped data is not supported or cannot be materialized.
+    fn task_input_instance(
+        &self,
+        data: &RunData,
+        instance: &ExecutionInstanceId,
+    ) -> Result<Vec<u8>, ExpressionFailure> {
+        if !instance.path().is_root() {
+            return Err(ExpressionFailure(
+                "scoped task input is unavailable".to_owned(),
+            ));
+        }
+        Ok(self.task_input(data, instance.node()))
+    }
+
+    /// Captures the immutable JSON values selected by a collection expression.
+    fn collection_items(
+        &self,
+        expression: &Expression,
+        data: &RunData,
+    ) -> Result<Vec<Vec<u8>>, ExpressionFailure>;
+
+    /// What a collection expression selects: the array itself, or the descriptor of a blob whose
+    /// content is the array (T014-016). The default only knows arrays.
+    ///
+    /// # Errors
+    /// [`ExpressionFailure`] when the expression fails or yields neither.
+    fn collection_source(
+        &self,
+        expression: &Expression,
+        data: &RunData,
+    ) -> Result<crate::collection_source::CollectionSource, ExpressionFailure> {
+        self.collection_items(expression, data)
+            .map(crate::collection_source::CollectionSource::Items)
+    }
+
+    /// Evaluates a body return in the exact iteration context.
+    fn collection_return(
+        &self,
+        expression: &Expression,
+        data: &RunData,
+        instance: &ExecutionInstanceId,
+    ) -> Result<Vec<u8>, ExpressionFailure>;
+
+    /// Maps one body result through the collection node's result expression.
+    fn collection_member_result(
+        &self,
+        expression: &Expression,
+        data: &RunData,
+        instance: &ExecutionInstanceId,
+        body_result: &[u8],
+    ) -> Result<Vec<u8>, ExpressionFailure>;
+
+    /// Evaluates the initial carry and, for a pre-test loop, its first condition from the same
+    /// immutable run snapshot.
+    fn loop_entry(
+        &self,
+        initial: &Expression,
+        condition: Option<&Expression>,
+        data: &RunData,
+    ) -> Result<LoopEntryEvaluation, ExpressionFailure>;
+
+    /// Evaluates one body return, the new carry and the condition against that new carry from one
+    /// immutable iteration snapshot.
+    fn loop_checkpoint(
+        &self,
+        result: &Expression,
+        carry: &Expression,
+        condition: &Expression,
+        data: &RunData,
+        return_instance: &ExecutionInstanceId,
+    ) -> Result<LoopCheckpointEvaluation, ExpressionFailure>;
 
     /// Reads the answer of a reconciliation activity: a JSON object
     /// `{"effect": "applied" | "not_applied" | "unknown", "output": <JSON>}` where `output` is
@@ -233,6 +541,20 @@ pub trait ExpressionEvaluator: Send + Sync {
     fn is_json_object(&self, bytes: &[u8]) -> bool;
 }
 
+/// The evaluated answer for an End node that requested its `outputExpr`.
+///
+/// Absence is represented by the command that optionally carries this answer. In particular,
+/// [`Self::Succeeded`] containing `b"null"` is a successful JSON null and is not absence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EndOutputAnswer {
+    /// Canonical JSON bytes produced by the bounded expression evaluator.
+    Succeeded(Vec<u8>),
+    /// The expression could not be evaluated over the observed Run data.
+    ExpressionError,
+    /// The result exceeded the per-payload or retained Run-data ceiling.
+    RunDataLimit,
+}
+
 /// The run that started a child, and what becomes of the child when the parent stops.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParentLink {
@@ -252,6 +574,8 @@ pub struct ChildSpawn {
 /// Everything about a run that does not change after it is created.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunInfo {
+    /// Private managed execution provenance; ordinary published runs omit it.
+    pub origin: Option<crate::runs::RunOrigin>,
     pub run_id: RunId,
     pub tenant_id: TenantId,
     pub namespace_id: NamespaceId,
@@ -276,6 +600,17 @@ pub struct RunInfo {
     pub root: RunId,
 }
 
+/// Where a run sits in its continuation chain, when it belongs to one. A segment that ended into
+/// its successor is `SUCCEEDED` without being the process outcome; this is what tells the two apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunSegment {
+    pub chain_id: RunId,
+    pub index: u16,
+    /// `None` while the segment is open.
+    pub completion_kind: Option<sagat_domain::execution::SegmentCompletionKind>,
+    pub successor: Option<RunId>,
+}
+
 /// A run as read by the API.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunRecord {
@@ -286,6 +621,179 @@ pub struct RunRecord {
     pub paused: bool,
     pub updated_at: OffsetDateTime,
     pub finished_at: Option<OffsetDateTime>,
+    /// Set by the reads that serve the API (`get`, `list`); `None` for a run outside any chain and
+    /// for a record loaded inside a command transaction.
+    pub chain: Option<RunSegment>,
+}
+
+/// One consistent bounded read used to plan progress in an exact scoped path.
+#[derive(Debug, Clone)]
+pub struct PathExecutionSnapshot {
+    pub info: RunInfo,
+    pub definition: Arc<WorkflowDefinition>,
+    pub state: PathExecutionState,
+    pub data: RunData,
+}
+
+/// Bounded scoped execution store. Prepared writes recheck their snapshot revision under the run
+/// lock; metadata commands can instead read the current exact path in that transaction. Neither
+/// path reopens the full [`RunTx`] history.
+pub trait PathExecutionStore: Send + Sync {
+    type Tx: PathExecutionTx;
+
+    fn load_path(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+        path: InstancePath,
+    ) -> impl Future<Output = Result<Option<PathExecutionSnapshot>, StoreError>> + Send;
+
+    /// Locks the run and reads its current bounded path on that same connection. This is for
+    /// commands such as heartbeat that need no external I/O or expensive preparation; it avoids
+    /// global revision retry storms and never waits for a second pool connection under the lock.
+    fn begin_current_path(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+        path: InstancePath,
+        lock: crate::runs::Lock,
+    ) -> impl Future<Output = Result<Option<Self::Tx>, StoreError>> + Send;
+
+    /// Opens a short mutation transaction for an already evaluated snapshot. The adapter locks the
+    /// run and compares its revision before returning, so a caller never applies a decision made
+    /// from stale path state.
+    fn begin_path(
+        &self,
+        snapshot: PathExecutionSnapshot,
+        lock: crate::runs::Lock,
+    ) -> impl Future<Output = Result<Option<Self::Tx>, StoreError>> + Send;
+}
+
+/// One revision-fenced exact-path transaction. Scoped mutation capabilities belong on this port;
+/// [`RunTx`] intentionally remains the full replay oracle.
+pub trait PathExecutionTx: Send {
+    fn snapshot(&mut self) -> &mut PathExecutionSnapshot;
+
+    /// Run-wide logical output charge under the run lock, without reading historical values.
+    fn logical_output_bytes(&mut self) -> impl Future<Output = Result<u64, StoreError>> + Send;
+
+    /// Database time observed after the run lock was acquired.
+    fn now(&self) -> OffsetDateTime;
+
+    /// Both expiry clocks of a live lease in this exact path. An outside path is not visible.
+    fn lease_deadlines(
+        &mut self,
+        instance: &ExecutionInstanceId,
+    ) -> impl Future<Output = Result<Option<LeaseDeadlines>, StoreError>> + Send;
+
+    /// Checks this run's shard owner/generation at database time and keeps its shared fence until
+    /// commit. A lease of another shard never authorizes this transaction.
+    fn holds_shard(
+        &mut self,
+        owner: &str,
+        lease: crate::shards::Lease,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    fn lease_expiry(
+        &mut self,
+        instance: &ExecutionInstanceId,
+    ) -> impl Future<Output = Result<Option<OffsetDateTime>, StoreError>> + Send;
+
+    fn worker_drained(
+        &mut self,
+        subject: &str,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    fn worker_session_room(
+        &mut self,
+        session_id: uuid::Uuid,
+        token_hash: &[u8],
+        subject: &str,
+    ) -> impl Future<Output = Result<u32, StoreError>> + Send;
+
+    fn bound_patterns(
+        &mut self,
+        subject: &str,
+    ) -> impl Future<Output = Result<Vec<String>, StoreError>> + Send;
+
+    fn secret_inputs(
+        &mut self,
+        names: &[SecretName],
+    ) -> impl Future<Output = Result<SecretInputs, StoreError>> + Send;
+
+    fn secret_pool_refusal(
+        &mut self,
+        names: &[SecretName],
+        subject: &str,
+        check: PoolCheck,
+    ) -> impl Future<Output = Result<Option<SecretName>, StoreError>> + Send;
+
+    fn secret_versions(
+        &mut self,
+        names: &[SecretName],
+    ) -> impl Future<Output = Result<Vec<StoredSecret>, StoreError>> + Send;
+
+    /// Locks and checks the worker's current tenant authority through the bounded commit.
+    fn current_worker_authorized(
+        &mut self,
+        subject: &str,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    fn required_worker_protocol_minor(
+        &mut self,
+    ) -> impl Future<Output = Result<u32, StoreError>> + Send;
+
+    fn activity_admitted(
+        &mut self,
+        activity: &ActivityName,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    fn compensation_admitted(
+        &mut self,
+        activity: &ActivityName,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    /// Freezes script retention for a lease of `instance` in this exact structured path.
+    /// Forward work also freezes any script compensation or reconciliation it can create.
+    /// Derived work inherits the pin recorded by its originating forward attempt.
+    fn script_execution_admitted(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        activity: &ActivityName,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    fn lease_unexpired(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        token_hash: &[u8],
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    fn lease_matches(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        token_hash: &[u8],
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    fn reported_by(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        token_hash: &[u8],
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    fn replay(
+        &mut self,
+        idempotency: &Idempotency,
+    ) -> impl Future<Output = Result<Option<String>, StoreError>> + Send;
+
+    /// Journals and projects already-reduced exact-path events in this short transaction.
+    fn persist_addressed(
+        &mut self,
+        events: &[AddressedRunEvent],
+        outputs: &[(ExecutionInstanceId, Vec<u8>)],
+        effects: Effects,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    fn commit(self) -> impl Future<Output = Result<(), StoreError>> + Send;
 }
 
 /// Who caused the events of one transaction (stored with every journal entry).
@@ -317,7 +825,8 @@ pub struct Effects {
     pub actor: Actor,
     pub trace_id: Option<String>,
     /// The outputs of steps that finished in this transaction: what a worker returned, or the
-    /// payload of the signal that woke a wait.
+    /// payload of the signal that woke a wait. This existing writer path addresses root nodes;
+    /// scoped writers must carry [`ExecutionInstanceId`] through effects and transaction staging.
     pub outputs: Vec<(NodeId, Vec<u8>)>,
     /// The lease granted to a worker by a `step.leased` event of this transaction.
     pub lease: Option<LeaseGrant>,
@@ -329,10 +838,15 @@ pub struct Effects {
     pub idempotency: Option<(Idempotency, String)>,
     /// `READY` steps to write a fresh wake-up notification for (their notification was lost).
     pub rehint: Vec<NodeId>,
+    /// Scoped `READY` instances whose wake-up notification may have been lost.
+    pub rehint_instances: Vec<ExecutionInstanceId>,
     /// Child runs reserved in this transaction; the engine fills it while resolving `child` steps.
     pub children: Vec<ChildSpawn>,
     /// Blobs the outputs above are descriptors of: committed with them, or the transaction fails.
     pub blobs: Vec<BlobCommit>,
+    /// The lease whose holder reports its attempt in this transaction (G141): kept so that a
+    /// heartbeat of that same lease arriving after the report can be told apart from a lost lease.
+    pub reported: Option<ReportedLease>,
 }
 
 impl Effects {
@@ -347,8 +861,10 @@ impl Effects {
             audit: None,
             idempotency: None,
             rehint: Vec::new(),
+            rehint_instances: Vec::new(),
             children: Vec::new(),
             blobs: Vec::new(),
+            reported: None,
         }
     }
 }
@@ -365,7 +881,7 @@ pub struct LeaseDeadlines {
 /// The lease handed to a worker. Only the hash of the token is stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeaseGrant {
-    pub node: NodeId,
+    pub instance: ExecutionInstanceId,
     pub token_hash: Vec<u8>,
     pub worker_id: String,
     /// Added to the database clock: a lease lasts this long unless renewed.
@@ -374,19 +890,36 @@ pub struct LeaseGrant {
     pub attempt_timeout: Option<std::time::Duration>,
 }
 
+/// The lease that reported the attempt of `instance`: the hash of its token, never the token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReportedLease {
+    pub instance: ExecutionInstanceId,
+    pub token_hash: Vec<u8>,
+}
+
 /// A heartbeat: push the lease expiry out by `ttl` (capped by the attempt deadline).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeaseRenewal {
-    pub node: NodeId,
+    pub instance: ExecutionInstanceId,
     pub ttl: std::time::Duration,
+}
+
+/// What a pool check is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PoolCheck {
+    /// Choosing what to lease: a stale answer costs nothing, because the value is judged again when
+    /// it is asked for. Takes no locks.
+    Hint,
+    /// Deciding to hand a value over, in the transaction that reads it.
+    Delivery,
 }
 
 /// One locked run, mutated in memory and written back in a single transaction.
 pub trait RunTx: Send {
     fn info(&self) -> &RunInfo;
 
-    /// The database clock when the transaction began: every deadline is computed from it, so all
-    /// instances agree regardless of their own clocks.
+    /// The database clock sampled after the required run lock is acquired: deadlines must not be
+    /// backdated by time spent waiting for a writer. All instances use the database's clock.
     fn now(&self) -> OffsetDateTime;
 
     /// The immutable definition and the mutable state, borrowed together.
@@ -406,12 +939,36 @@ pub trait RunTx: Send {
         node: &NodeId,
     ) -> impl Future<Output = Result<Option<OffsetDateTime>, StoreError>> + Send;
 
+    fn lease_expiry_instance(
+        &mut self,
+        instance: &ExecutionInstanceId,
+    ) -> impl Future<Output = Result<Option<OffsetDateTime>, StoreError>> + Send {
+        async move {
+            if !instance.path().is_root() {
+                return Err(scoped_execution_adapter_required());
+            }
+            self.lease_expiry(instance.node()).await
+        }
+    }
+
     /// The two times at which the lease held on `node` ends (`None` when no lease is held): the
     /// renewable expiry and the attempt's own deadline, if it has one.
     fn lease_deadlines(
         &mut self,
         node: &NodeId,
     ) -> impl Future<Output = Result<Option<LeaseDeadlines>, StoreError>> + Send;
+
+    fn lease_deadlines_instance(
+        &mut self,
+        instance: &ExecutionInstanceId,
+    ) -> impl Future<Output = Result<Option<LeaseDeadlines>, StoreError>> + Send {
+        async move {
+            if !instance.path().is_root() {
+                return Err(scoped_execution_adapter_required());
+            }
+            self.lease_deadlines(instance.node()).await
+        }
+    }
 
     /// Whether `owner` still holds the shard lease `lease`, as of the database's clock. It takes
     /// the shard's row in shared mode, held to the end of the transaction, and a takeover of the
@@ -423,6 +980,17 @@ pub trait RunTx: Send {
         owner: &str,
         lease: crate::shards::Lease,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    /// A new child is admitted by the owner of its immutable parent's shard. This exceptional
+    /// fence is valid only in the uncommitted creation transaction, before its first event.
+    /// Existing children and ordinary run mutations must use their own `holds_shard` fence.
+    fn holds_parent_shard(
+        &mut self,
+        _owner: &str,
+        _lease: crate::shards::Lease,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
 
     /// Whether the worker identity `subject` is being drained in this run's namespace. It takes
     /// the drain's lock in shared mode, held to the end of the transaction, and a drain takes it
@@ -460,6 +1028,23 @@ pub trait RunTx: Send {
         names: &[SecretName],
     ) -> impl Future<Output = Result<SecretInputs, StoreError>> + Send;
 
+    /// The first of the declared `names` (in the order given) that lists worker pools none of
+    /// which has been granted to the worker identity `subject` in this run's namespace; `None`
+    /// when every one may be delivered to it (a secret that lists no pool, or that no longer
+    /// exists, never refuses). Read on the transaction's own connection, from the stored grants at
+    /// this moment (G48).
+    ///
+    /// With [`PoolCheck::Delivery`] the rows the answer rests on (the secrets, and the identity's
+    /// grants) are locked in share mode until the transaction ends: a change to either that is
+    /// committing waits for this transaction, and one that has committed is seen, so a value read
+    /// afterwards in the same transaction cannot have passed a check that was already out of date.
+    fn secret_pool_refusal(
+        &mut self,
+        names: &[SecretName],
+        subject: &str,
+        check: PoolCheck,
+    ) -> impl Future<Output = Result<Option<SecretName>, StoreError>> + Send;
+
     /// Every stored version of the declared `names` (a handful each), newest first, with the
     /// secrets that no longer exist simply absent: what an output is searched for. A value handed
     /// out earlier in the attempt may have been replaced since, so the current one is not enough.
@@ -476,6 +1061,94 @@ pub trait RunTx: Send {
         node: &NodeId,
         token_hash: &[u8],
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    fn lease_unexpired_instance(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        token_hash: &[u8],
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async move {
+            if !instance.path().is_root() {
+                return Err(scoped_execution_adapter_required());
+            }
+            self.lease_unexpired(instance.node(), token_hash).await
+        }
+    }
+
+    /// Locks current membership authority through the capability disclosure commit.
+    /// Adapters that cannot prove current authority refuse credential delivery.
+    fn current_worker_authorized(
+        &mut self,
+        _subject: &str,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
+
+    /// Exact current machine role/session ownership; ordinary workers cannot borrow a managed lease.
+    fn database_executor_owns(
+        &mut self,
+        _node: &NodeId,
+        _subject: &str,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
+
+    /// Current dedicated role and durable owner of a previously leased managed attempt. Used only
+    /// to return an existing report receipt after its live session linkage has been cleared.
+    fn database_report_owns(
+        &mut self,
+        _node: &NodeId,
+        _fence: sagat_domain::execution::Fence,
+        _subject: &str,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
+
+    /// Current connection/publisher/initiator admission and exact connection/namespace/tenant
+    /// concurrency reservation in the lease transaction. Unsupported stores fail closed.
+    fn database_claim(
+        &mut self,
+        _node: &NodeId,
+        _subject: &str,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
+
+    /// Selected immutable connection and credential metadata; no provider I/O occurs here.
+    fn database_input(
+        &mut self,
+        _node: &NodeId,
+        _subject: &str,
+    ) -> impl Future<Output = Result<crate::database::DatabaseInput, StoreError>> + Send {
+        async { Err(StoreError::DatabaseUnavailable) }
+    }
+
+    /// Records the credential before returning its value. The pin is immutable for this attempt.
+    fn pin_database_credential(
+        &mut self,
+        _node: &NodeId,
+        _secret: &StoredSecret,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        async { Err(StoreError::DatabaseUnavailable) }
+    }
+
+    /// Frozen connection/operation ceilings for retained output. Pause/revocation blocks new
+    /// capability delivery, but cannot discard evidence of an already delivered attempt.
+    fn database_result_limits(
+        &mut self,
+        _node: &NodeId,
+    ) -> impl Future<Output = Result<sagat_domain::database::DatabaseLimits, StoreError>> + Send
+    {
+        async { Err(StoreError::DatabaseUnavailable) }
+    }
+
+    /// Credential evidence survives logical rotation/deletion until attempt/result retention ends.
+    fn database_credential(
+        &mut self,
+        _node: &NodeId,
+    ) -> impl Future<Output = Result<Option<StoredSecret>, StoreError>> + Send {
+        async { Ok(None) }
+    }
 
     /// Whether the circuit breaker of the compensations of `activity` lets one be leased now.
     ///
@@ -508,10 +1181,45 @@ pub trait RunTx: Send {
         activity: &ActivityName,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
+    fn script_execution_admitted_instance(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        activity: &ActivityName,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async move {
+            if !instance.path().is_root() {
+                return Err(scoped_execution_adapter_required());
+            }
+            self.script_execution_admitted(instance.node(), activity)
+                .await
+        }
+    }
+
     /// Whether `token_hash` is the hash of the lease currently held on `node`.
     fn lease_matches(
         &mut self,
         node: &NodeId,
+        token_hash: &[u8],
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    fn lease_matches_instance(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        token_hash: &[u8],
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async move {
+            if !instance.path().is_root() {
+                return Err(scoped_execution_adapter_required());
+            }
+            self.lease_matches(instance.node(), token_hash).await
+        }
+    }
+
+    /// Whether `token_hash` is the hash of the lease that reported the attempt of `instance` and
+    /// the step has not been leased again since (G141).
+    fn reported_by(
+        &mut self,
+        instance: &ExecutionInstanceId,
         token_hash: &[u8],
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
@@ -522,15 +1230,58 @@ pub trait RunTx: Send {
         idempotency: &Idempotency,
     ) -> impl Future<Output = Result<Option<String>, StoreError>> + Send;
 
+    /// Latches cancellation on a containing execution chain while that chain is locked. Stores
+    /// without chain membership keep the compatibility no-op.
+    fn latch_chain_cancel(&mut self) -> impl Future<Output = Result<(), StoreError>> + Send {
+        async { Ok(()) }
+    }
+
     /// The run's input and the outputs of its finished steps (loaded once per transaction).
     fn data(&mut self) -> impl Future<Output = Result<&RunData, StoreError>> + Send;
 
+    /// Effective retained output bytes for this Run, read before staging a new output.
+    ///
+    /// Includes verified historical collection outputs absent from legacy owner projections.
+    /// PostgreSQL reads the scalar without hydrating those values, even above the Run limit.
+    /// The compatibility default requires complete RunData; adapters with partial data or staged
+    /// outputs must override it to report the durable total.
+    fn logical_output_bytes(&mut self) -> impl Future<Output = Result<u64, StoreError>> + Send {
+        async move {
+            let mut total = 0_u64;
+            for output in self.data().await?.outputs.values() {
+                let bytes = u64::try_from(output.len()).map_err(|_| StoreError::Internal {
+                    detail: "the logical output byte count overflowed".into(),
+                })?;
+                total = total
+                    .checked_add(bytes)
+                    .ok_or_else(|| StoreError::Internal {
+                        detail: "the logical output byte count overflowed".into(),
+                    })?;
+            }
+            Ok(total)
+        }
+    }
+
     /// Makes outputs that are about to be persisted visible to this transaction's evaluations: a
-    /// condition that follows a step that just completed must see what that step returned.
+    /// condition that follows a step that just completed must see what that step returned. The
+    /// existing path stages root nodes; scoped staging requires a typed effect identity.
     fn stage_outputs(
         &mut self,
         outputs: &[(NodeId, Vec<u8>)],
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// Makes outputs addressed by their complete logical identity visible to evaluations in this
+    /// transaction. The compatibility implementation accepts root instances only and delegates to
+    /// [`Self::stage_outputs`]; adapters must override this method before scoped work is enabled.
+    fn stage_instance_outputs(
+        &mut self,
+        outputs: &[(ExecutionInstanceId, Vec<u8>)],
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        async move {
+            let root_outputs = root_outputs_for_legacy_adapter(outputs)?;
+            self.stage_outputs(&root_outputs).await
+        }
+    }
 
     /// Appends `events` to the journal and updates every projection (steps, timers, subscriptions,
     /// payloads, the run row, the outbox) in this transaction. `state` already includes `events`.
@@ -539,6 +1290,23 @@ pub trait RunTx: Send {
         events: &[RunEvent],
         effects: Effects,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// Persists explicitly addressed events and outputs without discarding their instance paths.
+    /// The compatibility implementation delegates only when every identity is root. A scoped item
+    /// fails before [`Self::persist`] is called, so a legacy adapter cannot flatten it silently.
+    fn persist_addressed(
+        &mut self,
+        events: &[AddressedRunEvent],
+        outputs: &[(ExecutionInstanceId, Vec<u8>)],
+        mut effects: Effects,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        async move {
+            let root_events = root_events_for_legacy_adapter(events)?;
+            let root_outputs = root_outputs_for_legacy_adapter(outputs)?;
+            effects.outputs.extend(root_outputs);
+            self.persist(&root_events, effects).await
+        }
+    }
 
     /// Records, in this transaction, that an event was delivered to a consumer of this run (a step
     /// it wakes, or the trigger that starts it). `true` when the delivery is new; `false` when the
@@ -552,6 +1320,40 @@ pub trait RunTx: Send {
 
     /// Commits. Dropping the transaction instead rolls everything back.
     fn commit(self) -> impl Future<Output = Result<(), StoreError>> + Send;
+}
+
+fn root_events_for_legacy_adapter(
+    events: &[AddressedRunEvent],
+) -> Result<Vec<RunEvent>, StoreError> {
+    if events.iter().any(|event| !event.path().is_root()) {
+        return Err(scoped_execution_adapter_required());
+    }
+    Ok(events
+        .iter()
+        .cloned()
+        .map(AddressedRunEvent::into_event)
+        .collect())
+}
+
+fn root_outputs_for_legacy_adapter(
+    outputs: &[(ExecutionInstanceId, Vec<u8>)],
+) -> Result<Vec<(NodeId, Vec<u8>)>, StoreError> {
+    if outputs
+        .iter()
+        .any(|(instance, _)| !instance.path().is_root())
+    {
+        return Err(scoped_execution_adapter_required());
+    }
+    Ok(outputs
+        .iter()
+        .map(|(instance, output)| (instance.node().clone(), output.clone()))
+        .collect())
+}
+
+fn scoped_execution_adapter_required() -> StoreError {
+    StoreError::Internal {
+        detail: SCOPED_EXECUTION_ADAPTER_REQUIRED.into(),
+    }
 }
 
 /// Why an engine call failed.
@@ -578,6 +1380,36 @@ impl<E: ExpressionEvaluator> Engine<E> {
     #[must_use]
     pub const fn evaluator(&self) -> &E {
         &self.evaluator
+    }
+
+    /// Evaluates one End output request with the same failure redaction and retained-output limits
+    /// used by normal Engine execution.
+    ///
+    /// Callers must invoke this only for an actual [`Evaluation::Output`] produced by the reducer.
+    /// A reducer that settles without requesting output has no [`EndOutputAnswer`].
+    #[must_use]
+    pub fn evaluate_run_result(
+        &self,
+        node: &NodeId,
+        expression: &Expression,
+        data: &RunData,
+    ) -> EndOutputAnswer {
+        let bytes = match self
+            .evaluator
+            .run_result(expression, data)
+            .map_err(log_failure(node))
+        {
+            Ok(bytes) => bytes,
+            Err(()) => return EndOutputAnswer::ExpressionError,
+        };
+        let retained: usize = data.outputs.values().map(Vec::len).sum();
+        if bytes.len() > MAX_PAYLOAD_BYTES
+            || retained.saturating_add(bytes.len()) > MAX_RUN_OUTPUT_BYTES
+        {
+            EndOutputAnswer::RunDataLimit
+        } else {
+            EndOutputAnswer::Succeeded(bytes)
+        }
     }
 
     /// Executes `command` against the transaction's run, resolves whatever the planner needs to
@@ -624,8 +1456,10 @@ impl<E: ExpressionEvaluator> Engine<E> {
             if rounds > limit {
                 return Err(ExecutionError::Invariant("evaluations did not settle").into());
             }
-            let (resolution, spawn) = self.resolve(tx, &evaluation).await?;
+            let (resolution, spawn, output) = self.resolve(tx, &evaluation).await?;
             effects.children.extend(spawn);
+            // A run result is the output of its `end` step, written with the step in `persist`.
+            effects.outputs.extend(output);
             progress = {
                 let (def, state) = tx.parts();
                 sagat_domain::execution::resolve(def, state, resolution, now)?
@@ -636,15 +1470,47 @@ impl<E: ExpressionEvaluator> Engine<E> {
         Ok(value)
     }
 
+    /// Executes a command whose journal and outputs retain their complete logical identity.
+    /// Structured control nodes that need external evaluation keep their dedicated transaction
+    /// owners; this path advances worker-owned activity transitions only.
+    pub async fn run_addressed<T, Tx, F>(
+        &self,
+        tx: &mut Tx,
+        outputs: Vec<(ExecutionInstanceId, Vec<u8>)>,
+        effects: Effects,
+        command: F,
+    ) -> Result<T, EngineError>
+    where
+        Tx: RunTx,
+        F: FnOnce(
+            &WorkflowDefinition,
+            &mut RunState,
+            OffsetDateTime,
+        )
+            -> Result<(T, sagat_domain::execution::AddressedProgress), ExecutionError>,
+    {
+        if !outputs.is_empty() {
+            tx.stage_instance_outputs(&outputs).await?;
+        }
+        let now = tx.now();
+        let (value, progress) = {
+            let (def, state) = tx.parts();
+            command(def, state, now)?
+        };
+        tx.persist_addressed(&progress.events, &outputs, effects)
+            .await?;
+        Ok(value)
+    }
+
     async fn resolve<Tx: RunTx>(
         &self,
         tx: &mut Tx,
         evaluation: &Evaluation,
-    ) -> Result<(Resolution, Option<ChildSpawn>), EngineError> {
+    ) -> Result<(Resolution, Option<ChildSpawn>, Option<(NodeId, Vec<u8>)>), EngineError> {
         let depth = tx.info().depth;
         let parent = tx.info().run_id;
         let data = tx.data().await?;
-        Ok(match evaluation {
+        let (resolution, spawn) = match evaluation {
             Evaluation::Condition { node, expression } => (
                 Resolution::Condition {
                     node: node.clone(),
@@ -655,6 +1521,32 @@ impl<E: ExpressionEvaluator> Engine<E> {
                 },
                 None,
             ),
+            Evaluation::Switch { node, cases } => {
+                let mut selection = Ok(sagat_domain::execution::SwitchSelection::Default);
+                for case in cases {
+                    match self.evaluator.condition(case.when(), data) {
+                        Ok(true) => {
+                            selection = Ok(sagat_domain::execution::SwitchSelection::Case(
+                                case.id().clone(),
+                            ));
+                            break;
+                        }
+                        Ok(false) => {}
+                        Err(error) => {
+                            log_failure(node)(error);
+                            selection = Err(());
+                            break;
+                        }
+                    }
+                }
+                (
+                    Resolution::Switch {
+                        node: node.clone(),
+                        selection,
+                    },
+                    None,
+                )
+            }
             Evaluation::Correlation { node, expression } => (
                 Resolution::Correlation {
                     node: node.clone(),
@@ -707,7 +1599,36 @@ impl<E: ExpressionEvaluator> Engine<E> {
                     ),
                 }
             }
-        })
+            Evaluation::Output { node, expression } => {
+                return Ok(match self.evaluate_run_result(node, expression, data) {
+                    EndOutputAnswer::Succeeded(bytes) => (
+                        Resolution::Output {
+                            node: node.clone(),
+                            outcome: Ok(()),
+                        },
+                        None,
+                        Some((node.clone(), bytes)),
+                    ),
+                    EndOutputAnswer::ExpressionError => (
+                        Resolution::Output {
+                            node: node.clone(),
+                            outcome: Err(FailureCode::expression_error()),
+                        },
+                        None,
+                        None,
+                    ),
+                    EndOutputAnswer::RunDataLimit => (
+                        Resolution::Output {
+                            node: node.clone(),
+                            outcome: Err(FailureCode::run_data_limit()),
+                        },
+                        None,
+                        None,
+                    ),
+                });
+            }
+        };
+        Ok((resolution, spawn, None))
     }
 }
 
@@ -765,6 +1686,14 @@ impl DefinitionCache {
         }
     }
 
+    /// Validates/canonicalizes a new document through the same codec used by published runs.
+    pub fn parse_document(
+        &self,
+        document: &[u8],
+    ) -> Result<crate::definitions::ParsedDefinition, IrError> {
+        self.codec.parse(document)
+    }
+
     /// The parsed definition of `version` if it is cached.
     #[must_use]
     pub fn get(&self, version: WorkflowVersionId) -> Option<Arc<WorkflowDefinition>> {
@@ -802,7 +1731,7 @@ impl DefinitionCache {
             }
         }
         // Parse outside the lock: it can take milliseconds and other versions must not wait.
-        let parsed = Arc::new(self.codec.parse(document)?.definition);
+        let parsed = Arc::new(self.codec.parse_stored(document)?.definition);
         let mut guard = self
             .entries
             .lock()
@@ -831,5 +1760,32 @@ impl DefinitionCache {
             }
         }
         Ok(parsed)
+    }
+
+    /// Evaluates the optional declared business state for a new run using the same codec that
+    /// admitted its immutable workflow version.
+    ///
+    /// # Errors
+    /// Returns a value-free evaluator error for an invalid input, expression or initial state.
+    pub fn initial_declared_state(
+        &self,
+        document: &[u8],
+        input: &[u8],
+    ) -> Result<
+        Option<crate::declared_operations::EvaluatedOperationWrite>,
+        crate::operation_evaluation::OperationEvaluationError,
+    > {
+        self.codec.initial_declared_state(document, input)
+    }
+
+    /// Extracts immutable declared-state publication metadata with the cache's admission codec.
+    ///
+    /// # Errors
+    /// Returns an IR error when a stored declaration no longer validates.
+    pub fn declared_state_publication(
+        &self,
+        document: &[u8],
+    ) -> Result<Option<crate::declared_operations::PublishedDeclaredState>, IrError> {
+        self.codec.declared_state_publication(document)
     }
 }

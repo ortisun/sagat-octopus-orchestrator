@@ -445,6 +445,333 @@ public sealed class ClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task RerunAsNewNamesTheNewRunAndTheNewRunNamesItsOrigin()
+    {
+        const string started = "0190aaaa-0000-7000-8000-000000000021";
+        server.Handler = request => request.PathAndQuery.EndsWith("/operations", StringComparison.Ordinal)
+            ? Reply(202, new JsonObject { ["operationId"] = "op-2", ["accepted"] = true, ["runStatus"] = "SUCCEEDED", ["runVersion"] = 9, ["newRunId"] = started })
+            : Reply(200, Run(run =>
+            {
+                run["runId"] = started;
+                run["rerunOf"] = Ids.Run;
+            }));
+        var client = NewClient();
+        var rerun = await client.RerunAsNewAsync(Ids.Run, "run it again after the fix", new OperateOptions { IdempotencyKey = "rerun-key-001" });
+        Assert.Equal(("op-2", true, "SUCCEEDED", 9L, started), (rerun.OperationId, rerun.Accepted, rerun.RunStatus, rerun.RunVersion, rerun.NewRunId));
+        Assert.Equal($"/v1/runs/{Ids.Run}/operations", server.Requests[0].PathAndQuery);
+        Assert.Equal("""{"action":"RERUN_AS_NEW","reason":"run it again after the fix"}""", server.Requests[0].BodyText);
+        Assert.Equal("rerun-key-001", server.Requests[0].Header("idempotency-key"));
+        Assert.Equal(Ids.Run, (await client.GetAsync(started)).RerunOf);
+
+        server.Handler = _ => Reply(200, Run());
+        Assert.Null((await NewClient().GetAsync(Ids.Run)).RerunOf);
+        server.Handler = _ => Reply(202, new JsonObject { ["operationId"] = "op-3", ["accepted"] = true, ["runStatus"] = "CANCELLING" });
+        Assert.Null((await NewClient().CancelAsync(Ids.Run, "no longer needed")).NewRunId);
+    }
+
+    [Fact]
+    public async Task AnApprovalDecisionUsesItsBodyKeyAndReturnsATypedReceipt()
+    {
+        const string approvalId = "0190aaaa-0000-7000-8000-000000000099";
+        server.Handler = _ => Reply(200, new JsonObject
+        {
+            ["receiptId"] = "0190aaaa-0000-7000-8000-000000000100",
+            ["approvalId"] = approvalId,
+            ["decisionKey"] = "review-1",
+            ["decision"] = "APPROVE",
+            ["reasonCode"] = "POLICY_OK",
+            ["actor"] = "alice",
+            ["decidedAt"] = "2026-10-15T10:00:00Z",
+            ["outcomeSequence"] = 7,
+            ["replayed"] = false,
+            ["futureField"] = "kept",
+        });
+        var receipt = await NewClient().DecideApprovalAsync(
+            approvalId,
+            ApprovalDecision.Approve,
+            new ApprovalDecisionOptions { DecisionKey = "review-1", ReasonCode = "POLICY_OK", Traceparent = Trace });
+        var request = Assert.Single(server.Requests);
+        Assert.Equal($"/v1/approvals/{approvalId}/decisions", request.PathAndQuery);
+        Assert.Equal("""{"decisionKey":"review-1","decision":"APPROVE","reasonCode":"POLICY_OK"}""", request.BodyText);
+        Assert.Empty(request.Header("idempotency-key"));
+        Assert.Equal(new DateTimeOffset(2026, 10, 15, 10, 0, 0, TimeSpan.Zero), receipt.DecidedAt);
+        Assert.Equal(7, receipt.OutcomeSequence);
+        Assert.Equal("kept", receipt.Raw.GetProperty("futureField").GetString());
+    }
+
+    [Fact]
+    public async Task ApprovalPagesAreTypedAndAllPagesFollowTheOpaqueCursor()
+    {
+        var ids = new[] { "0190aaaa-0000-7000-8000-000000000099", "0190aaaa-0000-7000-8000-000000000100" };
+        server.Handler = request =>
+        {
+            var second = request.PathAndQuery.Contains("cursor=next", StringComparison.Ordinal);
+            var index = second ? 1 : 0;
+            return Reply(200, new JsonObject
+            {
+                ["items"] = new JsonArray
+                {
+                    new JsonObject
+                    {
+                        ["approvalId"] = ids[index],
+                        ["runId"] = Ids.Run,
+                        ["nodeId"] = "review",
+                        ["instancePath"] = new JsonArray { new JsonObject { ["scopeNodeId"] = "items", ["iterationIndex"] = 3 } },
+                        ["status"] = second ? "APPROVED" : "PENDING",
+                        ["deadline"] = "2026-10-16T10:00:00Z",
+                        ["settledAt"] = second ? "2026-10-15T10:00:00Z" : null,
+                    },
+                },
+                ["nextCursor"] = second ? null : "next",
+            });
+        };
+        var client = NewClient();
+        var page = await client.ListApprovalsAsync(Ids.Run, new ApprovalListOptions { Cursor = "from", Limit = 1, Traceparent = Trace });
+        Assert.Equal(ApprovalStatus.Pending, page.Items[0].Status);
+        Assert.Equal(3, page.Items[0].InstancePath[0].IterationIndex);
+        var items = new List<ApprovalListItem>();
+        await foreach (var item in client.ListAllApprovalsAsync(Ids.Run, new ApprovalListOptions { Limit = 1 }))
+        {
+            items.Add(item);
+        }
+
+        Assert.Equal(ids, items.Select(item => item.ApprovalId));
+    }
+
+    [Theory]
+    [InlineData(403, SagatErrorCode.Forbidden, "NOT_ELIGIBLE")]
+    [InlineData(409, SagatErrorCode.Conflict, "IDEMPOTENCY_KEY_REUSED")]
+    public async Task AnApprovalDecisionSurfacesAuthorizationAndIdempotencyFailures(int status, SagatErrorCode code, string reason)
+    {
+        server.Handler = _ => Reply(status, Envelope(code.ToString().ToUpperInvariant(), "refused", false, reason));
+        var error = await Assert.ThrowsAsync<SagatException>(() => NewClient().DecideApprovalAsync(
+            "0190aaaa-0000-7000-8000-000000000099",
+            ApprovalDecision.Reject,
+            new ApprovalDecisionOptions { DecisionKey = "review-1" }));
+        Assert.Equal((status, code, reason), (error.HttpStatus, error.Code, error.Reason));
+    }
+
+    [Fact]
+    public async Task MalformedApprovalDecisionInputIsRejectedBeforeAnythingIsSent()
+    {
+        var client = NewClient();
+        await Assert.ThrowsAsync<SagatException>(() => client.DecideApprovalAsync(
+            "../other", ApprovalDecision.Approve, new ApprovalDecisionOptions { DecisionKey = "review-1" }));
+        await Assert.ThrowsAsync<SagatException>(() => client.DecideApprovalAsync(
+            "0190aaaa-0000-7000-8000-000000000099", ApprovalDecision.Approve, new ApprovalDecisionOptions { DecisionKey = "bad key" }));
+        Assert.Empty(server.Requests);
+    }
+
+    [Fact]
+    public async Task DeclaredQueryAndUpdatePreserveRevisionsResultAndUpdateKey()
+    {
+        server.Handler = request => request.PathAndQuery.Contains("/queries/", StringComparison.Ordinal)
+            ? Reply(200, new JsonObject { ["runId"] = Ids.Run, ["runVersion"] = 4, ["stateRevision"] = 1, ["result"] = new JsonObject { ["balance"] = 12 } })
+            : Reply(200, new JsonObject
+            {
+                ["runId"] = Ids.Run,
+                ["operation"] = "account.credit",
+                ["updateKey"] = "credit-1",
+                ["status"] = "APPLIED",
+                ["result"] = new JsonObject { ["balance"] = 15 },
+                ["beforeStateRevision"] = 1,
+                ["afterStateRevision"] = 2,
+                ["runVersion"] = 5,
+                ["replayed"] = false,
+                ["future"] = true,
+            });
+        var client = NewClient();
+        var query = await client.QueryAsync(Ids.Run, "account.balance", new { currency = "BRL" });
+        var update = await client.UpdateAsync(
+            Ids.Run, "account.credit", new { amount = 3 },
+            new UpdateOptions { UpdateKey = "credit-1", ExpectedStateRevision = 1, Traceparent = Trace });
+        Assert.Equal($"/v1/runs/{Ids.Run}/queries/account.balance", server.Requests[0].PathAndQuery);
+        Assert.Equal($"/v1/runs/{Ids.Run}/updates/account.credit", server.Requests[1].PathAndQuery);
+        Assert.Equal("""{"args":{"currency":"BRL"}}""", server.Requests[0].BodyText);
+        Assert.Equal("""{"updateKey":"credit-1","args":{"amount":3},"expectedStateRevision":1}""", server.Requests[1].BodyText);
+        Assert.Empty(server.Requests[1].Header("idempotency-key"));
+        Assert.Equal(12, query.Result.GetProperty("balance").GetInt32());
+        Assert.Equal(2, update.AfterStateRevision);
+        Assert.True(update.Raw.GetProperty("future").GetBoolean());
+    }
+
+    [Fact]
+    public async Task InvalidDeclaredOperationInputIsRejectedBeforeAnythingIsSent()
+    {
+        var client = NewClient();
+        await Assert.ThrowsAsync<SagatException>(() => client.QueryAsync(Ids.Run, "bad operation", new { }));
+        await Assert.ThrowsAsync<SagatException>(() => client.UpdateAsync(
+            Ids.Run, "credit", new { }, new UpdateOptions { UpdateKey = "bad key" }));
+        await Assert.ThrowsAsync<SagatException>(() => client.UpdateAsync(
+            Ids.Run, "credit", new { }, new UpdateOptions { UpdateKey = "credit-2", ExpectedStateRevision = -1 }));
+        Assert.Empty(server.Requests);
+    }
+
+    [Fact]
+    public async Task DeclaredUpdateRetriesWithTheSameBodyKey()
+    {
+        var attempts = 0;
+        server.Handler = _ => ++attempts == 1
+            ? Reply(503, Envelope("UNAVAILABLE", "busy", true))
+            : Reply(200, new JsonObject
+            {
+                ["runId"] = Ids.Run,
+                ["operation"] = "account.credit",
+                ["updateKey"] = "credit-1",
+                ["status"] = "APPLIED",
+                ["result"] = 15,
+                ["beforeStateRevision"] = 1,
+                ["afterStateRevision"] = 2,
+                ["runVersion"] = 5,
+                ["replayed"] = false,
+            });
+        await NewClient().UpdateAsync(
+            Ids.Run, "account.credit", new { amount = 3 }, new UpdateOptions { UpdateKey = "credit-1" });
+        Assert.Equal(2, server.Requests.Count);
+        Assert.Equal(server.Requests[0].BodyText, server.Requests[1].BodyText);
+    }
+
+    [Fact]
+    public async Task ChainInspectionAndCommandsUseExpectedHeadAndDurableKeys()
+    {
+        const string namespaceId = "0190aaaa-0000-7000-8000-000000000010";
+        const string chainId = "0190aaaa-0000-7000-8000-000000000011";
+        const string head = "0190aaaa-0000-7000-8000-000000000012";
+        server.Handler = request => request.PathAndQuery.Contains("/signals/", StringComparison.Ordinal)
+            ? Reply(202, new JsonObject { ["deliveredTo"] = new JsonArray("wait") })
+            : request.PathAndQuery.EndsWith("/cancel", StringComparison.Ordinal) ? Reply(202) : Reply(200, new JsonObject
+            {
+                ["chainId"] = chainId,
+                ["currentRunId"] = head,
+                ["revision"] = 2,
+                ["cancelRequested"] = false,
+                ["finalOutcome"] = null,
+                ["segments"] = new JsonArray(
+                    new JsonObject { ["index"] = 0, ["runId"] = chainId, ["predecessorRunId"] = null, ["successorRunId"] = head },
+                    new JsonObject { ["index"] = 1, ["runId"] = head, ["predecessorRunId"] = chainId, ["successorRunId"] = null })
+            });
+        var client = NewClient();
+        var inspection = await client.InspectChainAsync(namespaceId, chainId);
+        var signal = await client.SignalChainAsync(namespaceId, chainId, "chain.release", new { ok = true },
+            new ChainCommandOptions { ExpectedRunId = head, IdempotencyKey = "chain-signal-1" });
+        await client.CancelChainAsync(namespaceId, chainId, "operator requested cancellation",
+            new ChainCommandOptions { ExpectedRunId = head, IdempotencyKey = "chain-cancel-1" });
+        Assert.Equal(chainId, inspection.Segments[1].PredecessorRunId);
+        Assert.Equal(["wait"], signal.DeliveredTo);
+        Assert.Equal("""{"expectedRunId":"0190aaaa-0000-7000-8000-000000000012","payload":{"ok":true}}""", server.Requests[1].BodyText);
+        Assert.Equal("chain-signal-1", server.Requests[1].Header("idempotency-key"));
+    }
+
+    [Fact]
+    public async Task ARunInAChainNamesItsSegmentAndARunOutsideOneHasNone()
+    {
+        const string chain = "0190aaaa-0000-7000-8000-000000000011";
+        const string successor = "0190aaaa-0000-7000-8000-000000000012";
+        server.Handler = _ => Reply(200, Run(run =>
+        {
+            run["status"] = "SUCCEEDED";
+            run["chain"] = new JsonObject { ["chainId"] = chain, ["segmentIndex"] = 0, ["completionKind"] = "CONTINUED", ["successorRunId"] = successor };
+        }));
+        var continued = await NewClient().GetAsync(Ids.Run);
+        Assert.Equal("SUCCEEDED", continued.Status);
+        Assert.Equal(new RunChainSegment(chain, 0, "CONTINUED", successor), continued.Chain);
+
+        server.Handler = _ => Reply(200, Run(run =>
+            run["chain"] = new JsonObject { ["chainId"] = chain, ["segmentIndex"] = 2, ["completionKind"] = null, ["successorRunId"] = null }));
+        var open = await NewClient().GetAsync(Ids.Run);
+        Assert.Equal(new RunChainSegment(chain, 2, null, null), open.Chain);
+
+        server.Handler = _ => Reply(200, Run());
+        Assert.Null((await NewClient().GetAsync(Ids.Run)).Chain);
+
+        server.Handler = _ => Reply(200, Run(run =>
+            run["chain"] = new JsonObject { ["chainId"] = chain, ["segmentIndex"] = 0, ["completionKind"] = "SOMEDAY", ["successorRunId"] = null }));
+        var bad = await Assert.ThrowsAsync<SagatException>(() => NewClient().GetAsync(Ids.Run));
+        Assert.Equal(SagatErrorCode.Protocol, bad.Code);
+    }
+
+    [Fact]
+    public async Task TheRunsOfAChainArePagedInSegmentOrderFollowingTheServerCursor()
+    {
+        const string namespaceId = "0190aaaa-0000-7000-8000-000000000010";
+        const string chainId = "0190aaaa-0000-7000-8000-000000000011";
+        string[] ids = [chainId, "0190aaaa-0000-7000-8000-000000000012", "0190aaaa-0000-7000-8000-000000000013"];
+        JsonObject Item(int index) => new()
+        {
+            ["index"] = index,
+            ["runId"] = ids[index],
+            ["status"] = index < 2 ? "SUCCEEDED" : "RUNNING",
+            ["completionKind"] = index < 2 ? "CONTINUED" : null,
+            ["predecessorRunId"] = index == 0 ? null : ids[index - 1],
+            ["successorRunId"] = index < 2 ? ids[index + 1] : null,
+            ["createdAt"] = "2026-10-10T10:00:00Z",
+            ["finishedAt"] = index < 2 ? "2026-10-10T10:00:01Z" : null,
+        };
+        server.Handler = request => request.PathAndQuery.Contains("cursor=AAE", StringComparison.Ordinal)
+            ? Reply(200, new JsonObject { ["items"] = new JsonArray(Item(2)), ["nextCursor"] = null })
+            : Reply(200, new JsonObject { ["items"] = new JsonArray(Item(0), Item(1)), ["nextCursor"] = "AAE" });
+        var client = NewClient();
+        var collected = new List<int>();
+        await foreach (var segment in client.ListAllChainRunsAsync(namespaceId, chainId, new ChainRunListOptions { Limit = 2 }))
+        {
+            collected.Add(segment.Index);
+        }
+
+        Assert.Equal([0, 1, 2], collected);
+        Assert.Equal($"/v1/namespaces/{namespaceId}/chains/{chainId}/runs?limit=2", server.Requests[0].PathAndQuery);
+        Assert.Equal($"/v1/namespaces/{namespaceId}/chains/{chainId}/runs?cursor=AAE&limit=2", server.Requests[1].PathAndQuery);
+        var page = await client.ListChainRunsAsync(namespaceId, chainId);
+        Assert.Equal("CONTINUED", page.Items[0].CompletionKind);
+        Assert.Equal(ids[2], page.Items[1].SuccessorRunId);
+        Assert.Equal("AAE", page.NextCursor);
+        Assert.Equal(2026, page.Items[0].CreatedAt.Year);
+
+        var oversized = Item(0);
+        oversized["index"] = 10_000;
+        server.Handler = _ => Reply(200, new JsonObject { ["items"] = new JsonArray(oversized), ["nextCursor"] = null });
+        var bad = await Assert.ThrowsAsync<SagatException>(() => client.ListChainRunsAsync(namespaceId, chainId));
+        Assert.Equal(SagatErrorCode.Protocol, bad.Code);
+        await Assert.ThrowsAsync<SagatException>(() => client.ListChainRunsAsync("not-an-id", chainId));
+    }
+
+    [Fact]
+    public async Task ChainQueryCarriesExpectedHeadAndReturnsResolvedRevisions()
+    {
+        const string namespaceId = "0190aaaa-0000-7000-8000-000000000010";
+        const string chainId = "0190aaaa-0000-7000-8000-000000000011";
+        const string head = "0190aaaa-0000-7000-8000-000000000012";
+        server.Handler = _ => Reply(200, new JsonObject
+        {
+            ["runId"] = head,
+            ["runVersion"] = 7,
+            ["stateRevision"] = 3,
+            ["result"] = new JsonObject { ["amount"] = "19.99", ["occurredAt"] = "2026-10-15T15:34:56.789Z" },
+        });
+        var result = await NewClient().QueryChainAsync(
+            namespaceId, chainId, "account.snapshot", new { }, new ChainQueryOptions { ExpectedRunId = head });
+        Assert.Equal($"/v1/namespaces/{namespaceId}/chains/{chainId}/queries/account.snapshot", server.Requests[0].PathAndQuery);
+        Assert.Equal("""{"args":{},"expectedRunId":"0190aaaa-0000-7000-8000-000000000012"}""", server.Requests[0].BodyText);
+        Assert.Equal(head, result.RunId);
+        Assert.Equal("19.99", result.Result.GetProperty("amount").GetString());
+        Assert.Equal("2026-10-15T15:34:56.789Z", result.Result.GetProperty("occurredAt").GetString());
+    }
+
+    [Fact]
+    public async Task CancellingADeclaredUpdateStopsTheCallWithoutRetrying()
+    {
+        server.Delay = TimeSpan.FromSeconds(5);
+        server.Handler = _ => Reply(200, new JsonObject());
+        using var cancel = new CancellationTokenSource();
+        var call = NewClient().UpdateAsync(
+            Ids.Run, "account.credit", new { amount = "19.99" }, new UpdateOptions { UpdateKey = "credit-1" }, cancel.Token);
+        await Eventually.UntilAsync(() => server.Requests.Count == 1, "the update request");
+        await cancel.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => call);
+        await Task.Delay(100);
+        Assert.Single(server.Requests);
+    }
+
+    [Fact]
     public async Task OperationsOtherThanCancelNameTheirActionAndCarryTheirArguments()
     {
         server.Handler = _ => Reply(202, new JsonObject { ["operationId"] = "op-2", ["accepted"] = true });

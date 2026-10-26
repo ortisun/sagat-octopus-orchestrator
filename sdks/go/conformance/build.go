@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -23,6 +24,19 @@ func asList(value any) []any {
 func asString(value any) string {
 	s, _ := value.(string)
 	return s
+}
+
+// asCount reads a small non-negative integer the scenario wrote (a limit, a position); absent is zero.
+func asCount(value any) int {
+	n, ok := value.(interface{ Int64() (int64, error) })
+	if !ok {
+		return 0
+	}
+	count, err := n.Int64()
+	if err != nil || count < 0 {
+		return 0
+	}
+	return int(count)
 }
 
 func asMillis(value any) time.Duration {
@@ -111,6 +125,8 @@ func stepOptions(m object) []workflow.StepOption {
 			opts = append(opts, workflow.HighRisk(asBool(value)))
 		case "onError":
 			opts = append(opts, workflow.OnError(asString(value)))
+		case "outputSchema":
+			opts = append(opts, workflow.OutputSchema(asObject(value)))
 		default:
 			panic(fmt.Sprintf("unknown step option %q", key))
 		}
@@ -125,8 +141,43 @@ func apply(b *workflow.Builder, ops []any) {
 		id := asString(op["id"])
 		options := asObject(op["options"])
 		switch asString(op["op"]) {
+		case "database":
+			var database workflow.DatabaseOptions
+			raw, err := json.Marshal(options)
+			if err != nil {
+				panic(sagat.Invalid("invalid managed database operation"))
+			}
+			if err = json.Unmarshal(raw, &database); err != nil {
+				panic(sagat.Invalid("invalid managed database operation"))
+			}
+			b.Database(id, database)
 		case "step":
 			b.Step(id, asString(op["activity"]), stepOptions(options)...)
+		case "script":
+			var opts []workflow.ScriptOption
+			for _, key := range sortedKeys(options) {
+				switch key {
+				case "language":
+					opts = append(opts, workflow.ScriptLanguage(asString(options[key])))
+				case "retry":
+					opts = append(opts, workflow.ScriptRetry(retryOptions(asObject(options[key]))...))
+				case "compensateWith":
+					opts = append(opts, workflow.ScriptCompensateWith(asString(options[key])))
+				case "secrets":
+					var names []string
+					for _, value := range asList(options[key]) {
+						names = append(names, asString(value))
+					}
+					opts = append(opts, workflow.ScriptSecrets(names...))
+				case "onError":
+					opts = append(opts, workflow.ScriptOnError(asString(options[key])))
+				case "outputSchema":
+					opts = append(opts, workflow.ScriptOutputSchema(asObject(options[key])))
+				default:
+					panic(fmt.Sprintf("unknown script option %q", key))
+				}
+			}
+			b.Script(id, asString(op["artifactDigest"]), opts...)
 		case "sleep":
 			b.Sleep(id, asMillis(op["durationMs"]))
 		case "waitForEvent":
@@ -138,6 +189,8 @@ func apply(b *workflow.Builder, ops []any) {
 					opts = append(opts, workflow.OnTimeout(asString(options[key])))
 				case "lookbackMs":
 					opts = append(opts, workflow.Lookback(asMillis(options[key])))
+				case "outputSchema":
+					opts = append(opts, workflow.WaitOutputSchema(asObject(options[key])))
 				default:
 					panic(fmt.Sprintf("unknown waitForEvent option %q", key))
 				}
@@ -153,6 +206,8 @@ func apply(b *workflow.Builder, ops []any) {
 					opts = append(opts, workflow.ChildInput(asString(options[key])))
 				case "cancelPolicy":
 					opts = append(opts, workflow.ChildCancelPolicy(workflow.CancelPolicy(asString(options[key]))))
+				case "outputSchema":
+					opts = append(opts, workflow.ChildOutputSchema(asObject(options[key])))
 				default:
 					panic(fmt.Sprintf("unknown invokeChild option %q", key))
 				}
@@ -160,6 +215,61 @@ func apply(b *workflow.Builder, ops []any) {
 			b.InvokeChild(id, asString(op["workflow"]), opts...)
 		case "condition":
 			b.Condition(id, asString(op["expression"]), asString(op["ifTrue"]), asString(op["ifFalse"]))
+		case "switch":
+			items := asList(op["cases"])
+			cases := make([]workflow.SwitchCase, 0, len(items))
+			for _, item := range items {
+				caseObject := asObject(item)
+				cases = append(cases, workflow.SwitchCase{ID: asString(caseObject["id"]), When: asString(caseObject["when"]), Target: asString(caseObject["target"])})
+			}
+			b.Switch(id, cases, asString(op["default"]))
+		case "forEach":
+			b.ForEach(id, asString(op["items"]), asString(op["body"]), asString(op["result"]), asInt(op["maxItems"]), asInt(op["maxConcurrency"]))
+		case "map":
+			b.Map(id, asString(op["items"]), asString(op["body"]), asString(op["result"]), asInt(op["maxItems"]), asInt(op["maxConcurrency"]))
+		case "while", "repeatUntil":
+			var opts []workflow.LoopOption
+			if op["delayMs"] != nil {
+				opts = append(opts, workflow.LoopDelay(asMillis(op["delayMs"])))
+			}
+			if op["onError"] != nil {
+				opts = append(opts, workflow.LoopOnError(asString(op["onError"])))
+			}
+			if asString(op["op"]) == "while" {
+				b.While(id, asString(op["condition"]), asString(op["body"]), asString(op["initial"]), asString(op["carry"]), asInt(op["maxIterations"]), asMillis(op["timeoutMs"]), opts...)
+			} else {
+				b.RepeatUntil(id, asString(op["condition"]), asString(op["body"]), asString(op["initial"]), asString(op["carry"]), asInt(op["maxIterations"]), asMillis(op["timeoutMs"]), opts...)
+			}
+		case "approval":
+			policyObject := asObject(op["policy"])
+			policy := workflow.ApprovalPolicy{}
+			if value, present := policyObject["subjects"]; present {
+				items := asList(value)
+				policy.Subjects = make([]string, 0, len(items))
+				for _, subject := range items {
+					policy.Subjects = append(policy.Subjects, asString(subject))
+				}
+			}
+			if value, present := policyObject["roles"]; present {
+				items := asList(value)
+				policy.Roles = make([]workflow.ApprovalRole, 0, len(items))
+				for _, role := range items {
+					policy.Roles = append(policy.Roles, workflow.ApprovalRole(asString(role)))
+				}
+			}
+			if value, present := policyObject["excludeInitiator"]; present {
+				exclude := asBool(value)
+				policy.ExcludeInitiator = &exclude
+			}
+			b.Approval(id, policy, asMillis(op["timeoutMs"]), asString(op["onApprove"]), asString(op["onReject"]), asString(op["onExpire"]))
+		case "continueAsNew":
+			var opts []workflow.ContinuationOption
+			if state, present := op["state"]; present {
+				opts = append(opts, workflow.ContinuationState(asString(state)))
+			}
+			b.ContinueAsNew(id, asString(op["input"]), opts...)
+		case "return":
+			b.Return(id, asString(op["result"]))
 		case "parallel":
 			var branches []*workflow.Builder
 			for _, branch := range asList(op["branches"]) {
@@ -240,8 +350,64 @@ func builderOf(definition object) *workflow.Builder {
 	if schema := asObject(definition["outputSchema"]); schema != nil {
 		b.OutputSchema(schema)
 	}
+	if limits := asObject(definition["limits"]); limits != nil {
+		var opts []workflow.LimitOption
+		if value, present := limits["maxInstances"]; present {
+			opts = append(opts, workflow.MaxInstances(asInt(value)))
+		}
+		if value, present := limits["maxDepth"]; present {
+			opts = append(opts, workflow.MaxDepth(asInt(value)))
+		}
+		b.Limits(opts...)
+	}
+	if state := asObject(definition["state"]); state != nil {
+		queries := make(map[string]workflow.QueryDefinition)
+		for name, value := range asObject(state["queries"]) {
+			query := asObject(value)
+			queries[name] = workflow.QueryDefinition{
+				ArgsSchema: asObject(query["argsSchema"]), ResultSchema: asObject(query["resultSchema"]),
+				Expression: asString(query["expression"]), Disclosure: workflow.DisclosurePolicy(asString(query["disclosure"])),
+			}
+		}
+		updates := make(map[string]workflow.UpdateDefinition)
+		for name, value := range asObject(state["updates"]) {
+			update := asObject(value)
+			updates[name] = workflow.UpdateDefinition{
+				ArgsSchema: asObject(update["argsSchema"]), Validate: asString(update["validate"]),
+				State: asString(update["state"]), Result: asString(update["result"]),
+				ResultSchema: asObject(update["resultSchema"]), Disclosure: workflow.DisclosurePolicy(asString(update["disclosure"])),
+			}
+		}
+		b.State(workflow.StateDefinition{
+			Schema: asObject(state["schema"]), Initial: asString(state["initial"]), Queries: queries, Updates: updates,
+		})
+	}
+	if policy := asObject(definition["chainPolicy"]); policy != nil {
+		b.ChainPolicy(asInt(policy["maxSegments"]), asMillis(policy["timeoutMs"]))
+	}
+	for _, name := range sortedKeys(asObject(definition["bodies"])) {
+		bodyDefinition := asObject(asObject(definition["bodies"])[name])
+		body := workflow.Flow()
+		apply(body, asList(bodyDefinition["program"]))
+		b.Body(name, body)
+	}
 	apply(b, asList(definition["program"]))
 	return b
+}
+
+// Numeric fixture values that cannot inhabit a typed public option are validation errors.
+func tryBuilderOf(definition object) (builder *workflow.Builder, err error) {
+	defer func() {
+		if problem := recover(); problem != nil {
+			if validation, ok := problem.(*sagat.Error); ok {
+				err = validation
+			} else {
+				panic(problem)
+			}
+		}
+	}()
+	builder = builderOf(definition)
+	return
 }
 
 // build builds every workflow of the scenario with the SDK's builders, and records what the
@@ -249,7 +415,10 @@ func builderOf(definition object) *workflow.Builder {
 func build(scenario object) (object, error) {
 	workflows, canonical := object{}, object{}
 	for key, definition := range asObject(scenario["workflows"]) {
-		builder := builderOf(asObject(definition))
+		builder, err := tryBuilderOf(asObject(definition))
+		if err != nil {
+			return nil, err
+		}
 		document, err := builder.Build()
 		if err != nil {
 			return nil, fmt.Errorf("workflow %s: %w", key, err)
@@ -267,8 +436,10 @@ func build(scenario object) (object, error) {
 	for key, item := range asObject(scenario["invalidWorkflows"]) {
 		invalid := asObject(item)
 		// Built with the builders and written as canonical text: the refusal may come from either.
-		builder := builderOf(asObject(invalid["workflow"]))
-		_, err := builder.Build()
+		builder, err := tryBuilderOf(asObject(invalid["workflow"]))
+		if err == nil {
+			_, err = builder.Build()
+		}
 		if err == nil {
 			_, err = builder.JSON()
 		}

@@ -11,15 +11,35 @@ use uuid::Uuid;
 use crate::execution::PgRunStore;
 use crate::identity::{insert_audit, store_error};
 
+/// Hold the same authority key that binding replacement takes exclusively, through this commit.
+pub(crate) async fn hold_worker_binding(
+    conn: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    subject: &str,
+) -> Result<(), StoreError> {
+    sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))")
+        .bind(format!("binding:{tenant}:{namespace}:{subject}"))
+        .execute(conn)
+        .await
+        .map_err(store_error)?;
+    Ok(())
+}
+
 impl BindingStore for PgRunStore {
     async fn bindings(
         &self,
         tenant: TenantId,
         namespace: NamespaceId,
     ) -> Result<Vec<StoredBinding>, StoreError> {
-        let rows: Vec<(String, Vec<String>)> = sqlx::query_as(
-            "SELECT subject, array_agg(pattern ORDER BY pattern) FROM worker_bindings \
-             WHERE tenant_id = $1 AND namespace_id = $2 GROUP BY subject ORDER BY subject",
+        let rows: Vec<(String, Vec<String>, Vec<String>)> = sqlx::query_as(
+            "SELECT b.subject, array_agg(b.pattern ORDER BY b.pattern), \
+                    COALESCE((SELECT array_agg(p.pool ORDER BY p.pool) FROM worker_binding_pools p \
+                              WHERE p.tenant_id = b.tenant_id AND p.namespace_id = b.namespace_id \
+                                AND p.subject = b.subject), '{}') \
+             FROM worker_bindings b \
+             WHERE b.tenant_id = $1 AND b.namespace_id = $2 \
+             GROUP BY b.tenant_id, b.namespace_id, b.subject ORDER BY b.subject",
         )
         .bind(tenant.as_uuid())
         .bind(namespace.as_uuid())
@@ -28,16 +48,22 @@ impl BindingStore for PgRunStore {
         .map_err(store_error)?;
         Ok(rows
             .into_iter()
-            .map(|(subject, patterns)| StoredBinding { subject, patterns })
+            .map(|(subject, patterns, pools)| StoredBinding {
+                subject,
+                patterns,
+                pools,
+            })
             .collect())
     }
 
+    #[allow(clippy::too_many_arguments)] // the port's signature
     async fn replace_binding(
         &self,
         tenant: TenantId,
         namespace: NamespaceId,
         subject: &str,
         patterns: &[String],
+        pools: Option<&[String]>,
         changed_by: &str,
         audit: &AuditRecord,
     ) -> Result<Option<Revoked>, StoreError> {
@@ -70,6 +96,34 @@ impl BindingStore for PgRunStore {
         if patterns.is_empty() && removed == 0 {
             // Nothing to remove: the transaction ends without a trace.
             return Ok(None);
+        }
+        // Pool grants go with the binding; a replacement that does not name pools keeps them.
+        if patterns.is_empty() || pools.is_some() {
+            sqlx::query(
+                "DELETE FROM worker_binding_pools \
+                 WHERE tenant_id = $1 AND namespace_id = $2 AND subject = $3",
+            )
+            .bind(tenant.as_uuid())
+            .bind(namespace.as_uuid())
+            .bind(subject)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        }
+        if let Some(pools) = pools.filter(|pools| !pools.is_empty() && !patterns.is_empty()) {
+            sqlx::query(
+                "INSERT INTO worker_binding_pools \
+                 (tenant_id, namespace_id, subject, pool, updated_by) \
+                 SELECT $1, $2, $3, p, $5 FROM unnest($4::text[]) AS t(p)",
+            )
+            .bind(tenant.as_uuid())
+            .bind(namespace.as_uuid())
+            .bind(subject)
+            .bind(pools)
+            .bind(changed_by)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
         }
         if !patterns.is_empty() {
             sqlx::query(

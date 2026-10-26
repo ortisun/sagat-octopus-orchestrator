@@ -4,7 +4,8 @@ use sagat_application::definitions::{StoredPlan, VersionRecord, WorkflowRecord};
 use sagat_application::execution::RunRecord;
 use sagat_application::runs::{GraphChanges, GraphSnapshot, JournalEntry};
 use sagat_domain::definition::WorkflowVersion;
-use sagat_domain::workflow::{Node, NodeKind};
+use sagat_domain::execution::{ExecutionInstanceId, InstancePath, SwitchSelection};
+use sagat_domain::workflow::{Node, NodeId, NodeKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -33,12 +34,34 @@ fn problem_body(problem: &sagat_application::definitions::Problem) -> Value {
 
 /// What a dry-run validation found.
 pub fn validation_body(validation: &sagat_application::definitions::Validation) -> Value {
-    json!({
+    let mut body = json!({
         "valid": validation.is_valid(),
         "digest": validation.digest,
         "problems": validation.problems.iter().map(problem_body).collect::<Vec<_>>(),
         "warnings": validation.warnings.iter().map(problem_body).collect::<Vec<_>>(),
-    })
+    });
+    if let Some(analysis) = &validation.classification {
+        use sagat_application::classification::CarrierPointer;
+        body["classification"] = Value::Array(analysis.report.iter().map(|entry| {
+            let mut value = json!({"path": entry.path.as_str(), "level": entry.level.as_str(), "declared": entry.declared});
+            match &entry.carrier {
+                CarrierPointer::Input => value["carrier"] = json!("inputSchema"),
+                CarrierPointer::Result => value["carrier"] = json!("outputSchema"),
+                CarrierPointer::NodeOutput(node) => {
+                    value["carrier"] = json!("nodeOutputSchema");
+                    value["nodeId"] = json!(node.as_str());
+                },
+                CarrierPointer::BodyNodeOutput { body, node } => {
+                    value["carrier"] = json!("nodeOutputSchema");
+                    value["nodeId"] = json!(node.as_str());
+                    value["bodyName"] = json!(body.as_str());
+                },
+            }
+            value
+        }).collect());
+        body["classificationTruncated"] = json!(analysis.report_truncated);
+    }
+    body
 }
 
 fn diff_side(side: sagat_application::diff::DiffSide) -> Value {
@@ -162,6 +185,9 @@ pub struct VersionSummary {
     pub published_by: String,
     #[serde(with = "time::serde::rfc3339")]
     pub published_at: OffsetDateTime,
+    /// The payload classification rules pinned to the version: `0` for a version published before
+    /// the feature (no value of its runs is disclosed), `1` since.
+    pub classification_rules: u8,
 }
 
 impl From<&WorkflowVersion> for VersionSummary {
@@ -173,6 +199,7 @@ impl From<&WorkflowVersion> for VersionSummary {
             digest: v.digest().to_hex(),
             published_by: v.published_by().to_string(),
             published_at: v.published_at(),
+            classification_rules: v.classification_rules().as_u8(),
         }
     }
 }
@@ -257,6 +284,20 @@ pub struct OperationBody {
     /// For `RESOLVE_STEP` with `FAILED`: the code the step is recorded as failed with.
     #[serde(default)]
     pub error_code: Option<String>,
+    /// For a decision about a step of an iteration of a collection or loop: the scopes around the
+    /// step, outermost first, each with the index of the iteration. Absent for a step of the root
+    /// graph.
+    #[serde(default)]
+    pub instance_path: Option<Vec<ScopeSegmentBody>>,
+}
+
+/// One scope around a step: the collection or loop node and the iteration the step runs in
+/// (`ApprovalScope` in the OpenAPI, the same shape the runtime graph reports).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ScopeSegmentBody {
+    pub scope_node_id: String,
+    pub iteration_index: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -281,6 +322,8 @@ pub struct SignalResultBody {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunBody {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<&'static str>,
     pub run_id: String,
     pub workflow_id: String,
     pub version_id: String,
@@ -305,6 +348,19 @@ pub struct RunBody {
     pub rerun_of: Option<String>,
     /// How deeply nested the run is: 0 when started through the API.
     pub depth: u8,
+    /// The run's segment in its continuation chain; absent for a run outside any chain. A segment
+    /// that is `SUCCEEDED` with `completionKind` `CONTINUED` is not the process outcome.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chain: Option<RunChainBody>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunChainBody {
+    pub chain_id: String,
+    pub segment_index: u16,
+    pub completion_kind: Option<&'static str>,
+    pub successor_run_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -318,6 +374,10 @@ pub struct ParentBody {
 impl From<&RunRecord> for RunBody {
     fn from(r: &RunRecord) -> Self {
         Self {
+            origin: r
+                .info
+                .origin
+                .map(sagat_application::runs::RunOrigin::as_str),
             run_id: r.info.run_id.to_string(),
             workflow_id: r.info.workflow_id.to_string(),
             version_id: r.info.version_id.to_string(),
@@ -338,6 +398,15 @@ impl From<&RunRecord> for RunBody {
             }),
             rerun_of: r.info.rerun_of.map(|r| r.to_string()),
             depth: r.info.depth,
+            chain: r.chain.map(|segment| RunChainBody {
+                chain_id: segment.chain_id.to_string(),
+                segment_index: segment.index,
+                completion_kind: segment.completion_kind.map(|kind| match kind {
+                    sagat_domain::execution::SegmentCompletionKind::Continued => "CONTINUED",
+                    sagat_domain::execution::SegmentCompletionKind::Final => "FINAL",
+                }),
+                successor_run_id: segment.successor.map(|run| run.to_string()),
+            }),
         }
     }
 }
@@ -462,13 +531,31 @@ pub fn runtime_graph(graph: &GraphSnapshot) -> Value {
         "projectionLagMs": 0,
         "nodes": runtime_nodes(graph, |_| true),
         "edges": runtime_edges(graph),
+        "chain": graph.chain.as_ref().map(chain_body),
+    })
+}
+
+fn chain_body(chain: &sagat_application::runs::ChainView) -> Value {
+    json!({
+        "chainId": chain.chain_id.to_string(),
+        "segmentIndex": chain.segment_index,
+        "segmentCount": chain.segment_count,
+        "currentRunId": chain.current_run_id.to_string(),
+        "predecessorRunId": chain.predecessor_run_id.map(|run| run.to_string()),
+        "successorRunId": chain.successor_run_id.map(|run| run.to_string()),
+        "completionKind": chain.completion_kind,
+        "finalOutcome": chain.final_outcome,
     })
 }
 
 /// The nodes of the runtime graph that `wanted` accepts (by the node and the state of its step).
 fn runtime_nodes(graph: &GraphSnapshot, wanted: impl Fn(&NodeView<'_>) -> bool) -> Vec<Value> {
-    let steps: std::collections::BTreeMap<_, _> =
-        graph.steps.iter().map(|s| (s.node.as_str(), s)).collect();
+    let steps: std::collections::BTreeMap<_, _> = graph
+        .steps
+        .iter()
+        .filter(|step| step.instance.path().is_root())
+        .map(|step| (step.node.as_str(), step))
+        .collect();
     let sagas: std::collections::BTreeMap<_, _> =
         graph.sagas.iter().map(|s| (s.node.as_str(), s)).collect();
     let mut nodes = Vec::new();
@@ -482,9 +569,11 @@ fn runtime_nodes(graph: &GraphSnapshot, wanted: impl Fn(&NodeView<'_>) -> bool) 
             continue;
         }
         let origin = node.origin();
+        let switch_selection =
+            switch_selection_body(node.kind(), step.and_then(|s| s.switch_selection.as_ref()));
         nodes.push(json!({
             "id": id,
-            "type": node.kind().label(),
+            "type": if node.database_operation().is_some() { "database" } else { node.kind().label() },
             "kind": if node.id().is_compensation() {
                 "COMPENSATION"
             } else if node.id().is_reconciliation() {
@@ -508,9 +597,108 @@ fn runtime_nodes(graph: &GraphSnapshot, wanted: impl Fn(&NodeView<'_>) -> bool) 
             "dueAt": step.and_then(|s| s.due_at).map(rfc3339),
             "waitingOn": step.and_then(|s| s.waiting_on),
             "childRunId": step.and_then(|s| s.child_run).map(|r| r.to_string()),
+            "switchSelection": switch_selection,
+            "approvalDecision": approval_decision_body(step.and_then(|s| s.approval.as_ref())),
         }));
     }
+    for step in graph.steps.iter().filter(|step| {
+        !step.instance.path().is_root()
+            || graph.definition.node_for_instance(&step.instance).is_none()
+    }) {
+        let id = instance_graph_id(&step.instance);
+        if !wanted(&NodeView { id: &id }) {
+            continue;
+        }
+        let node = graph.definition.node_for_instance(&step.instance);
+        let mut projected = json!({
+            "id": id,
+            "type": node.map_or("unsupported", |node| node.kind().label()),
+            "kind": if step.node.is_compensation() {
+                "COMPENSATION"
+            } else if step.node.is_reconciliation() {
+                "RECONCILIATION"
+            } else {
+                "FORWARD"
+            },
+            "forward": node.and_then(|node| node.origin().forward()).map(|id| id.as_str()),
+            "saga": null,
+            "status": step.status.as_str(),
+            "attempt": step.attempt,
+            "generation": step.generation,
+            "cancelRequested": step.cancel_requested,
+            "failureCode": step.failure_code,
+            "nextAttemptAt": step.next_attempt_at.map(rfc3339),
+            "dueAt": step.due_at.map(rfc3339),
+            "waitingOn": step.waiting_on,
+            "childRunId": step.child_run.map(|run| run.to_string()),
+            "switchSelection": node.map_or(Value::Null, |node| switch_selection_body(node.kind(), step.switch_selection.as_ref())),
+            "approvalDecision": approval_decision_body(step.approval.as_ref()),
+        });
+        if !step.instance.path().is_root() {
+            projected["nodeId"] = json!(step.node.as_str());
+            projected["instancePath"] = json!(
+                step.instance
+                    .path()
+                    .segments()
+                    .iter()
+                    .map(|segment| json!({
+                        "scopeNodeId": segment.scope_node().as_str(),
+                        "iterationIndex": segment.iteration_index(),
+                    }))
+                    .collect::<Vec<_>>()
+            );
+        }
+        nodes.push(projected);
+    }
     nodes
+}
+
+fn instance_graph_id(instance: &ExecutionInstanceId) -> String {
+    let mut id = instance_path_prefix(instance.path());
+    id.push_str(instance.node().as_str());
+    id
+}
+
+fn instance_path_prefix(path: &InstancePath) -> String {
+    let mut id = String::new();
+    for segment in path.segments() {
+        use std::fmt::Write;
+        let _ = write!(
+            id,
+            "{}[{}]/",
+            segment.scope_node().as_str(),
+            segment.iteration_index()
+        );
+    }
+    id
+}
+
+fn switch_selection_body(kind: &NodeKind, selection: Option<&SwitchSelection>) -> Value {
+    match (kind, selection) {
+        (NodeKind::Switch { cases, .. }, Some(SwitchSelection::Case(case_id))) => cases
+            .iter()
+            .find(|case| case.id() == case_id)
+            .map_or_else(
+                || json!({ "kind": "UNKNOWN", "caseId": case_id.as_str(), "target": null }),
+                |case| json!({ "kind": "CASE", "caseId": case_id.as_str(), "target": case.target().as_str() }),
+            ),
+        (NodeKind::Switch { default, .. }, Some(SwitchSelection::Default)) => {
+            json!({ "kind": "DEFAULT", "target": default.as_str() })
+        }
+        _ => Value::Null,
+    }
+}
+
+/// How the approval request of an approval node stands: `PENDING`, then the settled outcome and the
+/// pinned target it routed to. Null until the request opens. It never names the approver, the
+/// decision key or the reason code.
+fn approval_decision_body(approval: Option<&sagat_application::runs::ApprovalView>) -> Value {
+    approval.map_or(Value::Null, |view| {
+        json!({
+            "kind": view.status.as_str(),
+            "target": view.routed_node.as_ref().map(NodeId::as_str),
+        })
+    })
 }
 
 /// What a filter over the nodes of a runtime graph can look at.
@@ -547,6 +735,67 @@ fn runtime_edges(graph: &GraphSnapshot) -> Vec<Value> {
             }));
         }
     }
+    let present: std::collections::BTreeSet<_> = graph
+        .steps
+        .iter()
+        .map(|step| instance_graph_id(&step.instance))
+        .collect();
+    let paths: std::collections::BTreeSet<_> = graph
+        .steps
+        .iter()
+        .map(|step| step.instance.path().clone())
+        .filter(|path| !path.is_root())
+        .collect();
+    for path in paths {
+        let mut parent = InstancePath::root();
+        for segment in &path.segments()[..path.depth() - 1] {
+            if let Ok(next) = parent.child(segment.scope_node().clone(), segment.iteration_index())
+            {
+                parent = next;
+            }
+        }
+        let Some(owner) = path.segments().last() else {
+            continue;
+        };
+        let owner_instance = ExecutionInstanceId::in_path(parent, owner.scope_node().clone());
+        let Some(owner_node) = graph.definition.node_for_instance(&owner_instance) else {
+            continue;
+        };
+        let body_name = match owner_node.kind() {
+            NodeKind::ForEach { body, .. }
+            | NodeKind::While { body, .. }
+            | NodeKind::RepeatUntil { body, .. } => body,
+            _ => continue,
+        };
+        let Some(body) = graph.definition.body(body_name) else {
+            continue;
+        };
+        let prefix = instance_path_prefix(&path);
+        let entry = format!("{}{}", prefix, body.entrypoint().as_str());
+        let owner_id = instance_graph_id(&owner_instance);
+        if present.contains(&owner_id) && present.contains(&entry) {
+            edges.push(json!({ "from": owner_id, "to": entry, "kind": "begin" }));
+        }
+        for node in body.all_nodes() {
+            let mut local = Vec::new();
+            edges_of(node, &mut local);
+            for mut edge in local {
+                let (Some(from), Some(to)) = (
+                    edge.get("from").and_then(Value::as_str),
+                    edge.get("to").and_then(Value::as_str),
+                ) else {
+                    continue;
+                };
+                let from = format!("{prefix}{from}");
+                let to = format!("{prefix}{to}");
+                if present.contains(&from) && present.contains(&to) {
+                    edge["from"] = json!(from);
+                    edge["to"] = json!(to);
+                    edges.push(edge);
+                }
+            }
+        }
+    }
     edges
 }
 
@@ -559,16 +808,17 @@ fn runtime_edges(graph: &GraphSnapshot) -> Vec<Value> {
 /// change the run, whose `status` is always current. `reset` brings the whole graph.
 pub fn graph_changes_body(changes: &GraphChanges) -> Value {
     let graph = &changes.graph;
-    let touched: std::collections::BTreeSet<&str> = changes
+    let reset = changes.reset;
+    let touched: std::collections::BTreeSet<String> = changes
         .events
         .iter()
-        .flat_map(|e| e.touched.iter().flatten().map(String::as_str))
+        .flat_map(|event| event.touched.iter().flatten().map(instance_graph_id))
         .collect();
     let any = !changes.events.is_empty();
-    let nodes = if changes.reset {
+    let nodes = if reset {
         runtime_nodes(graph, |_| true)
     } else if any {
-        runtime_nodes(graph, |n| touched.contains(n.id))
+        runtime_nodes(graph, |node| touched.contains(node.id))
     } else {
         Vec::new()
     };
@@ -576,9 +826,9 @@ pub fn graph_changes_body(changes: &GraphChanges) -> Value {
         "runId": graph.run.info.run_id.to_string(),
         "status": graph.run.status.as_str(),
         // A reset is relative to nothing: the client replaces what it has.
-        "fromSeq": if changes.reset { 0 } else { changes.since },
+        "fromSeq": if reset { 0 } else { changes.since },
         "projectionSeq": graph.run.version,
-        "reset": changes.reset,
+        "reset": reset,
         "events": changes.events.iter().map(|e| json!({
             "seq": e.seq,
             "eventType": e.event_type,
@@ -587,8 +837,9 @@ pub fn graph_changes_body(changes: &GraphChanges) -> Value {
             "attempt": e.attempt,
         })).collect::<Vec<_>>(),
         "nodes": nodes,
+        "chain": graph.chain.as_ref().map(chain_body),
     });
-    if changes.reset {
+    if reset {
         body["edges"] = Value::Array(runtime_edges(graph));
     }
     body
@@ -601,33 +852,58 @@ fn rfc3339(at: OffsetDateTime) -> String {
 
 fn edges_of(node: &Node, out: &mut Vec<Value>) {
     let from = node.id().as_str();
-    let mut edge = |to: &str, kind: &str| out.push(json!({ "from": from, "to": to, "kind": kind }));
+    let edge = |out: &mut Vec<Value>, to: &str, kind: &str| {
+        out.push(json!({ "from": from, "to": to, "kind": kind }));
+    };
     match node.kind() {
         NodeKind::Condition {
             if_true, if_false, ..
         } => {
-            edge(if_true.as_str(), "true");
-            edge(if_false.as_str(), "false");
+            edge(out, if_true.as_str(), "true");
+            edge(out, if_false.as_str(), "false");
+        }
+        NodeKind::Switch { cases, default } => {
+            for case in cases {
+                out.push(json!({
+                    "from": from,
+                    "to": case.target().as_str(),
+                    "kind": "case",
+                    "caseId": case.id().as_str(),
+                }));
+            }
+            edge(out, default.as_str(), "default");
         }
         NodeKind::Parallel { branches, .. } => {
             for branch in branches {
-                edge(branch.as_str(), "branch");
+                edge(out, branch.as_str(), "branch");
             }
         }
         NodeKind::WaitEvent {
             on_timeout: Some(target),
             ..
-        } => edge(target.as_str(), "timeout"),
+        } => edge(out, target.as_str(), "timeout"),
+        // The three routes of an approval are all declared; the decision that took one is the
+        // node's `approvalDecision`.
+        NodeKind::Approval {
+            on_approve,
+            on_reject,
+            on_expire,
+            ..
+        } => {
+            edge(out, on_approve.as_str(), "approve");
+            edge(out, on_reject.as_str(), "reject");
+            edge(out, on_expire.as_str(), "expire");
+        }
         // The body of a saga starts where it says: without this edge the steps inside a saga look
         // like separate graphs.
-        NodeKind::Saga { begin, .. } => edge(begin.as_str(), "begin"),
+        NodeKind::Saga { begin, .. } => edge(out, begin.as_str(), "begin"),
         _ => {}
     }
     if let Some(next) = node.next() {
-        edge(next.as_str(), "next");
+        edge(out, next.as_str(), "next");
     }
     if let Some(target) = node.on_error() {
-        edge(target.as_str(), "error");
+        edge(out, target.as_str(), "error");
     }
 }
 
@@ -650,4 +926,283 @@ pub fn compensation_plans_body(plans: &[StoredPlan]) -> Value {
             })).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
     })
+}
+
+#[cfg(test)]
+mod switch_graph_tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
+    use super::*;
+    use sagat_application::runs::StepView;
+    use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
+    use sagat_domain::execution::{InstancePath, RunId, RunStatus, StepStatus};
+    use sagat_domain::identity::{NamespaceId, Slug, TenantId};
+    use sagat_domain::workflow::{
+        BodyDefinition, Expression, NodeId, SwitchCase, WorkflowDefinition, WorkflowLimits,
+    };
+
+    fn id(value: &str) -> NodeId {
+        NodeId::parse(value).expect("valid node id")
+    }
+
+    #[test]
+    fn scoped_graph_ids_distinguish_equal_local_names_and_iterations() {
+        let root = ExecutionInstanceId::root(id("charge"));
+        let first = InstancePath::root().child(id("items"), 0).unwrap();
+        let second = InstancePath::root().child(id("items"), 1).unwrap();
+        let nested = first.child(id("retry"), 2).unwrap();
+        assert_eq!(instance_graph_id(&root), "charge");
+        assert_eq!(
+            instance_graph_id(&ExecutionInstanceId::in_path(first, id("charge"))),
+            "items[0]/charge"
+        );
+        assert_eq!(
+            instance_graph_id(&ExecutionInstanceId::in_path(second, id("charge"))),
+            "items[1]/charge"
+        );
+        assert_eq!(
+            instance_graph_id(&ExecutionInstanceId::in_path(nested, id("charge"))),
+            "items[0]/retry[2]/charge"
+        );
+    }
+
+    #[test]
+    fn runtime_graph_projects_scoped_steps_and_precise_deltas() {
+        let definition = WorkflowDefinition::new_structured(
+            Slug::parse("items-flow").unwrap(),
+            id("items"),
+            vec![
+                Node::new(
+                    id("items"),
+                    NodeKind::ForEach {
+                        items: Expression::parse("input.items").unwrap(),
+                        body: id("line"),
+                        result: Expression::parse("bodyResult").unwrap(),
+                        max_items: 2,
+                        max_concurrency: 2,
+                    },
+                )
+                .with_next(id("done")),
+                Node::new(id("done"), NodeKind::End { output: None }),
+            ],
+            vec![
+                BodyDefinition::new(
+                    id("line"),
+                    id("return"),
+                    vec![Node::new(
+                        id("return"),
+                        NodeKind::Return {
+                            result: Expression::parse("item").unwrap(),
+                        },
+                    )],
+                )
+                .unwrap(),
+            ],
+            WorkflowLimits::default(),
+        )
+        .unwrap();
+        let run_id = RunId::new(uuid::Uuid::from_u128(1));
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let step = |index| StepView {
+            instance: ExecutionInstanceId::in_path(
+                InstancePath::root().child(id("items"), index).unwrap(),
+                id("return"),
+            ),
+            node: id("return"),
+            status: StepStatus::Succeeded,
+            attempt: 0,
+            generation: 0,
+            cancel_requested: false,
+            failure_code: None,
+            next_attempt_at: None,
+            due_at: None,
+            waiting_on: None,
+            child_run: None,
+            switch_selection: None,
+            approval: None,
+        };
+        let graph = GraphSnapshot {
+            run: RunRecord {
+                info: sagat_application::execution::RunInfo {
+                    run_id,
+                    tenant_id: TenantId::new(uuid::Uuid::from_u128(2)),
+                    namespace_id: NamespaceId::new(uuid::Uuid::from_u128(3)),
+                    workflow_id: WorkflowId::new(uuid::Uuid::from_u128(4)),
+                    version_id: WorkflowVersionId::new(uuid::Uuid::from_u128(5)),
+                    started_by: "test".into(),
+                    correlation_id: None,
+                    trace_id: None,
+                    rerun_of: None,
+                    parent_span: None,
+                    deadline_at: None,
+                    created_at: now,
+                    parent: None,
+                    depth: 0,
+                    root: run_id,
+                    origin: None,
+                },
+                status: RunStatus::Running,
+                version: 3,
+                stop_reason: None,
+                paused: false,
+                updated_at: now,
+                finished_at: None,
+                chain: None,
+            },
+            definition: std::sync::Arc::new(definition),
+            steps: vec![
+                StepView {
+                    instance: ExecutionInstanceId::root(id("items")),
+                    node: id("items"),
+                    status: StepStatus::Waiting,
+                    waiting_on: Some("branches"),
+                    ..step(0)
+                },
+                step(0),
+                step(1),
+                StepView {
+                    instance: ExecutionInstanceId::root(id("future-node")),
+                    node: id("future-node"),
+                    status: StepStatus::Running,
+                    ..step(0)
+                },
+            ],
+            sagas: Vec::new(),
+            chain: Some(sagat_application::runs::ChainView {
+                chain_id: run_id,
+                segment_index: 1,
+                segment_count: 2,
+                current_run_id: run_id,
+                predecessor_run_id: Some(RunId::new(uuid::Uuid::from_u128(6))),
+                successor_run_id: None,
+                completion_kind: None,
+                final_outcome: None,
+            }),
+        };
+        let body = runtime_graph(&graph);
+        assert_eq!(body["chain"]["segmentIndex"], 1);
+        assert_eq!(
+            body["chain"]["predecessorRunId"],
+            uuid::Uuid::from_u128(6).to_string()
+        );
+        let nodes = body["nodes"].as_array().unwrap();
+        assert!(nodes.iter().any(|node| {
+            node["id"] == "items[0]/return" && node["instancePath"][0]["iterationIndex"] == 0
+        }));
+        assert!(nodes.iter().any(|node| {
+            node["id"] == "items[1]/return" && node["instancePath"][0]["iterationIndex"] == 1
+        }));
+        assert!(nodes.iter().any(|node| {
+            node["id"] == "future-node"
+                && node["type"] == "unsupported"
+                && node.get("instancePath").is_none()
+        }));
+        assert!(body["edges"].as_array().unwrap().iter().any(|edge| {
+            edge["from"] == "items" && edge["to"] == "items[0]/return" && edge["kind"] == "begin"
+        }));
+        let changes = graph_changes_body(&GraphChanges {
+            graph,
+            since: 2,
+            reset: false,
+            events: vec![JournalEntry {
+                seq: 3,
+                event_type: "step.completed".into(),
+                node: Some("return".into()),
+                attempt: Some(0),
+                actor: "worker:test".into(),
+                trace_id: None,
+                occurred_at: now,
+                payload_ref: None,
+                cause: None,
+                span_id: None,
+                touched: Some(vec![ExecutionInstanceId::in_path(
+                    InstancePath::root().child(id("items"), 1).unwrap(),
+                    id("return"),
+                )]),
+            }],
+        });
+        assert_eq!(changes["reset"], false);
+        assert_eq!(changes["fromSeq"], 2);
+        assert_eq!(changes["nodes"].as_array().unwrap().len(), 1);
+        assert_eq!(changes["nodes"][0]["id"], "items[1]/return");
+        assert_eq!(changes["chain"], body["chain"]);
+    }
+
+    #[test]
+    fn switch_graph_exposes_persisted_selection_and_ordered_routes() {
+        let node = Node::new(
+            id("choose"),
+            NodeKind::Switch {
+                cases: vec![
+                    SwitchCase::new(id("first"), Expression::parse("true").unwrap(), id("left")),
+                    SwitchCase::new(
+                        id("second"),
+                        Expression::parse("true").unwrap(),
+                        id("right"),
+                    ),
+                ],
+                default: id("fallback"),
+            },
+        );
+        let mut edges = Vec::new();
+        edges_of(&node, &mut edges);
+        assert_eq!(
+            edges,
+            vec![
+                json!({"from":"choose","to":"left","kind":"case","caseId":"first"}),
+                json!({"from":"choose","to":"right","kind":"case","caseId":"second"}),
+                json!({"from":"choose","to":"fallback","kind":"default"}),
+            ]
+        );
+        assert_eq!(
+            switch_selection_body(node.kind(), Some(&SwitchSelection::Case(id("second")))),
+            json!({"kind":"CASE","caseId":"second","target":"right"})
+        );
+        assert_eq!(
+            switch_selection_body(node.kind(), Some(&SwitchSelection::Default)),
+            json!({"kind":"DEFAULT","target":"fallback"})
+        );
+        assert_eq!(switch_selection_body(node.kind(), None), Value::Null);
+    }
+
+    #[test]
+    fn approval_routes_are_edges_and_the_decision_names_no_one() {
+        use sagat_application::runs::ApprovalView;
+        use sagat_domain::execution::{ApprovalPolicy, ApprovalStatus};
+        use sagat_domain::identity::Role;
+
+        let node = Node::new(
+            id("review"),
+            NodeKind::Approval {
+                policy: ApprovalPolicy::new(Vec::new(), vec![Role::Operator]).unwrap(),
+                on_approve: id("approved"),
+                on_reject: id("rejected"),
+                on_expire: id("expired"),
+            },
+        );
+        let mut edges = Vec::new();
+        edges_of(&node, &mut edges);
+        assert_eq!(
+            edges,
+            vec![
+                json!({"from":"review","to":"approved","kind":"approve"}),
+                json!({"from":"review","to":"rejected","kind":"reject"}),
+                json!({"from":"review","to":"expired","kind":"expire"}),
+            ]
+        );
+        assert_eq!(approval_decision_body(None), Value::Null);
+        assert_eq!(
+            approval_decision_body(Some(&ApprovalView {
+                status: ApprovalStatus::Pending,
+                routed_node: None,
+            })),
+            json!({"kind":"PENDING","target":null})
+        );
+        assert_eq!(
+            approval_decision_body(Some(&ApprovalView {
+                status: ApprovalStatus::Expired,
+                routed_node: Some(id("expired")),
+            })),
+            json!({"kind":"EXPIRED","target":"expired"})
+        );
+    }
 }

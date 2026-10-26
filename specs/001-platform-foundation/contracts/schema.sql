@@ -40,6 +40,7 @@ CREATE TABLE steps (
  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id uuid NOT NULL REFERENCES tenants(id), run_id uuid NOT NULL REFERENCES runs(id),
  logical_path text NOT NULL, node_key text NOT NULL, status text NOT NULL,
  attempt integer NOT NULL DEFAULT 0, generation bigint NOT NULL DEFAULT 0, lease_token_hash text,
+ reported_lease_token_hash text, -- G141: the lease that reported the attempt; cleared on a new lease
  lease_expires_at timestamptz, next_attempt_at timestamptz, input_ref text, output_ref text,
  last_error_code text, updated_at timestamptz NOT NULL DEFAULT now(), UNIQUE(tenant_id,run_id,logical_path,node_key)
 );

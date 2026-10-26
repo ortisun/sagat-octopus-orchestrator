@@ -339,6 +339,13 @@ Validation after this correction: all 1,066 Vitest tests passed (70 files), lint
 production build and the real Chromium/API namespace journey passed. This newer full-suite run
 supersedes the six concurrent graph-layout failures recorded above.
 
+Owner navigation correction (T007-058): the sidebar is a hierarchy. On a first visit it offers only **Namespaces** and the selector
+(*Choose a namespace*); choosing a namespace, in the selector or with **Use namespace**, opens Workflows, Runs, Operations, Scripts
+and Integrations under it. Nothing is chosen for you, even with a single namespace; a page of a namespace opened without one says
+*Choose a namespace*. 1,145 Vitest tests passed (78 files), lint, typecheck, build and `check:api` too, and the built Studio was driven in Chromium
+at 1470, 390 and 320 px. The Playwright journeys were not run (they need the Rust platform); `signIn` in `frontend/e2e/support/studio.ts`
+now chooses the first namespace, and `smoke.spec.ts` carries the hierarchy journey.
+
 ### Configure a broker through Integrations (T007-053)
 
 Open **Integrations** for the selected namespace. An administrator can expand **Network access**
@@ -413,3 +420,52 @@ invented event name and failed; it was corrected against the domain's canonical 
 rerun successfully. Logs: ignored `target/usability/signal-{tests,browser}.log`.
 
 Integrated completion check (2026-10-12): all 1,104 Studio unit tests, full ESLint, TypeScript checking and the production build pass. The signal form also discards its payload after same-subject reauthentication, covered by a failing-first regression.
+
+## Integration of committed UX work — 2026-10-25
+
+The seven commits through `fad431fd` are integrated with features 016/017. Namespace-gated
+navigation retains Connections, Secrets and Ad hoc database; run origin labels/private-version
+handling remain intact beside address filters and Start run. Merge review found two defects:
+unsafe numeric input in Start run and Origin not being cleared. New regressions were observed
+failing before the fixes; exact-number authoring and all-filter clearing now pass.
+
+Current gates, macOS arm64 with the repository's Testcontainers/Colima fixture and a private
+Cargo target:
+
+- `npm test -- --maxWorkers=2`: **1,193 passed in 87 files**, zero failed (30.42 s, final graph fixes).
+- `npm run lint`, `npm run typecheck`, `npm run typecheck --workspace @sagat/e2e`,
+  `npm run build`, `npm run check:api`: passed. TypeScript SDK preparation is required before
+  E2E typechecking; the first attempt correctly failed because that SDK had not been built.
+- `npm audit --audit-level=moderate`: **0 vulnerabilities**.
+- `SAGAT_STUDIO_REBUILD=0 SAGAT_STUDIO_NO_SANDBOX=1 cargo test -p sagat-tests --test
+  e2e_workflow_studio --locked -- --ignored journeys --nocapture`: **35 Chromium scenarios
+  passed; zero failed; two opt-in performance skips** (101.20 s including harness). US02's
+  script sandbox is explicitly excluded by this local mode; Linux CI must prove it.
+
+The initial browser run had two failures (33 passed, 2 failed, 2 skips): the taller graph put
+bottom controls below the viewport, and a selected panel requested a deliberately blocked font
+weight after console observation began. Controls now occupy the visible top-right corner;
+the font-failure fixture settles every declared weight before strict unfiltered console checks.
+The original geometry, glyph, fallback-font and console assertions remain. Fresh independent
+reviews closed with no remaining C1/C2 findings. The new Start run journey validates malformed
+input, then verifies the real API's retained run, actor, workflow, navigation and successful
+completion. No new human visual or screen-reader acceptance is claimed.
+
+Owner-order follow-up: preserved the later 2026-10-16 G163 decision (**Scripts immediately
+follows Workflows**) within the new namespace hierarchy. The updated Shell regression failed
+2/10 before restoration, then passed 10/10. Production build passed. The two exact Chromium
+shell/menu scenarios passed (2/2, 9.66 s including harness), using the already-built real-platform
+journey binary; Rust application/test sources were unchanged by this menu-only correction.
+
+Linux CI follow-up (PR 50 run `40234003795`): Studio had two fixture failures. The all-font
+fallback count included Monaco's healthy `codicon.ttf`; a four-digit PAN prefix matched an
+unrelated random request id in an otherwise opaque foreign-resource refusal. The font fixture
+now targets the closed Geist/Geist Mono asset/family set, requires actual registered and blocked
+faces, and asserts zero loaded bundled text faces while preserving strict console and geometry
+checks. The tenant test scans complete, unmodified responses for all full fixture sentinels,
+retains the nonhex `acme|correlation` checks, and creates/selects its own valid foreign namespace.
+No production authorization changes. The font failure was reproduced locally; focused Chromium
+passed 3/3 and isolated foreign access passed 1/1. Root then reran the full real-platform browser
+suite: **35 passed, zero failed, two opt-in performance skips**, 96.98 s including harness, with
+local US02 explicitly excluded. E2E types passed; fresh review found no C1/C2 issue. This final
+rerun used the already-built journey binary because Rust application/test sources were unchanged.

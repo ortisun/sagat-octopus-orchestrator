@@ -37,11 +37,47 @@ fn body_of(operation: &str) -> Option<Value> {
         "validateWorkflowDraft" => json!({"ir": flow("attacker-flow")}),
         "startRun" => json!({"workflowId": "{workflowId}", "input": {}}),
         "operateRun" => json!({"action": "CANCEL", "reason": "cross-tenant battery probe"}),
-        "inspectRunPayload" => json!({"source": "input"}),
+        "inspectRunPayload" | "discloseRunPayload" => json!({"source": "input"}),
         "signalRun" => json!({"paid": true}),
+        // Feature 014: a chain is addressed by its id; the head the attacker claims to have seen
+        // is made up, so the only thing that can refuse the call is that the chain is not theirs.
+        "queryRun" => json!({"args": {}}),
+        "updateRunState" => json!({"updateKey": "battery-probe-0001", "args": {}}),
+        "decideWorkflowApproval" => {
+            json!({"decisionKey": "battery-probe-0001", "decision": "APPROVE"})
+        }
+        "queryExecutionChain" => json!({"args": {}}),
+        "updateExecutionChain" => json!({"updateKey": "battery-probe-0001", "args": {}}),
+        "signalExecutionChain" => json!({
+            "expectedRunId": "01900000-0000-7000-8000-000000000000", "payload": {"paid": true}
+        }),
+        "cancelExecutionChain" => json!({
+            "expectedRunId": "01900000-0000-7000-8000-000000000000",
+            "reason": "cross-tenant battery probe"
+        }),
         "setTenantQuota" | "setNamespaceQuota" | "setActivityQuota" => json!({"limit": 1}),
-        "bindWorker" => json!({"activities": ["*"]}),
+        "bindWorker" => json!({"activities": ["*"], "pools": ["attacker-pool"]}),
+        "setSecretPools" => json!({"pools": ["attacker-pool"]}),
+        "putDatabaseConnection" => {
+            json!({"requestId":Uuid::now_v7().to_string(),"expectedRevision":0,"status":"PAUSED","config":{"driver":"postgresql","host":"db.example.com","port":5432,"database":"orders","tls":{"mode":"verify-full"},"secretName":"stripe-key"}})
+        }
+        "deleteDatabaseConnection" => {
+            json!({"requestId":Uuid::now_v7().to_string(),"expectedRevision":1})
+        }
+        "probeDatabaseConnection" => json!({}),
+        "startDatabaseExecution" => json!({
+            "mode": "step", "input": {},
+            "definition": {
+                "apiVersion": "sagat-octopus-orchestrator.io/v1", "kind": "Workflow",
+                "metadata": {"name": "attacker-query"}, "entrypoint": "a",
+                "nodes": [{"id": "a", "type": "database", "connectionRef": {"name": "orders-db"},
+                    "operation": "query", "statement": "SELECT 1"}]
+            }
+        }),
         "putSecret" => json!({"value": "attacker-supplied-value-0001"}),
+        "migrateSecretToOpenBao" => {
+            json!({"requestId": Uuid::now_v7().to_string(), "expectedVersion": 1})
+        }
         "setEgressPolicy" => json!({"rules": ["attacker.example.net"]}),
         // Feature 004: what an attacker would send to take over the victim's event plumbing.
         "publishEvent" => json!({"type": "order.created", "data": {"attacker": true}}),
@@ -224,6 +260,7 @@ async fn snapshot(api: &TestApi, victim: &Victim) -> Value {
         format!("/namespaces/{ns}/worker-bindings"),
         format!("/namespaces/{ns}/secrets"),
         format!("/namespaces/{ns}/secrets/stripe-key/access"),
+        format!("/namespaces/{ns}/secrets/stripe-key/pools"),
         format!("/namespaces/{ns}/egress-policy"),
         format!("/namespaces/{ns}/scripts"),
         format!(
@@ -335,8 +372,13 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
         ),
         (
             "PUT",
+            format!("/namespaces/{ns}/secrets/stripe-key/pools"),
+            Some(json!({"pools": ["victim-pool"]})),
+        ),
+        (
+            "PUT",
             format!("/namespaces/{ns}/worker-bindings/worker-7"),
-            Some(json!({"activities": ["payments.*"]})),
+            Some(json!({"activities": ["payments.*"], "pools": ["victim-pool"]})),
         ),
         (
             "PUT",
@@ -415,6 +457,8 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
             ("activity", "payment.capture".to_owned()),
             ("subject", "worker-7".to_owned()),
             ("secretName", "stripe-key".to_owned()),
+            ("connectionName", "orders-db".to_owned()),
+            ("nodeId", "a".to_owned()),
         ]),
     };
     let before = snapshot(&api, &victim).await;
@@ -513,6 +557,7 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
                 "victim-secret-value",
                 "partner.example.com",
                 "worker-7",
+                "victim-pool",
                 "victim-script",
                 "victim-source",
             ] {

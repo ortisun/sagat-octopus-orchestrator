@@ -29,12 +29,6 @@ export function alertKind(kind: string): string {
   return `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
 }
 
-export function when(value: string | null | undefined): string {
-  if (!value) return 'Not recorded';
-  const instant = new Date(value);
-  return Number.isNaN(instant.getTime()) ? 'Not recorded' : instant.toLocaleString();
-}
-
 /** Links only same-origin references and HTTPS runbooks; every other value remains visible as text. */
 export function safeRunbookHref(reference: string): string | undefined {
   try {

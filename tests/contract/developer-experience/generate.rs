@@ -19,6 +19,7 @@ pub fn api_reference(openapi: &Value, source: &str) -> String {
     let mut by_tag: BTreeMap<String, Vec<(String, usize, String)>> = BTreeMap::new();
     // The operations that take no token: a `security: []` of their own.
     let mut open: Vec<String> = Vec::new();
+    let mut extensions: Vec<(String, String, String)> = Vec::new();
     let methods = ["get", "post", "put", "patch", "delete"];
     let mut count = 0usize;
     for (path, item) in openapi["paths"].as_object().into_iter().flatten() {
@@ -51,6 +52,16 @@ pub fn api_reference(openapi: &Value, source: &str) -> String {
                             .as_str()
                             .is_some_and(|n| n.eq_ignore_ascii_case("idempotency-key"))
                 });
+            if let (Some(feature), Some(description)) = (
+                operation["x-extended"].as_str(),
+                operation["description"].as_str(),
+            ) {
+                extensions.push((
+                    operation["operationId"].as_str().unwrap_or("?").to_owned(),
+                    feature.to_owned(),
+                    description.to_owned(),
+                ));
+            }
             let feature = operation["x-implemented"].as_str().unwrap_or("001");
             let mut row = String::new();
             let _ = write!(
@@ -99,6 +110,20 @@ pub fn api_reference(openapi: &Value, source: &str) -> String {
             let _ = writeln!(out, "{row}");
         }
         out.push('\n');
+    }
+    if !extensions.is_empty() {
+        extensions.sort();
+        let _ = writeln!(out, "## Extended operation contracts\n");
+        let _ = writeln!(
+            out,
+            "These descriptions come from the canonical contract. They include response compatibility changes.\n"
+        );
+        for (operation, feature, description) in extensions {
+            let _ = writeln!(
+                out,
+                "### `{operation}` (feature {feature})\n\n{description}\n"
+            );
+        }
     }
     out.trim_end().to_owned() + "\n"
 }
@@ -205,7 +230,9 @@ pub fn workflow_reference(schema: &Value, source: &str) -> String {
         "Made from `{source}`. A workflow is one JSON (or YAML) object: this page lists its fields and the \
          fields of each kind of node. The schema checks the shape; the platform's codec checks more \
          (the graph, the expressions, the references between nodes), and `sagat workflow validate` runs \
-         the codec: [errors.md](../quickstarts/errors.md) says what each of its findings means.\n"
+         the codec: [errors.md](../quickstarts/errors.md) says what each of its findings means. \
+         Some shapes are reserved for capabilities still under development; schema acceptance alone \
+         does not make a node runnable. See the [capability validation report](../../specs/014-workflow-primitives/validation-report.md).\n"
     );
     let defs = schema["$defs"].as_object();
     let kinds: Vec<&str> = schema["$defs"]["node"]["oneOf"]

@@ -6,6 +6,8 @@
 
 #[path = "control.rs"]
 mod control;
+#[path = "database.rs"]
+mod database;
 #[path = "normalize.rs"]
 mod normalize;
 
@@ -42,6 +44,19 @@ fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
 }
 
+/// Compatibility gates can run immutable released client sources against the current server.
+/// Scenarios, normalization and reviewed goldens continue to come from this checkout.
+fn sdk_source_root() -> PathBuf {
+    std::env::var_os("SAGAT_SDK_SOURCE_ROOT").map_or_else(
+        || repo().join("sdks"),
+        |root| {
+            let root = PathBuf::from(root);
+            assert!(root.is_absolute(), "SAGAT_SDK_SOURCE_ROOT must be absolute");
+            root
+        },
+    )
+}
+
 fn suite() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("contract")
@@ -64,7 +79,7 @@ fn languages(only: Option<&[&str]>) -> Vec<(&'static str, PathBuf)> {
                 .is_none_or(|list| list.iter().any(|l| l == name))
         })
         .filter(|(name, _)| only.is_none_or(|list| list.contains(name)))
-        .map(|(name, dir)| (*name, repo().join("sdks").join(dir).join("conformance")))
+        .map(|(name, dir)| (*name, sdk_source_root().join(dir).join("conformance")))
         .collect()
 }
 
@@ -236,10 +251,17 @@ struct Run {
     other_token: String,
     /// A worker identity with no binding: the platform refuses to register its activities.
     unbound_token: String,
+    /// Members of the tenant with one role each, for the scenarios that test who may do what.
+    operator_token: String,
+    viewer_token: String,
+    runner_token: String,
+    /// An operator the scenario revokes with the control endpoint.
+    revoked_token: String,
     /// The control endpoint, which holds the platform until it is stopped.
     tasks: Vec<tokio::task::JoinHandle<()>>,
     /// Both server processes use this directory, so it must outlive them.
     _blob_dir: TempBlobDir,
+    database: Option<database::Fixture>,
 }
 
 struct TempBlobDir(PathBuf);
@@ -293,7 +315,13 @@ fn token(platform: &Platform, subject: &str, tenant: &str) -> String {
 async fn boot(scenario: &Value) -> Run {
     let lease = scenario["server"]["leaseTtlSeconds"].as_u64().unwrap_or(30);
     let blob_dir = TempBlobDir::create();
+    let mut database = if scenario["server"]["managedDatabase"] == true {
+        Some(database::Fixture::start().await)
+    } else {
+        None
+    };
     let platform = platform_with(Options {
+        secret_provider: database.as_ref().map(|db| db.provider()),
         worker: WorkerSettings {
             lease_ttl: Duration::from_secs(lease),
             ..WorkerSettings::default()
@@ -310,6 +338,22 @@ async fn boot(scenario: &Value) -> Run {
         ..Options::default()
     })
     .await;
+    if let Some(limit) = scenario["server"]
+        .as_object()
+        .and_then(|settings| settings.get("iterationConcurrency"))
+    {
+        let limit = limit
+            .as_u64()
+            .expect("server.iterationConcurrency is a non-negative integer");
+        let (status, quota) = platform
+            .rest(
+                Method::PUT,
+                "/quotas/iteration_concurrency",
+                Some(&json!({"limit": limit})),
+            )
+            .await;
+        assert_eq!(status, 200, "setting iteration concurrency: {quota}");
+    }
     platform
         .grant(platform.tenant, "conformance-worker", Role::Worker)
         .await;
@@ -317,12 +361,20 @@ async fn boot(scenario: &Value) -> Run {
     platform
         .grant(platform.tenant, "conformance-unbound", Role::Worker)
         .await;
+    for (subject, role) in [
+        ("conformance-operator", Role::Operator),
+        ("conformance-viewer", Role::Viewer),
+        ("conformance-runner", Role::Runner),
+        ("conformance-revoked", Role::Operator),
+    ] {
+        platform.grant(platform.tenant, subject, role).await;
+    }
     // The engine the worker protocol is served by: timers, retries, leases that ran out and the wake-ups
     // (also the events that release a wait) are its loops, as in production.
     let ring = format!("k1:{}", platform.api.key_k1);
     let lease_secs = lease.to_string();
     let blob_root = blob_dir.path().to_string_lossy().into_owned();
-    let engine = RunningEngine::start(engine_env(
+    let mut env = engine_env(
         &platform.api.db,
         &platform.api.idp,
         &[
@@ -333,8 +385,14 @@ async fn boot(scenario: &Value) -> Run {
             ("SAGAT_BLOB_PROVIDER", "fs"),
             ("SAGAT_BLOB_FS_ROOT", blob_root.as_str()),
         ],
-    ))
-    .await;
+    );
+    if let Some(db) = &database {
+        env.extend(db.engine_env());
+    }
+    let engine = RunningEngine::start(env).await;
+    if let Some(db) = &mut database {
+        db.configure(&platform, &engine.grpc_url).await;
+    }
     let platform = Arc::new(platform);
     let (control, serving) = control::serve(Arc::clone(&platform)).await;
     Run {
@@ -342,11 +400,16 @@ async fn boot(scenario: &Value) -> Run {
         worker_token: token(&platform, "conformance-worker", TENANT),
         other_token: token(&platform, "bob", "globex"),
         unbound_token: token(&platform, "conformance-unbound", TENANT),
+        operator_token: token(&platform, "conformance-operator", TENANT),
+        viewer_token: token(&platform, "conformance-viewer", TENANT),
+        runner_token: token(&platform, "conformance-runner", TENANT),
+        revoked_token: token(&platform, "conformance-revoked", TENANT),
         control: format!("http://{control}"),
         platform,
         engine,
         tasks: vec![serving],
         _blob_dir: blob_dir,
+        database,
     }
 }
 
@@ -378,6 +441,60 @@ async fn publish(run: &Run, name: &str, ir: &Value) -> Value {
     json!({"workflowId": id, "versionId": version, "name": name})
 }
 
+/// Publication is a shared server HTTP phase: SDKs expose builders, not a publisher.
+async fn rejected_publication(run: &Run, key: &str, ir: &Value, reason: &str) -> Value {
+    let name = ir["metadata"]["name"].as_str().expect("workflow name");
+    let (status, created) = run
+        .platform
+        .rest(
+            Method::POST,
+            "/workflows",
+            Some(&json!({"name": name, "ir": ir})),
+        )
+        .await;
+    assert_eq!(
+        status, 201,
+        "creating rejected-publication draft {key}: {created}"
+    );
+    let id = created["id"].as_str().expect("draft id");
+    let (status, refused) = run
+        .platform
+        .rest(
+            Method::POST,
+            &format!("/workflows/{id}/publish"),
+            Some(&json!({"draftRevision": 1})),
+        )
+        .await;
+    assert_eq!(status, 422, "expected publication refusal {key}: {refused}");
+    assert_eq!(refused["code"], "VALIDATION_FAILED", "{key}: {refused}");
+    assert_eq!(refused["retryable"], false, "{key}: {refused}");
+    assert_eq!(refused["details"]["reason"], reason, "{key}: {refused}");
+    let trace = refused["traceId"]
+        .as_str()
+        .expect("publication refusal trace");
+    assert_eq!(trace.len(), 32);
+    assert!(trace.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    let (active, versions): (Option<uuid::Uuid>, i64) = sqlx::query_as(
+        "SELECT active_version_id, (SELECT count(*) FROM workflow_versions \
+         WHERE tenant_id=$1 AND workflow_id=$2) FROM workflows WHERE tenant_id=$1 AND id=$2",
+    )
+    .bind(run.platform.tenant.as_uuid())
+    .bind(uuid::Uuid::parse_str(id).expect("draft UUID"))
+    .fetch_one(&run.platform.api.db.pool)
+    .await
+    .expect("independent rejected publication projection");
+    assert_eq!(
+        (active, versions),
+        (None, 0),
+        "{key}: rejected draft published"
+    );
+    json!({
+        "workflow": key, "status": status, "code": refused["code"],
+        "reason": refused["details"]["reason"], "retryable": refused["retryable"],
+        "activeVersion": active.map(|id| id.to_string()), "publishedVersions": versions,
+    })
+}
+
 /// What the platform holds of every run once a language has played, read over REST without the SDK: the
 /// effect of what the SDK did (the status of each node, the attempts, the code a failure was recorded with).
 async fn server_state(run: &Run) -> Result<Value, String> {
@@ -389,7 +506,16 @@ async fn server_state(run: &Run) -> Result<Value, String> {
         return Err(format!("listing the runs answered {status}: {page}"));
     }
     let mut runs = Vec::new();
-    for item in page["items"].as_array().cloned().unwrap_or_default() {
+    // Newest first by creation, as the list gives them, but not by id alone: the first run of a child
+    // chain has an id derived from its parent's, which sorts anywhere among time-ordered ids.
+    let mut items = page["items"].as_array().cloned().unwrap_or_default();
+    items.sort_by(|a, b| {
+        b["createdAt"]
+            .as_str()
+            .cmp(&a["createdAt"].as_str())
+            .then_with(|| b["runId"].as_str().cmp(&a["runId"].as_str()))
+    });
+    for item in items {
         let id = item["runId"]
             .as_str()
             .ok_or("a run without an id")?
@@ -429,6 +555,194 @@ async fn server_state(run: &Run) -> Result<Value, String> {
         runs.push(json!({"runId": id, "status": item["status"], "paused": item["paused"], "nodes": nodes}));
     }
     Ok(Value::Array(runs))
+}
+
+/// The collection and loop events of every run, read from the journal and the payload store rather than
+/// from what an SDK reports: the order in which iterations were admitted and checkpointed, the most that
+/// were active at once, the carry of every loop checkpoint and the aggregate a collection finished with.
+/// The compensation events of a scope (`scope.compensation_planned`, `scope.compensated`) are part of it.
+/// A scenario asks for it with `"scopeEvidence": "ordered"` (every event, in journal order: for scopes that
+/// run one iteration at a time) or `"summary"` (admission order, the sorted checkpoints and the entry and
+/// finish: for scopes whose iterations complete concurrently, where the scheduler's order of looking at
+/// completions that arrive together is not part of the contract).
+async fn scope_evidence(run: &Run, state: &Value, summary: bool) -> Result<Value, String> {
+    let pool = &run.platform.api.db.pool;
+    let mut runs = Vec::new();
+    for item in state.as_array().into_iter().flatten() {
+        let id = item["runId"].as_str().ok_or("a run without an id")?;
+        let run_id = uuid::Uuid::parse_str(id).map_err(|e| format!("run id {id}: {e}"))?;
+        let rows: Vec<(String, Value)> = sqlx::query_as(
+            "SELECT event_type, detail FROM run_events WHERE run_id = $1 \
+             AND (event_type LIKE 'collection.%' OR event_type LIKE 'loop.%' \
+             OR event_type LIKE 'scope.%') ORDER BY seq",
+        )
+        .bind(run_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("reading the scope events of run {id}: {e}"))?;
+        let (mut active, mut peak) = (0_i64, 0_i64);
+        let mut events = Vec::new();
+        let (mut admitted, mut checkpointed) = (Vec::new(), Vec::new());
+        for (kind, detail) in rows {
+            if kind.ends_with(".iteration_admitted") {
+                active += 1;
+                peak = peak.max(active);
+            }
+            if kind.ends_with(".iteration_checkpointed") || kind.ends_with(".iteration_drained") {
+                active -= 1;
+            }
+            if summary && kind.ends_with(".iteration_admitted") {
+                admitted.push(detail["index"].clone());
+                continue;
+            }
+            if summary && kind.ends_with(".iteration_checkpointed") {
+                checkpointed.push(detail["index"].as_u64().unwrap_or_default());
+                continue;
+            }
+            if summary
+                && (kind.ends_with(".iteration_returned") || kind.ends_with(".iteration_drained"))
+            {
+                continue;
+            }
+            let mut entry = Map::new();
+            entry.insert("event".into(), json!(kind));
+            for key in [
+                "index",
+                "kind",
+                "outcome",
+                "code",
+                "condition",
+                "next_iteration",
+                "item_count",
+                "max_items",
+                "max_concurrency",
+                "max_iterations",
+                "initial_condition",
+            ] {
+                if let Some(value) = detail.get(key).filter(|v| !v.is_null()) {
+                    entry.insert(key.into(), value.clone());
+                }
+            }
+            if kind.starts_with("scope.") {
+                // The compensation of a scope: why it was planned, which instances it undoes and after
+                // which others, which effects cannot be undone, and how it ended.
+                for key in ["cause", "entries", "irreversible"] {
+                    if let Some(value) = detail.get(key).filter(|v| !v.is_null()) {
+                        entry.insert(key.into(), value.clone());
+                    }
+                }
+            }
+            if let Some(kind) = detail["continuation"]["kind"].as_str() {
+                entry.insert("continuation".into(), json!(kind));
+            }
+            for (field, label) in [
+                ("item_digest", "item"),
+                ("result_digest", "result"),
+                ("carry_digest", "carry"),
+                ("initial_carry_digest", "initialCarry"),
+            ] {
+                if let Some(digest) = detail[field].as_str() {
+                    entry.insert(label.into(), payload_json(pool, digest).await?);
+                }
+            }
+            events.push(Value::Object(entry));
+        }
+        if summary {
+            checkpointed.sort_unstable();
+            runs.push(json!({
+                "runId": id, "peakActive": peak, "admitted": admitted,
+                "checkpointed": checkpointed, "events": events,
+            }));
+        } else {
+            runs.push(json!({"runId": id, "peakActive": peak, "events": events}));
+        }
+    }
+    Ok(Value::Array(runs))
+}
+
+/// How each run of the scenario ended and where its collection took its items from, read from the
+/// platform's own rows: the run's status and stop code, and, when a collection was entered, its item
+/// count, whether the membership came from a blob, and how many times the engine's read of that blob
+/// was audited. A scenario asks for it with `"sourceEvidence": true`.
+async fn source_evidence(run: &Run, state: &Value) -> Result<Value, String> {
+    let pool = &run.platform.api.db.pool;
+    let mut runs = Vec::new();
+    for item in state.as_array().into_iter().flatten() {
+        let id = item["runId"].as_str().ok_or("a run without an id")?;
+        let run_id = uuid::Uuid::parse_str(id).map_err(|e| format!("run id {id}: {e}"))?;
+        let (status, stop_code): (String, Option<String>) =
+            sqlx::query_as("SELECT status, stop_code FROM runs WHERE id = $1")
+                .bind(run_id)
+                .fetch_one(pool)
+                .await
+                .map_err(|e| format!("reading run {id}: {e}"))?;
+        let scope: Option<(i32, Option<uuid::Uuid>)> = sqlx::query_as(
+            "SELECT item_count, source_blob_id FROM iteration_scopes WHERE run_id = $1",
+        )
+        .bind(run_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("reading the scope of run {id}: {e}"))?;
+        let scope = match scope {
+            None => Value::Null,
+            Some((item_count, blob)) => {
+                let reads: i64 = match blob {
+                    Some(blob) => sqlx::query_scalar(
+                        "SELECT count(*) FROM audit_records WHERE action = 'blob.read' \
+                           AND resource_id = $1",
+                    )
+                    .bind(blob.to_string())
+                    .fetch_one(pool)
+                    .await
+                    .map_err(|e| format!("reading the blob audit of run {id}: {e}"))?,
+                    None => 0,
+                };
+                json!({"itemCount": item_count, "fromBlob": blob.is_some(), "blobReads": reads})
+            }
+        };
+        runs.push(json!({
+            "runId": id, "status": status, "stopCode": stop_code, "collection": scope,
+        }));
+    }
+    Ok(Value::Array(runs))
+}
+
+/// The approval audit rows of the tenant, in the order they were written, from the audit trail itself:
+/// who was refused or allowed, with the trace of the call that caused it. A scenario asks for it with
+/// `"auditEvidence": true`.
+async fn audit_evidence(run: &Run) -> Result<Value, String> {
+    /// Action, actor, resource type, reason and trace of one audit row.
+    type AuditRow = (String, String, String, Option<String>, Option<String>);
+    let rows: Vec<AuditRow> = sqlx::query_as(
+        "SELECT action, actor, resource_type, reason, trace_id FROM audit_records \
+         WHERE tenant_id = $1 AND action LIKE 'approval.%' ORDER BY created_at, id",
+    )
+    .bind(run.platform.tenant.as_uuid())
+    .fetch_all(&run.platform.api.db.pool)
+    .await
+    .map_err(|e| format!("reading the approval audit trail: {e}"))?;
+    Ok(Value::Array(
+        rows.into_iter()
+            .map(|(action, actor, resource_type, reason, trace)| {
+                json!({
+                    "action": action, "actor": actor, "resourceType": resource_type,
+                    "reason": reason, "traceId": trace,
+                })
+            })
+            .collect(),
+    ))
+}
+
+/// The JSON payload stored under a hex SHA-256 digest.
+async fn payload_json(pool: &sqlx::PgPool, digest: &str) -> Result<Value, String> {
+    let content: Option<Vec<u8>> =
+        sqlx::query_scalar("SELECT content FROM payloads WHERE digest = decode($1, 'hex') LIMIT 1")
+            .bind(digest)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| format!("reading payload {digest}: {e}"))?;
+    let content = content.ok_or_else(|| format!("payload {digest} is not stored"))?;
+    serde_json::from_slice(&content).map_err(|e| format!("payload {digest} is not JSON: {e}"))
 }
 
 /// Durable evidence for the blob scenario. This is read independently of the SDK result so blessing
@@ -579,6 +893,10 @@ fn leaks(out: &Value, config: &Value, scenario: &Value) -> Vec<String> {
         "otherTenantToken",
         "unboundWorkerToken",
         "badToken",
+        "operatorToken",
+        "viewerToken",
+        "runnerToken",
+        "revokedToken",
     ]
     .iter()
     .filter_map(|key| config[*key].as_str().map(str::to_owned))
@@ -634,6 +952,50 @@ fn leaks(out: &Value, config: &Value, scenario: &Value) -> Vec<String> {
                         marker.chars().take(12).collect::<String>()
                     ));
                 }
+            }
+        }
+    }
+    found
+}
+
+/// Where a text the scenario listed under `mustNotAppear` (a secret-shaped value it put into a run's input)
+/// shows up in what the run reports: the observations, the server state and the evidence read from the
+/// journal and the audit trail. The worker's log is not searched: a handler is meant to see its input.
+fn marker_appearances(out: &Value, scenario: &Value) -> Vec<String> {
+    fn walk(value: &Value, path: &str, marker: &str, found: &mut Vec<String>) {
+        match value {
+            Value::String(text) if text.contains(marker) => found.push(path.to_owned()),
+            Value::Array(items) => items
+                .iter()
+                .enumerate()
+                .for_each(|(i, v)| walk(v, &format!("{path}[{i}]"), marker, found)),
+            Value::Object(map) => map
+                .iter()
+                .for_each(|(k, v)| walk(v, &format!("{path}.{k}"), marker, found)),
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    for marker in scenario["mustNotAppear"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|marker| !marker.is_empty())
+    {
+        for key in [
+            "observations",
+            "serverState",
+            "auditEvidence",
+            "scopeEvidence",
+        ] {
+            let mut at = Vec::new();
+            walk(&out[key], key, marker, &mut at);
+            for path in at {
+                found.push(format!(
+                    "{path} repeats \"{}…\", which the scenario marked as never to appear",
+                    marker.chars().take(8).collect::<String>()
+                ));
             }
         }
     }
@@ -705,7 +1067,24 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 /// A platform of its own for one scenario and one language, the workflows the scenario's builders wrote
 /// published in it, and the `config.json` the runner is given.
-async fn stage(scenario: &Value, built: &Value, lang: &str) -> (Run, Value, String) {
+async fn stage(scenario: &Value, built: &Value, lang: &str) -> (Run, Value, String, Vec<Value>) {
+    let rejections = scenario.get("publicationRejections").map(|value| {
+        let entries = value
+            .as_object()
+            .expect("publicationRejections must be an object");
+        for (key, reason) in entries {
+            assert!(
+                built["workflows"].get(key).is_some(),
+                "unknown rejected workflow {key}"
+            );
+            assert!(
+                reason.as_str().is_some_and(|reason| !reason.is_empty()),
+                "invalid publication reason for {key}"
+            );
+        }
+        entries
+    });
+    let mut publication_evidence = Vec::new();
     let run = boot(scenario).await;
     // The secrets a scenario's workflows declare must exist before they can be published.
     if let Some(secrets) = scenario["secrets"].as_object() {
@@ -729,20 +1108,30 @@ async fn stage(scenario: &Value, built: &Value, lang: &str) -> (Run, Value, Stri
                 .as_str()
                 .expect("workflow name")
                 .to_owned();
-            workflows.insert(key.clone(), publish(&run, &workflow_name, ir).await);
+            if let Some(reason) = rejections.and_then(|entries| entries.get(key)) {
+                publication_evidence.push(
+                    rejected_publication(&run, key, ir, reason.as_str().expect("reason")).await,
+                );
+            } else {
+                workflows.insert(key.clone(), publish(&run, &workflow_name, ir).await);
+            }
         }
     }
     let unique = format!(
         "{lang}-{}",
         &uuid::Uuid::now_v7().simple().to_string()[20..]
     );
+    let namespace_id = run.platform.namespace_id().await;
     let config = json!({
         "apiUrl": run.platform.api.base, "grpcUrl": run.engine.grpc_url, "namespace": NAMESPACE,
+        "namespaceId": namespace_id,
         "clientToken": run.client_token, "workerToken": run.worker_token, "otherTenantToken": run.other_token,
-        "unboundWorkerToken": run.unbound_token, "badToken": "not-a-jwt", "controlUrl": run.control, "unique": unique, "workflows": workflows,
+        "unboundWorkerToken": run.unbound_token, "badToken": "not-a-jwt",
+        "operatorToken": run.operator_token, "viewerToken": run.viewer_token,
+        "runnerToken": run.runner_token, "revokedToken": run.revoked_token, "controlUrl": run.control, "unique": unique, "workflows": workflows,
         "leaseTtlSeconds": scenario["server"]["leaseTtlSeconds"].as_u64().unwrap_or(30),
     });
-    (run, config, unique)
+    (run, config, unique, publication_evidence)
 }
 
 /// One language's normalized result of one scenario.
@@ -867,12 +1256,21 @@ async fn play(
         }
     }
 
+    // Builder-only scenarios pin additive authoring contracts before the server capability is enabled.
+    // They are never published or executed, so passing one does not claim runtime support.
+    if scenario["buildOnly"].as_bool() == Some(true) {
+        return Outcome {
+            failures,
+            played: Vec::new(),
+        };
+    }
+
     // 2. Play it, language by language, each on a platform of its own: the runs, the leases, the events
     //    and the quotas of one language are not there for the next to meet.
     let expected_path = suite().join("expected").join(format!("{name}.json"));
     let mut results: Vec<(&str, Value)> = Vec::new();
     for (lang, root) in langs {
-        let (run, config, unique) = stage(&scenario, &first, lang).await;
+        let (run, config, unique, publication_evidence) = stage(&scenario, &first, lang).await;
         // The process id is in the names: two plays of the suite at once (two people, a CI job and a
         // developer) do not overwrite each other's configuration and output.
         let pid = std::process::id();
@@ -902,6 +1300,9 @@ async fn play(
                 .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
             {
                 Some(mut out) => {
+                    if !publication_evidence.is_empty() {
+                        out["publicationEvidence"] = json!(publication_evidence);
+                    }
                     for leak in leaks(&out, &config, &scenario)
                         .into_iter()
                         .chain(instants_not_utc(&out))
@@ -911,6 +1312,30 @@ async fn play(
                     match server_state(&run).await {
                         Ok(state) => out["serverState"] = state,
                         Err(e) => failures.push(format!("{name}/{lang}: {e}")),
+                    }
+                    if scenario["auditEvidence"].as_bool() == Some(true) {
+                        match audit_evidence(&run).await {
+                            Ok(evidence) => out["auditEvidence"] = evidence,
+                            Err(e) => failures.push(format!("{name}/{lang}: {e}")),
+                        }
+                    }
+                    if let Some(mode) = scenario["scopeEvidence"].as_str() {
+                        match scope_evidence(&run, &out["serverState"], mode == "summary").await {
+                            Ok(evidence) => out["scopeEvidence"] = evidence,
+                            Err(e) => failures.push(format!("{name}/{lang}: {e}")),
+                        }
+                    }
+                    if scenario["sourceEvidence"].as_bool() == Some(true) {
+                        match source_evidence(&run, &out["serverState"]).await {
+                            Ok(evidence) => out["sourceEvidence"] = evidence,
+                            Err(e) => failures.push(format!("{name}/{lang}: {e}")),
+                        }
+                    }
+                    if let Some(db) = &run.database {
+                        match db.evidence(&run.platform, &out).await {
+                            Ok(evidence) => out["databaseEvidence"] = evidence,
+                            Err(error) => failures.push(format!("{name}/{lang}: {error}")),
+                        }
                     }
                     if name == "blobs" {
                         match blob_evidence(&run).await {
@@ -923,6 +1348,9 @@ async fn play(
                             Ok(evidence) => out["runInputBlobEvidence"] = evidence,
                             Err(e) => failures.push(format!("{name}/{lang}: {e}")),
                         }
+                    }
+                    for appearance in marker_appearances(&out, &scenario) {
+                        failures.push(format!("{name}/{lang}: {appearance}"));
                     }
                     let mut normalizer = Normalizer::new(&unique, given_traces(&scenario));
                     let doc = compared(&out, &mut normalizer);
@@ -1163,8 +1591,7 @@ pub async fn conform(selection: &Selection) -> Suite {
     let mut failures = Vec::new();
     if all_five {
         for (name, dir) in LANGUAGES {
-            let run = repo()
-                .join("sdks")
+            let run = sdk_source_root()
                 .join(dir)
                 .join("conformance")
                 .join("run.sh");
@@ -1402,7 +1829,7 @@ pub async fn measure(path: &Path, language: &'static str) -> Result<Measured, St
     .await?;
     let built: Value = serde_json::from_str(&text)
         .map_err(|e| format!("build printed something that is not JSON: {e}"))?;
-    let (run, config, _) = stage(&scenario, &built, language).await;
+    let (run, config, _, _) = stage(&scenario, &built, language).await;
     let config_path = dir.join(format!("{language}.config.json"));
     let out_path = dir.join(format!("{language}.out.json"));
     write_private(
@@ -1568,7 +1995,7 @@ pub async fn run_mode(path: &Path, language: &'static str, mode: &str) -> Result
     .await?;
     let built: Value = serde_json::from_str(&text)
         .map_err(|e| format!("build printed something that is not JSON: {e}"))?;
-    let (run, config, _) = stage(&scenario, &built, language).await;
+    let (run, config, _, _) = stage(&scenario, &built, language).await;
     let config_path = dir.join(format!("{language}.{mode}.config.json"));
     let out_path = dir.join(format!("{language}.{mode}.out.json"));
     write_private(

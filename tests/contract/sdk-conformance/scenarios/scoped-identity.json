@@ -1,0 +1,290 @@
+{
+  "name": "scoped-identity",
+  "description": "Two equal collection items and one distinct item execute the same definition node at distinct typed paths. Each retries under one logical identity and captured item, graph projection retains all instances, old root work is unchanged, and an older worker cannot receive scoped work.",
+  "server": {
+    "iterationConcurrency": 2
+  },
+  "workflows": {
+    "root": {
+      "name": "identity-root",
+      "program": [
+        {
+          "op": "step",
+          "id": "work",
+          "activity": "identity.work"
+        }
+      ]
+    },
+    "scoped": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "identity-scoped",
+      "limits": {
+        "maxInstances": 24,
+        "maxDepth": 1
+      },
+      "bodies": {
+        "line": {
+          "program": [
+            {
+              "op": "step",
+              "id": "work",
+              "activity": "identity.work"
+            },
+            {
+              "op": "return",
+              "id": "return",
+              "result": "steps.work.output"
+            }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "forEach",
+          "id": "lines",
+          "items": "input.items",
+          "body": "line",
+          "result": "bodyResult",
+          "maxItems": 3,
+          "maxConcurrency": 1
+        },
+        {
+          "op": "end",
+          "id": "done",
+          "options": {
+            "outputExpr": "steps.lines.output"
+          }
+        }
+      ]
+    }
+  },
+  "invalidWorkflows": {
+    "body-terminal": {
+      "contains": "cannot hold an end node",
+      "workflow": {
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "name": "identity-body-terminal",
+        "bodies": {
+          "line": {
+            "program": [
+              {
+                "op": "end",
+                "id": "wrong"
+              }
+            ]
+          }
+        },
+        "program": [
+          {
+            "op": "forEach",
+            "id": "lines",
+            "items": "input.items",
+            "body": "line",
+            "result": "bodyResult",
+            "maxItems": 2,
+            "maxConcurrency": 1
+          }
+        ]
+      }
+    },
+    "recursive-body": {
+      "contains": "body reference cycle",
+      "workflow": {
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "name": "identity-recursive-body",
+        "bodies": {
+          "line": {
+            "program": [
+              {
+                "op": "forEach",
+                "id": "nested",
+                "items": "input.items",
+                "body": "line",
+                "result": "bodyResult",
+                "maxItems": 2,
+                "maxConcurrency": 1
+              },
+              {
+                "op": "return",
+                "id": "return",
+                "result": "steps.nested.output"
+              }
+            ]
+          }
+        },
+        "program": [
+          {
+            "op": "forEach",
+            "id": "lines",
+            "items": "input.items",
+            "body": "line",
+            "result": "bodyResult",
+            "maxItems": 2,
+            "maxConcurrency": 1
+          },
+          {
+            "op": "end",
+            "id": "done"
+          }
+        ]
+      }
+    },
+    "escaping-body": {
+      "contains": "which is not a node",
+      "workflow": {
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "name": "identity-escaping-body",
+        "bodies": {
+          "line": {
+            "program": [
+              {
+                "op": "condition",
+                "id": "escape",
+                "expression": "true",
+                "ifTrue": "done",
+                "ifFalse": "return"
+              },
+              {
+                "op": "return",
+                "id": "return",
+                "result": "null"
+              }
+            ]
+          }
+        },
+        "program": [
+          {
+            "op": "forEach",
+            "id": "lines",
+            "items": "input.items",
+            "body": "line",
+            "result": "bodyResult",
+            "maxItems": 2,
+            "maxConcurrency": 1
+          },
+          {
+            "op": "end",
+            "id": "done"
+          }
+        ]
+      }
+    }
+  },
+  "workers": {
+    "old": {
+      "workerName": "identity-old",
+      "protocolVersion": "1.4",
+      "maxInflight": 1,
+      "autostart": false,
+      "activities": {
+        "identity.work": {
+          "behavior": {
+            "returns": {
+              "worker": "old"
+            }
+          }
+        }
+      }
+    },
+    "current": {
+      "workerName": "identity-current",
+      "protocolVersion": "1.5",
+      "maxInflight": 1,
+      "autostart": false,
+      "activities": {
+        "identity.work": {
+          "behavior": {
+            "failsUntilAttempt": 2,
+            "fails": {
+              "code": "RETRY_IDENTITY",
+              "message": "retry once",
+              "retryable": true
+            },
+            "returns": {
+              "worker": "current"
+            }
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "start-old",
+      "op": "startWorker",
+      "worker": "old"
+    },
+    {
+      "id": "run-root",
+      "op": "start",
+      "workflow": "root",
+      "input": {}
+    },
+    {
+      "id": "done-root",
+      "op": "waitForCompletion",
+      "run": "run-root",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "run-scoped",
+      "op": "start",
+      "workflow": "scoped",
+      "input": {
+        "items": [
+          {
+            "value": "same"
+          },
+          {
+            "value": "same"
+          },
+          {
+            "value": "different"
+          }
+        ]
+      }
+    },
+    {
+      "id": "old-cannot-lease",
+      "op": "awaitJournal",
+      "run": "run-scoped",
+      "eventType": "collection.iteration_admitted",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "still-waiting",
+      "op": "get",
+      "run": "run-scoped"
+    },
+    {
+      "id": "old-root-only",
+      "op": "awaitWorkerLog",
+      "worker": "old",
+      "count": 1,
+      "timeoutMs": 30000
+    },
+    {
+      "id": "stop-old",
+      "op": "stopWorker",
+      "worker": "old"
+    },
+    {
+      "id": "start-current",
+      "op": "startWorker",
+      "worker": "current"
+    },
+    {
+      "id": "done-scoped",
+      "op": "waitForCompletion",
+      "run": "run-scoped",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "three-paths-retried",
+      "op": "awaitWorkerLog",
+      "worker": "current",
+      "count": 6,
+      "timeoutMs": 30000
+    }
+  ]
+}

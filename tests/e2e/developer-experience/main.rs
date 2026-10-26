@@ -11,6 +11,7 @@ mod dev_environment;
 mod diagnostics;
 mod doctor;
 mod onboarding_browser;
+mod order_processing;
 mod saga;
 mod scripts;
 mod stories;

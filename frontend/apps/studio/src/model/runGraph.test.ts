@@ -48,6 +48,26 @@ describe('applyChanges', () => {
     expect(applyChanges(undefined, change(0, 40, [node('z', 'SUCCEEDED')], { reset: true })).kind).toBe('applied');
   });
 
+  it('keeps chain links in sync across deltas and resets', () => {
+    const link = {
+      chainId: RUN,
+      segmentIndex: 0,
+      segmentCount: 1,
+      currentRunId: RUN,
+      predecessorRunId: null,
+      successorRunId: null,
+      completionKind: null,
+      finalOutcome: null,
+    } as const;
+    const original = modelFromGraph({ ...graph(5, [node('a', 'READY')]), chain: link });
+    const retained = applyChanges(original, change(5, 6, []));
+    expect(retained.model?.chain).toEqual(link);
+    const moved = applyChanges(original, change(5, 6, [], { chain: { ...link, segmentCount: 2, currentRunId: 'successor', successorRunId: 'successor', completionKind: 'CONTINUED' } }));
+    expect(moved.model?.chain?.currentRunId).toBe('successor');
+    const reset = applyChanges(moved.model, change(0, 7, [], { reset: true, chain: null }));
+    expect(reset.model?.chain).toBeNull();
+  });
+
   it('remembers only the last events', () => {
     let model = base();
     for (let seq = 6; seq < 1200; seq++) {

@@ -91,7 +91,9 @@ pub async fn serve(
     }
 
     let cache = DefinitionCache::new(Arc::new(JsonIrCodec), DEFINITION_CACHE_ENTRIES);
-    let store = PgRunStore::new(pool.clone(), cache.clone()).with_breaker(engine.breaker);
+    let store = PgRunStore::new(pool.clone(), cache.clone())
+        .with_breaker(engine.breaker)
+        .with_scoped_worker_protocol();
     let state = AppState::with_rate_limit(
         IdentityService::new(identity, SystemClock),
         verifier,
@@ -106,9 +108,29 @@ pub async fn serve(
         Engine::new(JsonEvaluator),
         SystemEntropy,
         engine.worker,
+    )
+    .with_database_content(
+        Arc::new(sagat_infra_secrets::database::JsonDatabaseCredentials),
+        Arc::new(sagat_infra_ir::JsonDatabaseResultValidator),
     );
+    let provider: Option<Arc<dyn sagat_application::secret_provider::SecretProvider>> =
+        match &engine.openbao {
+            Some(settings) => Some(
+                settings
+                    .provider()
+                    .await
+                    .map_err(|_| RunError::Refused("could not configure OpenBao"))?,
+            ),
+            None => None,
+        };
+    let mut secret_reader = sagat_application::secrets::SecretReader::default();
     if let Some(secrets) = &engine.secrets {
         workers = workers.with_vault(secrets.cipher());
+        secret_reader = secret_reader.with_cipher(secrets.cipher());
+    }
+    if let Some(provider) = &provider {
+        workers = workers.with_secret_provider(provider.clone());
+        secret_reader = secret_reader.with_provider(provider.clone());
     }
     // The object store for large payloads, if one is configured. A bad configuration stops the
     // process here, not at the first upload.
@@ -157,16 +179,20 @@ pub async fn serve(
         );
         scheduler_settings.concurrency = room.max(1);
     }
-    let scheduler: Arc<EngineScheduler> = Arc::new(
-        Scheduler::new(
-            store.clone(),
-            Engine::new(JsonEvaluator),
-            SystemEntropy,
-            scheduler_settings,
-        )
-        .with_children(cache.clone())
-        .with_placement(placement.clone()),
-    );
+    let mut scheduler = Scheduler::new(
+        store.clone(),
+        Engine::new(JsonEvaluator),
+        SystemEntropy,
+        scheduler_settings,
+    )
+    .with_children(cache.clone())
+    .with_placement(placement.clone());
+    // A collection whose items live in a blob (T014-016) is read through the same store; without
+    // a blob store configured no blob can exist, so the scheduler needs no source.
+    if let Some(blobs) = &blobs {
+        scheduler = scheduler.with_item_source(Arc::new(blobs.clone()));
+    }
+    let scheduler: Arc<EngineScheduler> = Arc::new(scheduler);
     let events: Arc<EngineEvents> = Arc::new(
         EventDispatcher::new(
             store.clone(),
@@ -177,26 +203,25 @@ pub async fn serve(
         )
         .with_cron(Arc::new(sagat_infra_ir::cron::CronCalendar)),
     );
-    // Deliveries are signed with a secret of the namespace, so without a key ring there is nothing to
-    // deliver with.
-    let deliveries: Option<Arc<EngineDeliveries>> = engine.secrets.as_ref().map(|keys| {
-        Arc::new(DeliveryWorker::with_broker(
-            store.clone(),
-            sagat_infra_connectors::webhook::GuardedSender::new(store.clone()),
-            sagat_infra_connectors::publish::Publisher::new(store.clone()),
-            SystemEntropy,
-            keys.cipher(),
-            engine.deliveries,
-        ))
-    });
-    // The consumers of the connectors read brokers with credentials that are secrets of the
-    // namespace, so they need the key ring too.
-    let connectors = engine.secrets.as_ref().map(|keys| {
-        Arc::new(sagat_infra_connectors::supervisor::Supervisor::new(
+    // Deliveries and connector consumers share the configured secret authorities.
+    let deliveries: Option<Arc<EngineDeliveries>> =
+        (engine.secrets.is_some() || provider.is_some()).then(|| {
+            Arc::new(DeliveryWorker::with_broker_reader(
+                store.clone(),
+                sagat_infra_connectors::webhook::GuardedSender::new(store.clone()),
+                sagat_infra_connectors::publish::Publisher::new(store.clone()),
+                SystemEntropy,
+                secret_reader.clone(),
+                engine.deliveries,
+            ))
+        });
+    // Broker credentials are resolved through the same namespace-scoped reader.
+    let connectors = (engine.secrets.is_some() || provider.is_some()).then(|| {
+        Arc::new(sagat_infra_connectors::supervisor::Supervisor::with_reader(
             Arc::new(store.clone()),
             sagat_infra_connectors::guard::PolicyGuard::new(store.clone()),
             sagat_infra_connectors::webhook::Clients::new(store.clone()),
-            keys.cipher(),
+            secret_reader.clone(),
             Arc::new(JsonEvaluator),
             format!("engine-{}", uuid::Uuid::new_v4()),
             engine.connector_refresh,

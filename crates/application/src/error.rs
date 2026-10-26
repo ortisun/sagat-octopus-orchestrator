@@ -57,6 +57,12 @@ pub enum Refusal {
 /// API clients.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StoreError {
+    #[error("database connection is unavailable or may not be used")]
+    DatabaseUnavailable,
+    #[error("database operation exceeds connection limits")]
+    DatabaseLimit,
+    #[error("conflict with the current state: {0}")]
+    StateConflict(&'static str),
     #[error("uniqueness conflict")]
     Conflict(ConflictKind),
     #[error("referenced row does not exist")]
@@ -74,6 +80,11 @@ pub enum StoreError {
     Unavailable { detail: String },
     #[error("storage failure: {detail}")]
     Internal { detail: String },
+    /// The workflow version a run is pinned to is stored but this build cannot read it (it was
+    /// written by a newer build, and this one was rolled back). The run is not damaged and is not
+    /// this build's to touch: callers that serve many runs skip it and go on (G460).
+    #[error("a stored workflow version cannot be read by this build")]
+    UnreadableDefinition,
 }
 
 /// Failure of a use case, already expressed in terms the API can translate one-to-one.
@@ -144,7 +155,50 @@ pub enum AppError {
     Internal,
 }
 
+/// Why a caller was refused with a `403` / `PERMISSION_DENIED` (gap G9): what an audit record of the
+/// denial says. Never carries a value the caller chose (a secret's name, an identifier).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessDenial {
+    /// The caller's role does not grant the permission.
+    MissingPermission(Permission),
+    /// The identity holds the permission but may not do this: a closed code (`NOT_BOUND`,
+    /// `SECRET_NOT_USABLE`, `AUTHOR_CANNOT_DECIDE`, `NOT_THE_AUTHOR`, or `FORBIDDEN` for any other).
+    Refused(&'static str),
+}
+
+impl AccessDenial {
+    /// The text stored as the reason of the audit record.
+    #[must_use]
+    pub fn reason(&self) -> String {
+        match self {
+            Self::MissingPermission(permission) => {
+                format!("missing permission {}", permission.as_str())
+            }
+            Self::Refused(code) => format!("refused: {code}"),
+        }
+    }
+}
+
 impl AppError {
+    /// The denial this error is answered with, when it is answered with `403` /
+    /// `PERMISSION_DENIED`. A `404` that hides a foreign resource is not one: it has its own
+    /// cross-tenant record.
+    #[must_use]
+    pub const fn denial(&self) -> Option<AccessDenial> {
+        match self {
+            Self::Forbidden { permission } => Some(AccessDenial::MissingPermission(*permission)),
+            Self::NotBound => Some(AccessDenial::Refused("NOT_BOUND")),
+            Self::SecretUnavailable { .. } => Some(AccessDenial::Refused("SECRET_NOT_USABLE")),
+            Self::Versioning(Refusal::Request(VersioningError::AuthorCannotDecide)) => {
+                Some(AccessDenial::Refused("AUTHOR_CANNOT_DECIDE"))
+            }
+            Self::Versioning(Refusal::Request(VersioningError::NotTheAuthor)) => {
+                Some(AccessDenial::Refused("NOT_THE_AUTHOR"))
+            }
+            _ => None,
+        }
+    }
+
     /// Whether the same request may succeed if repeated later.
     #[must_use]
     pub const fn is_retryable(&self) -> bool {
@@ -166,13 +220,18 @@ impl From<IdentityError> for AppError {
 impl From<StoreError> for AppError {
     fn from(err: StoreError) -> Self {
         match err {
+            StoreError::DatabaseUnavailable => Self::NotFound,
+            StoreError::DatabaseLimit => {
+                Self::NotAllowed("database operation exceeds connection limits")
+            }
+            StoreError::StateConflict(reason) => Self::StateConflict(reason),
             StoreError::Conflict(kind) => Self::Conflict(kind),
             StoreError::MissingReference => Self::NotFound,
             StoreError::RevisionConflict { current } => Self::RevisionConflict { current },
             StoreError::IdempotencyKeyReused => Self::IdempotencyKeyReused,
             StoreError::QuotaExceeded { what } => Self::QuotaExceeded(what),
             StoreError::Unavailable { .. } => Self::Unavailable,
-            StoreError::Internal { .. } => Self::Internal,
+            StoreError::Internal { .. } | StoreError::UnreadableDefinition => Self::Internal,
         }
     }
 }

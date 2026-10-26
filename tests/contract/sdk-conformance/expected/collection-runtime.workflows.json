@@ -1,0 +1,50 @@
+{
+  "canonical": {
+    "map": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"tax\":{\"entrypoint\":\"price\",\"nodes\":[{\"activity\":\"tax.price\",\"id\":\"price\",\"next\":\"returned\",\"type\":\"activity\"},{\"id\":\"returned\",\"result\":\"steps.price.output\",\"type\":\"return\"}]}},\"entrypoint\":\"taxes\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"collection-map-runtime\"},\"nodes\":[{\"body\":\"tax\",\"id\":\"taxes\",\"items\":\"input.lines\",\"maxConcurrency\":1,\"maxItems\":2,\"next\":\"done\",\"result\":\"bodyResult.amount\",\"type\":\"forEach\"},{\"id\":\"done\",\"outputExpr\":\"steps.taxes.output\",\"type\":\"end\"}]}"
+  },
+  "workflows": {
+    "map": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "tax": {
+          "entrypoint": "price",
+          "nodes": [
+            {
+              "activity": "tax.price",
+              "id": "price",
+              "next": "returned",
+              "type": "activity"
+            },
+            {
+              "id": "returned",
+              "result": "steps.price.output",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "taxes",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "collection-map-runtime"
+      },
+      "nodes": [
+        {
+          "body": "tax",
+          "id": "taxes",
+          "items": "input.lines",
+          "maxConcurrency": 1,
+          "maxItems": 2,
+          "next": "done",
+          "result": "bodyResult.amount",
+          "type": "forEach"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.taxes.output",
+          "type": "end"
+        }
+      ]
+    }
+  }
+}

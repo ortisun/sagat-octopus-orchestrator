@@ -1,0 +1,241 @@
+{
+  "canonical": {
+    "ordered": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"route\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"switch-flow\"},\"nodes\":[{\"cases\":[{\"id\":\"nonnegative\",\"target\":\"positive\",\"when\":\"input.amount >= 0\"},{\"id\":\"one\",\"target\":\"also-positive\",\"when\":\"input.amount == 1\"},{\"id\":\"unselected-03\",\"target\":\"also-positive\",\"when\":\"false\"},{\"id\":\"unselected-04\",\"target\":\"also-positive\",\"when\":\"false\"},{\"id\":\"unselected-05\",\"target\":\"also-positive\",\"when\":\"false\"},{\"id\":\"unselected-06\",\"target\":\"also-positive\",\"when\":\"false\"},{\"id\":\"unselected-07\",\"target\":\"also-positive\",\"when\":\"false\"},{\"id\":\"unselected-08\",\"target\":\"also-positive\",\"when\":\"false\"},{\"id\":\"unselected-09\",\"target\":\"also-positive\",\"when\":\"false\"},{\"id\":\"unselected-10\",\"target\":\"also-positive\",\"when\":\"false\"},{\"id\":\"unselected-11\",\"target\":\"also-positive\",\"when\":\"false\"},{\"id\":\"unselected-12\",\"target\":\"also-positive\",\"when\":\"false\"},{\"id\":\"unselected-13\",\"target\":\"also-positive\",\"when\":\"false\"},{\"id\":\"unselected-14\",\"target\":\"also-positive\",\"when\":\"false\"},{\"id\":\"unselected-15\",\"target\":\"also-positive\",\"when\":\"false\"},{\"id\":\"unselected-16\",\"target\":\"also-positive\",\"when\":\"false\"},{\"id\":\"unselected-17\",\"target\":\"also-positive\",\"when\":\"false\"},{\"id\":\"unselected-18\",\"target\":\"also-positive\",\"when\":\"false\"},{\"id\":\"unselected-19\",\"target\":\"also-positive\",\"when\":\"false\"},{\"id\":\"unselected-20\",\"target\":\"also-positive\",\"when\":\"false\"},{\"id\":\"unselected-21\",\"target\":\"also-positive\",\"when\":\"false\"},{\"id\":\"unselected-22\",\"target\":\"also-positive\",\"when\":\"false\"},{\"id\":\"unselected-23\",\"target\":\"also-positive\",\"when\":\"false\"},{\"id\":\"unselected-24\",\"target\":\"also-positive\",\"when\":\"false\"},{\"id\":\"unselected-25\",\"target\":\"also-positive\",\"when\":\"false\"},{\"id\":\"unselected-26\",\"target\":\"also-positive\",\"when\":\"false\"},{\"id\":\"unselected-27\",\"target\":\"also-positive\",\"when\":\"false\"},{\"id\":\"unselected-28\",\"target\":\"also-positive\",\"when\":\"false\"},{\"id\":\"unselected-29\",\"target\":\"also-positive\",\"when\":\"false\"},{\"id\":\"unselected-30\",\"target\":\"also-positive\",\"when\":\"false\"},{\"id\":\"unselected-31\",\"target\":\"also-positive\",\"when\":\"false\"},{\"id\":\"unselected-32\",\"target\":\"also-positive\",\"when\":\"false\"}],\"default\":\"fallback\",\"id\":\"route\",\"type\":\"switch\"},{\"activity\":\"amount.positive\",\"id\":\"positive\",\"next\":\"positive-end\",\"type\":\"activity\"},{\"id\":\"positive-end\",\"type\":\"end\"},{\"activity\":\"amount.also-positive\",\"id\":\"also-positive\",\"next\":\"also-positive-end\",\"type\":\"activity\"},{\"id\":\"also-positive-end\",\"type\":\"end\"},{\"activity\":\"amount.fallback\",\"id\":\"fallback\",\"next\":\"fallback-end\",\"type\":\"activity\"},{\"id\":\"fallback-end\",\"type\":\"end\"}]}"
+  },
+  "errors": {
+    "case-limit-exceeded": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "dangling-case-target": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "dangling-default": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "duplicate-case-id": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "empty-cases": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    }
+  },
+  "workflows": {
+    "ordered": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "route",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "switch-flow"
+      },
+      "nodes": [
+        {
+          "cases": [
+            {
+              "id": "nonnegative",
+              "target": "positive",
+              "when": "input.amount >= 0"
+            },
+            {
+              "id": "one",
+              "target": "also-positive",
+              "when": "input.amount == 1"
+            },
+            {
+              "id": "unselected-03",
+              "target": "also-positive",
+              "when": "false"
+            },
+            {
+              "id": "unselected-04",
+              "target": "also-positive",
+              "when": "false"
+            },
+            {
+              "id": "unselected-05",
+              "target": "also-positive",
+              "when": "false"
+            },
+            {
+              "id": "unselected-06",
+              "target": "also-positive",
+              "when": "false"
+            },
+            {
+              "id": "unselected-07",
+              "target": "also-positive",
+              "when": "false"
+            },
+            {
+              "id": "unselected-08",
+              "target": "also-positive",
+              "when": "false"
+            },
+            {
+              "id": "unselected-09",
+              "target": "also-positive",
+              "when": "false"
+            },
+            {
+              "id": "unselected-10",
+              "target": "also-positive",
+              "when": "false"
+            },
+            {
+              "id": "unselected-11",
+              "target": "also-positive",
+              "when": "false"
+            },
+            {
+              "id": "unselected-12",
+              "target": "also-positive",
+              "when": "false"
+            },
+            {
+              "id": "unselected-13",
+              "target": "also-positive",
+              "when": "false"
+            },
+            {
+              "id": "unselected-14",
+              "target": "also-positive",
+              "when": "false"
+            },
+            {
+              "id": "unselected-15",
+              "target": "also-positive",
+              "when": "false"
+            },
+            {
+              "id": "unselected-16",
+              "target": "also-positive",
+              "when": "false"
+            },
+            {
+              "id": "unselected-17",
+              "target": "also-positive",
+              "when": "false"
+            },
+            {
+              "id": "unselected-18",
+              "target": "also-positive",
+              "when": "false"
+            },
+            {
+              "id": "unselected-19",
+              "target": "also-positive",
+              "when": "false"
+            },
+            {
+              "id": "unselected-20",
+              "target": "also-positive",
+              "when": "false"
+            },
+            {
+              "id": "unselected-21",
+              "target": "also-positive",
+              "when": "false"
+            },
+            {
+              "id": "unselected-22",
+              "target": "also-positive",
+              "when": "false"
+            },
+            {
+              "id": "unselected-23",
+              "target": "also-positive",
+              "when": "false"
+            },
+            {
+              "id": "unselected-24",
+              "target": "also-positive",
+              "when": "false"
+            },
+            {
+              "id": "unselected-25",
+              "target": "also-positive",
+              "when": "false"
+            },
+            {
+              "id": "unselected-26",
+              "target": "also-positive",
+              "when": "false"
+            },
+            {
+              "id": "unselected-27",
+              "target": "also-positive",
+              "when": "false"
+            },
+            {
+              "id": "unselected-28",
+              "target": "also-positive",
+              "when": "false"
+            },
+            {
+              "id": "unselected-29",
+              "target": "also-positive",
+              "when": "false"
+            },
+            {
+              "id": "unselected-30",
+              "target": "also-positive",
+              "when": "false"
+            },
+            {
+              "id": "unselected-31",
+              "target": "also-positive",
+              "when": "false"
+            },
+            {
+              "id": "unselected-32",
+              "target": "also-positive",
+              "when": "false"
+            }
+          ],
+          "default": "fallback",
+          "id": "route",
+          "type": "switch"
+        },
+        {
+          "activity": "amount.positive",
+          "id": "positive",
+          "next": "positive-end",
+          "type": "activity"
+        },
+        {
+          "id": "positive-end",
+          "type": "end"
+        },
+        {
+          "activity": "amount.also-positive",
+          "id": "also-positive",
+          "next": "also-positive-end",
+          "type": "activity"
+        },
+        {
+          "id": "also-positive-end",
+          "type": "end"
+        },
+        {
+          "activity": "amount.fallback",
+          "id": "fallback",
+          "next": "fallback-end",
+          "type": "activity"
+        },
+        {
+          "id": "fallback-end",
+          "type": "end"
+        }
+      ]
+    }
+  }
+}

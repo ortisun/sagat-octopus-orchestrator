@@ -224,6 +224,44 @@ async fn us01_a_run_that_waits_for_a_worker_says_so_instead_of_hanging_and_can_b
         (status_of(&p, &run).await == "CANCELLED").then_some(())
     })
     .await;
+    // An ended run can be started again as a new one; a run that has not ended cannot.
+    let again = cli(
+        &p,
+        &dir,
+        &[
+            "workflow",
+            "rerun",
+            &run,
+            "--reason",
+            "a worker serves it now",
+        ],
+    )
+    .await;
+    again
+        .expect(0)
+        .mentions(&format!("run {run} was started again as "));
+    let started = again
+        .out
+        .trim()
+        .rsplit(' ')
+        .next()
+        .expect("the new run")
+        .to_owned();
+    assert_ne!(started, run);
+    cli(
+        &p,
+        &dir,
+        &[
+            "workflow",
+            "rerun",
+            &started,
+            "--reason",
+            "it has not ended yet",
+        ],
+    )
+    .await
+    .expect(1)
+    .mentions("could not be started again");
     // The same input and key start the same run once.
     let first = cli(
         &p,

@@ -93,6 +93,54 @@ tests/contract/scalability-ha/ (with fixtures/), tests/integration/scalability-h
 
 Performance reports with hardware/configuration, zero confirmed Run loss in fault injection and validated DR restore.
 
+### Synthetic worker polling model (2026-10-25)
+
+The closed-loop transition benchmark follows the existing polling contract in
+`sdks/SPEC.md` sections 5 and 6.2: `AppError::Unavailable` permits another poll with
+backoff. The benchmark bounds this to four total attempts, with an initial 200 ms
+exponential delay, a 5 s cap and a random factor in `[0.5, 1.0]`, so persistent
+failure still terminates the experiment. Other application errors and completion
+operations remain strict. Driver-detail logs never select retry policy.
+
+Reports retain all nine workload configurations and the existing connection and
+statement limits. They expose poll attempts, retryable failures, exhausted calls
+and the policy used. Caller-owned counters retain attempts and observed failures
+even when a sibling failure cancels a poll during backoff. Logical-call latency
+includes attempts and backoff; it is separate from the per-task-normalized duration
+of the final successful attempt. Throughput
+continues from worker start to the last acknowledged completion, including retry
+delays on that path; final empty-poll drain is excluded and any total experiment
+wall time is labeled separately. Failed attempts never become empty polls or
+successful samples. Incomplete configurations retain their acknowledged progress
+and fail without a throughput verdict.
+Integrity-oracle failures use bounded observation and fixed safe labels, preserve
+the incomplete report and never print database errors or projection dumps.
+
+A deterministic real-PostgreSQL fixture holds all 20 connections of the actual
+replica pool, observes a real `Unavailable` response before any claim is possible,
+then releases the held connections through a channel/barrier. Recovery must prove
+distinct logical completions, every intended terminal run, journal/projection
+consistency and no leftover leases or transactions, including aborted transaction
+blocks on the actual reacquired pool backends. Persistent exhaustion and
+nonretryable errors must still fail. These are additional integrity checks beyond
+the earlier aggregate transition count.
+
+The isolated saturation fixture reacquires all 20 slots. The main experiment
+instead drains every currently existing pool connection with `try_acquire`,
+retaining handles until they account for the full current pool size. It creates
+no unused connections to reach a configured maximum. Returns settle within the
+oracle deadline; missing backend observations, open/aborted transactions or a
+connection retained outside the oracle fail the proof. After inspection, all
+handles must return to the idle pool. This keeps the standalone 100-connection
+fixture compatible without introducing a new all-pools capacity workload.
+
+This corrects the synthetic client model, not server semantics or a product SLO.
+The earlier Linux failures remain unclassified `Unavailable` responses; neither
+a later passing run nor controlled pool exhaustion establishes their driver cause.
+Evidence of a deadlock cycle, leak, invalid claim or state inconsistency remains a
+defect even when a client eventually recovers. Integrated-head release gates remain
+mandatory. Refs: T010-034, NFR-010-PERF.
+
 ## Completion hardening
 
 T010-037 groups named engine loops and server futures in a JoinSet, observes their
@@ -105,3 +153,16 @@ T010-040 orders ready activity candidates before transactional admission. Postgr
 tenant/namespace policy fences then exact activity locks; defaults and ceilings exclusively fence
 their changed level before writing/auditing. Gated real-DB tests reproduce opposite-node-order
 deadlocks and prove that a limit update cannot acknowledge while an older admission is unfinished.
+
+
+## Approved workflow-primitives dependency (2026-10-14)
+
+[ADR-0030](../../docs/adr/ADR-0030-structured-instances-and-continuation-chains.md) and
+[ADR-0031](../../docs/adr/ADR-0031-declared-operation-result-disclosure.md) accept the feature-014
+architecture and separate declared-result disclosure policy.
+[ADR-0032](../../docs/adr/ADR-0032-additive-workflow-ir.md) keeps the workflow IR at v1 and
+supersedes the earlier separate-revision allocation. New scheduler transitions use existing run-shard ownership/fencing and fair bounded admission. Parent child-chain completion is applied under the parent shard fence. Nested low-capacity admission, cross-run quotas and materialization/storage costs require real tests and measurement before release.
+
+This approves the described dependency for implementation, not a runtime guarantee. Canonical
+contracts, migration/replay, tenant/fault tests and applicable five-SDK evidence remain the
+feature-014 release gates; existing feature behavior stays supported.

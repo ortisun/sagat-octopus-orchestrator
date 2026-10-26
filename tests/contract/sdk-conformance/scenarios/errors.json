@@ -35,6 +35,7 @@
   "workers": {
     "w1": {
       "workerName": "errors-worker",
+      "protocolVersion": "1.4",
       "maxInflight": 2,
       "heartbeatIntervalMs": 200,
       "activities": {

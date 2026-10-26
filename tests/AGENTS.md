@@ -1,0 +1,11 @@
+# tests
+
+Layout `tests/<kind>/<feature>/` with kind one of `contract`, `integration`, `fault`, `e2e`, `performance`; Cargo targets are `<kind>_<feature>` (`docs/test-strategy.md`). No feature numbers in names.
+
+- Use real PostgreSQL (Testcontainers) and the real API. Do not mock the database. Docker must be reachable; the project's own Colima daemon is `DOCKER_HOST=unix://$HOME/.colima/sagat-remaining/docker.sock` when you run several agents.
+- Write the test, run it, see it fail for the right reason, then fix. Races use held locks, barriers or `pg_stat_activity`, never sleeps. A flaky test has a cause (an unexpired membership row, a transient state, load): find it.
+- Goldens (`tests/contract/sdk-conformance/expected/`, `docs/reference/`) are blessed only after reading the diff, then rerun without the bless switch.
+- The cross-tenant battery (`tests/contract/security-multitenancy/rest/battery.rs`) needs a valid request body for every operation that takes one (`body_of`) and lists the operations not built yet; a planned operation carries `x-planned`, a built one `x-implemented`.
+- Slow or toolchain-bound suites are `#[ignore]` and run in CI with `-- --ignored` (SDK conformance, e2e, fault of the SDKs). Run them locally before opening a PR; CI stops at its first failing binary and hides the rest.
+- A benchmark report states the environment, the load of the machine and the failures, not only the throughput (`tests/performance/reports/`).
+- A stage that can stall without failing (pull and start of a container, a child process, a scenario that waits on barriers) goes through `tests/support/bounded.rs`: it ends in a panic naming the stage and its limit. A test that leases a task and uses it late takes a lease longer than the slowest machine (`world_with` and `WorkerSettings::lease_ttl`; the 30 s default expired on a loaded runner and hung pull request 45 for six hours); a test of an expiring lease ages it on purpose (`age_lease`).

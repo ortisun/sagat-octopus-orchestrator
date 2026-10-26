@@ -162,14 +162,30 @@ async fn task_stream_byte_credit_is_cumulative_across_frames() {
         .publish("stream-byte-credit", &single_ir("stream-byte-credit", None))
         .await;
     let mut all_runs = Vec::new();
-    for index in 0..10 {
+    for index in 0..40 {
         all_runs.push(
             p.start(&wf, &json!({"index": index, "large": "x".repeat(220_000)}))
                 .await,
         );
     }
+    // Admit both waves before the finite stream window starts. Keep the second wave behind a
+    // real run lock so the first frame cannot consume it, without thirty REST calls while the
+    // response body is deliberately unread.
+    let second_wave = all_runs[10..]
+        .iter()
+        .map(|run| uuid::Uuid::parse_str(run).expect("run id"))
+        .collect::<Vec<_>>();
+    let mut wave_guard = p.api.db.pool.begin().await.expect("second-wave barrier");
+    sqlx::query("SELECT id FROM runs WHERE tenant_id=$1 AND id=ANY($2) FOR UPDATE")
+        .bind(p.tenant.as_uuid())
+        .bind(&second_wave)
+        .fetch_all(&mut *wave_guard)
+        .await
+        .expect("hold the second wave");
     let mut w = p.worker("wendy").await;
     register_stream_worker(&mut w, 64).await;
+    // Match all five SDKs: the 8 MiB task window can produce a frame above tonic's 4 MiB default.
+    w.client = w.client.clone().max_decoding_message_size(16 * 1024 * 1024);
     let mut stream = w
         .client
         .stream_tasks(w.req(w.poll_message(64)))
@@ -182,13 +198,17 @@ async fn task_stream_byte_credit_is_cumulative_across_frames() {
         .expect("first byte frame")
         .expect("first byte frame present");
     assert!(!first.tasks.is_empty());
+    assert!(
+        first
+            .tasks
+            .iter()
+            .all(|task| all_runs[..10].contains(&task.run_id))
+    );
 
-    for index in 10..40 {
-        all_runs.push(
-            p.start(&wf, &json!({"index": index, "large": "x".repeat(220_000)}))
-                .await,
-        );
-    }
+    wave_guard
+        .rollback()
+        .await
+        .expect("release the second wave");
     let mut frames = 1;
     let mut bytes = first
         .tasks
@@ -343,6 +363,19 @@ async fn task_stream_lifetime_admission_survives_headers_and_is_released_on_drop
         p.start(&wf, &json!({"index": index, "large": "x".repeat(180_000)}))
             .await;
     }
+    // Prepare delayed work before any response window. A real run lock prevents its claim
+    // until the old watchdog's deadline passes, without spending the remaining window on REST.
+    let last_run = p
+        .start(&wf, &json!({"index": 4, "large": "x".repeat(180_000)}))
+        .await;
+    let mut last_guard = p.api.db.pool.begin().await.expect("survivor work barrier");
+    sqlx::query("SELECT id FROM runs WHERE tenant_id=$1 AND id=$2 FOR UPDATE")
+        .bind(p.tenant.as_uuid())
+        .bind(uuid::Uuid::parse_str(&last_run).expect("run id"))
+        .fetch_one(&mut *last_guard)
+        .await
+        .expect("hold survivor work");
+
     let mut w = p.worker("wendy").await;
     register_stream_worker(&mut w, 4).await;
     let mut first_client = p.connect("wendy", TENANT).await;
@@ -417,6 +450,19 @@ async fn task_stream_lifetime_admission_survives_headers_and_is_released_on_drop
             .is_none()
     );
 
+    // Prepare delayed work outside either response window. A real run lock prevents its claim
+    // until the old watchdog's deadline passes, without spending the remaining window on REST.
+    let last_run = p
+        .start(&wf, &json!({"index": 4, "large": "x".repeat(180_000)}))
+        .await;
+    let mut last_guard = p.api.db.pool.begin().await.expect("survivor work barrier");
+    sqlx::query("SELECT id FROM runs WHERE tenant_id=$1 AND id=$2 FOR UPDATE")
+        .bind(p.tenant.as_uuid())
+        .bind(uuid::Uuid::parse_str(&last_run).expect("run id"))
+        .fetch_one(&mut *last_guard)
+        .await
+        .expect("hold survivor work");
+
     // A normally consumed body cancels its watchdog. A second stream on the same HTTP/2
     // connection remains alive past the first stream's former deadline and receives later work.
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -427,9 +473,7 @@ async fn task_stream_lifetime_admission_survives_headers_and_is_released_on_drop
         .expect("open stream on the same connection")
         .into_inner();
     tokio::time::sleep(Duration::from_millis(4_100)).await;
-    let last_run = p
-        .start(&wf, &json!({"index": 4, "large": "x".repeat(180_000)}))
-        .await;
+    last_guard.rollback().await.expect("release survivor work");
     let frame = survivor
         .message()
         .await
@@ -724,6 +768,70 @@ async fn a_cancellation_reaches_the_worker_through_the_heartbeat() {
         .expect("heartbeat")
         .into_inner();
     assert!(beat.cancel_requested, "the worker must be told to stop");
+}
+
+/// G141 (owner decision 2026-10-16): a heartbeat that was already on its way when the same lease
+/// reported is answered without an error, with no lease deadline (`0`) and no cancellation, so the
+/// worker stops beating and the call is not counted as a failure. Only the lease that reported gets
+/// this answer: a lost lease and a forged token are still stale attempts.
+#[tokio::test]
+async fn a_heartbeat_after_its_own_report_is_answered_without_an_error() {
+    let p = platform().await;
+    let wf = p.publish("single", &single_ir("single", None)).await;
+    p.start(&wf, &json!({})).await;
+    let mut w = p.worker("wendy").await;
+    w.register(&["act.a"]).await;
+    let lease = w.one_task().await;
+    w.complete(&lease, &json!({})).await.expect("complete");
+
+    let beat = w
+        .client
+        .heartbeat(w.req(w.heartbeat_message(&lease)))
+        .await
+        .expect("a late beat of the reporting lease is not an error")
+        .into_inner();
+    assert_eq!(
+        beat.lease_expires_at_epoch_ms, 0,
+        "no deadline: the attempt is over"
+    );
+    assert!(!beat.cancel_requested);
+
+    let mut forged = w.heartbeat_message(&lease);
+    forged.lease_token = "forged-lease-token".into();
+    let refused = w.client.heartbeat(w.req(forged)).await.expect_err("forged");
+    assert_eq!(machine_code(&refused), "STALE_ATTEMPT");
+}
+
+#[tokio::test]
+async fn a_heartbeat_of_a_lost_lease_stays_a_stale_attempt_after_another_worker_reports() {
+    let p = platform().await;
+    let retry = json!({"maxAttempts": 2, "strategy": "fixed", "initialDelayMs": 1, "maxDelayMs": 1, "jitter": false});
+    let wf = p
+        .publish("retrying", &single_ir("retrying", Some(retry)))
+        .await;
+    let run = p.start(&wf, &json!({})).await;
+    let mut lost = p.worker("wendy").await;
+    lost.register(&["act.a"]).await;
+    let first = lost.one_task().await;
+    p.expire_lease(&run, "a").await;
+    p.tick().await;
+    p.elapse_retry_delay(&run, "a").await;
+    p.tick().await;
+    let mut rescuer = p.worker("rhea").await;
+    rescuer.register(&["act.a"]).await;
+    let second = rescuer.one_task().await;
+    assert!(second.generation > first.generation);
+    rescuer
+        .complete(&second, &json!({}))
+        .await
+        .expect("rescuer completes");
+
+    let refused = lost
+        .client
+        .heartbeat(lost.req(lost.heartbeat_message(&first)))
+        .await
+        .expect_err("the lost lease never reported");
+    assert_eq!(machine_code(&refused), "STALE_ATTEMPT");
 }
 
 #[tokio::test]

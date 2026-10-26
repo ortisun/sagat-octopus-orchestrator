@@ -1,5 +1,5 @@
-import { Navigate } from 'react-router';
 import type { RouteObject } from 'react-router';
+import { Landing, NamespaceGate } from './NamespaceGate';
 import { Shell } from './Shell';
 import { NotFoundPage } from './NotFoundPage';
 import { RouteErrorPage } from './RouteErrorPage';
@@ -11,16 +11,26 @@ export const routes: RouteObject[] = [
     element: <Shell />,
     errorElement: <RouteErrorPage />,
     children: [
-      { index: true, element: <Navigate to="/workflows" replace /> },
-      { path: 'integrations', lazy: async () => ({ Component: (await import('../features/integrations/IntegrationsPage')).IntegrationsPage }) },
+      { index: true, element: <Landing /> },
+      // The tenant's own page: it is there whether or not a namespace is chosen.
       { path: 'namespaces', lazy: async () => ({ Component: (await import('./NamespacesPage')).NamespacesPage }) },
-      { path: 'operations', lazy: async () => ({ Component: (await import('../features/operations/OperationsPage')).OperationsPage }) },
-      { path: 'workflows', lazy: async () => ({ Component: (await import('../features/workflows/WorkflowsPage')).WorkflowsPage }) },
-      { path: 'workflows/:workflowId', lazy: async () => ({ Component: (await import('../features/workflows/WorkflowEditorPage')).WorkflowEditorPage }) },
-      { path: 'runs', lazy: async () => ({ Component: (await import('../features/runs/RunsPage')).RunsPage }) },
-      { path: 'runs/:runId', lazy: async () => ({ Component: (await import('../features/runs/RunDetailPage')).RunDetailPage }) },
-      { path: 'scripts', lazy: async () => ({ Component: (await import('../features/scripts/ScriptsPage')).ScriptsPage }) },
-      { path: 'scripts/:scriptId', lazy: async () => ({ Component: (await import('../features/scripts/ScriptEditorPage')).ScriptEditorPage }) },
+      // Everything else lives in a namespace and waits for one to be chosen.
+      {
+        element: <NamespaceGate />,
+        children: [
+          { path: 'database-executions', lazy: async () => ({ Component: (await import('../features/database/DatabaseExecutionsPage')).DatabaseExecutionsPage }) },
+          { path: 'connections', lazy: async () => ({ Component: (await import('../features/connections/ConnectionsPage')).ConnectionsPage }) },
+          { path: 'secrets', lazy: async () => ({ Component: (await import('../features/secrets/SecretsPage')).SecretsPage }) },
+          { path: 'integrations', lazy: async () => ({ Component: (await import('../features/integrations/IntegrationsPage')).IntegrationsPage }) },
+          { path: 'operations', lazy: async () => ({ Component: (await import('../features/operations/OperationsPage')).OperationsPage }) },
+          { path: 'workflows', lazy: async () => ({ Component: (await import('../features/workflows/WorkflowsPage')).WorkflowsPage }) },
+          { path: 'workflows/:workflowId', lazy: async () => ({ Component: (await import('../features/workflows/WorkflowEditorPage')).WorkflowEditorPage }) },
+          { path: 'runs', lazy: async () => ({ Component: (await import('../features/runs/RunsPage')).RunsPage }) },
+          { path: 'runs/:runId', lazy: async () => ({ Component: (await import('../features/runs/RunDetailPage')).RunDetailPage }) },
+          { path: 'scripts', lazy: async () => ({ Component: (await import('../features/scripts/ScriptsPage')).ScriptsPage }) },
+          { path: 'scripts/:scriptId', lazy: async () => ({ Component: (await import('../features/scripts/ScriptEditorPage')).ScriptEditorPage }) },
+        ],
+      },
       { path: '*', element: <NotFoundPage /> },
     ],
   },

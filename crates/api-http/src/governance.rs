@@ -7,12 +7,16 @@ use sagat_application::api_admission::{ApiAdmissionService, ApiAdmissionStore};
 use sagat_application::bindings::{BindingService, BindingStore};
 use sagat_application::clock::Clock;
 use sagat_application::connectors::{ConnectorService, ConnectorStore};
+use sagat_application::database::{ConnectionService, ConnectionStore};
 use sagat_application::egress::{EgressService, EgressStore};
+use sagat_application::event_payloads::EventPayloadUseCase;
 use sagat_application::events::{EventService, EventStore};
 use sagat_application::identity::IdentityStore;
+use sagat_application::managed_secrets::{ManagedSecretService, ManagedSecretStore};
 use sagat_application::operations::{AlertReader, AuditStore, OperationsService, WorkerAdmin};
 use sagat_application::outbound::{OutboundService, OutboundStore};
 use sagat_application::quotas::{QuotaService, QuotaStore};
+use sagat_application::reveal_grants::{RevealGrantService, RevealGrantStore};
 use sagat_application::scripts::{RunnerService, RunnerStore, ScriptService, ScriptStore};
 use sagat_application::secrets::{SecretService, SecretStore};
 
@@ -27,6 +31,8 @@ pub trait Governance: Core + Admission {
     type Store: QuotaStore
         + BindingStore
         + SecretStore
+        + ManagedSecretStore
+        + ConnectionStore
         + EgressStore
         + EventStore
         + OutboundStore
@@ -42,11 +48,15 @@ pub trait Governance: Core + Admission {
     fn quotas(&self) -> &QuotaService<Self::Store, Self::Clock>;
     fn bindings(&self) -> &BindingService<Self::Store, Self::Clock>;
     fn egress(&self) -> &EgressService<Self::Store, Self::Clock>;
-    /// `None` when the instance has no key ring: the secret routes are then not served at all.
+    /// `None` when no secret authority is configured.
     fn secrets(&self) -> Option<&SecretService<Self::Store, Self::Clock>>;
-    /// `None` when the instance has no key ring (a webhook cannot be verified without one): the
-    /// event routes are then not served at all.
+    fn managed_secrets(&self) -> Option<&ManagedSecretService<Self::Store, Self::Clock>>;
+    fn connections(&self) -> Option<&ConnectionService<Self::Store, Self::Clock>>;
+    /// `None` when no reader is configured to verify webhook secrets.
     fn events(&self) -> Option<&EventService<Self::Store, Self::Clock>>;
+    fn event_payloads(&self) -> Option<&Arc<dyn EventPayloadUseCase>> {
+        None
+    }
     /// `None` when the instance has no key ring (deliveries are signed): the subscription routes are
     /// then not served at all.
     fn outbound(&self) -> Option<&OutboundService<Self::Store, Self::Clock>>;
@@ -68,10 +78,14 @@ pub struct GovState<S, C, G> {
     pub core: AppState<S, C>,
     admission: Arc<ApiAdmissionService<G, C>>,
     quotas: Arc<QuotaService<G, C>>,
+    reveal_grants: Arc<RevealGrantService<G, C>>,
     bindings: Arc<BindingService<G, C>>,
     egress: Arc<EgressService<G, C>>,
     secrets: Option<Arc<SecretService<G, C>>>,
+    managed_secrets: Option<Arc<ManagedSecretService<G, C>>>,
+    connections: Option<Arc<ConnectionService<G, C>>>,
     events: Option<Arc<EventService<G, C>>>,
+    event_payloads: Option<Arc<dyn EventPayloadUseCase>>,
     outbound: Option<Arc<OutboundService<G, C>>>,
     connectors: Option<Arc<ConnectorService<G, C>>>,
     scripts: Option<Arc<ScriptService<G, C>>>,
@@ -87,15 +101,20 @@ impl<S, C, G> GovState<S, C, G> {
         quotas: QuotaService<G, C>,
         bindings: BindingService<G, C>,
         egress: EgressService<G, C>,
+        reveal_grants: RevealGrantService<G, C>,
     ) -> Self {
         Self {
             core,
             admission: Arc::new(admission),
             quotas: Arc::new(quotas),
+            reveal_grants: Arc::new(reveal_grants),
             bindings: Arc::new(bindings),
             egress: Arc::new(egress),
             secrets: None,
+            managed_secrets: None,
+            connections: None,
             events: None,
+            event_payloads: None,
             outbound: None,
             connectors: None,
             scripts: None,
@@ -115,6 +134,16 @@ impl<S, C, G> GovState<S, C, G> {
     #[must_use]
     pub fn with_secrets(mut self, secrets: SecretService<G, C>) -> Self {
         self.secrets = Some(Arc::new(secrets));
+        self
+    }
+
+    pub fn with_connections(mut self, service: ConnectionService<G, C>) -> Self {
+        self.connections = Some(Arc::new(service));
+        self
+    }
+
+    pub fn with_managed_secrets(mut self, service: ManagedSecretService<G, C>) -> Self {
+        self.managed_secrets = Some(Arc::new(service));
         self
     }
 
@@ -145,6 +174,13 @@ impl<S, C, G> GovState<S, C, G> {
         self
     }
 
+    /// Serves bounded, audited event and dead-letter payload reads.
+    #[must_use]
+    pub fn with_event_payloads(mut self, service: Arc<dyn EventPayloadUseCase>) -> Self {
+        self.event_payloads = Some(service);
+        self
+    }
+
     /// Serves the event routes (endpoints, publishing, the public webhook URL), backed by `events`.
     #[must_use]
     pub fn with_events(mut self, events: EventService<G, C>) -> Self {
@@ -159,10 +195,14 @@ impl<S, C, G> Clone for GovState<S, C, G> {
             core: self.core.clone(),
             admission: Arc::clone(&self.admission),
             quotas: Arc::clone(&self.quotas),
+            reveal_grants: Arc::clone(&self.reveal_grants),
             bindings: Arc::clone(&self.bindings),
             egress: Arc::clone(&self.egress),
             secrets: self.secrets.clone(),
+            managed_secrets: self.managed_secrets.clone(),
+            connections: self.connections.clone(),
             events: self.events.clone(),
+            event_payloads: self.event_payloads.clone(),
             outbound: self.outbound.clone(),
             connectors: self.connectors.clone(),
             scripts: self.scripts.clone(),
@@ -215,6 +255,18 @@ where
     ) -> Result<sagat_application::identity::Session, sagat_application::error::AppError> {
         self.core.authenticate(tenant, subject).await
     }
+
+    async fn record_access_denied(
+        &self,
+        principal: &sagat_domain::identity::Principal,
+        call: &str,
+        denial: sagat_application::error::AccessDenial,
+        ctx: &sagat_application::identity::RequestContext,
+    ) -> Result<(), sagat_application::error::StoreError> {
+        self.core
+            .record_access_denied(principal, call, denial, ctx)
+            .await
+    }
 }
 
 impl<S, C, G> Governance for GovState<S, C, G>
@@ -225,6 +277,8 @@ where
         + ApiAdmissionStore
         + BindingStore
         + SecretStore
+        + ManagedSecretStore
+        + ConnectionStore
         + EgressStore
         + EventStore
         + OutboundStore
@@ -255,8 +309,20 @@ where
         self.secrets.as_deref()
     }
 
+    fn connections(&self) -> Option<&ConnectionService<G, C>> {
+        self.connections.as_deref()
+    }
+
+    fn managed_secrets(&self) -> Option<&ManagedSecretService<G, C>> {
+        self.managed_secrets.as_deref()
+    }
+
     fn events(&self) -> Option<&EventService<G, C>> {
         self.events.as_deref()
+    }
+
+    fn event_payloads(&self) -> Option<&Arc<dyn EventPayloadUseCase>> {
+        self.event_payloads.as_ref()
     }
 
     fn outbound(&self) -> Option<&OutboundService<G, C>> {
@@ -277,5 +343,19 @@ where
 
     fn operations(&self) -> Option<&OperationsService<G, C>> {
         self.operations.as_deref()
+    }
+}
+
+impl<S, C, G> crate::reveal_grants::RevealGrantApi for GovState<S, C, G>
+where
+    S: IdentityStore + 'static,
+    C: Clock + 'static,
+    G: RevealGrantStore + ApiAdmissionStore + 'static,
+{
+    type GrantStore = G;
+    type GrantClock = C;
+
+    fn reveal_grants(&self) -> &RevealGrantService<G, C> {
+        &self.reveal_grants
     }
 }

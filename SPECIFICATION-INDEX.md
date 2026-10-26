@@ -13,7 +13,7 @@ The requirement-level authority is `docs/traceability.md`. Material gaps include
 - **Critical semantics:** `docs/architecture/execution-semantics.md`, `worker-runtime-protocol.md`, `sagas.md`, `storage-and-events.md`.
 - **Visual and SDK experience:** `docs/architecture/studio-ux.md`, `workflow-ir-and-sdk-modes.md`, `sdk-contract.md`.
 - **Security and operations:** `docs/architecture/security-and-sandbox.md`, `observability-slo.md`, `capacity-and-topology.md`.
-- **Per-feature plan:** `specs/{001..012}-{slug}/spec.md`, `plan.md`, `tasks.md`, `research.md`, `data-model.md`, `quickstart.md`, `checklists/requirements.md`.
+- **Per-feature plan:** `specs/{001..012,014}-{slug}/spec.md`, `plan.md`, `tasks.md`, `research.md`, `data-model.md`, `quickstart.md`, `checklists/requirements.md`.
 - **Contracts:** `specs/001-platform-foundation/contracts/`.
 - **Tasks:** `specs/*/tasks.md` have IDs, paths and tests to direct agents.
 - **Example:** `examples/payment-saga.workflow.json`, `examples/sdk-parity.md`.
@@ -30,6 +30,8 @@ The requirement-level authority is `docs/traceability.md`. Material gaps include
 8. 010 Scale/HA, followed by completion work that integrated C# sandboxing, Studio/DX and Helm network isolation.
 
 ## Pending product and validation decisions
+
+- [017 Database Connections](specs/017-database-connections/spec.md): PostgreSQL connections configured in the UI, OpenBao secrets in the first delivery, and shared SDK/visual/ad hoc execution. User approved implementation on 2026-10-16; [ADR-0035](docs/adr/ADR-0035-database-connections-and-managed-execution.md) is accepted and the feature plan/tasks track implementation. Product completion remains pending runtime evidence.
 
 - Choose registry ownership, signing and release policy for the five SDK packages and the `sagat` binary.
 - Choose production identity/KMS/object-storage providers and the retention/classification tiers.

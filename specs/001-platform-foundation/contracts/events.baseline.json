@@ -1,4 +1,183 @@
 {
+  "ApprovalCancelled": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "outcomeSequence": {
+          "type": [
+            "integer"
+          ]
+        },
+        "requestId": {
+          "type": [
+            "string"
+          ]
+        },
+        "runId": {
+          "type": [
+            "string"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "namespaceId",
+        "outcomeSequence",
+        "requestId",
+        "runId",
+        "tenantId"
+      ]
+    }
+  },
+  "ApprovalOpened": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "deadline": {
+          "type": [
+            "integer"
+          ]
+        },
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "requestId": {
+          "type": [
+            "string"
+          ]
+        },
+        "runId": {
+          "type": [
+            "string"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "deadline",
+        "namespaceId",
+        "requestId",
+        "runId",
+        "tenantId"
+      ]
+    }
+  },
+  "ApprovalSettled": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "outcomeSequence": {
+          "type": [
+            "integer"
+          ]
+        },
+        "requestId": {
+          "type": [
+            "string"
+          ]
+        },
+        "route": {
+          "type": [
+            "string"
+          ]
+        },
+        "runId": {
+          "type": [
+            "string"
+          ]
+        },
+        "status": {
+          "enum": [
+            "APPROVED",
+            "EXPIRED",
+            "REJECTED"
+          ],
+          "type": [
+            "string"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "namespaceId",
+        "outcomeSequence",
+        "requestId",
+        "route",
+        "runId",
+        "status",
+        "tenantId"
+      ]
+    }
+  },
   "BrokerMessage": {
     "headers": {
       "properties": {
@@ -33,6 +212,403 @@
     "payload": {
       "properties": {},
       "required": []
+    }
+  },
+  "CapacityMemberFinished": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "chainId": {
+          "type": [
+            "string"
+          ]
+        },
+        "epoch": {
+          "type": [
+            "integer"
+          ]
+        },
+        "groupId": {
+          "type": [
+            "string"
+          ]
+        },
+        "headRunId": {
+          "type": [
+            "string"
+          ]
+        },
+        "memberId": {
+          "type": [
+            "string"
+          ]
+        },
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "resultingRevision": {
+          "type": [
+            "integer"
+          ]
+        },
+        "retired": {
+          "type": [
+            "boolean"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "chainId",
+        "epoch",
+        "groupId",
+        "headRunId",
+        "memberId",
+        "namespaceId",
+        "resultingRevision",
+        "retired",
+        "tenantId"
+      ]
+    }
+  },
+  "CapacityScopedMemberFinished": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "epoch": {
+          "type": [
+            "integer"
+          ]
+        },
+        "groupId": {
+          "type": [
+            "string"
+          ]
+        },
+        "iterationIndex": {
+          "type": [
+            "integer"
+          ]
+        },
+        "memberId": {
+          "type": [
+            "string"
+          ]
+        },
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "originalRunId": {
+          "type": [
+            "string"
+          ]
+        },
+        "resultingRevision": {
+          "type": [
+            "integer"
+          ]
+        },
+        "retired": {
+          "type": [
+            "boolean"
+          ]
+        },
+        "rootOwnerNode": {
+          "type": [
+            "string"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "epoch",
+        "groupId",
+        "iterationIndex",
+        "memberId",
+        "namespaceId",
+        "originalRunId",
+        "resultingRevision",
+        "retired",
+        "rootOwnerNode",
+        "tenantId"
+      ]
+    }
+  },
+  "ChainFinished": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "chainId": {
+          "type": [
+            "string"
+          ]
+        },
+        "headRunId": {
+          "type": [
+            "string"
+          ]
+        },
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "status": {
+          "enum": [
+            "CANCELLED",
+            "COMPENSATED",
+            "COMPENSATION_FAILED",
+            "FAILED",
+            "PARTIAL",
+            "SUCCEEDED",
+            "TIMED_OUT"
+          ],
+          "type": [
+            "string"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "chainId",
+        "headRunId",
+        "namespaceId",
+        "status",
+        "tenantId"
+      ]
+    }
+  },
+  "CollectionDrainStarted": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "reason": {
+          "enum": [
+            "CANCELLED",
+            "FAILED",
+            "STORAGE_QUOTA"
+          ],
+          "type": [
+            "string"
+          ]
+        },
+        "runId": {
+          "type": [
+            "string"
+          ]
+        },
+        "scopeId": {
+          "type": [
+            "string"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "namespaceId",
+        "reason",
+        "runId",
+        "scopeId",
+        "tenantId"
+      ]
+    }
+  },
+  "CollectionFinished": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "runId": {
+          "type": [
+            "string"
+          ]
+        },
+        "scopeId": {
+          "type": [
+            "string"
+          ]
+        },
+        "status": {
+          "enum": [
+            "CANCELLED",
+            "FAILED",
+            "SUCCEEDED"
+          ],
+          "type": [
+            "string"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "namespaceId",
+        "runId",
+        "scopeId",
+        "status",
+        "tenantId"
+      ]
+    }
+  },
+  "CollectionIteration": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "index": {
+          "type": [
+            "integer"
+          ]
+        },
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "runId": {
+          "type": [
+            "string"
+          ]
+        },
+        "scopeId": {
+          "type": [
+            "string"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "index",
+        "namespaceId",
+        "runId",
+        "scopeId",
+        "tenantId"
+      ]
     }
   },
   "EventDocument": {
@@ -98,6 +674,120 @@
         "event.receivedAt",
         "event.source",
         "event.type"
+      ]
+    }
+  },
+  "LoopHint": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "node": {
+          "type": [
+            "string"
+          ]
+        },
+        "runId": {
+          "type": [
+            "string"
+          ]
+        },
+        "status": {
+          "enum": [
+            "CANCELLED",
+            "DRAINING",
+            "FAILED",
+            "SUCCEEDED"
+          ],
+          "type": [
+            "string"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "namespaceId",
+        "node",
+        "runId",
+        "status",
+        "tenantId"
+      ]
+    }
+  },
+  "LoopTimerScheduled": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "dueAtMicros": {
+          "type": [
+            "integer"
+          ]
+        },
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "runId": {
+          "type": [
+            "string"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "timerId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "dueAtMicros",
+        "namespaceId",
+        "runId",
+        "tenantId",
+        "timerId"
       ]
     }
   },
@@ -273,6 +963,60 @@
         "id",
         "time",
         "type"
+      ]
+    }
+  },
+  "RunContinued": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "chainId": {
+          "type": [
+            "string"
+          ]
+        },
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "predecessorRunId": {
+          "type": [
+            "string"
+          ]
+        },
+        "successorRunId": {
+          "type": [
+            "string"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "chainId",
+        "namespaceId",
+        "predecessorRunId",
+        "successorRunId",
+        "tenantId"
       ]
     }
   },
@@ -524,6 +1268,66 @@
       ]
     }
   },
+  "RunStateUpdated": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "operation": {
+          "type": [
+            "string"
+          ]
+        },
+        "runId": {
+          "type": [
+            "string"
+          ]
+        },
+        "runVersion": {
+          "type": [
+            "integer"
+          ]
+        },
+        "stateRevision": {
+          "type": [
+            "integer"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "namespaceId",
+        "operation",
+        "runId",
+        "runVersion",
+        "stateRevision",
+        "tenantId"
+      ]
+    }
+  },
   "TaskReady": {
     "headers": {
       "properties": {
@@ -538,6 +1342,26 @@
     "payload": {
       "properties": {
         "activity": {
+          "type": [
+            "string"
+          ]
+        },
+        "instancePath": {
+          "type": [
+            "array"
+          ]
+        },
+        "instancePath[]": {
+          "type": [
+            "object"
+          ]
+        },
+        "instancePath[].index": {
+          "type": [
+            "integer"
+          ]
+        },
+        "instancePath[].scope": {
           "type": [
             "string"
           ]
@@ -571,6 +1395,8 @@
       },
       "required": [
         "activity",
+        "instancePath[].index",
+        "instancePath[].scope",
         "namespaceId",
         "node",
         "runId",

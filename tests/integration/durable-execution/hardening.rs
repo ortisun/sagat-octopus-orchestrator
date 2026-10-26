@@ -77,7 +77,7 @@ async fn a_run_cannot_retain_more_output_than_its_budget_and_the_step_fails_for_
     // The next one would push what the run retains over the budget: it is accepted as a *failure*
     // of the step, with a code of its own and no retry (a retry would only exceed it again).
     let task = w.one_task(&session).await;
-    let node = task.node.as_str().to_owned();
+    let node = task.instance.node().as_str().to_owned();
     w.complete(&session, &task, &output)
         .await
         .expect("the report itself is accepted");
@@ -301,7 +301,7 @@ async fn large_sibling_tasks_are_budgeted_before_their_leases_commit() {
         "waiting for response space spends no attempt"
     );
     assert_eq!(last.fence.generation, 1);
-    assert!(first.iter().all(|task| task.node != last.node));
+    assert!(first.iter().all(|task| task.instance != last.instance));
     for task in first.iter().chain(std::iter::once(&last)) {
         w.complete(&session, task, &json!({}))
             .await
@@ -475,6 +475,7 @@ async fn the_claim_query_walks_the_ready_index_and_never_aggregates_the_backlog(
     .bind(vec!["act.a".to_owned(), "act.b".to_owned()])
     .bind(8_i64)
     .bind(3_i32) // current negotiated worker minor; legacy compatibility is tested separately
+    .bind("some-worker")
     .fetch_all(&mut *conn)
     .await
     .expect("explain");
@@ -793,6 +794,15 @@ async fn a_worker_of_another_tenant_is_refused_and_the_attempt_is_audited() {
         subject_of("worker-b"),
         Role::Worker,
     );
+    sagat_infra_postgres::PgIdentityStore::new(w.db.pool.clone())
+        .insert_membership(&sagat_domain::identity::Membership::restore(
+            foreign.tenant_id(),
+            foreign.subject().clone(),
+            Role::Worker,
+            crate::support::now(),
+        ))
+        .await
+        .expect("foreign tenant's current worker membership");
     let _theirs = w.session_as(&foreign, &["act.a"], 10).await;
     let heartbeat = w.workers.heartbeat(&foreign, &task_ref(&task)).await;
     assert_eq!(heartbeat.map(|_| ()), Err(AppError::StaleAttempt));

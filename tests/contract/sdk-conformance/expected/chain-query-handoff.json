@@ -1,0 +1,367 @@
+{
+  "faultsApplied": [],
+  "observations": [
+    {
+      "id": "start",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "chain": {
+          "chainId": "<uuid:1>",
+          "completionKind": null,
+          "segmentIndex": 0,
+          "successorRunId": null
+        },
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": "<chain-deadline:1>",
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "initial",
+      "ok": true,
+      "op": "inspectChain",
+      "result": {
+        "cancelRequested": false,
+        "chainId": "<uuid:1>",
+        "currentRunId": "<uuid:1>",
+        "finalOutcome": null,
+        "revision": 0,
+        "segments": [
+          {
+            "index": 0,
+            "predecessorRunId": null,
+            "runId": "<uuid:1>",
+            "successorRunId": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "start-worker",
+      "ok": true,
+      "op": "startWorker",
+      "result": {
+        "protocolVersion": "1.5"
+      }
+    },
+    {
+      "id": "entry-complete",
+      "ok": true,
+      "op": "awaitJournal"
+    },
+    {
+      "id": "stop-worker",
+      "ok": true,
+      "op": "stopWorker"
+    },
+    {
+      "id": "head",
+      "ok": true,
+      "op": "inspectChain",
+      "result": {
+        "cancelRequested": false,
+        "chainId": "<uuid:1>",
+        "currentRunId": "<uuid:4>",
+        "finalOutcome": null,
+        "revision": 1,
+        "segments": [
+          {
+            "index": 0,
+            "predecessorRunId": null,
+            "runId": "<uuid:1>",
+            "successorRunId": "<uuid:4>"
+          },
+          {
+            "index": 1,
+            "predecessorRunId": "<uuid:1>",
+            "runId": "<uuid:4>",
+            "successorRunId": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "segment-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "chain": {
+          "chainId": "<uuid:1>",
+          "completionKind": "CONTINUED",
+          "segmentIndex": 0,
+          "successorRunId": "<uuid:4>"
+        },
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": "<chain-deadline:1>",
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "query",
+      "ok": true,
+      "op": "queryChain",
+      "result": {
+        "result": "19.99",
+        "runId": "<uuid:4>",
+        "runVersion": 3,
+        "stateRevision": 0
+      }
+    },
+    {
+      "id": "update",
+      "ok": true,
+      "op": "updateChain",
+      "result": {
+        "afterStateRevision": 1,
+        "beforeStateRevision": 0,
+        "operation": "amount.replace",
+        "replayed": false,
+        "result": "24.99",
+        "runId": "<uuid:4>",
+        "runVersion": 4,
+        "status": "APPLIED",
+        "updateKey": "chain-amount-{{unique}}"
+      }
+    },
+    {
+      "id": "replay",
+      "ok": true,
+      "op": "updateChain",
+      "result": {
+        "afterStateRevision": 1,
+        "beforeStateRevision": 0,
+        "operation": "amount.replace",
+        "replayed": true,
+        "result": "24.99",
+        "runId": "<uuid:4>",
+        "runVersion": 4,
+        "status": "APPLIED",
+        "updateKey": "chain-amount-{{unique}}"
+      }
+    },
+    {
+      "id": "updated",
+      "ok": true,
+      "op": "queryChain",
+      "result": {
+        "result": "24.99",
+        "runId": "<uuid:4>",
+        "runVersion": 4,
+        "stateRevision": 1
+      }
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "CHAIN_HEAD_CHANGED",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:2>"
+      },
+      "id": "stale-update",
+      "ok": false,
+      "op": "updateChain"
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "CHAIN_HEAD_CHANGED",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:3>"
+      },
+      "id": "stale",
+      "ok": false,
+      "op": "queryChain"
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "RUN_CONTINUED",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:4>"
+      },
+      "id": "continued-update",
+      "ok": false,
+      "op": "update"
+    },
+    {
+      "error": {
+        "code": "TRANSPORT",
+        "message": "<text>",
+        "reason": "WAIT_TIMEOUT",
+        "remediation": "No answer from the server: check the URL, the network and the TLS settings; the call is retried when it is safe.",
+        "retryAfterMs": null,
+        "retryable": true,
+        "status": null,
+        "traceId": ""
+      },
+      "id": "early-wait",
+      "ok": false,
+      "op": "waitForChainCompletion"
+    },
+    {
+      "id": "cancel-chain",
+      "ok": true,
+      "op": "cancelChain",
+      "result": {
+        "accepted": true
+      }
+    },
+    {
+      "id": "chain-done",
+      "ok": true,
+      "op": "waitForChainCompletion",
+      "result": {
+        "cancelRequested": true,
+        "chainId": "<uuid:1>",
+        "currentRunId": "<uuid:4>",
+        "finalOutcome": "CANCELLED",
+        "revision": 3,
+        "segments": [
+          {
+            "index": 0,
+            "predecessorRunId": null,
+            "runId": "<uuid:1>",
+            "successorRunId": "<uuid:4>"
+          },
+          {
+            "index": 1,
+            "predecessorRunId": "<uuid:1>",
+            "runId": "<uuid:4>",
+            "successorRunId": null
+          }
+        ]
+      }
+    }
+  ],
+  "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "rollover",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "continueAsNew",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "work",
+          "kind": "FORWARD",
+          "status": "CANCELLED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:4>",
+      "status": "CANCELLED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "rollover",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "continueAsNew",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "work",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:1>",
+      "status": "SUCCEEDED"
+    }
+  ],
+  "workerLog": {
+    "current": [
+      {
+        "abortedReason": null,
+        "activity": "chain.work",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:work",
+        "input": {
+          "account": {
+            "amount": "19.99"
+          },
+          "next": {
+            "account": {
+              "amount": "0.00"
+            }
+          }
+        },
+        "instance": {
+          "definitionNodeId": "work",
+          "instancePath": []
+        },
+        "kind": "activity",
+        "node": "work",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      }
+    ]
+  }
+}

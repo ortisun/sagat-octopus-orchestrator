@@ -73,7 +73,7 @@ describe('adding nodes', () => {
     const { user } = await opened();
     await user.keyboard('{Alt>}n{/Alt}');
     const dialog = await screen.findByRole('dialog', { name: 'Add a node' });
-    expect(within(dialog).getAllByRole('button')).toHaveLength(12);
+    expect(within(dialog).getAllByRole('button')).toHaveLength(13);
     await user.click(within(dialog).getByRole('button', { name: 'Timer' }));
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add a node' })).not.toBeInTheDocument());
     expect(row('timer_1')).toBeInTheDocument();

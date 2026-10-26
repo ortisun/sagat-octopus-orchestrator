@@ -9,7 +9,14 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import dev.sagatoctopusorchestrator.sdk.CallOptions;
+import dev.sagatoctopusorchestrator.sdk.ApprovalDecision;
+import dev.sagatoctopusorchestrator.sdk.ApprovalDecisionOptions;
+import dev.sagatoctopusorchestrator.sdk.ApprovalDecisionReceipt;
+import dev.sagatoctopusorchestrator.sdk.ApprovalListItem;
+import dev.sagatoctopusorchestrator.sdk.ApprovalListOptions;
+import dev.sagatoctopusorchestrator.sdk.ApprovalPage;
 import dev.sagatoctopusorchestrator.sdk.ClientConfig;
+import dev.sagatoctopusorchestrator.sdk.ChainQueryOptions;
 import dev.sagatoctopusorchestrator.sdk.EventAccepted;
 import dev.sagatoctopusorchestrator.sdk.EventInput;
 import dev.sagatoctopusorchestrator.sdk.JdkHttpTransport;
@@ -32,13 +39,26 @@ import dev.sagatoctopusorchestrator.sdk.WaitOptions;
 import dev.sagatoctopusorchestrator.sdk.worker.WorkerConfig;
 import dev.sagatoctopusorchestrator.sdk.worker.WorkerHost;
 import dev.sagatoctopusorchestrator.sdk.workflow.ChildOptions;
+import dev.sagatoctopusorchestrator.sdk.workflow.ApprovalOptions;
+import dev.sagatoctopusorchestrator.sdk.workflow.ApprovalPolicy;
+import dev.sagatoctopusorchestrator.sdk.workflow.ApprovalRole;
+import dev.sagatoctopusorchestrator.sdk.workflow.CollectionOptions;
+import dev.sagatoctopusorchestrator.sdk.workflow.ChainPolicy;
 import dev.sagatoctopusorchestrator.sdk.workflow.Flow;
+import dev.sagatoctopusorchestrator.sdk.workflow.LoopOptions;
+import dev.sagatoctopusorchestrator.sdk.workflow.QueryDefinition;
+import dev.sagatoctopusorchestrator.sdk.workflow.DatabaseOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.RetryOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.SagaOptions;
+import dev.sagatoctopusorchestrator.sdk.workflow.ScriptOptions;
+import dev.sagatoctopusorchestrator.sdk.workflow.StateDefinition;
 import dev.sagatoctopusorchestrator.sdk.workflow.StepOptions;
+import dev.sagatoctopusorchestrator.sdk.workflow.SwitchCase;
 import dev.sagatoctopusorchestrator.sdk.workflow.Trigger;
+import dev.sagatoctopusorchestrator.sdk.workflow.UpdateDefinition;
 import dev.sagatoctopusorchestrator.sdk.workflow.WaitForEventOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.WorkflowBuilder;
+import dev.sagatoctopusorchestrator.sdk.workflow.WorkflowLimits;
 import java.io.File;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -136,7 +156,7 @@ public final class Runner {
             return options;
         }
         known(node, "step", "retry", "timeoutMs", "compensateWith", "reconcileWith", "idempotencyTemplate", "secrets",
-                "compensationRetry", "compensationTimeoutMs", "irreversible", "highRisk", "onError");
+                "compensationRetry", "compensationTimeoutMs", "irreversible", "highRisk", "onError", "outputSchema");
         if (node.has("retry")) {
             options.retry(retryOf(node.get("retry")));
         }
@@ -172,18 +192,67 @@ public final class Runner {
         if (node.has("onError")) {
             options.onError(node.get("onError").asText());
         }
+        if (node.has("outputSchema")) {
+            options.outputSchema(node.get("outputSchema"));
+        }
         return options;
+    }
+
+    private static int databaseInt(JsonNode node) {
+        if (!node.isIntegralNumber() || !node.canConvertToInt()) throw SagatException.invalid("invalid managed database operation");
+        return node.intValue();
+    }
+
+    private static DatabaseOptions databaseOptionsOf(JsonNode node) {
+        try {
+            JsonNode ref = node.path("connectionRef");
+            DatabaseOptions options = DatabaseOptions.create(new DatabaseOptions.ConnectionRef(ref.path("name").asText(null), ref.has("revision") ? databaseInt(ref.path("revision")) : null),
+                DatabaseOptions.Operation.valueOf(node.path("operation").asText().toUpperCase(java.util.Locale.ROOT)), node.path("statement").asText(null));
+            if (node.has("parameters")) {
+                List<DatabaseOptions.Parameter> parameters = new ArrayList<>();
+                for (JsonNode p : node.path("parameters")) {
+                    JsonNode literal = p.get("literal");
+                    parameters.add(literal != null
+                        ? DatabaseOptions.Parameter.literal(DatabaseOptions.Type.valueOf(literal.path("type").asText().toUpperCase(java.util.Locale.ROOT)), literal.get("value"))
+                        : DatabaseOptions.Parameter.expression(DatabaseOptions.Type.valueOf(p.path("type").asText().toUpperCase(java.util.Locale.ROOT)), p.path("expression").asText()));
+                }
+                options.parameters(parameters);
+            }
+            if (node.has("limits")) {
+                Map<String, Integer> limits = new LinkedHashMap<>();
+                node.path("limits").fields().forEachRemaining(p -> limits.put(p.getKey(), databaseInt(p.getValue())));
+                options.limits(limits);
+            }
+            if (node.has("timeoutMs")) options.timeoutMs(databaseInt(node.path("timeoutMs")));
+            if (node.has("onError")) options.onError(node.path("onError").asText());
+            return options;
+        } catch (IllegalArgumentException error) {
+            throw SagatException.invalid("invalid managed database operation");
+        }
     }
 
     private static void apply(Flow target, JsonNode ops) {
         for (JsonNode op : ops) {
             String id = op.path("id").asText(null);
             switch (op.path("op").asText()) {
+                case "database" -> target.database(id, databaseOptionsOf(op.path("options")));
                 case "step" -> target.step(id, op.path("activity").asText(null), stepOptionsOf(op.get("options")));
+                case "script" -> {
+                    JsonNode o = op.path("options");
+                    known(o, "script", "language", "retry", "compensateWith", "secrets", "onError", "outputSchema");
+                    ScriptOptions options = ScriptOptions.create();
+                    if (o.has("language")) options.language(o.get("language").asText());
+                    if (o.has("retry")) options.retry(retryOf(o.get("retry")));
+                    if (o.has("compensateWith")) options.compensateWith(o.get("compensateWith").asText());
+                    if (o.has("secrets")) { List<String> values = new ArrayList<>(); o.get("secrets").forEach(value -> values.add(value.asText())); options.secrets(values); }
+                    if (o.has("onError")) options.onError(o.get("onError").asText());
+                    if (o.has("outputSchema")) options.outputSchema(o.get("outputSchema"));
+                    target.script(id, op.path("artifactDigest").asText(null), options);
+                }
                 case "sleep" -> target.sleepMs(id, op.path("durationMs").asLong());
                 case "waitForEvent" -> {
                     JsonNode o = op.path("options");
-                    known(o, "waitForEvent", "eventType", "correlationExpr", "timeoutMs", "onTimeout", "lookbackMs");
+                    known(o, "waitForEvent", "eventType", "correlationExpr", "timeoutMs", "onTimeout", "lookbackMs", "outputSchema");
                     WaitForEventOptions options = WaitForEventOptions.of(
                             o.path("eventType").asText(null), o.path("correlationExpr").asText(null), o.path("timeoutMs").asLong());
                     if (o.has("onTimeout")) {
@@ -192,11 +261,14 @@ public final class Runner {
                     if (o.has("lookbackMs")) {
                         options.lookbackMs(o.get("lookbackMs").asLong());
                     }
+                    if (o.has("outputSchema")) {
+                        options.outputSchema(o.get("outputSchema"));
+                    }
                     target.waitForEvent(id, options);
                 }
                 case "invokeChild" -> {
                     JsonNode o = op.get("options");
-                    known(o, "invokeChild", "version", "input", "cancelPolicy");
+                    known(o, "invokeChild", "version", "input", "cancelPolicy", "outputSchema");
                     ChildOptions options = ChildOptions.create();
                     if (o != null && o.has("version")) {
                         options.version(o.get("version").asInt());
@@ -207,10 +279,77 @@ public final class Runner {
                     if (o != null && o.has("cancelPolicy")) {
                         options.cancelPolicy(enumOf(ChildOptions.CancelPolicy.class, o.get("cancelPolicy")));
                     }
+                    if (o != null && o.has("outputSchema")) {
+                        options.outputSchema(o.get("outputSchema"));
+                    }
                     target.invokeChild(id, op.path("workflow").asText(null), options);
                 }
                 case "condition" -> target.condition(
                         id, op.path("expression").asText(null), op.path("ifTrue").asText(null), op.path("ifFalse").asText(null));
+                case "switch" -> {
+                    List<SwitchCase> cases = new ArrayList<>();
+                    for (JsonNode item : op.path("cases")) {
+                        cases.add(new SwitchCase(
+                                item.path("id").asText(null),
+                                item.path("when").asText(null),
+                                item.path("target").asText(null)));
+                    }
+                    target.switchCase(id, cases, op.path("default").asText(null));
+                }
+                case "forEach" -> target.forEach(
+                        id,
+                        op.path("items").asText(null),
+                        op.path("body").asText(null),
+                        op.path("result").asText(null),
+                        CollectionOptions.of(op.path("maxItems").asInt(), op.path("maxConcurrency").asInt()));
+                case "map" -> target.map(
+                        id,
+                        op.path("items").asText(null),
+                        op.path("body").asText(null),
+                        op.path("result").asText(null),
+                        CollectionOptions.of(op.path("maxItems").asInt(), op.path("maxConcurrency").asInt()));
+                case "while" -> target.whileLoop(
+                        id, op.path("condition").asText(null), op.path("body").asText(null),
+                        op.path("initial").asText(null), op.path("carry").asText(null), loopOptions(op));
+                case "repeatUntil" -> target.repeatUntil(
+                        id, op.path("condition").asText(null), op.path("body").asText(null),
+                        op.path("initial").asText(null), op.path("carry").asText(null), loopOptions(op));
+                case "approval" -> {
+                    JsonNode policy = op.path("policy");
+                    List<String> subjects = null;
+                    if (policy.has("subjects")) {
+                        subjects = new ArrayList<>();
+                        for (JsonNode subject : policy.path("subjects")) {
+                            subjects.add(subject.textValue());
+                        }
+                    }
+                    List<ApprovalRole> roles = null;
+                    if (policy.has("roles")) {
+                        roles = new ArrayList<>();
+                        for (JsonNode role : policy.path("roles")) {
+                            roles.add(switch (role.asText()) {
+                                case "admin" -> ApprovalRole.ADMIN;
+                                case "developer" -> ApprovalRole.DEVELOPER;
+                                case "operator" -> ApprovalRole.OPERATOR;
+                                default -> null;
+                            });
+                        }
+                    }
+                    Boolean exclude = policy.has("excludeInitiator")
+                            ? policy.path("excludeInitiator").booleanValue()
+                            : null;
+                    target.approval(id, new ApprovalOptions(
+                            new ApprovalPolicy(subjects, roles, exclude),
+                            Duration.ofMillis(op.path("timeoutMs").longValue()),
+                            op.path("onApprove").asText(null),
+                            op.path("onReject").asText(null),
+                            op.path("onExpire").asText(null)));
+                }
+                case "continueAsNew" -> target.continueAsNew(
+                        id,
+                        op.path("input").asText(null),
+                        op.has("state") ? op.path("state").asText() : null);
+                case "return" -> target.returnValue(id, op.path("result").asText(null));
                 case "parallel" -> {
                     List<Flow> branches = new ArrayList<>();
                     for (JsonNode branchOps : op.path("branches")) {
@@ -244,6 +383,18 @@ public final class Runner {
         }
     }
 
+    private static LoopOptions loopOptions(JsonNode op) {
+        LoopOptions options = LoopOptions.of(
+                op.path("maxIterations").intValue(), Duration.ofMillis(op.path("timeoutMs").longValue()));
+        if (op.has("delayMs")) {
+            options = options.withDelay(Duration.ofMillis(op.path("delayMs").longValue()));
+        }
+        if (op.has("onError")) {
+            options = options.withOnError(op.path("onError").textValue());
+        }
+        return options;
+    }
+
     private static WorkflowBuilder builderOf(JsonNode definition) {
         WorkflowBuilder builder = WorkflowBuilder.named(definition.path("name").asText(null));
         if (definition.has("description") && !definition.get("description").asText().isEmpty()) {
@@ -259,6 +410,42 @@ public final class Runner {
         if (definition.has("outputSchema")) {
             builder.outputSchema(definition.get("outputSchema"));
         }
+        if (definition.has("limits")) {
+            JsonNode limits = definition.get("limits");
+            builder.limits(new WorkflowLimits(
+                    limits.has("maxInstances") ? limits.get("maxInstances").intValue() : null,
+                    limits.has("maxDepth") ? limits.get("maxDepth").intValue() : null));
+        }
+        if (definition.has("state")) {
+            JsonNode state = definition.path("state");
+            Map<String, QueryDefinition> queries = new LinkedHashMap<>();
+            state.path("queries").properties().forEach(entry -> {
+                JsonNode query = entry.getValue();
+                queries.put(entry.getKey(), new QueryDefinition(
+                        query.get("argsSchema"), query.get("resultSchema"),
+                        query.path("expression").textValue(), query.path("disclosure").textValue()));
+            });
+            Map<String, UpdateDefinition> updates = new LinkedHashMap<>();
+            state.path("updates").properties().forEach(entry -> {
+                JsonNode update = entry.getValue();
+                updates.put(entry.getKey(), new UpdateDefinition(
+                        update.get("argsSchema"), update.path("validate").textValue(),
+                        update.path("state").textValue(), update.path("result").textValue(),
+                        update.get("resultSchema"), update.path("disclosure").textValue()));
+            });
+            builder.state(new StateDefinition(state.get("schema"), state.path("initial").textValue(), queries, updates));
+        }
+        if (definition.has("chainPolicy")) {
+            JsonNode policy = definition.path("chainPolicy");
+            builder.chainPolicy(ChainPolicy.of(
+                    policy.path("maxSegments").intValue(),
+                    Duration.ofMillis(policy.path("timeoutMs").longValue())));
+        }
+        definition.path("bodies").properties().forEach(e -> {
+            Flow nested = Flow.body();
+            apply(nested, e.getValue().path("program"));
+            builder.body(e.getKey(), nested);
+        });
         Flow program = Flow.create();
         apply(program, definition.path("program"));
         builder.append(program);
@@ -336,7 +523,33 @@ public final class Runner {
             parent.put("node", run.parent().node());
             parent.put("cancelPolicy", run.parent().cancelPolicy());
         }
+        // Present only for a run in a chain, so the observations of every other run stay as they were.
+        if (run.chain() != null) {
+            ObjectNode chain = out.putObject("chain");
+            chain.put("chainId", run.chain().chainId());
+            chain.put("segmentIndex", run.chain().segmentIndex());
+            if (run.chain().completionKind() == null) chain.putNull("completionKind"); else chain.put("completionKind", run.chain().completionKind());
+            if (run.chain().successorRunId() == null) chain.putNull("successorRunId"); else chain.put("successorRunId", run.chain().successorRunId());
+        }
+        // Present only for a run started again from an ended one.
+        if (run.rerunOf() != null) {
+            out.put("rerunOf", run.rerunOf());
+        }
         return out;
+    }
+
+    private static ObjectNode chainJson(dev.sagatoctopusorchestrator.sdk.ChainInspection chain) {
+        ObjectNode result = F.objectNode();
+        result.put("chainId", chain.chainId()); result.put("currentRunId", chain.currentRunId());
+        result.put("revision", chain.revision()); result.put("cancelRequested", chain.cancelRequested());
+        if (chain.finalOutcome() == null) result.putNull("finalOutcome"); else result.put("finalOutcome", chain.finalOutcome());
+        ArrayNode segments = result.putArray("segments");
+        chain.segments().forEach(item -> {
+            ObjectNode value = segments.addObject(); value.put("index", item.index()); value.put("runId", item.runId());
+            if (item.predecessorRunId() == null) value.putNull("predecessorRunId"); else value.put("predecessorRunId", item.predecessorRunId());
+            if (item.successorRunId() == null) value.putNull("successorRunId"); else value.put("successorRunId", item.successorRunId());
+        });
+        return result;
     }
 
     private static ObjectNode errorJson(Throwable error) {
@@ -421,7 +634,11 @@ public final class Runner {
         String apiPath = URI.create(config.get("apiUrl").asText()).getPath().replaceAll("/$", "");
 
         Map<String, SagatClient> clients = new LinkedHashMap<>();
-        for (Map.Entry<String, String> token : Map.of("default", "clientToken", "bad", "badToken", "other", "otherTenantToken").entrySet()) {
+        for (Map.Entry<String, String> token : Map.of(
+                "default", "clientToken", "bad", "badToken", "other", "otherTenantToken",
+                // Members of the tenant with one role each, the worker identity, and an operator the scenario revokes.
+                "worker", "workerToken", "operator", "operatorToken", "viewer", "viewerToken",
+                "runner", "runnerToken", "revoked", "revokedToken").entrySet()) {
             clients.put(token.getKey(), SagatClient.create(ClientConfig.builder()
                     .apiUrl(config.get("apiUrl").asText())
                     .namespace(config.get("namespace").asText())
@@ -511,12 +728,53 @@ public final class Runner {
     }
 
     private static String runOf(JsonNode step, Map<String, JsonNode> results) {
+        if (step.path("page").isTextual()) {
+            // A segment of a page of listChainRuns, by position.
+            JsonNode listed = results.get(step.get("page").asText());
+            JsonNode items = listed == null ? null : listed.path("items");
+            int index = step.path("index").asInt(0);
+            if (items == null || !items.isArray() || index < 0 || index >= items.size() || !items.get(index).path("runId").isTextual()) {
+                throw new IllegalStateException("step " + step.get("page").asText() + " has no segment " + index);
+            }
+            return items.get(index).get("runId").textValue();
+        }
+        // A rerun answers "newRunId" and no "runId": the step then names the run it started.
         JsonNode result = results.get(step.path("run").asText());
-        JsonNode id = result == null ? null : result.get("runId");
+        JsonNode id = result == null ? null : (result.has("runId") ? result.get("runId") : result.get("newRunId"));
         if (id == null || !id.isTextual()) {
             throw new IllegalStateException("step " + step.path("run").asText() + " has no run");
         }
         return id.textValue();
+    }
+
+    private static String approvalOf(JsonNode step, Map<String, JsonNode> results) {
+        if (step.has("approvalId")) return step.get("approvalId").asText();
+        JsonNode source = results.get(step.get("approval").asText());
+        JsonNode items = source == null ? null : source.path("items");
+        if (items == null || !items.isArray() || items.isEmpty() || !items.get(0).path("approvalId").isTextual()) {
+            throw new IllegalArgumentException("step " + step.get("approval").asText() + " has no approval");
+        }
+        return items.get(0).get("approvalId").asText();
+    }
+
+    private static String chainRef(JsonNode value, JsonNode config, Map<String, JsonNode> results) {
+        String text = value.asText();
+        if (text.equals("{{namespaceId}}")) return config.get("namespaceId").asText();
+        String field;
+        String key;
+        if (text.startsWith("{{chainId:") && text.endsWith("}}")) {
+            field = "runId";
+            key = text.substring(10, text.length() - 2);
+        } else if (text.startsWith("{{currentRunId:") && text.endsWith("}}")) {
+            field = "currentRunId";
+            key = text.substring(15, text.length() - 2);
+        } else {
+            return text;
+        }
+        JsonNode source = results.get(key);
+        JsonNode resolved = source == null ? null : source.get(field);
+        if (resolved == null || !resolved.isTextual()) throw new IllegalStateException("step " + key + " has no " + field);
+        return resolved.asText();
     }
 
     private static void pause(long millis) throws InterruptedException {
@@ -553,8 +811,13 @@ public final class Runner {
             }
             case "startWithBlob": {
                 JsonNode workflow = config.path("workflows").path(step.get("workflow").asText());
-                byte[] body = new byte[step.get("inputBlobBytes").asInt()];
-                java.util.Arrays.fill(body, (byte) 'i');
+                byte[] body;
+                if (step.has("inputBlobText")) {
+                    body = step.get("inputBlobText").asText().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                } else {
+                    body = new byte[step.get("inputBlobBytes").asInt()];
+                    java.util.Arrays.fill(body, (byte) 'i');
+                }
                 String sha256 = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(body));
                 var descriptor = client.uploadRunInput(new ByteArrayInputStream(body),
                         new RunInputBlobOptions("application/octet-stream", (long) body.length, sha256));
@@ -587,11 +850,66 @@ public final class Runner {
                 if (step.path("all").asBoolean(false)) {
                     client.listAll(options).forEach(run -> ids.add(run.runId()));
                 } else {
-                    // In the order the server gave (newest first): the SDK keeps it, also across pages.
-                    client.list(options).items().forEach(run -> ids.add(run.runId()));
+                    // "waitForCount": the runs of a chain are made by the scheduler, so a scenario that needs a
+                    // hand-off to have happened waits for it by the count of runs in a status.
+                    for (int attempt = 0; ; attempt++) {
+                        ids.removeAll();
+                        // In the order the server gave (newest first): the SDK keeps it, also across pages.
+                        client.list(options).items().forEach(run -> ids.add(run.runId()));
+                        if (ids.size() >= step.path("waitForCount").asInt(0) || attempt >= 100) break;
+                        Thread.sleep(50);
+                    }
                 }
                 ObjectNode result = F.objectNode();
-                result.set("items", ids);
+                // "countOnly" answers the number alone, for runs whose ids are derived from their parent's and so
+                // sort anywhere.
+                if (step.path("countOnly").asBoolean(false)) {
+                    result.put("count", ids.size());
+                } else {
+                    result.set("items", ids);
+                }
+                return result;
+            }
+            case "listApprovals": {
+                ApprovalListOptions options = ApprovalListOptions.create();
+                if (step.has("cursor")) options.cursor(step.get("cursor").asText());
+                if (step.has("limit")) options.limit(step.get("limit").asInt());
+                if (step.has("traceparent")) options.traceparent(step.get("traceparent").asText());
+                ApprovalPage page = client.listApprovals(runOf(step, results), options);
+                for (int attempt = 0; step.path("waitForItem").asBoolean(false) && page.items().isEmpty() && attempt < 100; attempt++) {
+                    try {
+                        Thread.sleep(50);
+                    } catch (InterruptedException error) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException("interrupted while waiting for an approval");
+                    }
+                    page = client.listApprovals(runOf(step, results), options);
+                }
+                ArrayNode items = F.arrayNode();
+                for (ApprovalListItem item : page.items()) {
+                    ObjectNode value = F.objectNode();
+                    value.put("approvalId", item.approvalId());
+                    value.put("runId", item.runId());
+                    value.put("nodeId", item.nodeId());
+                    ArrayNode path = F.arrayNode();
+                    item.instancePath().forEach(scope -> {
+                        ObjectNode segment = F.objectNode();
+                        segment.put("scopeNodeId", scope.scopeNodeId());
+                        segment.put("iterationIndex", scope.iterationIndex());
+                        path.add(segment);
+                    });
+                    value.set("instancePath", path);
+                    value.put("status", item.status().name());
+                    value.put("deadline", java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
+                            .withZone(java.time.ZoneOffset.UTC).format(item.deadline()));
+                    if (item.settledAt() == null) value.putNull("settledAt"); else value.put("settledAt",
+                            java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
+                                    .withZone(java.time.ZoneOffset.UTC).format(item.settledAt()));
+                    items.add(value);
+                }
+                ObjectNode result = F.objectNode();
+                result.set("items", items);
+                if (page.nextCursor() == null) result.putNull("nextCursor"); else result.put("nextCursor", page.nextCursor());
                 return result;
             }
             case "cancel": {
@@ -614,6 +932,157 @@ public final class Runner {
                 }
                 return operation(client.operate(
                         runOf(step, results), OperateAction.valueOf(step.get("action").asText()), step.get("reason").asText(), options));
+            }
+            case "decideApproval": {
+                ApprovalDecisionOptions options = ApprovalDecisionOptions.create(step.get("decisionKey").asText());
+                if (step.has("reasonCode")) {
+                    options.reasonCode(step.get("reasonCode").asText());
+                }
+                if (step.has("traceparent")) {
+                    options.traceparent(step.get("traceparent").asText());
+                }
+                ApprovalDecisionReceipt receipt = client.decideApproval(
+                        approvalOf(step, results), ApprovalDecision.valueOf(step.get("decision").asText()), options);
+                ObjectNode result = F.objectNode();
+                result.put("receiptId", receipt.receiptId());
+                result.put("approvalId", receipt.approvalId());
+                result.put("decisionKey", receipt.decisionKey());
+                result.put("decision", receipt.decision().name());
+                if (receipt.reasonCode() == null) result.putNull("reasonCode"); else result.put("reasonCode", receipt.reasonCode());
+                result.put("actor", receipt.actor());
+                result.put("decidedAt", java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
+                        .withZone(java.time.ZoneOffset.UTC).format(receipt.decidedAt()));
+                result.put("outcomeSequence", receipt.outcomeSequence());
+                result.put("replayed", receipt.replayed());
+                return result;
+            }
+            case "query": {
+                dev.sagatoctopusorchestrator.sdk.QueryResult queried = client.query(
+                        runOf(step, results), step.get("name").asText(), step.get("args"), CallOptions.create());
+                ObjectNode result = F.objectNode();
+                result.put("runVersion", queried.runVersion());
+                result.put("stateRevision", queried.stateRevision());
+                result.set("result", queried.result());
+                return result;
+            }
+            case "queryChain": {
+                ChainQueryOptions options = ChainQueryOptions.create();
+                if (step.has("expectedRunId")) {
+                    options.expectedRunId(chainRef(step.get("expectedRunId"), config, results));
+                }
+                if (step.has("traceparent")) options.traceparent(step.get("traceparent").asText());
+                dev.sagatoctopusorchestrator.sdk.QueryResult queried = client.queryChain(
+                        chainRef(step.get("namespaceId"), config, results),
+                        chainRef(step.get("chainId"), config, results),
+                        step.get("name").asText(), step.get("args"), options);
+                ObjectNode result = F.objectNode();
+                result.put("runId", queried.runId());
+                result.put("runVersion", queried.runVersion());
+                result.put("stateRevision", queried.stateRevision());
+                result.set("result", queried.result());
+                return result;
+            }
+            case "update": {
+                dev.sagatoctopusorchestrator.sdk.UpdateOptions options =
+                        dev.sagatoctopusorchestrator.sdk.UpdateOptions.create(step.get("updateKey").asText());
+                if (step.has("expectedStateRevision")) options.expectedStateRevision(step.get("expectedStateRevision").longValue());
+                if (step.has("traceparent")) options.traceparent(step.get("traceparent").asText());
+                dev.sagatoctopusorchestrator.sdk.UpdateReceipt updated = client.update(
+                        runOf(step, results), step.get("name").asText(), step.get("args"), options);
+                ObjectNode result = F.objectNode();
+                result.put("operation", updated.operation()); result.put("updateKey", updated.updateKey());
+                result.put("status", updated.status()); result.set("result", updated.result());
+                result.put("beforeStateRevision", updated.beforeStateRevision());
+                result.put("afterStateRevision", updated.afterStateRevision());
+                result.put("runVersion", updated.runVersion()); result.put("replayed", updated.replayed());
+                return result;
+            }
+            case "updateChain": {
+                dev.sagatoctopusorchestrator.sdk.ChainUpdateOptions options =
+                        dev.sagatoctopusorchestrator.sdk.ChainUpdateOptions.create(step.get("updateKey").asText());
+                if (step.has("expectedRunId")) {
+                    options.expectedRunId(chainRef(step.get("expectedRunId"), config, results));
+                }
+                if (step.has("expectedStateRevision")) {
+                    options.expectedStateRevision(step.get("expectedStateRevision").longValue());
+                }
+                if (step.has("traceparent")) options.traceparent(step.get("traceparent").asText());
+                dev.sagatoctopusorchestrator.sdk.UpdateReceipt updated = client.updateChain(
+                        chainRef(step.get("namespaceId"), config, results),
+                        chainRef(step.get("chainId"), config, results),
+                        step.get("name").asText(), step.get("args"), options);
+                ObjectNode result = F.objectNode();
+                result.put("runId", updated.runId()); result.put("operation", updated.operation());
+                result.put("updateKey", updated.updateKey()); result.put("status", updated.status());
+                result.set("result", updated.result());
+                result.put("beforeStateRevision", updated.beforeStateRevision());
+                result.put("afterStateRevision", updated.afterStateRevision());
+                result.put("runVersion", updated.runVersion()); result.put("replayed", updated.replayed());
+                return result;
+            }
+            case "listChainRuns": {
+                dev.sagatoctopusorchestrator.sdk.ChainRunListOptions options = dev.sagatoctopusorchestrator.sdk.ChainRunListOptions.create();
+                if (step.has("limit")) options.limit(step.get("limit").asInt());
+                if (step.has("traceparent")) options.traceparent(step.get("traceparent").asText());
+                if (step.has("cursor")) {
+                    String cursor = step.get("cursor").asText();
+                    if (cursor.startsWith("{{nextCursor:") && cursor.endsWith("}}")) {
+                        JsonNode earlier = results.get(cursor.substring("{{nextCursor:".length(), cursor.length() - 2));
+                        if (earlier == null || !earlier.path("nextCursor").isTextual()) {
+                            throw new IllegalStateException("the referenced step has no next page");
+                        }
+                        cursor = earlier.get("nextCursor").asText();
+                    }
+                    options.cursor(cursor);
+                }
+                dev.sagatoctopusorchestrator.sdk.ChainRunPage page = client.listChainRuns(
+                        chainRef(step.get("namespaceId"), config, results), chainRef(step.get("chainId"), config, results), options);
+                ObjectNode result = F.objectNode();
+                ArrayNode items = result.putArray("items");
+                for (dev.sagatoctopusorchestrator.sdk.ChainRun item : page.items()) {
+                    ObjectNode entry = items.addObject();
+                    entry.put("index", item.index()); entry.put("runId", item.runId()); entry.put("status", item.status());
+                    if (item.completionKind() == null) entry.putNull("completionKind"); else entry.put("completionKind", item.completionKind());
+                    if (item.predecessorRunId() == null) entry.putNull("predecessorRunId"); else entry.put("predecessorRunId", item.predecessorRunId());
+                    if (item.successorRunId() == null) entry.putNull("successorRunId"); else entry.put("successorRunId", item.successorRunId());
+                    entry.set("createdAt", instant(item.createdAt())); entry.set("finishedAt", instant(item.finishedAt()));
+                }
+                if (page.nextCursor() == null) result.putNull("nextCursor"); else result.put("nextCursor", page.nextCursor());
+                return result;
+            }
+            case "inspectChain": {
+                CallOptions options = CallOptions.create();
+                if (step.has("traceparent")) options.traceparent(step.get("traceparent").asText());
+                String namespaceId = chainRef(step.get("namespaceId"), config, results);
+                String chainId = chainRef(step.get("chainId"), config, results);
+                dev.sagatoctopusorchestrator.sdk.ChainInspection chain = client.inspectChain(
+                        namespaceId, chainId, options);
+                if (step.has("waitForHeadChange")) {
+                    String previous = chainRef(step.get("waitForHeadChange"), config, results);
+                    for (int attempt = 0; chain.currentRunId().equals(previous) && attempt < 100; attempt++) {
+                        pause(50);
+                        chain = client.inspectChain(namespaceId, chainId, options);
+                    }
+                }
+                return chainJson(chain);
+            }
+            case "signalChain": {
+                dev.sagatoctopusorchestrator.sdk.ChainCommandOptions options =
+                        dev.sagatoctopusorchestrator.sdk.ChainCommandOptions.create(chainRef(step.get("expectedRunId"), config, results));
+                if (step.has("idempotencyKey")) options.idempotencyKey(step.get("idempotencyKey").asText());
+                if (step.has("traceparent")) options.traceparent(step.get("traceparent").asText());
+                SignalResult signal = client.signalChain(chainRef(step.get("namespaceId"), config, results), chainRef(step.get("chainId"), config, results),
+                        step.get("name").asText(), step.get("payload"), options);
+                ObjectNode result = F.objectNode(); ArrayNode delivered = result.putArray("deliveredTo"); signal.deliveredTo().forEach(delivered::add);
+                return result;
+            }
+            case "cancelChain": {
+                dev.sagatoctopusorchestrator.sdk.ChainCommandOptions options =
+                        dev.sagatoctopusorchestrator.sdk.ChainCommandOptions.create(chainRef(step.get("expectedRunId"), config, results));
+                if (step.has("idempotencyKey")) options.idempotencyKey(step.get("idempotencyKey").asText());
+                if (step.has("traceparent")) options.traceparent(step.get("traceparent").asText());
+                client.cancelChain(chainRef(step.get("namespaceId"), config, results), chainRef(step.get("chainId"), config, results), step.get("reason").asText(), options);
+                ObjectNode result = F.objectNode(); result.put("accepted", true); return result;
             }
             case "signal": {
                 SignalResult signalled = client.signal(
@@ -643,6 +1112,13 @@ public final class Runner {
                         WaitOptions.create()
                                 .timeout(Duration.ofMillis(step.has("timeoutMs") ? step.get("timeoutMs").asLong() : 60_000))
                                 .pollInterval(Duration.ofMillis(100))));
+            case "waitForChainCompletion": {
+                var chain = client.waitForChainCompletion(
+                        chainRef(step.get("namespaceId"), config, results), chainRef(step.get("chainId"), config, results),
+                        WaitOptions.create().timeout(Duration.ofMillis(step.has("timeoutMs") ? step.get("timeoutMs").asLong() : 60_000))
+                                .pollInterval(Duration.ofMillis(100)));
+                return chainJson(chain);
+            }
             case "events": {
                 JournalPage page = client.events(runOf(step, results), null, 200);
                 ObjectNode result = F.objectNode();
@@ -763,6 +1239,10 @@ public final class Runner {
         ObjectNode result = F.objectNode();
         result.put("accepted", r.accepted());
         result.put("runStatus", r.runStatus());
+        // "newRunId" only for the action that starts a run, so the other operations observe as they did.
+        if (r.newRunId() != null) {
+            result.put("newRunId", r.newRunId());
+        }
         return result;
     }
 

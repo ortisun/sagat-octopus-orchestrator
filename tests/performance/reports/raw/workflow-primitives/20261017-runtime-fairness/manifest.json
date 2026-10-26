@@ -1,0 +1,13 @@
+{
+  "executed_checkout_head": "f23c60af",
+  "reproducible_source_base": "574f76a3bf64d53fd4980777e653d1d5433d4483",
+  "patch": "runtime-membership.patch",
+  "binary_sha256": "f856e6cc6e801f0c486ba75413f453d6b84ade6414e1b9d431c6f32ea553a91c",
+  "role": "sagat_app (observer/setup postgres)",
+  "fixture": "repository disposable PostgreSQL16-alpine with shm1GiB, no external URL",
+  "command": "SAGAT_TEST_AS_RUNTIME_ROLE=1 SAGAT_PERF_FRAGMENTS=<output> cargo test -p sagat-tests --test perf_workflow_primitives --locked tenants::measure_cross_run_tenant_slot_bounds_with_a_bursting_neighbour -- --exact --ignored --nocapture",
+  "exit_code": 0,
+  "harness_seconds": 46.1,
+  "scope": "6x40 bursting neighbour and 1x40 quiet tenant; no general production capacity acceptance",
+  "limitations": "Shared host with builds, SDK scenarios and other benchmarks; debug; no OS peak memory sample for this corrected run"
+}

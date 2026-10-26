@@ -12,7 +12,7 @@ PostgreSQL is the source of truth. NATS JetStream transports notifications; Kafk
 connectors integrate external systems. External effects are **at-least-once**: use idempotency keys
 and reconciliation for operations such as payments.
 
-**Version:** [0.1.0](docs/releases/0.1.0.md). **License:** [MIT](LICENSE). **Implementation and validation status:**
+**Version:** [0.2.0](docs/releases/0.2.0.md). **License:** [MIT](LICENSE). **Implementation and validation status:**
 [requirement traceability](docs/traceability.md). This README documents the source checkout; it does
 not assume that application images, CLI binaries or SDK packages have been published to a registry.
 Studio labels and project documentation are in English.
@@ -23,6 +23,7 @@ Studio labels and project documentation are in English.
 - [Access ports](#access-ports)
 - [Configure the platform](#configure-the-platform)
 - [Run your first workflow](#run-your-first-workflow)
+- [SDK use cases](#sdk-use-cases)
 - [Configure integrations](#configure-integrations)
 - [Write and run scripts](#write-and-run-scripts)
 - [Develop without application containers](#develop-without-application-containers)
@@ -229,6 +230,21 @@ independent applications. After token expiry, renew it and restart this CLI work
 Next, try the [payment saga](docs/quickstarts/saga.md) to observe compensation, then replace the mock
 worker with a [TypeScript](docs/quickstarts/typescript.md), [Go](docs/quickstarts/go.md),
 [Python](docs/quickstarts/python.md), [C#](docs/quickstarts/dotnet.md) or [Java](docs/quickstarts/java.md) worker.
+
+## SDK use cases
+
+After the first workflow, run [order processing](examples/order-processing/README.md) in
+**TypeScript, Python, Go, C# or Java**. Every language demonstrates conditional routing (including
+business rejection), static parallel fulfillment, a durable reminder and an injected permanent
+notification failure. The guide includes publication, worker permissions, expected output and
+troubleshooting. Browse the [example matrix](examples/sdk-parity.md) for greeting and payment
+saga examples as well.
+
+The [workflow runbook](docs/runbooks/workflow-primitives.md) documents the restricted public
+subsets for collections, loops, approval, switch, Query/Update and continuation chains. General
+nesting and large-workload acceptance remain pending; declaration limits are not production
+capacity guarantees. See [ADR-0040](docs/adr/ADR-0040-release-checkpoints-preserve-incomplete-feature-boundaries.md)
+and the [open feature tasks](specs/014-workflow-primitives/tasks.md). Runnable examples use the current API.
 
 ## Configure integrations
 
@@ -633,7 +649,9 @@ kubectl -n sagat logs deployment/sagat-octopus-orchestrator-engine --previous --
 Further procedures: [control plane](docs/runbooks/control-plane.md),
 [execution engine](docs/runbooks/execution-engine.md), [scripts](docs/runbooks/scripts.md),
 [security/governance](docs/runbooks/security-governance.md), [events](docs/runbooks/events.md),
-[Studio](docs/runbooks/studio.md), [alerts](docs/runbooks/alerts.md).
+[Studio](docs/runbooks/studio.md), [alerts](docs/runbooks/alerts.md),
+[workflow primitives](docs/runbooks/workflow-primitives.md) and
+[SDK compatibility](docs/sdk-compatibility.md).
 
 ## Repository and operational scripts
 
@@ -652,14 +670,17 @@ infra/helm/                   Kubernetes chart and deployment values
 infra/observability/           Collector, Prometheus, Grafana and alert configuration
 infra/dr/                     Disaster-recovery drill and journal verification
 scripts/                      Repository validation and SDK packaging tools
-specs/001..012/                Feature specifications, plans, tasks, contracts and evidence
-docs/                         Architecture, ADRs, references, quickstarts and operational runbooks
+specs/NNN-slug/               Feature specifications, plans, tasks, contracts and evidence (Spec Kit)
+docs/                         Architecture, ADRs, engineering guide, references, quickstarts and runbooks
+.claude/                      Agent skills, read-only reviewer subagents, hooks and shared settings
+AGENTS.md, CLAUDE.md          Rules and commands for coding agents (CLAUDE.md imports AGENTS.md)
 .specify/memory/constitution.md Architecture and delivery principles
 ```
 
 | Script | Purpose and side effects |
 |---|---|
 | `scripts/check-architecture.py` | Checks crate dependency/layer rules; uses Cargo metadata |
+| `scripts/check-agent-config.py` | Checks the agent instruction files, skills, subagents, hooks and ADR headers for size, links and consistency; read-only |
 | `scripts/smoke-compose.sh` | Builds and tests an isolated Compose project; removes only its own project/volumes |
 | `scripts/package-sdks.sh` | Builds SDK distribution artifacts into `target/sdk-packages` by default; requires all packaging toolchains and an empty output directory; does not publish packages |
 | `tests/e2e/scalability-ha/kubernetes/run.sh` | Creates a disposable kind cluster and checks product/KEDA behavior |
@@ -695,4 +716,5 @@ Start with [architecture](docs/architecture/overview.md),
 bugfix branches from `develop`, never commit directly to `main`/`develop`, and include real validation
 evidence. Read the [constitution](.specify/memory/constitution.md) and the active feature's spec, plan
 and tasks before implementation. Spec Kit resolves the active feature through `.specify/feature.json`
-or `SPECIFY_FEATURE_DIRECTORY`; new features continue numbering from 013.
+or `SPECIFY_FEATURE_DIRECTORY`; feature numbers are shared by every branch, so check `git branch -a` before taking the next one.
+How the project uses specification-driven development, records architecture decisions and directs coding agents is in the [engineering guide](docs/engineering/README.md).

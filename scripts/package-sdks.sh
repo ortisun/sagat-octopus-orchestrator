@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly SDK_VERSION="0.1.0"
+readonly SDK_VERSION="0.2.0"
 readonly PYTHON_BUILD_VERSION="1.3.0"
 readonly MAVEN_INSTALL_PLUGIN_VERSION="3.1.4"
 
@@ -51,6 +51,11 @@ export NPM_CONFIG_UPDATE_NOTIFIER=false
 export DOTNET_CLI_TELEMETRY_OPTOUT=1
 export DOTNET_NOLOGO=1
 export DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1
+
+# The consumers assert the version this script packages; their sources carry a placeholder.
+set_version() {
+  sed "s/@SDK_VERSION@/${SDK_VERSION}/g" "$1" >"$1.versioned" && mv "$1.versioned" "$1"
+}
 
 for command_name in git node npm "${python_bin}" go dotnet java jar; do
   command -v "${command_name}" >/dev/null || {
@@ -174,10 +179,12 @@ PY
   --require-hashes \
   -r "${python_source}/requirements.lock.txt"
 "${work_dir}/python-consumer/bin/python" -m pip install --no-deps "${python_wheel}"
-"${work_dir}/python-consumer/bin/python" - <<'PY'
+env SDK_VERSION="${SDK_VERSION}" "${work_dir}/python-consumer/bin/python" - <<'PY'
+import os
+
 from sagat_octopus_orchestrator import __version__, workflow
 
-assert __version__ == "0.1.0"
+assert __version__ == os.environ["SDK_VERSION"]
 assert workflow("package-smoke").end("done").build()["metadata"]["name"] == "package-smoke"
 PY
 
@@ -238,12 +245,13 @@ import (
 )
 
 func main() {
-	if sagat.Version != "0.1.0" {
+	if sagat.Version != "@SDK_VERSION@" {
 		panic("unexpected SDK version")
 	}
 	fmt.Println(sagat.Version)
 }
 EOF
+set_version "${work_dir}/go-consumer/main.go"
 (
   cd "${work_dir}/go-consumer"
   GOWORK=off \
@@ -326,12 +334,13 @@ EOF
 cat >"${work_dir}/dotnet-consumer/Program.cs" <<'EOF'
 using SagatOctopusOrchestrator.Sdk;
 
-if (SdkInfo.Version != "0.1.0")
+if (SdkInfo.Version != "@SDK_VERSION@")
 {
     throw new InvalidOperationException("unexpected SDK version");
 }
 Console.WriteLine(SdkInfo.Version);
 EOF
+set_version "${work_dir}/dotnet-consumer/Program.cs"
 cat >"${work_dir}/dotnet-consumer/NuGet.Config" <<EOF
 <?xml version="1.0" encoding="utf-8"?>
 <configuration>
@@ -473,13 +482,14 @@ public final class PackageSmoke {
     private PackageSmoke() {}
 
     public static void main(String[] args) {
-        if (!"0.1.0".equals(SagatSdk.VERSION)) {
+        if (!"@SDK_VERSION@".equals(SagatSdk.VERSION)) {
             throw new IllegalStateException("unexpected SDK version");
         }
         System.out.println(SagatSdk.VERSION);
     }
 }
 EOF
+set_version "${work_dir}/java-consumer/src/main/java/example/PackageSmoke.java"
 (
   cd "${work_dir}/java-consumer"
   MAVEN_USER_HOME="${work_dir}/maven-smoke-home" "${java_source}/mvnw" -q \

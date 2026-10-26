@@ -9,12 +9,12 @@ mod common;
 use std::time::Duration;
 
 use common::{
-    Harness, T0, activity, build, condition, effect, end, flaky, id, parallel, saga, sid, timer,
-    wait,
+    Harness, T0, activity, build, condition, effect, end, end_with, flaky, id, parallel, saga, sid,
+    timer, wait,
 };
 use sagat_domain::execution::{
-    self, CorrelationKey, ExecutionError, Expiry, FailureCode, Fence, Resolution, RunEvent, RunId,
-    RunState, RunStatus, StepStatus, StopReason, WaitingOn,
+    self, CorrelationKey, Evaluation, ExecutionError, Expiry, FailureCode, Fence, Resolution,
+    RunEvent, RunId, RunState, RunStatus, StepStatus, StopReason, WaitingOn,
 };
 use sagat_domain::workflow::JoinPolicy;
 
@@ -471,6 +471,72 @@ fn an_expression_error_fails_the_node_without_retrying() {
         run.state.stop_code().map(FailureCode::as_str),
         Some("EXPRESSION_ERROR")
     );
+}
+
+// ------------------------------------------------------------------ run result (G21)
+
+#[test]
+fn an_end_with_a_result_expression_finishes_the_run_only_after_evaluating_it() {
+    let mut run = Harness::start(build(
+        "a",
+        vec![
+            activity("a").with_next(id("done")),
+            end_with("done", "steps.a.output"),
+        ],
+    ));
+    let fence = run.lease("a");
+    run.complete("a", fence).expect("complete");
+    assert!(
+        matches!(&run.pending, Some(Evaluation::Output { node, .. }) if *node == id("done")),
+        "{:?}",
+        run.pending
+    );
+    assert_eq!(run.state.status(), RunStatus::Running);
+    run.resolve(Resolution::Output {
+        node: id("done"),
+        outcome: Ok(()),
+    })
+    .expect("resolution");
+    assert_eq!(run.status("done"), StepStatus::Succeeded);
+    assert_eq!(run.state.status(), RunStatus::Succeeded);
+    run.assert_replays();
+}
+
+#[test]
+fn a_result_that_cannot_be_kept_fails_the_run_with_its_code() {
+    let mut run = Harness::start(build(
+        "a",
+        vec![
+            activity("a").with_next(id("done")),
+            end_with("done", "steps.a.output"),
+        ],
+    ));
+    let fence = run.lease("a");
+    run.complete("a", fence).expect("complete");
+    run.resolve(Resolution::Output {
+        node: id("done"),
+        outcome: Err(FailureCode::run_data_limit()),
+    })
+    .expect("resolution");
+    assert_eq!(run.status("done"), StepStatus::Failed);
+    assert_eq!(run.state.status(), RunStatus::Failed);
+    assert_eq!(
+        run.state.stop_code().map(FailureCode::as_str),
+        Some("RUN_DATA_LIMIT")
+    );
+    run.assert_replays();
+}
+
+#[test]
+fn an_end_without_a_result_expression_finishes_without_an_evaluation() {
+    let mut run = Harness::start(build(
+        "a",
+        vec![activity("a").with_next(id("done")), end("done")],
+    ));
+    let fence = run.lease("a");
+    run.complete("a", fence).expect("complete");
+    assert!(run.pending.is_none());
+    assert_eq!(run.state.status(), RunStatus::Succeeded);
 }
 
 #[test]
@@ -1022,6 +1088,42 @@ fn routing_cannot_activate_a_step_twice() {
 }
 
 #[test]
+fn release_pending_continues_a_step_that_a_durable_transaction_activated() {
+    // A transaction outside the planner (an approval outcome) completed `a` and activated `b`,
+    // then committed: the next owner of the run finds `b` pending and releases it, once.
+    let mut run = Harness::start(build(
+        "a",
+        vec![activity("a").with_next(id("b")), activity("b")],
+    ));
+    let fence = run.lease("a");
+    run.state
+        .apply(&RunEvent::StepCompleted {
+            node: id("a"),
+            attempt: fence.attempt,
+            generation: fence.generation,
+        })
+        .expect("complete");
+    run.state
+        .apply(&RunEvent::StepRouted {
+            node: id("a"),
+            activated: vec![id("b")],
+        })
+        .expect("route");
+    assert_eq!(run.status("b"), StepStatus::Pending);
+
+    let progress = execution::release_pending(&run.def, &mut run.state, T0).expect("release");
+    assert_eq!(
+        progress.events,
+        vec![RunEvent::StepReleased { node: id("b") }]
+    );
+    assert!(progress.pending.is_none());
+    assert_eq!(run.status("b"), StepStatus::Ready);
+
+    let again = execution::release_pending(&run.def, &mut run.state, T0).expect("nothing left");
+    assert!(again.events.is_empty() && again.pending.is_none());
+}
+
+#[test]
 fn a_run_cannot_finish_while_work_remains() {
     let run = Harness::start(build("a", vec![activity("a")]));
     let mut state = run.state;
@@ -1523,4 +1625,72 @@ mod children {
             [DefinitionWarning::RecursiveChild { node: id("again") }]
         );
     }
+}
+
+// ------------------------------------------------------------------ the author's instance limit
+
+fn limited(
+    entry: &str,
+    nodes: Vec<sagat_domain::workflow::Node>,
+    instances: u32,
+) -> sagat_domain::workflow::WorkflowDefinition {
+    build(entry, nodes)
+        .with_limits(sagat_domain::workflow::WorkflowLimits::new(instances, 8).expect("limits"))
+        .expect("lowered limits")
+}
+
+#[test]
+fn the_instance_that_would_pass_the_authors_limit_stops_the_run_with_instance_limit() {
+    let mut run = Harness::start(limited(
+        "a",
+        vec![
+            activity("a").with_next(id("b")),
+            activity("b").with_next(id("done")),
+            end("done"),
+        ],
+        2,
+    ));
+    let fence = run.lease("a");
+    run.complete("a", fence).expect("complete a");
+    let fence = run.lease("b");
+    run.complete("b", fence).expect("complete b");
+
+    assert_eq!(run.state.status(), RunStatus::Failed);
+    assert_eq!(run.state.stop_reason(), Some(StopReason::Failed));
+    assert_eq!(run.state.stop_code(), Some(&FailureCode::instance_limit()));
+    assert_eq!(run.status("done"), StepStatus::Cancelled);
+    assert!(run.names().contains(&"run.stop_requested"));
+    run.assert_replays();
+}
+
+#[test]
+fn a_run_that_exactly_fits_the_limit_succeeds() {
+    let mut run = Harness::start(limited(
+        "a",
+        vec![
+            activity("a").with_next(id("b")),
+            activity("b").with_next(id("done")),
+            end("done"),
+        ],
+        3,
+    ));
+    let fence = run.lease("a");
+    run.complete("a", fence).expect("complete a");
+    let fence = run.lease("b");
+    run.complete("b", fence).expect("complete b");
+    assert_eq!(run.state.status(), RunStatus::Succeeded);
+    assert_eq!(run.state.stop_reason(), None);
+    run.assert_replays();
+}
+
+#[test]
+fn a_definition_without_a_lowered_limit_never_pays_for_the_check() {
+    let mut run = Harness::start(build(
+        "a",
+        vec![activity("a").with_next(id("done")), end("done")],
+    ));
+    let fence = run.lease("a");
+    run.complete("a", fence).expect("complete a");
+    assert_eq!(run.state.status(), RunStatus::Succeeded);
+    assert!(!run.names().contains(&"run.stop_requested"));
 }

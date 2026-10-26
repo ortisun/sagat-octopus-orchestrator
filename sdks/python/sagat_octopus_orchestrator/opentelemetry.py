@@ -69,9 +69,11 @@ class OpenTelemetryBridge:
                         old.end()
                     if len(self._open) >= _MAX_OPEN_TASKS:
                         return
-                    parent = self._propagator.extract(
-                        {"traceparent": event.traceparent}, getter=_Getter()
-                    ) if event.traceparent else None
+                    parent = (
+                        self._propagator.extract({"traceparent": event.traceparent}, getter=_Getter())
+                        if event.traceparent
+                        else None
+                    )
                     self._open[event.task_id] = self._tracer.start_span(
                         "sagat.worker.task",
                         context=parent,

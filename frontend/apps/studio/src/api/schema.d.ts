@@ -379,6 +379,85 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/runs/{runId}/queries/{operationName}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Evaluate a declared side-effect-free business query
+         * @description Needs `run:read` and `run:query` in the run's current namespace. The named operation must
+         *     be pinned in the run's immutable workflow version with
+         *     `disclosure: declared-business-result-v1`. Evaluation observes one committed snapshot and
+         *     returns only the schema-checked declared result. It does not append a journal event, change
+         *     state or schedule work. Authorization and audit commit before any value is returned.
+         */
+        post: operations["queryRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runs/{runId}/updates/{operationName}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply a declared business state update
+         * @description Needs `run:update` in the run's current namespace. A fresh request is accepted only while
+         *     the run is RUNNING or WAITING. The immutable declaration validates arguments and computes
+         *     state and result without I/O, callbacks or external effects. APPLIED commits state, result,
+         *     receipt, journal, audit and outbox atomically without scheduling work. Business-validator
+         *     and expected-revision failures commit stable REJECTED receipts without changing state. An
+         *     exact replay returns the durable receipt only after current authorization; changing any
+         *     request content under the same `updateKey` returns `409 IDEMPOTENCY_KEY_REUSED`.
+         */
+        post: operations["updateRunState"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/runs/{runId}/database-results/{nodeId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read one retained database step result after authorization and audit
+         * @description Requires `run:read` and `database:result:read` (Admin by default). The namespace,
+         *     run and node must identify a succeeded managed database step. Ordinary run inspection
+         *     remains structural. No digest, blob ID, query override or bulk selector is accepted.
+         *     Returns the validated complete typed result, limited to 4 MiB and 10000 rows.
+         *     Current membership is checked before object I/O and again in the audit transaction.
+         *     The audit commits before response bytes; failed audit, lost/corrupt content and
+         *     revoked access disclose no result. Reads work independently of OpenBao availability.
+         *     Namespace admission is charged once after scope/permission checks. The read and
+         *     response delivery deadline is the minimum of 30s, configured transfer duration and
+         *     the bearer lifetime. Responses have Cache-Control: private, no-store and nosniff.
+         */
+        get: operations["readDatabaseResult"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/runs/{runId}/payload-inspections": {
         parameters: {
             query?: never;
@@ -401,6 +480,32 @@ export interface paths {
          *     Canonical namespace API admission is charged once after authorization.
          */
         post: operations["inspectRunPayload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runs/{runId}/payload-disclosures": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Disclose retained run values under the workflow's pinned classification
+         * @description Needs `run:read`. Selects the run input, result or one retained journal payload and applies
+         *     the classification carrier of the workflow version pinned by that run. `public` is visible
+         *     to every run reader; `internal` also needs `payload:read-internal`; `pii` is returned only
+         *     when `reveal: [pii]` is explicit and the caller has a namespace reveal grant; `secret` is
+         *     never returned. A PII reveal is audited in the read transaction before any value leaves.
+         *     Requests are limited to 1 KiB and responses to 256 KiB. Canonical namespace admission is
+         *     charged once after authorization and opaque run resolution.
+         */
+        post: operations["discloseRunPayload"];
         delete?: never;
         options?: never;
         head?: never;
@@ -575,6 +680,181 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/namespaces/{namespaceId}/chains/{chainId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Inspect the immutable lineage and current head of an execution chain
+         * @description Needs `run:read`. The tenant is taken from authentication and a chain in another tenant is indistinguishable from a missing chain. The response is read from one database snapshot and is never cached. It lists every segment (at most 10,000 small entries), and a long chain is read a page at a time with `GET /namespaces/{namespaceId}/chains/{chainId}/runs`.
+         */
+        get: operations["inspectExecutionChain"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/chains/{chainId}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the runs of an execution chain in segment order
+         * @description Needs `run:read`. One bounded page of the chain's segments, ordered by segment index, with
+         *     each run's status and whether the segment was `CONTINUED` into a successor or ended the
+         *     chain (`FINAL`). The cursor is opaque and stable: a segment is only ever appended, so a
+         *     page never repeats or skips one when the chain grows between reads. Pages carry lineage and
+         *     lifecycle only, never an input, output or state. The tenant is taken from authentication and a
+         *     chain in another tenant is indistinguishable from a missing chain. The response is never cached.
+         */
+        get: operations["listExecutionChainRuns"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/chains/{chainId}/queries/{operationName}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Evaluate a declared business query on the current chain head
+         * @description Needs `run:read` and `run:query` in the chain namespace. The transaction takes a shared
+         *     chain lock before the current run lock, then evaluates the immutable declaration against
+         *     that run's committed state snapshot. An optional `expectedRunId` rejects a replaced head
+         *     with `409 CHAIN_HEAD_CHANGED`. The response identifies the run actually observed and is
+         *     never cached. Authorization and access audit commit before any declared value is returned.
+         */
+        post: operations["queryExecutionChain"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/chains/{chainId}/updates/{operationName}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply a declared business update to the expected current chain head
+         * @description Needs `run:update` in the chain namespace. The transaction locks the chain before its
+         *     current run. An optional `expectedRunId` rejects a replaced head for a new update with
+         *     `409 CHAIN_HEAD_CHANGED`. The caller-chosen `updateKey` is scoped to the chain: an exact
+         *     replay returns the original applied or rejected receipt after rollover and still names the
+         *     run that committed it, while changed content returns `IDEMPOTENCY_KEY_REUSED`. State,
+         *     receipt, journal, resolved-run audit and outbox commit atomically. Responses are never
+         *     cached and contain only the declared bounded business result.
+         */
+        post: operations["updateExecutionChain"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/chains/{chainId}/signals/{signalName}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Signal a wait on the expected current chain head
+         * @description The command locks the chain before the current run. `expectedRunId` prevents a delayed caller from signalling a replacement head. The signal, journal, projection, payload retention, audit and idempotency record commit together. A signal for which no root wait exists is refused with 409. Scoped waits remain unavailable until addressed signal routing is integrated.
+         */
+        post: operations["signalExecutionChain"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/chains/{chainId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel the expected current chain head and latch chain cancellation
+         * @description Needs `run:operate`. The chain cancellation latch and current-head cancellation journal, projection, outbox, audit and idempotency record commit atomically. `expectedRunId` makes a command for a replaced head fail with 409 and `details.reason=CHAIN_HEAD_CHANGED`.
+         */
+        post: operations["cancelExecutionChain"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runs/{runId}/approvals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List approval requests for one run
+         * @description Needs both `run:read` and `approval:read`. Results are ordered by the immutable opening journal sequence and use a bounded opaque cursor. The response deliberately omits the eligibility policy, initiating identity and decision actor. Missing and foreign-tenant run identifiers both return the same `404` response.
+         */
+        get: operations["listRunApprovals"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/approvals/{approvalId}/decisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Decide a pending workflow approval
+         * @description Needs `approval:decide` and current eligibility under the approval policy. The initiating identity cannot decide when the policy excludes it. The first committed decision wins atomically with the run journal, timer cancellation, outcome route, outbox and audit record. Repeating the same `decisionKey` with the same body returns the original receipt; reusing it for another body is `409 IDEMPOTENCY_KEY_REUSED`. Missing and foreign-tenant approval identifiers both return the same `404` response.
+         */
+        post: operations["decideWorkflowApproval"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/quotas": {
         parameters: {
             query?: never;
@@ -707,6 +987,52 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/namespaces/{namespaceId}/payload-reveal-grants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the identities allowed to reveal personal run payload values
+         * @description Needs `membership:manage`. Grants are scoped to this namespace and do not change a subject's role.
+         */
+        get: operations["listPayloadRevealGrants"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/payload-reveal-grants/{subject}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Grant one namespace member permission to reveal personal payload values
+         * @description Needs `membership:manage`. Idempotent. The subject must be a member of the tenant with a role
+         *     that holds `payload:read-internal`. The grant and `payload.reveal_granted` audit record commit
+         *     together; an administrator may grant this right to their own subject.
+         */
+        put: operations["grantPayloadReveal"];
+        post?: never;
+        /**
+         * Revoke one namespace member's personal-data reveal grant
+         * @description Needs `membership:manage`. The removal and `payload.reveal_revoked` audit record commit together. Returns 404 when no such grant exists.
+         */
+        delete: operations["revokePayloadReveal"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/namespaces/{namespaceId}/worker-bindings": {
         parameters: {
             query?: never;
@@ -737,7 +1063,7 @@ export interface paths {
         get?: never;
         /**
          * Bind a worker identity to activities of a namespace
-         * @description Replaces what the identity was bound to in this namespace. Each entry is an activity name (`payments.charge`), a prefix ending in `.*` (`payments.*`, which does not cover `payments` itself) or `*`. Sessions the new binding no longer covers are closed and the attempts they hold are released. Needs `worker:bind`. Audited.
+         * @description Replaces what the identity was bound to in this namespace. `pools` (optional) replaces the worker pools the identity is granted: absent leaves them as they are, an empty list takes them away, and removing the binding removes them. A pool is what a secret lists to say which workers may receive it (see `setSecretPools`); repeats are dropped. Each entry is an activity name (`payments.charge`), a prefix ending in `.*` (`payments.*`, which does not cover `payments` itself) or `*`. Sessions the new binding no longer covers are closed and the attempts they hold are released. Needs `worker:bind`. Audited.
          */
         put: operations["bindWorker"];
         post?: never;
@@ -746,6 +1072,125 @@ export interface paths {
          * @description The identity can no longer register in this namespace; its sessions are closed and the attempts they hold are released. 404 when it has no binding there. Needs `worker:bind`. Audited.
          */
         delete: operations["unbindWorker"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/database-executions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retain and execute an ad hoc database step or workflow
+         * @description Requires current run:start, database:adhoc, database:use, secret ACL and database:write for writes. Definition, pins and run admission commit together. Identical requests replay with current authorization. SQL executes in the managed runner. Private definitions consume workflow and retained-content quotas.
+         */
+        post: operations["startDatabaseExecution"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/connections/{connectionName}/probe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                connectionName: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Read the latest durable connection probe metadata
+         * @description Requires namespace:read and run:read. Includes the tested revision, timestamps, durable run status and a closed failure code. Returns null when none exists. Never returns SQL, results or credentials.
+         */
+        get: operations["latestDatabaseConnectionProbe"];
+        put?: never;
+        /**
+         * Admit a fixed SELECT 1 probe in the managed runner
+         * @description Uses current ad hoc permissions and secret ACL. A paused connection is refused. Only durable SUCCEEDED is evidence of connectivity, for the run's pinned revision. SQL and parameters cannot be supplied.
+         */
+        post: operations["probeDatabaseConnection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/database-drivers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * List implemented database drivers and supported operation types
+         * @description Requires namespace:read. Advertises server capabilities, not target connectivity or
+         *     available runner capacity. PostgreSQL is the only implemented driver. Current namespace
+         *     and operator quotas can narrow the advertised hard maxima; a saved connection needs a probe.
+         */
+        get: operations["listDatabaseDrivers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/connections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List current connection metadata in the namespace
+         * @description Requires namespace:read. Values and provider routing are never returned. Deleted connections are omitted. Saving does not prove connectivity.
+         */
+        get: operations["listDatabaseConnections"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/connections/{connectionName}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read connection settings at a revision
+         * @description Requires namespace:read. The status always reflects current authority, including when selecting an older immutable revision.
+         */
+        get: operations["getDatabaseConnection"];
+        /**
+         * Create or revise a PostgreSQL connection
+         * @description Requires current database:manage and a namespace OpenBao secret. expectedRevision zero creates. Retries retain requestId; changed content conflicts. Every update or pause creates an immutable revision. Current settings and audit commit together. A legacy secret requires explicit migration. Saving performs no SQL or probe.
+         */
+        put: operations["putDatabaseConnection"];
+        post?: never;
+        /**
+         * Tombstone a connection and retain its revisions
+         * @description Requires current database:manage and optimistic revision. Subsequent execution must reject the tombstone. Retained revisions remain for run history. Repetition after deletion returns not found.
+         */
+        delete: operations["deleteDatabaseConnection"];
         options?: never;
         head?: never;
         patch?: never;
@@ -760,7 +1205,7 @@ export interface paths {
         };
         /**
          * The secrets of a namespace, by name, without values
-         * @description Needs `secret:read`. These operations exist only on instances configured with a key ring (`SAGAT_SECRETS_KEYS`); elsewhere they answer 404. A value is accepted here and nowhere else, and is never returned by any operation: workers receive it through `ResolveSecrets` of the worker protocol while they hold the lease of a step whose definition declares it.
+         * @description Needs `secret:read`. These operations exist on instances configured with a local key ring or OpenBao; elsewhere they answer 404. A value is accepted here and nowhere else, and is never returned by any operation: workers receive it through `ResolveSecrets` of the worker protocol while they hold the lease of a step whose definition declares it.
          */
         get: operations["listSecrets"];
         put?: never;
@@ -781,7 +1226,7 @@ export interface paths {
         get?: never;
         /**
          * Store a secret, or a new version of it
-         * @description Needs `secret:manage`. Stores the value sealed under the active key and keeps the last five versions. Counts against the namespace's `secrets` quota when the secret is new. Audited (the name and the actor, never the value). These operations exist only on instances configured with a key ring (`SAGAT_SECRETS_KEYS`); elsewhere they answer 404. A value is accepted here and nowhere else, and is never returned by any operation: workers receive it through `ResolveSecrets` of the worker protocol while they hold the lease of a step whose definition declares it.
+         * @description Needs `secret:manage`. With OpenBao enabled, requires requestId and expectedVersion, persists a recoverable intent and activates only a verified provider receipt. Same-key/same-body replay returns the original version; changed content or revision conflicts. Legacy instances seal under the local key ring. Keeps the last five logical versions. Counts against the namespace's `secrets` quota when the secret is new. Audited (the name and the actor, never the value). These operations exist on instances configured with a local key ring or OpenBao; elsewhere they answer 404. A value is accepted here and nowhere else, and is never returned by any operation: workers receive it through `ResolveSecrets` of the worker protocol while they hold the lease of a step whose definition declares it.
          */
         put: operations["putSecret"];
         post?: never;
@@ -790,6 +1235,46 @@ export interface paths {
          * @description Needs `secret:manage`. Workflows that declare it stop resolving it at once. Audited.
          */
         delete: operations["deleteSecret"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/secrets/{secretName}/migrate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Explicitly migrate one local secret while preserving its logical name and ACL
+         * @description Needs current secret:manage. Provider receipt is verified before authority changes. No local fallback after cutover. Requires configured OpenBao and the legacy key ring.
+         */
+        post: operations["migrateSecretToOpenBao"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/secret-operations/{requestId}/reconcile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Recover the caller's pending provider receipt without resubmitting the secret
+         * @description Needs current secret:manage. The UUID is the client request identity, never an OpenBao path. Missing receipt requires secure value resubmission with the same request identity; changed content conflicts. Does not reactivate deleted secrets.
+         */
+        post: operations["reconcileSecretWrite"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -808,6 +1293,30 @@ export interface paths {
          */
         get: operations["listSecretAccess"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/secrets/{secretName}/pools": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The worker pools allowed to receive the secret
+         * @description Needs `secret:manage`. An empty list means the secret is not restricted to pools.
+         */
+        get: operations["listSecretPools"];
+        /**
+         * Restrict delivery of the secret to workers of some pools
+         * @description Needs `secret:manage`. Replaces the list; an empty list lifts the restriction and the secret goes, as before, to every worker bound to the activity of a step that declares it. With a list, a step that declares the secret is not leased to a worker whose identity was not granted one of the pools (see `bindWorker`); the step stays available to a worker that was, and the refusal is audited (`secret.delivery_refused`, once per worker identity, run, node and attempt). `ResolveSecrets` refuses the value again on the grants of that moment, so a lease handed out earlier carries nothing. A pool is a name an administrator grants to an identity in one namespace; the `pools` a worker advertises at registration are scaling labels and play no part. Audited.
+         */
+        put: operations["setSecretPools"];
         post?: never;
         delete?: never;
         options?: never;
@@ -1276,7 +1785,12 @@ export interface paths {
         };
         /**
          * Read an event of the inbox, with what it woke or started
-         * @description Needs `event:read`. `status` is `PENDING` while the dispatcher has not finished with it, `DISPATCHED` when it has, `DEAD` when dispatching it failed again and again (`lastError` says what class of failure).
+         * @description Needs `event:read`. This is a breaking feature-016 response change: by default `data` is
+         *     absent and `dataStructure` describes only types and counts. `reveal=pii` returns `data` only
+         *     to a caller that also holds `payload:read-internal` and a reveal grant in this namespace;
+         *     otherwise that explicit reveal is 403 `PII_REVEAL_NOT_GRANTED`. `status` is `PENDING` while
+         *     the dispatcher has not finished with it, `DISPATCHED` when it has, and `DEAD` after repeated
+         *     dispatch failure (`lastError` names only the failure class).
          */
         get: operations["getInboxEvent"];
         put?: never;
@@ -1612,7 +2126,11 @@ export interface paths {
         };
         /**
          * List the messages a connector set aside, newest first
-         * @description Needs `event:read`. At most 1000 are kept per connector, the first ones: once it is full a message that cannot become an event is acknowledged to the broker and counted, but not kept.
+         * @description Needs `event:read`. This list never returns a body or headers and has no reveal parameter;
+         *     every item contains only bounded structure and sizes. This is a breaking feature-016 response
+         *     change for clients that previously read those fields. At most 1000 are kept per connector,
+         *     the first ones: once full, a message that cannot become an event is acknowledged and counted
+         *     but not retained.
          */
         get: operations["listConnectorDeadLetters"];
         put?: never;
@@ -1632,7 +2150,11 @@ export interface paths {
         };
         /**
          * Read a message a connector set aside
-         * @description Needs `event:read`. The body is shown as text, cut at 64 KiB (`truncated`).
+         * @description Needs `event:read`. This is a breaking feature-016 response change: by default `body` and
+         *     `headers` are absent and the response carries structure, byte size and header count only.
+         *     `reveal=pii` returns the retained body (cut at 64 KiB) and headers only to a caller that also
+         *     holds `payload:read-internal` and a reveal grant in this namespace; otherwise the explicit
+         *     reveal is 403 `PII_REVEAL_NOT_GRANTED`.
          */
         get: operations["getConnectorDeadLetter"];
         put?: never;
@@ -2169,6 +2691,141 @@ export interface components {
             reason: "NO_RETAINED_PAYLOAD" | "UNSUPPORTED_FORMAT";
             sizeBytes?: number;
         });
+        /** @enum {string} */
+        ClassificationLevel: "public" | "internal" | "pii" | "secret";
+        PayloadDisclosureRequest: {
+            /** @constant */
+            source: "input";
+            reveal?: "pii"[];
+        } | {
+            /** @constant */
+            source: "result";
+            reveal?: "pii"[];
+        } | {
+            /** @constant */
+            source: "journal";
+            sequence: number;
+            reveal?: "pii"[];
+        };
+        PayloadDisclosureSelector: {
+            /** @constant */
+            source: "input";
+        } | {
+            /** @constant */
+            source: "result";
+        } | {
+            /** @constant */
+            source: "journal";
+            sequence: number;
+        };
+        PayloadDisclosureCaller: {
+            /** @description The levels this answer was built to contain; `secret` is never eligible. */
+            disclosedLevels: ("public" | "internal" | "pii")[];
+            /**
+             * @description Whether a reveal grant exists and the role holds `payload:read-internal`.
+             * @enum {string}
+             */
+            revealPii: "granted" | "not_granted";
+            /** @description Whether this answer was built from an explicit PII reveal request. */
+            revealed: boolean;
+        };
+        PayloadClassificationSchema: {
+            /** @enum {string} */
+            carrier: "inputSchema" | "outputSchema" | "nodeOutputSchema";
+            versionNumber: number;
+            /** @constant */
+            rules: 1;
+        };
+        PayloadDisclosureChild: {
+            ordinal: number;
+            /** @description A declared property name, or an undeclared key only when its value is disclosed. */
+            name?: string;
+            node: components["schemas"]["PayloadDisclosureNode"];
+        };
+        PayloadDisclosureNode: {
+            /** @constant */
+            kind: "value";
+            /** @enum {string} */
+            level: "public" | "internal" | "pii";
+            /** @enum {string} */
+            type: "string" | "number" | "boolean" | "null";
+            value: string | number | boolean | null;
+            /** @constant */
+            valueTruncated?: true;
+            /** @description Original UTF-8 byte length of a truncated string. */
+            length?: number;
+        } | {
+            /** @constant */
+            kind: "container";
+            /** @enum {string} */
+            type: "object" | "array";
+            /** @enum {string} */
+            level: "public" | "internal" | "pii";
+            childCount: number;
+            omittedChildren: number;
+            children: components["schemas"]["PayloadDisclosureChild"][];
+        } | {
+            /** @constant */
+            kind: "withheld";
+            /** @enum {string} */
+            type: "object" | "array" | "string" | "number" | "boolean" | "null";
+            /** @enum {string} */
+            level: "internal" | "pii" | "secret";
+            /** @enum {string} */
+            reason: "LEVEL_NOT_PERMITTED" | "REVEAL_NOT_REQUESTED" | "SECRET";
+        };
+        PayloadDisclosure: {
+            /** Format: uuid */
+            runId: string;
+            runVersion: number;
+            selection: components["schemas"]["PayloadDisclosureSelector"];
+            nodeId?: string;
+            attempt?: number;
+            /** @constant */
+            policy: "classified-v1";
+            caller: components["schemas"]["PayloadDisclosureCaller"];
+        } & ({
+            /** @constant */
+            kind: "disclosed";
+            schema: components["schemas"]["PayloadClassificationSchema"];
+            /** @description Size of the whole stored payload. Present only for a caller with `run:payload:inspect`, because it includes personal and secret fields (D278). */
+            sizeBytes?: number;
+            truncated: boolean;
+            tree: components["schemas"]["PayloadDisclosureNode"];
+        } | {
+            /** @constant */
+            kind: "structure-only";
+            schema?: components["schemas"]["PayloadClassificationSchema"];
+            sizeBytes: number;
+            truncated: boolean;
+            /** @enum {string} */
+            reason: "NO_SCHEMA" | "SCHEMA_MISMATCH" | "LEGACY_VERSION" | "SCHEMA_UNUSABLE";
+            tree: components["schemas"]["PayloadStructure"];
+        } | {
+            /** @constant */
+            kind: "external";
+            sizeBytes: number;
+            /** @enum {string} */
+            contentKind: "json" | "text" | "binary" | "other";
+            /** @constant */
+            reason: "EXTERNAL_CONTENT_NOT_INSPECTED";
+        } | {
+            /** @constant */
+            kind: "unavailable";
+            /** @enum {string} */
+            reason: "NO_RETAINED_PAYLOAD" | "UNSUPPORTED_FORMAT" | "NOT_DISCLOSABLE";
+            sizeBytes?: number;
+        });
+        PayloadRevealGrant: {
+            subject: string;
+            grantedBy: string;
+            /** Format: date-time */
+            grantedAt: string;
+        };
+        PayloadRevealGrantPage: {
+            items: components["schemas"]["PayloadRevealGrant"][];
+            nextCursor?: string | null;
+        };
         JsonObject: {
             [key: string]: unknown;
         };
@@ -2186,7 +2843,7 @@ export interface components {
             requestId?: string;
             /** @description What can be done about it, in a sentence from a closed table: the same for every error of a `code`, refined by `details.reason` when that changes what to do. It never carries a payload, a secret or another tenant's data. Absent from the errors of a platform older than feature 008. */
             remediation?: string;
-            /** @description Extra, safe context. `reason` is a stable machine-readable refinement of `code` (for example `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`). A call the server does not have is `NOT_FOUND` with the reason `ROUTE_NOT_FOUND` (an unknown path) or `BAD_REQUEST` with `METHOD_NOT_ALLOWED` (a known path, another method): an SDK newer than the server tells that from a resource that does not exist, which is `NOT_FOUND` without those reasons. */
+            /** @description Extra, safe context. `reason` is a stable machine-readable refinement of `code` (for example `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`). A call the server does not have is `NOT_FOUND` with the reason `ROUTE_NOT_FOUND` (an unknown path) or `BAD_REQUEST` with `METHOD_NOT_ALLOWED` (a known path, another method): an SDK newer than the server tells that from a resource that does not exist, which is `NOT_FOUND` without those reasons. Structured workflow capabilities refine existing codes with `INVALID_SCOPE`, `INVALID_OPERATION_STATE`, `NOT_ELIGIBLE`, `INITIATOR_CANNOT_DECIDE`, `CHAIN_HEAD_CHANGED`, `RUN_NOT_MUTABLE`, `RUN_CONTINUED`, `INVALID_ARGUMENTS`, `INVALID_UPDATE_KEY`, `INVALID_DECISION_KEY`, `INVALID_REASON_CODE`, `REVISION_CONFLICT` and `UPDATE_REJECTED`; payload classification refines existing codes with `PII_REVEAL_NOT_GRANTED`, `CLASSIFICATION`, `UNKNOWN_SUBJECT`, `ROLE_CANNOT_REVEAL` and `GRANT_LIMIT`; they do not add a new `Error.code` value. An `UNSUPPORTED_NODE` for a combination the design accepts but whose prerequisite is not built yet also carries `dependency`, a closed name of what has to exist first (`SCOPED_COMPENSATION`: an approval inside a collection or loop body), next to `node` and `kind`. */
             details?: {
                 [key: string]: unknown;
             };
@@ -2212,7 +2869,8 @@ export interface components {
             tenant: string;
             subject: string;
             /** @enum {string} */
-            role: "admin" | "developer" | "operator" | "viewer";
+            role: "admin" | "developer" | "operator" | "viewer" | "worker" | "runner" | "database-runner";
+            /** @description The caller's role permissions. `payload:read-internal` appears for developer, operator and admin; the namespace reveal grant is reported only on a disclosure response. */
             permissions: string[];
             traceId: string;
         };
@@ -2276,6 +2934,11 @@ export interface components {
             publishedBy?: string;
             /** Format: date-time */
             publishedAt?: string;
+            /**
+             * @description The payload classification rules pinned to the version when it was published (feature 016). `0` is a version published before payload classification: no value of its runs is disclosed, whatever its schemas say. `1` reads `x-sagat-classification`. Publishing a document identical to an existing version returns that version (`created: false`) with its own rules, so an unchanged legacy document stays at `0`; publish a changed document to adopt the rules.
+             * @enum {integer}
+             */
+            classificationRules: 0 | 1;
         };
         WorkflowDraft: {
             /** Format: uuid */
@@ -2337,7 +3000,29 @@ export interface components {
             sha256: string;
             contentType: string;
         };
+        /** @enum {string} */
+        DatabaseExecutionOrigin: "AD_HOC_STEP" | "AD_HOC_WORKFLOW" | "CONNECTION_PROBE";
+        StartDatabaseExecutionRequest: {
+            /** @enum {string} */
+            mode: "step" | "workflow";
+            /** @description Canonical IR. Step: one database node. Workflow: at most 64 database/timer/condition/parallel/end nodes, at least one database node, no triggers. */
+            definition: components["schemas"]["JsonObject"];
+            /** @default {} */
+            input: components["schemas"]["JsonObject"];
+            /** @default 300000 */
+            timeoutMs: number;
+        };
+        ProbeDatabaseConnectionRequest: {
+            revision?: number;
+        };
+        DatabaseConnectionProbe: {
+            run: components["schemas"]["Run"];
+            revision: number;
+            failureCode: string | null;
+        };
         Run: {
+            /** @description Present only for retained private managed executions. */
+            origin?: components["schemas"]["DatabaseExecutionOrigin"];
             /** Format: uuid */
             runId: string;
             /** Format: uuid */
@@ -2378,6 +3063,19 @@ export interface components {
                 /** @enum {string} */
                 cancelPolicy: "PROPAGATE" | "REQUEST_CANCEL" | "DETACH";
             } | null;
+            /** @description Present only when the run is a segment of a continuation chain. A segment with status `SUCCEEDED` and `completionKind` `CONTINUED` ended into its successor: it is not the process outcome, which is the chain's `finalOutcome`. */
+            chain?: {
+                /** Format: uuid */
+                chainId: string;
+                segmentIndex: number;
+                /**
+                 * @description Null while the segment is open.
+                 * @enum {string|null}
+                 */
+                completionKind: "CONTINUED" | "FINAL" | null;
+                /** Format: uuid */
+                successorRunId: string | null;
+            };
         };
         RunPage: {
             items: components["schemas"]["Run"][];
@@ -2477,7 +3175,7 @@ export interface components {
         DefinitionProblem: {
             /** @enum {string} */
             severity: "error" | "warning";
-            /** @description Stable, upper snake case: SCHEMA, DOCUMENT_TOO_LARGE, DOCUMENT_MALFORMED, UNSUPPORTED_NODE, EXPRESSION, NAME_MISMATCH, UNKNOWN_SCRIPT, SECRET_UNAVAILABLE, CYCLE, UNREACHABLE, UNKNOWN_TARGET, UNKNOWN_ENTRYPOINT, DUPLICATE_NODE, and the other graph rules; a warning has its own (COMPENSATION_OUTSIDE_SAGA, RECURSIVE_CHILD). */
+            /** @description Stable, upper snake case: SCHEMA, DOCUMENT_TOO_LARGE, DOCUMENT_MALFORMED, UNSUPPORTED_NODE, EXPRESSION, NAME_MISMATCH, UNKNOWN_SCRIPT, SECRET_UNAVAILABLE, CYCLE, UNREACHABLE, UNKNOWN_TARGET, UNKNOWN_ENTRYPOINT, DUPLICATE_NODE, and the other graph rules. Classification uses CLASSIFICATION_INVALID_LEVEL, CLASSIFICATION_LOOSENED, CLASSIFICATION_UNSUPPORTED_KEYWORD, CLASSIFICATION_UNRESOLVED_REF, CLASSIFICATION_NOT_APPLICABLE and CLASSIFICATION_TOO_COMPLEX errors, plus the CLASSIFICATION_INHERITED_OPEN warning; other warnings include COMPENSATION_OUTSIDE_SAGA and RECURSIVE_CHILD. */
             code: string;
             /** @description Safe: never holds a value of the document beyond a clipped fragment. */
             message: string;
@@ -2486,12 +3184,29 @@ export interface components {
             /** @description A JSON pointer into the document, for a schema problem. */
             path?: string | null;
         };
+        ClassificationReportEntry: {
+            /** @enum {string} */
+            carrier: "inputSchema" | "outputSchema" | "nodeOutputSchema";
+            /** @description Present only for a node output carrier. */
+            nodeId?: string;
+            /** @description Present only for a node output carrier inside the named body; distinguishes repeated node identifiers. */
+            bodyName?: string;
+            /** @description JSON pointer inside the carrier; the root is the empty pointer. */
+            path: string;
+            level: components["schemas"]["ClassificationLevel"];
+            /** @description True when this location carries its own annotation; false when it inherits. */
+            declared: boolean;
+        };
         Validation: {
             valid: boolean;
             /** @description The digest of the canonical document, when it is valid. */
             digest?: string | null;
             problems: components["schemas"]["DefinitionProblem"][];
             warnings: components["schemas"]["DefinitionProblem"][];
+            /** @description Effective levels of declared locations in each classification carrier. */
+            classification?: components["schemas"]["ClassificationReportEntry"][];
+            /** @description True when the bounded classification report has more than 500 entries. */
+            classificationTruncated?: boolean;
         };
         DiffSide: {
             /** @enum {string} */
@@ -2502,7 +3217,15 @@ export interface components {
             revision?: number | null;
         };
         DiffFinding: {
-            /** @description TRIGGER_REMOVED, TRIGGER_CHANGED, INPUT_PROPERTY_REMOVED, INPUT_TYPE_CHANGED, INPUT_REQUIRED_ADDED, OUTPUT_PROPERTY_REMOVED, OUTPUT_TYPE_CHANGED, EVENT_TYPE_REMOVED (breaking); ACTIVITY_ADDED, ACTIVITY_CHANGED, SECRET_ADDED, SCRIPT_CHANGED (attention). */
+            /**
+             * @description TRIGGER_REMOVED, TRIGGER_CHANGED, INPUT_PROPERTY_REMOVED, INPUT_TYPE_CHANGED, INPUT_REQUIRED_ADDED, OUTPUT_PROPERTY_REMOVED, OUTPUT_TYPE_CHANGED, EVENT_TYPE_REMOVED (breaking); ACTIVITY_ADDED, ACTIVITY_CHANGED, SECRET_ADDED, SCRIPT_CHANGED (attention).
+             *
+             *     Payload classification (feature 016) adds these attention codes; none is breaking.
+             *     CLASSIFICATION_RELAXED and CLASSIFICATION_TIGHTENED: the effective level of the path in `path` became less or more strict between the two sides. A side that has no schema for the location (a carrier added or dropped), or that was published before payload classification (`classificationRules` 0), discloses nothing and counts as `undisclosed`, as strict as `secret`: adding an `outputSchema` that makes a field `public` relaxes it, and a legacy version compared with the same document under the current rules relaxes every location the document makes readable. The first draft of a workflow, which has no earlier version, is not compared.
+             *     CLASSIFICATION_TOO_COMPLEX, CLASSIFICATION_UNRESOLVED_REF and CLASSIFICATION_UNSUPPORTED_KEYWORD: a carrier of one side could not be walked completely (`path` says where), so none of its levels was compared and a relaxation inside it is not reported; fix the carrier and compare again. Each is reported once per carrier.
+             *     MORE_FINDINGS: findings of one kind past the first 100 are not listed, only counted in the message.
+             *     `sagat sync` prints every attention finding as `prepare`; the Studio lists them all in the version comparison, and the classification panel of the workflow settings shows the two level changes and a notice for the carriers that could not be compared.
+             */
             code: string;
             message: string;
             nodeId?: string | null;
@@ -2569,9 +3292,19 @@ export interface components {
             nodes: components["schemas"]["RuntimeNode"][];
             /** @description Only when `reset` is true. */
             edges?: components["schemas"]["RuntimeEdge"][];
+            chain?: components["schemas"]["RuntimeChain"] | null;
         };
         RuntimeNode: {
+            /** @description Root node id or a scoped execution id such as items[2]/charge. Stable across retries. */
             id: string;
+            /** @description Local definition node id for a scoped instance; absent for an unscoped root node. */
+            nodeId?: string;
+            /** @description Ordered scope ancestry for a scoped instance; absent for an unscoped root node. */
+            instancePath?: {
+                scopeNodeId: string;
+                iterationIndex: number;
+            }[];
+            /** @description Authored node kind. Managed PostgreSQL operations use database; their internal activity name, SQL and values are not disclosed. */
             type: string;
             /** @enum {string} */
             status: "NOT_STARTED" | "PENDING" | "READY" | "LEASED" | "RUNNING" | "WAITING" | "RETRY_WAIT" | "SUCCEEDED" | "FAILED" | "CANCELLED" | "SKIPPED";
@@ -2584,15 +3317,31 @@ export interface components {
             /** Format: date-time */
             dueAt?: string | null;
             /**
-             * @description `saga`: a saga node while its body works, compensates or waits. `reconciliation`: the lookup `<id>~r` is finding out whether the effect happened. `operator`: a person has to decide (RETRY_STEP, RETRY_COMPENSATION, SKIP_COMPENSATION or RESOLVE_STEP).
+             * @description `saga`: a saga node while its body works, compensates or waits. `reconciliation`: the lookup `<id>~r` is finding out whether the effect happened. `operator`: a person has to decide (RETRY_STEP, RETRY_COMPENSATION, SKIP_COMPENSATION or RESOLVE_STEP). `loop` and `collection`: the owner while its iterations run. `approval`: the node while its request is open.
              * @enum {string|null}
              */
-            waitingOn?: "timer" | "event" | "branches" | "child" | "saga" | "reconciliation" | "operator" | null;
+            waitingOn?: "timer" | "event" | "branches" | "child" | "saga" | "reconciliation" | "operator" | "loop" | "approval" | "collection" | null;
             /**
              * Format: uuid
              * @description The child run a `child` node reserved.
              */
             childRunId?: string | null;
+            /** @description The persisted route chosen for a switch node; null until evaluation. An unknown case indicates inconsistent historical data. */
+            switchSelection?: {
+                /** @enum {string} */
+                kind: "CASE" | "DEFAULT" | "UNKNOWN";
+                /** @description The selected case identifier for CASE, or the unknown identifier for UNKNOWN. */
+                caseId?: string;
+                /** @description The target in the pinned workflow definition, or null for UNKNOWN. */
+                target: string | null;
+            } | null;
+            /** @description How the approval request of an approval node stands; null until it opens. It names the outcome and the pinned route taken, never the approver, the decision key or the reason code. */
+            approvalDecision?: {
+                /** @enum {string} */
+                kind: "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED" | "CANCELLED";
+                /** @description The pinned node the outcome routed to; null while pending or after cancellation. */
+                target: string | null;
+            } | null;
             /**
              * @description Forward work, the compensation `<id>~c` of a node, or the lookup `<id>~r` that finds out whether it happened.
              * @enum {string}
@@ -2616,10 +3365,12 @@ export interface components {
             from: string;
             to: string;
             /**
-             * @description `begin`: the first step of the body of a saga. `compensation`: the compensation at `to` waits for the one at `from`. `reconcile`: `to` finds out whether `from` happened.
+             * @description `case` and `default`: switch routes. `approve`, `reject` and `expire`: the three declared routes of an approval; the one taken is the node's `approvalDecision`. `begin`: the first step of the body of a saga, or from a collection or loop owner to the entry step of one of its admitted iterations. `compensation`: the compensation at `to` waits for the one at `from`. `reconcile`: `to` finds out whether `from` happened.
              * @enum {string}
              */
-            kind: "next" | "error" | "true" | "false" | "branch" | "timeout" | "begin" | "compensation" | "reconcile";
+            kind: "next" | "error" | "true" | "false" | "case" | "default" | "branch" | "timeout" | "begin" | "approve" | "reject" | "expire" | "compensation" | "reconcile";
+            /** @description The local switch case identifier when kind is case. */
+            caseId?: string;
         };
         RuntimeGraph: {
             /** Format: uuid */
@@ -2630,6 +3381,135 @@ export interface components {
             projectionLagMs?: number;
             nodes: components["schemas"]["RuntimeNode"][];
             edges: components["schemas"]["RuntimeEdge"][];
+            chain?: components["schemas"]["RuntimeChain"] | null;
+        };
+        RuntimeChain: {
+            /**
+             * Format: uuid
+             * @description Stable initial run identifier of the continuation chain.
+             */
+            chainId: string;
+            segmentIndex: number;
+            segmentCount: number;
+            /**
+             * Format: uuid
+             * @description Current head of the continuation chain.
+             */
+            currentRunId: string;
+            /** Format: uuid */
+            predecessorRunId?: string | null;
+            /** Format: uuid */
+            successorRunId?: string | null;
+            /** @enum {string|null} */
+            completionKind?: "CONTINUED" | "FINAL" | null;
+            /** @enum {string|null} */
+            finalOutcome?: "SUCCEEDED" | "FAILED" | "CANCELLED" | "TIMED_OUT" | "COMPENSATED" | "PARTIAL" | "COMPENSATION_FAILED" | null;
+        };
+        DeclaredQueryRequest: {
+            /** @description JSON value checked against the immutable operation argument schema; at most 256 KiB after canonicalization. */
+            args: unknown;
+        };
+        ChainDeclaredQueryRequest: {
+            /** @description JSON value checked against the immutable operation argument schema; at most 256 KiB after canonicalization. */
+            args: unknown;
+            /**
+             * Format: uuid
+             * @description Optional current-head precondition. A different committed head returns CHAIN_HEAD_CHANGED.
+             */
+            expectedRunId?: string;
+        };
+        DeclaredQueryResponse: {
+            /** Format: uuid */
+            runId: string;
+            /** Format: int64 */
+            runVersion: number;
+            /** Format: int64 */
+            stateRevision: number;
+            /** @description Only the explicitly disclosed result, validated against its closed bounded schema. */
+            result: unknown;
+        };
+        DeclaredUpdateRequest: {
+            /** @description Caller-chosen durable idempotency key. Retries keep this exact key. */
+            updateKey: string;
+            /** @description JSON value checked against the immutable operation argument schema; at most 256 KiB after canonicalization. */
+            args: unknown;
+            /** Format: int64 */
+            expectedStateRevision?: number;
+        };
+        ChainDeclaredUpdateRequest: {
+            /** @description Caller-chosen idempotency key retained across the entire chain. Retries keep this exact key. */
+            updateKey: string;
+            /** @description JSON value checked against the immutable operation argument schema; at most 256 KiB after canonicalization. */
+            args: unknown;
+            /**
+             * Format: uuid
+             * @description Optional current-head precondition for a new update. Exact receipt replay remains bound to the original resolved run after rollover.
+             */
+            expectedRunId?: string;
+            /** Format: int64 */
+            expectedStateRevision?: number;
+        };
+        DeclaredUpdateResponse: {
+            /** Format: uuid */
+            runId: string;
+            operation: string;
+            updateKey: string;
+            /** @constant */
+            status: "APPLIED";
+            /** @description Only the explicitly disclosed result, validated before it is retained and returned. */
+            result: unknown;
+            /** Format: int64 */
+            beforeStateRevision: number;
+            /** Format: int64 */
+            afterStateRevision: number;
+            /** Format: int64 */
+            runVersion: number;
+            replayed: boolean;
+        };
+        ApprovalScope: {
+            scopeNodeId: string;
+            iterationIndex: number;
+        };
+        ApprovalListItem: {
+            /** Format: uuid */
+            approvalId: string;
+            /** Format: uuid */
+            runId: string;
+            nodeId: string;
+            instancePath: components["schemas"]["ApprovalScope"][];
+            /** @enum {string} */
+            status: "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED" | "CANCELLED";
+            /** Format: date-time */
+            deadline: string;
+            /** Format: date-time */
+            settledAt: string | null;
+        };
+        ApprovalList: {
+            items: components["schemas"]["ApprovalListItem"][];
+            nextCursor: string | null;
+        };
+        ApprovalDecisionRequest: {
+            /** @description Caller-chosen idempotency key for this approval. */
+            decisionKey: string;
+            /** @enum {string} */
+            decision: "APPROVE" | "REJECT";
+            /** @description Bounded machine-readable reason; free text is not accepted. */
+            reasonCode?: string;
+        };
+        ApprovalDecisionReceipt: {
+            /** Format: uuid */
+            receiptId: string;
+            /** Format: uuid */
+            approvalId: string;
+            decisionKey: string;
+            /** @enum {string} */
+            decision: "APPROVE" | "REJECT";
+            reasonCode?: string | null;
+            actor: string;
+            /** Format: date-time */
+            decidedAt: string;
+            outcomeSequence: number;
+            replayed: boolean;
         };
         CompensationPlans: {
             sagas: {
@@ -2669,6 +3549,8 @@ export interface components {
             outcome?: "SUCCEEDED" | "FAILED";
             /** @description For RESOLVE_STEP with outcome FAILED: the code the step is recorded as failed with. */
             errorCode?: string;
+            /** @description For a decision about a step of an iteration of a collection or loop (the compensation `reserve~c` of iteration 1 of `lines`): the scopes around the step, outermost first, with the iteration of each, as the runtime graph reports them. Absent for a step of the root graph. Refused for the operations that apply to the whole run. */
+            instancePath?: components["schemas"]["ApprovalScope"][];
             /** @description Counted after trimming; for the decisions of a saga it is kept whole in the audit trail. */
             reason: string;
             /** @description Optimistic concurrency: refused with 409 if the run moved on. */
@@ -2698,6 +3580,8 @@ export interface components {
             subject: string;
             /** @description Activity names, `<prefix>.*` or `*`. */
             activities: string[];
+            /** @description The worker pools the identity was granted in this namespace; a secret that lists pools is delivered only to identities that hold one of them. */
+            pools?: string[];
             revoked?: components["schemas"]["RevokedWorkers"];
         };
         WorkerBindingList: {
@@ -2705,15 +3589,27 @@ export interface components {
         };
         SetWorkerBindingRequest: {
             activities: string[];
+            /** @description Replaces the pools the identity is granted. Absent leaves them as they are; an empty list takes them all away. Removing the binding removes them too. */
+            pools?: string[];
         };
         Secret: {
             name: string;
             version: number;
-            /** @description The key of the ring the current version is sealed under. */
-            keyId: string;
+            /** @description Local encryption key identifier; null for OpenBao. */
+            keyId: string | null;
+            /**
+             * @description Authority for the current secret version.
+             * @enum {string}
+             */
+            provider?: "local" | "openbao";
             createdBy: string;
             /** Format: date-time */
             updatedAt: string;
+            /** @description The worker pools allowed to receive the secret; empty means every worker bound to the activity (see `setSecretPools`). Present only for callers who hold `secret:manage`: whoever may merely use the secret is not told which fleets are trusted with it. */
+            pools?: string[];
+        };
+        SecretPools: {
+            pools: string[];
         };
         SecretList: {
             items: components["schemas"]["Secret"][];
@@ -2724,6 +3620,162 @@ export interface components {
         SetSecretRequest: {
             /** @description The secret, UTF-8 text of 1 to 16384 bytes. Never returned. */
             value: string;
+            /** @description Replaces the worker pools allowed to receive the secret in the same call (see `setSecretPools`). Absent leaves them as they are, and a new secret then has none; an empty list lifts the restriction. Deleting a secret deletes its restriction, so recreate one that must stay restricted with its pools, which makes it restricted from the first instant. */
+            pools?: string[];
+            /**
+             * Format: uuid
+             * @description Required with OpenBao. Stable identity for retries of this exact write.
+             */
+            requestId?: string;
+            /** @description Required with OpenBao. Zero creates; otherwise matches the current logical version. */
+            expectedVersion?: number;
+            /**
+             * @description Refuse with 503 when this authority is not configured. Database connection forms must send this field.
+             * @enum {string}
+             */
+            requiredProvider?: "openbao";
+        };
+        /** Bounded managed database result */
+        DatabaseResult: {
+            columns: {
+                name: string;
+                /** @enum {unknown} */
+                type: "null" | "boolean" | "integer" | "decimal" | "float" | "text" | "timestamp" | "date" | "binary" | "json";
+            }[];
+            rows: components["schemas"]["DatabaseResultCell"][][];
+            affectedRows: string;
+            /** @constant */
+            truncated: false;
+        };
+        DatabaseResultCell: {
+            /** @constant */
+            type: "null";
+            value: null;
+        } | {
+            /** @constant */
+            type: "boolean";
+            value: boolean;
+        } | {
+            /** @constant */
+            type: "integer";
+            value: string;
+        } | {
+            /** @constant */
+            type: "decimal";
+            value: string;
+        } | {
+            /** @constant */
+            type: "float";
+            value: number;
+        } | {
+            /** @constant */
+            type: "text";
+            value: string;
+        } | {
+            /** @constant */
+            type: "timestamp";
+            /** Format: date-time */
+            value: string;
+        } | {
+            /** @constant */
+            type: "date";
+            /** Format: date */
+            value: string;
+        } | {
+            /** @constant */
+            type: "binary";
+            value: string;
+        } | {
+            /** @constant */
+            type: "json";
+            value: unknown;
+        };
+        /** @description Positive finite limits. Effective execution uses the minimum of operation, connection, namespace and deployment limits. Zero never means unlimited. */
+        DatabaseLimits: {
+            /** @default 16384 */
+            maxStatementBytes: number;
+            /** @default 64 */
+            maxParameters: number;
+            /** @default 65536 */
+            maxParameterBytes: number;
+            /** @default 1000 */
+            maxRows: number;
+            /** @default 1048576 */
+            maxResultBytes: number;
+            /** @default 10000 */
+            timeoutMs: number;
+            /** @default 5000 */
+            connectTimeoutMs: number;
+            /** @default 4 */
+            poolSize: number;
+            /** @default 30000 */
+            idleTimeoutMs: number;
+        };
+        DatabaseTls: {
+            /** @constant */
+            mode: "verify-full";
+            /** @description Optional public CA certificates, never a private key */
+            caPem?: string;
+        } | {
+            /** @constant */
+            mode: "development-plaintext";
+        };
+        PostgresConnectionConfig: {
+            /** @constant */
+            driver: "postgresql";
+            /** @description Bare DNS hostname or IP, never a URL or credentials */
+            host: string;
+            port: number;
+            database: string;
+            tls: components["schemas"]["DatabaseTls"];
+            secretName: string;
+            limits?: components["schemas"]["DatabaseLimits"];
+        };
+        DatabaseConnection: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            namespaceId: string;
+            name: string;
+            revision: number;
+            /** @enum {string} */
+            status: "ACTIVE" | "PAUSED" | "DELETED";
+            config: components["schemas"]["PostgresConnectionConfig"];
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        DatabaseDriverList: {
+            items: {
+                /** @enum {string} */
+                id: "postgresql";
+                operations: ("query" | "execute")[];
+                parameterTypes: ("null" | "boolean" | "integer" | "decimal" | "float" | "text" | "timestamp" | "date" | "binary" | "json")[];
+                defaultLimits: components["schemas"]["DatabaseLimits"];
+                maximumLimits: components["schemas"]["DatabaseLimits"];
+            }[];
+        };
+        DatabaseConnectionList: {
+            items: components["schemas"]["DatabaseConnection"][];
+        };
+        PutDatabaseConnectionRequest: {
+            /** Format: uuid */
+            requestId: string;
+            expectedRevision: number;
+            config: components["schemas"]["PostgresConnectionConfig"];
+            /** @enum {string} */
+            status: "ACTIVE" | "PAUSED";
+        };
+        DeleteDatabaseConnectionRequest: {
+            /** Format: uuid */
+            requestId: string;
+            expectedRevision: number;
+        };
+        MigrateSecretRequest: {
+            /** Format: uuid */
+            requestId: string;
+            expectedVersion: number;
         };
         EgressPolicy: {
             /** @description Exact hosts, `*.domain` rules and CIDR networks, lower-cased and masked. */
@@ -2743,16 +3795,29 @@ export interface components {
          *     tenant_content_bytes and tenant_log_bytes are logical retained bytes (maximum 2^50);
          *     api_requests_per_second and events_per_second are requests/second (maximum 1,000,000,
          *     fixed two-second burst); event_retention_seconds is 0 or 60..2,592,000 seconds;
-         *     script_retention_days is 0..365 days. Zero disables new admission for that resource.
+         *     script_retention_days is 0..365 days. iteration_concurrency is tenant-wide; its explicit
+         *     value is 1..1,000,000,000, its default operator ceiling is 1,024 and, while absent or
+         *     cleared, structured iteration admission is disabled. Zero disables new admission for
+         *     resources that accept it.
+         *     Database operation ceilings are positive:
+         *     database_statement_bytes <= 65536, database_parameters <= 256,
+         *     database_parameter_bytes <= 262144, database_rows <= 10000,
+         *     database_result_bytes <= 4194304, database_timeout_ms <= 30000,
+         *     database_connect_timeout_ms <= 10000, database_pool_size <= 16,
+         *     database_idle_timeout_ms <= 60000. These governance ceilings default to the hard maximum;
+         *     operation and connection defaults remain smaller. Count ceilings default/max are
+         *     database_connections 100/1000 (including paused), database_concurrency 16/64,
+         *     tenant_database_concurrency 64/256, secret_provider_operations 32/128.
+         *     Zero disables new admission for count/rate/retention resources, never means unlimited.
          *     Lowering a limit does not erase retained content or rewrite existing expiry.
          */
         Quota: {
             /** @enum {string} */
-            resource: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days";
+            resource: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days" | "database_statement_bytes" | "database_parameters" | "database_parameter_bytes" | "database_rows" | "database_result_bytes" | "database_timeout_ms" | "database_connect_timeout_ms" | "database_pool_size" | "database_idle_timeout_ms" | "database_connections" | "database_concurrency" | "tenant_database_concurrency" | "secret_provider_operations";
             /** Format: int64 */
             limit: number;
             /**
-             * @description Where the limit in force comes from. default means the tenant set nothing and the ceiling applies.
+             * @description Where the limit in force comes from. default means the tenant set nothing; iteration_concurrency then remains disabled, while other resources use their platform default up to the ceiling.
              * @enum {string}
              */
             source: "default" | "tenant" | "namespace";
@@ -2763,7 +3828,7 @@ export interface components {
             ceiling: number;
             /**
              * Format: int64
-             * @description Exact charged items or bytes, including outstanding content reservations. Absent for rate/retention policies and for a per-namespace resource in the tenant-wide view.
+             * @description Exact charged items or bytes, including outstanding content reservations. Absent for per-operation database and rate/retention policies and for a per-namespace resource in the tenant-wide view.
              */
             used?: number;
         };
@@ -2802,6 +3867,68 @@ export interface components {
         SignalResult: {
             /** @description The waitEvent nodes the signal woke. */
             deliveredTo: string[];
+        };
+        ChainSignalRequest: {
+            /**
+             * Format: uuid
+             * @description The current head observed by the caller.
+             */
+            expectedRunId: string;
+            /** @description JSON retained as the output of every matching root wait. */
+            payload: unknown;
+        };
+        ChainCancelRequest: {
+            /**
+             * Format: uuid
+             * @description The current head observed by the caller.
+             */
+            expectedRunId: string;
+            reason: string;
+        };
+        ChainSegment: {
+            index: number;
+            /** Format: uuid */
+            runId: string;
+            /** Format: uuid */
+            predecessorRunId: string | null;
+            /** Format: uuid */
+            successorRunId: string | null;
+        };
+        ChainRun: {
+            index: number;
+            /** Format: uuid */
+            runId: string;
+            /** @enum {string} */
+            status: "RUNNING" | "WAITING" | "PAUSED" | "CANCELLING" | "COMPENSATING" | "MANUAL_REVIEW" | "SUCCEEDED" | "FAILED" | "CANCELLED" | "TIMED_OUT" | "COMPENSATED" | "PARTIAL" | "COMPENSATION_FAILED";
+            /**
+             * @description `CONTINUED`: this segment ended into its successor, so its `SUCCEEDED` status is not the process outcome. `FINAL`: it ended the chain. Absent (null) while the segment is open.
+             * @enum {string|null}
+             */
+            completionKind: "CONTINUED" | "FINAL" | null;
+            /** Format: uuid */
+            predecessorRunId: string | null;
+            /** Format: uuid */
+            successorRunId: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            finishedAt: string | null;
+        };
+        ChainRunPage: {
+            items: components["schemas"]["ChainRun"][];
+            nextCursor: string | null;
+        };
+        ChainInspection: {
+            /** Format: uuid */
+            chainId: string;
+            /** Format: uuid */
+            currentRunId: string;
+            /** Format: int64 */
+            revision: number;
+            cancelRequested: boolean;
+            /** @enum {string|null} */
+            finalOutcome: "SUCCEEDED" | "FAILED" | "CANCELLED" | "TIMED_OUT" | "COMPENSATED" | "PARTIAL" | "COMPENSATION_FAILED" | null;
+            segments: components["schemas"]["ChainSegment"][];
         };
         EventPayload: components["schemas"]["JsonObject"];
         IncomingEvent: {
@@ -2940,9 +4067,21 @@ export interface components {
             lastError?: string;
             /** Format: date-time */
             dispatchedAt?: string;
-            data: components["schemas"]["JsonObject"];
+            /**
+             * @description Whether this answer includes the whole event data. Events have no field carrier and are treated as PII as a whole.
+             * @enum {string}
+             */
+            dataDisclosure: "revealed" | "structure-only";
+            /** @description Bytes of the stored event payload. */
+            dataSizeBytes: number;
+            data?: components["schemas"]["JsonObject"];
+            /** @description The ADR-0028 structure of the event data, or {kind: opaque} when the projector does not accept the stored data (a server-side bound, not a refusal of the caller). */
+            dataStructure?: components["schemas"]["PayloadStructure"] | {
+                /** @constant */
+                kind: "opaque";
+            };
             deliveries: components["schemas"]["EventDelivery"][];
-        };
+        } & unknown;
         BrokerSubscription: {
             /** Format: uuid */
             id: string;
@@ -3231,10 +4370,41 @@ export interface components {
             position: string;
             /** @enum {string} */
             reason: "NO_EVENT_TYPE" | "BAD_ENVELOPE" | "NOT_A_JSON_OBJECT" | "TOO_LARGE" | "EVENT_ID_REUSED";
-            headers: {
+            /**
+             * @description Whether this answer includes the retained body and headers. Dead-letter values are treated as PII as a whole.
+             * @enum {string}
+             */
+            bodyDisclosure: "revealed" | "structure-only";
+            /** @description Bytes of the retained body, after the 64 KiB bound. */
+            bodySizeBytes: number;
+            headerCount: number;
+            headers?: {
                 [key: string]: string;
             };
-            body: string;
+            body?: string;
+            bodyStructure?: components["schemas"]["PayloadStructure"] | {
+                /** @constant */
+                kind: "opaque";
+            };
+            truncated: boolean;
+            /** Format: date-time */
+            receivedAt: string;
+        } & unknown;
+        DeadLetterSummary: {
+            /** Format: uuid */
+            id: string;
+            /** @description Where it was: topic/partition/offset, a stream sequence, a message id. */
+            position: string;
+            /** @enum {string} */
+            reason: "NO_EVENT_TYPE" | "BAD_ENVELOPE" | "NOT_A_JSON_OBJECT" | "TOO_LARGE" | "EVENT_ID_REUSED";
+            /** @constant */
+            bodyDisclosure: "structure-only";
+            bodySizeBytes: number;
+            headerCount: number;
+            bodyStructure: components["schemas"]["PayloadStructure"] | {
+                /** @constant */
+                kind: "opaque";
+            };
             truncated: boolean;
             /** Format: date-time */
             receivedAt: string;
@@ -3334,7 +4504,7 @@ export interface components {
             nextCursor?: string | null;
         };
         DeadLetterPage: {
-            items: components["schemas"]["DeadLetter"][];
+            items: components["schemas"]["DeadLetterSummary"][];
             nextCursor?: string;
         };
         /** @description What a script is held to. Every field has a floor and a ceiling, and the platform has a ceiling of its own that a script cannot ask past. */
@@ -4024,6 +5194,8 @@ export interface components {
         Limit: number;
         /** @description The identity (the `sub` of its token), URL-encoded. */
         WorkerSubject: string;
+        /** @description The namespace member identity (the `sub` of its token), URL-encoded. */
+        PayloadRevealSubject: string;
         SecretName: string;
         NamespaceId: string;
         EndpointId: string;
@@ -4031,12 +5203,13 @@ export interface components {
         DeliveryId: string;
         ConnectorId: string;
         DeadLetterId: string;
-        QuotaResourceName: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days";
+        QuotaResourceName: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days" | "database_statement_bytes" | "database_parameters" | "database_parameter_bytes" | "database_rows" | "database_result_bytes" | "database_timeout_ms" | "database_connect_timeout_ms" | "database_pool_size" | "database_idle_timeout_ms" | "database_connections" | "database_concurrency" | "tenant_database_concurrency" | "secret_provider_operations";
         ActivityName: string;
         WorkflowId: string;
         VersionNumber: number;
         RequestId: string;
         RunId: string;
+        ApprovalId: string;
         ScriptId: string;
         TestRunId: string;
         JobId: string;
@@ -4777,6 +5950,7 @@ export interface operations {
                 /** @description Page size; values outside 1..200 are clamped. */
                 limit?: components["parameters"]["Limit"];
                 workflowId?: string;
+                origin?: components["schemas"]["DatabaseExecutionOrigin"];
                 status?: "RUNNING" | "WAITING" | "PAUSED" | "CANCELLING" | "COMPENSATING" | "MANUAL_REVIEW" | "SUCCEEDED" | "FAILED" | "CANCELLED" | "TIMED_OUT" | "COMPENSATED" | "PARTIAL" | "COMPENSATION_FAILED";
             };
             header: {
@@ -4878,6 +6052,119 @@ export interface operations {
             default: components["responses"]["InternalError"];
         };
     };
+    queryRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: components["parameters"]["RunId"];
+                operationName: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeclaredQueryRequest"];
+            };
+        };
+        responses: {
+            /** @description The declared result and the exact revisions observed */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeclaredQueryResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            413: components["responses"]["PayloadTooLarge"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    updateRunState: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: components["parameters"]["RunId"];
+                operationName: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeclaredUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description The applied durable receipt and declared result, including exact replay */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeclaredUpdateResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    readDatabaseResult: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                runId: components["parameters"]["RunId"];
+                nodeId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One complete audited database result */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    "Cache-Control"?: "private, no-store";
+                    "X-Content-Type-Options"?: "nosniff";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatabaseResult"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
     inspectRunPayload: {
         parameters: {
             query?: never;
@@ -4903,6 +6190,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PayloadInspection"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            413: components["responses"]["PayloadTooLarge"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    discloseRunPayload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: components["parameters"]["RunId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PayloadDisclosureRequest"];
+            };
+        };
+        responses: {
+            /** @description A classified projection, structural fallback, external reference or unavailable state */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    "Cache-Control"?: "private, no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PayloadDisclosure"];
                 };
             };
             400: components["responses"]["BadRequest"];
@@ -5174,6 +6499,315 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SignalResult"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    inspectExecutionChain: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                chainId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current chain head and immutable lineage */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChainInspection"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listExecutionChainRuns: {
+        parameters: {
+            query?: {
+                /** @description Opaque cursor returned as `nextCursor` by the previous page. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size; values outside 1..200 are clamped. */
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                chainId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A bounded page of segments */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChainRunPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    queryExecutionChain: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                chainId: string;
+                operationName: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChainDeclaredQueryRequest"];
+            };
+        };
+        responses: {
+            /** @description The declared result and exact current-head revisions observed */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeclaredQueryResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    updateExecutionChain: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                chainId: string;
+                operationName: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChainDeclaredUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description The applied result or exact durable replay */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeclaredUpdateResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    signalExecutionChain: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                chainId: string;
+                signalName: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChainSignalRequest"];
+            };
+        };
+        responses: {
+            /** @description Signal committed, or the exact durable replay */
+            202: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignalResult"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    cancelExecutionChain: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                chainId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChainCancelRequest"];
+            };
+        };
+        responses: {
+            /** @description Cancellation committed, or the exact durable replay */
+            202: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listRunApprovals: {
+        parameters: {
+            query?: {
+                /** @description Opaque cursor returned as `nextCursor` by the previous page. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size; values outside 1..200 are clamped. */
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path: {
+                runId: components["parameters"]["RunId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A bounded page of approval requests for the run */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalList"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    decideWorkflowApproval: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                approvalId: components["parameters"]["ApprovalId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApprovalDecisionRequest"];
+            };
+        };
+        responses: {
+            /** @description The durable winning decision receipt, or its exact replay */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalDecisionReceipt"];
                 };
             };
             400: components["responses"]["BadRequest"];
@@ -5477,6 +7111,106 @@ export interface operations {
             default: components["responses"]["InternalError"];
         };
     };
+    listPayloadRevealGrants: {
+        parameters: {
+            query?: {
+                /** @description Opaque cursor returned as `nextCursor` by the previous page. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size; values outside 1..200 are clamped. */
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The reveal grants */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PayloadRevealGrantPage"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    grantPayloadReveal: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                /** @description The namespace member identity (the `sub` of its token), URL-encoded. */
+                subject: components["parameters"]["PayloadRevealSubject"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The reveal grant now in force */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PayloadRevealGrant"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    revokePayloadReveal: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                /** @description The namespace member identity (the `sub` of its token), URL-encoded. */
+                subject: components["parameters"]["PayloadRevealSubject"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The grant was removed */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
     listWorkerBindings: {
         parameters: {
             query?: never;
@@ -5577,6 +7311,293 @@ export interface operations {
             default: components["responses"]["InternalError"];
         };
     };
+    startDatabaseExecution: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartDatabaseExecutionRequest"];
+            };
+        };
+        responses: {
+            /** @description Durable managed execution */
+            201: {
+                headers: {
+                    "Cache-Control"?: "private, no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Run"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    latestDatabaseConnectionProbe: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                connectionName: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Latest probe or null */
+            200: {
+                headers: {
+                    "Cache-Control"?: "private, no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatabaseConnectionProbe"] | null;
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    probeDatabaseConnection: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                connectionName: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProbeDatabaseConnectionRequest"];
+            };
+        };
+        responses: {
+            /** @description Durable fixed probe */
+            201: {
+                headers: {
+                    "Cache-Control"?: "private, no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Run"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listDatabaseDrivers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Implemented drivers */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatabaseDriverList"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    listDatabaseConnections: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Connection metadata */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatabaseConnectionList"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    getDatabaseConnection: {
+        parameters: {
+            query?: {
+                revision?: number;
+            };
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                connectionName: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Connection metadata */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatabaseConnection"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    putDatabaseConnection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                connectionName: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PutDatabaseConnectionRequest"];
+            };
+        };
+        responses: {
+            /** @description Connection metadata */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatabaseConnection"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    deleteDatabaseConnection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                connectionName: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeleteDatabaseConnectionRequest"];
+            };
+        };
+        responses: {
+            /** @description Connection metadata */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatabaseConnection"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
     listSecrets: {
         parameters: {
             query?: never;
@@ -5638,6 +7659,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
             422: components["responses"]["ValidationError"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
@@ -5673,6 +7695,77 @@ export interface operations {
             default: components["responses"]["InternalError"];
         };
     };
+    migrateSecretToOpenBao: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                secretName: components["parameters"]["SecretName"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MigrateSecretRequest"];
+            };
+        };
+        responses: {
+            /** @description Activated secret metadata, never the value */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Secret"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    reconcileSecretWrite: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                requestId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Activated secret metadata, never the value */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Secret"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
     listSecretAccess: {
         parameters: {
             query?: never;
@@ -5699,6 +7792,74 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listSecretPools: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                secretName: components["parameters"]["SecretName"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The pools */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecretPools"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    setSecretPools: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                secretName: components["parameters"]["SecretName"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SecretPools"];
+            };
+        };
+        responses: {
+            /** @description The pools now in force */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecretPools"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
             default: components["responses"]["InternalError"];
@@ -6739,7 +8900,10 @@ export interface operations {
     };
     getInboxEvent: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Explicitly request the whole event data as PII; requires `payload:read-internal` and a namespace reveal grant. */
+                reveal?: "pii";
+            };
             header?: never;
             path: {
                 namespaceId: components["parameters"]["NamespaceId"];
@@ -6755,6 +8919,7 @@ export interface operations {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
                     "X-Request-Id": components["headers"]["HttpRequestId"];
+                    "Cache-Control"?: "private, no-store";
                     [name: string]: unknown;
                 };
                 content: {
@@ -6764,6 +8929,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
             default: components["responses"]["InternalError"];
@@ -7558,11 +9724,12 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description A page of dead letters */
+            /** @description A page of dead letters without bodies or headers */
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
                     "X-Request-Id": components["headers"]["HttpRequestId"];
+                    "Cache-Control"?: "private, no-store";
                     [name: string]: unknown;
                 };
                 content: {
@@ -7580,7 +9747,10 @@ export interface operations {
     };
     getConnectorDeadLetter: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Explicitly request the retained letter values as PII; requires `payload:read-internal` and a namespace reveal grant. */
+                reveal?: "pii";
+            };
             header?: never;
             path: {
                 namespaceId: components["parameters"]["NamespaceId"];
@@ -7596,6 +9766,7 @@ export interface operations {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
                     "X-Request-Id": components["headers"]["HttpRequestId"];
+                    "Cache-Control"?: "private, no-store";
                     [name: string]: unknown;
                 };
                 content: {
@@ -7605,6 +9776,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
             default: components["responses"]["InternalError"];

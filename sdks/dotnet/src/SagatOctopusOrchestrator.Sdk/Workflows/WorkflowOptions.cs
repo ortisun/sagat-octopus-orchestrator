@@ -1,3 +1,5 @@
+using System.Text.Json.Nodes;
+
 namespace SagatOctopusOrchestrator.Sdk.Workflows;
 
 /// <summary>How the wait between the attempts of a step grows.</summary>
@@ -32,6 +34,9 @@ public sealed record StepRetry
 /// <summary>Options of <see cref="FlowBase{TSelf}.Step"/>. Absent options are left out of the document, never written as null.</summary>
 public sealed record StepOptions
 {
+    /// <summary>The JSON Schema of the activity result carried by journal completion events.</summary>
+    public JsonObject? OutputSchema { get; init; }
+
     /// <summary>The retry budget of the step.</summary>
     public StepRetry? Retry { get; init; }
 
@@ -66,6 +71,17 @@ public sealed record StepOptions
     public string? OnError { get; init; }
 }
 
+/// <summary>Options of a pinned script artifact node.</summary>
+public sealed record ScriptOptions
+{
+    public string? Language { get; init; }
+    public StepRetry? Retry { get; init; }
+    public string? CompensateWith { get; init; }
+    public IReadOnlyList<string>? Secrets { get; init; }
+    public string? OnError { get; init; }
+    public JsonObject? OutputSchema { get; init; }
+}
+
 /// <summary>Options of <see cref="FlowBase{TSelf}.WaitForEvent"/>.</summary>
 public sealed record WaitForEventOptions
 {
@@ -83,6 +99,9 @@ public sealed record WaitForEventOptions
 
     /// <summary>An event that arrived up to this long before the wait started also wakes it (once).</summary>
     public TimeSpan? Lookback { get; init; }
+
+    /// <summary>The JSON Schema of the event payload carried by the satisfied wait.</summary>
+    public JsonObject? OutputSchema { get; init; }
 }
 
 /// <summary>What happens to a child run when its parent is stopped.</summary>
@@ -109,6 +128,17 @@ public sealed record ChildOptions
 
     /// <summary>What happens to the child when the parent is stopped.</summary>
     public ChildCancelPolicy? CancelPolicy { get; init; }
+
+    /// <summary>The JSON Schema of the child result carried by the completed node.</summary>
+    public JsonObject? OutputSchema { get; init; }
+}
+
+/// <summary>Optional workflow-wide execution ceilings.</summary>
+public sealed record WorkflowLimitsOptions
+{
+    public int? MaxInstances { get; init; }
+
+    public int? MaxDepth { get; init; }
 }
 
 /// <summary>How a parallel node joins its branches.</summary>
@@ -152,6 +182,134 @@ public sealed record SagaOptions
 
     /// <summary>What a cancellation or a deadline does to the saga.</summary>
     public SagaCancelPolicy? CancelPolicy { get; init; }
+}
+
+/// <summary>Required bounds of a runtime-sized collection.</summary>
+public sealed record CollectionOptions
+{
+    /// <summary>Largest captured collection, from 1 through 10,000.</summary>
+    public required int MaxItems { get; init; }
+
+    /// <summary>Largest number of admitted iterations, from 1 through 256.</summary>
+    public required int MaxConcurrency { get; init; }
+}
+
+/// <summary>Required bounds and optional routing of a sequential workflow loop.</summary>
+public sealed record LoopOptions
+{
+    /// <summary>Largest number of body executions, from 1 through 10,000.</summary>
+    public required int MaxIterations { get; init; }
+
+    /// <summary>Total time available to the loop, from 1 through 31,622,400,000 milliseconds.</summary>
+    public required TimeSpan Timeout { get; init; }
+
+    /// <summary>Optional durable delay between iterations that are still needed.</summary>
+    public TimeSpan? Delay { get; init; }
+
+    /// <summary>The node to follow when the loop fails.</summary>
+    public string? OnError { get; init; }
+}
+
+/// <summary>A built-in namespace role that may decide an approval.</summary>
+public enum ApprovalRole
+{
+    /// <summary>Namespace administrator.</summary>
+    Admin,
+
+    /// <summary>Workflow developer.</summary>
+    Developer,
+
+    /// <summary>Workflow operator.</summary>
+    Operator,
+}
+
+/// <summary>Subjects and built-in roles eligible to decide an approval.</summary>
+public sealed record ApprovalPolicy
+{
+    /// <summary>Eligible subject identifiers.</summary>
+    public IReadOnlyList<string>? Subjects { get; init; }
+
+    /// <summary>Eligible built-in namespace roles.</summary>
+    public IReadOnlyList<ApprovalRole>? Roles { get; init; }
+
+    /// <summary>Whether the subject that started the run is excluded. Omission uses the server default of true.</summary>
+    public bool? ExcludeInitiator { get; init; }
+}
+
+/// <summary>Policy, deadline and routes of a native approval.</summary>
+public sealed record ApprovalOptions
+{
+    /// <summary>The eligibility policy pinned when the request opens.</summary>
+    public required ApprovalPolicy Policy { get; init; }
+
+    /// <summary>Time available for a decision.</summary>
+    public required TimeSpan Timeout { get; init; }
+
+    /// <summary>The node selected by an approval.</summary>
+    public required string OnApprove { get; init; }
+
+    /// <summary>The node selected by a rejection.</summary>
+    public required string OnReject { get; init; }
+
+    /// <summary>The node selected when the deadline wins.</summary>
+    public required string OnExpire { get; init; }
+}
+
+/// <summary>Finite lifetime shared by every run in a continuation chain.</summary>
+public sealed record ChainPolicyOptions
+{
+    /// <summary>Maximum number of segments, including the initial run.</summary>
+    public required int MaxSegments { get; init; }
+
+    /// <summary>Original deadline retained by every segment.</summary>
+    public required TimeSpan Timeout { get; init; }
+}
+
+/// <summary>The explicit authorization boundary for declared operation results.</summary>
+public static class OperationDisclosure
+{
+    /// <summary>An authorized caller may receive the declared, bounded business result.</summary>
+    public const string DeclaredBusinessResultV1 = "declared-business-result-v1";
+}
+
+/// <summary>A bounded snapshot projection over declared workflow state.</summary>
+public sealed record QueryDefinition
+{
+    public required JsonObject? ArgsSchema { get; init; }
+
+    public required JsonObject? ResultSchema { get; init; }
+
+    public required string? Expression { get; init; }
+
+    public required string? Disclosure { get; init; }
+}
+
+/// <summary>An atomic declarative validator, state reducer and result projection.</summary>
+public sealed record UpdateDefinition
+{
+    public required JsonObject? ArgsSchema { get; init; }
+
+    public string? Validate { get; init; }
+
+    public required string? State { get; init; }
+
+    public required string? Result { get; init; }
+
+    public required JsonObject? ResultSchema { get; init; }
+
+    public required string? Disclosure { get; init; }
+}
+
+/// <summary>Bounded business state and its named side-effect-free operations.</summary>
+public sealed record StateDefinition
+{
+    public required JsonObject? Schema { get; init; }
+
+    public required string? Initial { get; init; }
+
+    public IReadOnlyDictionary<string, QueryDefinition>? Queries { get; init; }
+
+    public IReadOnlyDictionary<string, UpdateDefinition>? Updates { get; init; }
 }
 
 /// <summary>The kind of a workflow trigger.</summary>

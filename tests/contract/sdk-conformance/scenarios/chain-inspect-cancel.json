@@ -1,0 +1,22 @@
+{
+  "name": "chain-inspect-cancel",
+  "description": "The five SDKs inspect and cancel a public chain while its initial activity waits for a worker; this deliberately does not claim continuation handoff coverage.",
+  "workflows": {
+    "chain": {
+      "name": "chain-inspect-cancel-runtime",
+      "chainPolicy": { "maxSegments": 3, "timeoutMs": 86400000 },
+      "program": [
+        { "op": "step", "id": "work", "activity": "chain.work" },
+        { "op": "continueAsNew", "id": "next", "input": "input" }
+      ]
+    }
+  },
+  "steps": [
+    { "id": "start", "op": "start", "workflow": "chain", "input": { "key": "order-{{unique}}" }, "idempotencyKey": "chain-start-{{unique}}" },
+    { "id": "inspect", "op": "inspectChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}" },
+    { "id": "foreign", "op": "inspectChain", "token": "other", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}" },
+    { "id": "cancel", "op": "cancelChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:inspect}}", "reason": "operator requested cancellation", "idempotencyKey": "chain-cancel-{{unique}}" },
+    { "id": "cancel-replay", "op": "cancelChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:inspect}}", "reason": "operator requested cancellation", "idempotencyKey": "chain-cancel-{{unique}}" },
+    { "id": "inspect-cancelled", "op": "inspectChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}" }
+  ]
+}

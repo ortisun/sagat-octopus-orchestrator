@@ -1,0 +1,228 @@
+{
+  "faultsApplied": [],
+  "observations": [
+    {
+      "id": "start-worker",
+      "ok": true,
+      "op": "startWorker",
+      "result": {
+        "protocolVersion": "1.5"
+      }
+    },
+    {
+      "id": "run",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "two-items",
+      "ok": true,
+      "op": "awaitWorkerLog"
+    },
+    {
+      "id": "stop-worker",
+      "ok": true,
+      "op": "stopWorker"
+    }
+  ],
+  "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "taxes",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "forEach",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "taxes[0]/price",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "taxes[0]/returned",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "return",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "taxes[1]/price",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "taxes[1]/returned",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "return",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:1>",
+      "status": "SUCCEEDED"
+    }
+  ],
+  "workerLog": {
+    "current": [
+      {
+        "abortedReason": null,
+        "activity": "tax.price",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:<uuid:4>",
+        "input": {
+          "lines": [
+            {
+              "sku": "a"
+            },
+            {
+              "sku": "b"
+            }
+          ]
+        },
+        "instance": {
+          "definitionNodeId": "price",
+          "instancePath": [
+            {
+              "iterationIndex": 0,
+              "scopeNodeId": "taxes"
+            }
+          ]
+        },
+        "kind": "activity",
+        "node": "price",
+        "outcome": "returned",
+        "scopeInput": {
+          "index": 0,
+          "item": {
+            "sku": "a"
+          }
+        },
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "tax.price",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:<uuid:5>",
+        "input": {
+          "lines": [
+            {
+              "sku": "a"
+            },
+            {
+              "sku": "b"
+            }
+          ]
+        },
+        "instance": {
+          "definitionNodeId": "price",
+          "instancePath": [
+            {
+              "iterationIndex": 1,
+              "scopeNodeId": "taxes"
+            }
+          ]
+        },
+        "kind": "activity",
+        "node": "price",
+        "outcome": "returned",
+        "scopeInput": {
+          "index": 1,
+          "item": {
+            "sku": "b"
+          }
+        },
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      }
+    ]
+  }
+}
