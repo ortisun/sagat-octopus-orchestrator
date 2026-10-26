@@ -684,8 +684,9 @@ impl World {
         config.acquire_timeout = std::time::Duration::from_secs(2);
         let pool = connect(&config).await.expect("a second pool");
         let cache = DefinitionCache::new(Arc::new(JsonIrCodec), 64);
-        let store = PgRunStore::new(pool, cache.clone());
+        let store = PgRunStore::new(pool.clone(), cache.clone());
         Replica {
+            execution_pool: pool,
             runs: RunService::new(
                 store.clone(),
                 SystemClock,
@@ -1045,6 +1046,7 @@ async fn exec(pool: &PgPool, sql: &'static str, run: RunId, node: &str) {
 
 /// A second process over the same database (see [`World::replica`]).
 pub struct Replica {
+    pub execution_pool: PgPool,
     pub store: PgRunStore,
     pub runs: Runs,
     pub workers: Workers,

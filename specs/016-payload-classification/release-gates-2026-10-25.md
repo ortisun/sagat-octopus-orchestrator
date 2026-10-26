@@ -79,9 +79,144 @@ C1/C2 issue in the change or its validation contract. The earlier macOS pass did
 the Linux failure, so these local results do not establish the Linux regression fix: the new
 integrated heads must pass actual Linux CI before merge or release.
 
-
 Root repeated the same combined five-case command above on the integrated 0.2.0 candidate
 `0d2791a9`: **5 passed; 0 failed; 0 ignored; 549 filtered out; 14.00 s**, 53.03 s overall
 including compilation. Formatting, architecture (24 crates), agent configuration, release-version
 agreement and Actionlint passed. This primary integrated-tree rerun remains local evidence;
 actual Linux CI is still required to close the regression.
+
+The subsequent actual Linux Rust job on `36440cc8`,
+[121313905093](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/40241444603/job/121313905093),
+passed all five named relay cases. The workflow-primitives target reported
+**538 passed; 0 failed; 16 ignored; 680.03 s**, and the complete workspace job
+succeeded. This closes the observed relay regression on that tested source;
+final integrated-head gates remain mandatory.
+
+## Historical load-harness failures and diagnostic revision
+
+Linux runs [40241230658](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/40241230658/job/121313248319)
+and [40241444603](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/40241444603/job/121313905154)
+failed `step_transitions_per_second` with `poll: Unavailable` (51.84 s and 53.55 s).
+The same scenario passed in run 40241447148. An application-level `Unavailable`
+does not distinguish pool saturation, a database timeout or a concurrency defect;
+their private driver cause remains unclassified. The failures exposed a synthetic
+client that aborted on an outcome the existing SDK contract permits it to retry.
+The client-model correction below requires new validation; a passing diagnostic
+run alone does not discharge the failed runs.
+
+Diagnostic revision `cdbc8f62` kept all nine configurations, 60 runs per configuration
+in CI, the 20-connection pool, two-second acquisition limit, five-second statement
+limit, operation calls and completion-count assertions. It adds no retry or runtime
+change. A non-printing, harness-owned tracing subscriber reduces driver detail to
+fixed cause labels; it never emits the original detail. A separate observer bounds
+its database-state snapshot to 500 ms. On failure, pending sibling worker futures
+are dropped and the sampler is aborted. External progress buffers preserve all
+acknowledged completions; the incomplete row and earlier complete rows are printed
+and persisted before the test fails. The incomplete configuration receives no
+throughput result or load-level verdict.
+
+Three fresh-context review cycles identified and corrected raw-detail logging,
+an unbounded sampler await, waiting for stalled sibling workers, and unbounded
+barrier tests. Both barrier scenarios now use named five-second `support::bounded`
+limits. Root reran the final source and passed all four diagnostic tests:
+**4 passed; 0 failed; 7 filtered out; 0.00 s** (0.52 s including Cargo):
+
+```sh
+cargo test -p sagat-tests --test perf_scalability_ha --locked diagnostics::tests -- --nocapture
+```
+
+Root also passed formatting, focused strict Clippy, architecture (24 crates, no
+cycles), agent configuration and diff checks. These local runs used a private
+Cargo target, two build jobs, incremental compilation disabled and
+`line-tables-only` dev/test debug metadata on macOS arm64.
+
+The implementer reports two post-implementation mutation checks: restoring the
+unbounded sampler await and then restoring `join_all` each produced its named
+five-second stage timeout and exit 101. These are mutation proofs, not an initial
+TDD RED run. After restoration, root's four-test run above passed.
+
+The implementer's controlled database-outage probe with that diagnostic worker
+collection logic exited 101 in 6.78 s, retained 50 partial acknowledgements and
+two earlier complete configurations, and emitted a fixed `pool_timeout` label.
+This validates diagnostic termination and reporting; it cannot establish the
+cause of the original CI failures. Root subsequently passed all nine configurations
+with 60 runs each: 1,620 acknowledged transitions, 17.19 s on macOS arm64,
+PostgreSQL 18.6. Linux diagnostic run
+[40247177253](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/40247177253/job/121331108877)
+also passed all nine configurations (38.00 s) and disaster recovery. These passes
+do not identify the earlier failures' driver causes. Refs: T010-034, NFR-010-PERF,
+T016-054.
+
+## Bounded synthetic-worker correction
+
+The benchmark now follows the existing `PollTasks` retry contract in
+`sdks/SPEC.md` sections 5 and 6.2. Only typed `AppError::Unavailable` is retried,
+with four total attempts, a 200 ms initial exponential delay, random factor
+`[0.5, 1.0]` and 5 s cap. Completion and every other application error remain
+strict. Driver logs never select retry policy. Known deadlock observations remain
+a post-run integrity failure even if polling recovers.
+
+The initial real-PostgreSQL recovery fixture failed before retries were added:
+all 20 execution-pool connections were held, a real poll returned `Unavailable`
+after one attempt (2.002 s), and the recovery assertion failed (exit 101, 4.26 s
+test runtime). A channel releases the connections only after observing that
+failure. The final fixture requires distinct intended completions, terminal
+status, journal/replay consistency, no leases and recovery of all 20 slots.
+Persistent real-pool exhaustion still fails after four attempts; nonretryable
+errors fail after one.
+
+Additional negative controls were observed failing before correction:
+
+- Cancelling during controlled backoff lost the observed attempt/failure
+  counters: actual retained attempts 0, expected 1. Caller-owned counters now
+  survive cancellation, and the actual sample-recording path has cancellation
+  and successful-call controls.
+- The exact-state transaction check observed one of two intentionally held
+  normal/aborted transaction blocks. A separate aborted-only control then exposed
+  the `xact_start`-only check returning success. The oracle now rejects both
+  active transactions and aborted blocks, verifies every current backend PID,
+  and emits fixed labels instead of database errors.
+
+An intermediate main oracle tried allocating all eight configured 20-slot pools
+against the standalone fixture's 100-connection PostgreSQL. It correctly produced
+an incomplete report and exited nonzero, but imposed a capacity workload the
+benchmark never required. Main now retains every existing idle connection through
+`try_acquire`, boundedly reconciles all pool-owned handles, verifies current
+backends without creating unused connections, and waits for all handles to return.
+The isolated fixture still proves all 20 slots. The declared `run.sh`
+`max_connections=400` and standalone fixture limits are unchanged.
+
+All nine workload configurations, 60 runs of three activities in CI, pool size
+and acquisition/statement limits remain. Successful-attempt latency per task is
+separate from logical-call latency including backoff. Reports expose attempts,
+retryable failures, exhausted calls and wall time; throughput includes retry
+delays before the final acknowledgement and explicitly excludes final empty-poll
+drain. Independent checks cover every started run, unique task/run-node
+completions, terminal projections, journal/replay, leases and open/aborted
+transactions. Bounded integrity failures preserve earlier rows and acknowledged
+progress, print only fixed labels, and fail without a throughput verdict.
+
+The full nonignored target has 16 tests, including the earlier diagnostics:
+
+```sh
+SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test -p sagat-tests --test perf_scalability_ha --locked -- --nocapture
+cargo clippy -p sagat-tests --test perf_scalability_ha --locked -- -D warnings
+cargo fmt --all -- --check
+```
+
+Three fresh-context review cycles found and corrected the accounting, safe-error,
+transaction-state and regression-test gaps. The remaining synchronization issue
+was isolated: a named five-second observer barrier establishes the exact aborted
+backend state with a null transaction timestamp before the negative control runs.
+Temporarily removing only the aborted-state predicate then failed deterministically
+(`Ok(())` versus `Err(OpenTransaction)`, exit 101, 1.64 s). The core was restored
+exactly afterward. This is a post-implementation coverage proof, not an initial
+TDD failure or another general review cycle.
+
+Root's final run passed **16 tests; 0 failed; 7 ignored; 11.19 s** with the runtime
+role (11.55 s including Cargo). Final formatting, focused strict Clippy (0.35 s),
+architecture (24 crates, no cycles), agent configuration and diff checks passed.
+The ignored benchmarks and DR scenarios require their explicit scripted runs.
+Final integrated-head benchmark/CI/preflight validation remains mandatory before
+merge or release; these local results are not a waiver. Historical Linux
+`Unavailable` causes remain unknown. Refs: T010-034, NFR-010-PERF, T016-054.
