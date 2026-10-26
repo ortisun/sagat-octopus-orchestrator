@@ -58,7 +58,9 @@ existing immutable payload, journal and blob-catalog records.
 ### Namespace creation UI contract (T007-052)
 
 `namespace:create` from `/auth/context` exposes **New namespace** on the `/namespaces` page.
-The **Namespaces** navigation menu opens the list; the shell selector only changes context.
+The **Namespaces** navigation menu opens the list; the shell selector only changes context. The menu of a
+namespace (Workflows, Runs, Operations, Scripts, Integrations) is shown only while one is chosen (T007-058): nothing is chosen
+by default, the choice is the slug kept in `studio.namespace`, and a slug the tenant does not list is dropped.
 The dialog reads all pages of `GET /workspaces` and posts generated `CreateNamespaceRequest`
 (`slug`, `environment`: dev/staging/prod) to `POST /workspaces/{workspaceId}/namespaces`.
 It never supplies a tenant ID: authenticated server admission remains authoritative. Successful

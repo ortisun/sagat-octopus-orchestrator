@@ -94,6 +94,48 @@ Implementation evidence (2026-10-11; owner approval and sandbox CI validation re
 - **T007-045:** README, runbook, design/research record, quickstart and traceability describe the implementation, final local
   results, owner approval and the successful Studio CI job.
 
+## Browser UX review 2026-10-14 (FR-007-008/009, SC-007-005)
+
+- [x] T007-057 Correct the sizing, overlap and navigation defects a real-browser review of the built Studio found (15 screens at 320, 390,
+  768, 1024, 1280, 1470 and 1920 px, light and dark). No backend, wire-contract or execution-semantics change. Changes, each with a test:
+  the shell scrolls as one document below 45rem (the pinned navigation took 41% of a 320x640 screen); the run graph has a canvas of
+  `clamp(22rem, 68vh, 46rem)` and the selected step sits beside it (a sticky panel in a `run` size container) where the page area is at
+  least 62rem; the overview map is off until the *Overview map* toggle is pressed, takes the Studio tokens (it stayed light in the dark
+  theme) and the React Flow credit moves to the bottom centre; the journal table had nine columns and eight widths (Step got 80 px,
+  Payload what was left: rows of ~190 px), and the steps table is narrower, with the first column kept in view; Runs filters
+  (`?status=`, `?workflow=`) and the Workflows search (`?q=`) live in the address, opening a run keeps them, *Clear filters*, *Open a
+  run by id*; the runs list is a list of cards below 74rem; *Start run…* (needs `run:start`, uses the existing `POST /runs`, a JSON
+  object of at most 256 KiB, one idempotency key per identical request) on the Workflows list and the Runs page; one time format with the UTC time on hover on Workflows, Versions, Operations
+  and Scripts; one shared reason is said once under the action list instead of under each button; the editor toolbar keeps save and
+  publish together, the palette is a strip without sentences below 100rem, *Add trigger* stays on one line and the description is not
+  monospace. Evidence on 2026-10-14: 1 133 Vitest tests in 77 files (28 added; the test that counts the journal's columns against its widths was
+  checked to fail when a width is removed), `tsc --noEmit`, ESLint and the production build pass; the built bundle was served against the running
+  control plane and re-audited in Chromium with the same checks as the review (105 screen/width pairs: no page overflow before or after;
+  canvas cuts 14 to 9, occluded text 39 to 23, small targets 178 to 163; the remaining occlusion is the edge-label background that
+  has `pointer-events: none`, and the remaining truncation is the runs list's names, which now carry a tooltip). Sideways overflow of
+  the shell and the page area was measured on ten routes at 320, 390 and 640 px: only the Monaco script editor at 320 px overflows
+  (it did before, 48 px against 66 px now). The *Start run* dialog was opened in the browser; **no run was started in the live
+  namespace**, so its request is proved by the component tests only. **Not run:** the Playwright journeys of `frontend/e2e`
+  (they build and start the Rust platform, which was not built for this change), so `visual-layout.spec.ts` and the
+  benchmark geometry have not been re-measured against this change. Deferred items are listed in `research.md` (UX review 2026-10-14).
+
+- [x] T007-058 Make the menu follow the hierarchy (owner request, 2026-10-14: the namespace is the tenant of the product, so what depends on it
+  appears only once one is chosen). No backend, wire-contract or execution-semantics change. The sidebar is now **Namespaces** (the tenant's page,
+  always there), the **Namespace** selector and, under it, in a list named *In <namespace>*: Workflows, Runs, Operations, Scripts and
+  Integrations. Until a namespace is chosen only *Namespaces* is offered, with a line saying what choosing one opens. The Studio **no longer chooses
+  the first namespace for the person** (even when there is only one); a choice remembered from an earlier visit is kept while the tenant lists it
+  and forgotten, not replaced, when it does not. The pages of a namespace sit behind a route that says *Choose a namespace* (with a way to the list)
+  when none is chosen, so a deep link waits and opens by itself as soon as one is chosen in the menu; `/` opens the workflows of the chosen
+  namespace or, on a first visit, the namespace list. The top bar shows *namespace / page* only for a page of a namespace. Evidence on 2026-10-14:
+  1 145 Vitest tests in 78 files (12 added: the order and nesting of the menu, the first-visit state, a lone namespace not chosen for the person,
+  the empty tenant, a remembered choice kept or forgotten, the top bar, the gate on a list page and on a deep link, who is told they may create
+  one, where `/` opens; the gate and the no-auto-choice tests were checked to fail when the behaviour is put back), `tsc --noEmit`, ESLint, the
+  production build and `check:api` pass; the built bundle was driven in Chromium against the running control plane (first visit, a page of a
+  namespace without one, after choosing; 1470, 390 and 320 px; no page overflow) and opened in a browser by the owner's request. **Not run:** the
+  Playwright journeys of `frontend/e2e`. Because the Studio chooses nothing now, `signIn` in `frontend/e2e/support/studio.ts` chooses the first
+  namespace (or the one it is given) after signing in, which is what every journey relied on the shell doing, and `smoke.spec.ts` has a new journey for
+  the hierarchy; both are written but unproved until the platform can be built.
+
 ## Final Phase: Hardening / rollout
 - [x] T007-032 Run the relevant REST/gRPC/AsyncAPI contract suite in `tests/contract/workflow-studio/`. — REST only: this feature adds no gRPC and no event contract; `tests/contract/workflow-studio/rest/conformance.rs` (the new operations on their normal and error paths against the OpenAPI) and `npm run check:api` (the generated types equal the contract).
 - [x] T007-033 Apply lint and acyclic dependency checks in `crates/` and product rules in `docs/architecture/`. — Restyle: Rust fmt, workspace/all-targets clippy and architecture passed locally, as did frontend lint/typecheck/generated API/advisory checks. Final post-Monaco-fix frontend checks passed; prior baseline `cargo audit` evidence is recorded separately in `quickstart.md`.
@@ -192,3 +234,10 @@ the owner-review portion of T007-043/044 and SC-007-005. The real-sandbox US02 j
   JSON-object validation, stable retry keys and context disposal (G167). Eight focused component
   tests and the real Chromium/API/engine signal journey passed on 2026-10-12; an actual waitEvent
   run reached SUCCEEDED and retained `wait.satisfied` in its journal. Integrated gates follow.
+
+Integration evidence for T007-057/T007-058 (2026-10-25): the committed UX/menu work is
+reconciled with 016/017, including all three managed-database routes. Final 1,193 frontend
+checks and 35 real Chromium scenarios passed; two opt-in benchmarks were skipped and local
+US02 was explicitly excluded. The new Start run API journey passed. Exact commands, the two
+initial browser failures and their fixes are recorded in quickstart.md; complete Linux CI is
+still required before merge.

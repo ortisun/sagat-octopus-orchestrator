@@ -56,6 +56,17 @@
   margin-left: auto;
 }
 
+.wf-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  align-items: center;
+}
+
+.wf-tools-save {
+  margin-left: auto;
+}
+
 .wf-toggle {
   display: inline-flex;
 }
@@ -533,6 +544,26 @@
   flex: 1;
 }
 
+/* The button sits at the foot of the select it belongs to, and its two words stay on one line. */
+.wf-add-trigger {
+  align-items: flex-end;
+}
+
+.wf-add-trigger .btn {
+  flex: none;
+  white-space: nowrap;
+}
+
+.wf-add-trigger .field {
+  flex: 1;
+  margin-bottom: 0;
+}
+
+/* A description is a sentence for people, not code. */
+.field textarea.wf-prose {
+  font-family: var(--font);
+}
+
 /* This row is also used by tags and rename controls; only durations have a unit selector. */
 .wf-duration > .wf-duration-row {
   display: grid;
@@ -887,9 +918,9 @@ table.data tbody th[scope="row"] {
   font-size: var(--font-size-mono);
 }
 
-/* On a laptop the canvas needs the room more than the palette needs its sentences: the description of a kind
-   stays for assistive technology and for the title of the button. */
-@media (min-width: 68.8125rem) and (max-width: 99.9375rem) {
+/* Wherever the canvas needs the room more than the palette needs its sentences (a laptop, a tablet, a phone, where the
+   palette is a strip above it) the description of a kind stays for assistive technology and for the title of the button. */
+@media (max-width: 99.9375rem) {
   .wf-kind-desc {
     position: absolute;
     width: 1px;
@@ -905,4 +936,38 @@ table.data tbody th[scope="row"] {
   .wf-palette {
     width: 9.375rem;
   }
+}
+
+/* The search above the list of workflows: its field is a field, not a banner. */
+.wf-find {
+  align-items: flex-end;
+}
+
+.wf-find .field {
+  width: min(100%, 24rem);
+  margin-bottom: 0;
+}
+
+.wf-find .hint {
+  padding-bottom: var(--space-3);
+}
+
+/* A workflow's name is a slug that may be long and has no spaces: it breaks anywhere rather than widen the table. On a phone the
+   draft revision (the editor's business) and the time of the last update give way, so the name, the version and the way to start
+   a run fit in 320 px; both are there from 45rem up. */
+.wf-list th[scope='row'] a {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 45rem) {
+  .wf-list th:nth-child(3),
+  .wf-list td:nth-child(3),
+  .wf-list th:nth-child(4),
+  .wf-list td:nth-child(4) {
+    display: none;
+  }
+}
+
+.wf-list td .btn {
+  white-space: nowrap;
 }
