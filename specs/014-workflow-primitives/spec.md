@@ -6,6 +6,10 @@
 **Status**: Architecture accepted in ADR-0030/0031/0032; runtime implementation partial
 **Input**: Specify additional workflow primitives with Spec Kit and improve practical workflow examples in TypeScript, Go, Python, C# and Java.
 
+Release 0.2.0 follows [ADR-0040](../../docs/adr/ADR-0040-release-checkpoints-preserve-incomplete-feature-boundaries.md) for the
+implemented-subset checkpoint. General nesting and the eight open feature-014 tasks remain
+pending; publication capabilities, authority checks and required technical gates are unchanged.
+
 ## Context and delivery boundary
 
 Developers need to route orders, process a runtime-sized collection, repeat work until a business

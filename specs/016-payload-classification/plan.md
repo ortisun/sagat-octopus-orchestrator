@@ -4,6 +4,10 @@
 
 **Input**: `specs/016-payload-classification/spec.md`; decision [ADR-0033](../../docs/adr/ADR-0033-payload-values-are-classified-per-field.md).
 
+Release 0.2.0 follows [ADR-0040](../../docs/adr/ADR-0040-release-checkpoints-preserve-incomplete-feature-boundaries.md) for the
+implemented-subset checkpoint. General nesting and the eight open feature-014 tasks remain
+pending; publication capabilities, authority checks and required technical gates are unchanged.
+
 ## Summary
 
 Add an author-declared classification (`public`, `internal`, `pii`, `secret`) to the JSON Schemas the

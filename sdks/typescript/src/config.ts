@@ -42,7 +42,7 @@ export interface TlsOptions {
 }
 
 /** SDK version, sent in `User-Agent` and as the worker's SDK identity. */
-export const SDK_VERSION = '0.1.0';
+export const SDK_VERSION = '0.2.0';
 
 /** The newest minor version of worker protocol 1 this SDK speaks (SPEC §6.1). */
 export const PROTOCOL_VERSION = '1.5';

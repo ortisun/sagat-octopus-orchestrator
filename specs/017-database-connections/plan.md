@@ -2,6 +2,10 @@
 
 Status: Implemented and locally verified on 2026-10-17. Product scope and ADR-0035 approved by the user on 2026-10-16. See [verification.md](verification.md) for executed gates, reruns and limits.
 
+Release 0.2.0 follows [ADR-0040](../../docs/adr/ADR-0040-release-checkpoints-preserve-incomplete-feature-boundaries.md) for the
+implemented-subset checkpoint. General nesting and the eight open feature-014 tasks remain
+pending; publication capabilities, authority checks and required technical gates are unchanged.
+
 ## Architecture and dependency decisions
 
 The delivery extends features 001, 002, 003, 006, 007, 008, 009 and 011 in the bounded ways described in ADR-0035. It does not depend on merging the separate 013 proposal. Keep existing engine transitions and admission transactions; extend their validation and persisted bindings. Never run customer SQL in an API or scheduler process.

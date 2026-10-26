@@ -79,6 +79,19 @@ C1/C2 issue in the change or its validation contract. The earlier macOS pass did
 the Linux failure, so these local results do not establish the Linux regression fix: the new
 integrated heads must pass actual Linux CI before merge or release.
 
+Root repeated the same combined five-case command above on the integrated 0.2.0 candidate
+`0d2791a9`: **5 passed; 0 failed; 0 ignored; 549 filtered out; 14.00 s**, 53.03 s overall
+including compilation. Formatting, architecture (24 crates), agent configuration, release-version
+agreement and Actionlint passed. This primary integrated-tree rerun remains local evidence;
+actual Linux CI is still required to close the regression.
+
+The subsequent actual Linux Rust job on `36440cc8`,
+[121313905093](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/40241444603/job/121313905093),
+passed all five named relay cases. The workflow-primitives target reported
+**538 passed; 0 failed; 16 ignored; 680.03 s**, and the complete workspace job
+succeeded. This closes the observed relay regression on that tested source;
+final integrated-head gates remain mandatory.
+
 ## Historical load-harness failures and diagnostic revision
 
 Linux runs [40241230658](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/40241230658/job/121313248319)
@@ -207,3 +220,21 @@ The ignored benchmarks and DR scenarios require their explicit scripted runs.
 Final integrated-head benchmark/CI/preflight validation remains mandatory before
 merge or release; these local results are not a waiver. Historical Linux
 `Unavailable` causes remain unknown. Refs: T010-034, NFR-010-PERF, T016-054.
+
+## Primary verification on the integrated 0.2.0 candidate
+
+Root reran the reviewed client on release candidate `5aec324e` using the runtime
+role, a private Cargo target, two build jobs and two test threads. The complete
+nonignored `perf_scalability_ha` target passed **16 tests; 0 failed; 7 ignored;
+11.29 s** (32.76 s including Cargo). The script
+`SAGAT_PERF_TRANSITION_RUNS=60 SAGAT_PERF_SCENARIOS=step_transitions_per_second
+tests/performance/scalability-ha/run.sh` passed all nine configurations, each
+with 60 three-activity runs: **1,620 distinct acknowledged transitions**, with
+terminal-run, journal/replay, lease and transaction checks, in **18.03 s**
+(236.62 s including compilation). This used macOS arm64 and the script-owned
+PostgreSQL 18.6; all rows recorded zero failed attempts and exhausted calls.
+This particular run does not establish the cause of historical Linux failures.
+
+`cargo clippy --workspace --all-targets --locked -- -D warnings` also passed on
+that integrated tree in **88.86 s**. The full current-head CI gates remain
+mandatory; these local results do not replace them.

@@ -12,7 +12,7 @@ PostgreSQL is the source of truth. NATS JetStream transports notifications; Kafk
 connectors integrate external systems. External effects are **at-least-once**: use idempotency keys
 and reconciliation for operations such as payments.
 
-**Version:** [0.1.0](docs/releases/0.1.0.md). **License:** [MIT](LICENSE). **Implementation and validation status:**
+**Version:** [0.2.0](docs/releases/0.2.0.md). **License:** [MIT](LICENSE). **Implementation and validation status:**
 [requirement traceability](docs/traceability.md). This README documents the source checkout; it does
 not assume that application images, CLI binaries or SDK packages have been published to a registry.
 Studio labels and project documentation are in English.
@@ -240,10 +240,11 @@ notification failure. The guide includes publication, worker permissions, expect
 troubleshooting. Browse the [example matrix](examples/sdk-parity.md) for greeting and payment
 saga examples as well.
 
-The [workflow primitive specification](specs/014-workflow-primitives/spec.md) proposes bounded
-iteration and dynamic fan-out, loops, native approval, switch, Query/Update and Continue-As-New.
-It records acceptance criteria and implementation tasks; these additions are **not implemented**
-in version 0.1.0. The runnable examples use the current API.
+The [workflow runbook](docs/runbooks/workflow-primitives.md) documents the restricted public
+subsets for collections, loops, approval, switch, Query/Update and continuation chains. General
+nesting and large-workload acceptance remain pending; declaration limits are not production
+capacity guarantees. See [ADR-0040](docs/adr/ADR-0040-release-checkpoints-preserve-incomplete-feature-boundaries.md)
+and the [open feature tasks](specs/014-workflow-primitives/tasks.md). Runnable examples use the current API.
 
 ## Configure integrations
 

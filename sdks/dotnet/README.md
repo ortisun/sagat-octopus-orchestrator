@@ -1,6 +1,6 @@
 # SagatOctopusOrchestrator.Sdk (C# / .NET)
 
-The .NET SDK of the Sagat Octopus Orchestrator, version **0.1.0**. It is three things in one package and nothing else
+The .NET SDK of the Sagat Octopus Orchestrator, version **0.2.0**. It is three things in one package and nothing else
 (`sdks/SPEC.md`):
 
 1. a **client** for the REST API: start, read, list, operate, cancel and signal runs, publish events, wait for a run;
@@ -16,7 +16,7 @@ every state and every retry decision. It integrates with `Microsoft.Extensions.D
 ## Install
 
 ```text
-dotnet add package SagatOctopusOrchestrator.Sdk --version 0.1.0
+dotnet add package SagatOctopusOrchestrator.Sdk --version 0.2.0
 ```
 
 The package is not published to a feed yet. `dotnet pack src/SagatOctopusOrchestrator.Sdk -c Release -o ./nupkg` makes it
@@ -185,7 +185,7 @@ answer with more tasks than the host asked for runs the first ones and leaves th
 | `Token` / `TokenProvider` | a bearer token, or a provider called before every request | one is required |
 | `Timeout` | deadline of one REST call or unary RPC | 30 s |
 | `Retry` | `MaxAttempts`, `InitialDelay`, `MaxDelay` | 4, 200 ms, 5 s |
-| `UserAgent` | suffix appended to `sagat-sdk-csharp/0.1.0` | none |
+| `UserAgent` | suffix appended to `sagat-sdk-csharp/0.2.0` | none |
 | `Tls` | `TrustedRoots`, `ServerName`, `ClientCertificate` | system roots, the host of the URL, no client certificate |
 | `Json` | `JsonSerializerOptions` for typed payloads | camel case, case-insensitive on read |
 | `HttpMessageHandler` | the transport of the client (a proxy, a test, fault injection); the caller owns it and must turn redirects off | a pooled `SocketsHttpHandler` |

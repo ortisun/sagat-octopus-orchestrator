@@ -3,6 +3,9 @@
 Status: Accepted implementation reconciliation, 2026-10-17, within the user's authorization
 to complete all open project tasks. Runtime guarantees remain gated by executed tests.
 
+Partially superseded by [ADR-0040](./ADR-0040-release-checkpoints-preserve-incomplete-feature-boundaries.md) only for the final release-prerequisite
+sentence: implemented-subset checkpoints do not close the complete feature-014 guarantees.
+
 Refines ADR-0030/0032 scoped execution and ADR-0033 classified disclosure, and reconciles
 feature 017's managed database decision, renumbered ADR-0035. ADR-0034 remains available for
 the separately owned feature 015 draft, following the owner's numbering decision.
@@ -90,4 +93,5 @@ other paths and run-wide compensation, preserving the original status precedence
 read in the same repeatable-read snapshot; mutation still checks the global run revision. New
 partial indexes in 20261208000000 support the probes. This changes no SDK/wire semantics and
 adds no external-effect delivery guarantee. Full worker/provider/blob/control/finalizer wiring
-and the accepted large-workload evidence remain release prerequisites.
+and the accepted large-workload evidence remain prerequisites for the complete feature-014
+guarantee. Implemented-subset release checkpoints follow [ADR-0040](./ADR-0040-release-checkpoints-preserve-incomplete-feature-boundaries.md).

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly SDK_VERSION="0.1.0"
+readonly SDK_VERSION="0.2.0"
 readonly PYTHON_BUILD_VERSION="1.3.0"
 readonly MAVEN_INSTALL_PLUGIN_VERSION="3.1.4"
 
