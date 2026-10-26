@@ -4,6 +4,12 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-10-26
+
+| # | Item | Decision | Recorded in | Status |
+|---|---|---|---|---|
+| 1 | Remaining implementation and release target | “Continue com a implementacao do restante agora para a release v0.3”. Complete the eight remaining feature-014 tasks for release 0.3.0 with their original acceptance criteria and required gates. | [0.3.0 implementation ledger](../specs/014-workflow-primitives/implementation-0.3.md) | Implementation in progress; no capacity or release guarantee inferred |
+
 ## 2026-10-25
 
 | # | Item | Decision | Recorded in | Status |

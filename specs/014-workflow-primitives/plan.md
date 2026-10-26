@@ -10,6 +10,11 @@ pending; publication capabilities, authority checks and required technical gates
 
 ## Summary
 
+The owner requested completion of the remaining implementation for release 0.3 on
+2026-10-26. [The 0.3.0 implementation ledger](./implementation-0.3.md) records the
+ordered remaining increments and actual verification. Existing unchecked tasks and
+publication gates remain authoritative until their acceptance evidence is obtained.
+
 Deliver current-API order examples for all five SDKs (US01), then implement bounded dynamic
 collections, sequential loops, native approval, switch, declarative Query/Update and run-chain
 continuation (US02–US07) through accepted dependency-ordered slices. US01, bounded switch,
