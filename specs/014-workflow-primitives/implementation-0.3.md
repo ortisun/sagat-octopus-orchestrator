@@ -248,3 +248,100 @@ in that ordinary invocation and is represented only by the separate focused all-
 Formatting, architecture (24 crates/no cycles) and agent configuration pass. The final
 physical-guard adversarial review found no required issue, ending its bounded three-cycle
 review. A broader committed-tree regression remains separate from the focused evidence.
+
+
+### Committed local-control broad regression
+
+The b4dbb28d tree completed the serial native command
+`cargo test -p sagat-tests --test integration_workflow_primitives --test fault_workflow_primitives --locked`:
+**92 fault tests passed,0failed,0ignored in346.13s** and **555 integration tests
+passed,0failed,16ignored in1694.80s**. Total command2073.75s including compilation.
+This is the committed local-decision tree, before control-entry admission; it is not a
+full regression of the next schema/profile. No ignored test was changed.
+
+## Third runtime increment: scheduler-owned collection entry
+
+CLAIM: Activity and scheduler-owned entry have distinct durable dispatch obligations.
+A Condition/Switch entry charges one real logical instance and its complete reservations,
+with no fake activity/outbox identity; revision, shard, tenant and quota remain checked in
+the existing admission transaction. WHY THIS MATTERS: conflating scheduler work with a
+worker task can stall cold recovery, leak a slot or permit an incorrect rollback.
+
+`CollectionEntryDispatch` and general member admission retain the activity constructor/port
+signatures. PostgreSQL validates the exact pinned body entry, records Activity as READY
+with its actual release/outbox, or Scheduler as pristine PENDING with one admission event.
+The latter's append-only marker is independent retained evidence; it is not a second source
+of execution state. Full, exact-path and frontier readers check the dispatch projection.
+The old activity-only port refuses Scheduler intent.
+
+All local refs and worktree migration files were inventoried before allocating
+20261221000000; the previous maximum was20261220000000. The additive migration backfills
+ACTIVITY, closes nullable activity/outbox combinations by dispatch CHECK, and leaves
+table-level runtime privileges intact. Down locks runs→memberships→journal and refuses
+retained Scheduler membership OR immutable admission evidence, including completed runs.
+No applied migration was rewritten. The new bounded column is classified protected_system.
+
+Observed focused results, separate invocations:
+
+- `control-entry-public-red`:2failed at unsupported publication, correct behavioral RED.
+- `control-entry-first-runtime`:2passed,0failed,5.67s. Pure controls create zero worker
+  leases/task.ready rows; switch entry leases one selected real activity with exact budget.
+- First native3-case invocation was stopped after a refused SQLx migration left its session
+  advisory lock held and a subsequent migration blocked. The queued expanded invocation was
+  also stopped. No pass is claimed for either. Dedicated acquired migrator connections now
+  close after refusal, with15s bounded waits. `control-entry-native-bounded`:5passed,0failed,
+  12.80s, including rollback, replay, capacity/cold discovery, cancel and schema backfill.
+- Review reproduced two CHECK-valid dispatch-masquerading REDs: the full reader accepted it
+  and downgrade succeeded incorrectly (`control-entry-disguise-red`:2failed,4.37s).
+  Pinned dispatch read validation and the immutable journal marker/down predicate correct them.
+- `control-entry-evidence-green`:19passed,1failed,86.85s. The failure was an invalid test
+  expectation that public quota0 is accepted; API returned422. Existing domain/SQL contracts
+  require iteration_concurrency>=1. This increment preserves that policy; dormant nested
+  zero-room authority gates remain separate. No public quota product semantics changed.
+- `control-entry-focused-final`:21passed,0failed,0ignored,86.01s, including all three
+  corruption readers, immutable-evidence downgrade, cancellation, exact journal/outbox rollback,
+  cold cached-store/scheduler recovery through reduced capacity and frozen shape exclusion.
+- `control-entry-native-regression`:23passed,0failed,0ignored,92.52s. Adds current
+  tenant/shard/dispatch/item/reservation refusal snapshots and reruns the genuine activity-chain
+  certification/replay after nullability. Both control kinds fail pure-domain frozen shape
+  checking and native certification under owner/runtime access without mutations.
+- `sdk-control-entry-observation`:all five actual runtime observations identical SHA256
+  88b0089b4cb3d73cf0e9853dcc7bc013c231b7630b3ac97ca5c7ab83610624f1; aggregate failed
+  only for two missing reference files. After reading complete observations and canonical
+  documents, references were recorded without a bless switch. `sdk-control-entry-verified`:
+  1aggregate passed,0failed,30.52s. The pure condition Run finishes before startWorker; both
+  Runs yield ordered[1,-1], and the only worker call is switch index0/control.notify.
+- `clippy-control-entry`:strict workspace/all-targets locked Clippy passed,86s build output.
+  fmt,architecture(24crates) and agent configuration also passed. Core/contracts/classification
+  gates are running separately and are not yet claimed here.
+
+Adversarial design review produced the actionable masquerading and frozen-profile evidence
+requirements, plus same-delivery spec/contract updates. The zero-quota request was a contract
+misread, as verified against quota.rs and the actual422. Mixed older-scheduler execution of
+new definitions is unsupported: old authority must be fenced/drained before admission, and
+released0.2-profile active-run/rollout evidence is required before release or advertising0.3.
+A fresh bounded review of the corrected admission/projection/down artifact found no required
+issues. Cross-model review remains skipped per the owner's earlier choice.
+
+The registry now contains63scenarios; a focused pass is not full63 acceptance. Timer/wait/child
+body progression, nested capacity and workloads remain pending. All eight canonical tasks stay
+unchecked and no version/tag/release has been changed.
+
+
+### Third-increment final focused gates
+
+- Four core crates (`sagat-domain`, `sagat-application`, `sagat-infra-ir`,
+  `sagat-scheduler`) passed1009tests,0failed,0ignored across77targets;60.36s command.
+- The initial contract command passed18payload-classification tests but failed one stale
+  primitive negative fixture (46passed/1failed): it still declared control entry unproven.
+  The negative fixture now preserves the independent Return-only admission refusal, and a
+  new positive contract checks both reviewed public control-entry canonical documents.
+  Corrected command passed18classification +48primitive +2ordinary SDK tests,0failures,
+  with the expensive SDK aggregate explicitly ignored;19.41s command. The separate
+  all-five new-case verification above supplies its actual focused runtime evidence.
+- Runtime-role storage manifest fitness test passed1/1,1.74s;32.02s including compilation.
+- Final strict workspace/all-targets Clippy after the contract adjustment passed,1.13s.
+  No implementation change followed the23-case native verification or five-SDK pass.
+
+Complete native regression of this new migration profile and the complete63-scenario
+aggregate remain pending; the555/92 broad result above belongs to b4dbb28d.

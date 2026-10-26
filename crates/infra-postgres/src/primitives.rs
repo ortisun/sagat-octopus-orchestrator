@@ -13,9 +13,9 @@ use sagat_application::execution::{
 };
 use sagat_application::primitives::{
     CollectionAdmission, CollectionCheckpoint, CollectionDataLimitEvidence, CollectionDrain,
-    CollectionDrainFinish, CollectionEntry, CollectionFinish, CollectionIterationDrain,
-    CollectionProgress, CollectionScopeId, CollectionScopeRef, CollectionStore,
-    CollectionTransition, PrimitiveStoreError, PrimitiveWrite,
+    CollectionDrainFinish, CollectionEntry, CollectionEntryDispatch, CollectionFinish,
+    CollectionIterationDrain, CollectionProgress, CollectionScopeId, CollectionScopeRef,
+    CollectionStore, CollectionTransition, PrimitiveStoreError, PrimitiveWrite,
 };
 use sagat_application::runs::Lock;
 use sagat_domain::audit::{AuditAction, ResourceType};
@@ -1765,6 +1765,16 @@ impl CollectionStore for PgCollectionStore {
         &self,
         admission: &CollectionAdmission,
     ) -> Result<PrimitiveWrite, PrimitiveStoreError> {
+        if !matches!(admission.dispatch, CollectionEntryDispatch::Activity { .. }) {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        }
+        self.admit_collection_member(admission).await
+    }
+
+    async fn admit_collection_member(
+        &self,
+        admission: &CollectionAdmission,
+    ) -> Result<PrimitiveWrite, PrimitiveStoreError> {
         check_audit(&admission.transition)?;
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let run = lock_run(&mut tx, &admission.transition).await?;
@@ -1794,11 +1804,31 @@ impl CollectionStore for PgCollectionStore {
         };
         let expected_reservations = u16::try_from(expected_reservations)
             .map_err(|_| PrimitiveStoreError::InvalidTransition)?;
+        let (dispatch, activity, outbox_id, node_kind) =
+            match (&admission.dispatch, entry_definition.kind()) {
+                (
+                    CollectionEntryDispatch::Activity {
+                        activity,
+                        outbox_id,
+                    },
+                    NodeKind::Activity {
+                        activity: declared, ..
+                    },
+                ) if activity == declared => (
+                    "ACTIVITY",
+                    Some(activity.as_str()),
+                    Some(*outbox_id),
+                    "activity",
+                ),
+                (CollectionEntryDispatch::Scheduler, NodeKind::Condition { .. }) => {
+                    ("SCHEDULER", None, None, "condition")
+                }
+                (CollectionEntryDispatch::Scheduler, NodeKind::Switch { .. }) => {
+                    ("SCHEDULER", None, None, "switch")
+                }
+                _ => return Err(PrimitiveStoreError::InvalidTransition),
+            };
         if admission.entry.node() != body.entrypoint()
-            || !matches!(
-                entry_definition.kind(),
-                NodeKind::Activity { activity, .. } if activity == &admission.activity
-            )
             || admission.reserved_instances != expected_reservations
         {
             return Err(PrimitiveStoreError::InvalidTransition);
@@ -1824,7 +1854,7 @@ impl CollectionStore for PgCollectionStore {
             return Err(PrimitiveStoreError::InvalidTransition);
         }
         if let Some(row) = sqlx::query(
-            "SELECT entry_instance_id, item_digest, activity, reserved_instances, outbox_id \
+            "SELECT entry_instance_id, item_digest, activity, reserved_instances, outbox_id, entry_dispatch \
              FROM collection_iterations WHERE tenant_id = $1 AND run_id = $2 \
                AND scope_id = $3 AND iteration_index = $4",
         )
@@ -1844,10 +1874,11 @@ impl CollectionStore for PgCollectionStore {
             let matches = row.get::<Uuid, _>("entry_instance_id") == expected_id
                 && row.get::<Vec<u8>, _>("item_digest")
                     == admission.item_digest.as_bytes().as_slice()
-                && row.get::<String, _>("activity") == admission.activity.as_str()
+                && row.get::<Option<String>, _>("activity").as_deref() == activity
+                && row.get::<String, _>("entry_dispatch") == dispatch
                 && row.get::<i32, _>("reserved_instances")
                     == i32::from(admission.reserved_instances)
-                && row.get::<Uuid, _>("outbox_id") == admission.outbox_id;
+                && row.get::<Option<Uuid>, _>("outbox_id") == outbox_id;
             if !matches {
                 return Err(PrimitiveStoreError::DuplicateMismatch);
             }
@@ -1932,22 +1963,26 @@ impl CollectionStore for PgCollectionStore {
             &admission.entry,
         );
         let admitted_sequence = run.run_version + 1;
-        let released_sequence = admitted_sequence + 1;
+        let final_sequence = admitted_sequence + u64::from(activity.is_some());
         sqlx::query(
             "INSERT INTO steps \
              (tenant_id, run_id, node, step_id, namespace_id, status, activity, ready_at, \
-              last_hinted_at, hint_count, updated_at, instance_path_nodes, instance_path_indices) \
-             VALUES ($1, $2, $3, $4, $5, 'READY', $6, $7, $7, 1, $7, $8, $9)",
+              last_hinted_at, hint_count, updated_at, instance_path_nodes, instance_path_indices, node_kind) \
+             VALUES ($1, $2, $3, $4, $5, $10, $6, $11, $11, $12, $7, $8, $9, $13)",
         )
         .bind(admission.transition.tenant_id().as_uuid())
         .bind(admission.transition.run_id().as_uuid())
         .bind(admission.entry.node().as_str())
         .bind(entry_id)
         .bind(run.namespace_id.as_uuid())
-        .bind(admission.activity.as_str())
+        .bind(activity)
         .bind(admission.transition.occurred_at())
         .bind(&entry_nodes)
         .bind(&entry_indices)
+        .bind(if activity.is_some() { "READY" } else { "PENDING" })
+        .bind(activity.map(|_| admission.transition.occurred_at()))
+        .bind(i32::from(activity.is_some()))
+        .bind(node_kind)
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
@@ -1956,9 +1991,9 @@ impl CollectionStore for PgCollectionStore {
              (tenant_id, run_id, scope_id, iteration_index, entry_path_nodes, entry_path_indices, \
               entry_node, entry_instance_id, activity, item_digest, lifecycle, slot_held, \
               reserved_instances, remaining_reservations, admitted_sequence, outbox_id, \
-              created_at, updated_at) \
+              created_at, updated_at, entry_dispatch) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'ADMITTED', true, $11, $11, \
-                     $12, $13, $14, $14)",
+                     $12, $13, $14, $14, $15)",
         )
         .bind(admission.transition.tenant_id().as_uuid())
         .bind(admission.transition.run_id().as_uuid())
@@ -1968,12 +2003,13 @@ impl CollectionStore for PgCollectionStore {
         .bind(&entry_indices)
         .bind(admission.entry.node().as_str())
         .bind(entry_id)
-        .bind(admission.activity.as_str())
+        .bind(activity)
         .bind(admission.item_digest.as_bytes().as_slice())
         .bind(i32::from(admission.reserved_instances))
         .bind(number(admitted_sequence, "journal sequence")?)
-        .bind(admission.outbox_id)
+        .bind(outbox_id)
         .bind(admission.transition.occurred_at())
+        .bind(dispatch)
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
@@ -2007,55 +2043,65 @@ impl CollectionStore for PgCollectionStore {
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
+        let mut admission_detail = json!({
+            "index": admission.index,
+            "entry": instance_json(&admission.entry),
+            "item_digest": admission.item_digest.to_hex(),
+        });
+        if matches!(admission.dispatch, CollectionEntryDispatch::Scheduler) {
+            admission_detail["entry_dispatch"] = json!("SCHEDULER");
+        }
         append_event(
             &mut tx,
             &admission.transition,
             run,
             admitted_sequence,
             "collection.iteration_admitted",
-            json!({
-                "index": admission.index,
-                "entry": instance_json(&admission.entry),
-                "item_digest": admission.item_digest.to_hex(),
-            }),
+            admission_detail,
         )
         .await?;
-        append_instance_event(
-            &mut tx,
-            &admission.transition,
-            run,
-            &admission.entry,
-            released_sequence,
-            "step.released",
-            json!({}),
-        )
-        .await?;
-        sqlx::query(
+        if let CollectionEntryDispatch::Activity {
+            activity,
+            outbox_id,
+        } = &admission.dispatch
+        {
+            append_instance_event(
+                &mut tx,
+                &admission.transition,
+                run,
+                &admission.entry,
+                final_sequence,
+                "step.released",
+                json!({}),
+            )
+            .await?;
+            sqlx::query(
             "INSERT INTO event_outbox (id, tenant_id, aggregate_id, event_type, routing_key, payload) \
              VALUES ($1, $2, $3, 'task.ready', $4, $5)",
         )
-        .bind(admission.outbox_id)
+        .bind(outbox_id)
         .bind(admission.transition.tenant_id().as_uuid())
         .bind(admission.transition.run_id().as_uuid())
-        .bind(admission.activity.as_str())
+        .bind(activity.as_str())
         .bind(json!({
             "tenantId": admission.transition.tenant_id().to_string(),
             "namespaceId": admission.transition.namespace_id().to_string(),
             "runId": admission.transition.run_id().to_string(),
             "node": admission.entry.node().as_str(),
             "instancePath": instance_json(&admission.entry)["path"],
-            "activity": admission.activity.as_str(),
+            "activity": activity.as_str(),
             "traceId": admission.transition.trace_id(),
         }))
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
-        finish_version(&mut tx, &admission.transition, released_sequence).await?;
-        mark_telemetry_pending(&mut tx, &admission.transition, released_sequence).await?;
+        }
+        finish_version(&mut tx, &admission.transition, final_sequence).await?;
+        mark_telemetry_pending(&mut tx, &admission.transition, final_sequence).await?;
         tx.commit().await.map_err(store_error)?;
         Ok(PrimitiveWrite {
             applied: true,
-            run_version: released_sequence,
+            run_version: final_sequence,
         })
     }
 
@@ -3978,6 +4024,15 @@ impl CollectionStore for PgRunStore {
     ) -> Result<PrimitiveWrite, PrimitiveStoreError> {
         PgCollectionStore::with_definition_cache(self.pool.clone(), self.cache.clone())
             .admit_collection_activity(admission)
+            .await
+    }
+
+    async fn admit_collection_member(
+        &self,
+        admission: &CollectionAdmission,
+    ) -> Result<PrimitiveWrite, PrimitiveStoreError> {
+        PgCollectionStore::with_definition_cache(self.pool.clone(), self.cache.clone())
+            .admit_collection_member(admission)
             .await
     }
 

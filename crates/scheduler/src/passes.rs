@@ -2147,7 +2147,7 @@ where
         Ok(CollectionAdvance::Checkpointed { index })
     }
 
-    /// Admits iteration `index` of a collection: its entry activity, its slot and its reservation.
+    /// Admits iteration `index`, its entry dispatch, slot and complete reservation.
     async fn admit_collection(
         &self,
         transition: CollectionTransition,
@@ -2163,13 +2163,10 @@ where
                 .map_err(|_| CollectionAdvanceError::InvalidProgress)?,
             body.entrypoint().clone(),
         );
-        let NodeKind::Activity { activity, .. } = body
+        let entry_kind = body
             .node(body.entrypoint())
             .ok_or(CollectionAdvanceError::InvalidProgress)?
-            .kind()
-        else {
-            return Err(CollectionAdvanceError::InvalidProgress);
-        };
+            .kind();
         // The iteration reserves every other node of its body, the compensations and lookups
         // of its activities included, so the budget cannot stop them (D384).
         let reserved_instances = u16::try_from(body.all_nodes().count().saturating_sub(1))
@@ -2179,17 +2176,30 @@ where
             .collection_item(tenant, run, scope_id, index)
             .await?
             .ok_or(CollectionAdvanceError::InvalidProgress)?;
-        let admission = CollectionAdmission::from_item(
-            transition.clone(),
-            scope_id,
-            index,
-            entry,
-            activity.clone(),
-            item,
-            reserved_instances,
-            uuid::Uuid::now_v7(),
-        )?;
-        match self.store.admit_collection_activity(&admission).await {
+        let admission = match entry_kind {
+            NodeKind::Activity { activity, .. } => CollectionAdmission::from_item(
+                transition.clone(),
+                scope_id,
+                index,
+                entry,
+                activity.clone(),
+                item,
+                reserved_instances,
+                uuid::Uuid::now_v7(),
+            )?,
+            NodeKind::Condition { .. } | NodeKind::Switch { .. } => {
+                CollectionAdmission::scheduler_from_item(
+                    transition.clone(),
+                    scope_id,
+                    index,
+                    entry,
+                    item,
+                    reserved_instances,
+                )?
+            }
+            _ => return Err(CollectionAdvanceError::InvalidProgress),
+        };
+        match self.store.admit_collection_member(&admission).await {
             Ok(_) => {}
             // Entry proved the whole collection fits, so only a later reduction of the run's
             // budget (tenant policy) or other work spending it lands here. Accepted work is

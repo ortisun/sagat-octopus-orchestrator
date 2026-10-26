@@ -61,7 +61,7 @@ switch integration target exercises these outcomes against PostgreSQL and checks
 The five SDKs can construct additive v1 collection, bounded-loop, approval and continuation
 documents. The server accepts a restricted collection graph with an optional ordinary source
 activity prefix followed by one or more root `forEach` nodes ending at `end`; each body contains a
-bounded acyclic graph with an activity entry, one to eight executable nodes (activities,
+bounded acyclic graph with an activity/condition/switch entry, one to eight executable nodes (activities,
 conditions, switches) and one `return`. The 0.3 increment adds local `onError` recovery and
 recorded local decisions. Control-node entry, timers, child workflows and nesting remain
 separately gated. Before starting work, an administrator must set the tenant-wide active iteration budget:
@@ -603,6 +603,20 @@ RUST_TEST_THREADS=1 cargo test -p sagat-tests --test integration_workflow_primit
 SAGAT_SDK_SCENARIO=collection-control-routing cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 ```
 
-Bodies still require an activity entry, at most eight executable declared nodes and one
+Bodies accept activity/condition/switch entry, at most eight executable declared nodes and one
 Return. Timers, children, scoped approval and nesting have separate pending admission/runtime
 gates. A loop's body capability remains the existing linear activity/Return subset.
+
+
+A body may also begin at `choose`: a condition can route both outcomes directly to the
+Return, or a switch may select the actual activity. `collection-control-entry` proves the
+control-only Run finishes before a worker starts, then leases only the positive switch
+branch. The unchanged body builders emit entrypoint=`choose` in all five SDKs.
+
+```sh
+RUST_TEST_THREADS=1 cargo test -p sagat-tests --test integration_workflow_primitives --locked -- collection_control_entry:: collection_control_admission::
+SAGAT_SDK_SCENARIO=collection-control-entry cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+```
+
+This development capability requires 0.3 schedulers. Fence/drain older scheduler authority
+before admitting its definitions; release compatibility and rollout acceptance remain open.

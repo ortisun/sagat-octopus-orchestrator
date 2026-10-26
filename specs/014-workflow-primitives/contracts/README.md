@@ -143,7 +143,8 @@ fails the run with `EXPRESSION_ERROR`.
 
 ### Bodies that compensate (T014-014..021, D380-D389)
 
-A published collection body starts with an activity, contains one to eight executable nodes
+On the unreleased 0.3 branch a collection body starts with an activity, condition or switch,
+contains one to eight executable nodes
 (activities, `condition`, `switch`) and one terminal `return`.
 The 0.3 increment permits local acyclic success/error routes; all paths stay inside
 that body. A committed handled error does not fail the collection. An unhandled recovery
@@ -160,9 +161,18 @@ outputs; a switch selects the first true case or its default. An expression fail
 Run revision, checks current shard authority and global/ancestor forward fences, then commits
 the choice, routing and selected task/outbox together. Malformed control state and orphan
 worker/wait metadata are rejected by full/path/frontier readers and both native writers.
-Control-node entry, `saga`, timers, child workflows and nested scopes remain closed. The existing
-IR fields and worker minor 1.5 are unchanged. `collection-local-recovery` and
-`collection-control-routing` verify these focused common five-SDK contracts.
+A control entry is admitted as a pristine PENDING instance. Its slot, captured item, complete
+reservation, single admission journal event, head and telemetry commit together. No activity,
+lease, step.released or task.ready identity is fabricated. Durable candidate discovery drives
+the subsequent control transaction. Stored dispatch is checked against the pinned kind and
+immutable journal marker by full/path/frontier readers. Migration 20261221000000 backfills old
+activity members; downgrade refuses retained scheduler admissions in either membership or
+append-only journal, including completed runs. OrdinaryLeafV1 certification stays activity-only.
+`saga`, timers, child workflows and nested scopes remain closed. IR fields and worker minor1.5
+are unchanged. `collection-local-recovery`, `collection-control-routing` and
+`collection-control-entry` cover the focused common five-SDK contracts. This is not rolling
+execution compatibility with a 0.2 scheduler; release must fence/drain old scheduler authority
+before admitting new 0.3 definitions and prove continued execution of pinned 0.2 runs.
 
 A scope whose body declares any of `compensateWith`, `irreversible` or `highRisk` is its own saga.
 When it stops for a failed iteration, the storage quota, an outer cancellation or a loop timeout, the

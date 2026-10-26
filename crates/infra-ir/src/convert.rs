@@ -674,14 +674,16 @@ fn is_activity_chain(body: &sagat_domain::workflow::BodyDefinition, limit: usize
 }
 
 /// A validated body is already acyclic, reachable, closed and has exactly one terminal return.
-/// One local branch executes at a time. Activity entry reuses existing admission; evaluated
-/// conditions/switches continue from a revision-fenced exact-path snapshot. Waits/nesting and
-/// control-node entry retain their separate admission gates.
+/// One local branch executes at a time. Entry dispatch distinguishes worker activities from
+/// scheduler-owned controls; conditions/switches use a revision-fenced exact-path snapshot.
+/// Waits and nesting retain their separate admission gates.
 fn is_collection_body(body: &sagat_domain::workflow::BodyDefinition) -> bool {
-    if !body
-        .node(body.entrypoint())
-        .is_some_and(|node| matches!(node.kind(), NodeKind::Activity { .. }))
-    {
+    if !body.node(body.entrypoint()).is_some_and(|node| {
+        matches!(
+            node.kind(),
+            NodeKind::Activity { .. } | NodeKind::Condition { .. } | NodeKind::Switch { .. }
+        )
+    }) {
         return false;
     }
     let mut steps = 0;
@@ -811,7 +813,7 @@ pub(crate) fn published_collection_definition(
             return Err(IrError::Unsupported {
                 node: body.name().as_str().to_owned(),
                 kind: "body".to_owned(),
-                reason: "the runtime supports an activity-entry collection body of one to eight activities/conditions/switches with local routes and one return",
+                reason: "the runtime supports a collection body of one to eight activities/conditions/switches with local routes and one return",
             });
         }
     }

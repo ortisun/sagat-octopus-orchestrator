@@ -39,12 +39,9 @@ fn collection_publication_rejects_an_unproven_body_shape() {
     let source = std::fs::read(path).expect("reviewed SDK golden");
     let golden: Value = serde_json::from_slice(&source).expect("golden JSON");
     let mut document = golden["workflows"]["map"].clone();
-    // Control-node entry still requires its own admission and runtime evidence.
+    // Return-only entry has a separate admission/budget gate; control entry is now proven.
     document["bodies"]["line"]["nodes"] = serde_json::json!([
-        {"id": "price", "type": "condition", "expression": "true",
-         "ifTrue": "fallback", "ifFalse": "return-price"},
-        {"id": "fallback", "type": "activity", "activity": "line.fallback", "next": "return-price"},
-        {"id": "return-price", "type": "return", "result": "steps.price.output"}
+        {"id": "price", "type": "return", "result": "item"}
     ]);
     let bytes = serde_json::to_vec(&document).expect("workflow JSON");
 
@@ -55,6 +52,27 @@ fn collection_publication_rejects_an_unproven_body_shape() {
         JsonIrCodec.parse(&bytes).is_err(),
         "publication must stay closed for body shapes without end-to-end evidence"
     );
+}
+
+#[test]
+fn five_sdk_control_entry_documents_match_the_public_canonical_definition() {
+    let path = super::repository_root()
+        .join("tests/contract/sdk-conformance/expected/collection-control-entry.workflows.json");
+    let source = std::fs::read(path).expect("reviewed all-five control entry reference");
+    let golden: Value = serde_json::from_slice(&source).expect("golden JSON");
+    let workflows = golden["workflows"].as_object().expect("workflows");
+    assert_eq!(workflows.len(), 2);
+    for (name, document) in workflows {
+        let parsed = JsonIrCodec
+            .parse(&serde_json::to_vec(document).expect("workflow JSON"))
+            .expect("the runtime-proven control entry is publishable");
+        assert_eq!(
+            String::from_utf8(parsed.canonical).expect("canonical UTF-8"),
+            golden["canonical"][name]
+                .as_str()
+                .expect("reviewed canonical text")
+        );
+    }
 }
 
 fn chain_of(activities: usize, extra: &serde_json::Value) -> serde_json::Value {

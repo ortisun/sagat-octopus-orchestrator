@@ -841,3 +841,17 @@ SDK/resource/release gates remain open. Exact tests/reviews/source provenance ar
 capacity-finish-schema-20261018, capacity-native-finish-20261018, capacity-finish-barriers-20261018,
 capacity-finish-commit-loss-20261018, capacity-finish-races-20261018 and
 capacity-finish-observations-20261018.
+
+
+### 2026-10-26 control entry development increment
+
+T014-014–017/040, FR-014-004/005/014/015/016: `collection_control_entry` and
+`collection_control_admission` exercise public Condition/Switch entry, actual worker absence
+for pure controls, ordered result/instance accounting, native journal failure rollback,
+replay/mismatch, revision/current tenant and shard authority, capacity reduction and cold
+discovery, cancellation, backfill/closed schema constraints and retained journal/projection
+downgrade refusal. Full/path/frontier readers reject dispatch masquerading against a pinned
+definition. Pure-domain and owner/runtime native tests keep both controls outside frozen
+OrdinaryLeafV1. Common SDK fixture `collection-control-entry` exercises existing builders and
+worker1.5. Exact invocation results/limits are in implementation-0.3.md; no canonical task or
+release closure is inferred from these focused fixtures.

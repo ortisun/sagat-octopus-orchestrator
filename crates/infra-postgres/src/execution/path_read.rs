@@ -267,6 +267,9 @@ impl PgRunStore {
             }
         }
 
+        let definition = self
+            .definition(&mut *tx, tenant, record.info.version_id)
+            .await?;
         let mut ancestors = Vec::with_capacity(path.depth());
         let mut owner_nodes = Vec::<String>::new();
         let mut owner_indices = Vec::<i32>::new();
@@ -279,10 +282,14 @@ impl PgRunStore {
                         scope.drain_failure_code,scope.drain_sequence,scope.drain_outbox_id, \
                         scope.finish_sequence,scope.finish_outbox_id,owner.status AS owner_status, \
                         owner.waiting_kind AS owner_waiting_kind, \
-                        owner.failure_code AS owner_failure_code \
+                        owner.failure_code AS owner_failure_code,member.entry_node, \
+                        member.entry_dispatch,member.activity,member.outbox_id, \
+                        admission.detail->>'entry_dispatch' AS journal_dispatch \
                  FROM iteration_scopes scope JOIN collection_iterations member \
                    ON member.tenant_id=scope.tenant_id AND member.run_id=scope.run_id \
                   AND member.scope_id=scope.scope_id AND member.iteration_index=$6 \
+                 LEFT JOIN run_events admission ON admission.tenant_id=member.tenant_id AND admission.run_id=member.run_id \
+                  AND admission.seq=member.admitted_sequence AND admission.event_type='collection.iteration_admitted' \
                  LEFT JOIN steps owner \
                    ON owner.tenant_id=scope.tenant_id AND owner.run_id=scope.run_id \
                   AND owner.instance_path_nodes=scope.owner_path_nodes \
@@ -294,7 +301,8 @@ impl PgRunStore {
                  UNION ALL \
                  SELECT 'LOOP',scope.lifecycle,coalesce(scope.active_iteration=$6,false), \
                         NULL::bytea,NULL::text,NULL::integer,NULL::text,NULL::bigint,NULL::uuid, \
-                        NULL::bigint,NULL::uuid,NULL::text,NULL::text,NULL::text \
+                        NULL::bigint,NULL::uuid,NULL::text,NULL::text,NULL::text, \
+                        NULL::text,NULL::text,NULL::text,NULL::uuid,NULL::text \
                  FROM loop_scopes scope WHERE scope.tenant_id=$1 AND scope.run_id=$2 \
                    AND scope.owner_path_nodes=$3 AND scope.owner_path_indices=$4 \
                    AND scope.owner_node=$5",
@@ -320,6 +328,15 @@ impl PgRunStore {
             let active = col::<bool>(&scope, "active")?;
             ancestors.push(match col::<String>(&scope, "family")?.as_str() {
                 "COLLECTION" => {
+                    let entry = ExecutionInstanceId::in_path(
+                        owner
+                            .path()
+                            .child(owner.node().clone(), segment.iteration_index())
+                            .map_err(|_| corrupt("collection entry path"))?,
+                        NodeId::parse_stored(&col::<String>(&scope, "entry_node")?)
+                            .map_err(|_| corrupt("collection entry node"))?,
+                    );
+                    validate_collection_entry_dispatch(&definition, &entry, &scope)?;
                     let phase = match lifecycle.as_str() {
                         "OPEN" => CollectionPhase::Open,
                         "DRAINING" => CollectionPhase::Draining,
@@ -611,9 +628,6 @@ impl PgRunStore {
             outputs,
             scope_inputs,
         };
-        let definition = self
-            .definition(&mut *tx, tenant, record.info.version_id)
-            .await?;
         for row in &rows {
             let node = NodeId::parse_stored(&col::<String>(row, "node")?)
                 .map_err(|_| corrupt("step node"))?;

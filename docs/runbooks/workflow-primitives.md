@@ -4,7 +4,7 @@ The public workflow document remains additive `sagat-octopus-orchestrator.io/v1`
 `switch`, run-addressed declared Query/Update and a bounded root human approval are available
 with the existing basic root nodes. A public collection workflow may start with ordinary source
 activities followed by a chain of `forEach` nodes ending at `end`; each referenced body contains a
-bounded acyclic graph with an activity entry, one to eight executable nodes (activities,
+bounded acyclic graph with an activity/condition/switch entry, one to eight executable nodes (activities,
 conditions, switches) and one `return`. In the 0.3 increment, local `onError` routes and
 recorded decisions may select a branch; a recovery failure drains with its own
 code. Unselected branches retain their lifetime charge as retired reservations, while actual
@@ -339,7 +339,7 @@ RUST_TEST_THREADS=1 cargo test -p sagat-tests --test integration_workflow_primit
 SAGAT_SDK_SCENARIO=collection-control-routing cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 ```
 
-The published body has an activity entry, up to eight executable activity/condition/switch
+The published body has an activity/condition/switch entry, up to eight executable activity/condition/switch
 nodes and one Return. Control entry, waits, children and nesting remain gated. The existing
 wire fields and worker minor1.5 are unchanged; a full release-wide compatibility matrix
 remains required before shipping.
@@ -600,3 +600,24 @@ Reproduce with runtime option and external DB unset:
 Existing script_incidents_total/log mappings remain after commit; port tests do not assert counters.
 Exact source, review and regression limits: tasks/project-completion/evidence/incident-lock-order-20261018/.
 Complete B0/group and release gates remain open.
+
+
+### Control entry admission on the 0.3 development branch
+
+A PENDING condition/switch entry is scheduler-owned: no activity, ready hint, worker lease
+or task.ready outbox belongs to its admission. Inspect the qualified admission journal,
+collection membership and scheduler.action spans; durable collection candidates provide
+recovery after a lost hint or cold cache. Existing collection admission/checkpoint counters
+remain applicable. The current iteration_concurrency policy stays positive; a reduction to
+its minimum 1 blocks new slots while accepted controls/checkpoints still progress.
+
+Migration 20261221000000 distinguishes ACTIVITY/SCHEDULER membership. Downgrade refuses any
+retained SCHEDULER admission, including terminal history and an immutable journal marker
+whose projection was subsequently relabeled. Do not edit that evidence to force rollback.
+Older schedulers cannot execute the new shapes: fence/drain their shard authority before
+admitting new 0.3 definitions. A compatible0.3 reader is required for retained new runs.
+Released-profile upgrade/active-run evidence and the complete release gates remain pending.
+
+Reproduce `collection_control_entry::`, `collection_control_admission::` and common SDK case
+`collection-control-entry`. Frozen OrdinaryLeafV1 certification still rejects both control
+entry kinds, separately from public runtime support.

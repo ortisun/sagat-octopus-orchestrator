@@ -26,7 +26,8 @@ use uuid::Uuid;
 use crate::collection_outputs;
 use crate::execution::{
     PgRunStore, RUN_SNAPSHOT, instance_path, run_record, scoped_control_metadata_empty,
-    step_instance_path, step_state, validate_scoped_control_row,
+    step_instance_path, step_state, validate_collection_entry_dispatch,
+    validate_scoped_control_row,
 };
 use crate::identity::{col, corrupt, store_error};
 use crate::pool::BeginSafely;
@@ -305,8 +306,11 @@ impl ScopeFrontierStore for PgRunStore {
         let mut data = base_data(&mut tx, tenant_id, run_id, &header.input_digest).await?;
         let rows = sqlx::query(
             "SELECT i.iteration_index, i.entry_path_nodes, i.entry_path_indices, i.entry_node, \
-                    p.content AS item \
+                    p.content AS item, i.entry_dispatch,i.activity,i.outbox_id, \
+                    admission.detail->>'entry_dispatch' AS journal_dispatch \
              FROM collection_iterations i \
+             LEFT JOIN run_events admission ON admission.tenant_id=i.tenant_id AND admission.run_id=i.run_id \
+              AND admission.seq=i.admitted_sequence AND admission.event_type='collection.iteration_admitted' \
              JOIN payloads p ON p.tenant_id = i.tenant_id AND p.digest = i.item_digest \
              WHERE i.tenant_id = $1 AND i.run_id = $2 AND i.scope_id = $3 AND i.slot_held \
              ORDER BY i.iteration_index",
@@ -346,6 +350,7 @@ impl ScopeFrontierStore for PgRunStore {
                 instance_path(nodes, full, "collection entry path")?,
                 NodeId::parse_stored(&node).map_err(|_| corrupt("collection entry node"))?,
             );
+            validate_collection_entry_dispatch(&header.run.definition, &entry, row)?;
             data.scope_inputs.insert(
                 entry.path().clone(),
                 ScopeInput::Collection {

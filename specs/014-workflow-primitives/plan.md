@@ -598,3 +598,17 @@ producer composition, native End/scheduler activation, full old-binary rollout, 
 nested capacity and final release gates remain open. No canonical runtime task is closed by Q5.
 Evidence: `tasks/project-completion/evidence/legacy-output-view-20261018/reproduce.md` and
 `scoped-output-refusal-red-20261018/reproduce.md`.
+
+
+### 0.3 control entry admission increment
+
+[The bounded admission contract](./control-entry-admission.md) extends collection entry to
+Condition/Switch through an explicit Activity/Scheduler dispatch intent. It reuses native
+chain/run→shard→policy/usage→scope admission, charges the entry and reservations exactly once,
+and discovers PENDING control work from durable state without a task hint. The additive
+20261221000000 migration preserves old activity writers by default and retains immutable
+scheduler admission evidence for rollback refusal. Named native tests cover transaction
+rollback, replay/mismatch, revision, capacity reduction, cold discovery, cancellation,
+CHECK-valid projection corruption and frozen OrdinaryLeafV1 exclusion. All general task and
+release gates remain open. Old scheduler authority must be fenced/drained before admitting
+new definitions; released-profile upgrade evidence is required before advertising 0.3.

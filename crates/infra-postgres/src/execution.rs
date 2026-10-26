@@ -259,13 +259,13 @@ impl PgRunStore {
             sagas,
             record.version,
         );
-        load_collections(&mut tx, tenant, run, &mut state).await?;
-        load_loops(&mut tx, tenant, run, &mut state).await?;
-        load_scope_sagas(&mut tx, tenant, run, &mut state).await?;
-        load_chain(&mut tx, tenant, run, &mut state).await?;
         let definition = self
             .definition(&mut tx, tenant, record.info.version_id)
             .await?;
+        load_collections(&mut tx, tenant, run, &definition, &mut state).await?;
+        load_loops(&mut tx, tenant, run, &mut state).await?;
+        load_scope_sagas(&mut tx, tenant, run, &mut state).await?;
+        load_chain(&mut tx, tenant, run, &mut state).await?;
         for row in &step_rows {
             let node = NodeId::parse_stored(&col::<String>(row, "node")?)
                 .map_err(|_| corrupt("step node"))?;
@@ -1954,10 +1954,44 @@ struct RestoredCollectionRows {
     active_count: i32,
 }
 
+/// Dispatch is a projection of the pinned entry kind, never an independent worker capability.
+pub(crate) fn validate_collection_entry_dispatch(
+    definition: &WorkflowDefinition,
+    entry: &ExecutionInstanceId,
+    row: &PgRow,
+) -> Result<(), StoreError> {
+    let dispatch: String = col(row, "entry_dispatch")?;
+    let activity: Option<String> = col(row, "activity")?;
+    let outbox: Option<Uuid> = col(row, "outbox_id")?;
+    let journal: Option<String> = col(row, "journal_dispatch")?;
+    let valid = match definition.node_for_instance(entry).map(Node::kind) {
+        Some(NodeKind::Activity {
+            activity: expected, ..
+        }) => {
+            dispatch == "ACTIVITY"
+                && activity.as_deref() == Some(expected.as_str())
+                && outbox.is_some()
+                && journal.as_deref().is_none_or(|kind| kind == "ACTIVITY")
+        }
+        Some(NodeKind::Condition { .. } | NodeKind::Switch { .. }) => {
+            dispatch == "SCHEDULER"
+                && activity.is_none()
+                && outbox.is_none()
+                && journal.as_deref() == Some("SCHEDULER")
+        }
+        _ => false,
+    };
+    if !valid {
+        return Err(corrupt("collection entry dispatch"));
+    }
+    Ok(())
+}
+
 async fn load_collections(
     tx: &mut Transaction<'static, Postgres>,
     tenant: TenantId,
     run: RunId,
+    definition: &WorkflowDefinition,
     state: &mut RunState,
 ) -> Result<(), StoreError> {
     let scopes = sqlx::query(
@@ -1983,10 +2017,13 @@ async fn load_collections(
                 i.entry_node, i.entry_instance_id, i.item_digest, i.lifecycle, i.slot_held, \
                 i.remaining_reservations, i.return_path_nodes, i.return_path_indices, \
                 i.return_node, i.return_instance_id, i.result_digest, i.checkpoint_sequence, \
-                i.drained_sequence, i.drain_outbox_id, \
+                i.drained_sequence, i.drain_outbox_id, i.entry_dispatch,i.activity,i.outbox_id, \
+                admission.detail->>'entry_dispatch' AS journal_dispatch, \
                 entry_step.step_id AS projected_entry_id, \
                 return_step.step_id AS projected_return_id \
          FROM collection_iterations i \
+         LEFT JOIN run_events admission ON admission.tenant_id=i.tenant_id AND admission.run_id=i.run_id \
+          AND admission.seq=i.admitted_sequence AND admission.event_type='collection.iteration_admitted' \
          LEFT JOIN steps entry_step \
            ON entry_step.tenant_id = i.tenant_id AND entry_step.run_id = i.run_id \
           AND entry_step.instance_path_nodes = i.entry_path_nodes \
@@ -2065,6 +2102,7 @@ async fn load_collections(
             path,
             NodeId::parse_stored(&node).map_err(|_| corrupt("collection entry node"))?,
         );
+        validate_collection_entry_dispatch(definition, &entry, row)?;
         let item_digest = stored_digest(col(row, "item_digest")?, "collection item digest")?;
         let (restored, completed) = match lifecycle.as_str() {
             "ADMITTED"

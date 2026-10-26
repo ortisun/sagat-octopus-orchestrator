@@ -691,7 +691,7 @@ This evidence does not accept general nested runtime, C0, production ceilings or
 `collection-control-routing.json` adds the 0.3 WP-03 local condition/switch case. Both bodies
 start with a compensable reservation; positive items notify, negative items go directly to
 Return. Every SDK must produce `[1,-1]`, the same six qualified worker calls, two recorded
-choices per Run and no `selected` instance for index1. Authored lifetime12/depth1 and worker
+choices per Run and no `selected` instance for index1. Authored lifetime12/depth 1 and worker
 minor1.5 stay in the reviewed workflow/runtime references. This is a focused scenario;
 native tests own rollback, malformed physical metadata, stale snapshot and failure proofs.
 
@@ -703,3 +703,12 @@ collection_recovery suite separately checks skipped recovery branches, sibling i
 retired lifetime reservations, native false-drain refusal and full/frontier parity. New
 workflow and runtime goldens were recorded after reading the complete matching observed
 outputs, then verified in all five languages without a bless switch.
+
+
+`collection-control-entry.json` is the 63rd registry scenario. The condition-only collection
+finishes before startWorker and produces no worker calls. A switch-entry collection returns
+ordered [1,-1] and leases one actual control.notify activity for index 0. Existing builders,
+IR v1 and worker 1.5 are unchanged; authored lifetime ceilings are 6/8 and depth 1. Native
+admission tests own journal-fault rollback, replay/mismatch, current tenant/shard authority,
+quota reduction, cancellation, cold discovery, retained-evidence rollback refusal and
+frozen OrdinaryLeafV1 exclusion. A focused pass is not complete 63-scenario acceptance.
