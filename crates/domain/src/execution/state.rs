@@ -1428,6 +1428,16 @@ impl StepState {
                 self.waiting = None;
                 self.cancel_requested = false;
             }
+            RunEvent::ConditionEvaluated { outcome, .. } => {
+                require(self, &[Pending])?;
+                self.status = Succeeded;
+                self.condition = Some(*outcome);
+            }
+            RunEvent::SwitchEvaluated { selection, .. } => {
+                require(self, &[Pending])?;
+                self.status = Succeeded;
+                self.switch_selection = Some(selection.clone());
+            }
             RunEvent::StepCancelRequested { .. } => {
                 require(self, &[Leased, Running, Waiting])?;
                 if (self.status == Waiting
@@ -4132,6 +4142,8 @@ impl RunState {
             | RunEvent::StepRetryScheduled { .. }
             | RunEvent::StepRetryDue { .. }
             | RunEvent::StepFailed { .. }
+            | RunEvent::ConditionEvaluated { .. }
+            | RunEvent::SwitchEvaluated { .. }
             | RunEvent::StepCancelRequested { .. }
             | RunEvent::StepCancelled { .. }) => {
                 self.steps

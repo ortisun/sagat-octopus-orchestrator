@@ -149,3 +149,36 @@ test and avoids accumulation of hundreds of migrated test databases in a continu
 held shared server. The failed two-thread invocation is retained as failed evidence;
 no ignored test was changed and no Docker data from another session was removed.
 Final all-five recovery conformance is also in progress. No merge/release gate is inferred.
+
+Subsequent results on the first increment's production sources (`5c20d0de`):
+`RUST_TEST_THREADS=1 cargo test -p sagat-tests --test fault_workflow_primitives --locked`
+passed92/92,0 ignored,381.83s test execution. The final
+`SAGAT_SDK_SCENARIO=collection-local-recovery ... cargo test -p sagat-tests
+--test sdk_conformance --locked -- --ignored --nocapture` passed1 aggregate covering
+all five languages,0 failures,41.59s test execution, with no bless/reuse/language filter.
+The two ordinary non-ignored registry tests are filtered by `--ignored`; this is still
+one focused scenario, not a full61-scenario aggregate. Broad serial integration remains
+in progress against that increment's binary.
+
+## Next increment: scoped condition/switch evaluation
+
+The first bounded artifact is domain recording/routing only. Tests initially observed
+`UnsupportedScopedEvent("condition.evaluated")` and rejection of a closed switch body
+as a prematurely ending success path. The shared scoped step reducer now records a
+Pending control's outcome, the full and exact-path planners share existing control
+successor selection, and switch success branches satisfy the body's Return rule.
+Root selection behavior is preserved. Duplicate choices fail without mutation, unrelated
+iterations remain untouched, and both selected/default paths match the full-state oracle.
+
+`cargo test -p sagat-domain --test scoped_control_routing --test scoped_reducer --locked`
+passes9/9 (2 new choice tests and7 reducer cases). The subsequent full domain invocation
+passes546 tests,0 failures,0 ignored,68.41s including compilation. A fresh read-only
+adversarial review of this artifact found no required issue; root ran the tests.
+
+This does not activate control nodes: the public parser and native projection guards remain
+closed. The separately added two public runtime tests were actually run and fail at the
+expected unsupported-body publication boundary (0 passed,2 failed,4.02s). Their completion
+requires a scoped evaluator, exact snapshot/revision/fence validation, transactional
+condition/switch projection and branch reservation accounting. An evaluator compatibility
+default must delegate root calls and refuse unsupported scoped evaluation. No canonical
+task closes through this domain foundation.
