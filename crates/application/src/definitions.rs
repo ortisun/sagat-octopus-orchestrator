@@ -9,11 +9,12 @@
 use std::future::Future;
 
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
+use sagat_domain::classification::ClassificationRules;
 use sagat_domain::definition::{Workflow, WorkflowId, WorkflowVersion, WorkflowVersionId};
 use sagat_domain::identity::{Namespace, NamespaceId, Permission, Principal, Slug, TenantId};
 use sagat_domain::saga::{SagaPlan, compensation_plans};
 use sagat_domain::workflow::{
-    DefinitionWarning, Digest, NodeKind, WorkflowDefinition, WorkflowError,
+    DefinitionWarning, Digest, NodeId, NodeKind, WorkflowDefinition, WorkflowError,
 };
 use time::OffsetDateTime;
 
@@ -97,6 +98,8 @@ pub enum IrError {
     Malformed,
     #[error("the document does not match the workflow schema ({} problem(s))", .0.len())]
     Schema(Vec<IrIssue>),
+    #[error("classification annotations are invalid ({} finding(s))", .0.len())]
+    Classification(Vec<crate::classification::ClassificationFinding>),
     /// A node kind that exists in the schema but that this version of the engine does not run.
     #[error("node '{node}' is a '{kind}', which is not supported yet: {reason}")]
     Unsupported {
@@ -123,6 +126,13 @@ pub enum IrError {
     },
     #[error("{0}")]
     Invalid(WorkflowError),
+    /// Unlike an ordinary missing root target, this edge leaves its named body's closed graph.
+    #[error("body '{body}': node '{from}' references '{to}' outside its declared body")]
+    EscapingBodyEdge {
+        body: NodeId,
+        from: NodeId,
+        to: NodeId,
+    },
     #[error("node '{node}', field '{field}': {message}")]
     Expression {
         node: String,
@@ -198,6 +208,7 @@ pub struct Validation {
     pub problems: Vec<Problem>,
     pub warnings: Vec<Problem>,
     pub digest: Option<String>,
+    pub classification: Option<crate::classification::ClassificationAnalysis>,
 }
 
 impl Validation {
@@ -213,6 +224,25 @@ pub fn problems_of(error: &IrError) -> Vec<Problem> {
     match error {
         IrError::TooLarge => vec![Problem::error("DOCUMENT_TOO_LARGE", error.to_string())],
         IrError::Malformed => vec![Problem::error("DOCUMENT_MALFORMED", error.to_string())],
+        IrError::Classification(findings) => {
+            let mut problems: Vec<_> = findings
+                .iter()
+                .filter(|finding| {
+                    finding.code.severity() == crate::classification::FindingSeverity::Error
+                })
+                .map(|finding| {
+                    Problem::error(finding.code.as_str(), finding.code.message())
+                        .at_path(finding.path.as_str())
+                })
+                .collect();
+            if problems.is_empty() {
+                problems.push(Problem::error(
+                    "CLASSIFICATION_TOO_COMPLEX",
+                    "classification carrier exceeds a fixed complexity bound",
+                ));
+            }
+            problems
+        }
         IrError::Schema(issues) => issues
             .iter()
             .map(|issue| {
@@ -240,6 +270,11 @@ pub fn problems_of(error: &IrError) -> Vec<Problem> {
                 None => problem,
             }]
         }
+        IrError::EscapingBodyEdge { body, from, .. } => vec![
+            Problem::error("UNKNOWN_TARGET", error.to_string())
+                .at_node(from.to_string())
+                .at_path(format!("/bodies/{body}")),
+        ],
     }
 }
 
@@ -252,6 +287,7 @@ fn graph_rule(error: &WorkflowError) -> (&'static str, Option<String>) {
         E::InvalidActivityName(_) => ("INVALID_ACTIVITY_NAME", None),
         E::InvalidEventType(_) => ("INVALID_EVENT_TYPE", None),
         E::InvalidExpression(_) => ("INVALID_EXPRESSION", None),
+        E::ExpressionByteLimit { node, .. } => ("EXPRESSION", Some(node.to_string())),
         E::NoNodes => ("NO_NODES", None),
         E::TooManyNodes(_) => ("TOO_MANY_NODES", None),
         E::TooManyParallels(_) => ("TOO_MANY_PARALLELS", None),
@@ -335,6 +371,25 @@ pub trait IrCodec: Send + Sync {
     /// An [`IrError`] describing why the document cannot be published.
     fn parse(&self, document: &[u8]) -> Result<ParsedDefinition, IrError>;
 
+    /// Restores the executable IR of an already persisted immutable version. Publication-time
+    /// metadata checks must not reinterpret an older version's business execution. Syntax,
+    /// structural limits, expressions and supported execution capabilities still fail closed.
+    /// A codec with no distinct authoring-only rules uses its ordinary parser.
+    ///
+    /// # Errors
+    /// An [`IrError`] for an unreadable/unsupported execution definition.
+    fn parse_stored(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
+        self.parse(document)
+    }
+
+    /// Bounded authoring report, independent of tenant data and persistence.
+    fn classification_analysis(
+        &self,
+        _document: &[u8],
+    ) -> Option<crate::classification::ClassificationAnalysis> {
+        None
+    }
+
     /// Returns immutable declared-state metadata when the document contains that capability.
     /// Codecs that do not implement declared state remain closed and return no publication.
     ///
@@ -364,12 +419,28 @@ pub trait IrCodec: Send + Sync {
     }
 
     /// What differs between two documents, compared as written (so a draft that does not
-    /// validate can be compared with the version it came from).
+    /// validate can be compared with the version it came from), both sides under the current
+    /// classification rules.
     ///
     /// # Errors
     /// [`IrError::TooLarge`] or [`IrError::Malformed`] when a side is not a JSON object within
     /// [`MAX_IR_BYTES`].
     fn diff(&self, from: &[u8], to: &[u8]) -> Result<crate::diff::DocumentDiff, IrError>;
+
+    /// [`IrCodec::diff`] told which classification rules each side was published under, so that a
+    /// side under rules `0` (which discloses no value) is compared as such. An adapter that does
+    /// not read classification annotations keeps the default, which ignores `rules`.
+    ///
+    /// # Errors
+    /// As [`IrCodec::diff`].
+    fn diff_with_rules(
+        &self,
+        from: &[u8],
+        to: &[u8],
+        _rules: crate::diff::DiffRules,
+    ) -> Result<crate::diff::DocumentDiff, IrError> {
+        self.diff(from, to)
+    }
 }
 
 /// How an idempotent write is recognised: the key the client chose and the bytes that identify the
@@ -990,11 +1061,30 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
         principal.authorize(Permission::DefinitionWrite)?;
         let record = self.get_workflow(principal, id, ctx).await?;
         let bytes = document.unwrap_or(&record.draft);
+        let classification = self.codec.classification_analysis(bytes);
+        let classification_warnings = classification.as_ref().map_or_else(Vec::new, |analysis| {
+            analysis
+                .findings
+                .iter()
+                .filter(|finding| {
+                    finding.code.severity() == crate::classification::FindingSeverity::Warning
+                })
+                .map(|finding| Problem {
+                    severity: Severity::Warning,
+                    code: finding.code.as_str(),
+                    message: finding.code.message().to_owned(),
+                    node: None,
+                    path: Some(finding.path.as_str().to_owned()),
+                })
+                .collect::<Vec<_>>()
+        });
         let parsed = match self.codec.parse(bytes) {
             Ok(parsed) => parsed,
             Err(error) => {
                 return Ok(Validation {
                     problems: problems_of(&error),
+                    warnings: classification_warnings,
+                    classification,
                     ..Validation::default()
                 });
             }
@@ -1032,10 +1122,13 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
             Err(error) => return Err(error.into()),
         }
         let valid = problems.is_empty();
+        let mut warnings: Vec<_> = parsed.warnings.iter().map(warning_problem).collect();
+        warnings.extend(classification_warnings);
         Ok(Validation {
             problems,
-            warnings: parsed.warnings.iter().map(warning_problem).collect(),
+            warnings,
             digest: valid.then(|| parsed.digest.to_string()),
+            classification,
         })
     }
 
@@ -1065,12 +1158,21 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
             .map(|version| DiffRef::Version(version.number()));
         let from = side(from, default_from);
         let to = side(to, Some(DiffRef::Draft));
-        let resolve = async |reference: Option<DiffRef>| -> Result<(DiffSide, Vec<u8>), AppError> {
+        // A draft is published under the current rules; a version under the ones it pinned.
+        let resolve = async |reference: Option<DiffRef>| -> Result<
+            (DiffSide, Vec<u8>, ClassificationRules),
+            AppError,
+        > {
             match reference {
-                None => Ok((DiffSide::Empty, b"{}".to_vec())),
+                None => Ok((
+                    DiffSide::Empty,
+                    b"{}".to_vec(),
+                    ClassificationRules::CURRENT,
+                )),
                 Some(DiffRef::Draft) => Ok((
                     DiffSide::Draft(record.workflow.draft_revision()),
                     record.draft.clone(),
+                    ClassificationRules::CURRENT,
                 )),
                 Some(DiffRef::Version(number)) => {
                     let version = self
@@ -1078,15 +1180,26 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                         .get_version(principal.tenant_id(), id, number)
                         .await?
                         .ok_or(AppError::NotFound)?;
-                    Ok((DiffSide::Version(number), version.document))
+                    Ok((
+                        DiffSide::Version(number),
+                        version.document,
+                        version.version.classification_rules(),
+                    ))
                 }
             }
         };
-        let (from_side, from_bytes) = resolve(from).await?;
-        let (to_side, to_bytes) = resolve(to).await?;
+        let (from_side, from_bytes, from_rules) = resolve(from).await?;
+        let (to_side, to_bytes, to_rules) = resolve(to).await?;
         let diff = self
             .codec
-            .diff(&from_bytes, &to_bytes)
+            .diff_with_rules(
+                &from_bytes,
+                &to_bytes,
+                crate::diff::DiffRules {
+                    from: from_rules,
+                    to: to_rules,
+                },
+            )
             .map_err(|e| AppError::InvalidDefinition(Box::new(e)))?;
         Ok(DefinitionDiff {
             from: from_side,

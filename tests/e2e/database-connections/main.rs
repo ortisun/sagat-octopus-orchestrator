@@ -107,7 +107,10 @@ async fn catalog_and_secrets_in_a_real_browser() {
     let config_file = dir.path().join("runner.json");
     std::fs::write(&config_file, config.to_string()).unwrap();
     let logs = std::fs::File::create(dir.path().join("runner.log")).unwrap();
-    let mut runner = Command::new(repo.join("target/debug/database-runner"))
+    let binary = std::env::var_os("SAGAT_DATABASE_RUNNER_BIN")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| support::built_binary("database-runner"));
+    let mut runner = Command::new(binary)
         .env_clear()
         .env("SAGAT_DATABASE_RUNNER_CONFIG", config_file)
         .env("SAGAT_DATABASE_RUNNER_METRICS_ADDR", "127.0.0.1:0")

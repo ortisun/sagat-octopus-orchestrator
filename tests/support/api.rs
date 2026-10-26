@@ -300,22 +300,46 @@ pub async fn start() -> TestApi {
 pub async fn start_with(options: Options) -> TestApi {
     install_crypto_provider();
     let db = migrated_db().await;
+    start_on_ready_db(db, options, None).await
+}
+
+/// Starts the real API against a caller-owned, already migrated test database.
+pub async fn start_on_db(db: TestDb, options: Options) -> TestApi {
+    install_crypto_provider();
+    start_on_ready_db(db, options, None).await
+}
+
+/// Starts the real API against a caller-owned, already migrated test database and uses the
+/// caller's exact pool for identity, execution, REST and gRPC stores.
+///
+/// The caller owns the pool configuration and lifecycle. In particular, `options.statement_timeout`
+/// is not applied to a supplied pool.
+pub async fn start_on_db_with_pool(db: TestDb, options: Options, api_pool: PgPool) -> TestApi {
+    install_crypto_provider();
+    start_on_ready_db(db, options, Some(api_pool)).await
+}
+
+async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<PgPool>) -> TestApi {
     let idp = TestIdp::start().await;
 
     let mut auth = AuthConfig::new(ISSUER, AUDIENCE, idp.jwks_url());
     auth.allow_insecure_jwks_http = true;
     (options.auth)(&mut auth);
 
-    let api_url = if options.runtime_role {
-        db.url_for(super::RUNTIME_ROLE, super::RUNTIME_ROLE_PASSWORD)
+    let api_pool = if let Some(pool) = supplied_pool {
+        pool
     } else {
-        db.url.clone()
+        let api_url = if options.runtime_role {
+            db.url_for(super::RUNTIME_ROLE, super::RUNTIME_ROLE_PASSWORD)
+        } else {
+            db.url.clone()
+        };
+        let mut pool_config = PoolConfig::new(api_url);
+        pool_config.max_connections = 8;
+        pool_config.acquire_timeout = Duration::from_secs(5);
+        pool_config.statement_timeout = options.statement_timeout;
+        connect(&pool_config).await.expect("api pool")
     };
-    let mut pool_config = PoolConfig::new(api_url);
-    pool_config.max_connections = 8;
-    pool_config.acquire_timeout = Duration::from_secs(5);
-    pool_config.statement_timeout = options.statement_timeout;
-    let api_pool = connect(&pool_config).await.expect("api pool");
     let store = PgIdentityStore::new(api_pool.clone());
     let fetcher = HttpJwksFetcher::new(&auth).expect("fetcher");
     let verifier = TokenVerifier::new(Arc::new(fetcher), &auth);
@@ -351,7 +375,15 @@ pub async fn start_with(options: Options) -> TestApi {
         QuotaService::new(executions.clone(), SystemClock),
         BindingService::new(executions.clone(), SystemClock),
         EgressService::new(executions.clone(), SystemClock),
+        sagat_application::reveal_grants::RevealGrantService::new(executions.clone(), SystemClock),
     )
+    .with_event_payloads(Arc::new(
+        sagat_application::event_payloads::EventPayloadService::new(
+            executions.clone(),
+            SystemClock,
+            sagat_infra_ir::JsonPayloadProjector,
+        ),
+    ))
     .with_operations(sagat_application::operations::OperationsService::new(
         executions.clone(),
         SystemClock,
@@ -467,6 +499,14 @@ pub async fn start_with(options: Options) -> TestApi {
             SystemClock,
             sagat_infra_ir::JsonDatabaseResultValidator,
             blobs.clone(),
+        ),
+    ))
+    .with_payload_disclosures(Arc::new(
+        sagat_application::payload_disclosure::PayloadDisclosureService::new(
+            executions.clone(),
+            SystemClock,
+            sagat_infra_schema::classification::Classifier::default(),
+            sagat_infra_ir::JsonPayloadProjector,
         ),
     ))
     .with_payload_inspections(Arc::new(PayloadInspectionService::new(

@@ -189,6 +189,46 @@ fn restore_drained_from_steps(
     restored
 }
 
+fn restore_checkpointed_data_limit_from_steps(
+    replayed: &RunState,
+    phase: CollectionPhase,
+) -> RunState {
+    let mut restored = RunState::restore_instances(
+        replayed.run_id(),
+        replayed.status(),
+        replayed
+            .stop_reason()
+            .map(|stop| (stop, replayed.stop_code().cloned())),
+        replayed.is_paused(),
+        replayed
+            .instances()
+            .map(|(instance, step)| (instance.clone(), step.clone()))
+            .collect::<BTreeMap<_, _>>(),
+        BTreeMap::new(),
+        replayed.version(),
+    );
+    restored
+        .restore_collection_progress(
+            owner(),
+            phase,
+            1,
+            1,
+            1,
+            Digest::new([1; 32]),
+            None,
+            Some(CollectionDrainReason::RunDataLimit),
+            vec![CollectionIterationRestore::checkpointed(
+                0,
+                member("work"),
+                Digest::new([2; 32]),
+                member("return"),
+                Digest::new([3; 32]),
+            )],
+        )
+        .expect("checkpointed data-limit projection restores");
+    restored
+}
+
 #[test]
 fn checkpointed_open_projection_equals_its_addressed_journal() {
     let run = RunId::generate();
@@ -246,6 +286,41 @@ fn failed_projection_equals_its_addressed_journal() {
     let replayed = RunState::replay_addressed(run, &events).expect("failed journal replays");
     let restored = restore_drained_from_steps(&replayed, CollectionPhase::Failed, reason);
     assert_eq!(restored, replayed);
+}
+
+#[test]
+fn checkpointed_run_data_limit_projection_equals_its_actual_event_state() {
+    let run = RunId::generate();
+    let code = FailureCode::run_data_limit();
+    let mut events = checkpointed_events();
+    events.extend([
+        AddressedRunEvent::root(RunEvent::RunStopRequested {
+            reason: sagat_domain::execution::StopReason::Failed,
+            code: Some(code.clone()),
+        }),
+        AddressedRunEvent::root(RunEvent::CollectionDrainStarted {
+            node: node("items"),
+            reason: CollectionDrainReason::RunDataLimit,
+        }),
+    ]);
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event.event(), RunEvent::CollectionIterationDrained { .. }))
+    );
+
+    let draining = RunState::replay_addressed(run, &events).expect("draining journal replays");
+    let restored = restore_checkpointed_data_limit_from_steps(&draining, CollectionPhase::Draining);
+    assert_eq!(restored, draining);
+
+    events.push(AddressedRunEvent::root(RunEvent::CollectionFinished {
+        node: node("items"),
+        outcome: CollectionOutcome::Failed(code),
+        result_digest: None,
+    }));
+    let failed = RunState::replay_addressed(run, &events).expect("failed journal replays");
+    let restored = restore_checkpointed_data_limit_from_steps(&failed, CollectionPhase::Failed);
+    assert_eq!(restored, failed);
 }
 
 #[test]

@@ -1,0 +1,2 @@
+ALTER TABLE run_instance_usage DROP CONSTRAINT run_instance_usage_output_bytes;
+ALTER TABLE run_instance_usage DROP COLUMN logical_output_bytes;

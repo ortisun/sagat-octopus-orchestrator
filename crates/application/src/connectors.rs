@@ -567,43 +567,6 @@ where
             .await?)
     }
 
-    /// Dead letters of a connector, newest first.
-    ///
-    /// # Errors
-    /// [`AppError::Forbidden`]; [`AppError::NotFound`].
-    pub async fn dead_letters(
-        &self,
-        principal: &Principal,
-        id: ConnectorId,
-        before: Option<Uuid>,
-        limit: u32,
-    ) -> Result<Vec<DeadLetterRecord>, AppError> {
-        principal.authorize(Permission::EventRead)?;
-        self.load(principal, id).await?;
-        Ok(self
-            .store
-            .dead_letters(principal.tenant_id(), id, before, limit.clamp(1, 200))
-            .await?)
-    }
-
-    /// One dead letter.
-    ///
-    /// # Errors
-    /// [`AppError::Forbidden`]; [`AppError::NotFound`].
-    pub async fn dead_letter(
-        &self,
-        principal: &Principal,
-        id: ConnectorId,
-        letter: Uuid,
-    ) -> Result<DeadLetterRecord, AppError> {
-        principal.authorize(Permission::EventRead)?;
-        self.load(principal, id).await?;
-        self.store
-            .dead_letter(principal.tenant_id(), id, letter)
-            .await?
-            .ok_or(AppError::NotFound)
-    }
-
     /// Forgets a dead letter.
     ///
     /// # Errors

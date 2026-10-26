@@ -424,6 +424,8 @@ pub enum ChildOutcome {
 pub enum CollectionDrainReason {
     /// One admitted iteration failed permanently.
     Failed { iteration: u32, code: FailureCode },
+    /// The collection cannot cross its boundary within the retained Run-data ceiling.
+    RunDataLimit,
     /// Retaining an automatic collection value exceeded the tenant's durable-content quota.
     StorageQuotaExceeded,
     /// The enclosing run asked the collection to stop.
@@ -1158,6 +1160,10 @@ impl RunEvent {
                 reason: CollectionDrainReason::StorageQuotaExceeded,
                 ..
             } => cause("failure", FailureCode::storage_quota_exceeded().as_str()),
+            Self::CollectionDrainStarted {
+                reason: CollectionDrainReason::RunDataLimit,
+                ..
+            } => cause("failure", FailureCode::run_data_limit().as_str()),
             Self::CollectionDrainStarted {
                 reason: CollectionDrainReason::Cancelled,
                 ..

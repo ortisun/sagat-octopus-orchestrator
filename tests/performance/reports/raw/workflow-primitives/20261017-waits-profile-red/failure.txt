@@ -1,0 +1,16 @@
+
+running 1 test
+test measure_durable_waits_and_cross_run_tenant_slot_contention has been running for over 60 seconds
+
+thread 'measure_durable_waits_and_cross_run_tenant_slot_contention' (70144310) panicked at tests/performance/workflow-primitives/main.rs:481:5:
+PostgreSQL connections exceed the pool plus the probe: 18
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test measure_durable_waits_and_cross_run_tenant_slot_contention ... FAILED
+
+failures:
+
+failures:
+    measure_durable_waits_and_cross_run_tenant_slot_contention
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 286.78s
+

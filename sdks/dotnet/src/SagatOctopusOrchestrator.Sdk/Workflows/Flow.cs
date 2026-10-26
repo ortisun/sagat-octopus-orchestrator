@@ -24,6 +24,9 @@ public abstract partial class FlowBase<TSelf>
     [GeneratedRegex("^[a-z][a-z0-9._-]{0,63}\\z", RegexOptions.CultureInvariant)]
     private static partial Regex SecretPattern();
 
+    [GeneratedRegex("^sha256:[0-9a-f]{64}\\z", RegexOptions.CultureInvariant)]
+    private static partial Regex ArtifactDigestPattern();
+
     /// <summary>Step.Run: an activity executed by a worker.</summary>
     public TSelf Step(string id, string activity, StepOptions? options = null)
     {
@@ -47,6 +50,10 @@ public abstract partial class FlowBase<TSelf>
         }
 
         var node = new JsonObject { ["id"] = id, ["type"] = "activity", ["activity"] = activity };
+        if (options.OutputSchema is { } outputSchema)
+        {
+            node["outputSchema"] = outputSchema.DeepClone();
+        }
         if (options.Retry is { } retry)
         {
             node["retry"] = RetryNode(retry);
@@ -80,6 +87,40 @@ public abstract partial class FlowBase<TSelf>
         return Push(new JsonObject { ["id"] = id, ["type"] = "timer", ["durationMs"] = ms });
     }
 
+    /// <summary>Runs one immutable script artifact in the platform's isolated runner.</summary>
+    public TSelf Script(string id, string artifactDigest, ScriptOptions? options = null)
+    {
+        if (!ArtifactDigestPattern().IsMatch(artifactDigest ?? string.Empty))
+        {
+            throw Invalid($"script {id} needs a sha256 artifact digest");
+        }
+        options ??= new ScriptOptions();
+        foreach (var secret in options.Secrets ?? [])
+        {
+            if (!SecretPattern().IsMatch(secret))
+            {
+                throw Invalid($"script {id} names a secret that is not a name: {Quote(secret)}");
+            }
+        }
+        var node = new JsonObject { ["id"] = id, ["type"] = "script", ["artifactDigest"] = artifactDigest };
+        Set(node, "language", options.Language);
+        if (options.Retry is { } retry)
+        {
+            node["retry"] = RetryNode(retry);
+        }
+        Set(node, "compensateWith", options.CompensateWith);
+        if (options.Secrets is { } secrets)
+        {
+            node["secrets"] = new JsonArray([.. secrets.Select(secret => (JsonNode?)JsonValue.Create(secret))]);
+        }
+        Set(node, "onError", options.OnError);
+        if (options.OutputSchema is { } outputSchema)
+        {
+            node["outputSchema"] = outputSchema.DeepClone();
+        }
+        return Push(node);
+    }
+
     /// <summary>WaitForEvent: waits for an event of a type with a correlation key, or for the timeout.</summary>
     public TSelf WaitForEvent(string id, WaitForEventOptions options)
     {
@@ -102,6 +143,10 @@ public abstract partial class FlowBase<TSelf>
         if (options.Lookback is { } lookback)
         {
             node["lookbackMs"] = WholeMillis(lookback, $"waitForEvent {id} lookback");
+        }
+        if (options.OutputSchema is { } outputSchema)
+        {
+            node["outputSchema"] = outputSchema.DeepClone();
         }
 
         return Push(node);
@@ -127,6 +172,10 @@ public abstract partial class FlowBase<TSelf>
                 ChildCancelPolicy.Detach => "detach",
                 _ => "request_cancel",
             };
+        }
+        if (options.OutputSchema is { } outputSchema)
+        {
+            node["outputSchema"] = outputSchema.DeepClone();
         }
 
         return Push(node);
@@ -646,6 +695,7 @@ public sealed partial class WorkflowBuilder : FlowBase<WorkflowBuilder>
     private JsonObject? input;
     private JsonObject? output;
     private JsonObject? state;
+    private JsonObject? workflowLimits;
     private JsonObject? chainPolicy;
     private readonly SortedDictionary<string, Body> bodies = new(StringComparer.Ordinal);
 
@@ -695,6 +745,30 @@ public sealed partial class WorkflowBuilder : FlowBase<WorkflowBuilder>
     public WorkflowBuilder OutputSchema(JsonObject schema)
     {
         output = (JsonObject)schema.DeepClone();
+        return this;
+    }
+
+    /// <summary>Lowers the workflow instance and nesting ceilings.</summary>
+    public WorkflowBuilder Limits(WorkflowLimitsOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        if (options.MaxInstances is < 1 or > 100_000)
+        {
+            throw Invalid("limits maxInstances must be between 1 and 100000");
+        }
+        if (options.MaxDepth is < 1 or > 8)
+        {
+            throw Invalid("limits maxDepth must be between 1 and 8");
+        }
+        workflowLimits = new JsonObject();
+        if (options.MaxInstances is { } maxInstances)
+        {
+            workflowLimits["maxInstances"] = maxInstances;
+        }
+        if (options.MaxDepth is { } maxDepth)
+        {
+            workflowLimits["maxDepth"] = maxDepth;
+        }
         return this;
     }
 
@@ -928,6 +1002,11 @@ public sealed partial class WorkflowBuilder : FlowBase<WorkflowBuilder>
         if (output is not null)
         {
             document["outputSchema"] = output.DeepClone();
+        }
+
+        if (workflowLimits is not null)
+        {
+            document["limits"] = workflowLimits.DeepClone();
         }
 
         if (state is not null)

@@ -694,3 +694,18 @@ when available; no full-workspace success is claimed by these focused results.
 
 Final reviewed stream setup: `cargo test -p sagat-tests --test contract_grpc_durable_execution --locked protocol::task_stream -- --nocapture` passed **3/3**, zero failed, in **18.86 s** (51.01 s including compilation). Fresh review closed with no C1/C2 findings remaining.
 Final `cargo fmt --all -- --check` passed; final workspace/all-targets strict clippy passed (3.40 s), after the reviewed setup relocation.
+
+
+## Classified-tree secret fixture correction — 2026-10-25
+
+PR 47 CI run `40163480113` failed
+`durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotation` before the
+provider-read barrier: this integrated fixture reused a task it had already completed. The
+production `StaleAttempt` refusal is correct. Preserve that completion, assert its stale
+resolution, then admit another run of the same secret-bearing workflow and lease its active
+task for the membership-revocation race. No authority, lease duration or provider barrier is
+weakened. On this branch, the focused real PostgreSQL/OpenBao test was observed failing
+(0 passed, 1 failed, 60.52 s), then passed after the fixture correction (1 passed, 0 failed,
+74.78 s). Command: `cargo test -p sagat-tests --test integration_database_connections --locked
+durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotation -- --exact --nocapture`.
+This focused result does not replace the full integrated CI gate.

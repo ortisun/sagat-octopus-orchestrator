@@ -198,6 +198,15 @@ async fn managed_secret_lifecycle(progress: Progress) {
         .await
         .unwrap();
     assert_eq!(resolved[0].value.expose(), b"rotated-canary-017");
+    w.complete(&session, &task, &serde_json::json!({}))
+        .await
+        .unwrap();
+    assert!(matches!(
+        w.workers
+            .resolve_secrets(&session.principal, &support::engine::task_ref(&task), None)
+            .await,
+        Err(AppError::StaleAttempt)
+    ));
     // A legacy writer cannot silently switch provider authority back to local ciphertext.
     assert!(
         w.secrets
@@ -278,9 +287,11 @@ async fn managed_secret_lifecycle(progress: Progress) {
     Box::pin(output_blobs::run(provider.clone())).await;
 
     progress.enter("membership change during a provider read");
+    w.start(workflow, &serde_json::json!({})).await;
+    let active_task = w.one_task(&session).await;
     let gated = Arc::new(ReadBarrier::new(provider.clone()));
     w.workers = w.workers.with_secret_provider(gated.clone());
-    revoke_during_provider_read(&w, &gated, &session, &task).await;
+    revoke_during_provider_read(&w, &gated, &session, &active_task).await;
     // Stale in-memory admin principals cannot replay a management receipt either.
     assert!(service.put(&w.admin, ns, write(), &ctx()).await.is_err());
     let catalog = sagat_application::database::ConnectionService::new(w.store.clone(), SystemClock);

@@ -12,11 +12,14 @@ use sagat_application::chain_progress::{
     ChainHandoffCommand, ChainProgressError, ChainProgressStore, ContinuationSelection,
 };
 use sagat_application::entropy::SystemEntropy;
-use sagat_application::execution::Engine;
+use sagat_application::execution::{Engine, RunTx};
 use sagat_application::primitives::SchedulerAuthority;
+use sagat_application::runs::{Lock, RunStore};
+use sagat_application::shards::Lease;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::execution::{ChainError, ChainScope, QuiescenceBlocker, RunId, RunStatus};
 use sagat_domain::identity::Subject;
+use sagat_domain::sharding::Shard;
 use sagat_domain::workflow::NodeId;
 use sagat_infra_ir::JsonEvaluator;
 use sagat_scheduler::{
@@ -96,12 +99,6 @@ impl Boundary {
             QuiescenceBlocker::Lease => ("LEASED", None),
             other => panic!("{other:?} is not seeded by this helper"),
         };
-        sqlx::query("DELETE FROM steps WHERE tenant_id=$1 AND run_id=$2 AND node='ghost'")
-            .bind(self.world.admin.tenant_id().as_uuid())
-            .bind(self.chain.as_uuid())
-            .execute(&self.world.db.pool)
-            .await
-            .expect("clear the previous obstruction");
         let leased = status == "LEASED";
         sqlx::query(
             "INSERT INTO steps (tenant_id,run_id,node,step_id,namespace_id,status,waiting_kind, \
@@ -115,7 +112,13 @@ impl Boundary {
                      CASE WHEN $5='EVENT' THEN 'k' END, \
                      CASE WHEN $6 THEN decode('00','hex') END, \
                      CASE WHEN $6 THEN now()+interval '1 day' END, \
-                     CASE WHEN $6 THEN 'w' END, false, now(), '{}', '{}')",
+                     CASE WHEN $6 THEN 'w' END, false, now(), '{}', '{}') \
+             ON CONFLICT ON CONSTRAINT steps_pkey DO UPDATE SET \
+                status=EXCLUDED.status,waiting_kind=EXCLUDED.waiting_kind, \
+                activity=EXCLUDED.activity,ready_at=EXCLUDED.ready_at,due_at=EXCLUDED.due_at, \
+                event_type=EXCLUDED.event_type,correlation_key=EXCLUDED.correlation_key, \
+                lease_token_hash=EXCLUDED.lease_token_hash,lease_expires_at=EXCLUDED.lease_expires_at, \
+                leased_by=EXCLUDED.leased_by,routed=false,updated_at=EXCLUDED.updated_at",
         )
         .bind(self.world.admin.tenant_id().as_uuid())
         .bind(self.chain.as_uuid())
@@ -182,6 +185,14 @@ impl Boundary {
         &self,
         claimed: ChainScope,
     ) -> Result<sagat_application::chain_progress::ChainHandoffWrite, ChainProgressError> {
+        let prepared = self.prepare_write_as(claimed).await;
+        self.world.store.continue_evaluated(&prepared).await
+    }
+
+    async fn prepare_write_as(
+        &self,
+        claimed: ChainScope,
+    ) -> sagat_application::chain_progress::EvaluatedChainHandoffCommand {
         let tenant = self.world.admin.tenant_id();
         let scope = claimed;
         let (revision, version): (i64, i64) = sqlx::query_as(
@@ -241,10 +252,7 @@ impl Boundary {
             Uuid::now_v7(),
             Uuid::now_v7(),
         );
-        self.world
-            .store
-            .continue_evaluated(&selection.into_command(handoff).expect("command"))
-            .await
+        selection.into_command(handoff).expect("command")
     }
 }
 
@@ -786,12 +794,49 @@ async fn a_continuation_workflow_starts_as_a_child_with_a_durable_link() {
         family.world.step_status(family.parent, "kid").await,
         Some(StepStatus::Waiting)
     );
+    let parent_shard = Shard::of(family.parent.as_uuid());
+    let (owner, generation): (String, i64) =
+        sqlx::query_as("SELECT owner,generation FROM scheduler_shards WHERE shard=$1")
+            .bind(i16::from(parent_shard.index()))
+            .fetch_one(&family.world.db.pool)
+            .await
+            .expect("current parent lease");
+    let mut reopened = family
+        .world
+        .store
+        .begin(family.world.admin.tenant_id(), family.chain, Lock::Wait)
+        .await
+        .expect("reopen committed child")
+        .expect("child exists");
+    assert!(
+        !reopened
+            .holds_parent_shard(
+                &owner,
+                Lease {
+                    shard: parent_shard,
+                    generation: u64::try_from(generation).expect("generation"),
+                }
+            )
+            .await
+            .expect("child admission capability is unavailable after commit")
+    );
 }
 
 #[tokio::test]
 async fn the_parent_hears_only_the_final_outcome_of_a_child_chain_and_hears_it_once() {
     let family = Family::start("final").await;
     family.scheduler.tick().await;
+    let initial = family
+        .world
+        .run_record(family.chain)
+        .await
+        .expect("initial segment")
+        .info;
+    assert_eq!(
+        initial.parent.as_ref().map(|parent| parent.run),
+        Some(family.parent)
+    );
+    assert_eq!((initial.root, initial.depth), (family.parent, 1));
     let session = family.world.session(&["segment.work", "act.after"]).await;
     let mut heads = vec![family.chain];
 
@@ -850,7 +895,27 @@ async fn the_parent_hears_only_the_final_outcome_of_a_child_chain_and_hears_it_o
     let after = family.world.one_task_of(&session, "act.after").await;
     assert_eq!(after.run_id, family.parent);
     family.world.assert_consistent(family.parent).await;
+    let linked_parent: Uuid = sqlx::query_scalar(
+        "SELECT parent_run_id FROM child_chain_links WHERE tenant_id=$1 AND child_chain_id=$2",
+    )
+    .bind(family.world.admin.tenant_id().as_uuid())
+    .bind(family.chain.as_uuid())
+    .fetch_one(&family.world.db.pool)
+    .await
+    .expect("original incoming link");
+    assert_eq!(linked_parent, family.parent.as_uuid());
     for head in heads {
+        let info = family
+            .world
+            .run_record(head)
+            .await
+            .expect("segment ancestry")
+            .info;
+        assert_eq!(
+            info.parent, initial.parent,
+            "a child chain never reparents a segment"
+        );
+        assert_eq!((info.root, info.depth), (initial.root, initial.depth));
         family.world.assert_consistent(head).await;
     }
 }
@@ -1579,4 +1644,48 @@ async fn request_cancel_makes_the_parent_wait_until_the_child_chain_has_settled(
     );
     assert_eq!(family.link().await.1.as_deref(), Some("CANCELLED"));
     family.world.assert_consistent(family.parent).await;
+}
+
+#[tokio::test]
+async fn post_wait_fence_rejects_an_expired_evaluated_handoff_without_effects() {
+    use crate::bounded_fences::{SchedulerExpiryBarrier, chain_checkpoint};
+    let boundary = Boundary::reach("postwait").await;
+    let scope = ChainScope::new(
+        boundary.world.admin.tenant_id(),
+        boundary.world.namespace.id(),
+    );
+    let prepared = boundary.prepare_write_as(scope).await;
+    let barrier = SchedulerExpiryBarrier::hold(&boundary.world.db.pool, boundary.chain).await;
+    let before = chain_checkpoint(&boundary.world, boundary.chain).await;
+    let (result, ()) = tokio::join!(
+        boundary.world.store.continue_evaluated(&prepared),
+        barrier.expire_after_wait()
+    );
+    assert_eq!(result, Err(ChainProgressError::SchedulerFenceLost));
+    assert_eq!(
+        chain_checkpoint(&boundary.world, boundary.chain).await,
+        before
+    );
+    let fresh = boundary.prepare_write_as(scope).await;
+    let committed = boundary
+        .world
+        .store
+        .continue_evaluated(&fresh)
+        .await
+        .expect("fresh evaluated handoff");
+    assert!(!committed.replayed());
+    assert!(
+        boundary
+            .world
+            .store
+            .continue_evaluated(&fresh)
+            .await
+            .expect("exact evaluated replay")
+            .replayed()
+    );
+    boundary.world.assert_consistent(boundary.chain).await;
+    boundary
+        .world
+        .assert_consistent(committed.successor())
+        .await;
 }

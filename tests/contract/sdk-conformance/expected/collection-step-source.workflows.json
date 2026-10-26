@@ -1,0 +1,60 @@
+{
+  "canonical": {
+    "map": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"tax\":{\"entrypoint\":\"fetch\",\"nodes\":[{\"activity\":\"tax.price\",\"id\":\"fetch\",\"next\":\"returned\",\"type\":\"activity\"},{\"id\":\"returned\",\"result\":\"steps.fetch.output\",\"type\":\"return\"}]}},\"entrypoint\":\"fetch\",\"kind\":\"Workflow\",\"limits\":{\"maxDepth\":1,\"maxInstances\":16},\"metadata\":{\"name\":\"collection-step-source\"},\"nodes\":[{\"activity\":\"source.fetch\",\"id\":\"fetch\",\"next\":\"taxes\",\"type\":\"activity\"},{\"body\":\"tax\",\"id\":\"taxes\",\"items\":\"steps.fetch.output\",\"maxConcurrency\":1,\"maxItems\":2,\"next\":\"done\",\"result\":\"bodyResult.amount\",\"type\":\"forEach\"},{\"id\":\"done\",\"outputExpr\":\"steps.taxes.output\",\"type\":\"end\"}]}"
+  },
+  "workflows": {
+    "map": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "tax": {
+          "entrypoint": "fetch",
+          "nodes": [
+            {
+              "activity": "tax.price",
+              "id": "fetch",
+              "next": "returned",
+              "type": "activity"
+            },
+            {
+              "id": "returned",
+              "result": "steps.fetch.output",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "fetch",
+      "kind": "Workflow",
+      "limits": {
+        "maxDepth": 1,
+        "maxInstances": 16
+      },
+      "metadata": {
+        "name": "collection-step-source"
+      },
+      "nodes": [
+        {
+          "activity": "source.fetch",
+          "id": "fetch",
+          "next": "taxes",
+          "type": "activity"
+        },
+        {
+          "body": "tax",
+          "id": "taxes",
+          "items": "steps.fetch.output",
+          "maxConcurrency": 1,
+          "maxItems": 2,
+          "next": "done",
+          "result": "bodyResult.amount",
+          "type": "forEach"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.taxes.output",
+          "type": "end"
+        }
+      ]
+    }
+  }
+}

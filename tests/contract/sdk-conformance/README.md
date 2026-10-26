@@ -24,7 +24,20 @@ The five ordinary SDK workers consume typed results and never execute managed SQ
 Independent assertions check precise values, target effects and safe failure codes
 before goldens can be blessed. The CI SDK job builds the executable first.
 
+Prior-release compatibility may set `SAGAT_SDK_SOURCE_ROOT` to an absolute directory containing
+an exact archived release's `sdks/` tree. The clients and their checked-in prepare/run scripts then
+come from that directory; the real server, scenarios, normalization and reviewed goldens remain
+current. Record the source release commit and include its canonical contracts alongside the archived
+SDKs, because their preparation scripts synchronize shared protocol/catalog files. A previous client's
+successful run is separate from current-client conformance; it does not bless new goldens.
+
 ## Protocol compatibility
+
+The short `secrets` and `blobs` journal fixtures schedule the current worker's first heartbeat after their
+30-second completion deadline (60 seconds). They compare secret/blob operations and completion
+without racing an optional `step.started` heartbeat event against the short activity. The full raw
+result is still checked for secret leaks, and no journal event is removed by normalization.
+Heartbeat renewal and cancellation are exercised separately by their dedicated scenarios.
 
 `protocol-negotiation.json` keeps the production worker ceiling and old-minor path executable in
 all five SDKs. It probes the accepted 1.x minors, malformed input and incompatible majors, then
@@ -142,8 +155,19 @@ its status, its stop code and whether its collection was entered from a blob.
 
 `collection-limits.json` is the item-limit case of WP-12: three items under `maxItems: 3` run to the end, four fail with
 `ITERATION_LIMIT` before any iteration is admitted and with no worker call (`sourceEvidence` shows the stop code). The
-instance budget (`limits.maxInstances`) is not settable through the SDK builders yet (a scenario's `limits` key is
-ignored by every runner), so it is covered only by the Rust suite `limits.rs`.
+instance budget (`limits.maxInstances`) and nesting ceiling (`limits.maxDepth`) are carried by all
+five builders and conformance runners. `loop-runtime` explicitly authors 12 instances/depth 1 and
+`scoped-identity` authors 24/depth 1; both their canonical text and document goldens preserve these
+fields, while runtime output is checked separately. The Rust `limits.rs` suite covers admission
+boundaries and policy reduction; this small SDK matrix does not establish the large workload ceilings.
+
+`workflow-instance-limits.json` now exercises actual instance admission in all five SDKs: an
+`a -> b -> end` workflow succeeds with `maxInstances: 3`; at2, both activity completions are accepted
+and the run fails with persisted `INSTANCE_LIMIT`, leaving the end cancelled at attempt0.
+Each run is created with workers stopped, then its dedicated worker starts; this keeps the
+start observation independent of execution speed. Four invalid builder cases reject instance0/
+100001 and depth0/9 with `VALIDATION_FAILED`. Depth1/8 authoring is checked; this does not execute
+nested depth8 or establish the remaining WP-12 resource ceilings. No normalizer fields are hidden.
 
 `collection-compensation.json` is the WP-04 contract for a collection that stops. A `map` with concurrency one
 over bodies of several activities: when `ship` fails for good in the first iteration, the iteration's completed
@@ -217,7 +241,19 @@ restricted collection body through the served scheduler and worker API. A retain
 completes root work but cannot claim scoped work. A 1.5 worker observes two equal items at distinct
 indices plus a third distinct item, preserves each typed identity, captured `{item,index}` and
 idempotency key across a retry, and reaches a terminal graph with all three logical instances. No
-private store or control tick advances the collection.
+private store or control tick advances the collection. Before inspecting the run, the scenario
+awaits the public `collection.iteration_admitted` journal event with a bounded deadline. A fixed
+500 ms sleep could observe either the entered scope (`WAITING`) or its admitted ready activity
+(`RUNNING`) under load. The journal barrier makes the existing `RUNNING` observation reproducible;
+the reviewed expected document changes only the observation's operation label to `awaitJournal`.
+
+`collection-step-source.json` runs an ordinary root producer before the public `map`. The run's
+input is empty; the producer returns two members, which are captured and delivered in order to
+scoped workers. The reviewed document retains `maxInstances: 16`/`maxDepth: 1`; the root task has an
+empty path and each body task its own indexed path despite sharing the same `fetch` node id. The body tasks see their assigned member and
+local outputs, not the root producer's array in `steps`. This fixture uses polling and unchanged
+public SDK builders/worker APIs. Its new definition and observation files were manually reviewed
+against the scenario after all five languages agreed; no bless mode is used.
 
 `collection-runtime.json` executes the public `map` builder with a non-identity result expression
 in all five SDKs. Its reviewed graph has two ordered scoped members and a terminal result. The
@@ -290,6 +326,14 @@ that predecessor. The reviewed runtime and workflow goldens pass in all five SDK
 `chain-state-final-success.json` adds exact declared-state transfer to that conditional graph.
 After both segments finish, chain Query on the final head returns `19.99`, although the successor
 input contains `0.00`. The reviewed goldens pass in all five SDKs.
+
+The `database-connections` scenario also requires a prebuilt isolated executor:
+`cargo build -p sagat-database-runner --bin database-runner --locked` (or set
+`SAGAT_DATABASE_RUNNER_BIN`). Its fixture starts OpenBao 2.7.1 and target PostgreSQL
+16 for each language and gives the executor only its capability token and policy.
+The five ordinary SDK workers consume typed results and never execute managed SQL.
+Independent assertions check precise values, target effects and safe failure codes
+before goldens can be blessed. The CI SDK job builds the executable first.
 
 ## What each SDK ships
 
@@ -550,3 +594,95 @@ read fail with UNAVAILABLE. It must not cancel task handlers or silently discard
 Its plan is counted once when the matching stream is opened, with the same `times`/`after` rules
 as unary faults. A scenario must contain queued work so the nonempty frame is actually reached.
 The runner must not manufacture a task or substitute a unary poll for this operation.
+
+`classification.json` is explicitly builder-only. It proves byte-identical workflow and node
+carrier schemas across all five public builders, including the synthetic script digest and child
+reference, against `expected/classification.workflows.json`. It never publishes those synthetic
+references. Actual script/child/worker/wait outputs and disclosure have their separately executed
+classification integration, CLI and browser scenarios. The fast registry test requires a reviewed
+canonical document for every scenario and a reviewed runtime result for each runtime scenario,
+so a missing phase marker is caught without a full language/platform run.
+
+
+### Managed database executor prerequisite
+
+Before the full suite or `database-connections`, build the isolated executor with the same Cargo
+target and profile used for the integration test:
+
+```sh
+cargo build --locked -p sagat-database-runner --bin database-runner
+SAGAT_SDK_SCENARIO=database-connections cargo test --locked -p sagat-tests --test sdk_conformance -- --ignored --nocapture
+```
+
+The harness resolves the binary beside the actual test profile, including an external
+`CARGO_TARGET_DIR` or target triple. `SAGAT_DATABASE_RUNNER_BIN` remains an explicit override.
+The ordinary consumer in this root-work scenario explicitly offers 1.4, matching the reviewed
+golden and the established old-worker fixtures; the isolated DatabaseRunner offers 1.6 and owns
+the managed capability. Scoped/default-1.5 behavior is exercised separately by the primitive and
+protocol-negotiation scenarios.
+
+
+`collection-blob-output` adds protocol1.5 forward iteration BlobOutput coverage: two300KB uploads,
+ordered returned descriptors with independently checked SHA-256, exact scoped instances and
+successful final server state. All five builder documents and normalized runtime results were
+compared before creating its new reviewed goldens; no existing golden or normalizer was changed.
+This focused case does not establish derived/declared-secret blob support or broader nested graphs.
+
+### Switch case limit refresh
+
+The shared `switch-builders` fixture has 32 ordered cases and an otherwise valid 33-case refusal.
+All five public builders must retain the exact canonical boundary document and return
+`VALIDATION_FAILED` for excess. Actual publication and first-match/default/predicate-error execution
+use that 32-case document; added cases are false. Existing normalized runtime golden is unchanged.
+
+### Expression limits and expected publication refusals
+
+`expression-limits` uses existing public query operations in all five SDKs. It evaluates exactly
+1,024 UTF-8 bytes (including non-ASCII characters), a 64-item literal and a constructed 4,096-item
+list. Constructing 4,097 items fails with `VALIDATION_FAILED` and
+`details.reason=OPERATION_EVALUATION_FAILED`; the following successful query retains the same Run
+and state revisions.
+
+A scenario may declare `publicationRejections: {"workflow-key": "EXPRESSION"}`. These keys must
+name SDK-built workflows in its reviewed canonical document. The shared server HTTP staging phase
+saves each draft, attempts publication, requires 422/VALIDATION_FAILED/non-retryable/exact reason,
+and independently checks no active version and zero published versions. Refused workflows never
+enter the runtime runner's configuration. Closed `publicationEvidence` is retained in the complete
+normalized golden. SDKs expose no publisher; this phase is explicitly HTTP server evidence for
+the documents authored by all five builders. The expression fixture covers 1,025-byte source,
+65-item literal and unsupported object literal refusals here, before execution. Scenarios without
+the optional declaration retain their existing staging and normalized output.
+
+### Active sibling drain and public upper boundaries
+
+`collection-fail-fast-drain` starts a maxInflight=1 holding polling worker, waits for actual
+`step.started`, then starts a different failing polling worker. Summary/source evidence and the
+complete graph/logs require two active admitted iterations, permanent failure plus cancellation,
+no third admission/checkpoint and no successful join. The barrier proves server-observed running
+work, not a separate callback-entry acknowledgement. No full global journal order is pinned.
+
+`approval-builders` accepts 31 distinct subjects plus one role, keeping the existing 33-principal
+refusal. This remains authoring-only. `expression-limits` publishes 32 queries and 32 updates;
+the existing builder fixture rejects 33. Its schema.read returns a marker string against integer
+schema: runtime must refuse with INVALID_OPERATION_STATE without leaking full/prefix marker,
+and the following successful query must retain the same Run/state revisions.
+
+
+## Complete current 60-case SDK acceptance — 2026-10-18
+
+T014-041 closes on the complete, unfiltered current five-SDK aggregate: 60 scenarios, 300
+language/scenario plays, 30 authoring-only, 5 publication-only and 265 live workflow/protocol.
+All 270 complete normalized outputs independently equal the reviewed golden; all 1,672 frozen
+inputs are unchanged. The aggregate passed in 1,067.94 s (harness 1,067.57 s), without blessing,
+prepared-runner reuse or archived source. Eight actual native compatibility tests pass on
+identical executable inputs, covering active-old-run and old-worker-minor compatibility.
+
+The first full attempt failed during managed-secret PUT with an unexplained 503, before the
+five database scenario outputs. Its same-source focused retry and this subsequent full pass
+are retained separately; no inferred provider cause or speculative fix is claimed. The third
+and final supported-public mapping review found no further missing observation after the
+last focused fixtures; stale matrix wording was corrected. Actual tagged v0.1.0 lifecycle
+coverage remains separately scoped, with other historical features/versions untested.
+
+Evidence: [complete SDK60 aggregate](../../../tasks/project-completion/evidence/sdk60-current-20261018/reproduce.md).
+This evidence does not accept general nested runtime, C0, production ceilings or final release gates.

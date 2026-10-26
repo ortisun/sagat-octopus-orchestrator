@@ -56,8 +56,9 @@ macro_rules! pool_refused {
 // from hiding other activities behind the global LIMIT. The transaction rechecks the exact quota
 // under its admission locks. With no configured override/ceiling, leave the default to that gate.
 // OFFSET/LIMIT stops after the configured number of active leases; it never aggregates READY rows.
-pub const CLAIMABLE: &str = concat!(
-    "SELECT s.run_id FROM unnest($3::text[]) AS a(activity) \
+macro_rules! claimable_query {
+    ($tail:literal) => { concat!(
+    "WITH candidates AS (SELECT s.run_id,s.instance_path_nodes,s.instance_path_indices,s.ready_at FROM unnest($3::text[]) AS a(activity) \
      CROSS JOIN LATERAL ( \
        SELECT least( \
          coalesce( \
@@ -68,7 +69,7 @@ pub const CLAIMABLE: &str = concat!(
          (SELECT max_value FROM quota_ceilings WHERE tenant_id = $1 AND resource = 'activity_concurrency')) AS max_inflight \
      ) quota \
      CROSS JOIN LATERAL ( \
-         (SELECT st.run_id, st.ready_at FROM steps st \
+         (SELECT st.run_id, st.ready_at,st.instance_path_nodes,st.instance_path_indices FROM steps st \
           JOIN runs r ON r.tenant_id = st.tenant_id AND r.id = st.run_id \
           WHERE st.tenant_id = $1 AND st.namespace_id = $2 AND st.activity = a.activity \
             AND st.status = 'READY' \
@@ -85,7 +86,7 @@ pub const CLAIMABLE: &str = concat!(
     " \
           ORDER BY st.ready_at LIMIT $4) \
          UNION ALL \
-         (SELECT st.run_id, st.ready_at FROM steps st \
+         (SELECT st.run_id, st.ready_at,st.instance_path_nodes,st.instance_path_indices FROM steps st \
           JOIN runs r ON r.tenant_id = st.tenant_id AND r.id = st.run_id \
           WHERE st.tenant_id = $1 AND st.namespace_id = $2 AND st.activity = a.activity \
             AND st.status = 'READY' AND st.kind <> 'COMPENSATION' AND NOT r.paused \
@@ -100,7 +101,7 @@ pub const CLAIMABLE: &str = concat!(
     " \
           ORDER BY st.ready_at LIMIT 4) \
          UNION ALL \
-         (SELECT st.run_id, st.ready_at FROM steps st \
+         (SELECT st.run_id, st.ready_at,st.instance_path_nodes,st.instance_path_indices FROM steps st \
           JOIN runs r ON r.tenant_id = st.tenant_id AND r.id = st.run_id \
           WHERE st.tenant_id = $1 AND st.namespace_id = $2 AND st.activity = a.activity \
             AND st.status = 'READY' AND st.kind = 'COMPENSATION' \
@@ -118,7 +119,7 @@ pub const CLAIMABLE: &str = concat!(
     " \
           ORDER BY st.ready_at LIMIT $4) \
          UNION ALL \
-         (SELECT st.run_id, st.ready_at FROM steps st \
+         (SELECT st.run_id, st.ready_at,st.instance_path_nodes,st.instance_path_indices FROM steps st \
           JOIN runs r ON r.tenant_id = st.tenant_id AND r.id = st.run_id \
           WHERE st.tenant_id = $1 AND st.namespace_id = $2 AND st.activity = a.activity \
             AND st.status = 'READY' \
@@ -144,7 +145,14 @@ pub const CLAIMABLE: &str = concat!(
            AND active.status IN ('LEASED', 'RUNNING') AND active.lease_expires_at > clock_timestamp() \
          OFFSET greatest(quota.max_inflight - 1, 0) LIMIT 1 \
      )) \
-     ORDER BY s.ready_at, s.run_id LIMIT $4"
+     ORDER BY s.ready_at, s.run_id LIMIT $4) ", $tail
+    ) };
+}
+
+pub const CLAIMABLE: &str =
+    claimable_query!("SELECT run_id FROM candidates ORDER BY ready_at,run_id");
+const CLAIMABLE_PATHS: &str = claimable_query!(
+    "SELECT run_id,instance_path_nodes,instance_path_indices FROM candidates ORDER BY ready_at,run_id"
 );
 
 fn micros(duration: Duration) -> i64 {
@@ -237,7 +245,8 @@ impl WorkerStore for PgRunStore {
             .activities
             .iter()
             .any(|a| a.starts_with(sagat_domain::database::MANAGED_DATABASE_PREFIX));
-        if (managed && role != Some(sagat_domain::identity::Role::DatabaseRunner))
+        if !role.is_some_and(|role| role.grants(sagat_domain::identity::Permission::WorkerExecute))
+            || (managed && role != Some(sagat_domain::identity::Role::DatabaseRunner))
             || role.is_some_and(|role| {
                 !sagat_application::worker::managed_capabilities_allowed(
                     role,
@@ -314,6 +323,27 @@ impl WorkerStore for PgRunStore {
         token_hash: &[u8],
         ttl: Duration,
     ) -> Result<Option<SessionRecord>, StoreError> {
+        let mut tx = self.pool().begin_safely().await.map_err(store_error)?;
+        let expires_at: Option<time::OffsetDateTime> = sqlx::query_scalar(
+            "SELECT expires_at FROM worker_sessions \
+             WHERE tenant_id = $1 AND id = $2 AND token_hash = $3 FOR UPDATE",
+        )
+        .bind(tenant.as_uuid())
+        .bind(id)
+        .bind(token_hash)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let Some(expires_at) = expires_at else {
+            return Ok(None);
+        };
+        let now: time::OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        if expires_at <= now {
+            return Ok(None);
+        }
         let row = sqlx::query(
             "UPDATE worker_sessions SET expires_at = clock_timestamp() + $4 * interval '1 microsecond' \
              WHERE tenant_id = $1 AND id = $2 AND token_hash = $3 AND expires_at > clock_timestamp() \
@@ -328,27 +358,64 @@ impl WorkerStore for PgRunStore {
         .bind(id)
         .bind(token_hash)
         .bind(micros(ttl))
-        .fetch_optional(self.pool())
+        .fetch_optional(&mut *tx)
         .await
         .map_err(store_error)?;
-        row.map(|row| {
-            let inflight: i32 = col(&row, "max_inflight")?;
-            let protocol_minor: i32 = col(&row, "accepted_protocol_minor")?;
-            Ok(SessionRecord {
-                id: col(&row, "id")?,
-                tenant_id: TenantId::new(col::<Uuid>(&row, "tenant_id")?),
-                namespace_id: NamespaceId::new(col::<Uuid>(&row, "namespace_id")?),
-                subject: col(&row, "subject")?,
-                worker_name: col(&row, "worker_name")?,
-                activities: col(&row, "activities")?,
-                max_inflight: u32::try_from(inflight).map_err(|_| corrupt("max inflight"))?,
-                accepted_protocol_minor: u32::try_from(protocol_minor)
-                    .map_err(|_| corrupt("accepted protocol minor"))?,
-                expires_at: col(&row, "expires_at")?,
-                draining: col(&row, "draining")?,
+        let session = row
+            .map(|row| {
+                let inflight: i32 = col(&row, "max_inflight")?;
+                let protocol_minor: i32 = col(&row, "accepted_protocol_minor")?;
+                Ok(SessionRecord {
+                    id: col(&row, "id")?,
+                    tenant_id: TenantId::new(col::<Uuid>(&row, "tenant_id")?),
+                    namespace_id: NamespaceId::new(col::<Uuid>(&row, "namespace_id")?),
+                    subject: col(&row, "subject")?,
+                    worker_name: col(&row, "worker_name")?,
+                    activities: col(&row, "activities")?,
+                    max_inflight: u32::try_from(inflight).map_err(|_| corrupt("max inflight"))?,
+                    accepted_protocol_minor: u32::try_from(protocol_minor)
+                        .map_err(|_| corrupt("accepted protocol minor"))?,
+                    expires_at: col(&row, "expires_at")?,
+                    draining: col(&row, "draining")?,
+                })
             })
-        })
-        .transpose()
+            .transpose()?;
+        tx.commit().await.map_err(store_error)?;
+        Ok(session)
+    }
+
+    async fn claimable_paths(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        activities: &[String],
+        limit: u32,
+        accepted_protocol_minor: u32,
+        subject: &str,
+    ) -> Result<Vec<(RunId, sagat_domain::execution::InstancePath)>, StoreError> {
+        let rows = sqlx::query(CLAIMABLE_PATHS)
+            .bind(tenant.as_uuid())
+            .bind(namespace.as_uuid())
+            .bind(activities)
+            .bind(i64::from(limit.min(64)))
+            .bind(
+                i32::try_from(accepted_protocol_minor)
+                    .map_err(|_| corrupt("accepted protocol minor"))?,
+            )
+            .bind(subject)
+            .fetch_all(self.pool())
+            .await
+            .map_err(store_error)?;
+        let mut seen = std::collections::BTreeSet::new();
+        let mut candidates = Vec::new();
+        for row in rows {
+            let run = RunId::new(col::<Uuid>(&row, "run_id")?);
+            let path = crate::execution::step_instance_path(&row)?;
+            if seen.insert((run, path.clone())) {
+                candidates.push((run, path));
+            }
+        }
+        Ok(candidates)
     }
 
     async fn claimable_runs(

@@ -77,3 +77,15 @@ Recorded on 2026-10-09 after checking FR-009-001..008, the success criteria and 
 - **D57 — The output scan covers every kept version and the failure code.** Found by the security review: only the current version was searched, so a value handed out before a rotation could come back in an output; and `fail` took a worker's error code unexamined although a credential fits the characters and length a code may have. Both are closed; a step that reports a secret in its failure code fails for good with `SECRET_IN_OUTPUT`.
 - **D58 — The capability ends with the lease; the other smaller findings.** `ResolveSecrets` requires a lease that has not run out by the database clock (reports still accept a late completion until the attempt is reclaimed, to save work). A non-administrator lists only the secrets whose access list names them. `reseal` steps over a version no key opens and reports it at the end, so one bad row stops nobody else's rotation. The control plane, which accepts secret values over plaintext HTTP, needs `SAGAT_API_ALLOW_PLAINTEXT_SECRETS` outside development like the engine. A definition declares at most 128 distinct secrets. `steps (tenant_id, leased_by)` is indexed for the revocation update.
 - **D59 — A sandbox denial is durable before it is acknowledged.** The supervisor reports only a closed category (`EGRESS_DISABLED` or one of the six domain denial codes) and a production/test target fenced by tenant, namespace, lease token and attempt identity. The control plane authenticates the runner, validates the current unexpired lease, session and binding, and commits `script.violation` in that transaction. The endpoint is idempotent per target and category. Only a 204 after commit lets the host return `Denied`; a timeout, stale fence or storage failure returns `Failed` and no outbound request is made. Destination, URL, headers and payload never cross this boundary. This guarantees durable evidence for acknowledged supervisor denials, not exactly-once external effects and not observation of raw syscalls that never reached the supervisor.
+
+
+## Feature 016 integration checkpoint — 2026-10-17
+
+G39/G42: integrated permissions include `payload:read-internal`, while no role holds
+`payload:reveal-pii` automatically. A namespace reveal grant is inert after a role loses internal
+read permission; current authority and revocation are fenced in the read transaction. Feature
+017 adds DatabaseRunner as a separate machine role under ADR-0036. This does not add custom roles,
+commercial tiers or a regulator-specific retention policy.
+
+Focused commands and remaining gates are in
+`tasks/project-completion/integration-notes.md`; final release acceptance remains pending.

@@ -180,6 +180,7 @@ async fn lock_run_whatever_its_state(
     namespace: sagat_domain::identity::NamespaceId,
     run: RunId,
 ) -> Result<LockedRun, ApprovalProgressError> {
+    crate::execution::lock_member_chain(tx, tenant, namespace, run).await?;
     let row = sqlx::query(
         "SELECT namespace_id, status, run_version, workflow_version_id FROM runs \
          WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
@@ -220,18 +221,12 @@ async fn check_scheduler_fence(
     if lease.shard != Shard::of(run.as_uuid()) {
         return Err(ApprovalProgressError::SchedulerFenceLost);
     }
-    let held: Option<i16> = sqlx::query_scalar(
-        "SELECT shard FROM scheduler_shards \
-         WHERE shard = $1 AND generation = $2 AND owner = $3 \
-           AND expires_at > clock_timestamp() FOR SHARE",
-    )
-    .bind(i16::from(lease.shard.index()))
-    .bind(stored_i64(lease.generation, "scheduler generation")?)
-    .bind(authority.owner())
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(store_error)?;
-    if held.is_none() {
+    // Keep this port's existing conversion error for an oversized generation.
+    stored_i64(lease.generation, "scheduler generation")?;
+    if crate::execution::locked_scheduler_time(tx, run, authority.owner(), lease)
+        .await?
+        .is_none()
+    {
         return Err(ApprovalProgressError::SchedulerFenceLost);
     }
     Ok(())

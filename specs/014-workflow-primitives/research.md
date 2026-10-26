@@ -1217,13 +1217,19 @@ O420-O421 (D410+ and G410+ are free for the peer increments).
 - **G424 — No retention for committed blobs.** The foreign key protects a live membership; a retention
   policy for finished runs (D298) must still decide when `iteration_scopes` rows, and with them the
   reference, go.
-- **G425 — The SDK builders cannot set the top-level `limits`.** A scenario's `limits` key is ignored by
-  all five runners, so WP-12's instance budget, depth and node ceilings are not exercised through the
-  SDKs (`loop-runtime.json` carries a `limits` that has no effect). Rust covers them (`limits.rs`,
-  `ceilings.rs`).
+- **G425 — Resolved for authoring and bounded instance admission (2026-10-18).** The original
+  builders/runner gap has been implemented in all five SDKs. Reviewed `loop-runtime` and
+  `scoped-identity` documents preserve their limits; `workflow-instance-limits` additionally proves
+  maxInstances3 succeeds and2 fails with persisted INSTANCE_LIMIT. Four invalid authoring cases
+  cover instance0/100001 and depth0/9; depth1/8 is retained in canonical output. This does not prove
+  nested depth8 execution or the large-workload ceilings. Native `limits.rs`/`ceilings.rs` remain
+  separate evidence.
 - **G426 — WP-02 server-side rejection and WP-13 object-literal rejection are not SDK-visible.** Publishing a
   document is not an SDK operation (the harness publishes), so rejection of invalid, cyclic or escaping bodies
-  and of unsupported expressions is proven by the Rust contract suites, not by the five SDKs.
+  and of unsupported expressions is proven by native contracts and the public HTTP
+  `publication_rejections` suite (10/10,2026-10-18), not by the five SDKs. Schema-forbidden body
+  kinds return SCHEMA first; schema-valid cycles/escapes/overlap/recursion return INVALID_SCOPE.
+  Object literals and effective UTF-8 expression byte limits return EXPRESSION.
 - **G427 — Nested descendants at low capacity are not exercised** because nested scopes are closed (O383); the
   low-quota case covers the iteration's own instances (a capacity of one runs four iterations to the end).
 
@@ -1319,6 +1325,12 @@ poll of up to 256 tasks in reverse order.
 ### Verification of this increment (2026-10-17)
 
 `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `scripts/check-architecture.py`
+pass. Suites on the final tree are listed in the delivery report; two tests failed once while the 10,000-iteration
+run and the SDK suite were loading the machine (`fault scope_compensation::a_scheduler_replica_that_takes_over_mid_compensation_finishes_it`,
+`integration operations_http::outbox_failure_rolls_back_the_http_update_and_the_same_key_can_retry`) and passed on rerun alone.
+
+Additional source-branch checkpoint (8ade8f18, separate from this integration gate):
+
 pass. On the final tree: contract 44, integration 263 (+1 ignored: the 10,000-iteration run), platform_foundation 89, durable_execution 178, sagas_compensations 74 pass, and fault 69 of 70 (the failure is G428, pre-existing). `operations_http::outbox_failure_rolls_back_the_http_update_and_the_same_key_can_retry` failed once under load and passed alone and in the final full run.
 
 - **G428 — `scope_compensation::a_scheduler_replica_that_takes_over_mid_compensation_finishes_it` is flaky when its
@@ -1436,7 +1448,7 @@ Written 2026-10-17 for T014-041 and T014-042. The coordinator ticks the tasks; n
 ### Owner questions
 
 - **O460 — Is a quadratic collection acceptable for the first release?** With G461 open, a published
-  `maxItems` of 10,000 is correct but slow (one run took 1 h 54 min, the three budgeted runs did not finish
+  The measured flat `maxItems` 10,000 fixture was correct but slow (one run took 1 h 54 min, the three budgeted runs did not finish
   in 10 minutes). Options:
   publish a lower ceiling until the transition is incremental, or schedule the fix before enabling
   collections. The recommendation is to cap `maxItems` and `maxIterations` at the largest size the report
@@ -1716,3 +1728,43 @@ implementation or a measurement changed them.
   "cap `maxItems` at 1,000" to "10,000 is correct but takes minutes per run; 1,000 takes about one minute".
 - **O465 — May the shared test container preload `pg_stat_statements`?** It is how the G461 tests count
   rows. It changes the server flags of every suite's default container (no data effect).
+
+
+## Combined-profile completion checkpoint
+
+The source branch's scale/CI evidence above belongs to its recorded commits and migration profile.
+The combined 014/016/017 checkout retains the accepted open criteria until its own runtime and
+integrated gates pass. In particular, partial public shapes do not close accepted nested graphs
+or the unimplemented bounded worker/control/compensation/blob/root-finalization paths. The
+open-step index migration keeps the name 20261122000000_steps_open_index that develop merged
+(PR #37); feature 017 took 20261122000100 for OpenBao (D602, ADR-0036). No deployed SQLx ledger is
+rewritten.
+
+
+## 2026-10-18 — T014-004 fixture completion
+
+The historical remainder above is superseded for fixtures: G425 authoring and bounded instance
+admission pass in all five SDKs (`workflow-instance-limits`), while G426 public server rejections
+pass 10/10 in `publication_rejections`. The47 primitive contracts pass, covering the quoted
+node/depth/effective-expression/list boundaries. The 1024-byte bound is unchanged: 602-character/
+1202-byte body and switch expressions and a 702-character/2102-byte body expression return
+EXPRESSION. The latter previously escaped to a legacy 2048-byte wrapper and incorrectly returned
+SCHEMA; the adapter now retains the typed cause before that wrapper. The original wrong terminal
+body oracle, all real failing regressions and the three bounded review findings are retained.
+
+T014-004 is closed for these fixtures and the fresh10,000-reference materialization test in
+the379-test runtime-role regression (every stored index checked;10,001 refused). The separate
+historical full-completion D429 run is retained and not claimed as a fresh pass.
+This does not close nested execution, quota composition, the 100k resource gate or T014-041's
+complete all 58 matrix. Current normal regressions still skip the separate long 10k source test.
+Exact commands, source hashes and limits: `tasks/project-completion/evidence/publication-scope-20261018/manifest.json`.
+
+## Shared public WP04/08/12 acceptance refresh — 2026-10-18
+
+The shared collection-fail-fast-drain case now covers another active owned iteration during
+permanent sibling failure, without pinning cross-iteration compensation or global journal order.
+All five actual polling hosts agree on full graph/logs and summary/source facts. The shared
+expression case adds distinct query result-schema failure, raw canary redaction and unchanged
+Run/state versions, plus actual publication of32queries/32updates. Approval authoring accepts32
+principals and retains33 refusal. Focused all-five results and exact commands are retained in
+`tasks/project-completion/evidence/sdk-public-gaps-20261018`; full60 integration remains separate.

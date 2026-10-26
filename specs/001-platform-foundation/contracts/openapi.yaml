@@ -2,6 +2,9 @@ openapi: 3.1.0
 info:
   title: Sagat Octopus Orchestrator Control & Execution API
   version: 0.1.0
+  license:
+    name: MIT
+    identifier: MIT
   description: |
     Operations tagged `Identity` are implemented by the control plane (feature 001); operations marked
     `x-implemented: '002'` (workflow definitions, runs, operator actions and signals) by the durable
@@ -26,11 +29,17 @@ security:
   - bearerAuth: []
 tags:
   - name: Identity
+    description: Authentication context, tenant and namespace identity, and service health.
   - name: Workflows
+    description: Draft authoring, validation, publication, and immutable workflow definitions.
   - name: Runs
+    description: Execution state, commands, signals, scoped progress, and retained run data.
   - name: Events
+    description: Event ingestion, subscriptions, inbox and dead-letter operations, and outbound integrations.
   - name: Scripts
+    description: Script authoring, versions, validation, and isolated test execution.
   - name: Operations
+    description: Operator inspection, reconciliation, audit, and platform operations.
   - name: Governance
     description: Quotas, worker bindings, secrets and egress policy of a tenant or namespace (feature 009).
   - name: Versions
@@ -597,6 +606,9 @@ paths:
         '409': {$ref: '#/components/responses/Conflict'}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
         '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /namespaces/{namespaceId}/runs/{runId}/database-results/{nodeId}:
     get:
       operationId: readDatabaseResult
@@ -668,6 +680,46 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/PayloadInspection'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /runs/{runId}/payload-disclosures:
+    post:
+      operationId: discloseRunPayload
+      summary: Disclose retained run values under the workflow's pinned classification
+      tags: [Runs]
+      x-implemented: '016'
+      description: |
+        Needs `run:read`. Selects the run input, result or one retained journal payload and applies
+        the classification carrier of the workflow version pinned by that run. `public` is visible
+        to every run reader; `internal` also needs `payload:read-internal`; `pii` is returned only
+        when `reveal: [pii]` is explicit and the caller has a namespace reveal grant; `secret` is
+        never returned. A PII reveal is audited in the read transaction before any value leaves.
+        Requests are limited to 1 KiB and responses to 256 KiB. Canonical namespace admission is
+        charged once after authorization and opaque run resolution.
+      parameters:
+        - {$ref: '#/components/parameters/RunId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PayloadDisclosureRequest'}
+      responses:
+        '200':
+          description: A classified projection, structural fallback, external reference or unavailable state
+          headers:
+            X-Trace-Id: {$ref: '#/components/headers/TraceId'}
+            X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}
+            Cache-Control: {schema: {type: string, const: 'private, no-store'}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PayloadDisclosure'}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1307,6 +1359,67 @@ paths:
         - {$ref: '#/components/parameters/ActivityName'}
       responses:
         '200': {description: 'The inherited activity quota now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ActivityQuota'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/payload-reveal-grants:
+    get:
+      operationId: listPayloadRevealGrants
+      summary: List the identities allowed to reveal personal run payload values
+      tags: [Governance]
+      x-implemented: '016'
+      description: Needs `membership:manage`. Grants are scoped to this namespace and do not change a subject's role.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200': {description: 'The reveal grants', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PayloadRevealGrantPage'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/payload-reveal-grants/{subject}:
+    put:
+      operationId: grantPayloadReveal
+      summary: Grant one namespace member permission to reveal personal payload values
+      tags: [Governance]
+      x-implemented: '016'
+      description: |
+        Needs `membership:manage`. Idempotent. The subject must be a member of the tenant with a role
+        that holds `payload:read-internal`. The grant and `payload.reveal_granted` audit record commit
+        together; an administrator may grant this right to their own subject.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/PayloadRevealSubject'}
+      responses:
+        '200': {description: 'The reveal grant now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PayloadRevealGrant'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: revokePayloadReveal
+      summary: Revoke one namespace member's personal-data reveal grant
+      tags: [Governance]
+      x-implemented: '016'
+      description: Needs `membership:manage`. The removal and `payload.reveal_revoked` audit record commit together. Returns 404 when no such grant exists.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/PayloadRevealSubject'}
+      responses:
+        '200':
+          description: The grant was removed
+          headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}
+          content: {application/json: {schema: {type: object, additionalProperties: false, maxProperties: 0}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -2384,17 +2497,25 @@ paths:
       summary: Read an event of the inbox, with what it woke or started
       tags: [Events]
       x-implemented: '004'
+      x-extended: '016'
       description: |
-        Needs `event:read`. `status` is `PENDING` while the dispatcher has not finished with it, `DISPATCHED` when it has, `DEAD` when dispatching it failed again and again (`lastError` says what class of failure).
+        Needs `event:read`. This is a breaking feature-016 response change: by default `data` is
+        absent and `dataStructure` describes only types and counts. `reveal=pii` returns `data` only
+        to a caller that also holds `payload:read-internal` and a reveal grant in this namespace;
+        otherwise that explicit reveal is 403 `PII_REVEAL_NOT_GRANTED`. `status` is `PENDING` while
+        the dispatcher has not finished with it, `DISPATCHED` when it has, and `DEAD` after repeated
+        dispatch failure (`lastError` names only the failure class).
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {name: source, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}}
         - {name: eventId, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
+        - {name: reveal, in: query, required: false, schema: {type: string, enum: [pii]}, description: 'Explicitly request the whole event data as PII; requires `payload:read-internal` and a namespace reveal grant.'}
       responses:
-        '200': {description: 'The event', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/InboxEvent'}}}}
+        '200': {description: 'The event', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}, Cache-Control: {schema: {type: string, const: 'private, no-store'}}}, content: {application/json: {schema: {$ref: '#/components/schemas/InboxEvent'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
@@ -2899,15 +3020,20 @@ paths:
       summary: List the messages a connector set aside, newest first
       tags: [Events]
       x-implemented: '004'
+      x-extended: '016'
       description: |
-        Needs `event:read`. At most 1000 are kept per connector, the first ones: once it is full a message that cannot become an event is acknowledged to the broker and counted, but not kept.
+        Needs `event:read`. This list never returns a body or headers and has no reveal parameter;
+        every item contains only bounded structure and sizes. This is a breaking feature-016 response
+        change for clients that previously read those fields. At most 1000 are kept per connector,
+        the first ones: once full, a message that cannot become an event is acknowledged and counted
+        but not retained.
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/ConnectorId'}
         - {$ref: '#/components/parameters/Cursor'}
         - {$ref: '#/components/parameters/Limit'}
       responses:
-        '200': {description: 'A page of dead letters', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/DeadLetterPage'}}}}
+        '200': {description: 'A page of dead letters without bodies or headers', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}, Cache-Control: {schema: {type: string, const: 'private, no-store'}}}, content: {application/json: {schema: {$ref: '#/components/schemas/DeadLetterPage'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -2921,17 +3047,24 @@ paths:
       summary: Read a message a connector set aside
       tags: [Events]
       x-implemented: '004'
+      x-extended: '016'
       description: |
-        Needs `event:read`. The body is shown as text, cut at 64 KiB (`truncated`).
+        Needs `event:read`. This is a breaking feature-016 response change: by default `body` and
+        `headers` are absent and the response carries structure, byte size and header count only.
+        `reveal=pii` returns the retained body (cut at 64 KiB) and headers only to a caller that also
+        holds `payload:read-internal` and a reveal grant in this namespace; otherwise the explicit
+        reveal is 403 `PII_REVEAL_NOT_GRANTED`.
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/ConnectorId'}
         - {$ref: '#/components/parameters/DeadLetterId'}
+        - {name: reveal, in: query, required: false, schema: {type: string, enum: [pii]}, description: 'Explicitly request the retained letter values as PII; requires `payload:read-internal` and a namespace reveal grant.'}
       responses:
-        '200': {description: 'The dead letter', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/DeadLetter'}}}}
+        '200': {description: 'The dead letter', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}, Cache-Control: {schema: {type: string, const: 'private, no-store'}}}, content: {application/json: {schema: {$ref: '#/components/schemas/DeadLetter'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
@@ -3599,6 +3732,12 @@ components:
       required: true
       description: The identity (the `sub` of its token), URL-encoded.
       schema: {type: string, minLength: 1, maxLength: 255}
+    PayloadRevealSubject:
+      name: subject
+      in: path
+      required: true
+      description: The namespace member identity (the `sub` of its token), URL-encoded.
+      schema: {type: string, minLength: 1, maxLength: 255}
     SecretName:
       name: secretName
       in: path
@@ -3785,6 +3924,170 @@ components:
                 reason: {type: string, enum: [NO_RETAINED_PAYLOAD, UNSUPPORTED_FORMAT]}
                 sizeBytes: {type: integer, minimum: 0}
       unevaluatedProperties: false
+    ClassificationLevel:
+      type: string
+      enum: [public, internal, pii, secret]
+    PayloadDisclosureRequest:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [source]
+          properties:
+            source: {type: string, const: input}
+            reveal: {type: array, maxItems: 1, uniqueItems: true, items: {type: string, const: pii}}
+        - type: object
+          additionalProperties: false
+          required: [source]
+          properties:
+            source: {type: string, const: result}
+            reveal: {type: array, maxItems: 1, uniqueItems: true, items: {type: string, const: pii}}
+        - type: object
+          additionalProperties: false
+          required: [source, sequence]
+          properties:
+            source: {type: string, const: journal}
+            sequence: {type: integer, minimum: 1, maximum: 9223372036854775807}
+            reveal: {type: array, maxItems: 1, uniqueItems: true, items: {type: string, const: pii}}
+    PayloadDisclosureSelector:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [source]
+          properties:
+            source: {type: string, const: input}
+        - type: object
+          additionalProperties: false
+          required: [source]
+          properties:
+            source: {type: string, const: result}
+        - type: object
+          additionalProperties: false
+          required: [source, sequence]
+          properties:
+            source: {type: string, const: journal}
+            sequence: {type: integer, minimum: 1, maximum: 9223372036854775807}
+    PayloadDisclosureCaller:
+      type: object
+      additionalProperties: false
+      required: [disclosedLevels, revealPii, revealed]
+      properties:
+        disclosedLevels:
+          type: array
+          maxItems: 3
+          uniqueItems: true
+          items: {type: string, enum: [public, internal, pii]}
+          description: The levels this answer was built to contain; `secret` is never eligible.
+        revealPii: {type: string, enum: [granted, not_granted], description: 'Whether a reveal grant exists and the role holds `payload:read-internal`.'}
+        revealed: {type: boolean, description: Whether this answer was built from an explicit PII reveal request.}
+    PayloadClassificationSchema:
+      type: object
+      additionalProperties: false
+      required: [carrier, versionNumber, rules]
+      properties:
+        carrier: {type: string, enum: [inputSchema, outputSchema, nodeOutputSchema]}
+        versionNumber: {type: integer, minimum: 1}
+        rules: {type: integer, const: 1}
+    PayloadDisclosureChild:
+      type: object
+      additionalProperties: false
+      required: [ordinal, node]
+      properties:
+        ordinal: {type: integer, minimum: 0}
+        name: {type: string, description: 'A declared property name, or an undeclared key only when its value is disclosed.'}
+        node: {$ref: '#/components/schemas/PayloadDisclosureNode'}
+    PayloadDisclosureNode:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [kind, level, type, value]
+          properties:
+            kind: {type: string, const: value}
+            level: {type: string, enum: [public, internal, pii]}
+            type: {type: string, enum: [string, number, boolean, 'null']}
+            value: {type: [string, number, boolean, 'null']}
+            valueTruncated: {type: boolean, const: true}
+            length: {type: integer, minimum: 0, description: 'Original UTF-8 byte length of a truncated string.'}
+        - type: object
+          additionalProperties: false
+          required: [kind, type, level, childCount, omittedChildren, children]
+          properties:
+            kind: {type: string, const: container}
+            type: {type: string, enum: [object, array]}
+            level: {type: string, enum: [public, internal, pii]}
+            childCount: {type: integer, minimum: 0}
+            omittedChildren: {type: integer, minimum: 0}
+            children: {type: array, maxItems: 128, items: {$ref: '#/components/schemas/PayloadDisclosureChild'}}
+        - type: object
+          additionalProperties: false
+          required: [kind, type, level, reason]
+          properties:
+            kind: {type: string, const: withheld}
+            type: {type: string, enum: [object, array, string, number, boolean, 'null']}
+            level: {type: string, enum: [internal, pii, secret]}
+            reason: {type: string, enum: [LEVEL_NOT_PERMITTED, REVEAL_NOT_REQUESTED, SECRET]}
+    PayloadDisclosure:
+      allOf:
+        - type: object
+          required: [runId, runVersion, selection, policy, caller]
+          properties:
+            runId: {type: string, format: uuid}
+            runVersion: {type: integer, minimum: 0}
+            selection: {$ref: '#/components/schemas/PayloadDisclosureSelector'}
+            nodeId: {type: string}
+            attempt: {type: integer, minimum: 0}
+            policy: {type: string, const: classified-v1}
+            caller: {$ref: '#/components/schemas/PayloadDisclosureCaller'}
+        - oneOf:
+            - type: object
+              required: [kind, schema, truncated, tree]
+              properties:
+                kind: {type: string, const: disclosed}
+                schema: {$ref: '#/components/schemas/PayloadClassificationSchema'}
+                sizeBytes:
+                  type: integer
+                  minimum: 0
+                  description: Size of the whole stored payload. Present only for a caller with `run:payload:inspect`, because it includes personal and secret fields (D278).
+
+                truncated: {type: boolean}
+                tree: {$ref: '#/components/schemas/PayloadDisclosureNode'}
+            - type: object
+              required: [kind, sizeBytes, truncated, reason, tree]
+              properties:
+                kind: {type: string, const: structure-only}
+                schema: {$ref: '#/components/schemas/PayloadClassificationSchema'}
+                sizeBytes: {type: integer, minimum: 0}
+                truncated: {type: boolean}
+                reason: {type: string, enum: [NO_SCHEMA, SCHEMA_MISMATCH, LEGACY_VERSION, SCHEMA_UNUSABLE]}
+                tree: {$ref: '#/components/schemas/PayloadStructure'}
+            - type: object
+              required: [kind, sizeBytes, contentKind, reason]
+              properties:
+                kind: {type: string, const: external}
+                sizeBytes: {type: integer, minimum: 0}
+                contentKind: {type: string, enum: [json, text, binary, other]}
+                reason: {type: string, const: EXTERNAL_CONTENT_NOT_INSPECTED}
+            - type: object
+              required: [kind, reason]
+              properties:
+                kind: {type: string, const: unavailable}
+                reason: {type: string, enum: [NO_RETAINED_PAYLOAD, UNSUPPORTED_FORMAT, NOT_DISCLOSABLE]}
+                sizeBytes: {type: integer, minimum: 0}
+      unevaluatedProperties: false
+    PayloadRevealGrant:
+      type: object
+      additionalProperties: false
+      required: [subject, grantedBy, grantedAt]
+      properties:
+        subject: {type: string, minLength: 1, maxLength: 255}
+        grantedBy: {type: string, minLength: 1, maxLength: 255}
+        grantedAt: {type: string, format: date-time}
+    PayloadRevealGrantPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: {type: array, maxItems: 200, items: {$ref: '#/components/schemas/PayloadRevealGrant'}}
+        nextCursor: {type: [string, 'null']}
     JsonObject: {type: object, additionalProperties: true}
     Error:
       type: object
@@ -3817,6 +4120,8 @@ components:
             `CHAIN_HEAD_CHANGED`, `RUN_NOT_MUTABLE`, `RUN_CONTINUED`, `INVALID_ARGUMENTS`,
             `INVALID_UPDATE_KEY`, `INVALID_DECISION_KEY`, `INVALID_REASON_CODE`, `REVISION_CONFLICT` and
             `UPDATE_REJECTED`;
+            payload classification refines existing codes with `PII_REVEAL_NOT_GRANTED`,
+            `CLASSIFICATION`, `UNKNOWN_SUBJECT`, `ROLE_CANNOT_REVEAL` and `GRANT_LIMIT`;
             they do not add a new `Error.code` value. An `UNSUPPORTED_NODE` for a combination the design accepts
             but whose prerequisite is not built yet also carries `dependency`, a closed name of what has to exist
             first (`SCOPED_COMPENSATION`: an approval inside a collection or loop body), next to `node` and `kind`.
@@ -3847,7 +4152,8 @@ components:
         role: {type: string, enum: [admin, developer, operator, viewer, worker, runner, database-runner]}
         permissions:
           type: array
-          items: {type: string, example: 'workspace:read'}
+          description: 'The caller''s role permissions. `payload:read-internal` appears for developer, operator and admin; the namespace reveal grant is reported only on a disclosure response.'
+          items: {type: string, example: 'payload:read-internal'}
         traceId: {type: string, pattern: '^[0-9a-f]{32}$'}
     Workspace:
       type: object
@@ -3912,7 +4218,7 @@ components:
         releaseNotes: {type: string, maxLength: 2048}
     VersionSummary:
       type: object
-      required: [workflowId, versionId, versionNumber, digest]
+      required: [workflowId, versionId, versionNumber, digest, classificationRules]
       properties:
         workflowId: {type: string, format: uuid}
         versionId: {type: string, format: uuid}
@@ -3920,6 +4226,10 @@ components:
         digest: {type: string, pattern: '^[0-9a-f]{64}$'}
         publishedBy: {type: string}
         publishedAt: {type: string, format: date-time}
+        classificationRules:
+          type: integer
+          enum: [0, 1]
+          description: 'The payload classification rules pinned to the version when it was published (feature 016). `0` is a version published before payload classification: no value of its runs is disclosed, whatever its schemas say. `1` reads `x-sagat-classification`. Publishing a document identical to an existing version returns that version (`created: false`) with its own rules, so an unchanged legacy document stays at `0`; publish a changed document to adopt the rules.'
     WorkflowDraft:
       type: object
       required: [id, name, draftRevision, ir]
@@ -4122,10 +4432,21 @@ components:
       required: [severity, code, message]
       properties:
         severity: {type: string, enum: [error, warning]}
-        code: {type: string, description: 'Stable, upper snake case: SCHEMA, DOCUMENT_TOO_LARGE, DOCUMENT_MALFORMED, UNSUPPORTED_NODE, EXPRESSION, NAME_MISMATCH, UNKNOWN_SCRIPT, SECRET_UNAVAILABLE, CYCLE, UNREACHABLE, UNKNOWN_TARGET, UNKNOWN_ENTRYPOINT, DUPLICATE_NODE, and the other graph rules; a warning has its own (COMPENSATION_OUTSIDE_SAGA, RECURSIVE_CHILD).'}
+        code: {type: string, description: 'Stable, upper snake case: SCHEMA, DOCUMENT_TOO_LARGE, DOCUMENT_MALFORMED, UNSUPPORTED_NODE, EXPRESSION, NAME_MISMATCH, UNKNOWN_SCRIPT, SECRET_UNAVAILABLE, CYCLE, UNREACHABLE, UNKNOWN_TARGET, UNKNOWN_ENTRYPOINT, DUPLICATE_NODE, and the other graph rules. Classification uses CLASSIFICATION_INVALID_LEVEL, CLASSIFICATION_LOOSENED, CLASSIFICATION_UNSUPPORTED_KEYWORD, CLASSIFICATION_UNRESOLVED_REF, CLASSIFICATION_NOT_APPLICABLE and CLASSIFICATION_TOO_COMPLEX errors, plus the CLASSIFICATION_INHERITED_OPEN warning; other warnings include COMPENSATION_OUTSIDE_SAGA and RECURSIVE_CHILD.'}
         message: {type: string, description: 'Safe: never holds a value of the document beyond a clipped fragment.'}
         nodeId: {type: [string, 'null'], description: 'The node the problem is about, when a rule names one.'}
         path: {type: [string, 'null'], description: 'A JSON pointer into the document, for a schema problem.'}
+    ClassificationReportEntry:
+      type: object
+      additionalProperties: false
+      required: [carrier, path, level, declared]
+      properties:
+        carrier: {type: string, enum: [inputSchema, outputSchema, nodeOutputSchema]}
+        nodeId: {type: string, description: 'Present only for a node output carrier.'}
+        bodyName: {type: string, description: 'Present only for a node output carrier inside the named body; distinguishes repeated node identifiers.'}
+        path: {type: string, description: 'JSON pointer inside the carrier; the root is the empty pointer.'}
+        level: {$ref: '#/components/schemas/ClassificationLevel'}
+        declared: {type: boolean, description: 'True when this location carries its own annotation; false when it inherits.'}
     Validation:
       type: object
       required: [valid, problems, warnings]
@@ -4134,6 +4455,8 @@ components:
         digest: {type: [string, 'null'], pattern: '^[0-9a-f]{64}$', description: 'The digest of the canonical document, when it is valid.'}
         problems: {type: array, items: {$ref: '#/components/schemas/DefinitionProblem'}}
         warnings: {type: array, items: {$ref: '#/components/schemas/DefinitionProblem'}}
+        classification: {type: array, maxItems: 500, items: {$ref: '#/components/schemas/ClassificationReportEntry'}, description: 'Effective levels of declared locations in each classification carrier.'}
+        classificationTruncated: {type: boolean, description: 'True when the bounded classification report has more than 500 entries.'}
     DiffSide:
       type: object
       required: [kind]
@@ -4145,7 +4468,16 @@ components:
       type: object
       required: [code, message]
       properties:
-        code: {type: string, description: 'TRIGGER_REMOVED, TRIGGER_CHANGED, INPUT_PROPERTY_REMOVED, INPUT_TYPE_CHANGED, INPUT_REQUIRED_ADDED, OUTPUT_PROPERTY_REMOVED, OUTPUT_TYPE_CHANGED, EVENT_TYPE_REMOVED (breaking); ACTIVITY_ADDED, ACTIVITY_CHANGED, SECRET_ADDED, SCRIPT_CHANGED (attention).'}
+        code:
+          type: string
+          description: |
+            TRIGGER_REMOVED, TRIGGER_CHANGED, INPUT_PROPERTY_REMOVED, INPUT_TYPE_CHANGED, INPUT_REQUIRED_ADDED, OUTPUT_PROPERTY_REMOVED, OUTPUT_TYPE_CHANGED, EVENT_TYPE_REMOVED (breaking); ACTIVITY_ADDED, ACTIVITY_CHANGED, SECRET_ADDED, SCRIPT_CHANGED (attention).
+
+            Payload classification (feature 016) adds these attention codes; none is breaking.
+            CLASSIFICATION_RELAXED and CLASSIFICATION_TIGHTENED: the effective level of the path in `path` became less or more strict between the two sides. A side that has no schema for the location (a carrier added or dropped), or that was published before payload classification (`classificationRules` 0), discloses nothing and counts as `undisclosed`, as strict as `secret`: adding an `outputSchema` that makes a field `public` relaxes it, and a legacy version compared with the same document under the current rules relaxes every location the document makes readable. The first draft of a workflow, which has no earlier version, is not compared.
+            CLASSIFICATION_TOO_COMPLEX, CLASSIFICATION_UNRESOLVED_REF and CLASSIFICATION_UNSUPPORTED_KEYWORD: a carrier of one side could not be walked completely (`path` says where), so none of its levels was compared and a relaxation inside it is not reported; fix the carrier and compare again. Each is reported once per carrier.
+            MORE_FINDINGS: findings of one kind past the first 100 are not listed, only counted in the message.
+            `sagat sync` prints every attention finding as `prepare`; the Studio lists them all in the version comparison, and the classification panel of the workflow settings shows the two level changes and a notice for the carriers that could not be compared.
         message: {type: string}
         nodeId: {type: [string, 'null']}
         path: {type: [string, 'null']}
@@ -5128,7 +5460,11 @@ components:
         deliveredAt: {type: string, format: date-time}
     InboxEvent:
       type: object
-      required: [eventId, source, type, receivedAt, expiresAt, status, attempts, data, deliveries]
+      required: [eventId, source, type, receivedAt, expiresAt, status, attempts, deliveries, dataDisclosure, dataSizeBytes]
+      allOf:
+        - if: {properties: {dataDisclosure: {const: revealed}}, required: [dataDisclosure]}
+          then: {required: [data], not: {required: [dataStructure]}}
+          else: {required: [dataStructure], not: {required: [data]}}
       properties:
         eventId: {type: string}
         source: {type: string}
@@ -5142,7 +5478,14 @@ components:
         attempts: {type: integer, description: 'Dispatches that failed before the last.'}
         lastError: {type: string}
         dispatchedAt: {type: string, format: date-time}
+        dataDisclosure: {type: string, enum: [revealed, structure-only], description: 'Whether this answer includes the whole event data. Events have no field carrier and are treated as PII as a whole.'}
+        dataSizeBytes: {type: integer, minimum: 0, description: 'Bytes of the stored event payload.'}
         data: {$ref: '#/components/schemas/JsonObject'}
+        dataStructure:
+          description: 'The ADR-0028 structure of the event data, or {kind: opaque} when the projector does not accept the stored data (a server-side bound, not a refusal of the caller).'
+          oneOf:
+            - {$ref: '#/components/schemas/PayloadStructure'}
+            - {type: object, additionalProperties: false, required: [kind], properties: {kind: {type: string, const: opaque}}}
         deliveries: {type: array, items: {$ref: '#/components/schemas/EventDelivery'}}
     BrokerSubscription:
       type: object
@@ -5404,13 +5747,41 @@ components:
         status: {type: string, enum: [ACTIVE, PAUSED], default: ACTIVE}
     DeadLetter:
       type: object
-      required: [id, position, reason, headers, body, truncated, receivedAt]
+      required: [id, position, reason, truncated, receivedAt, bodyDisclosure, bodySizeBytes, headerCount]
+      allOf:
+        - if: {properties: {bodyDisclosure: {const: revealed}}, required: [bodyDisclosure]}
+          then: {required: [headers, body], not: {required: [bodyStructure]}}
+          else: {required: [bodyStructure], not: {anyOf: [{required: [headers]}, {required: [body]}]}}
       properties:
         id: {type: string, format: uuid}
         position: {type: string, description: 'Where it was: topic/partition/offset, a stream sequence, a message id.'}
         reason: {type: string, enum: [NO_EVENT_TYPE, BAD_ENVELOPE, NOT_A_JSON_OBJECT, TOO_LARGE, EVENT_ID_REUSED]}
+        bodyDisclosure: {type: string, enum: [revealed, structure-only], description: 'Whether this answer includes the retained body and headers. Dead-letter values are treated as PII as a whole.'}
+        bodySizeBytes: {type: integer, minimum: 0, maximum: 65536, description: 'Bytes of the retained body, after the 64 KiB bound.'}
+        headerCount: {type: integer, minimum: 0}
         headers: {type: object, additionalProperties: {type: string}}
         body: {type: string}
+        bodyStructure:
+          oneOf:
+            - {$ref: '#/components/schemas/PayloadStructure'}
+            - {type: object, additionalProperties: false, required: [kind], properties: {kind: {type: string, const: opaque}}}
+        truncated: {type: boolean}
+        receivedAt: {type: string, format: date-time}
+    DeadLetterSummary:
+      type: object
+      additionalProperties: false
+      required: [id, position, reason, truncated, receivedAt, bodyDisclosure, bodySizeBytes, headerCount, bodyStructure]
+      properties:
+        id: {type: string, format: uuid}
+        position: {type: string, description: 'Where it was: topic/partition/offset, a stream sequence, a message id.'}
+        reason: {type: string, enum: [NO_EVENT_TYPE, BAD_ENVELOPE, NOT_A_JSON_OBJECT, TOO_LARGE, EVENT_ID_REUSED]}
+        bodyDisclosure: {type: string, const: structure-only}
+        bodySizeBytes: {type: integer, minimum: 0, maximum: 65536}
+        headerCount: {type: integer, minimum: 0}
+        bodyStructure:
+          oneOf:
+            - {$ref: '#/components/schemas/PayloadStructure'}
+            - {type: object, additionalProperties: false, required: [kind], properties: {kind: {type: string, const: opaque}}}
         truncated: {type: boolean}
         receivedAt: {type: string, format: date-time}
     Alert:
@@ -5499,7 +5870,7 @@ components:
       type: object
       required: [items]
       properties:
-        items: {type: array, items: {$ref: '#/components/schemas/DeadLetter'}}
+        items: {type: array, items: {$ref: '#/components/schemas/DeadLetterSummary'}}
         nextCursor: {type: string}
     ScriptPolicy:
       type: object

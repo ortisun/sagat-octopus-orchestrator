@@ -1,5 +1,12 @@
 # Validation report — feature 014
 
+> **Evidence paths.** References to `tasks/project-completion/` in this repository point at the working and
+> evidence tree of the Codex session that built this work. That tree (about 1.7 million lines of raw command
+> output, source snapshots and drafts) is deliberately not in git; it is preserved outside the repository
+> (local ref `handoff/016-project-completion-20261024`). A tick or a claim that cites only such a path is
+> historical until the named command is rerun in this tree.
+
+
 Original report: 2026-10-14. It covers specification of future primitives and executable examples
 of current v1 behavior. Later sections record the additive identity foundation and the bounded
 switch implementation separately.
@@ -1381,6 +1388,79 @@ privilege audit), `integration_security_multitenancy` 96, `integration_durable_e
 `contract_grpc_durable_execution` 63. The compatibility test expected protocol 1.4; the server has
 negotiated 1.5 since the scoped protocol was enabled, and the test now says so.
 
+
+### Populated release upgrade regression — combined completion branch, 2026-10-17
+
+The actual v0.1.0 process gate reached migration 20261205000000 and failed with PostgreSQL 55006:
+CREATE INDEX on steps had pending deferred steps_quota_flush trigger events. Fresh empty-database
+migration tests had not exposed this. A focused real PostgreSQL regression restores the pre-005
+schema over an existing activity step, then executes the complete up migration in one transaction.
+It first failed with the same error (`/tmp/sagat-completion-discovery-migration-red.log`).
+
+The unreleased bounded_execution_discovery migration now creates indexes before its node-kind
+backfill. Deferred quota triggers retain their normal commit boundary and the migration remains
+atomic. The focused regression passed 1/1 in 7.21 s
+(`/tmp/sagat-completion-discovery-migration-green.log`), preserving step identities/status and
+backfilling the activity kind with a usable index. It ran the actual integration target binary
+built by the preceding focused Cargo command. All 60 migration files in the published v0.1.0 tag
+were compared bytewise and remain unchanged. The full old-process upgrade must still be repeated
+with a newly built current binary containing the corrected migration checksum. This does not close
+T014-041 or T014-043 and does not bridge an already-applied unreleased checksum.
+
+
+### Bounded path mutation foundation integration
+
+Merged the committed bounded-execution work through 4f70bd08 into the integration tree. The
+shared step lifecycle reducer is used by both full replay and the exact-path reducer. The new
+PostgreSQL transaction rechecks the run revision, exact instance/lease/session identity, current
+worker authority, quotas and script retention and persists the journal, output accounting, next
+task hints, receipts and audit atomically. It remains a foundation: production WorkerService still
+uses the complete RunTx path; bounded failure/control/blob/reconciliation and compensation
+authority must be completed and verified before switching that service.
+
+Actual local gates on this integration:
+- `cargo test --locked -p sagat-domain`: 501 passed across 37 targets including doc tests; 0 failed or
+  ignored (`/tmp/sagat-completion-bounded-domain.log`). This includes full-state lifecycle/property
+  tests and the five bounded/full-replay differential/planning cases.
+- `cargo test --locked -p sagat-tests --test integration_workflow_primitives byte_ceilings::
+  -- --test-threads=1`: 13 passed, 117.27 s, no ignored cases
+  (`/tmp/sagat-completion-bounded-byte-gate.log`). Actual PostgreSQL verifies bounded lease and
+  completion persistence, retention admission and all logical/value/aggregate/task-input ceilings.
+- `python3 scripts/check-architecture.py`: passed, 24 crates, no forbidden layers or cycles
+  (`/tmp/sagat-completion-architecture-latest.log`).
+
+A follow-up regression is being added for snapshot reads queuing behind the run writer and for
+indexed compensation authority. Neither the foundation nor these focused gates close the remaining
+feature-014 runtime, large-workload or release tasks.
+
+
+### Exact-path snapshot and compensation authority correction
+
+The writer-lock regression failed on the previous implementation in
+`/tmp/sagat-completion-bounded-snapshot-red.log` (the held writer caused the one-second timeout).
+Path reads now use one REPEATABLE READ READ ONLY transaction without a run-row lock. Mutation
+still compares the snapshot revision under its existing exclusive run lock. A typed bounded saga
+projection reads only ancestor/local headers and the exact iteration's indexed entries; it never
+imports sibling compensation authority. Derived leases require that persisted compensation or
+reconciliation authority. The other worktree's uncommitted source was read and applied as a patch
+to this integration checkout; its contents and worktree remain untouched.
+
+Actual focused domain gate: 5 bounded planning/lifecycle tests plus 26 scoped-compensation tests
+passed in `/tmp/sagat-completion-bounded-authority-domain.log`. Actual PostgreSQL gate:
+`cargo test --locked -p sagat-tests --test integration_workflow_primitives
+byte_ceilings::a_bounded -- --test-threads=1` passed 4/4, 12.55 s, no ignored cases
+(`/tmp/sagat-completion-bounded-snapshot-green-2.log`). These cover the nonblocking snapshot,
+per-iteration saga selection, existing bounded completion and script retention. The first saga
+fixture had admitted only iteration 0, so correctly refused iteration 1; an additional scheduler
+admission and an explicit two-member database assertion fix that harness prerequisite.
+
+This does not enable a partially implemented bounded worker. Failure/reconciliation reducers,
+control progression, blobs, root finalization and the accepted large-workload evidence remain
+required before that production switch.
+
+
+## Additional source-branch evidence (8ade8f18; integrated gates pending)
+
 ## Release-gate checkpoint (2026-10-17)
 
 Run on `feature/workflow-primitives` after merging the chain, scoped-compensation, loop, approval,
@@ -1463,3 +1543,2328 @@ need containers and toolchains this shell did not point at (`fault_developer_exp
 `e2e_developer_experience`, `e2e_inline_code_sandbox`, ...) while the machine was under heavy load; the
 same command passed in CI, so the laptop run is not used as evidence here and I did not investigate those
 failures further.
+
+### Combined integration checkpoint: bounded maintenance and current authority
+
+The approved integration worktree records reproducible commands, failed baselines and exact
+scope in `tasks/project-completion/integration-notes.md`. Current focused evidence includes:
+
+- Exact-path automatic expiry/retry with whole-run iteration-history SELECT revoked: red first,
+  then successful recovery and projection/journal replay. Exceptional content-quota drain keeps
+  its full-run revision/fence guard; worker claims/reports are still a separate conversion.
+- Shard expiry after an actual unchanged-row lock wait, for both full and bounded transactions,
+  and binding authority through bounded commit: three real failing baselines, then **3/3** passed.
+- Combined lock/byte/chain/scoped/loop regression **81/81**; after making the scoped fixture's pool
+  explicitly follow the runtime-role switch, scoped/barrier repeat **19/19**, with the waiting
+  execution connection asserted to be `sagat_app`. Current SQL privilege audit **1/1**, no exception.
+- Full primitive fault matrix **87/87** on the explicit 1 GiB PostgreSQL shared-memory profile.
+  The previous **78/9** run suffered shared-memory exhaustion and server recovery; its failures
+  remain recorded. The same exhaustion warning precedes both preserved disposable-server crashes.
+- Real PostgreSQL/OpenBao aggregate **3/3**, including blocked-provider cancellation/rotation/
+  outage receipts; explicit cancellation acknowledgement works without granting new capabilities.
+- Additive ceiling compatibility migration: both resource families and guarded configuration-
+  preserving rollback/reapply; complete migration module **5/5**. No earlier migration was edited.
+- Shared SDK expected limits/minors and a deterministic short secrets journal repaired with four
+  individual all-five-language repeats; no auto-bless. The original 55-scenario run failed those
+  four scenarios and is not relabeled successful.
+
+The original workspace diagnostic completed 234 harnesses with **3310 passed/35 failed/61 ignored**
+and two additional rustdoc compilation failures from sources newer than compiled libraries.
+Named repaired cases/modules and successful current doctest compilation are retained; a final
+current-source whole-workspace release gate is still required. Strict all-target Clippy passed
+at the documented checkpoints. The earlier Compose/browser smoke passed on its recorded source
+boundary; the new shared-memory Compose change has a configuration check, not a rebuilt smoke.
+The moderate performance target passed **4/5 ignored**, which does not execute the separate
+10k/100k capacity workloads. The open tasks stay unchecked: broad graphs/nesting, descendants under
+low capacity, the wider compatibility matrix and the named large resource workloads are not
+established by these focused repairs.
+
+
+### Combined integration: scoped heartbeat
+
+The exact-path heartbeat contract and deterministic barriers are recorded in
+`contracts/conformance.md` and `tasks/project-completion/integration-notes.md`. Four current tests
+passed after genuine failing baselines: no full-history read, current role after contention,
+terminal late acknowledgement and twelve renewals on two runtime connections. The wider selected
+workflow gate passed **85/85**, OpenBao aggregate **3/3**, all-target strict Clippy passed, and
+`scoped-identity`/`lease-lost` each passed across all five SDKs without changed expected files.
+Two whole gRPC repeats each passed **69/70** with different near-deadline stream fixture failures;
+the byte-credit case passed separately with runtime privileges. Those failures remain under
+investigation, so this checkpoint does not approve the complete gRPC or release gate. Claims,
+completion/failure and the large resource workloads remain open.
+
+
+The heartbeat gRPC follow-up passed the complete suite **70/70**, 31.87 s, with runtime-role
+connections. Real row-lock barriers replace near-deadline REST admissions; the test transport now
+matches the public SDKs' 16 MiB decoder. Its first barrier repeat exposed that default-decoder
+mismatch (**69/70**), retained alongside the earlier failures in the integration notes. Production
+stream deadlines, input credit and task bounds are unchanged. This checkpoint predates the next
+bounded-claim slice and does not establish the final project release gate.
+
+
+### Combined integration: bounded scoped claims
+
+Discovery now retains exact paths from the same quota/pool/protocol/breaker-aware query as the
+run-only API. Scoped leasing no longer restores whole-run iteration history. Real runtime-role
+barriers verify binding-before-session ordering, current role after contention and refusal after
+binding/session withdrawal. An injected later-path write failure proves an earlier committed token
+still reaches its worker. Task/forward-effect identity construction remains shared with Root.
+
+The selected worker/loop/scoped-compensation modules passed **79/79**, 69.68 s with four test
+threads, after fixing six completed-loop NULL-fence failures; the full privilege module passed
+**33/33**, 8.36 s, and strict workspace/all-target Clippy passed, 1 min 43 s. These results, failed
+baselines and exact commands/logs are recorded in the integration notes. The expanded workflow
+diagnostic remains **328/15/1 ignored**: it also exposed a distinct child-start shard fence defect
+and connection exhaustion from parallel default-thread harnesses. An isolated child-start failure
+confirms that defect independently of the exhausted profile. Final protocol/provider/SDK repeats,
+child-admission correction, report/capability conversion and large resource gates remain open.
+
+
+### Combined integration: child creation under parent shard authority
+
+An explicit creation-only parent fence restores parent-owned child admission while keeping normal
+run-shard checks strict. The adapter rejects reopened/ordinary/already-mutated transactions and
+samples expiry after the shard lock. The old isolated child-start baseline failed **0/1**; the
+complete pre-report-regression workflow suite now passed **344/344, 1 ignored**, 272.41 s, including
+all eight child-chain failures and the six completed-loop compensation failures. Three real two-
+replica ownership tests passed **3/3**, 17.38 s. Application/PostgreSQL/scheduler strict all-target
+Clippy passed; no new privilege, schema, wire or external-effect guarantee was added.
+
+The claim server also passed complete gRPC **70/70**, OpenBao **3/3**, and the three all-five SDK
+identity/collection-compensation/loop-compensation repeats recorded in the integration notes.
+These are focused current checkpoints. Five newly added report/history/current-receipt regressions
+subsequently failed **0/5** and are outside the 344-pass checkpoint. Inline report/capability
+conversion, wider graphs/nesting and full release/resource acceptance remain open.
+
+
+### Combined integration: bounded inline completion and failure
+
+Five real failing history/current-receipt baselines passed **5/5**, then the complete pre-provider-
+barrier workflow suite passed **349 passed /0 failed /1 ignored**, 234.19 s. Two additional real
+OpenBao scan barriers passed **2/2**, 5.34 s, including independent acquisition of the run lock and
+committed role/binding withdrawal while the provider read was paused. Resumption commits no step
+completion and returns the expected typed refusal. Current receipt authority also covers Root.
+
+Current complete gRPC **70/70**, OpenBao aggregate **3/3**, primitive faults **87/87**, SQL privilege
+module **33/33**, strict whole-workspace/all-target Clippy, format/diff checks and four individually
+selected all-five SDK scenarios passed. Exact logs, wall/harness times, failed compilations and
+source boundaries are recorded in the integration notes. Pure policy, logical output accounting,
+mandatory secret-denial audit, transactional receipt/outbox and provider I/O boundaries remain;
+no schema, wire or expected SDK output changed. Blob completion, secret/blob capabilities, broader
+body/control/nesting, the complete compatibility matrix and 10k/100k resource gates remain open.
+
+
+## 2026-10-17 — Current scoped secret and blob capabilities
+
+Refs: T014-016–017, T014-040–041, FR-014-014–017, NFR-014-001–002.
+
+Scoped secret delivery now opens current exact-path transactions in both authority phases. Root
+and scoped delivery share the same handoff algorithm through an internal transaction-lifecycle
+enum, preserving Root legacy-attempt handling and audit text. Both phases check current worker
+membership/bindings, live token/attempt/generation, cancellation, worker pools and publisher
+ACL/version inputs. Real provider I/O occurs between committed transactions. Changed authority
+or inputs discards the resolved value; a successful value-free audit commits before any handoff.
+Scoped secret success/denial and pool-refusal audits include the complete logical step UUID, so
+another iteration of the same node does not collapse into the first iteration's audit.
+
+Scoped blob access and report-scope lookup also use current exact-path state. Blob access retains
+live lease and cancellation fences. A step declaring secrets retains its typed upload scanning
+refusal, including a current cancelled attempt; that exception only returns a denial. Report-scope
+lookup intentionally permits an expired lease for receipt replay while checking current authority
+and echoed step identity. Actual catalog/object authorization remains in the existing blob service;
+these tests do not claim an object-store byte transfer, or enable scoped blob completion.
+
+Follow-up public-RPC evidence: the managed database bound probe previously restored the whole run
+before the bounded upload check. `database_blob_limit` now returns no managed bound for non-root
+instances; this is not authorization, and the existing upload capability remains mandatory.
+The new real gRPC test first failed with `Internal` under denied historical reads (0/1,4.63s).
+After the fix, the pipeline group passed5/5,8.01s, including actual uploaded bytes/hash and a
+self-consistent forged generation refused with `STALE_ATTEMPT` before a second object reservation.
+An intermediate test incorrectly expected a capability error for an internally inconsistent task
+ID/generation; the server correctly returned `InvalidArgument`. The fixture now changes both and
+asserts `Aborted/STALE_ATTEMPT`. A prior field-name compiler error is also retained, not counted as
+behavioral RED. Logs: `/tmp/sagat-completion-scoped-grpc-blob-{red,red-runtime,green,green-fixed}.log`.
+Affected regressions passed on disposable repository fixtures: complete gRPC70/70,107.87s and
+real PostgreSQL/OpenBao aggregate3/3,45.24s. Strict workspace/all-target Clippy passed2m57s;
+their logs use the same prefix. The full all-five scenario matrix is separate and still pending.
+
+### Chain-client acceptance closure (T014-038)
+
+The current acceptance audit found missing Python synchronous `update_chain`,
+`wait_for_chain_completion`, `rerun_as_new`; the three aliases now share the existing async
+implementation/private loop. RED3/3 missing-method failures preceded focused43/43 and complete
+Python264/264 passing results, strict mypy and Ruff. Eight selected current scenarios completed
+in all five SDKs without bless: one continuation-authoring scenario and seven chain runtime
+scenarios. All35 normalized runtime artifacts were independently parsed against exact reviewed
+goldens, including final-chain versus exact-segment waits and parent cancellation. The retained
+manifest is `tasks/project-completion/evidence/chain-sdk-20261017.json`. T014-038 is closed;
+T014-041 and the other shared release gates remain open. The concurrent full56-scenario command
+has an original blob-heartbeat failure; its corrected all-five case passed separately, so this
+task-specific evidence is not an assertion of a wholly green aggregate command.
+
+Evidence:
+
+- The two new history-denial cases first failed **0/2** with `Internal`, because the old full-run
+  restoration read revoked `iteration_checkpoints` (`/tmp/sagat-completion-bounded-capabilities-red.log`).
+  A subsequent test build failed on an incorrect test-only `TenantId` constructor; it was corrected
+  and is retained at `...-green.log`, not counted as a test result.
+- Corrected focused tests passed **7/7**, 12.86 s (`...-green-fixed.log`). The same compiled cases
+  then passed **7/7**, 8.54 s using the repository's disposable PostgreSQL fixture with no external
+  database URL (`...-canonical-fixture.log`). They exercise the runtime role with two connections,
+  revoked unrelated-history access, correct secret scope, per-instance audit deduplication,
+  incorrect step/generation, foreign tenant, current membership withdrawal and full replay oracle.
+- Four of those cases use real OpenBao 2.7.1 with explicit secret migration and a wrapper that only
+  pauses the actual provider read: role/binding withdrawal during output scanning or secret
+  resolution commits independently, including a run-row lock probe. Resumption refuses the report
+  or delivery and records neither a completion nor a successful secret handoff.
+- Complete primitive integration: **356 passed /0 failed /1 ignored**, 443.78 s, four harness threads
+  (`...-workflow-regression.log`). This diagnostic used the dedicated local verification database;
+  it is not the final canonical whole-workspace release gate.
+- Fresh repository-owned disposable database fixtures, without an external database URL:
+  security **123/123**, 130.62 s; gRPC **70/70**, 83.91 s; primitive faults **87/87**, 90.13 s;
+  PostgreSQL/OpenBao aggregate **3/3**, 44.18 s. Logs are
+  `/tmp/sagat-completion-bounded-capabilities-{security,grpc,faults}-regression.log` and
+  `...-provider-all-regression.log`. Command wall times/exit codes are separately retained in
+  `...-gate-results.json`. An initial `provider::` filter selected **zero tests**; that result is
+  explicitly marked unaccepted in the manifest and was replaced by the unfiltered three-test run.
+- Strict whole-workspace/all-target Clippy passed, 3 min 09 s (`...-clippy.log`). Formatting and
+  diff checks passed. No migration, PostgreSQL adapter query, privilege grant or wire field changed.
+- All five SDKs passed the unchanged `secrets` scenario (38.79 s command wall time). The first
+  `scoped-identity` run failed after 74.23 s: .NET/Java inspected `WAITING` at version 2 while
+  TypeScript/Go/Python inspected `RUNNING` at version 4. The 500 ms sleep read different legitimate
+  scheduling milestones. Commit `6c019922` replaces it with the existing public journal admission
+  barrier. The manually reviewed golden changes only `sleep` to `awaitJournal`; the expected
+  `RUNNING` status and all other observations remain unchanged. Corrected all-five conformance
+  passed, 54.65 s, on a disposable fixture with no external database URL. Scenario/expected-document
+  validation passed **1/1**, 0.29 s. Logs and retained initial failure are in
+  `...-sdk-results.json`, `...-sdk-scoped-identity-barrier.log` and
+  `/tmp/sagat-completion-scoped-identity-{sleep-race.json,scenario-validation.log}`.
+
+This increment does not close the remaining broad body/nesting, low-capacity descendant admission,
+blob completion, full old-version compatibility, 10k/100k resource or release gates. The task
+checkboxes remain open. The ongoing flat 10k benchmark executes frozen commit `025ce8d4`, not this
+increment; its source and environment remain explicit in its own manifest.
+
+
+## 2026-10-17 — Public root activity sources for collections (G420)
+
+Refs: T014-004, T014-016–017, FR-014-003–005,016–017.
+
+Publication now accepts a plain root activity prefix followed by the existing root collection
+chain. The root producer may return an inline array or commit its output blob; the existing
+collection source port captures it under the original ownership, digest, value and context limits.
+No runtime transaction, wire field, migration or adapter query changed. Error edges, compensation,
+reconciliation, effect policies and managed database operations in the prefix remain unsupported,
+as do activity successors and nested/broader bodies. This is another implementation increment,
+not a reduction of the accepted feature scope or completion of its remaining tasks.
+
+Four native public pipeline tests first failed **0/4**, 11.08 s, on the closed entrypoint gate
+(`/tmp/sagat-completion-collection-pipeline-red.log`). After enabling the bounded prefix they
+passed **4/4**, 6.46 s (`...-green.log`). The inline case was strengthened to use a legacy minor
+1.4 producer advertising both activities: it produces root work but cannot claim the admitted
+scoped work; a minor 1.5 body worker completes the run. These four cases passed **4/4**, 4.92 s
+(`...-legacy-root.log`). They cover REST publication/start, real gRPC blob upload and exact source
+completion replay, ordered/equal members, uncommitted descriptor refusal (`BLOB_UNAVAILABLE`),
+failed producer with no collection, and independent full replay. They use the repository's
+self-contained PostgreSQL/object fixtures, not an external database URL.
+
+The final fixture deliberately gives the root producer and body activity the same `fetch` node
+id. The identical `steps.fetch.output` expression resolves the root array at capture and the
+scoped result at body return. Updated native cases passed **4/4**, 5.66 s (`...-same-node.log`).
+Both data and binding identity remain scoped; this also checks that body contexts do not expose
+the producer's array as local step data.
+
+The new five-SDK `collection-step-source` scenario first failed only because its two reviewed
+expected phase documents did not yet exist (20.59 s, `...-sdk-review.log`); all five builders and
+normalized runtime documents agreed. Both complete documents were manually reviewed against the
+scenario before writing the new expected files, with no bless mode. The initial reviewed case
+passed **1/1 across all five**, 19.81 s (`...-sdk-green.log`). After strengthening the fixture to
+the equal root/body node ids, the manually updated definitions/observations passed all five again,
+22.71 s (`...-sdk-same-node.log`). Review manifests are `...-golden-review.json` and
+`...-same-node-review.json`; existing semantic goldens and SDK/runner sources remain unchanged.
+The suite now contains 56 scenarios. Scenario/phase validation passed **1/1**, 0.05 s.
+
+Two focused IR guard tests passed (0.03 s), exercising five unsupported source-policy mutations
+and the still-closed activity successor. Complete IR package tests passed **169/0/0 ignored**;
+doctests compiled with zero executable examples (`...-full-ir-regression.log`). Complete primitive
+integration passed **360/0/1 ignored**, 270.21 s, with four threads on the repository's disposable
+fixture (`...-workflow-regression.log`), before the final same-node test-data enhancement; the
+production code stayed unchanged and the four affected cases then passed as recorded above.
+Strict workspace/all-target Clippy passed (1m10s, `...-clippy.log`); formatting/diff checks passed.
+
+The G420 public source gap is closed for this plain prefix. Broader source policies/graphs,
+nesting and descendant admission under low quotas, remaining resource/compatibility and release
+criteria stay open. No task checkbox is advanced on the strength of this focused subset alone.
+
+
+## 2026-10-17 — Flat diagnostic completion and execution-role measurement guard
+
+The frozen 025ce8d4 diagnostic completed all 10k/width 1,16,256 cases with zero scheduler errors.
+Raw fragments, source/environment and limitations are retained in
+[the capacity report](../../tests/performance/reports/workflow-primitives.md). This owner-role,
+serial-driver diagnostic is not final capacity acceptance; sampled peaks 1/15/255 do not establish
+observed 16/256. Checkpoint-only SQL probes, queue delay, true peak RSS and canonical infrastructure
+remain explicit measurement limitations.
+
+Two new real measurement tests failed 0/2 (2.85s): an even interval selected no admission probes,
+and a journal trigger observed actual writes with current_user=postgres. The driver now creates
+an 8-connection runtime pool, verifies current_user=sagat_app and labels observer/execution roles.
+The trigger guards all measured scheduler, claim, completion and finalization journal writes.
+Two consecutive probe points cover both transition families. Corrected tests passed 2/2 (2.66s),
+with RED/GREEN logs at `/tmp/sagat-completion-perf-profile-smoke/`. An initial duplicate-out-dir
+compiler error is preserved separately and is not counted as a behavioral RED. The old benchmark
+completed before its executable path was rebuilt; its digest was checked unchanged at completion.
+These safeguards improve measurement validity and do not close T014-042 or production ceilings.
+
+
+## 2026-10-17 — Scoped forward BlobOutput completion
+
+Ordinary forward scoped activities now upload and commit native BlobOutput results using current
+exact-path authority, without restoring unrelated iteration history. Preparation returns an exact
+receipt or a live scoped target in one transaction. A miss cannot reach catalog metadata with a
+forged/expired lease; an exact receipt remains replayable under current membership/binding after
+lease completion. Cancellation can report an already produced result for scope effect accounting.
+Derived and declared-secret blob outputs remain refused.
+
+The storage port binds descriptor ID/size/digest/content type to its BlobCommit, and the existing
+catalog UPDATE repeats exact catalog metadata/owner/state checks. Output, catalog state, journal,
+quota, outbox and receipt commit or roll back together. Blob quota-failure recovery repeats the
+live cancellation-tolerant fence after rollback. No migration, broad grant or wire field is added.
+Existing worker.scoped.report spans, upload/read audits and quota refusal counters remain; no blob
+bytes, lease tokens or provider values enter logs.
+
+Three bounded independent read-only reviews found five actionable issues, all corrected with
+behavioral regressions. The final split-preparation race was reproduced before replacing the two
+lookups with atomic receipt-or-scope preparation; no fourth full review was run after the skill's
+three-cycle bound was surfaced. The user selected the current review and no external CLI was used.
+
+| Executed gate, final source | Result |
+| --- | --- |
+| Native scoped_blob_completion filter, runtime role | 8 passed,0 failed,19.56s |
+| Complete contract_grpc_durable_execution | 70 passed,0 failed,51.04s |
+| Complete fault_workflow_primitives | 87 passed,0 failed,95.07s |
+| Complete integration_database_connections, real OpenBao | 3 passed,0 failed,30.40s |
+| Complete integration_workflow_primitives | 369 passed,0 failed,1 ignored,191.06s |
+| collection-blob-output, all five SDKs | 1 passed,17.68s; five exact normalized documents |
+| blobs, all five SDKs, existing reviewed golden | 1 passed,18.69s; five exact normalized documents |
+| Scenario phase/golden registration,57 cases | 1 passed,0.06s |
+
+The ignored test is the separately long10k reference-source end-to-end case; it is not counted as
+passing in this round, and the frozen flat performance workloads are not substituted for it.
+Public native tests cover300KB uploads, history SELECT refusal, journal rollback/retry, foreign
+iteration refusal, current role withdrawal, changed-key conflict, pre-catalog fencing, cancellation,
+descriptor/canonical catalog type mismatch and expiry at a real quota lock barrier. HTTP/gRPC and
+PostgreSQL are real; the blob fixture uses the production Memory backend, not an S3 acceptance test.
+The initial all-five execution failed only because this new case lacked reviewed golden files;
+all five builder/runtime documents were independently compared and inspected before creating the
+new goldens. No existing golden, normalizer or SDK runner was changed for this increment.
+
+A superseded validation attempt produced58 passing/12 failing gRPC tests with57P01/57P03 database
+shutdown errors while older validation processes were being interrupted. That result is retained,
+not accepted. The uninterrupted final run above passed all70; no product-causality claim is made
+from the interrupted fixture. Test-only compile/SQL mistakes are retained separately from actual
+behavioral RED. [Exact evidence and source hashes](../../tasks/project-completion/evidence/scoped-blob-20261017/manifest.json)
+retain failures, native/runtime results and all ten current normalized SDK documents.
+
+Broader body planning/nesting, descendant capacity,100k nested measurements and complete release
+gates remain open. This focused increment does not close T014-014..017 or T014-040..044.
+
+
+Final static gates for this increment: `cargo fmt --all -- --check` and `git diff --check` passed;
+`cargo clippy --locked --workspace --all-targets -- -D warnings` passed in1m30s;
+`python3 scripts/check-architecture.py` passed for24 crates with respected layers/no cycles.
+These are recorded with the same focused source hashes, not claimed as the complete T014-043
+release gate (Compose, full locked workspace execution and advisories still require their named gates).
+
+
+## 2026-10-18 — Isolated capacity-group lifecycle A1
+
+After the three-cycle whole-protocol escalation, work was decomposed into pure lifecycle A,
+transaction/eligibility B and rollout/composition C. Three independent component reviews (abstract
+invariants, bounded representation, implementation) found no substantive violations under the
+exact current member-fact and caller proof preconditions. This was a deliberate smaller unit,
+not a fourth whole-protocol review; the whole nested protocol remains unaccepted.
+
+`cargo test --locked -p sagat-domain --test capacity_groups` first failed to compile with E0432
+because the new typed API did not exist. That is API-absence RED, not a reproduced runtime bug.
+After implementation it passed6/6 in0.23s, including1024 deterministic histories(seed3714) checked
+against an independent full registry. Named cases cover intermediate holder FINAL with surviving
+A/C, non-holder finality preserving the child epoch, yielding before child completion, finished
+member facts refusing join and stale/foreign operations leaving the header unchanged.
+`cargo test --locked -p sagat-domain --lib execution::capacity::tests::` passed2/2 for overflow
+without partial mutation. Locked domain/all-target Clippy with warnings denied passed10.63s;
+formatting and the24-crate architecture check passed. [Exact evidence](../../tasks/project-completion/evidence/capacity-a1-20261018/manifest.json)
+contains the missing-API failure, results and source hashes.
+
+The model keeps a constant-size header plus one selected member fact, not a historical registry
+scan. No PostgreSQL store, scheduler/worker gate, new quota projection or public nesting is
+implemented by A1. Authority, quiescence, exact fact freshness, atomic header/member persistence,
+compatible restore and actual low-quota/100k behavior remain unproved B/C dependencies; canonical
+T014-014..017 and the broader release tasks remain unchecked.
+
+
+## 2026-10-18 — Child admission/continuation lock regressions
+
+B0 source inventory exposed two existing admission-order risks, independently of nested groups.
+Two controlled real-PostgreSQL competitions were added to the fault suite: depth-two child
+handoff against root-child creation under the tree advisory gate, and evaluated continuation
+against a new public root start sharing a novel payload under the active-run quota gate.
+Before correction both failed: the first returned an explicit PostgreSQL deadlock; the second
+returned public `Unavailable`. The source review identifies its quota/payload uniqueness
+inversion; the public error alone does not expose the database cause. Earlier invalid parallel
+and overclaiming-session fixtures, and a later test Arc ownership compile error, are retained
+separately and are not behavioral RED evidence.
+
+The reservation's parent lock now uses `NO KEY UPDATE`, permitting stable-key FK checks while
+still excluding parent writes. Both input and initial-state retention blocks now follow tree/
+active-run admission, matching evaluated handoff's resource order. No boundary, payload hash,
+role, audit, outbox, migration or wire contract changed. Two bounded independent review cycles
+addressed payload inversion findings and then found no issues in the actual patch/barriers.
+The owner selected the existing review; no external CLI was invoked.
+
+Focused regression: **2/2 passed in8.59s**. The first also verifies rollback of admitted child
+creation, retries through the real scheduler and verifies journals; the second commits both
+new root and successor with independent journal checks. Runtime-role regression passed709 tests: gRPC70/38.98s, workflow faults89/79.82s, real
+PostgreSQL/OpenBao3/30.03s, durable execution178/95.89s, and workflow integration369/178.62s.
+The separately long10k reference-source case remains ignored, not passed. Locked workspace/all-target
+Clippy passed1m57s; format/diff checks and24-crate architecture checks passed.
+[Exact commands, failures and source hashes](../../tasks/project-completion/evidence/child-root-fk-20261018/manifest.json)
+are retained. This does not close the full workspace/Compose/advisory release gate. The working lock inventory remains incomplete, including
+its recorded parent-guard/legacy child-link questions. A1 does not authorize runtime nesting;
+B0 and all previously open canonical tasks remain unchecked.
+
+
+## 2026-10-18 — Five-SDK instance-limit admission
+
+The new58th common case `workflow-instance-limits` proves maxInstances3 succeeds for a->b->end;
+maxInstances2 accepts both activity completions, fails with persisted INSTANCE_LIMIT and leaves
+end CANCELLED/attempt0. All five builders preserve depth1/8 and reject instance0/100001 and depth0/9
+with VALIDATION_FAILED. No nested depth8 execution is inferred. Source/status/graph evidence and
+four worker calls agree in all five complete documents. Two fresh-context reviews found then
+resolved a start-response race: each root now starts while workers are stopped, then its dedicated
+worker starts; it is stopped/drained before the next root. No sleeps or normalizer changes hide it.
+The missing-golden probes are retained separately from the actual final pass: all five completed
+in11.83s. Complete builder/runtime documents were independently compared and inspected before
+writing the two new goldens, without blessing. Native primitive contracts passed47/47 in0.45s;
+registry preflight passed1/1 with58 scenarios. This is focused evidence, not an all58 matrix result.
+Exact commands/hashes/results are in tasks/project-completion/evidence/sdk-instance-limits-20261018/manifest.json.
+T014-004 still needs its public HTTP malformed-scope/object-literal evidence; canonical broader
+runtime, nesting and release tasks remain open. G425's old SDK-authoring limitation is resolved.
+
+
+## 2026-10-18 — Public publication diagnostics and T014-004 fixtures
+
+Public HTTP rejection coverage passes 10/10 under the real PostgreSQL application role. Each
+case validates the saved draft, attempts publication, checks 422/VALIDATION_FAILED/retryable=false,
+asserts response/header trace identity and independently verifies no active/published version.
+Cases cover schema-forbidden terminal body nodes, escaping and recursive bodies, body-edge
+cycles, overlapping parallel branches, unsupported object literals and ordinary root dangling
+edges. Named-body escapes retain provenance and use INVALID_SCOPE; root dangling edges keep
+GRAPH and dry-run UNKNOWN_TARGET remains stable with an additive body path.
+
+Effective expression byte-limit failures are typed separately from scope rules. The suite
+reproduced and fixed both 1202-byte body/switch expressions and a 2102-byte schema-valid body
+expression rejected by the legacy 2048-byte wrapper before domain validation. All use EXPRESSION
+with no expression content in the byte diagnostic. Schema validation remains first.
+
+The three bounded independent reviews found these provenance/byte-boundary issues. Their exact
+findings and reconciliation are retained; no fourth or external review was run. The final adapter
+precheck was verified by tests, not another independent verdict. The initial mixed oracle log
+contains a mistaken expected reason for a schema-forbidden body end, retained separately from
+the corrected behavioral failures.
+
+The four native packages passed 971 tests before the final adapter precheck; after that precheck,
+all 169 infra-ir tests passed again. The47 primitive contracts passed. These counts overlap and
+are not summed as unique tests. T014-004 closes its fixture scope together with the existing
+all-five instance-limit evidence and the fresh10,000-reference materialization test.
+Nested runtime/capacity and T014-040–044 remain open. This is not the full all 58 SDK matrix or
+the workspace/Compose/advisory release gate. Exact commands, source hashes, failures and final
+gate results: `tasks/project-completion/evidence/publication-scope-20261018/manifest.json`.
+
+The final runtime-role workflow regression passed379 tests in246.25s, including exact ordered
+materialization of10,000 blob references and refusal of10,001 before retaining a scope. The
+separate long10,000-completion case remained ignored and is not counted as a fresh pass.
+
+Strict locked workspace/all-target Clippy passed in1m43s. Formatting, diff and24-crate
+architecture checks passed. These are local gates; shared release tasks remain unchecked.
+
+
+## 2026-10-18 — Separate chained-child settlement from legacy flags
+
+Refs: T014-014..017/040, FR-014-012–015, ADR-0030§18–19. The B0 inventory found that both
+parent cancellation variants and final notification updated the first child segment's legacy
+flags before the authoritative chain link. Three real PostgreSQL trigger guards reject those
+flag updates after chain initialization. All 3 failed before correction (two cancellation errors;
+one failed scheduler notification), then all 3 passed in 2.54s. This proves the mixed writes on
+actual service/scheduler paths; no database deadlock reproduction is claimed for these guards.
+
+The parent now updates its exact tenant/own-parent/child link and returns on a match. A child
+without a link retains legacy flags with an exact own-parent predicate. Propagate/RequestCancel
+and final latch/settlement behavior stay distinct; legacy metadata remains unchanged for chains.
+Cancellation has exactly one request audit, and automatic final notification preserves existing
+audit behavior with one child.finished journal event. Journal/projection consistency is checked
+for parent and child. Existing transaction/outbox boundaries and external-effect semantics remain.
+
+Two bounded reviews found and resolved a missing audit_records oracle, then found no concrete
+source/test issues. The handoff comment/contract now state its actual chain→parent KEY SHARE→
+head/link order. This leaves the existing strict-ADR metadata-guard decision and complete B0
+graph pending; no nested group persistence/activation or canonical task closure is inferred.
+
+The full fault target passed 92/92 in 91.80s, including both ordered parent/handoff races and
+failed/duplicate parent notification. Durable execution passed 178/178 in 146.65s, including
+legacy Propagate/RequestCancel/Detach, child races and tree budgets. Exact final commands,
+source hashes, failed and broader results: evidence/child-link-only-20261018/manifest.json
+under tasks/project-completion/. Counts from focused and full runs overlap.
+
+The chain-filtered workflow integration target passed72/72 in42.27s. The existing common
+chain-child and chain-cancel-parent goldens passed unchanged in all five SDKs (21.88s/12.93s
+test execution), including three child segments before parent continuation and propagated versus
+detached mid-chain cancellation. All ten complete normalized documents independently equal
+their existing golden and are retained; no blessing, SDK/runner/normalizer change or complete
+all58-matrix claim. Strict locked workspace/all-target Clippy passed in1m45s; formatting and
+24-crate architecture checks passed. Final exact manifest: tasks/project-completion/evidence/
+child-link-only-20261018/manifest.json. The remaining B0/ADR and release tasks stay unchecked.
+
+
+## 2026-10-18 — Stable parent identity guard (ADR-0037)
+
+The existing handoff keeps chain→parent KEY SHARE→own head→incoming link. ADR-0037 permits
+this narrow identity protection under immutable initial/head/link ancestry; it grants no parent
+business-state or mutation authority. Parent commands still require explicit own-run FOR UPDATE.
+No executable production change, migration, SDK/API change or nested activation is introduced.
+
+Removing only the early guard as a reversible negative control made the existing ordered race
+fail 0/1: handoff committed but parent cancellation returned Unavailable. That is an observed
+public error, not proof of PostgreSQL SQLSTATE/deadlock cause. Original source bytes were restored
+exactly and the same two-order race passed 1/1 (3.64s). Added positive ancestry assertions passed
+for three direct child segments/link (3.05s) and a depth-two handoff with distinct parent/root
+(2.85s). Two independent scoped reviews resolved an unstated ancestry precondition, then found
+no remaining concrete defects. This is a current-writer invariant, not a stronger FK guarantee.
+
+Exact controls, hashes and review: tasks/project-completion/evidence/parent-fk-guard-20261018/.
+The complete B0 graph, B1/group persistence, compatibility fencing and production resource/release
+gates remain open. No canonical checkbox closes from this clarification.
+
+
+## Exact-path chain prefix — 2026-10-18
+
+The existing begin_current_path and begin_path helpers previously took only their own run lock.
+Both now invoke the same tenant-scoped optional chain guard as full RunStore::begin, in the same
+transaction before lock_path_revision. A contended chain returns None for SkipLocked; Wait keeps
+the chain guard until path commit. Snapshot CAS, database-time sampling and exact-path mutation
+bounds are unchanged. The additional membership lookup uses chain_segments_run_unique; it does
+not load historical members. Retaining the SQL guard grants no new chain finality authority.
+
+Four real storage-protocol tests use a trusted scoped fixture plus real singleton chain
+initialization before loading the snapshot. General public chain+collection composition remains
+closed. Both entry points fail the pre-fix SkipLocked and Wait oracles (0/4, 3.40s): contended chains
+were ignored. With the fix, all eight bounded fence tests pass (6.51s). Actual pg_blocking_pids
+barriers prove Wait blocks on chain before holding run; independent NOWAIT probes prove both
+locks last through commit and are then released. Skip tests prove None/nonblocking and no
+retained run lock, with ordering established by the corresponding Wait test.
+
+Two isolated reviews identified fixture deadline/revision and lock-lifetime oracle requirements,
+then found no concrete final defects. An earlier prototype RED and a fixture import compile
+failure are retained separately from the corrected-fixture behavioral RED. Exact records:
+tasks/project-completion/evidence/path-chain-prefix-20261018/. B0 remains incomplete; this does
+not accept the other primitive/direct-Update prefixes, group transactions or general nesting.
+
+Final regression for this increment: workflow383 passed,1 ignored in260.71s; the separate long
+10k-completion test remains ignored, not a fresh pass. Strict locked workspace/all-target Clippy
+passed in1m17s; formatting, diff and24-crate architecture gates passed. This is not a full
+workspace execution, five-SDK matrix, Compose/advisory or nested-capacity resource result.
+Exact source/results: tasks/project-completion/evidence/path-chain-prefix-20261018/manifest.json.
+
+
+## Direct run Update chain prefix — 2026-10-18
+
+Refs:T014-040/044, FR-014-014, ADR-0030§18. PgDeclaredOperationStore::apply_update now
+locks a run's tenant/namespace-scoped membership chain before its exact run. A Run address
+never resolves to a newer head. Chain-addressed behavior, request hashes, current state CAS,
+receipt replay, audit and outbox boundaries remain unchanged. No migration or wire change.
+
+The public HTTP regression addresses a successor distinct from the chain ID. A real chain lock
+barrier must precede own-run acquisition; a test-only receipt trigger exposes guard lifetime
+until commit. Before correction, the test failed because the chain wait was never observed
+(0/1,7.03s); this is not a reproduced PostgreSQL deadlock. After correction, the10 HTTP operation
+cases passed (5.56s), including earlier-segment RUN_CONTINUED, terminal refusal, rollback/retry,
+permissions and tenant opacity. The new case checks successor mutation, unchanged predecessor,
+one durable receipt/state event/outbox, two trace-bearing audits for apply+replay, and foreign
+tenant NOT_FOUND. A replay is a separately audited access, not a second mutation.
+
+Two bounded reviews required a non-singleton successor and correct replay audit counts, then
+found no production defect. The second suggested a stronger SHARE probe for the chain mutation
+guard; its final focused verification is recorded in the evidence manifest. Remaining primitive
+adapter prefixes, post-wait authority checks and complete B0/group ordering stay open. Exact
+source, failures and commands: tasks/project-completion/evidence/direct-update-chain-prefix-20261018/.
+
+Final direct-Update regression passed26 operation cases in10.33s (includes the10 HTTP cases);
+the strengthened exclusive-guard probe passed1/1 in2.23s. Strict locked workspace/all-target
+Clippy passed in1m34s before that one-line test-probe refinement; production did not change.
+Exact test-source variants and limits: evidence/direct-update-chain-prefix-20261018/manifest.json
+under tasks/project-completion/. Broader workspace/release/nesting gates remain open.
+
+
+## Chain scheduler expiry after row-lock wait — 2026-10-18
+
+Refs:T014-040, FR-014-014/015. The chain port's expiry WHERE predicate could accept an authority
+that expired while waiting for an unchanged scheduler_shards tuple. Three real PostgreSQL
+barriers now cover legacy handoff, evaluated continuation and finalization. Each observes the
+actual runtime-role wait while the lease is live, keeps the tuple unchanged until DB-clock
+expiry, then releases it. On unchanged production all three committed under expired authority
+(behavioral RED:1 pass for the overflow compatibility case,3 failures,6.47s). Earlier fixture API and
+slug setup failures are retained separately and do not count as three behavioral counterexamples.
+
+The shared execution::locked_scheduler_time helper remains transaction-typed and becomes
+crate-visible. Chain checks use its lock-then-clock validation, retain own-shard rejection and
+their existing oversized-generation Storage(Internal) conversion. Evaluated continuation keeps
+its separate transaction_now after the incoming link lock for deadline/wait timestamps. No
+lock order, wire capability, deadline policy, migration or external-effect guarantee changes.
+
+GREEN passed4/4 (6.70s). Failed authority leaves independent chain/segments/run/journal/outbox/
+audit/retained-usage snapshots unchanged. Fresh own authority succeeds, exact replay is detected
+and journal consistency holds. The private chain fixture now honors the runtime-role option via
+world.execution_pool. Its older owner-pool tests remain real results but did not prove runtime
+privileges merely because that environment option was set; the existing explicit least-privilege
+chain test was separate coverage. New wait barriers require sagat_app when the option is active.
+
+Two bounded reviews identified generation-error compatibility, transaction typing and fixture
+pool preconditions; the actual five-file review found no concrete defects. Reviewers ran no
+tests. Evidence: tasks/project-completion/evidence/chain-post-wait-fence-20261018/. Collection,
+loop and approval post-wait checks, their applicable chain prefixes and complete B0/group
+ordering remain open. No canonical checkbox closes from this chain correction.
+
+Final chain-expiry regression passed81 chain-filtered workflow cases (55.26s), all92 fault
+cases (93.86s), and all8 bounded fence cases. These counts overlap. Strict locked workspace/
+all-target Clippy, formatting, diff and24-crate architecture gates passed. No fresh full-workspace
+or all-five SDK matrix is claimed. Exact source/commands, mixed/setup failures and scope limits:
+tasks/project-completion/evidence/chain-post-wait-fence-20261018/manifest.json.
+
+## Collection and loop scheduler expiry after row-lock wait — 2026-10-18
+
+Refs:T014-040, FR-014-014/015. Both private scheduler checks now use the owning transaction's
+locked_scheduler_time helper after preserving wrong-shard rejection and oversized-generation
+Storage(Internal). All seven collection and six loop callers own their transaction. No new lock
+prefix, deadline clock, capability, migration or nested execution eligibility is introduced.
+
+Two runtime-role PostgreSQL entry barriers reproduced expired-authority commits after an
+unchanged scheduler row wait. Clean RED was2 compatibility passes/2 failures (6.54s); GREEN
+was4/4 (6.16s). Rejection leaves an atomic snapshot of17 tenant tables unchanged. The loop carry
+is newly retained data, explicitly absent before entry. Fresh authority succeeds and exact
+replay leaves persisted state unchanged. Collection success requires exactly one traced audit.
+The initial collection attempt instead exposed a duplicate audit INSERT: enter_collection and
+finish_version wrote the same record. Removing the entry INSERT retains the single atomic
+finish_version audit. That audit-only correction preceded the clean RED; the earlier masked
+audit failure and a SQLx static-SQL compile failure are recorded separately.
+
+Two bounded reviews required non-vacuous new payload/audit oracles, then found no concrete
+defects. New stores explicitly use runtime pools; historical owner fixtures do not acquire
+least-privilege evidence from an environment flag. Existing scheduler mapping reports fenced
+collection/loop outcomes with scheduler_actions_total and scheduler_fenced_total; these private
+port barriers do not assert telemetry counters. Approval fencing, primitive chain prefixes,
+complete B0 and all nested-capacity runtime/release gates remain open. Exact source variants,
+commands and limits: tasks/project-completion/evidence/scope-post-wait-fence-20261018/.
+
+Final focused regression passed15 collection transaction cases (10.64s),38 loop cases (22.18s)
+and all92 fault cases (82.63s). Counts overlap the focused barriers. Strict locked workspace/
+all-target Clippy (91.92s), formatting, diff and24-crate architecture gates passed. Exact tested
+source, commands and staged evidence hashes are recorded in the scope-post-wait manifest.
+No canonical task closes from this adapter correction.
+
+## Approval scheduler expiry after row-lock wait — 2026-10-18
+
+Refs:T014-040, FR-014-008/014. Approval open/expire now use the existing transaction-typed
+lock-then-clock scheduler check. Own-shard rejection and stored_i64 generation conversion
+retain their existing error precedence; user decide authorization and all business clocks stay
+unchanged. The shared scope snapshot now includes telemetry_pending and all three approval
+tables (21 tenant tables in one atomic SELECT).
+
+Three new private tests use explicit runtime stores and the actual sagat_app wait oracle.
+Opening and genuinely due expiry both committed after authority expiry before correction:
+RED1 compatibility pass/2 failures (65.16s). The expiry fixture waits for its real60-second
+business deadline using bounded75-second asynchronous PostgreSQL-clock polling, then waits
+for scheduler expiry under an unchanged tuple. Its actual due timestamp supplies audit and
+occurred_at together. It does not pretend a future occurred_at is a real due-time barrier.
+Fresh authority opens/expires; opening success has one traced audit and expiry has one traced
+audit/event/outbox plus a FIRED timer. Opening replay retains RuntimeUnavailable with no
+persisted changes, matching its existing revision contract rather than inventing replay success.
+
+The plan review required telemetry_pending coverage, correct opening replay and a deadline
+wait longer than the normal five-second eventually helper. These are implemented. This bounded
+correction adds no chain prefix, nested eligibility, migration, wire or public capability.
+Existing scheduler_actions_total/scheduler_fenced_total map these errors to kind=approval_open
+or approval_expire; the private port barriers do not test counters. Complete B0 and all nested
+capacity and release gates remain open. Evidence: tasks/project-completion/evidence/approval-post-wait-fence-20261018/.
+
+Final approval-expiry GREEN passed3/3 (67.95s, including the genuine60-second deadline).
+Regression passed46 approval-filtered workflow cases (35.54s) and21 approval fault cases
+(29.07s), skipping the3 already-run focused barriers. Strict locked workspace/all-target
+Clippy (61.64s), formatting, diff and24-crate architecture gates passed. Two bounded reviews
+ended with no concrete final defects; reviewers ran no tests. Exact source/commands/evidence:
+tasks/project-completion/evidence/approval-post-wait-fence-20261018/manifest.json. No canonical
+checkbox closes; complete B0, nested runtime and integrated release gates remain pending.
+
+## Approval chain-before-run writer prefix — 2026-10-18
+
+Refs:T014-040/044, FR-014-008/014, ADR-0030§18. Approval's common writer helper now takes its
+applicable tenant/namespace/run member chain UPDATE guard before exact own-run UPDATE. It covers
+open/expire/decide, including ended-outcome receipt reads, without forwarding the request or
+granting head/finality authority. The unchanged direct Run Update membership SQL moves to a
+transaction-typed shared execution helper; its old wrapper is removed and StoreError conversion
+stays at the calling boundary. No wire, migration, group or public-shape change.
+
+Initial membership commits with uncommitted new-run creation (execution.rs create/commit);
+subsequent member identity is immutable under SQL constraints/triggers. This is not a protocol
+for live reparenting or delayed external initialization. The trusted native fixture first opens
+an approval, then invokes the real chain initializer with a deadline: journal revisions are
+start1/open2/chain3/decision4/route5. General entrypoint/body shapes remain gated.
+
+The real runtime decision waits on chain before holding run, observed through pg_blocking_pids
+and independent NOWAIT. A test-only final-audit trigger, immediately before commit, exposes
+exclusive chain and own-run guard lifetime through two55P03 probes. Success has one receipt,
+one approval.decided and one step.routed, one decision outbox and one traced decision audit.
+Receipt replay preserves the21-table checkpoint and chain head. Initial test tuple compilation
+failure is retained separately; behavioral RED0/1 (8.37s) times out on the missing chain wait,
+not a reproduced deadlock. Collection/loop prefixes and complete B0 remain pending.
+Evidence: tasks/project-completion/evidence/approval-chain-prefix-20261018/.
+
+Final approval chain-prefix GREEN passed1/1 (2.58s). Regression passed49 approval workflow
+cases (55.35s, includes opening/overflow post-wait checks; skips the unchanged real60-second
+due-expiry case last run atd413e5a8),28 operation cases (13.88s, including public direct
+successor Update), and all92 fault cases (94.72s). Counts overlap. Strict locked workspace/
+all-target Clippy (62.76s), formatting/diff and24-crate architecture passed. Two bounded reviews
+ended with no concrete final defects. Exact source variants, commands and limits:
+tasks/project-completion/evidence/approval-chain-prefix-20261018/manifest.json. No canonical
+checkbox closes; remaining collection/loop prefixes and B0/group ordering stay pending.
+
+## Collection/loop member-chain writer prefixes — 2026-10-18
+
+Refs:T014-040/044, FR-014-004/006/014, ADR-0030§18. Collection lock_run/lock_drain_run and
+loop lock_run now require their owning Transaction and acquire the existing scoped member-chain
+guard before own-run UPDATE. All seven collection and six loop callers already own begin_safely
+transactions. Their run validation, errors, revision, scheduler fence, business clocks, quotas
+and drain rules are unchanged. No new group, head authority, forwarding, migration or capability.
+
+Three trusted native runtime tests cover collection entry, start-drain following real cancellation,
+and loop entry. Setup supplies the required deadline and invokes the real chain initializer;
+commands use its updated revision. Before correction all three actually committed while an
+independent chain UPDATE guard was held (RED0/3,3.12s), not fixture errors or SQL deadlocks.
+Each barrier polls the actual mutation concurrently, observes its sagat_app chain wait and proves
+its own run remains free with NOWAIT before releasing the chain. Fresh mutation and exact replay
+have persisted event/outbox/state controls. This is a prefix oracle, not an independently repeated
+near-commit lifetime barrier for each primitive; the shared helper's lifetime is separately
+covered by approval's final-audit barrier. Transaction typing keeps the guard in the owning TX.
+
+These are explicitly trusted storage compositions; general public chain+collection/loop shapes
+remain gated. Initial membership commits with new-run creation and later identity is immutable;
+no live reparent/delayed-initialization protocol is inferred. Prior performance counts are not a
+fresh measurement of the extra membership lookup. Complete B0 graph, group persistence/eligibility,
+nested execution and release/resource gates remain pending. Existing typed errors, outcome metrics
+and sensitive-data-free logs remain mapped as before; port barriers do not assert telemetry.
+Evidence: tasks/project-completion/evidence/scope-chain-prefix-20261018/.
+
+Final scope-prefix GREEN passed3/3 (3.04s). Full workflow-primitives regression passed399
+tests with1 long10k completion test ignored (300.14s), including fresh10k reference-source
+materialization and the genuine60-second approval expiry barrier. All92 fault cases passed
+(93.23s). Strict locked workspace/all-target Clippy (62.56s), formatting/diff and24-crate
+architecture gates passed. Two bounded reviews ended with no concrete final defects; reviewers
+ran no tests. Exact tree/commands/limits: tasks/project-completion/evidence/scope-chain-prefix-20261018/manifest.json.
+This is not full-workspace execution or fresh production/nested100k resource acceptance; no
+canonical checkbox closes. Complete B0 includes the separately recorded incident/binding and
+worker-session source/test gaps, plus the remaining implicit/resource graph.
+
+## Production incident/report lock order — 2026-10-18
+
+Refs:T014-040/044, FR-009-004/005/008, FR-014-014. ADR-0038 explicitly refines ADR-0022's
+production binding-before-run clause. Attribution now uses applicable member chain UPDATE→
+exact own run UPDATE/namespace validation→existing binding EXCLUSIVE→own step UPDATE→audit
+deduplication. It never forwards, changes execution state, acquires a second run or emits outbox.
+Existing category/redaction/current fence/session/binding/expiry and commit-before-ACK rules
+remain intact; the test-run branch is untouched. Binding revocation/registration take no runs
+or chains, preserving the corrected source edge with ordinary report/heartbeat entry.
+
+Two runtime-role tests fail unchanged production: controlled native RunTx.bound_patterns plus
+public record_incident form a real cycle (PostgreSQL deadlocks0→1; incident Unavailable), and
+a public published/built/leased script+continuation workflow's incident bypasses its held chain.
+RED0/2,3.09s; GREEN2/2,2.12s. The first tests the exact report storage prefix, not controlled
+concurrency with the whole public completion call; public completion/journal verification are
+separate positive controls. The second observes actual app-role chain wait and ownrun NOWAIT
+free before release, followed by audit1/completion/journal verification. No fabricated source
+deadlock attribution from a generic typed error is used.
+
+Existing script_incidents_total{category} and the destination-free committed log retain their
+after-commit mapping; these native tests do not assert counters. Worker-session postwait
+freshness and remaining implicit/resource edges keep B0 unchecked. No nested/group persistence,
+public capability, migration or release/resource gate is inferred. Exact source/commands:
+tasks/project-completion/evidence/incident-lock-order-20261018/.
+
+Final incident-prefix GREEN passed2/2 (2.12s); the entire security integration suite passed
+125/125 (61.19s), including stale/revoked/expired/duplicate/tenant/rollback and prior incident
+concurrency cases. Strict locked workspace/all-target Clippy (73.93s), formatting/diff and
+24-crate architecture passed. Three bounded reviews reconciled the required real chain case
+and newADR refinement, then found no concrete code/document defects; reviewers ran no tests.
+Exact tree/commands/limits: tasks/project-completion/evidence/incident-lock-order-20261018/manifest.json.
+No new all-workspace/SDK58/Compose/advisory/resource gate is claimed. B0/group and remaining
+worker-session post-wait source/test gaps remain open; no canonical checkbox closes.
+
+
+## Worker session renewal freshness — 2026-10-18
+
+Refs:T014-040/044, FR-009-001/003, FR-014-014. WorkerStore.use_session locks only the matching
+tenant/id/token row, then samples database clock and renews in the same transaction if live.
+Missing/expired sessions retain the existing unauthenticated mapping. No session expired during
+an unchanged-row wait may extend its TTL or claim work. Existing TTL, caller-subject check and
+wire remain unchanged; this sample is not continuous authority through commit. No run/group
+lock or new API is added. Separate full/path claim-room and managed-database checks stay open.
+
+Actual public-poll RED renewed an expired session and leased1 task (0/1,5.10s). GREEN1/1,5.82s
+observes an actual sagat_app session wait while live, releases only after database expiry and
+compares one atomic checkpoint of expiry/run version/events/outbox/active leases. A fresh
+session claims successfully; old authority remains refused. No token/hash/task debug is logged.
+The entire security integration passes126/126 (81.09s); strict locked workspace/all-target
+Clippy (80.91s), format/diff and24-crate architecture pass. Two bounded plan/code reviews ended
+with no concrete defects; reviewers ran no tests. Owner's current-review selection applies,
+with no external CLI. Existing worker authentication/transport error and trace mapping is used;
+these integration tests do not assert telemetry counters. No all-workspace/SDK58/Compose/advisory/
+resource/nesting acceptance or canonical checkbox closure is claimed. Exact source/commands/
+limits: tasks/project-completion/evidence/session-renewal-postwait-20261018/manifest.json.
+
+
+## Full/exact-path claim-room session freshness — 2026-10-18
+
+Refs:T014-040/044, FR-009-001/003, FR-014-014. Both claim-time ports now share a private
+transaction-typed matching tenant/namespace/id/token/subject session guard. Sample DB clock
+after row acquisition; expired/missing yields0, otherwise preserve active LEASED/RUNNING count,
+conversion and saturation. Keep row guard on owning execution TX through count/lease commit;
+no renewal or new lock/API/TTL policy. Preserve root run/drain→session and scoped run/drain/
+binding→session separately; there is no new root binding guard. This sample does not promise
+continuous validity until commit. Separate managed-database SHARE guard/B0/group remain open.
+
+Both native-port RED cases returned8 after expiry (0/2,5.58s); GREEN2/2,7.02s. Actual known
+blocker and sagat_app wait are observed before expiry, unchanged guard rolls back after DB
+expiry, and zero room leaves21-table execution checkpoint and session expiry unchanged. Fresh
+public registration supplies8, old remains0, verify_run passes. These are claim-time port
+barriers, not publicpoll expired-lease acceptance: earlier publicpoll renewal is separate.
+Regression: scoped_worker18/18 (15.62s), bounded_fences10/10 (14.04s), security126/126 (85.39s).
+The10 include the focused2. Strict locked workspace/all-target Clippy113.29s, fmt/diff and
+24-crate architecture pass. Two bounded reviews ended with no concrete issues after correcting
+the prompt's root/scoped prefix wording; reviewers ran no tests. Existing worker.scoped.claim
+trace and outcome/error mapping stay intact; port tests do not assert counters. No new full
+workspace/SDK58/Compose/advisory/resource/nested acceptance or canonical checkbox closure.
+Exact source/commands/limits: tasks/project-completion/evidence/session-room-postwait-20261018/manifest.json.
+
+
+## Managed owner session freshness after SHARE wait — 2026-10-18
+
+Refs:T014-040/044, FR-017-012/019, FR-014-014. Existing database_owner now retains matching
+session SHARE then samples DB clock; missing/expired supplies no owner authority. Keep exact
+tenant/namespace/ownrun/rootnode/subject/minor>=6 filters and binding→session→namespaceSecrets
+quota→current dedicated membership order. No TTL/wire/provider/role change or new run lock.
+Validity is at that postlock sample, not continuous through later catalog waits or commit.
+
+Real PostgreSQL/OpenBao aggregate creates credential/catalog/published database query/dedicated
+runner and obtains an actual public lease. Unchanged-row barrier observes known blocker and
+actual sagat_app JOINsession waiter whilelive, rolls back only after DBexpiry. RED aggregate
+0/1,17.20s: public heartbeat accepted and extended lease after session expiry. This proves
+heartbeat authorization failure, not credential disclosure. GREEN whole connections target3/3,
+28.78s: heartbeatNotBound and atomic runversion/events/outbox/audits/pins/sessionexpiry/leaseexpiry
+unchanged, verify_run; public same-name reconnect preserves ID, replaces token and permits
+heartbeat before continuing all prior aggregate cases. No owner SQL revives positive authority.
+
+Fresh isolated database-runner process integration1/1,28.49s (latency measurement filtered),
+with rebuilt binary; strict locked workspace/all-target Clippy67.59s, fmt/diff and24-crate
+architecture pass. Two fresh bounded plan/code reviews found no actionable issues; no tests
+run by reviewers or external CLI. Existing database.resolve/worker heartbeat metrics, closed
+errors and after-commit audit mappings remain; native barriers do not assert counters.
+Complete B0/group, fullworkspace/SDK58/Compose/advisory/resource acceptance remain pending,
+with no canonical checkbox closure. Exact sources/commands/limits:
+tasks/project-completion/evidence/database-session-postwait-20261018/manifest.json.
+
+
+## Managed report receipt binding order — 2026-10-18
+
+Refs:T014-040/044, FR-017-019, FR-014-014. Existing managed report replay now retains binding S
+before namespace Secrets quota X and dedicated membership S. Permission, durable attempt owner,
+fingerprint and current binding/role remain required, including after session removal. Live/
+missing-receipt and ordinary paths retain their semantics. No new provider I/O, execution/pin/
+resolution-audit/outbox write or public field. This is a focused existing017 dependency of B0.
+
+Actual real PostgreSQL/OpenBao public receipt replay RED aggregate0/1 (17.62s) retains Secrets X
+while blocked on Binding S. This ordered-prefix failure is not a three-party deadlock proof.
+GREEN full connections3/3 (27.25s): known blocker/app-role wait, free Secrets probe, session
+cleared, exact already-applied receipt/status, unchanged atomic runversion/events/outbox/audit/
+pincounts and verify_run; public reconnect and next managed claim succeed.
+Fresh isolated runner integration1/1 (28.85s, benchmark filtered), rebuilt binary; strict locked
+workspace/all-target Clippy85.74s, formatting/diff and24-crate architecture pass. Sol/high
+provided a read-only test draft; root inspected, extended/applied and ran all tests. Fresh
+Astra/xhigh bounded code review found no concrete issues, no tests run by reviewer. Owner's
+current-review selection applies, no external CLI. Existing typed errors, database/worker
+metrics and committed audit mapping remain; these barriers do not assert counters.
+No fullworkspace/SDK58/Compose/advisory/resource/nested/group acceptance or task closure.
+Exact source/commands/limits: tasks/project-completion/evidence/managed-replay-prefix-20261018/manifest.json.
+
+
+## Rerun source identity admission — 2026-10-18
+
+Refs:T014-040/044, FR-014-012–015, T017-012/024. ADR-0039 advances exact tenant/source KEY SHARE
+after existing receipt replay and before retained definition, managed catalog, active-run and
+payload admission. Identity only; missing reference stays MissingReference/NotFound. Cleanup
+FOR UPDATE SKIP LOCKED is unchanged. Current reruns create unrelated roots and child writers
+have no rerun source: documented writer invariant, not a schema/type guarantee. No source-state
+or group authority, wire field, provider I/O or external-effect guarantee is added.
+
+The runtime-role real PostgreSQL/OpenBao barrier actually reproduced the old source/catalog
+cycle: deadlocks0→1; rerun succeeded and native pin cleanup returned Unavailable. Corrected
+full connections initially3/3 (27.30s). Missing source leaves atomic counts unchanged; cancelling
+the source-blocked request rolls back before same-key retry; cleanup skips guarded source and
+later full cleanup releases it. A real new rerun claims, resolves, completes and releases its pin;
+strengthened metadata control requires the current rotated credential and rejects source version.
+The first strengthened-control run hit an INT4/i64 fixture decode error, retained separately;
+only test SELECT casts changed. Final exact results are in the manifest below.
+
+Segment rerun/independent-chain regression1/1 (1.95s). Three fresh Astra/xhigh bounded plan/code
+reviews; actionable SKIP/error/runtime-role/writer-invariant and stale-credential-test findings
+incorporated, final no concrete issues. Sol/high read-only draft, root sole writer/test executor;
+owner's current review applies, no external CLI. Existing run.rerun trace/typed error and committed
+RunRerun audit/outbox/metrics mappings remain; native barriers do not assert metric counters.
+No fullworkspace tests/SDK58/100k/Compose/advisory/S3/nested/group acceptance or canonical closure.
+Evidence: tasks/project-completion/evidence/rerun-source-identity-20261018/manifest.json.
+
+Final stronger-control full connections3/3 (27.36s), strict locked all-target workspace Clippy
+passes2.87s, formatting4.11s, architecture24crates and diff check pass.
+
+
+## Pure capacity header restoration — 2026-10-18
+
+Refs:T014-014/017/040. Checked CapacityGroup::restore preserves identities/revision/epoch/count/
+possession, validates nonzero/bounded counters and exact Active holder consistency, and rejects
+malformed snapshots with InconsistentSnapshot. Maximum counters restore without reset; mutation
+overflow is inert. No registry hydration or new infrastructure/domain dependency.
+
+Test-first missing API compilation is retained, not reported as behavioral RED. Focused model9/9
+(0.22s),1024histories seed3714 roundtrip after every accepted independent-registry transition,
+15invalid header/fact tuples, explicit maximum preservation; internal overflow2/2. Strict domain
+all-target Clippy1.00s, fmt4.05s, architecture24crates. Fresh adversarial Astra/xhigh code review
+found no substantive issues; only root ran tests. No external reviewCLI, owner's current selection.
+Supplied consistency is not actual database count/tenant/unique history/own-member authority. SQL
+port/atomic journal/audit/outbox/OTel, mixed writers, eligibility/resource/SDK/nested acceptance
+remain pending adapter/integration work; no canonical checkbox closure. Evidence:
+tasks/project-completion/evidence/capacity-header-restore-20261018/manifest.json.
+
+
+## Dormant capacity Finish vocabulary — 2026-10-18
+
+Refs:T014-014/017/040. Truthful engine audit capacity.member.finished / capacity_group, without
+generic repeat collapse; native receipt dedup proof remains pending. Canonical closed AsyncAPI
+hint contains reference identities/result revision/epoch/retired/optional nullable trace only.
+Only new baseline message added manually; all prior parsed shapes and SDK goldens unchanged.
+Audit7/7, synthetic hint1/1, AsyncAPI evolution/actual existing outbound conformance4/4 (2.02s).
+Initial API/fixture compile errors retained separately; corrected hint RED0/1 (0.04s) on missing
+channel. Actual new producer/outbox/receipt behavior remains B2d/e; no broker delivery claim.
+Pinned CLI validates0errors/0warnings plus1version info; strict locked workspace/all-target
+Clippy83.89s, fmt4.04s,24-crate architecture pass. Fresh Astra/xhigh review's only finding was an
+overclaiming test name, corrected and audit rerun. No external reviewCLI. Native schema/port,
+SDK58/fullworkspace/resource/old-writer/nested acceptance and canonical tasks remain pending.
+Evidence: tasks/project-completion/evidence/capacity-finish-vocabulary-20261018/manifest.json.
+
+
+## Dormant capacity Finish schema — 2026-10-18
+
+Refs:T014-014/017/040. Three dormant metadata tables, protected bounded classification, deferred
+active-holder FK, immutable member/group tombstones, append-only Finish journal and narrow
+sagat_app column privileges. Actual PostgreSQL runtime-role schema tests9/9 (18.13s), exhaustive
+variable-column classification1/1 (1.79s), strict locked workspace/all-target Clippy54.85s,
+fmt4.23s and architecture24crates pass. Typed55000 guarded downgrade tested empty/nonempty and
+with an actual migration lock wait behind a concurrent committing writer. Fresh Astra/xhigh SQL
+review found no concrete issue. Initial schema absence, compile issue and two corrected test-probe
+failures remain in evidence; they are not behavioral regression proofs. No native Finish/current
+child FINAL/fence/replay/producer/unknown-COMMIT evidence follows from these fixtures. Permanent
+chain FKs pin cleanup until C0 retention/replay compatibility is resolved. B2c only closes locally;
+canonical014, fullB1/B2, SDK58/fullworkspace/resource/old-writer/nested/release gates remain open.
+Evidence: tasks/project-completion/evidence/capacity-finish-schema-20261018/manifest.json.
+
+
+## Dormant native ChildRoot Finish — 2026-10-18
+
+Refs:T014-014/017/040. Exact internal application/PG port, no production caller or group creator.
+Direct exact own chain → commanded current head → one G NOWAIT → current postwait scheduler
+fence; physical child lineage comes from own parent identity plus immutable link, never parent
+business state. Own committed FINAL/no successor and matching terminal outcome authorize A1
+Finish. Same-key canonical fingerprint replay precedes changed group/member checks and requires
+current own fence; result is original receipt, not current authority. New header/member/audit/
+closed outbox/receipt writes share actual commit. Server-confirmed23xxx/40001/40P01 aborts are
+storage failures; other commit errors are conservatively unknown, and cancellation after dispatch
+requires retained-command reconciliation. No native fault/recovery proof is inferred yet.
+
+Actual runtime-role schema/native16/16 (36.29s), classification1/1 (1.79s), strict locked workspace/
+all-target Clippy76.92s, final fmt and24-crate architecture pass. Application fingerprint vector1/1.
+Independent API/adapter Astra/xhigh reviews found no concrete issue. Expanded peer test initially
+failed because its helper leased/discarded a second task; corrected to poll1 without service change.
+Real runtime child creation/completion/continuation drives FINAL tests. Holder/nonholder survival,
+last retirement and original historical replay pass for three independent child chains (not nested
+A→B→C activation). Execution journals/versions/steps/chain projection/telemetry/usage stay unchanged;
+actual outbox validates canonical hints. B2e concurrency/fault/unknown-COMMIT evidence and B2f
+observations remain pending, as do C0 retention compatibility, fullB1/B2 and canonical runtime/
+SDK/resource/release gates. Evidence: capacity-native-finish-20261018/manifest.json under
+ tasks/project-completion/evidence.
+
+
+## Native capacity transaction barriers — 2026-10-18
+
+Refs:T014-014/017/040. B2e.1 test-only proof: G Busy consumes TX and releases own chain/run before
+the external G holder releases; two same-command chain waiters hold no earlier Run lock and yield
+one apply plus identical replay. First application and replay wait on an unchanged shard while
+DB time is live, then reject after actual DB expiry; renewed current authority succeeds. Audit/
+outbox/receipt statement and deferred receipt COMMIT23514 faults atomically preserve old state,
+with zero new side effects before one fresh same-key success. Injected-marker assertions exclude
+unrelated storage errors. No retained-quota delta/barrier or unknown-COMMIT proof is inferred.
+
+Fresh Astra/xhigh cycle1 found a test-role assumption, fixed by explicit sagat_app native pool;
+cycle2 found no remaining concrete issue. Corrected default4/4 (13.87s), full-runtime4/4 (14.24s);
+tightened marker assertion rerun1/1 in both modes (1.98s/2.02s). Strict locked workspace/all-target
+Clippy8.01s, final fmt and24-crate architecture pass. No production adapter changes. B2e.2 actual
+COMMIT acknowledgement loss/reconciliation and B2e.3 handoff/multiple-namespace counterexamples
+remain open, as do B2f observations/fullB1/B2/canonical runtime/SDK/resource/rollout gates. Evidence:
+tasks/project-completion/evidence/capacity-finish-barriers-20261018/manifest.json.
+
+
+## Native capacity unresolved COMMIT recovery — 2026-10-18
+
+Refs:T014-014/017/040. B2e.2 test-only local wire relay loses the reply while the real PG server
+still executes native COMMIT behind a labelled deferred receipt advisory gate. Actual query/lock
+observations prove dispatch and retained own chain/run/G/shard. Native caller returns Unknown
+with the original key while the server remains unresolved. A distinct current FINAL member gets
+G Busy and releases its own locks while preserving membership; same-command reconciliation blocks on the
+original own-chain prefix, times out/cancels without establishing original rollback.
+
+After gate release, the relay withholds actual committed C/COMMIT or labelled23514 abort plus Z/I.
+A fresh direct runtime transaction using the unchanged original command replays commitment or
+applies after confirmed abort; receipt/audit/hint end at1each, execution/usage unchanged, actual
+hint canonical validation passes. This is actual native response loss, not discarded success.
+One automated test executes both actual outcomes: final default1/1 (4.49s), full-runtime1/1 (4.71s).
+Strict locked workspace/all-target Clippy8.06s, final fmt and24-crate architecture pass. Initial
+compile-only nested import error retained. Three bounded harness reviews fixed close/startup
+cancellation task ownership; final review and independent sequence review found no concrete issue.
+Cleanup cancellation is source reviewed, not fault injected. No production adapter change, caller
+intent implementation, process restart or quota proof. B2e.3 authority race/multi-namespace and
+broader B2/canonical/SDK/resource/rollout gates remain open. Evidence:
+tasks/project-completion/evidence/capacity-finish-commit-loss-20261018/manifest.json.
+
+
+## Native capacity authority race and namespace boundaries — 2026-10-18
+
+Refs:T014-014/017/040. B2e.3 test-only proof uses an actual evaluated chain handoff queued ahead of
+native Finish behind an unchanged chain lock. PostgreSQL blocker observations prove ordering and
+own Run remains free before the chain guard. After handoff commits, Finish rejects the old head
+without capacity effects; only current successor FINAL from real worker completion may settle.
+A separate test runs two same-tenant physical child chains in different namespaces in one dormant
+owner-seeded G, with each holder placement. Wrong namespace rejects; first Finish preserves its
+peer; last Finish retires; original replay returns its historical result after peer settlement.
+Execution/usage snapshots are unchanged and receipt-linked audit/outbox carry exact namespace and
+member identities, with actual canonical hint validation.
+
+Both tests pass in default2/2 (6.50s) and full runtime-role2/2 (6.65s). Native adapter pools explicitly
+authenticate as sagat_app in both modes. Separate fresh Astra/xhigh reviews of the handoff and
+namespace artifacts found no concrete issue. Strict locked workspace/all-target Clippy8.12s,
+fmt4.06s and24-crate architecture pass. Production source unchanged. Local B2e closes, while B2f,
+fullB1/B2, durable production caller intent/process restart, C0 retention and mixed writers,
+canonical runtime/SDK/resource/release gates remain pending. No nested activation. Evidence:
+tasks/project-completion/evidence/capacity-finish-races-20261018/manifest.json.
+
+
+## Dormant native capacity observations — 2026-10-18
+
+Refs:T014-014/017/040. Local B2f adds a closed workflow.capacity.finish span under existing caller
+trace, six safe reference identities plus finite returned outcome, attempts/duration labeled only
+by outcome, and an unlabeled transition counter after acknowledged first commit only. Confirmed
+abort, Busy/refusal, replay and unknown acknowledgement do not increment transitions. A committed
+unknown followed by replay can remain uncounted in process metrics; durable receipt is authority.
+No raw command/key/owner/error/business value is added to these observations. Untraced direct
+calls still emit metrics but no OTLP span; cancellation has no returned-attempt outcome/counter.
+
+Real deferred-constraint abort, G Busy, fence refusal, first commit/replay and gated native reply
+loss/reconciliation produce exact outcome counts. Actual local OTLP collector validates exported
+span parent/identities/outcomes/status and safe completion logs. A filtered-child regression uses
+a real closed runtime pool and ensures Finish cannot overwrite its caller's outcome/error status.
+RED missing counter0vs1 (3.12s) and filtered caller mutation (2.20s) are retained. Fresh three-cycle
+review corrected ACK-loss test ordering and exact span targeting; final cycle found no issues.
+Final focused observations default2/2 (5.08s), full-runtime2/2 (5.38s); pre-final exact-handle fix
+native capacity set24/24 (64.70s), not represented as a final25-test run. Observability contracts
+9/9 (0.44s), strict locked workspace/all-target Clippy81.88s, fmt4.08s, architecture24crates pass.
+The transaction body is unchanged; only observations wrap it. Generic outbox routing still uses
+sagat.v1.<event_type>.<tenant> with fixed event classification; no broker delivery proof is added.
+
+Local dormant B2a-f closes, not full B1/B2 or canonical runtime tasks. Scoped settlement, production
+caller intent/trace, retention/mixed writers, process restart, SDK/resource/Compose/advisory/release
+acceptance remain pending. No production invocation or nested activation. Exact evidence:
+tasks/project-completion/evidence/capacity-finish-observations-20261018/manifest.json.
+
+
+## Integrated dependency advisory checkpoint — 2026-10-18
+
+Refs:T014-043. cargo-audit0.22.2 (same pinned CI tool) executes cargo audit --deny warnings:
+exit0 in2.29s,627locked dependencies,1338advisories from RustSec database commit
+999ec89d5d3f10f20be14750ec8c2d8b44e0ac9b. Existing .cargo/audit.toml policy is unchanged: RSA
+RUSTSEC-2023-0071 and four rustls RUSTSEC-2026-0346..0349 exceptions remain explicitly documented
+there and in foundation research. This result is passing under that policy, not absence of all
+known advisories. No dependency/lock/policy change. Other T014-043 gates and the task remain open.
+Exact lock/config/CI hashes, tool output and commands:
+tasks/project-completion/evidence/dependency-advisories-20261018/manifest.json.
+
+
+## Integrated canonical contract checkpoint — 2026-10-18
+
+Refs:T014-043. Redocly1.34.21 validates canonical OpenAPI without warnings after adding existing
+MIT-license metadata and six tag descriptions; initial seven warnings retained. paths/components
+are byte-identical. protoc36.2 compiles worker.proto; AsyncAPI CLI3.6.0 reports0errors/0warnings/
+1latest-versioninfo; AJV validates the payment-saga example with the documented custom-keyword
+strict=false option. Rust primitive contracts47/47 (1.00s), before metadata-only addition; includes
+canonical protobuf compilation, identity/schema/public IR contracts, not SDK client execution.
+HostNode26.11.1 differs from CI22/Linux; no exact environment parity. Npx transitive dependencies
+remain unpinned as in CI. T014-043 and broader release/runtime/SDK/resource gates stay open.
+Evidence: tasks/project-completion/evidence/canonical-contracts-20261018/manifest.json.
+
+
+## Pure successful collection shape — 2026-10-18
+
+Refs:T014-014/017/040. B1b.2a.1b introduces only a version1 pure definition classifier for a root
+collection owner and ordered selected ordinary activity body1..8→return. Frozen surrounding root/
+body checks fail closed; encoded scripts, declared companions/effects, body controls/error edges,
+nested/wrong owners and postcollection activities reject. Local IDs remain qualified by root
+owner/body, including another body's independent effects. No version pin, source facts, database,
+run state, capability or runtime activation is established.
+
+MissingAPI compile failure is retained, not behavioral RED. Initial7/8 had an invalid short-slug
+fixture; review also identified that managed DB+collection is already refused by the domain
+constructor. The unreachable predicate fixture was removed, not claimed as predicate DB coverage;
+the explicit defensive check remains. Final8/8 (4.30s command), strict domain/all-targetClippy10.18s,
+fmt4.11s and24-crate architecture pass. Fresh Astra/xhigh cycle1 found that fixture issue, cycle2
+found none. API/schema/source-writer/producer barrier/restart and broader B1/B2/runtime gates remain
+open. Evidence: tasks/project-completion/evidence/collection-success-shape-20261018/manifest.json.
+
+## Leaf certification application boundary — 2026-10-18
+
+Refs:T014-014/017/040. B1b.2a.1c.2 adds only the fixed V1 application port and shared typed
+identity/command/result/record/errors. Tests cover exact depth1 qualified identity, revision
+bounds, distinct checkpoint/aggregate digests, ordered source references, overflow and wrong
+return-path refusal. Constructing or structurally validating a record proves no database source,
+definition pin, current authority, execution closure or capability.
+
+Missing-module compilation failure is retained separately from two actual privacy failures:
+initial Display exposed StoreError detail; review then found derived Debug exposed it too.
+Both were reproduced with a synthetic canary and fixed; Display/Debug are safe while explicit
+source-chain diagnostics remain internal and require caller redaction. Final7/7,5.01s command;
+strict application/all-target Clippy6.76s, fmt4.10s and24-crate architecture pass. No database,
+Bao, S3, scheduler, SDK or restart execution by this unit. Source schema/retention/audit/writer
+and broader B1/B2/runtime gates remain open. Evidence:
+tasks/project-completion/evidence/leaf-certification-api-20261018/manifest.json.
+
+## Dormant leaf certification storage — 2026-10-18
+
+Refs:T014-014/017/040. Migration20261211000000 adds one immutable scalar metadata table, an exact
+namespace/original-run FK, source DELETE/TRUNCATE retention under D298 and original-run key
+immutability, including privileged replication-role bypass. All six variable-length columns have
+concrete bounded protected-system classification. Runtime has SELECT only; no source INSERT
+adapter/caller. Copied fields and retained projections do not establish source UPDATE closure.
+
+Initial4/4 fail on real missing schema42P01, retained separately from behavioral regression RED.
+First4/4 pass48.20s; review identified non-discriminating identity/source coverage. Final5/5 default
+42.23s and5/5 runtime10.26s verify fresh-audit duplicate identity, same-tenant namespace binding,
+constraints/privileges/ALWAYS immutability, populated direct DELETE rejection for all8sources,
+actual cascade isolation and own-run-before-down race. The cascade probe disables only the parent
+DELETE guard in a rollback-only owner transaction; production guards remain enabled. Exact
+TRUNCATE trigger kind/function/ALWAYS binding is also checked because CASCADE refusal can originate
+at a descendant. Owner-created snapshots/source rows are relational fixtures, not source proofs.
+
+Implementation review cycle2 found existing Boundary::obstruct DELETE/reseed incompatible with
+retention. Direct execution of the already built test binary reproduced23001 (1.95s, binary/source
+hashes retained). The fixture now reuses its row; both chain tests pass35.42s/2.21s. Final cycle3
+found none. Native Finish25/25 (64.03s), classification1/1 (25.51s), startup append-only privilege
+test1/1 with12grant probes (42.32s), runtime SQL/trigger privilege audit1/1 (4.48s), D298 maintenance
+retention1/1 (2.65s), postfixture strict workspace/all-targetClippy8.35s, fmt4.08s and architecture
+24crates0.31s pass. Native/D298/classification results precede the isolated chain-fixture-only fix;
+their production sources are unchanged. No full-workspace test run, SDK/Bao/S3/100k/restart or
+source-certifier acceptance follows. Evidence:
+tasks/project-completion/evidence/leaf-certification-schema-20261018/manifest.json.
+
+## Leaf certification audit vocabulary — 2026-10-18
+
+Refs:T014-014/017/040. Dedicated LeafCollectionSuccessCertified/LeafCollectionSuccess tags map to
+collection.leaf_success_certified/leaf_collection_success. The action has no generic repeat collapse,
+window or distinct cap; a future canonical first-record transaction supplies exactly its own audit,
+without generic dedupe suppression/advisory lock. No actual source/audit writer, hint or execution
+journal event is added. Missing-variant compile failure retained, not behavioral RED. Domain audit
+8/8 (4.27s), strict domain/all-targetClippy10.73s, fmt4.11s and24-crate architecture0.32s pass.
+Fresh bounded Astra/xhigh review found none. Atomic source/audit/replay, producer preservation,
+recovery and production activation remain pending. Evidence:
+tasks/project-completion/evidence/leaf-certification-audit-20261018/manifest.json.
+
+## Dormant leaf native source writer and bounded barriers — 2026-10-18
+
+Refs:T014-014/017/040. Local B1b.2a.1d adds the dormant exact PostgreSQL certifier. Current chain/
+originalRun and fresh post-lock scheduler authority precede canonical replay; replay precedes
+creation CAS, immutable pin/profile and bounded selected-source proof. Canonical fact+noncollapsing
+audit commit together, without changing source, Run, journal, usage or outbox. Storage errors expose
+only sanitized SQLSTATE, malformed canonical time is refused and valid far-future shard expiry is
+compared server-side. Runtime INSERT remains absent in released schema; disposable tests grant it.
+
+Native first-increment evidence:4/4default and runtime tests,25/25shared guard regression, real
+runtime SQL/trigger privilege audit and strict workspace gates; source-driver review3cycles and
+source-proof review1cycle reached no remaining bounded finding. Evidence:
+`tasks/project-completion/evidence/leaf-certification-native-20261018/manifest.json`.
+
+Subsequent bounded increments use actual HTTP/gRPC execution as source and preserve release gates:
+
+| Increment | Actual bounded evidence | Evidence directory under tasks/project-completion/evidence |
+| --- | --- | --- |
+| Source refusals |6tests, tenant/namespace/CAS/current authority, missing/contradictory evidence; corruption fixtures prove refusal only |leaf-certification-refusals-20261018 |
+| Already stale reports |complete/fail with new keys, both observed flat originalRun queue directions |leaf-certification-late-reports-20261018 |
+| Successful closure |scheduler checkpoint then actual finish_collection, both queue directions, fresh CAS and producer replay |leaf-certification-closure-20261018 |
+| Unknown COMMIT |actual reply loss for commit/23514abort, retained guards and fresh direct reconstruction |leaf-certification-commit-loss-20261018 |
+| Process recovery |kill/reap actual blocked native reconciler, natural backend cleanup, new OS client/current acquired authority, same identity |leaf-certification-process-20261018 |
+| Later work/cancel |later completion/failure and READY cancellation both queue directions, real terminal planning with stable source/saga absence |leaf-certification-later-work-20261018 |
+| Ambient binding |actual later lease expiry/session closure before proof and during blocked native COMMIT, without Run serialization |leaf-certification-binding-20261018 |
+
+Owner corruption is not producer reachability. Native reconciliation-client restart is not a crash
+of the original writer, control plane or engine. READY cancellation is not active-lease cancellation.
+Chain-member source, effect-bearing later saga planning, remaining ambient/C0/source preservation,
+path Finish, nested execution and canonical feature014 acceptance remain open.
+
+## Dormant leaf returned-attempt observations — 2026-10-18
+
+The operational span `workflow.collection.leaf.certify` inherits caller trace and carries only
+qualified tenant/namespace/originalRun/owner/index plus closed outcome. Attempt counts/duration
+have outcome only; `workflow_collection_leaf_certified_total` counts acknowledged first commits,
+not Unknown/server-inferred success or replay. Cancellation has no returned outcome. These are
+process observations, not durable counts or journal-projected workflow attempts.
+
+Actual OTLP collector receives7native outcomes across invalid/current-authority refusals, deferred
+COMMIT abort, acknowledged creation/replay and actual lost-reply commit/recovery. Metrics/histogram
+counts, exact unredacted JSON completion events, empty exported status descriptions/events/links,
+payload/driver/authority marker absence and filtered-child caller preservation are asserted.
+First RED2/2failed missing counters; fixture SQL capture was corrected before final verification.
+Three bounded fresh review cycles ended with no remaining concrete finding. Final integrated
+regression passed18tests with1private subprocess helper ignored in direct selection but explicitly
+executed by its parent in4OS processes;151.14s including compilation,86.61s harness.
+Evidence:`tasks/project-completion/evidence/leaf-certification-observations-20261018/manifest.json`.
+Strict workspace/all-target Clippy passed89.00s; formatting and architecture results are retained
+in the same manifest. No production caller or released INSERT follows from these observations.
+
+## Later effectful saga planning preserves the selected leaf — 2026-10-18
+
+Refs:T014-014/017/040, local B1b.2a.1d.3b.5. A real public two-collection definition keeps `lines`
+ordinary and declares compensateWith/reconcileWith/highRisk on completed work in `later`. Permanent
+failure or cancellation with a READY successor reaches the actual drained preplanning boundary.
+Deferred COMMIT gates observe the real saga planning transaction and first certification in both
+orders. For certification first, the preliminary restore is explicitly queued before certification;
+only after it releases can certification reach gated COMMIT, where the planner's second Run
+acquisition must wait. This avoids mistaking the preliminary read for the writing transaction.
+Planner first changes the creation revision and requires fresh CAS. Both cases retain exact source.
+
+One matrix/4fresh real flows passes with actual later COMPENSATING header, COMPENSATE entry and
+planning event, real line.refund compensation delivery/completion, and terminal COMPENSATED or
+CANCELLED plus DONE/COMPENSATED later saga. Selected source and its exact saga absence stay fixed;
+original canonical record replays and exact1fact/audit remain. First test passed73.79s before the
+review's stronger stage oracle; final passed49.49s (compile34.51s; harness12.86s). Two fresh bounded
+reviews ended with no concrete remaining stage/order/oracle issue. No production behavior changed.
+Evidence:`tasks/project-completion/evidence/leaf-certification-saga-20261018/manifest.json`.
+This closes only the known-effect later compensation unit; unknown-effect reconciliation,
+active-lease cancellation, other producers/chain/C0 and released caller/INSERT remain open.
+
+## All-five current SDK58 aggregate and native compatibility — 2026-10-18
+
+Refs:T014-041, FR-014-016, NFR-014-004, SC-014-002/005. Registry preflight 1/1 passed 23.14 s and the
+complete current-client 58-scenario aggregate passed 1/1 in 1055.10 s (harness 1054.80 s), with TypeScript,
+Go, Python, C# and Java, five preparation scripts and no reuse selection/bless/scenario/language/
+archived-source filters. Actual runtime database role is sagat_app. All 1238 tracked tested inputs
+are hash-identical before/after. No new implementation or golden change was needed for this run.
+
+The registry includes 6 authoring-only cases, 1 publication-only case and 51 live workflow/protocol
+cases: 290 language/scenario plays, of which 255 are live. All 260 runtime/publication normalized
+artifacts from this exact harness PID were copied and independently compared in full to reviewed
+goldens; authoring canonical equality is enforced by the aggregate harness. No truncated/subset
+comparison or new golden blessing is used. The previous failed 56-case attempt remains historical;
+this new aggregate is a separate complete success and includes the 58th instance-limit case.
+
+Fresh native `compatibility::` regression passed 8/8 in 15.02 s (harness 12.53 s), including old-schema
+active-run migration/pin/journal preservation, old-worker minors with scoped withholding/current
+positive control, unsupported-reader no-write behavior and compatible-reader fairness. It is not
+a newly run old-engine binary; prior archived v0.1.0 client evidence remains separate. Current
+phase/version/capability results are appended to docs/sdk-compatibility.md; broader nested/C0/
+resource/release acceptance remains open.
+Evidence:`tasks/project-completion/evidence/sdk58-current-20261018/manifest.json`.
+
+Bounded acceptance review keeps T014-041 open: shared WP-13 expression/list boundaries and
+unsupported object literals, plus WP-12 switch cases at 32/excess 33, still need five-SDK coverage.
+The successful current aggregate is retained without claiming those absent scenarios.
+
+## Current flat ordinary-leaf producer preservation inventory — 2026-10-18
+
+Refs:T014-014/017/040; local B1b.2a.1d.3b only. The current source inventory maps each distinct
+reachable mutation family to exact lifecycle/path predicates and previously executed native
+barriers for stale selected reports, actual closure, accepted later work/cancel, ambient binding
+and later saga planning/compensation. Heartbeat/expiry/retry/rehint/review/reconciliation command
+names are distinguished as static exclusions or shared exact-addressed writers; no new independent
+native race or test run is claimed for them. Separate focused inventory and fresh bounded
+Astra/xhigh adversarial review found no remaining current flat family requiring another barrier.
+
+The local producer-preservation subitem closes with the source inventory and pinned previous
+actual evidence. C0/old binaries, chain-source, arbitrary privileged UPDATE, nested relationships,
+release INSERT/production caller and parent source-writer/runtime gates remain open. See
+`tasks/project-completion/leaf-current-producer-preservation.md` and
+`tasks/project-completion/evidence/leaf-current-producer-preservation-20261018/manifest.json`.
+
+## Shared switch case-count boundary — 2026-10-18
+
+Refs:T014-041, WP-07/12, FR-014-009/015. Exact32-case canonical publication/execution and33-case
+public-builder refusal passed in all five SDKs, focused aggregate1/1 in28.14s (harness27.32s).
+All five complete normalized outputs equal the unchanged reviewed runtime golden; only authored
+scenario/canonical/error expectations change. Fresh focused review found no issue. No blessing,
+reuse/language/source filter, server semantic change or optional workspace gate rerun. This closes
+the concrete shared case-count gap, not T014-041 or broader limit/nested/resource acceptance.
+Evidence:`tasks/project-completion/evidence/sdk-switch-case-boundary-20261018/manifest.json`.
+
+## Shared expression limits and server publication refusals — 2026-10-18
+
+Refs:T014-041, WP-13, FR-014-016. New reviewed shared `expression-limits` canonical/runtime goldens
+were authored before execution. Actual RED failed at the missing server publication-refusal phase
+in 27.66 s: the server correctly returned 422/EXPRESSION for 1,025 bytes while the old harness
+required publication success. First implementation compile failed because Uuid lacks Serialize;
+only the optional evidence ID projection was changed to String, with no dependency flag added.
+
+Final registry preflight passed 1/1 in 28.08 s. Expression case passed all five SDKs, 1 aggregate
+in 28.46 s (harness 28.13 s); unchanged ordinary state-operations case passed all five, 1 aggregate
+in 19.05 s (harness 18.75 s). Exact 1,024 UTF-8-byte evaluation includes non-ASCII content; literal
+64 and constructed 4,096 succeed. Constructed 4,097 fails with the existing typed evaluation
+reason, and a subsequent query sees unchanged Run/state revisions. Shared HTTP staging rejects
+1,025 bytes, literal 65 and unsupported object literal documents authored by the five builders,
+with independently observed zero versions/no active version. Compile-time refusals never execute.
+
+All ten complete normalized artifacts independently equal the pre-authored reviewed goldens;
+all 1,241 tracked inputs stayed unchanged throughout testing. One fresh bounded contract/fixture/
+harness review found no issue. No SDK runner/API/server semantics or blessing changes. These
+focused results do not claim a fresh full 59-case run or close broader nested/C0/resource gates.
+Evidence:`tasks/project-completion/evidence/sdk-expression-limits-20261018/manifest.json`.
+
+Expression harness gates: targeted Clippy with warnings denied passed in 10.03 s; workspace
+format check passed in 4.31 s; 24-crate architecture check passed in 0.46 s.
+
+## Conditional scoped Finish schema contract — 2026-10-18
+
+Refs:T014-014..017/040; local B1b.2b.2 only. The bounded storage contract proposes complete
+ChildRoot/ScopedPath tuples, original Run FK and exact scoped member receipt binding, unchanged
+group-wide receipt uniqueness and permanent tombstones. Original-column-only receipt INSERT
+preserves the ChildRoot writer while new scoped discriminator/identity columns remain ungranted.
+Conditional down migration must refuse any scoped row and preserve legacy-only data/guards.
+One fresh bounded Astra review found no issue. No executable schema, test, source consumption,
+RLS, global lock safety, C0, caller or nested authority follows. Actual migration/constraint/
+privilege evidence and observed downgrade locks remain separate implementation units. See
+`tasks/project-completion/scoped-leaf-finish-schema.md` and
+`tasks/project-completion/evidence/scoped-finish-schema-decision-20261018/manifest.json`.
+
+## Complete current 59-case SDK aggregate — 2026-10-18
+
+The complete current matrix passed in all five SDKs in 1,142.10 s: 59 scenarios, 295 language/case
+plays, including 30 authoring-only, 5 publication-only and 260 live workflow/protocol plays.
+All 265 complete normalized outputs equal the exact reviewed golden, with every 53 server-phase
+case/language pair present once and all 1,241 frozen input hashes unchanged. No blessing, reuse,
+archived source or scenario/language filtering. The source base is bea961c2; a later documentary
+schema contract changed none of those inputs. The earlier eight native compatibility tests retain
+identical executable inputs and a separately recorded conformance documentation delta.
+
+The final public-contract mapping still leaves T014-041 open for active sibling drain after failure,
+Query result-schema rejection with unchanged revisions, and successful upper bounds of 32 approval
+principals/queries/updates. These are separate from the open nested/C0/resource gates. Drafts for
+those public observations are outside the tested snapshot and cannot be counted as passing yet.
+
+Refs:T014-041. Evidence:`tasks/project-completion/evidence/sdk59-current-20261018/manifest.json`.
+
+## Shared active drain, result-schema error and upper declarations — 2026-10-18
+
+Refs:T014-041, WP04/08/12. Registry60 preflight1/1 passed1.38s; all-five approval-builders passed
+16.11s (authoring-only), expression-limits passed20.38s, collection-fail-fast-drain passed22.33s.
+All ten complete live outputs equal pre-authored goldens; all1,244frozen inputs stayed unchanged.
+Actual concurrent failure drains the other active worker, stops at two of three admissions and
+produces no successful join. Query schema-result failure is INVALID_OPERATION_STATE with raw
+full/prefix canary absent and unchanged Run/state revisions. Exactly32query/update declarations
+publish;32approval principals author successfully and prior33 negatives remain.
+One fresh review per fixture unit found no actionable issue. No new Rust/runner/server logic,
+blessing or unchanged lint suite rerun. Full60 integration and other canonical runtime gates stay
+open. Evidence:`tasks/project-completion/evidence/sdk-public-gaps-20261018/manifest.json`.
+
+## Dormant scoped Finish schema execution — 2026-10-18
+
+Refs:T014-014..017/040; local B1b.2b.3. The initial five schema probes were RED with42703 before
+migration; the first implementation snapshot passed5/5. Final complete capacity Finish regression
+passed30/30 in75.28s (harness39.41s), including the strengthened flat-Run, tenant/group/namespace,
+complete nullable variants, grammar/index endpoints, group-wide keys, ACTIVE identity, FINISHED
+timestamp retention and exact20-column effective runtime INSERT tests. Native ChildRoot
+apply/replay, contention, uncertain-COMMIT, independent members, handoff and observations remain
+successful through sagat_app. Metadata completeness1/1, actual runtime SQL privilege audit1/1
+and append-only/least-privilege1/1 passed against unchanged SQL/catalog.
+
+A previous full regression passed13 then failed PostgreSQL initialization with SSLRequest0x48,
+followed by16 poisoned shared-server-mutex failures. That complete failure log is preserved;
+the successful repeat used a dedicated held PostgreSQL16.15 with unique per-World databases.
+Bounded SQL review had no issue; test review cycles1..3 produced concrete oracle/fixture fixes.
+No fourth protocol review or external CLI. Conditional down/up and lock-before-inspection tests
+remain a separate unit; no scoped writer, source consumption, INSERT grant, C0 or caller follows.
+Evidence:`tasks/project-completion/evidence/scoped-finish-schema-20261018/manifest.json`.
+
+Final schema gates: strict targeted Clippy passed8.78s, format4.10s and24-crate architecture0.35s.
+Initial Clippy flagged two complex test tuple annotations; local type aliases preserve the same
+SQL/result values. After that type-only change all five scoped tests passed again in38.32s
+(harness4.03s), with unchanged frozen final sources through the gates. No full native rerun is
+claimed for this type-only annotation delta; its complete30/30 result is retained separately.
+
+## Fixed scoped Finish application contract — 2026-10-18
+
+Refs:T014-014..017/040; local B1b.2b.5. The reviewed additive interface reuses the exact existing
+LeafCollectionPathIdentity, validates ordinary owner/depth/index and positive SQL-range counters,
+and specifies a distinct length-prefixed SHA-256 domain. Results explicitly name original_run_id;
+ChildRoot head semantics remain separate. Future owning order is current authority, validated
+canonical retained certificate, group-wide operation receipt, then creation CAS/active checks.
+One fresh bounded Astra review found no issue. This is documentation only: no native consumer,
+source proof from types, runtime permission, caller or nesting acceptance. No tests run for this
+contract decision. See tasks/project-completion/scoped-leaf-finish-application-contract.md and
+evidence/scoped-finish-port-decision-20261018.
+
+## Conditional scoped Finish downgrade execution — 2026-10-18
+
+Refs:T014-014..017/040; local B1b.2b.4. Three actual PostgreSQL tests pass37.62s (harness3.45s):
+explicit sagat_app native ChildRoot apply/down-replay/up-replay with preserved legacy rows/grants;
+separate ACTIVE and FINISHED+receipt retained variants refusing55000; and uncommitted original-Run
+thenG writer observed blocking runs AccessExclusiveLock before inspection, whose later commit is
+retained and causes55000. Migration version, scoped identity, ALWAYS guards and effective grant
+survive refusal. No sleep-only lock oracle, row rewrite, source-consumption or global lock claim.
+Native compatibility passes8/8 in6.32s on the current migration set. Strict targeted Clippy8.78s,
+format4.12s and24-crate architecture0.32s pass. All frozen SQL/test inputs unchanged. One fresh
+read-only bounded Astra review found no issue; native store uses an explicit runtime pool.
+Evidence:tasks/project-completion/evidence/scoped-finish-downgrade-20261018/manifest.json.
+
+## Canonical ordinary-leaf metadata reader contract — 2026-10-18
+
+Local B1b.2b.7 only, refs:T014-014..017/040. The reviewed crate-private extraction accepts the
+genuine shared path identity and actual locked Run pin/revision, preserving the exact existing
+metadata-only query, finite timestamp guard, typed decoder and authority-before-replay ordering.
+It proves stored metadata/key/pin relationships only and supplies no locks, new source proof,
+protection from coherent owner-written certificates, chain-source acceptance or INSERT grant.
+One independent bounded Astra review found no issue. No tests or executable extraction claimed;
+actual current baselines and concrete missing metadata controls precede that next implementation.
+See tasks/project-completion/canonical-leaf-reader-contract.md and
+evidence/canonical-leaf-reader-decision-20261018.
+
+## Incomplete first current60 SDK aggregate — 2026-10-18
+
+The first unfiltered current60 attempt failed after593.74s (harness570.55s), with31 scenarios
+completed and135 complete normalized outputs independently equal to reviewed goldens. At initial
+managed-secret setup for database-connections, the API returned503/UNAVAILABLE. All1672 frozen
+inputs remained identical. The exact same source/configuration then passed that focused case in
+all five SDKs in25.53s (harness24.66s), with prepared-runner reuse only. No underlying cause was
+established and no speculative product fix, write retry or golden change was added. Failed full
+and passing focused logs are retained separately at
+tasks/project-completion/evidence/sdk60-first-failure-20261018/manifest.json. T014-041 remains
+open pending a complete current60 pass; component successes are not combined into one.
+
+## Scoped Finish audit/hint vocabulary contract — 2026-10-18
+
+Local B1b.2b.9 only, refs:T014-014..017/040. The reviewed vocabulary reuses the genuine capacity
+membership audit action/resource with a scoped reason and proposes a distinct closed
+capacity.scoped_member.finished reference message. It contains originalRun/owner/index metadata,
+never invented chain/head values, and preserves the ChildRoot message/baseline. Existing closed
+returned-attempt outcomes/metrics and exact span-handle redaction rules apply; no identifier metric
+labels or broker/execution authority follows. One fresh bounded Astra review found no issue.
+No schema, tests, native producer, privilege or caller is claimed by this documentary unit.
+See tasks/project-completion/scoped-leaf-finish-audit-hint-contract.md and
+evidence/scoped-finish-vocabulary-decision-20261018.
+
+
+## Complete current 60-case SDK acceptance — 2026-10-18
+
+T014-041 closes on the complete, unfiltered current five-SDK aggregate: 60 scenarios, 300
+language/scenario plays, 30 authoring-only, 5 publication-only and 265 live workflow/protocol.
+All 270 complete normalized outputs independently equal the reviewed golden; all 1,672 frozen
+inputs are unchanged. The aggregate passed in 1,067.94 s (harness 1,067.57 s), without blessing,
+prepared-runner reuse or archived source. Eight actual native compatibility tests pass on
+identical executable inputs, covering active-old-run and old-worker-minor compatibility.
+
+The first full attempt failed during managed-secret PUT with an unexplained 503, before the
+five database scenario outputs. Its same-source focused retry and this subsequent full pass
+are retained separately; no inferred provider cause or speculative fix is claimed. The third
+and final supported-public mapping review found no further missing observation after the
+last focused fixtures; stale matrix wording was corrected. Actual tagged v0.1.0 lifecycle
+coverage remains separately scoped, with other historical features/versions untested.
+
+Evidence: [complete SDK60 aggregate](../../tasks/project-completion/evidence/sdk60-current-20261018/reproduce.md).
+This evidence does not accept general nested runtime, C0, production ceilings or final release gates.
+
+
+## Scoped Finish application port and flat-context prerequisite — 2026-10-18
+
+Local B1b.2b.6/.11 only, refs:T014-014..017/040. The additive public port shares the genuine
+LeafCollectionPathIdentity, names original_run_id in its separate receipt result, validates
+ordinary depth1 owner/index and signed counters, and uses the independent fixed152-byte SHA256
+vector. Six public integration tests passed in5.42s after natural E0432 RED before module export.
+Field perturbations include same-length owner changes; invalid commands refuse before hashing.
+Renewable scheduler/operation key are excluded; raw StoreError stays absent from ordinary errors.
+Strict all-target application Clippy8.15s, fmt4.16s and architecture0.40s pass. Two bounded
+implementation reviews corrected two oracle gaps and ended without findings.
+
+A separate fresh bounded Astra review accepts only the future consumer restriction: actual
+originalRun has no parent and no exact qualified chain membership, after authority and before
+source/receipt. UnsupportedRunContext is additive; no caller assertion or certificate-profile
+change supplies this proof. Actual native context tests remain pending. Current child creation
+always records ParentLink, but initializes a chain only with continuation policy.
+No native adapter, source query, runtime grant, caller, C0 or broader nested acceptance follows.
+Evidence: tasks/project-completion/evidence/scoped-finish-application-20261018/manifest.json;
+contracts: scoped-leaf-finish-application-contract.md and scoped-leaf-finish-flat-context.md.
+
+
+## Shared canonical leaf metadata reader — 2026-10-18
+
+Local B1b.2b.8, refs:T014-014..017/040. The crate-private reader now accepts genuine shared
+identity and actual locked Run pin/revision; exact query/binds/strict finite timestamp and
+metadata/error/replay behavior are unchanged. Two owner-only corruption/exact-key controls
+passed before refactoring (72.48s including compilation;2.98s harness). After extraction,
+full current leaf_certification_native passed21 tests in106.65s (64.44s harness), with one
+private subprocess probe ignored in direct enumeration; the parent process-recovery test
+executes that probe in its own actual children. Native uncertain-COMMIT, both-order source
+barriers, recovery, typed refusals and OTLP/redaction regressions pass. Targeted strict
+Clippy23.71s, fmt4.34s and architecture0.34s pass; both frozen input hashes unchanged.
+Two fresh bounded reviews found no issue. No metadata reader grants authority or detects
+coherent arbitrary database-owner forgery; no new source producer, permission or caller.
+Evidence: tasks/project-completion/evidence/canonical-leaf-reader-20261018/manifest.json.
+
+
+## Scoped Finish canonical hint vocabulary — 2026-10-18
+
+Local B1b.2b.10, refs:T014-014..017/040. Canonical AsyncAPI adds only the distinct scoped
+channel/operation/closed message and one hand-authored baseline entry; all20 old entries are
+unchanged. The audit enum/string is unchanged; its comment now covers scoped membership. Two
+new tests were naturally RED on absent channel, then all3 hint tests pass in49.97s including
+compilation. Exact signed bounds and malformed/omitted/extra payload controls pass with UUID
+format validation enabled. AsyncAPI evolution/conformance4/4 passes in71.15s including build
+lock wait; pinned CLI3.6.0 validates in4.25s with0errors/0warnings and one existing-version info.
+Actual runtime-role existing capacity Finish regression33/33 passes in45.14s (44.61s harness),
+including actual old outbox schema checks, observations, COMMIT uncertainty and scoped schema/down/up
+permission guards. Strict targeted Clippy23.90s, fmt4.28s and architecture0.44s pass. Four frozen
+inputs unchanged. One fresh bounded implementation review found no issue. No scoped producer,
+caller, new runtime grant or production capacity eligibility is introduced.
+Evidence: tasks/project-completion/evidence/scoped-finish-hint-20261018/manifest.json.
+
+
+## Dormant flat scoped native Finish contract — 2026-10-18
+
+Local B1b.2b.12, refs:T014-014..017/040. One fresh bounded Astra review found no issue in
+the next owning transaction contract. Namespace-qualified binding discovery precedes the
+existing applicable chain/Run/G NOWAIT/current scheduler guards; flat context and validated
+canonical metadata precede operation receipt, creation CAS and A1 mutation. Closed source/
+receipt decoding, guarded trace, local SQLSTATE-only diagnostics and conservative COMMIT
+outcomes are specified. Three executable prerequisites are integrated; no native scoped
+result, production caller or new grant is claimed yet. The contract splits first transaction,
+decoding, actual barriers, unknown-COMMIT/process and observations into separate evidence units.
+This closes no broader B1/B2/C0 or canonical runtime/release task.
+See tasks/project-completion/scoped-leaf-finish-native-contract.md and
+evidence/scoped-finish-native-decision-20261018/manifest.json.
+
+
+## First dormant native scoped Finish — 2026-10-18
+
+Local B1b.2b.13, refs:T014-014..017/040. Four runtime-role PostgreSQL tests pass in49.22s
+(6.47s harness) after natural E0432 pre-export RED. The store consumes genuine native leaf
+metadata under own chain/Run/G/current-fence/flat-context ordering and commits only selected
+capacity contribution plus one receipt/audit/scoped hint. Actual two-index certification and
+two native Finishes prove original-result replay after later G advance and legitimate Run
+failure. A1 holder/nonholder/vacant/last transitions, exact member/audit/receipt time, actual
+canonical hint, source/execution/nonselected snapshots, typed ordered refusals and signed
+overflow are checked. Source INSERT is revoked before Finish; four extra receipt columns are
+granted only in disposable fixtures, with explicit sagat_app/current_user assertions.
+
+Two fresh implementation-slice reviews found no issue. Test review identified three actionable
+oracle gaps (scalar two-iteration snapshot, CAS/inactive ordering, exact member time); all were
+fixed before running, then the second fresh test review found none. Strict adapter all-target
+Clippy13.62s, integration Clippy29.72s, fmt4.31s and architecture0.39s pass. All1091 frozen
+Rust/SQL/Protobuf/Cargo/canonical-contract input hashes are unchanged. No runtime grant/caller
+or source activation is added. Source/receipt corruption and qualification, metadata-only
+reads, full context matrix, real barriers/failures, unknown-COMMIT/process and observations
+remain subsequent units; no general nested/B1/B2/C0 or canonical task closes here.
+Evidence: tasks/project-completion/evidence/scoped-finish-native-first-20261018/manifest.json.
+
+
+## Scoped Finish source-before-receipt and metadata-only controls — 2026-10-18
+
+Local B1b.2b.14a, refs:T014-014..017/040. Three actual runtime-role PostgreSQL tests pass in
+39.89s (4.88s harness). Genuine applied receipts do not bypass a corrupted/missing canonical
+certificate; stale authority still precedes source absence. Labelled owner faults restore
+ALWAYS guards, compare snapshots before repair and finally recover the exact genuine row.
+Native apply/replay succeeds with actual42501 read denials on11 tables, including payloads
+and captured collection items, certificate SELECT/noINSERT and audit INSERT/noSELECT.
+No runtime is driven after denial; owner snapshots verify no source/execution mutation.
+
+Actual first compilationE0521 was fixed by declaring the literal-only SQL probe &'static str.
+Initial nine-table3/3 pass is retained separately; reviewC1 found missing payloads/items, added
+before the final run, and freshC2 found no issue. Strict integration Clippy14.80s, fmt4.28s and
+architecture0.40s pass. All1092 frozen inputs unchanged. No product implementation change,
+released privilege/caller, owner-corruption resistance or general decoder/fault guarantee.
+Evidence: tasks/project-completion/evidence/scoped-finish-source-controls-20261018/manifest.json.
+
+
+## Scoped Finish binding and receipt controls — 2026-10-18
+
+Local B1b.2b.14b/.14c, refs:T014-014..017/040. The complete current scoped family passes12/12
+in54.22s (19.48s harness):4first-native,3source,3qualification and2receipt controls. Native
+qualification proves opaque tenant/namespace/group/member absence versus observable binding
+mismatch, cross-namespace holder preservation without a holder certificate, and group-wide
+differing-fingerprint ChildRoot conflict followed by genuine fresh-key apply/replay. Hidden
+bindings deliberately mismatch to catch omission of discovery qualifiers before later lookups.
+
+Receipt-owner fixtures retain every CHECK/FK and exact user-trigger catalog, restore ALWAYS
+before calls, and exercise year10000 rejection, fingerprint precedence,9999/BC exact replay,
+coherent counter/binding discrepancies and exact native restoration. Every call preserves
+source/execution/nonselected members and its full before-call capacity state where required.
+No owner-corruption resistance or statement-level foreign-Run read proof follows. Qualification
+reviewC1/C2 found masking oracles, fixed; C3None. Receipt reviewNone. ActualE0282 HTTP RunId
+helper inference failure is retained separately and fixed with shared RunId annotation. Strict
+Clippy9.48s, fmt4.24s, architecture0.35s pass;1094 frozen inputs unchanged. Residual exact-FP
+ChildRoot decoder control is inventoried in14d; actual barriers/recovery/observations stay open.
+Evidence: tasks/project-completion/evidence/scoped-finish-binding-receipts-20261018/manifest.json.
+
+
+## Current-schema decoder completion — 2026-10-18
+
+Local B1b.2b.14/14d close after a fresh bounded inventory and matching-fingerprint cross-kind
+control. A schema-valid owner-only ChildRoot receipt with exactly the scoped fingerprint
+reaches decoding and returns ContradictoryProjection, preserving exact source/capacity
+snapshots. A fresh key with the same scoped fingerprint applies once and its genuine scoped
+receipt replays exactly. All CHECK/FK/append-only guards remain intact; this fixture does not
+claim a hash collision or native ChildRoot finality.
+
+Root's complete current scoped family passes13/13 in86.09s wall (21.12s harness), with all1095
+frozen executable/contract inputs unchanged. Strict integration Clippy16.17s, fmt4.22s and
+architecture0.43s/24crates pass. Fresh Astra review found no substantive issue. Inventory
+separates current-schema guarantees from defensive changed-schema branches. Actual wait/fault,
+commit recovery, diagnostics/OTLP units15..17 and production/C0/nesting gates remain pending.
+
+Evidence: tasks/project-completion/evidence/scoped-finish-decoder-residual-20261018/manifest.json.
+
+
+## Actual native entry barriers — 2026-10-18
+
+Local B1b.2b.15a adds3 tests witnessing actual Run-first entry and selected-G Busy rollback
+(released Run while G still held), exact duplicate commands serialized into one apply/one
+original-result replay, and applicable-chain-before-Run followed by context refusal before
+actually denied source/receipt reads. Chain membership is an owner-labelled context fixture,
+not evidence of non-flat source closure. Source/capacity snapshots and linked fact counts
+are preserved; ordering uses actual pg_stat_activity/blocking graphs and NOWAIT probes.
+
+Root's full scoped family16/16 passes in61.22s wall (25.97s harness), strict integration
+Clippy9.43s, fmt4.19s and architecture0.29s/24crates. All1096 frozen executable/contract
+inputs match. Fresh bounded Astra review found none. Production adapter unchanged;15b..e,
+16/17, production/C0/nesting and canonical runtime/release tasks remain open.
+Evidence: tasks/project-completion/evidence/scoped-finish-entry-barriers-20261018/manifest.json.
+
+
+## Post-shard-wait current authority — 2026-10-18
+
+Local B1b.2b.15b. Two tests use real renewal to shorten the current lease, hold its committed tuple unchanged, observe the native shard-row wait while still live, and prove original Run/G guards retained with NOWAIT probes. Database-clock expiry occurs before releasing that unchanged row. Both first application and exact receipt replay return SchedulerFenceLost with exact source/capacity snapshots and no extra effects. Actual fresh owner/generation changes only renewable command authority; the unchanged logical fingerprint applies once or returns the exact original receipt.
+
+Actual focused unchanged-row shard expiry controls 2/2 in44.33s wall (8.99s harness); strict integration Clippy9.31s, fmt4.2s, architecture0.28s/24crates. All1097 frozen executable/contract inputs match.
+Fresh bounded Astra review found no remaining substantive issue.
+No production implementation changed. Previous complete scoped16/16 result remains separately scoped to2426083b; this run is focused2/2, not an aggregate18-test pass. Remaining15c..e,16/17 and production/C0/nesting/canonical runtime/release gates stay open. No sleep ordering, forced expiry UPDATE during wait, or non-flat source claim.
+Evidence: tasks/project-completion/evidence/scoped-finish-shard-expiry-20261018/manifest.json.
+
+
+## Public context, writer ordering and confirmed atomic failures — 2026-10-18
+
+Local B1b.2b.15c, B1b.2b.15d, B1b.2b.15e, B1b.2b.15. Three public-context tests cover ordinary child live/detached, settled FINAL child chain, and an independent parentless historical CONTINUED segment after real handoff; current authority precedes UnsupportedRunContext and actually denied source/receipt SELECT. Three writer tests cover first native certifier versus Finish in both actual Run queue orders, later worker completion/failure versus Finish in both orders, and both distinct genuinely certified member orders with actual fresh discovery/new logical keys after confirmed stale refusals. One atomic test uses four isolated worlds: audit/outbox/receipt BEFORE INSERT and deferred COMMIT 23514, each with a nontransactional owner-only marker proving the exact failure point, exact rollback snapshots and unchanged-command apply/replay. Actual source/certificate and nonselected state is preserved; legitimately changed Run/steps are not asserted unchanged.
+
+Actual complete current scoped native family 25/25 in94.56s wall (58.70s harness); strict integration Clippy9.81s, fmt4.22s, architecture0.28s/24crates. All1100 frozen executable/contract inputs match.
+Fresh bounded Astra review found no remaining substantive issue.
+Production driver unchanged. Initial actual full run22pass/3fail in92.87s wall/56.83s harness is retained with identical1100 frozen failure inputs and owner-only fixture diagnostics. Two failures were children disabled in the fixture scheduler; fourth atomic workflow name deferred_commit was rejected422. After fixing those fixtures and the reviewed oracles, the complete25-test aggregate passes on the newly frozen tree. No combined partial-pass claim. Only dormant local15 closes;16/17, production/C0/callers/general nesting and canonical runtime/resource/release tasks remain open. Child and chain capacity rows are registry fixtures without canonical child-source certification. Returned canary checks cover sanitized detail/Display/Debug; actual diagnostic export remains17.
+Evidence: tasks/project-completion/evidence/scoped-finish-context-writer-failures-20261018/manifest.json.
+
+
+## Unknown COMMIT and cold exact-command reconciliation — 2026-10-18
+
+Local B1b.2b.16a. One param-loop test executes actual committed and deferred23514-aborted server outcomes after losing the dispatched COMMIT reply. Actual COMMIT/pg_blocking_pids and NOWAIT probes prove original Run/G/shard guards remain held while unacknowledged. A distinct real public Run reaches G Busy and releases its Run; the same complete original command waits at the original Run. Dropping that claimant does not resolve the unknown original outcome. The relay observes actual C/E plus idle ReadyForQuery after gate release. A fresh runtime pool/store reconciles the unchanged complete command/key/expectations: committed receipt replays its exact original IDs/time/counters without changing its pre-recovery snapshot; aborted original applies once. Subsequent replay preserves the exact resolved snapshot and one receipt/audit/hint set. Genuine source state remains unchanged.
+
+Actual focused COMMIT loss test with both actual server resolutions 1/1 in39.35s wall (4.02s harness); strict integration Clippy9.83s, fmt4.22s, architecture0.28s/24crates. All1101 frozen executable/contract inputs match.
+Fresh bounded Astra review found no remaining substantive issue.
+No production driver changed. The earlier focused1/1 pass at46a978de (39.37s/4.00s harness) is retained separately as pre-original-result-control, with1101 identical inputs; final stronger-oracle run is its own actual result. No invented failure or combined aggregate. The previous scoped25/25 aggregate remains separately scoped to80fc3917; this is focused1/1 with two real outcomes, not aggregate26. Process restart16b, actual observations17, production/C0/callers/nesting and canonical runtime/resource/release tasks remain open.
+Evidence: tasks/project-completion/evidence/scoped-finish-commit-loss-20261018/manifest.json.
+
+
+## Actual process recovery and closed returned observations — 2026-10-18
+
+Local B1b.2b.16b, B1b.2b.16, B1b.2b.17. The actual process matrix kills and reaps a genuinely blocked reconciliation OS child while the original uncertain writer remains alive, observes actual committed/23514-aborted server resolution, changes scheduler authority through real release/acquire, and starts another OS process from the byte-identical eleven-field complete original command. The replacement discovers only scheduler owner/generation, preserves original key/CAS and returns the pre-captured original IDs/time/counters or applies once after confirmed abort; subsequent replay preserves exact capacity/source snapshots. Three current-thread observation tests exercise all six returned outcomes, actual OTLP parent/status/exact identity attributes, fixed log sequence, closed metric series/labels, raw diagnostic/source canary redaction, filtered parent safety, and abandoned-call zero returned metrics/logs/effects with exact five identity values. Only acknowledged first apply increments the transition counter.
+
+Actual final strengthened observation controls 3/3 in6.35s wall (6.07s harness); strict integration Clippy10.95s, fmt4.19s, architecture0.35s/24crates. All1103 frozen executable/contract inputs match.
+Fresh bounded Astra review found no remaining substantive issue.
+No production driver changed (832811d8977b92ed8ac6d518603bc23e9f5f048c8c140730fa92f29f18143780). Native source+scoped baseline51passed/2private probes ignored in direct enumeration,170.51s wall/134.30s harness, is retained at its exact1103 frozen inputs. Both private probes actually run through their parent matrices:8 OS children total,4 killed while blocked and4 successful replacements. Final sources differ from that baseline only by abandoned-span identity assertions; focused final3/3 verifies those assertions. This is not a new aggregate54-test pass. Final-tree regressions:capacity/legacy/schema/privileges/downgrade33/33 in79.36s wall/42.91s harness, hint3/3 in0.30s, AsyncAPI4/4 in22.42s. Earlier72.99s full invocation was administratively SIGINT-superseded for review-oracle corrections; it is retained as incomplete, not a test assertion failure or completed aggregate. This proves reconciliation-client process death, not original writer/control-plane/engine restart. General B1b.2b/B1/B2/C0, source/scoped release grants, caller intent, nesting, resource ceilings and canonical runtime/release tasks remain open.
+Evidence: tasks/project-completion/evidence/scoped-finish-process-observations-20261018/manifest.json.
+
+
+## Genuine ordinary-child baseline — 2026-10-18
+
+A genuine publicly started parent creates an ordinary unchained child through the production scheduler. Before source closure the native certifier refuses SourceNotClosed; actual worker completion/checkpoint/collection closure creates the source while later child work remains LEASED and unfinished. First native certification retains exact qualified source identity, pinned definition, scope/body/Return/digests/five actual event references and one truthful audit. Cold runtime pool/cache/store replay returns the complete original record. Stale own authority precedes replay; foreign tenant/namespace, missing index and parent identity cannot reuse the child evidence. Actual later work finishes child and parent while selected source/certificate stay unchanged; terminal replay preserves the entire observed snapshot. A second genuine certificate fixture still receives UnsupportedRunContext from Scoped Finish before denied source/receipt reads (actual42501 probes), with no source/execution/capacity effects. Both use explicit sagat_app and a disposable test-only source INSERT grant that is revoked before replay. No production implementation changed.
+
+Actual focused child baseline: 2/2 default (40.1s wall) and 2/2 runtime-role (6.58s wall), the same two tests in separate invocations. Strict integration Clippy 39.21s, formatting 4.49s and architecture 0.41s/24 crates passed. All 1104 frozen executable/contract inputs match.
+
+This closes local B1b.2c.1a only. It characterizes existing source acceptance, not new child support or complete parent-writer preservation. Cold reconstruction is not an OS restart. Parent CANCEL races, child cancellation/drain/later compensation and terminal fanout remain separately pending. All parent/chain Scoped Finish refusals remain. Broader B1/B2/C0, production source/scoped INSERT grants/callers, nested runtime, resource ceilings and canonical T014-014/015/016/017/040/042/043/044 remain open. Earlier compilation is compilation only. Initial runtime0/2 failed at public workflow creation422; shortened test fixture prefixes fixed the public Slug63 mismatch. The retained preformat run passed2/2 in each mode and Clippy/architecture, but formatting rejected one edition2024 trailing comma. Final results above are from the corrected final source, not a combined aggregate.
+Evidence: tasks/project-completion/evidence/ordinary-child-source-baseline-20261018/manifest.json.
+
+
+## Actual incoming-parent flag preservation — 2026-10-18
+
+Real public parent CANCEL competes with first native certification of a genuine ordinary unchained child under PROPAGATE, DETACH and REQUEST_CANCEL in both observed child-row queue directions. Exact three-PID role/database/query/wait/blocker witnesses, parent Run conflict probes, original post-lease child CAS, policy-specific parent journal/status/step/flags, atomic audit/dedupe/outbox and immutable selected source/full child core/journal/steps/exact later lease are asserted. All six first certifications succeed without changing the captured revision. A seventh fresh fixture pauses the actual certifier COMMIT behind a deferred advisory gate; the real parent UPDATE waits behind that COMMIT while child Run, parent Run and child scheduler SHARE guards remain held. Releasing only the gate commits both. After revoking the disposable source INSERT grant, a cold runtime store/cache returns the exact original complete record/audit and preserves the full snapshot.
+
+Actual focused child suite:4/4 default in53.65s wall/16.71s harness and4/4 runtime-role in17.43s wall/16.78s harness. These are the same four named tests in separate invocations:two existing baseline controls and two new tests executing six policy/order fixtures plus one actual COMMIT fixture. Seven asserted three-PID observations are retained per mode. Strict integration Clippy11.27s, fmt4.33s and architecture0.36s/24 crates passed. All1105 frozen executable/contract inputs match.
+
+Local B1b.2c.1b closes only this incoming legacy flag writer family. No production code, grant, caller, profile, schema or capability changed. Later remains LEASED and unfinished; no own-child cancellation/drain, detached later progress or terminal fanout is claimed. The parent flag writers do not advance child revision/journal/updated_at. B1b.2c.1c/.1d/.1e and the master .1 remain open, as do broader B1/B2/C0, production activation, nesting/resource acceptance and canonical T014-014/015/016/017/040/042/043/044. Initial default invocation passed the two baseline tests and failed both new tests at the shared uppercase dedupe expectation; the six-cell loop then stopped in its first cell. Initial Clippy failed two test-only lints. All original records/source pins are retained separately, and no partial run is combined with the final suite.
+Evidence: tasks/project-completion/evidence/ordinary-child-parent-flags-20261018/manifest.json.
+
+
+## Actual detached-child later progress — 2026-10-18
+
+After genuine ordinary-child source certification, real public DETACH parent CANCEL commits a terminal parent with parent_settled=true and parent_cancel=false. The original leased later activity then completes through real gRPC, retaining its exact expected output, clearing lease metadata and advancing child revision/steps/journal without stopping or finishing the child. Selected source/certificate stay unchanged. Exact parent Run/steps/journal/audit/outbox snapshot stays unchanged, with no child.finished notification. After the disposable source INSERT grant is revoked, a cold explicit sagat_app store/cache replays the original creation CAS and returns the complete original certificate/audit under current own-child authority, preserving the entire post-progress snapshot.
+
+Actual focused DETACH later-progress test:1/1 default in38.62s wall/1.94s harness and1/1 runtime-role in2.53s wall/1.91s harness. These are separate invocations of the same named test, not two distinct cases. Strict integration Clippy11.21s, fmt4.27s and architecture0.35s/24 crates passed. All1106 frozen executable/contract inputs match.
+Fresh bounded Astra review:None.
+
+Local B1b.2c.1e only. No scheduler tick, child termination, terminal result propagation, fanout, own-child cancellation/drain/compensation, race matrix, production code/schema/profile/grant/caller or capacity activation is claimed. B1b.2c.1c/.1d/.1d.0 and master .1 remain open. The separately identified collection End/owner-result retention defect requires genuine RED and a reviewed correction; this test stops before that path. Broader B1/B2/C0, nesting/resource acceptance and canonical T014-014/015/016/017/040/042/043/044 stay open. Prior four-test child-suite results at2cdd5aaf remain separate at1105 inputs; this one-test proof at1106 inputs is not a new five-test aggregate.
+Evidence: tasks/project-completion/evidence/ordinary-child-detached-progress-20261018/manifest.json.
+
+## .1c acceptance checkpoint (2026-10-18)
+
+Two real PostgreSQL tests pass in default mode (42.77 s wall / 4.74 s harness) and explicit runtime-role mode (5.30 / 4.66); same two names in both, no aggregate four-test claim. Actual three-PID witnesses establish both original-child writer COMMIT orders. After real public PROPAGATE, cancellation, drain and known-effect refund, selected source/certificate/audit remain unchanged and the complete original record replays cold. The child remains unfinished; End/result/fanout remain separate. Strict Clippy passed 11.69 s, fmt 4.36 s, architecture 0.34 s / 24 crates. Final 1108 source inputs unchanged. See evidence/ordinary-child-own-cancel-20261018 manifest/review/reproduce and retained initial failures. B1b.2c.1c closes only; parent umbrella, .1d/.1d.0 and canonical 014 tasks stay open.
+
+Implementation/evidence commit: `de64eafc`. Prior child-suite, detached-progress and this two-test selection are separate source revisions and invocations, not a new combined suite. The independent collection End result and instance-limit RED regressions remain unresolved at `6ef22a85`; these successful cancellation tests stop before that path.
+
+## Shared End preparation checkpoint — 2026-10-18
+
+`da9201b2` closes local .1d.0b only: shared bounded End evaluator and optional closed answer on CollectionFinish, default None. Existing real result gRPC tests passed5/5 in each separate mode, final1108 inputs; strict application Clippy/fmt/architecture passed. See tasks/project-completion/evidence/collection-end-preparation-20261018/manifest.json. No native collection consumer activated; collection End/instance-limit RED and .0Q remain unresolved. No canonical task closure.
+
+## Data-limit vocabulary and domain checkpoint — 2026-10-18
+
+Q1 closed RunDataLimit vocabulary/domain/codec preparation and Q1a four new pure domain cases have bounded evidence in tasks/project-completion/evidence/collection-data-limit-vocabulary-20261018 and collection-data-limit-domain-20261018. Codec9/9; updated domain targets17/17,6/6,30/30 in one invocation. Strict relevant Clippy/fmt/architecture pass. Native reason production explicitly remains RuntimeNotIntegrated before transaction; full/path readers, additive schema, effective legacy accounting, real report/compensation/upgrade and native End correction are pending. No public capability/shape/grant or canonical task closure. Public empty-collection and End result/instance-limit regressions remain genuine RED.
+
+## Collection data-limit schema checkpoint — 2026-10-18
+
+`55ea9423` adds migration20261213000000 without changing applied migrations, grants or writer activation. Five behavioral PostgreSQL schema tests pass separately in default and runtime-role modes (49.04s/4.85s and5.14s/4.82s wall/harness), including total CHECK, old-form preservation, guarded down/up and observed down-before-writer rollback. Strict integration Clippy/fmt/architecture pass; final1112 inputs unchanged. See tasks/project-completion/evidence/collection-data-limit-schema-20261018/manifest.json, including the separately retained initial compilation failure. New-reason rows are explicit static fixtures, not native producer, replay or actual old/current upgrade evidence. Schema down eligibility never authorizes old execution binaries. Native producer, effective accounting, report preservation, scheduler lifecycle and End correction remain pending; no canonical task closes.
+
+## Collection reader and known-effect prerequisites — 2026-10-18
+
+`c620c2bd` and `7212a4b1` add strict new-reason full, owned-path and descendant-ancestor readers. Four focused SQL tests pass in each access mode, including ten static malformed projection cases and native finish no-write rejection; executed behavior pins and subsequent lint-only revision are separately recorded in collection-data-limit-readers-sql-20261018. The dormant path-owned nested shape is not exercised by these public depth1 fixtures, and native new-reason production/replay remains pending. Existing runtime byte_ceilings19/19 passes.
+
+`a7dc19b3` adds the metadata-only effective-byte helper, verified read-only legacy overlay and full positive-charge guard. Bounded reviews found no remaining issue, but actual frozen old-producer overlay/guard/upgrade acceptance is still pending. It is preparation, not a deployable bridge.
+
+`c04b786d` adds the root-only preparation command for refused known-success scoped outputs. Pure domain scoped_compensation34/34 passes, including four new ordinary/Applied identity, prior-stop, version and compensation-plan tests. PostgreSQL report atomicity/authorization and the matching scheduler consumer remain pending. `ffec26d5` adds typed audit/evidence with audit9/9 and constructor3/3, plus strict relevant Clippy/fmt/architecture. Final source pins are1114 for the domain command and1115 for audit/evidence. See their separate manifests under tasks/project-completion/evidence. No public shape, grant, production caller or canonical task closes.
+
+## Effective-byte/native preparation checkpoint — 2026-10-18
+
+`b0a7ea5e` shares verified E=L+V with exact-path scalar/positive guards and ScopeRun in its existing repeatable-read snapshot. Strict integration Clippy and existing runtime byte_ceilings19/19 pass, final1115 inputs unchanged. Actual old E>L snapshot/CAS/report acceptance remains pending. `012d746f` uses the effective scalar in four existing full preflights; existing real gRPC result5/5 passes separately per access mode and strict all-target application Clippy/fmt/architecture pass. These existing regressions do not establish new legacy signal/chain acceptance. See the effective-output-path-frontier-20261018 and effective-output-preflights-20261018 manifests.
+
+`9fd9405f` adds the guarded internal native drain writer. C1 owner/checkpoint gaps were corrected; fresh bounded C2 on e0928f4f found no required issue. Strict PostgreSQL library Clippy/fmt/architecture pass with1117 unchanged inputs; executed native behavior tests are zero. The old unconditional RuntimeNotIntegrated refusal has been replaced by checked audit/evidence plus locked source/budget/stop predicates; normal scheduler/report producers remain absent. Native positive/replay/corruption/fault/runtime acceptance and End correction remain pending. This intermediate source is not a deployable bridge.
+
+`46d3824f` corrects Q7b's unconditional report-outbox assumption to existing durable collection discovery. Report refusal creates no outgoing obligation or task release; its expected new outbox count is zero, with journal/projection/audit/receipt/telemetry atomic. The actual later drain retains its own outbox. Fresh bounded amendment review found no issue under Constitution I/VII and ADR-0002/0017. Cold normal-tick discovery without hints remains a required unexecuted gate. No public message, grant or shape, ADR divergence or canonical task closure follows.
+
+
+## Actual legacy-output compatibility acceptance — 2026-10-18
+
+Q5 is accepted with source `ce0cb786` and immutable old producer `6c44a0e4`: the complete
+old/current coordinator passed in133.91s. Each of the two independent role passes contains one
+real public old-producer test and one current matrix test with five ordered cases, not five tests.
+The old producer always uses the runtime role; only the current native store pool varies between
+owner and `sagat_app`. Read-only overlay/per-owner accounting, exact migration/read-only witnesses,
+isolated corruption refusals, unclamped E>L, fitting L-only charge, zero-delta access above the
+limit and positive-delta rollback passed. Stored `legacyControl` discovery metadata is allowed
+only with the unchanged pinned rootForEach/full source qualification; no old source/result is
+rewritten. Strict Clippy/fmt/architecture passed with1117 unchanged native inputs.
+
+Known-success report baseline tests in `03a0043a` independently reproduce actual FAILED acknowledgements
+for a real successful forward effect and a genuine Applied reconciliation; their correction and
+later compensation assertions remain pending. Q8 second-owner discovery compatibility and actual
+producer composition, native End/scheduler activation, full old-binary rollout, source/fanout,
+nested capacity and final release gates remain open. No canonical runtime task is closed by Q5.
+Evidence: `tasks/project-completion/evidence/legacy-output-view-20261018/reproduce.md` and
+`scoped-output-refusal-red-20261018/reproduce.md`.
+## Collection result correction checkpoint — 2026-10-18
+
+The focused [composition evidence](../../tasks/project-completion/evidence/collection-result-composition-20261018/reproduce.md)
+adds owner/End/Run result retention, actual scalar child-to-parent fanout, pinned classified HTTP
+result disclosure, post-persist Finish rollback/retry and fresh-store source-bound bodyless replay.
+Default/runtime selections pass, as do strict Clippy, formatting and architecture on 1,121 pinned
+native inputs. Public Flow producers use sagat_app in both invocations. No production source or
+scoped Finish INSERT grant/caller is introduced.
+
+The [separate old/current gate](../../tasks/project-completion/evidence/collection-discovery-integration-20261018/reproduce.md)
+passes both current store roles with unchanged old production: an effective-over-limit OPEN
+collection is discovered with a live RUNNING worker, records its audited drain/stop, respects
+the real worker lease and finishes without rewriting closed source. This is not old in-flight
+report acceptance, mixed-writer rollout, OS restart or uncertain COMMIT. The local correction
+and all eight canonical open feature014 tasks remain open for their remaining required gates.
+## Report atomicity and terminal End replay — 2026-10-18
+
+Source `6ed26a12` has [focused real evidence](../../tasks/project-completion/evidence/collection-report-replay-20261018/reproduce.md)
+for report receipt fault/rollback/same-key retry, failed-expression/pre-evaluation exact native
+replays, contradictory retained End bytes, prior-owner child context and the legal End result
+crossing the remaining Run-byte budget. Scope success and owner output remain durable while the
+Run fails; the final oracle checks physical payload absence, terminal hints, audit and head.
+Current-version default/runtime results are separate from old in-flight upgrade acceptance.
+All canonical open tasks remain unchecked; the later merged Clippy and release gates still apply.
+
+
+### Current worker compensation requiring a refused output — 2026-10-18
+
+Actual strict handler over real compensation lease input succeeds for 16 retained results and
+fails honestly for the refused result. Public FailStep retains operator review; exact authorized
+failed resolution is audited and ends COMPENSATION_FAILED. Final-source focused test passes
+in default/runtime invocations (both Flow sagat_app), strict integration Clippy/fmt/architecture
+pass. Full byte 23/23 passed before the named SQL result-model-only lint correction.
+See `tasks/project-completion/evidence/refused-output-worker-20261018/README.md`.
+This is current worker/engine behavior with fixture in-memory state, not external provider undo,
+old-process upgrade or canonical task closure.
+
+
+### Successful refusal report and drain fault boundaries — 2026-10-18
+
+Actual PostgreSQL barriers prove rollback after the root-only persist and before the first
+scoped journal insertion, then separately at the later drain outbox insertion. The former
+rolls back the whole report and permits the same key/lease to retry; the latter preserves
+the committed report/stop/ACK and rolls back only the drain. Both tests pass in default
+and runtime invocations (actual Flow sagat_app), with strict integration Clippy/fmt/architecture
+and 1122 matching source inputs. Normal retries drain and complete 17 actual engine compensation
+tasks. Evidence: `tasks/project-completion/evidence/refusal-transaction-faults-20261018/README.md`.
+No old binary, OS process, unknown-COMMIT or external-provider claim; canonical tasks remain open.
+
+
+### Post-correction five-SDK collection regression — 2026-10-18
+
+At e51b3390, existing collection-runtime passes across all five SDKs without golden changes
+(one selected scenario, cached runners, runtime-role stack). Aggregate 114.62 s/harness 33.74 s;
+1122 native and 582 SDK/scenario hashes match, five fresh normalized outputs match the reviewed
+golden with type-preserving independent comparison. See
+`tasks/project-completion/evidence/collection-sdk-regression-20261018/README.md`.
+This is execution/identity regression, not result-value disclosure or a new complete 60 pass.
+
+
+### Current binding recheck after the checked report path — 2026-10-18
+
+The genuine public seventeenth-output fixture now proves NOT_BOUND from fresh full authority
+after native HTTP unbind while the exact full checkpoint restoration query remains blocked.
+It verifies only the intended lease change, exact binding-byte refund and traced unbind audit;
+after rejection it permits only the exact report-traced mandatory policy denial audit. All
+execution/payload/usage/receipt/head/outbox state otherwise remains identical. Fresh store/cache
+journal reconstruction passes. Final focused 1/1 default/runtime (actual Flow sagat_app both),
+strict integration Clippy/fmt/architecture and 1122 matching source inputs.
+Evidence: `tasks/project-completion/evidence/refusal-fresh-binding-20261018/README.md`.
+Two failed fixture contracts are retained and explained. This does not close other authority,
+secret, fence, cold-process, legacy or nested capacity cases, nor canonical task checkboxes.
+
+
+### Immutable-old ordinary success before current drain — 2026-10-18
+
+The real frozen 6c44a0e4 producer/current consumer coordinator now passes all four phases
+(owner and actual sagat_app). An original still-leased compensable member reports success
+with its original authority/request before any current scheduler tick, at legacy E=4,200,020.
+Current success is retained without output, exact receipt/replay is stable, durable discovery
+starts the genuine drain and real compensation reaches COMPENSATED with matching target/key.
+Closed old source witnesses and fresh native journal reconstruction pass. Final strict
+Clippy/fmt/architecture and 1124 matching input hashes; two failed fixture expectations are
+retained separately. Evidence: `tasks/project-completion/evidence/legacy-inflight-ordinary-v1-20261018/README.md`.
+This closes only ordinary report-before-drain at E>limit. Drain-first, Applied, the other byte
+condition, cold post-ACK process/unknown-COMMIT, external effects and the full Q10c/canonical
+014 release gates remain open. No production nesting activation is inferred.
+
+
+### Fresh full exact OpenBao version recheck — 2026-10-18
+
+Actual OpenBao 2.7.1 public secret rotation now passes while the genuine seventeenth
+completion is held at observed full checkpoint restoration after its checked path/provider scan.
+Exact immutable v1 rows, one native v2 operation/version, two operation-specific audits and
+physical retained-byte charge are verified. Releasing the gate returns UNAVAILABLE without
+execution/refusal effects for the stale scanned vector. Same original key/lease retry accepts
+SUCCEEDED/RUN_DATA_LIMIT without output/new report outbox; cold journal reconstruction and
+stable replay pass. Both secret values remain absent from captured logs. Final focused 1/1
+default/runtime, both actual sagat_app; strict Clippy/fmt/architecture and1125 identical inputs.
+Evidence: `tasks/project-completion/evidence/refusal-secret-versions-20261018/README.md`.
+Two fixture-oracle failures are retained (shared key across instances and SQL alias/column
+collision). This is not a literal pre-begin fence/terminal race or an owner/runtime matrix.
+Other authority, old-order/Applied, cold-process/uncertain-COMMIT, nesting and release gates
+remain open; canonical014 checkboxes are unchanged.
+
+
+Merged regression after8d07b0d3: full byte_ceilings26/26 (zero ignored/failures) passes
+under runtime invocation in41.49s,1125 identical source hashes. This combines the recent
+report/drain faults, compensation and binding controls with the byte/End suite. Evidence:
+`tasks/project-completion/evidence/collection-current-merged-regression-20261018/README.md`.
+OpenBao/old-current tests retain separate evidence; full014/nesting/release tasks remain open.
+
+
+Current dependency advisory observation: exact CI `cargo audit --deny warnings` passes
+on25a197df with existing policy, cargo-audit0.22.2,627 dependencies/1338 advisories.
+No new exception or dependency change. See
+`tasks/project-completion/evidence/current-dependency-advisories-20261018/README.md`.
+This is not complete T014-043 acceptance.
+
+
+### Immutable-old ordinary drain-before-report — 2026-10-18
+
+Primary D1 passes all four real old/current phases in both API pool modes,149.81s.
+A live original member retains its slot/reservations through actual normal drain and an extra
+waiting tick; the original success stays SUCCEEDED, without output/new report outbox or journal
+payload reference. Exact first stop/drain and receipt replay remain stable. Actual original-target
+compensation must finish before COMPENSATED. Default report-before-drain regression also passes
+all four phases147.54s. Strict Clippy/fmt/architecture and1125 identical source inputs.
+Evidence: `tasks/project-completion/evidence/legacy-inflight-drain-first-20261018/README.md`.
+Only ordinary E>limit ordering is accepted; cancellation-first, other byte condition, Applied,
+cold-process/uncertain-COMMIT and full Q10c/canonical014 release gates remain open.
+
+
+### Current scanned original-lease expiry — 2026-10-18
+
+Actual public binding narrowing preserves the report activity but natively closes its incompatible
+session and expires the original lease while full checkpoint restoration remains observed blocked.
+After release, the scanned inline report returns Aborted/STALE_ATTEMPT with raw post-mutation
+execution and complete tenant authority unchanged. Exact quota/audit/expiry-only deltas, original
+natural-expiry control, checkpoint/catalog preservation, no refusal/receipt/outbox/head effect,
+cold journal reconstruction and log redaction pass. Final focused1/1 default/runtime, both actual
+sagat_app; strict Clippy/fmt/architecture and1125 identical source inputs.
+Evidence: `tasks/project-completion/evidence/refusal-current-lease-20261018/README.md`.
+One fixture registration-order failure is preserved. This proves current lease expiry after path
+drop inside full restore, not a literal pre-begin/generation/terminal race or full Q7b closure.
+
+
+### Immutable-old public cancellation before success — 2026-10-18
+
+D2 passes four real old/current phases in198.77s, actual postgres/postgres and
+sagat_app/sagat_app pools. Public CANCEL owns the exact first CANCELLED/null stop and operation
+receipt before normal cancelled drain. Original live lease/reservations survive waiting; original
+success records SUCCEEDED without output/report outbox and remains genuinely compensation-eligible.
+Exact original report receipt/ACK and operation receipt replay preserve their separate semantics.
+Only one truthful successful-output-refusal audit is allowed; all other/NULL data-limit reasons
+are excluded after waiting/success/replays/finality. Real original-target/key compensation must
+complete before final CANCELLED, with DONE/COMPENSATED saga and unchanged first stop/drain.
+Shared default and drain-first regressions each pass four phases (173.73s/154.46s).
+Final strict Clippy33.54s, fmt7.03s, architecture0.97s; each execution pins1125 unchanged inputs.
+Source/evidence:5ad34370, `tasks/project-completion/evidence/legacy-cancellation-first-20261018/README.md`.
+This supersedes the earlier cancellation-first pending status only. Ordinary E>limit is accepted
+for these three orderings; under-limit increment, Applied, OS-process/uncertain-COMMIT recovery,
+output-dependent old compensation, full Q10c and all eight canonical014 tasks remain open.
+
+
+### Current canonical contracts — 2026-10-18
+
+Evidence commit e80c061a records gates on source23127c38. All four repository CI contract commands pass: OpenAPI3.75s, Protobuf0.14s,
+AsyncAPI4.54s (zero errors/warnings, one informational version notice), IR/example1.99s.
+One real Rust invocation passes classification18/18, platform30/30 and primitives47/47,
+zero ignored/failures,78.73s including compilation.1125 native input hashes match before/after.
+Local Node26 differs from CI22 and npx resolution remains as configured; no tooling update is
+claimed. Evidence: `tasks/project-completion/evidence/current-canonical-contracts-20261018/README.md`.
+This is partial T014-043 evidence only; workspace/Compose/final integration and activation gates
+remain separate and canonical checkboxes are unchanged.
+
+
+### Supplied-pool public bootstrap prerequisite — 2026-10-18
+
+Source/evidence c7f62b4a adds only a test-support supplied PgPool constructor and genuine public
+Worker reopener. Original capability/current JWT survives exact owned-DB reconstruction; one
+sagat_app backend is observed at the exact public receipt gate. Actual250000-byte persisted output,
+session credential hash, independently canonical receipt digest and full replay identity pass.
+Final process-guarded api_reopen:: default2/2 (3.04s) and runtime2/2 (2.66s), both API pools sagat_app;
+strict Clippy18.07s/fmt4.91s/architecture1.02s and1125 unchanged inputs. Owner inspection confirms
+all four terminal fixtures and removed gates. The90s inner timeout is cooperative; required final
+GNU timeout supervises the whole process at180s/TERM+5s/KILL, covering synchronous lifecycle.
+Evidence: `tasks/project-completion/evidence/public-pool-bootstrap-20261018/README.md`.
+This accepts P0 bootstrap only. Supplied-pool scoped rollback/full reopen and actual lost-COMMIT
+recovery remain separate; no Q7b/canonical task or production activation closes.
+
+
+### Immutable-old fitting total / refused increment — 2026-10-18
+
+8b8046e5 accepts only ordinary report-first E<=limit<E+candidate over genuine frozen6c44a0e4
+history: L2000000,V2000020,E4000020, actual250000-byte candidate makes4250020>4194304.
+Full production overlay fits without backfill; normal pre-report Waiting/candidate exclusion and
+valid native ExistingOutputs refusal preserve complete execution/telemetry/saga footprint.
+Original successful report stays SUCCEEDED/nooutput with exact canonical receipt/replay/zerooutbox;
+fresh owned scheduler starts StoppedForRunDataLimit with its own truthful audit/outbox. Real original
+target/key compensation and terminal original-ACK replay pass with retained sources/bytes unchanged.
+Newcase four phases156.91s; original default/drain/cancel regressions four phases each132.53/135.47/
+145.53s. All16separate phases pass with actual postgres/postgres or sagat_app/sagat_app pools,
+1125identicalinputs across all before/after pairs and8created DB/private-receipt cleanups verified.
+Strict Clippy42.33s/fmt5.74s/architecture0.76s/shellsyntax pass. Evidence:
+`tasks/project-completion/evidence/legacy-underlimit-increment-20261018/README.md`.
+Only this report-first byte condition closes locally. Under-limit prior cancellation/drain, Applied,
+post-ACK OS/uncertainCOMMIT, frontier/CAS/rollout/general nesting and full Q10c/canonical014 stay open.
+
+
+### Public scoped refusal after complete API reopen — 2026-10-23
+
+Source/evidence98a1247a accepts P0b only. Real public17-member setup retains4M of sixteen outputs;
+the original seventeenth250000-byte command is submitted after exact owned-DB/capability reconstruction.
+An actual receipt advisory barrier ties its write to the supplied max1 sagat_app backend. First
+FAILED/RUN_DATA_LIMIT plus SUCCEEDED/nooutput, original canonical receipt/ACK and byte-identical replay
+preserve complete session/expiry/authority, tenant iteration ledger and retained source/payload rows.
+Default1/1 (47.69s including compilation), runtime1/1 (6.63s), api_reopen2/2 (4.58s), ordinary-refusal1/1
+(9.59s); no ignored tests. Root SQL independently verifies both positive databases. Final Clippy17.99s,
+fmt4.89s/architecture0.39s pass;1126native hashes match all before/after pairs. The first actual0/1
+fixture failure is retained: shard release expires rows instead of deleting owner history; the corrected
+oracle requires0liveleases/0members and empty Placement. No production state was patched.
+The2026-10-23 executions use only repository-declared Compose PostgreSQL on exclusive loopback65118
+and a fresh private target outside all checkouts. Evidence/reproduction:
+`tasks/project-completion/evidence/public-scoped-reopen-baseline-20261018/README.md`.
+Local .5b closes only the unarmed reopener prerequisite. Actual committed/aborted COMMIT reply loss,
+post-ACK process recovery, Q7b.5/master quota correction and all canonical task gates remain open.
+
+
+### Actual committed public refusal response loss — 2026-10-23
+
+Source/evidence ef12c32c accepts only current ordinary inline committed response loss. Exact receipt
+Gate A selects the writer before arming; SAME supplied sagat_app PID is observed at actual COMMIT
+behind deferred Gate B. After client EOF produces existing safe UNAVAILABLE/retry5000, the same
+COMMIT remains unresolved, Run locked and complete pre-state invisible. Actual server COMMIT/idle
+resolution precedes independent canonical receipt/Run+telemetry+journal-head/original-trace audit
+inspection. The receipt-derived ACK is frozen BEFORE a second full API/direct runtime-pool reopen;
+original-capability/protobuf/key replay is already-applied and leaves the full durable snapshot intact.
+Exact fault default1/1 (10.03s), runtime1/1 (7.74s); preserved P0b final1/1 (48.53s including compilation),
+all0ignored. Strict Clippy15.47s/fmt4.77s/architecture0.47s and1127equal native input pins pass. Root SQL
+independently verifies both positive databases and removed gates/functions/proxy connections.
+Evidence/reproduction: `tasks/project-completion/evidence/ordinary-public-committed-loss-20261023/README.md`.
+No production change or manufactured RED; two C1 witness gaps were fixed and fresh C2 review is None.
+Only local .5c closes; actual abort, OS/post-ACK recovery, wider report shapes, full Q7b.5/quota/nesting
+and canonical feature acceptance remain open. A lost commit ACK may omit the acknowledgement-dependent
+counter increment; no exactly-once metric or external undo guarantee is inferred.
+
+
+### Actual aborted public refusal response loss — 2026-10-23
+
+Source/evidence426629d1 accepts the current ordinary inline aborted counterpart. Exact Gate A/B/PID
+selection and client UNAVAILABLE occur while actual COMMIT remains unresolved; only afterward does
+the fixed deferred23514 probe abort, validated by server ErrorResponse/constraint/idle wire evidence.
+Owner canonical snapshots and exact original live lease/session/head prove complete rollback BEFORE
+retry and again after full API/direct-runtime-pool reconstruction. Safe actual before/after hashes and
+zero receipt/stop/success/audit counts are retained before recovery changes the state. Original
+protobuf/key/capability first applies once; fresh independent journal/head/trace/canonical receipt
+inspection validates that ACK, then the second exact replay preserves all durable bytes. Capacity
+and private quota deltas stay absent without new runtime grants. No scheduler/drain occurs.
+Six separate exact cases pass with0ignored: aborted10.90/9.26s, committed8.11/8.02s, P0b7.00/7.14s
+(default/runtime labels, both actual sagat_app). Clippy18.17s/separate locked build40.18s/fmt5.07s/
+architecture0.46s pass;1127input hashes and executable before/after match. Root SQL independently
+verifies all six final DBs and removed probes/connections. Evidence/reproduction:
+`tasks/project-completion/evidence/ordinary-public-aborted-loss-20261023/README.md`.
+Three fresh bounded reviews None; first actual new fault passes, with no manufactured production RED
+or production/proxy/schema/grant change. Only local .5d closes. OS/post-ACK recovery, broader report
+shapes, genuine-old/frontier/rollout/nesting and canonical feature acceptance remain separate.
+
+
+### Genuine old pending nonfinal Return — 2026-10-23
+
+Source/evidence b8f44488 accepts only frontier case (b). Immutable6c44a0e4 publicly
+produces twenty105000-byte successes and ten210003-byte closed aggregates; c10[0]
+work succeeds with JSON1 while its Return is PENDING and item1 remains unadmitted.
+Actual L/V/E=2100001/2100030/4200031. Migration preserves complete projection and
+closed/target source. Current normal frontier advance records first FAILED/RDL and
+native DRAINING before Return checkpoint or admission, with exact journal envelopes,
+original trace, existing_outputs audit and public FAILED hint. Ordinary cancellation
+of Return, one real original-target/key compensation with output1 in its input, held
+compensation Waiting and native COMPENSATED/FAILED-RDL finish all pass. Slots and
+reservations settle to0; completed_count becomes1 on DRAINED (correcting the original
+design snapshot's terminal0); no c10 checkpoint/result/owner output/End/new payload
+or old-source repair. Fresh verify and terminal replay preserve the full projection.
+Final new coordinator132.05s: four separate1/1 processes, actual API/store postgres or
+sagat_app. Preserved default matrix186.24s: four separate1/1; its immutable old Flow
+always uses sagat_app, and owner/runtime continues to describe the current reader.
+Isolated old RED coordinator127.55s observes two separate0passed/1failed tests,
+exit101 and exact Checkpointed marker; neither DB is consumed by current. All six
+final coordinator DBs/private receipts/source directories are cleaned;1127 native
+and four fixture hashes stay identical. Strict Clippy15.56s/fmt4.84s/architecture0.49s,
+shell/source checks and deterministic helper-wait/credential-order probes pass.
+Evidence/reproduction: `tasks/project-completion/evidence/legacy-nonfinal-return-acceptance-20261023/README.md`.
+Only local Q7c.1 closes. Free-admission/live-only/boundary/competing-stop/CAS/rollout,
+Q7c/Q8/master quota correction, general nesting and canonical014 tasks remain open.
+No production/schema/grants/SDK or source/scoped-Finish activation changed.
+
+
+### Genuine old free-admission frontier — 2026-10-23
+
+Source/evidence528e10fd accepts only §11.4(a), local Q7c.2. After20old public105000B
+successes, exact old c9Checkpointed1→Finished→c10Entered creates OPEN/WAITING with
+captured[[0,1],[1,2]], progress/members/reservations/tasks0 and actual L/V/E=
+2100000/2100030/4200030. Separate old controls actually admit0 and fail the expected
+DrainStarted assertion. Untouched handoffs reach current: exact DrainStarted then
+DrainFinished FAILED/RDL without admission, no compensation/effect flags, then fresh
+store/cache verification and AlreadyFinished with unchanged full projection/source.
+Complete stable Run/entry/version/snapshot/items/old history hashes, exact stop/drain/
+finish envelopes/native UUID outboxes/telemetry/audit and zero obligations pass.
+Final five-selector matrix: free RED121.13s, free positive146.92s, preserved nonfinal
+positive132.89s, nonfinal RED119.82s, original output-view184.04s including sequential
+builds. Twelve separate1/1positive processes and four separate0passed/1failed old
+controls exit101 with exact markers; no old RED DB is used by current. Ten final
+coordinator DBs/private receipts/source directories removed;1127native and four
+fixture hashes identical. Clippy27.67s/fmt4.72s/architecture0.41s, overlay rustfmt,
+shell/source checks pass. Root independently inspects all four exploratory DBs,
+including actual admitted READY work in old RED and FAILED/no-member current.
+Evidence/reproduction: `tasks/project-completion/evidence/legacy-free-admission-acceptance-20261023/README.md`.
+Only Q7c.2 closes. Live-only exact entry/oldWaiting RED, equality/precedence/CAS,
+rollout, general nesting, parent Q7c/Q8/quota and canonical014 remain open. Existing
+live-worker discovery/report/compensation evidence is preserved, not invalidated.
+No production/schema/grant/SDK or source/scoped-Finish activation change.
+
+### Genuine old only-live-work frontier — 2026-10-23
+
+Source/evidence59618184 accepts only §11.4(c), local Q7c.3. Immutable6c44a0e4
+publicly retains L2100000/V2100020/E4200020 with exactly one original uncancelled
+leased c10[0]/reserve and no admission capacity/stop/failure/Return/checkpoint.
+Separate old controls prove public Waiting with unchanged projection/source and
+fail the expected DrainStarted assertion. Untouched original19-field handoffs
+reach current, whose first execution call directly returns DrainStarted; exact
+scope/revision/leased entry and unchanged admission/member/identity inventories
+join the existing first-stop/drain/audit/trace/hint/authority/source/payload checks.
+Original success, canonical duplicate replay, real original-target/key compensation,
+held-compensation nonfinality and COMPENSATED/fresh verification remain accepted.
+Original discovery/report/cancel/under-limit wrappers retain their behavior.
+
+Final frozen six-selector matrix: live RED115.14s, live positive119.38s, original
+report-first115.76s, drain-first111.84s, cancel-first104.68s, under-limit104.39s,
+including sequential builds. Twenty separate1passed/0failed/0ignored processes and
+two independent old0passed/1failed/0ignored exit101 controls pass exact recognition;
+no RED DB is consumed by current. Actual API/shared store postgres or sagat_app is
+queried/asserted, with producer/current role binding. All twelve final DBs/private
+receipts/source directories are removed; original26 owned harness DBs unchanged.
+All1127 native/four fixture hashes identical. Strict Clippy27.59s/fmt4.68s/
+architecture0.39s, shell/source checks, credential-order/TERM-resistant/held-wait-lock
+probes pass. Root SQL separately checks both exploratory old Waiting and current
+COMPENSATED states. Safe source snapshots and actual-private-value scans pass.
+Evidence/reproduction: `tasks/project-completion/evidence/legacy-live-frontier-acceptance-20261023/README.md`.
+Only Q7c.3 closes. Parent Q7c/Q8/master quota, equality/precedence/CAS, rollout,
+general nesting and canonical014 tasks remain open. No production/schema/grant/SDK
+or source/scoped-Finish activation change; no provider-undo/performance claim.
+
+### Genuine old exact4MiB admission — 2026-10-23
+
+Source/evidence52c827c7 accepts only §11.4 equality, localQ7c.4. Same public old
+20-completion boundary uses19values105000B/final102137B, nine210003B aggregate
+references/final207140B: actual L2097137/V2097167/E4194304exact. No tick after
+completion20; exact c9checkpoint1→finish→c10entry leaves WAITING/OPEN and no members.
+Dedicated18-field equality handoff preserves real source/projection across migration.
+Current actual frontier reports exactE; first public advance admits0. Complete
+native delta proves one stable READY instance/member/slot/reservation, admitted/
+charged/active counters+1, two exact journal envelopes and one task.ready outbox.
+Original history/source/output/payload/audit/receipt/ledger inventories remain exact;
+no stop/drain/Return/checkpoint/item1/backfill. Fresh verify has no durable effects.
+Ends at legitimate admission, not workflow completion; no poll or observed wire key.
+
+Final frozen coordinator wall times (including sequential builds): free-admission-equal-limit 112.06s, free-admission-red 108.91s, free-admission 107.40s, nonfinal-return 108.78s, nonfinal-return-red 105.62s, output-view 170.54s.
+Six selectors:16separate1passed/0failed/0ignored positives and four independent
+expected old0passed/1failed/0ignored exit101 controls; exact roles/counts/markers,
+archive/migration/toolchain/lock/executable/fixture/receipt hashes retained. Twelve
+new final DBs/private receipts/source directories removed; original22 owned harness
+DBs unchanged. All1127native/four fixture hashes identical. Clippy26.10s/fmt4.65s/
+architecture0.37s, overlay rustfmt and shell/source checks pass. Initial owner tests
+reached real admission but failed an incomplete expected member (two omitted null
+drain columns); safe diagnostic and schema-grounded correction retained separately.
+Corrected exploratory113.41s has four passing phases; fresh producer C1/current C2
+reviews None. No production change or artificial equality RED; strict > already
+allows equality. Evidence: `tasks/project-completion/evidence/legacy-equal-limit-acceptance-20261023/README.md`.
+OnlyQ7c.4 closes. ParentQ7c/Q8/master quota, precedence/CAS/rollout/general nesting/
+canonical014 remain open; source/scoped-Finish activation closed.
+
+### Genuine old failed-member priority over excess — 2026-10-23
+
+Source/evidence21294435 accepts only localQ7c.5. Actual20old public105000B successes
+and ten210003B aggregate references retain L2100000/V2100030/E4200030. After exact
+c9checkpoint1→finish→c10entry, normaloldadmit0 and originalworkerpoll produce the
+real c10[0]/legacyWork lease. Nonretryable Q5_MEMBER_FAILURE FailStep plus canonical
+replay yields FAILED/WAITING, no root stop, OPEN/ADMITTED/heldslot/reserved1, no
+Return. Exact entry/admission/release/lease/failure/route suffix givesH=cutoff+6.
+Dedicated18-field handoff binds actual role, original failed row/reported hash/
+canonical lease-scoped receipt/member identities/source/events and owned DB.
+
+Current first public advance selects that actual member failure beforeE. Exact
+DrainStarted→Drained0→DrainFinished yields H+1first custom-code FAILED stop/H+2drain,
+H+3member settlement, H+4collection finish/H+5RunFAILED;1/1/2 native outboxes. Full
+per-phase deltas retain original trace/stop/drain/failed entry/receipt/closed source/
+payload/L/V/E while releasing slot/reservation and retiring the uncreated Return.
+No RDL audit, new work/checkpoint/output/item1/saga/compensation/backfill. Fresh
+verify plusAlreadyFinished have no durable effects. No fabricated preexisting
+FAILED Run over emptyOPEN scope; existing genuine priorCANCELLED coverage reused.
+
+Final frozen coordinator wall times, including sequential builds: failed-member 113.40s, free-admission-equal-limit 111.96s, free-admission-red 110.62s, free-admission 113.25s, nonfinal-return 110.73s, nonfinal-return-red 104.66s, output-view 169.60s, q10-cancellation-before-report 105.16s.
+SevenQ5 selectors:20positive native1passed/0failed/0ignored and four expected old
+0passed/1failed/0ignored exit101 controls. Q10cancel adds fourpositive phases;
+total24passing/4expectedfailures. Actual queried API/store profiles, exact count/
+marker/test/source/archive/restoredmigration/toolchain/lock/binary/receipt hashes
+retained. Sixteen final DBs/private receipts/source directories removed; original22
+owned harness DBs unchanged. All1127native/eight fixture pins identical. Strict
+Clippy26.43s/fmt4.67s/architecture0.44s, overlay rustfmt and shell/source checks pass.
+First exploratory122.66s has fourpassing phases, fresh producer andcurrent/source
+reviewsNone. No production change or manufactured RED. Evidence/reproduction:
+`tasks/project-completion/evidence/legacy-failed-member-acceptance-20261023/README.md`.
+OnlyQ7c.5 closes. ParentQ7c/Q8/Q10/quota, CAS/OS-restart/rollout/nesting/canonical014
+stayopen; source/scoped-Finish activation remainsclosed.
+
+### Genuine original-success/frontier CAS — 2026-10-23
+
+Source/evidencef821de85 accepts only localQ7c.6. Original immutable-old ordinary
+19-field handoff/session/lease/request and E4200020 are unchanged. Initial actual
+frontier proves OPEN/no-stop/original live uncancelled member/no failure/Return/
+capacity, exact source/revision105 and existing telemetry. Dedicated owner holderH
+locks telemetry; pinned autocommit API-role observerO proves real committing
+refusalR waiting there while owning RunTx, then dedicated role-correct max1
+schedulerS waiting behindR at EXACT native drain run-lock SQL. Both blocking edges
+and unchanged committed footprint are observed before holderROLLBACK.
+
+Actual report commits success/nooutput plus first FAILED/RDL stop and ACKs revision
+107. Public staleadvance returns exact native Primitive RevisionConflict current107;
+no stale drain/audit/outbox/capacity/rejection effect. Exact member/run/tenant usage
+and canonical receipt remain intact before fresh scheduling. Capture complete
+original stop/event/trace before advancement; compare afterreplay/freshdrain.
+Fresh store/cache publicadvance selects stopped_for_run_data_limit, preserves
+stop, orders stop<completion<drain and retains trace in event/audit/hint. Refusal
+counter+1; primitive rejection+0 stale/+1 fresh. Reused shared genuine compensation
+checks originaltarget/key, held nonfinality, realcompletion, COMPENSATED/FAILED-RDL/
+DONE-COMPENSATED, terminaloriginalACK replay and freshverify. No capability reset,
+full-scheduler fallback, source repair, output/blob/charge or forward work.
+
+Final frozen coordinator wall times, including sequential builds: report-frontier-cas 106.06s, live-work-frontier-red 101.22s, live-work-frontier 105.94s, report-before-drain 103.81s, drain-before-report 105.95s, cancellation-before-report 105.00s, under-limit-increment-before-drain 105.66s.
+Seven selectors:24positive separate1passed/0failed/0ignored processes plus two
+expectedoldWaiting0passed/1failed/0ignored exit101 controls. Actual queried role
+binding, exactmarkers/testcounts/commands/exits/harness/source/archive/restored-
+migration/compiler/lock/fixture/binary/receipt hashes retained. Fourteen final DBs/
+private receipts/source directories removed; original22 harness DBs unchanged.
+All1127native/eight fixture hashes identical. StrictClippy13.49s/fmt4.45s/
+architecture0.31s andshell/source checks pass. C1 missing selectormap caused real
+validationfailure beforeconsumer/cleanuprefusal; exactownedDB creation interval/
+ordinaryfixture content independently proved and removed23→22. C1 proof gaps
+(frontier/capacity/originalstop/trace/servercleanup) fixed; freshC2 reviewsNone.
+First realCAS105.01s fourphases pass; unused-assignment warnings andcollapsible-if
+failure/fix retained. No production fix or artificialRED. Emergency cleanup source
+reviewed, injected runtime emergency acceptance not claimed. Evidence/reproduction:
+`tasks/project-completion/evidence/legacy-frontier-cas-acceptance-20261023/README.md`.
+OnlyQ7c.6 closes. ParentQ7c/Q8/Q10/quota/otherfaults/Applied/rollout/nesting/canonical
+remainopen; source/scoped-Finish activation staysclosed.
+
+### Genuine under-limit increment after cancellation — 2026-10-24
+
+Source/evidence e2c0237c accepts only local Q10c.5. Immutable old6c44a0e4 produces
+L2000000/V2000020/E4000020 and retains the original250000-byte success: L+candidate
+fits while E+candidate4250020 exceeds4194304. Read-only full overlay agrees before
+public CANCEL. Native cancelled drain precedes exact original report; accepted
+SUCCEEDED/CANCELLING retains no output/new charge/successor. First CANCELLED/null
+stop, original authority/capability/source, exact receipts and one refusal audit
+remain; zero data-limit-drain audits. Real original-target/key compensation stays
+nonfinal while held, then finishes Run/scope/owner CANCELLED, saga DONE/COMPENSATED.
+Terminal original-report replay returns SAVED SUCCEEDED/CANCELLING ACK with same
+command ID/already_applied, unchanged complete footprint/retained output/source/
+stop/drain/authority. Fresh store/cache verification remains read-only.
+
+Final new and ordinary cancellation selectors take107.49s/104.40s including builds:
+eight separate old/current owner/runtime processes, each1passed/0failed/0ignored.
+Actual API roles postgres/sagat_app; four created DBs/private handoffs removed,
+original22 owned harness DBs unchanged. All1127 native/eight fixture hashes match.
+Strict Clippy24.20s/fmt4.42s/architecture0.34s and Bash/source checks pass. Source
+review C1 None; exploratory four-phase105.84s and compile31.54s are separate from
+final counts. No production change/manufactured RED. Root executes; consequential
+review GPT-6 Astra/xhigh, Sol unavailable without substitution, optional external
+review previously declined. Evidence and reproduction:
+`tasks/project-completion/evidence/legacy-underlimit-cancel-acceptance-20261024/README.md`.
+Only local Q10c.5 closes. Applied, output-dependent compensation, post-ACK/OS/
+uncertain-COMMIT compositions, Q10c/quota/rollout/nesting/canonical tasks stay open.
+
+### Bounded Q7c and ordinary-inline Q7b.5 parent reconciliation — 2026-10-24
+
+Fresh read-only GPT-6 Astra/xhigh audit maps Q7c directly to accepted b0a7ea5e and
+.1–.6: exact effective path/positive-write guard, one read-only REPEATABLE READ
+revision/stop/code/E snapshot, all three genuine-old frontiers, exact equality,
+selected real cancellation/custom failure, observed original-report/native CAS
+and fresh recovery. These bounded Q7c obligations close. Broader quota/report/
+rollout/nesting/canonical gates remain separate.
+
+Q7b.5 closes expressly CURRENT ORDINARY INLINE public refusal recovery: accepted
+.5a–d/final426629d1 six exact processes prove committed and deferred-aborted COMMIT
+reply loss plus unarmed full-reopen baseline in both invocation profiles, each
+1passed/0failed/0ignored. Both profiles actually sagat_app, not owner/runtime
+privilege evidence. Root rechecks saved exact results and verifies production/
+public recovery test sources unchanged since426629d1. This audit runs no new
+native tests; current affected cancellation regression separately passes eight
+processes in e2c0237c. Separate overlapping matrices are not summed.
+
+Bootstrap's proposed broader Applied P1 was explicitly context-only/unaccepted;
+subsequent accepted .5c/.5d isolate ordinary-inline. Applied response loss,
+post-ACK cold scheduler/OS recovery, remaining authority/fence/terminal controls,
+genuine-old Applied/output-dependent/recovery compositions stay under Q7b/Q10c.
+No public unknown-outcome enum, production source/scoped-Finish activation or
+canonical/master closure is inferred. Evidence with exact mapping/limitations:
+`tasks/project-completion/evidence/quota-parent-closure-audit-20261024/README.md`.
+Historical “parent open” notes describe their then-current state; this scoped audit
+supersedes them only for Q7c and current ordinary-inline Q7b.5.
+
+### Genuine-old Applied-ready handoff prerequisite — 2026-10-24
+
+Source/evidence 299f8b2e accepts only local Q10c.6a. Actual old public ten210000B
+completions retain L2100000/V2100020/E4200020 with absent owner outputs. Separate
+Applied workflow/binding/session publicly fails original reserve OUTCOME_UNKNOWN;
+normal old scheduler/poll produces real reserve~r lookup. Its target/key match
+ORIGINALforward, notlookup. Distinct private21-field handoff retains originalforward
+andlookup protobufs, exact Appliedrequest and full authority hash; noSQLstatefab.
+
+Strict canonicalwire/request and BOTH run/node/generation taskIDs, original fence/
+reportedhash/requestedevent, lookup LEASED/live/uncancelled and forward WAITING/
+RECONCILIATION hold. Before/after migration/startup/clientconstruction/freshrole
+frontier+verify_run: completeprojection/source/fullmembership/bindingtimestamps/
+poolgrant/session EXACTexpiry and bounded audit/receipt/telemetry/saga/usage/
+policy/quota/activecounter footprints are unchanged. SQL E and nativefrontier4200020
+agree; no checkpoint/success/conclusion/drain/reportreceipt/compensation/newoutput.
+Current reconciliation/refusal/primitive counters stay unchanged. Client signs
+original bytes but sends NO current RPC: authentication/Appliedacceptance are NOT
+claimed by attachment.
+
+Final affected coordinator times including builds: applied-handoff 103.53s, report-before-drain 103.67s, under-limit-increment-cancellation-before-report 105.67s, live-work-frontier-red 101.73s.
+Four selectors produce12separate1passed/0failed/0ignored positives plus two isolated
+oldWaiting0passed/1failed/0ignored exit101 controls. Actualqueried APIroles postgres/
+sagat_app, oldRED API/store rolechecks. Eight created DBs/privatehandoffs/source
+folders removed; same22previousownedDBs. All1128native/elevenfixture-docpins match.
+StrictClippy24.32s/fmt4.42s/architecture0.34s, finalseparateparserunit1/1 andBash/
+overlay/sourcechecks pass. Actualfixture RED ordinary1passed/currentkind1failed
+native101/outer1 in95.39s; priorcompile/setupfailures excluded. SourceC1 fixes absent
+oldcolumns, uncheckedtaskIDs, omittedcapacity/pool/audit witnesses. Coherentmutated
+syntheticwireunit observedRED33.73s thenGREEN33.82s; actualAppliedfirstfourphase
+102.84s exploratory predates finalstrengthening. FreshsourceC2 None/focusedfourcase
+scopeaccepted. Root executes; reviewGPT-6Astra/xhigh, Sol unavailable/no substitution,
+optionalexternalreviewdeclined. Exact evidence/reproduction:
+`tasks/project-completion/evidence/legacy-applied-handoff-acceptance-20261024/README.md`.
+Only prerequisite closes; actualAppliedreport/refusal/drain/compensation/oldquotaRED,
+otherorders/bytes/outputdependent/OS/COMMIT recovery, Q10c/quota/rollout/nesting/
+canonicaltasks stayopen. Source/scoped-Finish production activation remainsclosed.
+
+### Genuine immutable-old Applied quota RED — 2026-10-24
+
+Source/evidence 10b61669 accepts only localQ10c.6b/B1, upstreamA299f8b2e. Applied-only
+endmode reaches genuineoldlookup, submits exact40-byte retained Appliedrequest before
+handoffpublication. ActualoldAPI identitylookups increase; ACKSUCCEEDED/RUNNING,
+bothstepsSUCCEEDED, originalforward retains exact10B{"hold":7}, lookupoutputNULL.
+L2100010/V2100020/E4200030 withnoRDLstop/audit; returnedPENDING, no postreporttick/
+checkpoint/saga/compensation. Originalauthority EXACTexpiry/poolgrants/closedsource
+preserved; actualconcludedApplied andlookupcompletion/fences, nofakeforwardcomplete.
+OriginalLOOKUPreceipt scope/hashofwhole40wire/resource/created_at is capturedwith
+safeSHA; ACK/head/version/telemetry aligned. Onlythen emitexactrole/DB/proofmarkers
+andfail REQUIREDcurrentrefusal (RDLstop/nooutput): native101,onefailure/zeroignored.
+No handoff/currentconsumer, even ifguardunexpectedlypasses. SeparateB2 usesfreshDB.
+
+Finalfivecoordinator times includingbuilds: applied-report-before-drain-red 145.9s, applied-handoff 133.4s, report-before-drain 122.89s, under-limit-increment-cancellation-before-report 136.32s, live-work-frontier-red 121.55s.
+Twelve separate positive1passed/0failed/0ignored processes andfour expectedold
+native101/0passed/1failed/0ignored (twoAppliedquota,twoWaiting). Outercoordinator0
+validatesexpectedfailure, notcurrentGREEN. Actualpostgres/sagat_appAPI/sharedstore
+roles andpositivehandoffbindings queried. TencreatedDB/privatehandoffs/sourcefolders
+removed; original22ownedDBinventory unchanged. All1128native/twelvefixture-docpins
+match. StrictClippy30.45s/fmt5.27s/architecture0.68s/standaloneproducerfmt/Bash pass.
+SourceC1/C2None; root actualsource-markercontrol REDsuffixacceptance thenApplied-only
+Fxqfix gives12positive/negativechecks withoutSQL/DROP. Firstexploratory101.21s/two
+nativeexpectedfailures keptseparate. Sourceimplementationroot whileSolunavailable;
+consequentialreviewsGPT-6Astra/xhigh, optionalexternalreviewdeclined. Directowned
+containerinspection running/healthy/127.0.0.1:65118 afterread-onlyComposequerymissing
+interpolationvars; noinfrachange. Exactevidence/reproduction:
+`tasks/project-completion/evidence/legacy-applied-quota-red-acceptance-20261024/README.md`.
+OnlyB1closes; currentAppliedreport/refusal/drain/comp/replay, otherorders/bytes/
+fault/OS/COMMIT recovery/outputdependentcomp/quota/Q10c/rollout/nesting/canonical
+remainopen; productionactivation staysclosed/noexternalprovidereffectorundoguarantee.

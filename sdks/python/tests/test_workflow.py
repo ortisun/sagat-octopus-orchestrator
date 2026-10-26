@@ -15,6 +15,23 @@ def nodes_of(document: dict[str, Any]) -> list[dict[str, Any]]:
     return nodes
 
 
+def test_classified_result_schemas_and_workflow_limits_use_their_typed_carriers() -> None:
+    schema = {"type": "object", "x-sagat-classification": "internal", "properties": {"value": {"type": "string"}}}
+    document = (
+        workflow("classified-flow")
+        .limits(max_instances=23, max_depth=4)
+        .output_schema(schema)
+        .step("a", "act.a", output_schema=schema)
+        .script("s", "sha256:" + "0" * 64, output_schema=schema)
+        .wait_for_event("w", event_type="done", correlation_expr="input.id", timeout_ms=10, output_schema=schema)
+        .invoke_child("c", "child-flow", output_schema=schema)
+        .end("done")
+        .build()
+    )
+    assert document["limits"] == {"maxInstances": 23, "maxDepth": 4}
+    assert [node["outputSchema"] for node in nodes_of(document)[:4]] == [schema, schema, schema, schema]
+
+
 def test_a_chain_of_steps_is_linked_in_order_and_starts_at_the_first() -> None:
     doc = (
         workflow("order-flow")
@@ -198,16 +215,32 @@ def test_collections_use_named_bodies_and_map_writes_the_same_for_each_node() ->
         workflow("collection-flow")
         .body("line", line)
         .body("tax", tax)
-        .for_each(
-            "notify-lines", "input.lines", "line", "bodyResult", max_items=17, max_concurrency=3
-        )
+        .for_each("notify-lines", "input.lines", "line", "bodyResult", max_items=17, max_concurrency=3)
         .map("prices", "input.lines", "tax", "bodyResult.amount", max_items=17, max_concurrency=2)
         .end("done", output_expr="steps.prices.output")
         .build()
     )
     assert document["nodes"] == [
-        {"id": "notify-lines", "type": "forEach", "items": "input.lines", "body": "line", "result": "bodyResult", "maxItems": 17, "maxConcurrency": 3, "next": "prices"},
-        {"id": "prices", "type": "forEach", "items": "input.lines", "body": "tax", "result": "bodyResult.amount", "maxItems": 17, "maxConcurrency": 2, "next": "done"},
+        {
+            "id": "notify-lines",
+            "type": "forEach",
+            "items": "input.lines",
+            "body": "line",
+            "result": "bodyResult",
+            "maxItems": 17,
+            "maxConcurrency": 3,
+            "next": "prices",
+        },
+        {
+            "id": "prices",
+            "type": "forEach",
+            "items": "input.lines",
+            "body": "tax",
+            "result": "bodyResult.amount",
+            "maxItems": 17,
+            "maxConcurrency": 2,
+            "next": "done",
+        },
         {"id": "done", "type": "end", "outputExpr": "steps.prices.output"},
     ]
     assert document["bodies"] == {
@@ -229,9 +262,11 @@ def test_collections_use_named_bodies_and_map_writes_the_same_for_each_node() ->
 
 
 def test_named_bodies_cannot_reference_themselves() -> None:
-    recursive = body().for_each(
-        "nested", "input.items", "line", "bodyResult", max_items=2, max_concurrency=1
-    ).return_value("return", "steps.nested.output")
+    recursive = (
+        body()
+        .for_each("nested", "input.items", "line", "bodyResult", max_items=2, max_concurrency=1)
+        .return_value("return", "steps.nested.output")
+    )
     with pytest.raises(SagatError, match="body reference cycle"):
         workflow("recursive-body").body("line", recursive).for_each(
             "lines", "input.items", "line", "bodyResult", max_items=2, max_concurrency=1
@@ -269,8 +304,30 @@ def test_while_and_repeat_until_write_bounded_pre_test_and_post_test_loop_nodes(
     )
 
     assert document["nodes"] == [
-        {"id": "pre", "type": "while", "condition": "carry < 3", "body": "iteration", "initial": "input.start", "carry": "bodyResult", "maxIterations": 3, "timeoutMs": 60_000, "delayMs": 250, "onError": "failed", "next": "post"},
-        {"id": "post", "type": "repeatUntil", "condition": "carry >= 5", "body": "iteration", "initial": "steps.pre.output", "carry": "bodyResult", "maxIterations": 5, "timeoutMs": 120_000, "next": "done"},
+        {
+            "id": "pre",
+            "type": "while",
+            "condition": "carry < 3",
+            "body": "iteration",
+            "initial": "input.start",
+            "carry": "bodyResult",
+            "maxIterations": 3,
+            "timeoutMs": 60_000,
+            "delayMs": 250,
+            "onError": "failed",
+            "next": "post",
+        },
+        {
+            "id": "post",
+            "type": "repeatUntil",
+            "condition": "carry >= 5",
+            "body": "iteration",
+            "initial": "steps.pre.output",
+            "carry": "bodyResult",
+            "maxIterations": 5,
+            "timeoutMs": 120_000,
+            "next": "done",
+        },
         {"id": "done", "type": "end"},
         {"id": "failed", "type": "end"},
     ]

@@ -150,3 +150,31 @@ feature-014 release gates; existing feature behavior stays supported.
 ## Approved dependent delivery: database connections
 
 Feature [017](../017-database-connections/spec.md) and [ADR-0035](../../docs/adr/ADR-0035-database-connections-and-managed-execution.md) were approved on 2026-10-16. Its [plan](../017-database-connections/plan.md) defines the bounded extension to shared contracts, admission/leases, effects, SDKs, Studio, telemetry, secret-provider/security and immutable revisions. Existing transactional, tenant and general payload-inspection guarantees remain binding. Track implementation and new runtime evidence in feature 017; this dependency note does not mark its requirements complete.
+
+
+## Production incident serialization refinement (2026-10-18)
+
+ADR-0038 refines only ADR-0022's production lock prefix to applicable scoped member chain→
+exact own run→binding EXCLUSIVE→own step→audit deduplication, matching ordinary report entry.
+Both production attribution and actual report/heartbeat storage prefixes are exercised under
+real PostgreSQL runtime-role locks; the prior counterexample incremented PostgreSQL deadlocks
+0→1. A separate real public script+continuation fixture proves chain-before-run ordering.
+No incident wire, authorization/fence, category/redaction, test branch or commit-before-ACK
+guarantee changes. This is an existing 009 writer dependency of 014's B0 inventory, not a
+new security feature or acceptance of complete nested/group order. Source/tests/evidence:
+tasks/project-completion/evidence/incident-lock-order-20261018/.
+
+
+## Worker session renewal after lock waits (2026-10-18)
+
+The existing009 WorkerStore renewal acquires its matching tenant/id/token session row before
+sampling the database clock, then renews in the same transaction only if still live. A session
+that expires during an unchanged-row wait returns the existing unauthenticated outcome without
+changing expiry, leases, run version, journal or outbox. Fresh registration remains supported.
+This is post-lock freshness, not continuous validity through commit; TTL/wire policy is unchanged.
+Full/path claim-room checks now share a transaction-typed post-lock clock check: expired
+authority supplies zero room without renewal, retaining the guard through count/claim commit.
+Managed-database ownership separately retains its session SHARE guard and samples time after
+acquisition; the complete B0/group lock graph remains pending.
+Runtime-role public-poll RED/GREEN and exact source/commands are retained under
+`tasks/project-completion/evidence/session-renewal-postwait-20261018/`. No canonical task closes.

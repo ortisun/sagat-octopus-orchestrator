@@ -62,7 +62,7 @@ tonic.workspace = true
 prost.workspace = true
 prost-types = "0.14"
 protox.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "net", "process"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
@@ -305,6 +305,26 @@ path = "performance/gitops-versioning/main.rs"
 [[test]]
 name = "contract_developer_experience"
 path = "contract/developer-experience/main.rs"
+
+[[test]]
+name = "contract_payload_classification"
+path = "contract/payload-classification/main.rs"
+
+[[test]]
+name = "integration_payload_classification"
+path = "integration/payload-classification/main.rs"
+
+[[test]]
+name = "fault_payload_classification"
+path = "fault/payload-classification/main.rs"
+
+[[test]]
+name = "e2e_payload_classification"
+path = "e2e/payload-classification/main.rs"
+
+[[test]]
+name = "perf_payload_classification"
+path = "performance/payload-classification/main.rs"
 
 [[test]]
 name = "fault_developer_experience"

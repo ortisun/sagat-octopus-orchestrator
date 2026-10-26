@@ -24,17 +24,36 @@ impl PgRunTx {
         node: &NodeId,
         subject: &str,
     ) -> Result<bool, StoreError> {
+        // Binding mutations lock this key before the worker session row. Follow that order
+        // before retaining the delivery grant through capability disclosure.
+        sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))")
+            .bind(format!(
+                "binding:{}:{}:{subject}",
+                self.info.tenant_id, self.info.namespace_id
+            ))
+            .execute(&mut *self.tx)
+            .await
+            .map_err(store_error)?;
         // Session before catalog/membership locks, as on claiming. The current lease token is
         // independently checked by WorkerService; this also binds the token to its machine owner.
-        let session: Option<Uuid> = sqlx::query_scalar(
-            "SELECT w.id FROM steps s JOIN worker_sessions w ON w.tenant_id=s.tenant_id AND w.id::text=s.leased_by
-             WHERE s.tenant_id=$1 AND s.run_id=$2 AND s.node=$3 AND w.namespace_id=$4
-               AND w.subject=$5 AND w.expires_at>clock_timestamp() AND w.accepted_protocol_minor>=5
+        let session: Option<OffsetDateTime> = sqlx::query_scalar(
+            "SELECT w.expires_at FROM steps s JOIN worker_sessions w ON w.tenant_id=s.tenant_id AND w.id::text=s.leased_by
+             WHERE s.tenant_id=$1 AND s.run_id=$2 AND s.node=$3 AND cardinality(s.instance_path_nodes)=0 AND cardinality(s.instance_path_indices)=0 AND w.namespace_id=$4
+               AND w.subject=$5 AND w.accepted_protocol_minor>=6
              FOR SHARE OF w")
             .bind(self.info.tenant_id.as_uuid()).bind(self.info.run_id.as_uuid()).bind(node.as_str())
             .bind(self.info.namespace_id.as_uuid()).bind(subject)
             .fetch_optional(&mut *self.tx).await.map_err(store_error)?;
-        if session.is_none() {
+        let Some(expires_at) = session else {
+            return Ok(false);
+        };
+        // An unchanged-row lock wait can outlive expiry without rechecking a WHERE predicate.
+        // Observe time after retaining this session guard on the owning run transaction.
+        let now: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&mut *self.tx)
+            .await
+            .map_err(store_error)?;
+        if expires_at <= now {
             return Ok(false);
         }
         // Same lock order as catalog mutations and current publisher/initiator checks.
@@ -62,11 +81,24 @@ impl PgRunTx {
         }
         crate::database::admit_node(&mut self.tx, &self.info, &self.def, node).await?;
         let connection = self.database_connection(node).await?;
+        if crate::secrets::pool_refusal(
+            &mut self.tx,
+            self.info.tenant_id,
+            self.info.namespace_id,
+            std::slice::from_ref(connection.config.secret()),
+            subject,
+            false,
+        )
+        .await?
+        .is_some()
+        {
+            return Ok(false);
+        }
         let (tenant, namespace, pool): (i64,i64,i64) = sqlx::query_as(
             "SELECT count(*), count(*) FILTER (WHERE b.namespace_id=$2),
                     count(*) FILTER (WHERE b.namespace_id=$2 AND b.connection_id=$3)
              FROM steps s JOIN run_database_connections b ON b.tenant_id=s.tenant_id AND b.run_id=s.run_id AND b.node_id=s.node
-             WHERE s.tenant_id=$1 AND s.status IN ('LEASED','RUNNING')")
+             WHERE s.tenant_id=$1 AND cardinality(s.instance_path_nodes)=0 AND cardinality(s.instance_path_indices)=0 AND s.status IN ('LEASED','RUNNING')")
             .bind(self.info.tenant_id.as_uuid()).bind(self.info.namespace_id.as_uuid()).bind(connection.id.as_uuid())
             .fetch_one(&mut *self.tx).await.map_err(store_error)?;
         let requested = self
@@ -102,7 +134,9 @@ impl PgRunTx {
         }
         sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM run_events WHERE tenant_id=$1 AND run_id=$2
-             AND node=$3 AND event_type='step.leased' AND actor=$4
+             AND node=$3 AND COALESCE(cardinality(instance_path_nodes),0)=0
+             AND COALESCE(cardinality(instance_path_indices),0)=0
+             AND event_type='step.leased' AND actor=$4
              AND detail->>'attempt'=$5 AND detail->>'generation'=$6)",
         )
         .bind(self.info.tenant_id.as_uuid())
@@ -141,6 +175,19 @@ impl PgRunTx {
         }
         crate::database::admit_node(&mut self.tx, &self.info, &self.def, node).await?;
         let connection = self.database_connection(node).await?;
+        if crate::secrets::pool_refusal(
+            &mut self.tx,
+            self.info.tenant_id,
+            self.info.namespace_id,
+            std::slice::from_ref(connection.config.secret()),
+            subject,
+            true,
+        )
+        .await?
+        .is_some()
+        {
+            return Err(StoreError::DatabaseUnavailable);
+        }
         let mut operation = self
             .def
             .node(node)

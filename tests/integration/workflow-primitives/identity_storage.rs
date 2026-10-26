@@ -33,9 +33,9 @@ async fn column_exists(pool: &sqlx::PgPool, table: &str, column: &str) -> bool {
     .expect("column lookup")
 }
 
-/// The caller publishes an ordinary definition before undoing newer migrations. Run and journal
+/// The caller prepares an ordinary definition before undoing newer migrations. Run and journal
 /// rows are inserted only after the schema is old; this helper does not call a current writer
-/// against that schema (publication reads columns added by later migrations).
+/// against that schema (publication now requires classification metadata).
 pub(super) async fn insert_legacy_root_run(
     w: &World,
     (workflow, version): (WorkflowId, WorkflowVersionId),

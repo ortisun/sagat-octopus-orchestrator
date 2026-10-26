@@ -17,11 +17,12 @@ use sagat_application::clock::Clock;
 use sagat_application::definitions::DefinitionStore;
 use sagat_application::entropy::Entropy;
 use sagat_application::error::{AccessDenial, AppError};
-use sagat_application::execution::{ExpressionEvaluator, MAX_PAYLOAD_BYTES};
+use sagat_application::execution::{ExpressionEvaluator, MAX_PAYLOAD_BYTES, PathExecutionStore};
 use sagat_application::identity::RequestContext;
 use sagat_application::runs::RunStore;
 use sagat_application::worker::{
-    BlobOutput, Capabilities, ClaimedTask, StepAck, WorkerService, WorkerStore,
+    BlobCompletionTarget, BlobOutput, Capabilities, ClaimedTask, StepAck, WorkerService,
+    WorkerStore,
 };
 use sagat_domain::blobs::BlobId;
 use sagat_domain::execution::{ExecutionInstanceId, InstancePath};
@@ -388,7 +389,7 @@ where
 impl<St, S, C, E, R> pb::worker_service_server::WorkerService for WorkerGrpc<St, S, C, E, R>
 where
     St: Core,
-    S: RunStore + WorkerStore + DefinitionStore + 'static,
+    S: RunStore + WorkerStore + DefinitionStore + PathExecutionStore + 'static,
     C: Clock + 'static,
     E: ExpressionEvaluator + 'static,
     R: Entropy + 'static,
@@ -808,13 +809,18 @@ where
         observe(&self.core, "ResolveDatabase", trace, async {
             let auth = self.authenticate(&request).await?;
             let m = request.get_ref();
-            let attempt = Attempt::parse(
+            let mut attempt = Attempt::parse(
                 &m.task_id,
                 &m.run_id,
                 &m.step_id,
                 m.attempt,
                 m.generation,
                 &m.lease_token,
+            )?;
+            attach_instance(
+                &mut attempt,
+                m.instance.as_ref(),
+                self.workers.supports_scoped_worker_protocol(),
             )?;
             let resolved = self
                 .workers
@@ -898,9 +904,9 @@ where
                     .parse::<BlobId>()
                     .map_err(|_| invalid("output_blob_ref is not a blob id"))?;
                 let principal = &auth.session.principal;
-                if let Some(ack) = self
+                let scope = match self
                     .workers
-                    .replay_blob_completion(
+                    .prepare_blob_completion(
                         principal,
                         &attempt.task_ref(),
                         id,
@@ -910,13 +916,9 @@ where
                     .await
                     .map_err(app)?
                 {
-                    return Ok(step_response(&ack));
-                }
-                let scope = self
-                    .workers
-                    .blob_report_scope(principal, &attempt.task_ref())
-                    .await
-                    .map_err(app)?;
+                    BlobCompletionTarget::Replayed(ack) => return Ok(step_response(&ack)),
+                    BlobCompletionTarget::Ready(scope) => scope,
+                };
                 let described = blobs
                     .service
                     .describe_for_commit(scope, id)

@@ -78,7 +78,7 @@
     {
       "id": "old-cannot-lease",
       "ok": true,
-      "op": "sleep"
+      "op": "awaitJournal"
     },
     {
       "id": "still-waiting",

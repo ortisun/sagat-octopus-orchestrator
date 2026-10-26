@@ -12,7 +12,8 @@ disclose values through one new audited operation whose audience follows the lev
 inspection of ADR-0028, the declared operation results of ADR-0031 and every payload-free read stay as
 they are. The work is dependency-ordered: domain types and permissions, schema walker and publication
 check, storage, the use case and endpoint, the grant resource, then the CLI, the Studio, the SDK
-setters, the canary and fault suites and the benchmark. Nothing is implemented by this specification.
+setters, the canary and fault suites and the benchmark. Implementation is in progress; the combined
+branch evidence and remaining gates are recorded in `tasks/project-completion/integration-notes.md`.
 
 ## Technical Context
 
@@ -180,6 +181,13 @@ event or payload is rewritten. Old Studios and clients keep working: they never 
 reads of US08, whose response changes for every client that read the values (G292); that change is
 announced in the release notes and has no switch.
 
+Immutable execution restoration uses the codec's `parse_stored` entry point, not publication
+validation. Both share structural and executable conversion checks; only new publications apply
+classification and carrier-schema authoring checks. Declared Query/Update snapshots use the same
+stored-version distinction. Stored document bytes and classification pins are unchanged; disclosure
+continues to fail closed independently. The frozen v0.1.0 IR contract accepts unknown schema
+extensions, including annotations whose values are invalid under the new authoring rules.
+
 ## Risks and mitigations
 
 | Risk | Mitigation / evidence required |
@@ -191,7 +199,7 @@ announced in the release notes and has no switch.
 | Restricting event values breaks clients that read `data`, `body` or `headers` (G292) | Owner decision D302; OpenAPI descriptions, API reference, runbook and release notes; the repository's own readers (contract and e2e suites) updated in T016-064; Studio, CLI and SDKs read none of them (checked) |
 | Cost of compiling and validating per response | Bounds, cache, one admission charge; measured (T016-053); a request cannot exceed 256 KiB of payload and 64 KiB of schema |
 | Reveal audit records grow without bound | They are bounded by the namespace API bucket (ADR-0027) and the number of holders; the audit retention of feature 009 applies |
-| A grant outlives a demotion or a removed member | The grant row cascades with the membership; the effective check also requires `payload:read-internal` at read time |
+| A grant outlives a demotion or a removed member | The grant row cascades with the membership, a trigger removes the subject's grants when the role changes (D663), and the effective check also requires `payload:read-internal` at read time |
 | A published document is read differently by a later release | `classification_rules` pins the interpreter; version 1 is never reinterpreted |
 | Studio or CLI echo a revealed value into a store, log or clipboard history | No persistence, abort and clear on change, the CLI prints to stdout only, control characters neutralised; Studio storage assertions in the Chromium journey |
 | Dependency on unmerged branches (run result; 014) | Recorded in the spec; `source: "result"` is its own task gated on G21; nothing links to files absent from this branch |

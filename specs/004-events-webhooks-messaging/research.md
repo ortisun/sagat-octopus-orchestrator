@@ -92,3 +92,14 @@ The specification, `docs/architecture/storage-and-events.md` and the plan were r
   *The documentation was wrong in two places:* the runbook said that putting a secret twice more retires a leaked one (it does not while it is among the three newest: delete it, G92), and that NATS and SQS have one reader in the cluster (every replica reads; the broker shares the messages, and the rate is per replica). Both are corrected.
 
   *Mutation checks.* 78 mutations of the guards of this feature were tried (each weakens one guard in a throw-away copy of the tree and a named test must fail): 70 were killed at once. Eight survived, and what became of them: five showed a guard that no test would have noticed losing, and got a test (an unproven flood is turned away before anything is read; an event that was never dispatched keeps its id after its window; only the dispatcher that still sees a cron tick moves it on; a retry time is not pushed back by another attempt; two sources may share an event id at the same instant; an event that predates a wait does not wake it from the events side); one (a 429 treated as dead) was already covered by `a_2xx_is_delivered_and_a_server_error_or_a_request_for_patience_is_retried`, which the batch had not run; one (the attempts a wait for room uses up) was equivalent, the expression only fed a log line, and was removed. **The new tests were run against the correct code but were not run against their mutants again: on 2026-10-09 the maintainer asked to pause mutation testing until the most important features are done.** The batch is a script outside the repository; nothing in CI repeats it.
+
+
+## Feature 016 integration checkpoint — 2026-10-17
+
+G80's read-side restriction is implemented on the integration branch: inbox and dead-letter
+details default to structure; explicit PII reveal needs the namespace grant and current role and
+commits a mandatory success audit. Lists never return bodies or headers. This is the documented
+breaking response change; event field classification still waits for event type schemas.
+
+Focused commands and remaining gates are in
+`tasks/project-completion/integration-notes.md`; final release acceptance remains pending.

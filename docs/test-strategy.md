@@ -37,6 +37,10 @@ all 11 event E2E tests passed against fresh containers. This is a test-runner re
 not a change to production pool sizes, admission limits or the races exercised within tests.
 Keep performance benchmarks separate and report their own concurrency and hardware.
 
+CI sets the Cargo dev and test profiles to `debug = "line-tables-only"`. This retains filename/line
+backtraces while omitting type and variable debugging metadata; test commands are unchanged, and
+`debug_assertions` and the build-script `DEBUG=true` value remain enabled for these profiles.
+
 ## Critical matrix
 
 | Scenario | Expected invariant |

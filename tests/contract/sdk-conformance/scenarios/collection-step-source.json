@@ -1,0 +1,117 @@
+{
+  "name": "collection-step-source",
+  "description": "An ordinary root activity produces the array captured by a later public map; all five SDKs preserve root and scoped identities, authored limits and ordered membership.",
+  "server": {
+    "iterationConcurrency": 2
+  },
+  "workflows": {
+    "map": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "collection-step-source",
+      "bodies": {
+        "tax": {
+          "program": [
+            {
+              "op": "step",
+              "id": "fetch",
+              "activity": "tax.price"
+            },
+            {
+              "op": "return",
+              "id": "returned",
+              "result": "steps.fetch.output"
+            }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "step",
+          "id": "fetch",
+          "activity": "source.fetch"
+        },
+        {
+          "op": "map",
+          "id": "taxes",
+          "items": "steps.fetch.output",
+          "body": "tax",
+          "result": "bodyResult.amount",
+          "maxItems": 2,
+          "maxConcurrency": 1
+        },
+        {
+          "op": "end",
+          "id": "done",
+          "options": {
+            "outputExpr": "steps.taxes.output"
+          }
+        }
+      ],
+      "limits": {
+        "maxInstances": 16,
+        "maxDepth": 1
+      }
+    }
+  },
+  "workers": {
+    "current": {
+      "workerName": "collection-current",
+      "protocolVersion": "1.5",
+      "transport": "poll",
+      "maxInflight": 2,
+      "autostart": false,
+      "activities": {
+        "tax.price": {
+          "behavior": {
+            "returns": {
+              "amount": 1
+            }
+          }
+        },
+        "source.fetch": {
+          "behavior": {
+            "returns": [
+              {
+                "sku": "a"
+              },
+              {
+                "sku": "b"
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "start-worker",
+      "op": "startWorker",
+      "worker": "current"
+    },
+    {
+      "id": "run",
+      "op": "start",
+      "workflow": "map",
+      "input": {}
+    },
+    {
+      "id": "done",
+      "op": "waitForCompletion",
+      "run": "run",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "source-and-two-items",
+      "op": "awaitWorkerLog",
+      "worker": "current",
+      "count": 3,
+      "timeoutMs": 30000
+    },
+    {
+      "id": "stop-worker",
+      "op": "stopWorker",
+      "worker": "current"
+    }
+  ]
+}

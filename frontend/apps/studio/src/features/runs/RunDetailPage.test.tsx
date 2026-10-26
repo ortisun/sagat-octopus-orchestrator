@@ -793,9 +793,9 @@ describe('the run page: the details of a step', () => {
     expect(await within(panel).findByText(/no trace \(the worker did not send one/)).toBeInTheDocument();
   });
 
-  it('says the journal keeps no data of a step, instead of showing any', async () => {
+  it('explains that the journal carries a digest and values require a separate classified read', async () => {
     const { panel } = await select('pay');
-    expect(within(panel).getByText(/payload is redacted/)).toBeInTheDocument();
+    expect(within(panel).getByText(/journal event holds only a payload digest/)).toBeInTheDocument();
   });
 
   it('lists what leads into the step and out of it, so the structure is readable without the canvas', async () => {

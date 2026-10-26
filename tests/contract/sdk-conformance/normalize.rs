@@ -165,6 +165,7 @@ pub fn compared(out: &Value, normalizer: &mut Normalizer) -> Value {
         "scopeEvidence",
         "sourceEvidence",
         "auditEvidence",
+        "publicationEvidence",
     ] {
         if let Some(value) = out.get(key) {
             doc.insert(key.to_owned(), normalizer.value(value));

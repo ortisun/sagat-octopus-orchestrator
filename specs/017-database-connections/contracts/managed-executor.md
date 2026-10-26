@@ -9,6 +9,11 @@ Implementation contract for T017-013..017; executed evidence is in [verification
 - Protocol 1.6 `ResolveDatabase` uses the existing task id, run/node, attempt, generation
   and lease token. A managed lease requires the dedicated executor protocol revision. Registration,
   claiming and capability use check current authority; a stale in-memory role does not suffice.
+- The managed owner check retains the exact matching session SHARE guard in the owning run
+  transaction and samples database time after acquiring it. A session that expires during an
+  unchanged-row wait supplies no authority, including for heartbeat renewal. This is validity
+  at the post-lock sample, not continuous validity until commit. Binding, dedicated current
+  role, lease, namespace and protocol checks remain required; the check does not renew sessions.
 - Resolution first opens the run transaction, checks the lease, executor/session ownership,
   connection pin/current status and current publisher/initiator ACLs, and reads provider metadata.
   It closes that transaction before any OpenBao I/O. After reading the value, it opens a new run
@@ -138,3 +143,12 @@ attempt durations. `/metrics` listens at `SAGAT_DATABASE_RUNNER_METRICS_ADDR`
 (default `127.0.0.1:9092`); bind it only on the monitoring network. No SQL, parameter,
 credential, output, bearer token or session token is an observability field.
 The panic hook emits a fixed incident message without the panic payload.
+
+
+## Managed report receipt replay guards
+
+An accepted report replays under current dedicated role and binding plus its durable attempt
+ownership and request fingerprint. Retain binding authority before acquiring the namespace
+Secrets quota/current-membership guards. Replaying that receipt does not require a live session
+or repeat provider I/O. No new execution, pin, resolution audit or outbox entry is created.
+Live capability and missing-receipt report validation retain their separate lease/session rules.

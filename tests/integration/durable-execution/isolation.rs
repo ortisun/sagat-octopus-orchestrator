@@ -158,6 +158,15 @@ async fn workers_of_another_tenant_never_receive_tasks_and_cannot_use_foreign_se
         subject("their-worker"),
         Role::Worker,
     );
+    sagat_infra_postgres::PgIdentityStore::new(w.db.pool.clone())
+        .insert_membership(&sagat_domain::identity::Membership::restore(
+            outsider.tenant_id(),
+            outsider.subject().clone(),
+            Role::Worker,
+            crate::support::now(),
+        ))
+        .await
+        .expect("foreign session identity membership");
     let theirs = w.session_as(&outsider, &["act.a", "act.b"], 10).await;
     assert!(
         w.poll(&theirs, 10).await.is_empty(),
@@ -218,6 +227,15 @@ async fn an_activity_quota_never_crosses_the_tenant_boundary() {
         subject("their-worker"),
         Role::Worker,
     );
+    sagat_infra_postgres::PgIdentityStore::new(w.db.pool.clone())
+        .insert_membership(&sagat_domain::identity::Membership::restore(
+            outsider.tenant_id(),
+            outsider.subject().clone(),
+            Role::Worker,
+            crate::support::now(),
+        ))
+        .await
+        .expect("other tenant's worker membership");
     let theirs = w.session_as(&outsider, &["act.a"], 1).await;
     assert_eq!(w.poll(&theirs, 1).await.len(), 1);
 }

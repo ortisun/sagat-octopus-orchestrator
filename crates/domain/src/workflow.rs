@@ -20,6 +20,9 @@
 //! Wire formats (JSON) are an adapter concern: this module holds no serialization, and expressions
 //! are opaque text evaluated by an adapter (`FR-002-001`, ADR-0003).
 
+mod collection_shape;
+pub use collection_shape::{CollectionSuccessShapeError, LeafCollectionSuccessShape};
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::time::Duration;
@@ -72,6 +75,8 @@ pub enum WorkflowError {
     InvalidEventType(String),
     #[error("invalid expression: {0}")]
     InvalidExpression(ExpressionViolation),
+    #[error("node '{node}': expression exceeds the supported limit of {limit} UTF-8 bytes")]
+    ExpressionByteLimit { node: NodeId, limit: usize },
     #[error("a workflow needs at least one node")]
     NoNodes,
     #[error("a workflow may have at most {MAX_NODES} nodes, found {0}")]
@@ -1233,10 +1238,8 @@ impl WorkflowDefinition {
         kind: GraphKind,
         continuation_policy: Option<ContinuationPolicy>,
     ) -> Result<Self, WorkflowError> {
-        // Attempt credential pins and managed executor authorization address root nodes only
-        // (D601, migration 20261124 pins `instance_path` to the root). A managed database node
-        // may not sit in a loop or collection body, nor share a definition with a scope-producing
-        // node or a continuation policy, until a later feature proves scoped database attempts.
+        // Attempt credential pins and managed executor authorization are root-only. A typed
+        // caller must obey the same composition boundary as the public IR codec (ADR-0036).
         let managed_root = nodes.iter().any(|node| node.database_operation().is_some());
         let managed_body = bodies
             .iter()
@@ -1545,14 +1548,14 @@ impl WorkflowDefinition {
             + (region_entries + saga_entries + self.graph.scopes.len() + body_regions)
                 * PER_REGION_ENTRY
             + self
-                .graph
-                .nodes
+                .nodes()
+                .filter_map(Node::database_operation)
+                .map(DatabaseOperation::footprint)
+                .sum::<usize>()
+            + self
+                .bodies
                 .values()
-                .chain(
-                    self.bodies
-                        .values()
-                        .flat_map(|body| body.graph.nodes.values()),
-                )
+                .flat_map(|body| body.nodes())
                 .filter_map(Node::database_operation)
                 .map(DatabaseOperation::footprint)
                 .sum::<usize>()
@@ -1760,7 +1763,10 @@ fn check_graph_kind(node: &Node, kind: GraphKind) -> Result<(), WorkflowError> {
                 return Err(invalid("switch cannot declare next, onError or timeout"));
             }
             if cases.iter().any(|case| case.when().as_str().len() > 1024) {
-                return Err(invalid("predicate exceeds the supported byte limit"));
+                return Err(WorkflowError::ExpressionByteLimit {
+                    node: node.id().clone(),
+                    limit: 1024,
+                });
             }
         }
         NodeKind::Approval { .. } => {
@@ -1900,10 +1906,10 @@ fn check_graph_kind(node: &Node, kind: GraphKind) -> Result<(), WorkflowError> {
             .iter()
             .any(|expression| expression.as_str().len() > 1024)
         {
-            return Err(scope_error(
-                node.id(),
-                "expression exceeds the supported byte limit",
-            ));
+            return Err(WorkflowError::ExpressionByteLimit {
+                node: node.id().clone(),
+                limit: 1024,
+            });
         }
     }
     Ok(())

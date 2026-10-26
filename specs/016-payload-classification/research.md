@@ -215,7 +215,8 @@ namespace API bucket of ADR-0027 and by the number of holders. **Alternative**: 
 
 **Decision**: callers without `run:payload:inspect` get nodes omitted and a `childCount` of what they
 received; holders get typed `withheld` nodes (type and level, no value) and the true count. A `secret` is
-withheld for everyone and never a value. **Rationale**: ADR-0028 treats structure as sensitive metadata
+omitted for a caller without that permission, withheld (reason `SECRET`) for one who holds it, and its
+value is shown to nobody (D662). **Rationale**: ADR-0028 treats structure as sensitive metadata
 behind its own permission; the new operation must not hand it to a viewer by another route.
 
 ### D279 — Names: a declared property name is schema text; an undeclared key is data
@@ -256,6 +257,11 @@ audit record. **Rationale**: constitution VI and ADR-0028.
 is whatever the receiving carrier says. **Rationale**: tracking flow through the bounded expression
 evaluator, child inputs and results is a research problem; ADR-0033 puts the decision with the author.
 **Mitigation**: the `validate` report, the diff attention findings and review (G276).
+
+G21 integration clarification: a parent receives a child's retained result in `child.finished`.
+That journal selector uses the exact parent `child` node's output schema and persisted scope;
+the child's own input/result selectors use its own pinned workflow version. Event names do not
+broaden the carrier set: `child.finished` on an activity, wait or database node is ineligible.
 
 ### D284 — SDK scope: setters and one golden, no helper
 
@@ -414,3 +420,217 @@ would carry it (G282), erasure and retention per regulator (G283, G284), taint t
 screen (G280), SDK client methods (G281), whether `payloadRef` should stop being a plain digest (G275), a
 membership management surface (G290) and the production values of the bounds (G287). The design values of
 D280 are not capacity claims.
+
+## Review fixes: engine and disclosure (2026-10-25)
+
+Two independent reviews of the integrated feature (security and correctness, 2026-10-24) found defects in
+the walker, the validator cache and the disclosure answer. This section records the decisions, gaps and
+owner questions of the engine and disclosure half (D640 to D645, G640 to G647, O640 and O641). Another
+branch fixes the authoring and surface half and records its own numbers from D660. Findings are cited by
+the reviews' own numbering (S for the security review, C for the correctness review); each decision names
+the test that proves it.
+
+### D640 — A number is validated on the spelling that was sent, and "unsafe" is a precise rule (C1)
+
+**Decision**: a payload number is unsafe to validate only when the validator would compare a different
+value than the author sent. An integer spelling fits `i64`/`u64` (compared exactly) and, when the carrier
+has a decimal bound, constant or divisor, stays within 2^53. Any other spelling is the shortest decimal
+spelling of the `f64` it parses to (`9.99`, `12.5`, `1.5e2`; not a 30-digit fraction, not `1e400`) and
+is below 2^53. A carrier with an integer type refuses only a fraction that rounds to a whole number.
+Decimal schema bounds, constants and divisors are accepted below 2^53. A payload that fails the rule is
+`UnsupportedPayload`: callers without `run:payload:inspect` get `NOT_DISCLOSABLE`; inspectors get
+`UNSUPPORTED_FORMAT`. **Rationale**: the previous rule refused every fractional number as soon as the
+carrier had any numeric keyword or any integer type, so `{"price":9.99}` under `minimum: 0` and
+`{"amount":12.5,"qty":2}` under `type: integer` never disclosed, and the refusal told a viewer
+something about the payload. **Alternatives**: keep refusing all fractions (the defect); arbitrary
+precision arithmetic in the validator (a dependency feature we do not enable, and a different
+validator); refusing only above 2^53 for integers (would regress the tested exact large-integer modulo).
+**Proof**: `crates/infra-schema/tests/classification_numbers.rs` (6 tests: decimals under `minimum`,
+`maximum`, `exclusiveMinimum`, `const`, `enum`, `multipleOf: 0.25` and `0.01`, `uniqueItems`; mismatch
+stays a mismatch; unsafe spellings stay refused) and the integration test on real PostgreSQL.
+
+### D641 — One step budget bounds the whole walk (S1, C2, S7)
+
+**Decision**: a projection spends at most 4,000,000 steps (`MAX_WALK_STEPS`) and five seconds
+(`MAX_PROJECTION_DURATION`), whichever comes first, and ends as `SchemaUnusable` (an inspector sees
+`structure-only` with `SCHEMA_UNUSABLE`, everyone else `NOT_DISCLOSABLE`). Every expanded subschema is
+charged once for each instance node it applies to, which is also what the validator spends there, and
+the charge is made in a precheck before `is_valid` runs. A keyword outside the walked set that descends
+(`not`, `if`, `contains`, `propertyNames`, `dependentSchemas`, `unevaluated*`, a `$ref` inside them) is
+charged per descendant. The schemas that govern every remaining array item, and every key no schema
+names, are computed once per container. Number spellings live in a tree shaped like the payload, so the
+bookkeeping is linear in the payload instead of one path string per number. The 1,000 `$ref` expansion
+limit now applies to one schema location, as publication already counted it, so an array of more than
+1,000 referenced items discloses; a cycle still ends as an unusable carrier. **Rationale**: the walk
+runs inside the read transaction; its cost grew with payload times carrier. **Alternatives**: a payload
+node limit alone (does not bound the carrier side); cancelling the validator by timeout (it cannot be
+interrupted); memoising expansion per schema pointer (does not bound the product).
+**Reproduced and fixed**: 120 nested keys of 1 KiB over 60,000 integers retained about 7 GB (scaled to
+1/20 it peaked at 413 MB on the old code); it now runs in 0.02 s with 20 MB. 20,000 `allOf` branches
+under `items` with 131,000 elements did not finish in 60 s on the old code; it now stops at the budget.
+**Proof**: `crates/infra-schema/tests/classification_bounds.rs` (8 tests) and four walk unit tests.
+
+### D642 — The carrier compiles before the transaction, once per version (C5, S5)
+
+**Decision**: the store reads the pinned version and the selector's carrier without a transaction and
+asks the evaluator to `prepare` it, which compiles and caches the validator; only then does it open the
+transaction, where it checks the version is the one prepared and repeats every authority check. The
+compile is single-flight per key (other callers wait for its result), different keys compile together up
+to four permits, a cached hit never waits, a panicking compiler releases its flight, and a carrier that
+cannot be compiled is remembered in a separate table of 1,024 entries so it costs one attempt and does not
+evict a usable entry. Preparation and projection run through `block_in_place` on a multi-thread runtime.
+**Rationale**: the old cache compiled under a process-wide `std::sync::Mutex`, inside the transaction
+that holds the run, namespace, membership and grant locks, on an async worker, and never remembered a
+failure. The version is immutable (the `document` is covered by the immutability trigger), so what is
+read before the transaction cannot differ from what the transaction reads. **Proof**:
+`tests/fault/payload-classification/races.rs` (`a_cold_carrier_compiles_before_the_transaction_...`
+asserts no `idle in transaction` backend while the compile runs and that `project` only hit the cache;
+`a_projection_in_progress_does_not_occupy_the_only_runtime_worker` runs on one worker) and seven cache
+unit tests.
+
+### D643 — The cache budget is estimated compiled bytes, with a pattern cap (C4)
+
+**Decision**: an entry weighs 4 KiB plus 64 bytes per serialized schema byte plus 128 KiB per regular
+expression; the budget is 64 MiB of that estimate (it was 16 MiB of serialized bytes) with the 256-entry
+limit kept; a carrier may hold at most 32 `pattern` keywords and `patternProperties` keys; each regular
+expression is limited to 64 KiB of program and 64 KiB of lazy DFA (it was 1 MiB each). **Rationale**: the
+committed benchmark retained 414 MiB live at the old "16 MiB" limit, and a 64 KiB carrier of patterns
+could compile to hundreds of megabytes (1,400 simple patterns measured 17.8 MB; one pattern at the old
+limit could be 1 MiB). Measured ratios on this machine: 21 to 54 compiled bytes per serialized byte
+(wide object, 3,000-branch `allOf`, large `enum`, minimal schema) and up to 79 KB per pattern at the new
+limit. The weight rounds those up so it is an upper bound; the benchmark asserts it for five shapes.
+**Supersedes** the weight of D281 (the key, the LRU and the process scope stand). The numbers are design
+values; O641 asks the owner to confirm them. **Proof**: `classification_cache.rs` (5 tests) and the
+benchmark report `tests/performance/reports/payload-classification.md`.
+
+### D644 — A caller who may not inspect never learns why or how big (S2)
+
+**Decision**: `sizeBytes` (the size of the whole stored payload, personal and secret fields included) and
+`UNSUPPORTED_FORMAT` go only to a caller with `run:payload:inspect`. Every other caller gets
+`NOT_DISCLOSABLE` for every failure except `NO_RETAINED_PAYLOAD`, and a `disclosed` answer carries no
+`sizeBytes`. `sizeBytes` is therefore optional on the `disclosed` variant in the OpenAPI schema, the
+contract README and the generated Studio types. **Rationale**: D269 and D278 promised no data-dependent
+answer for these callers; the old code gave `UNSUPPORTED_FORMAT` for unsupported or too-large payloads
+(a one-bit oracle, and data-dependent through any fraction in a secret field) and `sizeBytes` to all.
+**Proof**: `the_stored_size_goes_only_to_a_caller_who_may_inspect` and the closed-failures tests.
+
+### D645 — A structure answer is audited as an inspection (C3)
+
+**Decision**: a `structure-only` answer (legacy version, no carrier, mismatch, unusable carrier) writes
+`payload.inspected` in the read transaction, reason `classified-v1:<selector>:structure`, with the 300 s
+collapse of ADR-0028. **Rationale**: ADR-0028 audits the same structure read and has no exemption; every
+run started before the feature is `LEGACY_VERSION`, so every such read was unaudited. No new ADR: this
+follows ADR-0028. **Proof**: the use-case test over every failure and role, and the PostgreSQL test of a
+legacy run (one row for two reads, none for a developer or a viewer).
+
+### Gaps and owner questions of this section
+
+| # | Gap | Treatment | Status |
+|---|---|---|---|
+| G640 | A key of a map governed only by `additionalProperties` is named at the level of its value (D279), so an email used as a key is shown to a viewer when the values are public; authors cannot classify keys (S4). | Behaviour kept and pinned by `pending_decision_keys_of_an_additional_properties_map_...`. The disclosure-side fix (name the key only for `audience.pii`) contradicts D279 and needs the owner (O640). The publication-side mitigation, `CLASSIFICATION_INHERITED_OPEN` for `items` and `additionalProperties` children, is in `publication.rs`, which the surface branch owns. | Open (O640) |
+| G641 | An inspector's `disclosed` answer shows the shape of withheld nodes and the real counts but is audited only when it returns an `internal` or `pii` value. | Same rule as D269 (a public-only read is a metric); inspectors are few, so auditing every inspector read as `payload.inspected` is a small change if the owner wants it. | Open |
+| G642 | Publication does not warn that a carrier has more than 32 patterns or that a read would exceed the walk budget; the runtime refuses it as an unusable carrier. | `publication.rs` belongs to the surface branch; the counts are exported constants (`MAX_CARRIER_PATTERNS`, `MAX_WALK_STEPS`). | Open |
+| G643 | A payload whose numbers cannot be validated shows an inspector `UNSUPPORTED_FORMAT` and no structure, because the structure-only wire reasons do not name it. | A new reason (for example `UNSUPPORTED_NUMBER`) is a contract change in OpenAPI, the SDKs and Studio; not made here. | Open |
+| G644 | Numbers in the schema (bounds, constants, divisors) reach the validator as `f64` after parsing, so their source spelling is not checked; a constant with more digits than an `f64` keeps compares as its `f64`. | Documented in the runbook; the payload side is exact. | Accepted |
+| G645 | The per-descendant charge for descending keywords outside the walked set can refuse a legitimate schema that puts a large conditional (`if`/`then`) on every element of a very long array. | Fails closed as an unusable carrier, which an inspector sees as `SCHEMA_UNUSABLE`; raise `MAX_WALK_STEPS` after measurement if it bites. | Accepted |
+| G646 | The compiled-validator cache is shared by all tenants, so a tenant that publishes and reads many large versions can evict other tenants' entries (a cost, not a leak: keys are global version ids). | The weight budget bounds memory; a per-tenant partition or quota is not built. | Open |
+| G647 | The weight bounds allocator-requested heap of a compiled entry, not RSS: regular-expression matchers also keep per-thread caches while serving requests. | The benchmark states `heap` semantics; the pattern cap and the 64 KiB limits bound each matcher. | Accepted |
+
+| # | Question for the owner | Options | Recommendation |
+|---|---|---|---|
+| O640 | Should the key of a map governed only by `additionalProperties` follow its value's level (D279 today) or be at least `pii`, shown only to a caller revealing PII? | (a) keep D279 and warn authors at publication; (b) name such keys only when the audience includes `pii`, so a viewer sees values without keys; (c) let authors classify keys (a new annotation under `propertyNames`). | (b): maps keyed by an identifier are common, and (b) needs no new schema syntax; it changes what a viewer sees for every such map, hence the question. |
+| O641 | Confirm the cache budget (64 MiB of estimated compiled bytes, 256 entries, 32 patterns per carrier, 64 KiB per regular expression) or choose other numbers. | The estimate is an upper bound measured on one machine (D643). | Keep; revisit with production telemetry (`classification_cache_total`). |
+
+## Surface fixes after the two independent reviews (2026-10-25)
+
+Two independent reviews of the integrated branch (a security review and a correctness review, both
+read-only) found defects in the publication, diff, event, grant and evidence surface. This section
+records what was decided while fixing them. The numbers D660+, G660+ and O660+ are this branch's;
+D640+, G640+ and O640+ belong to the engine-side fixes made at the same time (walker, validator cache,
+disclosure store, decimals, budgets). Findings are cited as S for the security review and C for the
+correctness review.
+
+### D660 — An annotation under any key the walker does not read is refused (S6, C7)
+
+**Decision**: publication refuses `x-sagat-classification` under every key of a schema except
+`properties`, `items`, `prefixItems`, `additionalProperties`, `allOf`, `anyOf`, `oneOf`, `$defs` and a
+local `$ref` target (`CLASSIFICATION_UNSUPPORTED_KEYWORD`, at the path of the key). Property names and
+`$defs` names are not keywords. An array under `items` is refused too. `CLASSIFICATION_INHERITED_OPEN` is
+raised for the children declared by `items` and `additionalProperties` as it was for `properties` and
+`prefixItems`. A 422 lists errors only in `details.issues`. **Rationale**: the list of 11 refused
+applicators let `contentSchema`, `additionalItems`, `dependencies` or a vendor key hold an annotation
+that nothing reads, which left the field `pii` with no feedback (US01.4). **Alternative** rejected: grow the
+list (every new keyword of a JSON Schema draft would reopen the hole).
+
+### D661 — Every version says which rules it was published under (C9)
+
+**Decision**: `VersionSummary` (publish, version read and list, the active version of a workflow) returns
+`classificationRules`. Publishing the document of an existing version still returns that version found by
+workflow and digest (`created: false`), so a legacy document stays at rules `0`; the answer now says so.
+**Alternative** rejected: re-pin the old version (versions are immutable) or publish a new version for an
+identical document (it would break the digest identity that rollback and promotion rely on).
+
+### D662 — A `secret` node: omitted, withheld, never shown (spec alignment)
+
+**Decision**: FR-016-009 and D278 now say what the contract matrix and the code do: a `secret` node is
+omitted for a caller without `run:payload:inspect`, withheld with the reason `SECRET` for one who holds it,
+and its value is shown to nobody. The earlier text ("withheld for everyone") disagreed with the matrix.
+
+### D663 — A change of role removes the subject's reveal grants (S10)
+
+**Decision**: a trigger on `memberships` deletes the subject's `payload_reveal_grants` in every namespace
+when `role` changes (migration `20261220000000`). A grant belongs to the role held when it was granted; an
+administrator grants again after the change. **Rationale**: D274 made a demoted grant inert but kept the
+row, so promoting the member again revived a right nobody renewed. Storing the role and comparing for
+equality would still revive a developer who was demoted and promoted back. Any change of role (also a
+promotion) removes the grants: simpler than ranking roles, and no role table is copied into SQL.
+**Alternative** rejected: store the role at grant time and require it to be at least the same.
+
+### D664 — The version diff compares what is disclosed, walks each side once (C8)
+
+**Decision**: a side with no schema for a location (a carrier added or dropped), or published under rules
+`0`, counts as `undisclosed`, as strict as `secret`; adding an `outputSchema` that makes a field `public`
+is `CLASSIFICATION_RELAXED`, dropping one is `CLASSIFICATION_TIGHTENED`, and a legacy version compared
+with the same document under the current rules relaxes every location its annotations make readable. The
+first draft of a workflow (nothing to compare with) is not compared. The application passes the rules of
+each side (`IrCodec::diff_with_rules`). Each document is walked once into an index
+(`ClassificationLocationIndex`) and each location is looked up in the other one's; before, every location
+started three walks of the whole carrier (130 s in a debug build for a 52 KB carrier of 2,000 properties,
+inside the async handler). The cost is asserted in walk steps (`ClassificationWalkStatus.steps`, five per
+location and side), not in time. The attention codes `CLASSIFICATION_TOO_COMPLEX`, `_UNRESOLVED_REF`,
+`_UNSUPPORTED_KEYWORD` and `MORE_FINDINGS` are described in the OpenAPI `DiffFinding`, the runbook and the
+Studio (the settings panel shows a notice for carriers that were not compared).
+
+### D665 — Event data the projector cannot shape is `opaque`, not a 403 (C, lower)
+
+**Decision**: `getInboxEvent` returns `dataStructure: {"kind": "opaque"}` when the stored data is not
+bounded JSON the projector accepts, as a dead letter already did. The earlier code answered
+`EventReadNotGranted` (a 403 for a server-side limit, which told the caller they lacked `event:read`).
+
+### D666 — Event and dead-letter reads audit cross-tenant probes; the unredacted readers are gone (S3, S8, S9, S11)
+
+**Decision**: the prepare step of the three event reads calls the shared `require_namespace`, so a probe of
+a namespace of another tenant is the opaque `404` and leaves a `CrossTenantAccessDenied` record against
+the prober (the old `EventService::event` did; the value-safe service had lost it). Dead letters were not
+audited before and are now. `EventService::event`, `ConnectorService::dead_letters` and `::dead_letter`
+(unredacted readers no route calls since D302) and the store read of a whole inbox event are deleted; the
+store keeps what redrive needs. The response types that hold revealed values (`EventBody`,
+`DeadLetterBody`) print state and sizes only in `Debug`. `Audience::new` keeps `pii` only when `internal`
+is set, so an audience that reads `pii` and not `internal` cannot be built.
+
+### Gaps
+
+| # | Gap | Treatment | Status |
+|---|---|---|---|
+| G660 | The removal of grants by a change of role (D663) and by the cascade of a deleted membership leaves no `payload.reveal_revoked` record: there is no membership management surface to audit (G290), and the trigger runs inside whatever statement changed the role. | The change of the membership itself is the audited act once that surface exists; until then the database owner who changes a role knows the effect. Revisit with G290. | Open |
+| G661 | The first version of a legacy workflow under the current rules lists a `CLASSIFICATION_RELAXED` finding per readable location (100, then `MORE_FINDINGS`): accurate, and noisy for a large carrier. | O660. | Open |
+| G662 | `T016-053` (benchmark) and `T016-054` (workspace gates) are not closed: the benchmark report states that the registered target and the cache tests must pass first and that the cache does not bound compiled-validator memory (414 MiB at the 16 MiB limit); the workspace gates were never run as one set on the integrated tree. | Unticked in `tasks.md`; the cache weight is an engine-side fix (D640+). Close both with the commands of the task on the merged tree. | Open |
+| G663 | `tasks/project-completion/` (about 1.7 million lines of command output) is not in git; 56 evidence lines and about 288 lines of specs and docs cite it. | The evidence lines say so; a tick stands only on a test that is in the repository and can be rerun. The output is kept outside git (local ref `handoff/016-project-completion-20261024`). | Accepted |
+| G664 | `npm audit --audit-level=moderate` in `frontend/` fails on this branch (2026-10-25): vitest and `@vitest/mocker` <= 4.1.11 (moderate), `dompurify` <= 3.4.16 (critical; the root `package.json` overrides it to 3.4.16) and `undici` 8.0.0 to 8.12.1 (high). No package or lockfile changed here. | Not fixed in this change (a dependency bump is its own change); it belongs to the advisory part of T016-054 and to whoever owns the Studio dependencies. | Open |
+
+### Owner questions
+
+| # | Question | Default taken |
+|---|---|---|
+| O660 | Should the first version of a legacy workflow under the current rules list a relaxation per location (D664), or one finding per carrier that says how many locations became readable? | Per location, bounded at 100 with the exact remainder; it follows US01.7 ("an attention finding for each"). |
+| O661 | Should a promotion (for example `operator` to `admin`) keep the member's reveal grants, and only a demotion remove them (D663)? | Any change of role removes them; the administrator grants again. Simpler, and it needs no ranking of roles. |

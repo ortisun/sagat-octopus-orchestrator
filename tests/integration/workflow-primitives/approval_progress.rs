@@ -893,3 +893,326 @@ async fn a_decision_is_committed_by_the_least_privilege_runtime_role() {
     assert!(replayed.replayed());
     assert_eq!(replayed.receipt().id(), committed.receipt().id());
 }
+
+#[tokio::test]
+async fn approval_post_wait_fence_rejects_opening_after_expiry_without_effects() {
+    assert_opening_post_wait(false).await;
+}
+
+#[tokio::test]
+async fn approval_post_wait_fence_preserves_generation_storage_error() {
+    assert_opening_post_wait(true).await;
+}
+
+async fn assert_opening_post_wait(overflow: bool) {
+    use crate::bounded_fences::{SchedulerExpiryBarrier, scope_checkpoint};
+    let fixture = pending_fixture("approval-postwait").await;
+    let store = PgApprovalProgressStore::new(fixture.world.db.runtime_pool().await);
+    let tenant = fixture.world.admin.tenant_id().as_uuid();
+    let command = |authority| {
+        ApprovalOpening::new(
+            fixture.request.clone(),
+            fixture.routes.clone(),
+            authority,
+            engine_audit(&fixture, AuditAction::ApprovalOpened, fixture.opened_at),
+            Uuid::now_v7(),
+            fixture.opened_at,
+        )
+    };
+    let claimed = if overflow {
+        SchedulerAuthority::for_run(fixture.scheduler.owner(), fixture.run, u64::MAX)
+    } else {
+        fixture.scheduler.clone()
+    };
+    let prepared = command(claimed);
+    let before = scope_checkpoint(&fixture.world.db.pool, tenant).await;
+    let result = if overflow {
+        store.open(&prepared).await
+    } else {
+        let barrier = SchedulerExpiryBarrier::hold(&fixture.world.db.pool, fixture.run).await;
+        let (result, ()) = tokio::join!(store.open(&prepared), barrier.expire_after_wait());
+        result
+    };
+    let error = result.expect_err("invalid authority must refuse approval opening");
+    if overflow {
+        assert!(matches!(
+            error,
+            ApprovalProgressError::Storage(sagat_application::error::StoreError::Internal { .. })
+        ));
+    } else {
+        assert_eq!(error, ApprovalProgressError::SchedulerFenceLost);
+    }
+    assert_eq!(
+        scope_checkpoint(&fixture.world.db.pool, tenant).await,
+        before
+    );
+    if !overflow {
+        let fresh = command(scheduler(&fixture.world.db.pool, fixture.run).await);
+        assert_eq!(
+            store.open(&fresh).await.expect("fresh opening").status(),
+            ApprovalStatus::Pending
+        );
+        let audits: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM audit_records WHERE tenant_id=$1 AND resource_id=$2 \
+             AND action='approval.opened' AND trace_id ~ '^[0-9a-f]{32}$'",
+        )
+        .bind(tenant)
+        .bind(fixture.request.id().to_string())
+        .fetch_one(&fixture.world.db.pool)
+        .await
+        .expect("one traced opening audit");
+        assert_eq!(audits, 1);
+        let committed = scope_checkpoint(&fixture.world.db.pool, tenant).await;
+        assert_eq!(
+            store
+                .open(&fresh)
+                .await
+                .expect_err("opening is not a replay port"),
+            ApprovalProgressError::RuntimeUnavailable
+        );
+        assert_eq!(
+            scope_checkpoint(&fixture.world.db.pool, tenant).await,
+            committed
+        );
+    }
+}
+
+#[tokio::test]
+async fn approval_post_wait_fence_rejects_due_expiry_without_effects() {
+    use crate::bounded_fences::{SchedulerExpiryBarrier, scope_checkpoint};
+    let fixture = pending_fixture("approval-expiry-postwait").await;
+    let store = PgApprovalProgressStore::new(fixture.world.db.runtime_pool().await);
+    store
+        .open(&ApprovalOpening::new(
+            fixture.request.clone(),
+            fixture.routes.clone(),
+            fixture.scheduler.clone(),
+            engine_audit(&fixture, AuditAction::ApprovalOpened, fixture.opened_at),
+            Uuid::now_v7(),
+            fixture.opened_at,
+        ))
+        .await
+        .expect("open through runtime role");
+    // Wait for the actual persisted business deadline; do not substitute a future occurred_at.
+    // The usual eventually helper is deliberately limited to five seconds, shorter than this IR.
+    let due_at = tokio::time::timeout(Duration::from_secs(75), async {
+        loop {
+            let now: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
+                .fetch_one(&fixture.world.db.pool)
+                .await
+                .expect("database due clock");
+            if now >= fixture.request.deadline() {
+                break now;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("approval becomes due within its 60-second fixture budget");
+    let command = |authority| {
+        ApprovalExpiryAttempt::new(
+            address(&fixture),
+            authority,
+            engine_audit(&fixture, AuditAction::ApprovalExpired, due_at),
+            Uuid::now_v7(),
+            due_at,
+        )
+    };
+    let prepared = command(fixture.scheduler.clone());
+    let tenant = fixture.world.admin.tenant_id().as_uuid();
+    let before = scope_checkpoint(&fixture.world.db.pool, tenant).await;
+    let barrier = SchedulerExpiryBarrier::hold(&fixture.world.db.pool, fixture.run).await;
+    let (result, ()) = tokio::join!(store.expire(&prepared), barrier.expire_after_wait());
+    assert_eq!(
+        result.expect_err("expired scheduler cannot settle due approval"),
+        ApprovalProgressError::SchedulerFenceLost
+    );
+    assert_eq!(
+        scope_checkpoint(&fixture.world.db.pool, tenant).await,
+        before
+    );
+    let fresh = command(scheduler(&fixture.world.db.pool, fixture.run).await);
+    let settled = store
+        .expire(&fresh)
+        .await
+        .expect("fresh own authority expires due request");
+    assert!(settled.changed());
+    assert_eq!(settled.status(), ApprovalStatus::Expired);
+    let effects: (i64,i64,i64,String) = sqlx::query_as(
+        "SELECT \
+         (SELECT count(*) FROM audit_records WHERE tenant_id=$1 AND resource_id=$2 \
+          AND action='approval.expired' AND trace_id ~ '^[0-9a-f]{32}$'), \
+         (SELECT count(*) FROM run_events WHERE tenant_id=$1 AND run_id=$3 AND event_type='approval.expired'), \
+         (SELECT count(*) FROM event_outbox WHERE tenant_id=$1 AND id=$4), \
+         (SELECT state FROM approval_timers WHERE tenant_id=$1 AND request_id=$5)",
+    ).bind(tenant).bind(fixture.request.id().to_string()).bind(fixture.run.as_uuid())
+    .bind(fresh.outbox_id()).bind(fixture.request.id().as_uuid()).fetch_one(&fixture.world.db.pool)
+    .await.expect("atomic expiry effects");
+    assert_eq!(effects, (1, 1, 1, "FIRED".into()));
+}
+
+/// Trusted storage protocol fixture: this does not open new public approval/chain shapes.
+#[tokio::test]
+async fn approval_chain_prefix_precedes_run_lock_and_lasts_until_decision_commit() {
+    let fixture = fixture("approval-chain-prefix").await;
+    let pool = &fixture.world.db.pool;
+    let tenant = fixture.world.admin.tenant_id().as_uuid();
+    let run = fixture.run.as_uuid();
+    let mut setup = pool.begin().await.expect("chain setup");
+    sqlx::query("UPDATE runs SET deadline_at=clock_timestamp()+interval '1 hour' WHERE tenant_id=$1 AND id=$2")
+        .bind(tenant).bind(run).execute(&mut *setup).await.expect("original chain deadline");
+    sagat_infra_postgres::initialize_chain_in_transaction(
+        &mut setup,
+        &sagat_application::chain_progress::ChainInitialization::new(
+            sagat_domain::execution::ChainScope::new(
+                fixture.world.admin.tenant_id(),
+                fixture.world.namespace.id(),
+            ),
+            fixture.run,
+            sagat_domain::execution::ChainPolicy::new(2).expect("chain policy"),
+        ),
+    )
+    .await
+    .expect("real chain initialization after approval opened");
+    setup
+        .commit()
+        .await
+        .expect("persist consistent chain metadata");
+    sqlx::raw_sql(
+        "CREATE FUNCTION test_hold_approval_audit() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN PERFORM pg_advisory_xact_lock(37140038::bigint); RETURN NEW; END $$; \
+         CREATE TRIGGER test_hold_approval_audit BEFORE INSERT ON audit_records \
+         FOR EACH ROW WHEN (NEW.action='approval.decided') EXECUTE FUNCTION test_hold_approval_audit()",
+    )
+    .execute(pool)
+    .await
+    .expect("decision lifetime gate");
+    let mut audit_gate = pool.begin().await.expect("audit gate");
+    let audit_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *audit_gate)
+        .await
+        .expect("audit backend");
+    sqlx::query("SELECT pg_advisory_xact_lock(37140038::bigint)")
+        .execute(&mut *audit_gate)
+        .await
+        .expect("hold audit gate");
+    let mut chain_gate = pool.begin().await.expect("chain gate");
+    let chain_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *chain_gate)
+        .await
+        .expect("chain backend");
+    sqlx::query(
+        "SELECT chain_id FROM execution_chains WHERE tenant_id=$1 AND chain_id=$2 FOR UPDATE",
+    )
+    .bind(tenant)
+    .bind(run)
+    .execute(&mut *chain_gate)
+    .await
+    .expect("hold original chain");
+    let store = PgApprovalProgressStore::new(fixture.world.db.runtime_pool().await);
+    let command = decision(
+        &fixture,
+        &fixture.actor,
+        "chain-prefix",
+        fixture.opened_at,
+        Uuid::now_v7(),
+    );
+    let mut request = Box::pin(store.decide(&command));
+    tokio::select! {
+        result = &mut request => panic!("decision bypassed chain gate: {result:?}"),
+        () = crate::support::eventually("approval decision waits on chain before run", || async {
+            sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() \
+                 AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE '%execution_chains%' \
+                 AND (NOT $2 OR usename='sagat_app'))",
+            ).bind(chain_pid).bind(crate::support::as_runtime_role()).fetch_one(pool).await
+            .expect("actual chain wait").then_some(())
+        }) => {}
+    }
+    let mut probe = pool.acquire().await.expect("early own-run probe");
+    sqlx::query("SELECT id FROM runs WHERE tenant_id=$1 AND id=$2 FOR UPDATE NOWAIT")
+        .bind(tenant)
+        .bind(run)
+        .execute(&mut *probe)
+        .await
+        .expect("chain wait holds no own run");
+    drop(probe);
+    chain_gate
+        .rollback()
+        .await
+        .expect("release initial chain guard");
+    tokio::select! {
+        result = &mut request => panic!("audit gate must pause decision: {result:?}"),
+        () = crate::support::eventually("decision reaches final audit in same transaction", || async {
+            sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() \
+                 AND $1=ANY(pg_blocking_pids(pid)) AND (NOT $2 OR usename='sagat_app'))",
+            ).bind(audit_pid).bind(crate::support::as_runtime_role()).fetch_one(pool).await
+            .expect("actual final audit wait").then_some(())
+        }) => {}
+    }
+    let mut probe = pool.acquire().await.expect("retained guards probe");
+    for statement in [
+        "SELECT chain_id FROM execution_chains WHERE tenant_id=$1 AND chain_id=$2 FOR SHARE NOWAIT",
+        "SELECT id FROM runs WHERE tenant_id=$1 AND id=$2 FOR UPDATE NOWAIT",
+    ] {
+        let error = sqlx::query(statement)
+            .bind(tenant)
+            .bind(run)
+            .execute(&mut *probe)
+            .await
+            .expect_err("exclusive chain and own-run guards retained until commit");
+        assert_eq!(
+            error.as_database_error().and_then(|e| e.code()).as_deref(),
+            Some("55P03")
+        );
+    }
+    drop(probe);
+    audit_gate.rollback().await.expect("release audit guard");
+    let committed = request.await.expect("approved after ordered locks");
+    assert!(!committed.replayed());
+    let effects: (String, i64, Vec<String>, i64, i64, i64) = sqlx::query_as(
+        "SELECT status, \
+         (SELECT count(*) FROM approval_decision_receipts WHERE tenant_id=$1 AND request_id=$2), \
+         (SELECT array_agg(event_type ORDER BY seq) FROM run_events WHERE tenant_id=$1 AND run_id=$3 AND seq>3), \
+         (SELECT count(*) FROM event_outbox WHERE tenant_id=$1 AND id=$4), \
+         (SELECT count(*) FROM audit_records WHERE tenant_id=$1 AND resource_id=$5 \
+          AND action='approval.decided' AND trace_id ~ '^[0-9a-f]{32}$'), \
+         (SELECT run_version FROM runs WHERE tenant_id=$1 AND id=$3) \
+         FROM approval_requests WHERE tenant_id=$1 AND request_id=$2",
+    ).bind(tenant).bind(fixture.request.id().as_uuid()).bind(run).bind(command.outbox_id())
+    .bind(fixture.request.id().to_string()).fetch_one(pool).await.expect("one atomic decision");
+    assert_eq!(
+        effects,
+        (
+            "APPROVED".into(),
+            1,
+            vec!["approval.decided".into(), "step.routed".into()],
+            1,
+            1,
+            5
+        )
+    );
+    let before_replay = crate::bounded_fences::scope_checkpoint(pool, tenant).await;
+    assert!(
+        store
+            .decide(&command)
+            .await
+            .expect("current-authority receipt replay")
+            .replayed()
+    );
+    assert_eq!(
+        crate::bounded_fences::scope_checkpoint(pool, tenant).await,
+        before_replay
+    );
+    // The original chain is still the member's chain; deciding never forwards or changes its head.
+    let head: Uuid = sqlx::query_scalar(
+        "SELECT current_run_id FROM execution_chains WHERE tenant_id=$1 AND chain_id=$2",
+    )
+    .bind(tenant)
+    .bind(run)
+    .fetch_one(pool)
+    .await
+    .expect("pinned chain head");
+    assert_eq!(head, run);
+}

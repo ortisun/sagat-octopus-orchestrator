@@ -1,6 +1,6 @@
 # Contract design for feature 016
 
-**Status: designed, not built.** Nothing below is deployed. The canonical contracts stay in
+**Status: implemented on the integration branch; release gates pending.** Nothing below is deployed. The canonical contracts stay in
 `specs/001-platform-foundation/contracts/` (`workflow.schema.json`, `openapi.yaml`); the changes listed
 here are made there by the tasks of `tasks.md` (T016-006, T016-008, T016-060), never by this document. `worker.proto`
 and `events.asyncapi.yaml` do not change.
@@ -27,7 +27,7 @@ four levels, case-sensitive.
 |---|---|---|---|
 | `inputSchema` | document root | yes (`type: object`, optional) | the run input (`source: "input"`) |
 | `outputSchema` | document root | yes (`type: object`, optional) | the run result (`source: "result"`) |
-| `outputSchema` | `activity`, `script`, `waitEvent`, `child` node | **new**, optional, `type: object` | the payload of that node's `step.completed`, `wait.satisfied` or `reconciliation.concluded` event (`source: "journal"`) |
+| `outputSchema` | `activity`, `script`, `waitEvent`, `child` node | **new**, optional, `type: object` | the payload of that node's `step.completed`, `wait.satisfied`, `reconciliation.concluded` or `child.finished` event (`source: "journal"`); `child.finished` requires the exact parent's `child` node |
 
 Not carriers, and an annotation there is refused (`CLASSIFICATION_NOT_APPLICABLE`): the declared state
 and the argument and result schemas of Query and Update (feature 014, ADR-0031), `humanApproval.formSchema`,
@@ -65,6 +65,20 @@ checks the rest (section 1.4). `docs/reference/workflow-document.md` is regenera
 7. A declared child never lowers the level. Inline or through `$ref`, a lower declaration is a
    publication error; the evaluator still clamps (`max`) as defence in depth.
 8. A node with an annotation but no `type` governs every type at that location.
+9. Numbers are validated on the spelling the author sent, not on the machine value (D640). When a
+   carrier has a numeric keyword (`minimum`, `maximum`, `exclusive*`, `multipleOf`, `uniqueItems`,
+   a `const` or `enum` holding a number) a payload number is validated only if the validator will
+   compare the value that was sent: an integer fits 64 bits (and stays within 2^53 when the
+   carrier has a decimal constant), and any other spelling is the shortest spelling of the
+   `f64` it parses to and is below 2^53. `9.99`, `12.5` and `1.5e2` are; a 30-digit fraction and
+   `1e400` are not. A payload that fails the rule is not validated: callers without
+   `run:payload:inspect` get `NOT_DISCLOSABLE`; inspectors get `UNSUPPORTED_FORMAT`. A carrier with
+   an integer type refuses only a fraction that rounds to a whole number.
+10. Cost is bounded (D641): one walk spends at most 4,000,000 steps, each expanded subschema
+    being charged once for every instance node it applies to, and at most five seconds. A walk that
+    runs out ends as an unusable carrier (`SCHEMA_UNUSABLE` for inspectors). The 1,000 `$ref`
+    limit applies to one schema location. A carrier may hold at most 32 `pattern` keywords and
+    `patternProperties` keys, each regular expression limited to 64 KiB of program.
 
 Worked example (the corpus of `tests/contract/payload-classification/fixtures/`):
 
@@ -181,14 +195,14 @@ type Node =
 type Child = { ordinal: number; name?: string; node: Node };   // name: a declared property, or a disclosed value's key
 
 type Disclosure = Provenance & (
-  | { kind: "disclosed"; schema: Schema; sizeBytes: number; truncated: boolean; tree: Node }
+  | { kind: "disclosed"; schema: Schema; sizeBytes?: number; truncated: boolean; tree: Node }   // sizeBytes: run:payload:inspect only
   | { kind: "structure-only"; schema?: Schema; sizeBytes: number; truncated: boolean;
       reason: "NO_SCHEMA" | "SCHEMA_MISMATCH" | "LEGACY_VERSION" | "SCHEMA_UNUSABLE";
       tree: PayloadStructure }                                       // the ADR-0028 type; run:payload:inspect only
   | { kind: "external"; sizeBytes: number; contentKind: "json" | "text" | "binary" | "other";
       reason: "EXTERNAL_CONTENT_NOT_INSPECTED" }
   | { kind: "unavailable"; reason: "NO_RETAINED_PAYLOAD" | "UNSUPPORTED_FORMAT" | "NOT_DISCLOSABLE";
-      sizeBytes?: number }
+      sizeBytes?: number }   // UNSUPPORTED_FORMAT and sizeBytes: run:payload:inspect only
 );
 ```
 
@@ -196,7 +210,11 @@ Rules of the answer:
 
 - `structure-only` appears only for a caller that holds `run:payload:inspect`; every other caller gets
   `unavailable` with `NOT_DISCLOSABLE` for the same situations, so that the state of a payload (valid,
-  invalid, schema-less, legacy) is not an oracle for them.
+  invalid, schema-less, legacy, unsupported or too large) is not an oracle for them. `UNSUPPORTED_FORMAT`
+  and `sizeBytes` (the size of the whole stored payload, personal and secret fields included) are
+  facts about the payload's structure and go to the same holders only (D644).
+- A `structure-only` answer is audited as `payload.inspected` in the same transaction, with the
+  300 s collapse of ADR-0028 and the reason `classified-v1:<selector>:structure` (D645).
 - For a caller without `run:payload:inspect`, withheld nodes are omitted and `childCount` counts the
   children returned; for a holder, `childCount` is the true count and withheld children appear.
 - `name` is present for a child declared in `properties`, and for an undeclared key only when its value
@@ -262,7 +280,11 @@ be the caller (D306); the audit record shows actor and subject.
   `classification` array of `{carrier, nodeId?, path, level, declared}` (the effective level of each
   declared location, `declared` false when inherited), at most 500 entries, and `classificationTruncated`.
 - `DiffFinding.code` description gains `CLASSIFICATION_RELAXED` and `CLASSIFICATION_TIGHTENED`
-  (attention, not breaking).
+  (attention, not breaking; a side with no schema for the location, or under rules `0`, counts as
+  `undisclosed`), the carrier codes `CLASSIFICATION_TOO_COMPLEX`, `_UNRESOLVED_REF` and
+  `_UNSUPPORTED_KEYWORD` (attention: the carrier was not compared) and `MORE_FINDINGS`.
+- `VersionSummary` gains the required `classificationRules` (`0` or `1`), the rules pinned to the
+  version when it was published (D661).
 - `Error.details.reason` description gains the five reasons above.
 
 ### 2.4 Event inbox and dead letters (US08, `x-implemented` stays `'004'`, marked `x-extended: '016'`)
@@ -288,7 +310,7 @@ type InboxEvent = {
   dataDisclosure: "revealed" | "structure-only";   // required (new)
   dataSizeBytes: number;                           // required (new): bytes of the stored payload
   data?: object;                                   // present only when dataDisclosure is "revealed"; was required
-  dataStructure?: PayloadStructure;                // present only when "structure-only"; the ADR-0028 type
+  dataStructure?: PayloadStructure | { kind: "opaque" };  // present only when "structure-only"; opaque when the data cannot be shaped
 };
 
 type DeadLetter = {
@@ -336,12 +358,15 @@ Audience for events and dead letters ("grant" means `payload:reveal-pii` in the 
 | Action | Resource | Written when | Reason (server-built) | Repeats |
 |---|---|---|---|---|
 | `payload.disclosed` | run | a disclosure returned at least one `internal` value | `classified-v1:input`, `classified-v1:result`, `classified-v1:journal:<sequence>` | collapse 300 s |
+| `payload.inspected` | run | a `structure-only` answer was returned (legacy version, no carrier, mismatch, unusable carrier), as ADR-0028 audits a structure read | `classified-v1:input:structure`, `classified-v1:result:structure`, `classified-v1:journal:<sequence>:structure` | collapse 300 s |
 | `payload.pii_revealed` | run; for events `ResourceType::Event` (id `source/event id`, reason `event-data:reveal=pii`); for a dead letter `ResourceType::Connector` (reason `dead-letter:<letter id>:reveal=pii`) | a reveal returned at least one `pii` value, or an event or letter value | run: the same with `:reveal=pii` | never collapse |
 | `payload.reveal_denied` | run, event or connector, as above | `reveal` without a grant | `permission` | collapse 300 s, best effort |
 | `payload.reveal_granted` | payload reveal grant (`ResourceType::PayloadRevealGrant`, id `namespace-id/subject`, as `Worker`) | a grant is created | `granted` | none |
 | `payload.reveal_revoked` | payload reveal grant | a grant is removed | `revoked` | none |
 
-A `public`-only disclosure is not audited per request (volume); it is counted by metric. No record
+A `public`-only disclosure is not audited per request (volume); it is counted by metric. An
+inspector's `disclosed` answer that returns no `internal` or `pii` value but shows the shape of
+withheld nodes is in the same class and is not audited either (G641). No record
 holds a value, key, digest, schema, free text or secret. `payload.pii_revealed` and the grant actions
 are visible to `audit:read`; `CrossTenantAccessDenied` stays withheld from the tenant as today.
 

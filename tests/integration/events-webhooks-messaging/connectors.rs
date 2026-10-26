@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sagat_application::connectors::{
-    Checkpoint, ConnectorChoices, ConnectorRecord, ConnectorRuntime, RawMessage,
+    Checkpoint, ConnectorChoices, ConnectorRecord, ConnectorRuntime, ConnectorStore, RawMessage,
 };
 use sagat_application::error::{AppError, ConflictKind};
 use sagat_domain::connectors::{ConnectorSettings, ConnectorStatus, DeadLetter, StartFrom};
@@ -223,9 +223,7 @@ async fn a_message_that_cannot_be_an_event_is_set_aside_with_why_and_never_block
     assert_eq!(offset(&w, &c, stream).await, Some(7));
     assert_eq!(inbox(&w).await.len(), 1);
 
-    let letters = w
-        .connectors
-        .dead_letters(&w.admin, c.id, None, 50)
+    let letters = ConnectorStore::dead_letters(&w.store, w.admin.tenant_id(), c.id, None, 50)
         .await
         .expect("letters");
     assert_eq!(letters.len(), 6);
@@ -248,8 +246,7 @@ async fn a_message_that_cannot_be_an_event_is_set_aside_with_why_and_never_block
         "done with, like any message the inbox already had"
     );
     assert_eq!(
-        w.connectors
-            .dead_letters(&w.admin, c.id, None, 50)
+        ConnectorStore::dead_letters(&w.store, w.admin.tenant_id(), c.id, None, 50)
             .await
             .expect("letters")
             .len(),
@@ -374,9 +371,7 @@ async fn a_dead_letter_can_be_tried_again_when_the_connector_can_now_take_it_or_
     ingest
         .ingest(&message("orders/0/1", &[("eventType", "a.b")], "[]"), None)
         .await;
-    let letters = w
-        .connectors
-        .dead_letters(&w.admin, c.id, None, 10)
+    let letters = ConnectorStore::dead_letters(&w.store, w.admin.tenant_id(), c.id, None, 10)
         .await
         .expect("letters");
     assert_eq!(letters.len(), 2);
@@ -427,8 +422,7 @@ async fn a_dead_letter_can_be_tried_again_when_the_connector_can_now_take_it_or_
     );
     assert_eq!(inbox(&w).await.len(), 1);
     assert_eq!(
-        w.connectors
-            .dead_letters(&w.admin, c.id, None, 10)
+        ConnectorStore::dead_letters(&w.store, w.admin.tenant_id(), c.id, None, 10)
             .await
             .expect("letters")
             .len(),
@@ -462,8 +456,7 @@ async fn a_dead_letter_can_be_tried_again_when_the_connector_can_now_take_it_or_
         Err(AppError::NotFound)
     );
     assert!(
-        w.connectors
-            .dead_letters(&w.admin, c.id, None, 10)
+        ConnectorStore::dead_letters(&w.store, w.admin.tenant_id(), c.id, None, 10)
             .await
             .expect("letters")
             .is_empty()

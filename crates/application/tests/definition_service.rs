@@ -1716,6 +1716,21 @@ fn every_error_of_the_codec_maps_to_a_stable_code_that_says_where() {
             vec![("UNKNOWN_TARGET", Some("a"), None)],
         ),
         (
+            IrError::EscapingBodyEdge {
+                body: id("line"),
+                from: id("a"),
+                to: id("zzz"),
+            },
+            vec![("UNKNOWN_TARGET", Some("a"), Some("/bodies/line"))],
+        ),
+        (
+            IrError::Invalid(WorkflowError::ExpressionByteLimit {
+                node: id("a"),
+                limit: 1024,
+            }),
+            vec![("EXPRESSION", Some("a"), None)],
+        ),
+        (
             IrError::Invalid(WorkflowError::Unreachable(id("orphan"))),
             vec![("UNREACHABLE", Some("orphan"), None)],
         ),

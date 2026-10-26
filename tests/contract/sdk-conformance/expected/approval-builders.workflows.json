@@ -1,7 +1,7 @@
 {
   "canonical": {
     "default-exclusion": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"review\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"approval-default-exclusion\"},\"nodes\":[{\"id\":\"review\",\"onApprove\":\"approved\",\"onExpire\":\"expired\",\"onReject\":\"rejected\",\"policy\":{\"roles\":[\"admin\",\"developer\"]},\"timeoutMs\":31622400000,\"type\":\"approval\"},{\"id\":\"approved\",\"type\":\"end\"},{\"id\":\"rejected\",\"type\":\"end\"},{\"id\":\"expired\",\"type\":\"end\"}]}",
-    "role-and-subject": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"review\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"approval-role-subject\"},\"nodes\":[{\"id\":\"review\",\"onApprove\":\"approved\",\"onExpire\":\"expired\",\"onReject\":\"rejected\",\"policy\":{\"excludeInitiator\":false,\"roles\":[\"operator\"],\"subjects\":[\"reviewer@example.com\"]},\"timeoutMs\":86400000,\"type\":\"approval\"},{\"id\":\"approved\",\"outputExpr\":\"'approved'\",\"type\":\"end\"},{\"id\":\"rejected\",\"outputExpr\":\"'rejected'\",\"type\":\"end\"},{\"id\":\"expired\",\"outputExpr\":\"'expired'\",\"type\":\"end\"}]}"
+    "role-and-subject": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"review\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"approval-role-subject\"},\"nodes\":[{\"id\":\"review\",\"onApprove\":\"approved\",\"onExpire\":\"expired\",\"onReject\":\"rejected\",\"policy\":{\"excludeInitiator\":false,\"roles\":[\"operator\"],\"subjects\":[\"reviewer@example.com\",\"limit-reviewer-01\",\"limit-reviewer-02\",\"limit-reviewer-03\",\"limit-reviewer-04\",\"limit-reviewer-05\",\"limit-reviewer-06\",\"limit-reviewer-07\",\"limit-reviewer-08\",\"limit-reviewer-09\",\"limit-reviewer-10\",\"limit-reviewer-11\",\"limit-reviewer-12\",\"limit-reviewer-13\",\"limit-reviewer-14\",\"limit-reviewer-15\",\"limit-reviewer-16\",\"limit-reviewer-17\",\"limit-reviewer-18\",\"limit-reviewer-19\",\"limit-reviewer-20\",\"limit-reviewer-21\",\"limit-reviewer-22\",\"limit-reviewer-23\",\"limit-reviewer-24\",\"limit-reviewer-25\",\"limit-reviewer-26\",\"limit-reviewer-27\",\"limit-reviewer-28\",\"limit-reviewer-29\",\"limit-reviewer-30\"]},\"timeoutMs\":86400000,\"type\":\"approval\"},{\"id\":\"approved\",\"outputExpr\":\"'approved'\",\"type\":\"end\"},{\"id\":\"rejected\",\"outputExpr\":\"'rejected'\",\"type\":\"end\"},{\"id\":\"expired\",\"outputExpr\":\"'expired'\",\"type\":\"end\"}]}"
   },
   "errors": {
     "dangling-route": {
@@ -96,7 +96,37 @@
               "operator"
             ],
             "subjects": [
-              "reviewer@example.com"
+              "reviewer@example.com",
+              "limit-reviewer-01",
+              "limit-reviewer-02",
+              "limit-reviewer-03",
+              "limit-reviewer-04",
+              "limit-reviewer-05",
+              "limit-reviewer-06",
+              "limit-reviewer-07",
+              "limit-reviewer-08",
+              "limit-reviewer-09",
+              "limit-reviewer-10",
+              "limit-reviewer-11",
+              "limit-reviewer-12",
+              "limit-reviewer-13",
+              "limit-reviewer-14",
+              "limit-reviewer-15",
+              "limit-reviewer-16",
+              "limit-reviewer-17",
+              "limit-reviewer-18",
+              "limit-reviewer-19",
+              "limit-reviewer-20",
+              "limit-reviewer-21",
+              "limit-reviewer-22",
+              "limit-reviewer-23",
+              "limit-reviewer-24",
+              "limit-reviewer-25",
+              "limit-reviewer-26",
+              "limit-reviewer-27",
+              "limit-reviewer-28",
+              "limit-reviewer-29",
+              "limit-reviewer-30"
             ]
           },
           "timeoutMs": 86400000,

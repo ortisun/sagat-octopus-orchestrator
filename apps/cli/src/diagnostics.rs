@@ -6,6 +6,9 @@
 //! has no help (a new rule nobody explained), or when the help names a code the codec no longer has,
 //! and another test fails when `docs/quickstarts/errors.md` lacks a section for a code.
 
+use sagat_application::classification::{
+    CarrierPointer, ClassificationAnalysis, ClassificationReportEntry, FindingSeverity,
+};
 use sagat_application::definitions::{IrCodec, problems_of};
 use sagat_infra_ir::JsonIrCodec;
 
@@ -26,42 +29,6 @@ pub const CATALOG: &[(&str, &str)] = &[
     (
         "UNSUPPORTED_NODE",
         "This node, or this combination of nodes, is in the schema but cannot be published yet: for example an approval inside a forEach or while body (the error's dependency names what it waits for), or a shape the enabled subset does not allow. Move the part that is not allowed into a child workflow.",
-    ),
-    (
-        "INVALID_SCOPE",
-        "A forEach, while or repeatUntil body is not well formed (the reason says how): a body is a chain of one to eight activities ending in a return, it stays inside its own scope and nothing outside jumps into it.",
-    ),
-    (
-        "DUPLICATE_BODY",
-        "Two entries of `bodies` have the same name. Body names are unique in a document.",
-    ),
-    (
-        "UNKNOWN_BODY",
-        "A forEach, while or repeatUntil node names a body that `bodies` does not define. Add the body or fix the name.",
-    ),
-    (
-        "UNREACHABLE_BODY",
-        "A body is defined and no node uses it. Remove it, or reference it from a forEach, while or repeatUntil node.",
-    ),
-    (
-        "RECURSIVE_BODY",
-        "A body refers to itself, directly or through other bodies. Bodies nest but never form a cycle.",
-    ),
-    (
-        "BODY_DEPTH_EXCEEDED",
-        "Bodies nest deeper than the limit (8 levels). Flatten the nesting or move the inner part into a child workflow.",
-    ),
-    (
-        "INVALID_WORKFLOW_LIMIT",
-        "A top-level `limits` value is outside its range. A workflow may lower maxInstances and the depth below the platform and tenant ceilings and never raise them.",
-    ),
-    (
-        "INVALID_CONTINUATION_POLICY",
-        "The chainPolicy of a workflow that continues as new is not valid: maxSegments is 1 to 10000 and a timeout is required. Only a workflow with a continueAsNew node declares one.",
-    ),
-    (
-        "INVALID_SWITCH",
-        "A switch needs at least one case, a default route, and unique case ids; each case has a predicate and a target node (the reason says which one is missing).",
     ),
     (
         "EXPRESSION",
@@ -196,6 +163,70 @@ pub const CATALOG: &[(&str, &str)] = &[
         "RECURSIVE_CHILD",
         "This child node starts the workflow it belongs to. It is legal, and the depth limit ends it at the latest: make sure a condition stops it before.",
     ),
+    (
+        "INVALID_SCOPE",
+        "A structured node has an invalid body, target or boundary. Keep each loop or approval inside its named body and follow the location named by the message.",
+    ),
+    (
+        "DUPLICATE_BODY",
+        "Two structured bodies have the same name. Body names are unique in a workflow.",
+    ),
+    (
+        "UNKNOWN_BODY",
+        "A structured node refers to a body that the workflow does not declare. Fix the body name or add that body.",
+    ),
+    (
+        "UNREACHABLE_BODY",
+        "The workflow declares a body that no structured node uses. Reference it from a node or remove it.",
+    ),
+    (
+        "RECURSIVE_BODY",
+        "Structured bodies cannot refer back to themselves through a chain of body references. Break the cycle into a finite structured flow.",
+    ),
+    (
+        "BODY_DEPTH_EXCEEDED",
+        "Body references exceed the workflow's maximum nesting depth. Flatten the structured flow or raise maxDepth within the supported limit.",
+    ),
+    (
+        "INVALID_WORKFLOW_LIMIT",
+        "Set maxInstances from 1 to 100000 and maxDepth from 1 to 8.",
+    ),
+    (
+        "INVALID_CONTINUATION_POLICY",
+        "Set maxSegments from 1 to 10000 and a timeout from 1 millisecond to 366 days; a chain policy also needs a continueAsNew node.",
+    ),
+    (
+        "INVALID_SWITCH",
+        "A switch has 1 to 32 uniquely named cases with bounded predicates, and it does not declare next, onError or timeout.",
+    ),
+    (
+        "CLASSIFICATION_INVALID_LEVEL",
+        "Use one of the four classification levels: public, internal, pii or secret.",
+    ),
+    (
+        "CLASSIFICATION_LOOSENED",
+        "A child cannot be less restrictive than its effective parent. Raise the child level or lower the parent only after reviewing every child.",
+    ),
+    (
+        "CLASSIFICATION_UNSUPPORTED_KEYWORD",
+        "Move the classification annotation to a supported schema location such as a carrier root, property, item or local reference target.",
+    ),
+    (
+        "CLASSIFICATION_UNRESOLVED_REF",
+        "Use a local JSON Pointer that resolves inside this carrier. Remote and cross-carrier references are not accepted.",
+    ),
+    (
+        "CLASSIFICATION_NOT_APPLICABLE",
+        "Classification annotations apply only to inputSchema, outputSchema and supported node outputSchema carriers. Remove the annotation from this location.",
+    ),
+    (
+        "CLASSIFICATION_TOO_COMPLEX",
+        "Keep the classification carrier within the fixed schema size, depth and reference-expansion limits.",
+    ),
+    (
+        "CLASSIFICATION_INHERITED_OPEN",
+        "A declared child inherits public or internal access. Declare a stricter level when that child should not stay open.",
+    ),
 ];
 
 /// The file that explains each code, one section for each.
@@ -275,7 +306,13 @@ pub fn render(diagnostics: &[Diagnostic], docs_base: Option<&str>) -> Vec<String
 /// What the platform's codec says about a document, with the help for each thing it says.
 #[must_use]
 pub fn of_document(document: &[u8]) -> Vec<Diagnostic> {
-    match JsonIrCodec.parse(document) {
+    analyze_document(document).0
+}
+
+/// Local validation diagnostics and the same bounded classification report used by publication.
+#[must_use]
+pub fn analyze_document(document: &[u8]) -> (Vec<Diagnostic>, Option<ClassificationAnalysis>) {
+    let mut diagnostics: Vec<Diagnostic> = match JsonIrCodec.parse(document) {
         Ok(parsed) => parsed
             .warnings
             .iter()
@@ -310,7 +347,74 @@ pub fn of_document(document: &[u8]) -> Vec<Diagnostic> {
                 help: help(p.code),
             })
             .collect(),
+    };
+    let analysis = JsonIrCodec.classification_analysis(document);
+    if let Some(analysis) = &analysis {
+        for finding in &analysis.findings {
+            let code = finding.code.as_str();
+            let at = format!("at {}", pointer(finding.path.as_str()));
+            if diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == code && diagnostic.at.as_deref() == Some(&at))
+            {
+                continue;
+            }
+            diagnostics.push(Diagnostic {
+                warning: finding.code.severity() == FindingSeverity::Warning,
+                code: code.to_owned(),
+                message: finding.code.message().to_owned(),
+                at: Some(at),
+                help: help(code),
+            });
+        }
     }
+    (diagnostics, analysis)
+}
+
+/// Effective classification levels for every bounded carrier path in an authoring report.
+#[must_use]
+pub fn classification_report(
+    workflow: &str,
+    entries: &[ClassificationReportEntry],
+    truncated: bool,
+) -> Vec<String> {
+    if entries.is_empty() && !truncated {
+        return Vec::new();
+    }
+    let mut lines = vec![format!("classification for {}:", one_line(workflow))];
+    for entry in entries {
+        let carrier = match &entry.carrier {
+            CarrierPointer::Input => "inputSchema".to_owned(),
+            CarrierPointer::Result => "outputSchema".to_owned(),
+            CarrierPointer::NodeOutput(node) => {
+                format!("nodeOutputSchema {}", one_line(node.as_str()))
+            }
+            CarrierPointer::BodyNodeOutput { body, node } => format!(
+                "body {} nodeOutputSchema {}",
+                one_line(body.as_str()),
+                one_line(node.as_str())
+            ),
+        };
+        let path = if entry.path.as_str().is_empty() {
+            "/"
+        } else {
+            entry.path.as_str()
+        };
+        lines.push(format!(
+            "  {carrier} {} {} {}",
+            one_line(path),
+            entry.level.as_str(),
+            if entry.declared {
+                "declared"
+            } else {
+                "inherited"
+            }
+        ));
+    }
+    if truncated {
+        lines.push("  report truncated at the fixed classification limit".to_owned());
+    }
+    lines
 }
 
 /// A JSON pointer that is empty names the document.

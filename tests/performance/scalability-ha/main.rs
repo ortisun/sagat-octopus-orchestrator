@@ -18,6 +18,7 @@
 #![allow(
     clippy::expect_used,
     clippy::panic,
+    clippy::print_stderr,
     clippy::print_stdout,
     clippy::cast_precision_loss
 )]
@@ -25,17 +26,25 @@
 #[path = "../../support/mod.rs"]
 mod support;
 
+mod diagnostics;
 mod dr;
+mod poll_client;
+#[cfg(test)]
+#[path = "transition_oracle_tests.rs"]
+mod transition_oracle_tests;
 
 use std::fmt::Write as _;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use futures_util::stream;
 use sagat_application::entropy::SystemEntropy;
+use sagat_application::error::AppError;
 use sagat_application::execution::Engine;
-use sagat_application::runs::StartRun;
+use sagat_application::runs::{RunStore, StartRun};
+use sagat_domain::execution::{RunId, RunStatus};
 use sagat_domain::identity::Role;
 use sagat_domain::quota::QuotaResource;
 use sagat_infra_ir::JsonEvaluator;
@@ -60,10 +69,213 @@ fn max_waits() -> usize {
 
 /// Connections of the pool of one worker-API replica in `step_transitions_per_second`.
 const API_POOL: u32 = 20;
+const INTEGRITY_ORACLE_LIMIT: Duration = Duration::from_secs(120);
 
 /// Callers starting runs at the same time.
 fn load_concurrency() -> usize {
     env_usize("SAGAT_PERF_LOAD_CONCURRENCY", 80)
+}
+
+fn app_error_variant(error: &AppError) -> &'static str {
+    match error {
+        AppError::Unauthenticated => "Unauthenticated",
+        AppError::Forbidden { .. } => "Forbidden",
+        AppError::NotFound => "NotFound",
+        AppError::Conflict(_) => "Conflict",
+        AppError::RevisionConflict { .. } => "RevisionConflict",
+        AppError::IdempotencyKeyReused => "IdempotencyKeyReused",
+        AppError::InvalidDefinition(_) => "InvalidDefinition",
+        AppError::NotAllowed(_) => "NotAllowed",
+        AppError::NotBound => "NotBound",
+        AppError::SecretUnavailable { .. } => "SecretUnavailable",
+        AppError::StaleAttempt => "StaleAttempt",
+        AppError::StateConflict(_) => "StateConflict",
+        AppError::Invalid(_) => "Invalid",
+        AppError::InvalidScript(_) => "InvalidScript",
+        AppError::QuotaExceeded(_) => "QuotaExceeded",
+        AppError::Versioning(_) => "Versioning",
+        AppError::Unavailable => "Unavailable",
+        AppError::PayloadTooLarge(_) => "PayloadTooLarge",
+        AppError::Busy { .. } => "Busy",
+        AppError::Internal => "Internal",
+    }
+}
+
+struct WorkerFailure {
+    worker: usize,
+    operation: &'static str,
+    variant: &'static str,
+    retryable: bool,
+    attempts: u32,
+    retryable_failures: u32,
+    exhausted: bool,
+    logical_call_elapsed: Duration,
+}
+
+struct FailedCall {
+    attempts: u32,
+    retryable_failures: u32,
+    exhausted: bool,
+    elapsed: Duration,
+}
+
+struct WorkerProgress {
+    polls: Vec<Duration>,
+    logical_polls: Vec<Duration>,
+    completes: Vec<Duration>,
+    poll_counters: poll_client::PollCounters,
+    completions: Vec<CompletedTask>,
+    last_done: Instant,
+}
+
+struct CompletedTask {
+    task_id: String,
+    run_id: RunId,
+    node: String,
+}
+
+impl WorkerProgress {
+    fn new() -> Self {
+        Self {
+            polls: Vec::new(),
+            logical_polls: Vec::new(),
+            completes: Vec::new(),
+            poll_counters: poll_client::PollCounters::default(),
+            completions: Vec::new(),
+            last_done: Instant::now(),
+        }
+    }
+
+    fn record_poll_success(&mut self, outcome: &poll_client::PollSuccess) {
+        self.logical_polls.push(outcome.logical_call_elapsed);
+        if !outcome.tasks.is_empty() {
+            self.polls.push(
+                outcome.success_attempt_elapsed
+                    / u32::try_from(outcome.tasks.len()).expect("small poll batch"),
+            );
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TransitionConfig {
+    api_replicas: usize,
+    workers: usize,
+    runs: usize,
+}
+
+struct FailureDiagnostics<'a> {
+    started: &'a AtomicBool,
+    observer: &'a World,
+    apis: &'a [Arc<support::engine::Replica>],
+    storage: &'a diagnostics::SafeStorageDiagnostics,
+    config: TransitionConfig,
+}
+
+async fn report_worker_failure(
+    w: &World,
+    apis: &[Arc<support::engine::Replica>],
+    storage_diagnostics: &diagnostics::SafeStorageDiagnostics,
+    config: TransitionConfig,
+    failure: &WorkerFailure,
+) {
+    let TransitionConfig {
+        api_replicas,
+        workers,
+        runs,
+    } = config;
+    eprintln!(
+        "transition configuration failure: api_replicas={api_replicas} workers={workers} runs={runs} api_pool_connections={API_POOL} worker={} operation={} error_variant={} retryable={} attempts={} retryable_failures={} exhausted={} logical_call_ms={:.1}",
+        failure.worker,
+        failure.operation,
+        failure.variant,
+        failure.retryable,
+        failure.attempts,
+        failure.retryable_failures,
+        failure.exhausted,
+        ms(failure.logical_call_elapsed),
+    );
+    for (replica, api) in apis.iter().enumerate() {
+        let size = api.execution_pool.size();
+        let idle = u32::try_from(api.execution_pool.num_idle()).unwrap_or(u32::MAX);
+        eprintln!(
+            "transition replica pool: replica={replica} max={API_POOL} size={size} idle={idle} in_use={} closed={}",
+            size.saturating_sub(idle),
+            api.execution_pool.is_closed()
+        );
+    }
+    let mut cause_seen = false;
+    for (classification, observations) in storage_diagnostics.counts() {
+        cause_seen = true;
+        eprintln!(
+            "transition storage cause: classification={classification} observations={observations}"
+        );
+    }
+    if !cause_seen {
+        eprintln!("transition storage cause: classification=other observations=0");
+    }
+    let activity = tokio::time::timeout(
+        Duration::from_millis(500),
+        sqlx::query_as::<_, (String, String, String, bool, i64, i64)>(
+            "SELECT coalesce(state, 'unknown'), coalesce(wait_event_type, 'CPU'), \
+                coalesce(wait_event, 'running'), cardinality(pg_blocking_pids(pid)) > 0, \
+                count(*)::bigint, \
+                coalesce(max(extract(epoch FROM (clock_timestamp() - \
+                    coalesce(xact_start, query_start, state_change))) * 1000)::bigint, 0) \
+           FROM pg_stat_activity \
+          WHERE datname = current_database() AND backend_type = 'client backend' \
+            AND pid <> pg_backend_pid() \
+          GROUP BY 1, 2, 3, 4 ORDER BY 1, 2, 3, 4",
+        )
+        .fetch_all(&w.db.pool),
+    )
+    .await;
+    match activity {
+        Ok(Ok(rows)) => {
+            for (state, wait_type, wait, blocked, connections, max_age_ms) in rows {
+                eprintln!(
+                    "transition database state: state={state} wait_type={wait_type} wait={wait} blocked={blocked} connections={connections} max_age_ms={max_age_ms}"
+                );
+            }
+        }
+        Ok(Err(_)) => eprintln!("transition database state: unavailable"),
+        Err(_) => eprintln!("transition database state: timed_out"),
+    }
+}
+
+async fn capture_worker_failure(
+    error: AppError,
+    worker: usize,
+    operation: &'static str,
+    call: FailedCall,
+    diagnostics: &FailureDiagnostics<'_>,
+) -> WorkerFailure {
+    let failure = WorkerFailure {
+        worker,
+        operation,
+        variant: app_error_variant(&error),
+        retryable: error.is_retryable(),
+        attempts: call.attempts,
+        retryable_failures: call.retryable_failures,
+        exhausted: call.exhausted,
+        logical_call_elapsed: call.elapsed,
+    };
+    if diagnostics
+        .started
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return std::future::pending().await;
+    }
+    report_worker_failure(
+        diagnostics.observer,
+        diagnostics.apis,
+        diagnostics.storage,
+        diagnostics.config,
+        &failure,
+    )
+    .await;
+    failure
 }
 
 // ---------------------------------------------------------------------------------- numbers
@@ -229,16 +441,19 @@ async fn sleeper(w: &World, name: &str) -> sagat_domain::definition::WorkflowId 
     wf
 }
 
-/// Starts runs `from..to` of `wf` with `load_concurrency()` callers, through the services of several
-/// API replicas (each with a pool of its own, as separate processes have: the pool of the world is
-/// eight connections and would be the limit); returns how long each start took.
-async fn start_runs(
+struct StartedRun {
+    run_id: RunId,
+    elapsed: Duration,
+}
+
+/// Starts runs `from..to` through the same public service path used by every load scenario.
+async fn start_runs_with_ids(
     w: &World,
     wf: sagat_domain::definition::WorkflowId,
     tag: &str,
     from: usize,
     to: usize,
-) -> Vec<Duration> {
+) -> Vec<StartedRun> {
     let mut apis = Vec::new();
     for _ in 0..env_usize("SAGAT_PERF_LOAD_API_REPLICAS", 6) {
         apis.push(Arc::new(w.replica_with_pool(16).await));
@@ -251,7 +466,8 @@ async fn start_runs(
             async move {
                 let t = Instant::now();
                 let input = serde_json::to_vec(&json!({ "i": i })).expect("json");
-                api.runs
+                let run_id = api
+                    .runs
                     .start(
                         &admin,
                         &StartRun {
@@ -266,13 +482,241 @@ async fn start_runs(
                         &ctx(),
                     )
                     .await
-                    .expect("start");
-                t.elapsed()
+                    .expect("start")
+                    .info
+                    .run_id;
+                StartedRun {
+                    run_id,
+                    elapsed: t.elapsed(),
+                }
             }
         })
         .buffer_unordered(load_concurrency())
         .collect()
         .await
+}
+
+/// Starts runs `from..to` of `wf` with `load_concurrency()` callers, through the services of several
+/// API replicas (each with a pool of its own, as separate processes have: the pool of the world is
+/// eight connections and would be the limit); returns how long each start took.
+async fn start_runs(
+    w: &World,
+    wf: sagat_domain::definition::WorkflowId,
+    tag: &str,
+    from: usize,
+    to: usize,
+) -> Vec<Duration> {
+    start_runs_with_ids(w, wf, tag, from, to)
+        .await
+        .into_iter()
+        .map(|run| run.elapsed)
+        .collect()
+}
+
+#[derive(Clone, Copy, Debug)]
+enum IntegrityFailure {
+    DeadlockObserved,
+    DuplicateStartedRun,
+    CompletionCount,
+    DuplicateTask,
+    DuplicateRunNode,
+    ForeignRun,
+    NodeSet,
+    ProjectionUnavailable,
+    ProjectionMissing,
+    RunNotTerminal,
+    StepProjectionUnavailable,
+    StepProjectionMismatch,
+    JournalUnavailable,
+    JournalMissing,
+    JournalMismatch,
+    ReplayMismatch,
+    LeaseObservationUnavailable,
+    LeaseRemaining,
+    Pool(poll_client::PoolOracleFailure),
+    TimedOut,
+}
+
+impl IntegrityFailure {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::DeadlockObserved => "deadlock_observed",
+            Self::DuplicateStartedRun => "duplicate_started_run",
+            Self::CompletionCount => "completion_count_mismatch",
+            Self::DuplicateTask => "duplicate_task_id",
+            Self::DuplicateRunNode => "duplicate_run_node",
+            Self::ForeignRun => "foreign_run_completion",
+            Self::NodeSet => "run_node_set_mismatch",
+            Self::ProjectionUnavailable => "run_projection_unavailable",
+            Self::ProjectionMissing => "run_projection_missing",
+            Self::RunNotTerminal => "run_not_terminal",
+            Self::StepProjectionUnavailable => "step_projection_unavailable",
+            Self::StepProjectionMismatch => "step_projection_mismatch",
+            Self::JournalUnavailable => "journal_unavailable",
+            Self::JournalMissing => "journal_missing",
+            Self::JournalMismatch => "journal_mismatch",
+            Self::ReplayMismatch => "journal_replay_mismatch",
+            Self::LeaseObservationUnavailable => "lease_observation_unavailable",
+            Self::LeaseRemaining => "lease_remaining",
+            Self::Pool(failure) => failure.label(),
+            Self::TimedOut => "integrity_oracle_timed_out",
+        }
+    }
+}
+
+fn verify_completion_identities(
+    started_runs: &[RunId],
+    completions: &[CompletedTask],
+) -> Result<(), IntegrityFailure> {
+    let expected_runs = started_runs
+        .iter()
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
+    if expected_runs.len() != started_runs.len() {
+        return Err(IntegrityFailure::DuplicateStartedRun);
+    }
+    if completions.len() != started_runs.len() * 3 {
+        return Err(IntegrityFailure::CompletionCount);
+    }
+    if completions
+        .iter()
+        .map(|completion| completion.task_id.as_str())
+        .collect::<std::collections::HashSet<_>>()
+        .len()
+        != completions.len()
+    {
+        return Err(IntegrityFailure::DuplicateTask);
+    }
+    if completions
+        .iter()
+        .map(|completion| (completion.run_id, completion.node.as_str()))
+        .collect::<std::collections::HashSet<_>>()
+        .len()
+        != completions.len()
+    {
+        return Err(IntegrityFailure::DuplicateRunNode);
+    }
+    let mut nodes_by_run: std::collections::HashMap<RunId, std::collections::HashSet<&str>> =
+        std::collections::HashMap::new();
+    for completion in completions {
+        if !expected_runs.contains(&completion.run_id) {
+            return Err(IntegrityFailure::ForeignRun);
+        }
+        nodes_by_run
+            .entry(completion.run_id)
+            .or_default()
+            .insert(&completion.node);
+    }
+    let expected_nodes = ["a", "b", "c"].into_iter().collect();
+    for run in &expected_runs {
+        if nodes_by_run.get(run) != Some(&expected_nodes) {
+            return Err(IntegrityFailure::NodeSet);
+        }
+    }
+    Ok(())
+}
+
+async fn bounded_integrity_oracle<F>(limit: Duration, oracle: F) -> Result<(), IntegrityFailure>
+where
+    F: std::future::Future<Output = Result<(), IntegrityFailure>>,
+{
+    match tokio::time::timeout(limit, oracle).await {
+        Ok(result) => result,
+        Err(_) => Err(IntegrityFailure::TimedOut),
+    }
+}
+
+async fn verify_transition_integrity(
+    w: &World,
+    apis: &[Arc<support::engine::Replica>],
+    started_runs: &[RunId],
+    completions: &[CompletedTask],
+    deadlocks: u64,
+) -> Result<(), IntegrityFailure> {
+    if deadlocks != 0 {
+        return Err(IntegrityFailure::DeadlockObserved);
+    }
+    verify_completion_identities(started_runs, completions)?;
+
+    let verified = stream::iter(started_runs.iter().copied())
+        .map(|run| async move {
+            let projected = w
+                .store
+                .get(w.admin.tenant_id(), run)
+                .await
+                .map_err(|_| IntegrityFailure::ProjectionUnavailable)?
+                .ok_or(IntegrityFailure::ProjectionMissing)?;
+            if projected.status != RunStatus::Succeeded {
+                return Err(IntegrityFailure::RunNotTerminal);
+            }
+            let steps: Vec<(String, String)> = sqlx::query_as(
+                "SELECT node, status FROM steps WHERE tenant_id = $1 AND run_id = $2",
+            )
+            .bind(w.admin.tenant_id().as_uuid())
+            .bind(run.as_uuid())
+            .fetch_all(&w.db.pool)
+            .await
+            .map_err(|_| IntegrityFailure::StepProjectionUnavailable)?;
+            let projected_steps = steps.into_iter().collect::<std::collections::HashSet<_>>();
+            let expected_steps = [
+                ("a".to_owned(), "SUCCEEDED".to_owned()),
+                ("b".to_owned(), "SUCCEEDED".to_owned()),
+                ("c".to_owned(), "SUCCEEDED".to_owned()),
+            ]
+            .into_iter()
+            .collect();
+            if projected_steps != expected_steps {
+                return Err(IntegrityFailure::StepProjectionMismatch);
+            }
+            let journal = w
+                .store
+                .journal(w.admin.tenant_id(), run, None, 500)
+                .await
+                .map_err(|_| IntegrityFailure::JournalUnavailable)?
+                .ok_or(IntegrityFailure::JournalMissing)?;
+            if journal
+                .iter()
+                .filter(|event| event.event_type == "step.completed")
+                .count()
+                != 3
+                || journal
+                    .iter()
+                    .filter(|event| event.event_type == "run.finished")
+                    .count()
+                    != 1
+            {
+                return Err(IntegrityFailure::JournalMismatch);
+            }
+            w.store
+                .verify_run(w.admin.tenant_id(), run)
+                .await
+                .map_err(|_| IntegrityFailure::ReplayMismatch)
+        })
+        .buffer_unordered(load_concurrency())
+        .collect::<Vec<Result<(), IntegrityFailure>>>()
+        .await;
+    for result in verified {
+        result?;
+    }
+
+    let run_ids = started_runs
+        .iter()
+        .map(|run| run.as_uuid())
+        .collect::<Vec<_>>();
+    let leased: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM steps WHERE run_id = ANY($1) AND status = 'LEASED'",
+    )
+    .bind(&run_ids)
+    .fetch_one(&w.db.pool)
+    .await
+    .map_err(|_| IntegrityFailure::LeaseObservationUnavailable)?;
+    if leased != 0 {
+        return Err(IntegrityFailure::LeaseRemaining);
+    }
+    poll_client::verify_replica_transactions(&w.db.pool, apis)
+        .await
+        .map_err(IntegrityFailure::Pool)?;
+    Ok(())
 }
 
 /// Makes `n` of the first tenant's timers due now, picked from the ones not yet due; returns the
@@ -824,6 +1268,7 @@ async fn refill(
 #[ignore = "benchmark: run on purpose with --ignored"]
 async fn step_transitions_per_second() {
     let runs = env_usize("SAGAT_PERF_TRANSITION_RUNS", 3_000);
+    let storage_diagnostics = diagnostics::SafeStorageDiagnostics::install();
     let w = Arc::new(world().await);
     let (wf, _) = w
         .publish(document(
@@ -838,9 +1283,9 @@ async fn step_transitions_per_second() {
         .await;
     let mut body = format!("{}\n", environment(&w).await);
     body.push_str(&format!(
-        "{runs} runs of three chained activities per configuration; a worker polls up to 16 tasks and completes each one (a complete is one transition: the commit, the routing and the next step becoming ready). Workers are tasks in this process with sessions of their own, spread over identities (a session budget is 32 per identity). The worker API is served by 1 to 8 replicas, each with a pool of {API_POOL} connections (the engine's default is 20): a worker's calls go to the replica its number selects. Closed loop: the workers take work as fast as they can, so the figure is the ceiling of this machine, not a rate that was asked for.\n\n"
+        "{runs} runs of three chained activities per configuration; a worker polls up to 16 tasks and completes each one (a complete is one transition: the commit, the routing and the next step becoming ready). Workers are tasks in this process with sessions of their own, spread over identities (a session budget is 32 per identity). The worker API is served by 1 to 8 replicas, each with a pool of {API_POOL} connections (the engine's default is 20): a worker's calls go to the replica its number selects. Closed loop: the workers take work as fast as they can, so the figure is the ceiling of this machine, not a rate that was asked for. PollTasks retries only typed Unavailable, with four total attempts, 200 ms initial exponential delay, random factor [0.5, 1.0] and a 5 s cap; completion and every other application error remain strict. `Final successful poll attempt per task` retains the existing final-attempt elapsed/tasks normalization for successful nonempty polls. `Logical poll` is one successful call from its first attempt through success, including failed attempts and backoff; failed attempts are counters, not separate successful latency samples. Throughput is worker start through the last acknowledged completion and excludes the final empty-poll drain; configuration wall time includes that drain but excludes run/session setup and integrity verification.\n\n"
     ));
-    body.push_str("| API replicas | Workers | Transitions | Transitions/s | Poll per task p50 / p95 / p99 | Complete p50 / p95 / p99 | What the active backends of the database were doing (share of 25 ms samples) |\n|---:|---:|---:|---:|---|---|---|\n");
+    body.push_str("| API replicas | Workers | Transitions | Transitions/s | Poll attempts / retryable failures / exhausted calls | Final successful poll attempt per task p50 / p95 / p99 | Successful logical poll p50 / p95 / p99 | Complete p50 / p95 / p99 | Config wall incl. drain | What the active backends of the database were doing (share of 25 ms samples) |\n|---:|---:|---:|---:|---:|---|---|---|---:|---|\n");
     let mut ceiling = 0f64;
     for (api_replicas, workers) in [
         (1usize, 4usize),
@@ -853,14 +1298,29 @@ async fn step_transitions_per_second() {
         (4, 128),
         (8, 128),
     ] {
+        let config = TransitionConfig {
+            api_replicas,
+            workers,
+            runs,
+        };
+        eprintln!(
+            "transition configuration start: api_replicas={api_replicas} workers={workers} runs={runs} api_pool_connections={API_POOL}"
+        );
+        storage_diagnostics.reset();
         // The worker API replicas of this configuration, each with a pool of its own.
         let mut apis = Vec::new();
         for _ in 0..api_replicas {
             apis.push(Arc::new(w.replica_with_pool(API_POOL).await));
         }
+        let apis = Arc::new(apis);
         // Fresh runs for this configuration.
         let tag = uuid::Uuid::new_v4().simple().to_string();
-        start_runs(&w, wf, &format!("chain-{tag}"), 0, runs).await;
+        let started_runs = start_runs_with_ids(&w, wf, &format!("chain-{tag}"), 0, runs)
+            .await
+            .into_iter()
+            .map(|run| run.run_id)
+            .collect::<Vec<_>>();
+        assert_eq!(started_runs.len(), runs, "all configured runs started");
         // (A session budget is 32 per identity and the sessions of earlier configurations stay, so
         // every configuration takes identities of its own.)
         let mut sessions = Vec::new();
@@ -908,90 +1368,246 @@ async fn step_transitions_per_second() {
             }
         });
         let started = Instant::now();
-        let results =
-            futures_util::future::join_all(sessions.iter().enumerate().map(|(n, session)| {
-                let api = Arc::clone(&apis[n % api_replicas]);
-                async move {
-                    let (mut polls, mut completes) = (Vec::new(), Vec::new());
-                    let mut last_done = Instant::now();
-                    let mut empty = 0;
-                    while empty < 3 {
-                        let t = Instant::now();
-                        let tasks = api
-                            .workers
-                            .poll(
-                                &session.principal,
-                                session.worker_id,
-                                &session.token,
+        let diagnostic_started = Arc::new(AtomicBool::new(false));
+        let mut progress = (0..workers)
+            .map(|_| WorkerProgress::new())
+            .collect::<Vec<_>>();
+        let failure =
+            diagnostics::stop_on_first_error(sessions.iter().zip(&mut progress).enumerate().map(
+                |(n, (session, progress))| {
+                    let api = Arc::clone(&apis[n % api_replicas]);
+                    let diagnostic_apis = Arc::clone(&apis);
+                    let diagnostic_started = Arc::clone(&diagnostic_started);
+                    let storage_diagnostics = storage_diagnostics.clone();
+                    let observer = Arc::clone(&w);
+                    async move {
+                        let failure_diagnostics = FailureDiagnostics {
+                            started: &diagnostic_started,
+                            observer: &observer,
+                            apis: &diagnostic_apis,
+                            storage: &storage_diagnostics,
+                            config,
+                        };
+                        let mut empty = 0;
+                        while empty < 3 {
+                            let outcome = match poll_client::poll(
+                                &api,
+                                session,
                                 16,
-                                None,
+                                &mut progress.poll_counters,
                             )
                             .await
-                            .expect("poll");
-                        if tasks.is_empty() {
-                            empty += 1;
-                            continue;
+                            {
+                                Ok(outcome) => outcome,
+                                Err(failed_poll) => {
+                                    let failure = capture_worker_failure(
+                                        failed_poll.error,
+                                        n,
+                                        "poll",
+                                        FailedCall {
+                                            attempts: failed_poll.attempts,
+                                            retryable_failures: failed_poll.retryable_failures,
+                                            exhausted: failed_poll.exhausted,
+                                            elapsed: failed_poll.logical_call_elapsed,
+                                        },
+                                        &failure_diagnostics,
+                                    )
+                                    .await;
+                                    return Err(failure);
+                                }
+                            };
+                            progress.record_poll_success(&outcome);
+                            let tasks = outcome.tasks;
+                            if tasks.is_empty() {
+                                empty += 1;
+                                continue;
+                            }
+                            empty = 0;
+                            for task in &tasks {
+                                let t = Instant::now();
+                                if let Err(error) = api
+                                    .workers
+                                    .complete(
+                                        &session.principal,
+                                        &support::engine::task_ref(task),
+                                        b"{}",
+                                        &format!("done-{}", task.task_id()),
+                                    )
+                                    .await
+                                {
+                                    let failure = capture_worker_failure(
+                                        error,
+                                        n,
+                                        "complete",
+                                        FailedCall {
+                                            attempts: 1,
+                                            retryable_failures: 0,
+                                            exhausted: false,
+                                            elapsed: t.elapsed(),
+                                        },
+                                        &failure_diagnostics,
+                                    )
+                                    .await;
+                                    return Err(failure);
+                                }
+                                progress.completes.push(t.elapsed());
+                                progress.completions.push(CompletedTask {
+                                    task_id: task.task_id(),
+                                    run_id: task.run_id,
+                                    node: task.instance.node().as_str().to_owned(),
+                                });
+                                progress.last_done = Instant::now();
+                            }
                         }
-                        empty = 0;
-                        polls.push(t.elapsed() / u32::try_from(tasks.len()).expect("small"));
-                        for task in &tasks {
-                            let t = Instant::now();
-                            api.workers
-                                .complete(
-                                    &session.principal,
-                                    &support::engine::task_ref(task),
-                                    b"{}",
-                                    &format!("done-{}", task.task_id()),
-                                )
-                                .await
-                                .expect("complete");
-                            completes.push(t.elapsed());
-                            last_done = Instant::now();
-                        }
+                        Ok(())
                     }
-                    (polls, completes, last_done)
-                }
-            }))
-            .await;
+                },
+            ))
+            .await
+            .err();
+        let failed = failure.is_some();
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        let (seen, samples) = sampler.await.expect("the sampler");
-        let mut by_share: Vec<_> = seen.into_iter().collect();
-        by_share.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
-        let waiting_on = by_share
-            .iter()
-            .take(4)
-            .map(|(event, n)| format!("{event} {:.0}%", 100.0 * *n as f64 / samples.max(1) as f64))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let mut waiting_on = match diagnostics::finish_sampler(sampler, failed)
+            .await
+            .expect("the sampler")
+        {
+            Some((seen, samples)) => {
+                let mut by_share: Vec<_> = seen.into_iter().collect();
+                by_share.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+                by_share
+                    .iter()
+                    .take(4)
+                    .map(|(event, n)| {
+                        format!("{event} {:.0}%", 100.0 * *n as f64 / samples.max(1) as f64)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+            None => "sampling unavailable after worker failure".to_owned(),
+        };
+        let config_wall = started.elapsed();
         // The rate is over the time the work took: until the last completion, not the last empty poll.
-        let (mut polls, mut completes) = (Vec::new(), Vec::new());
+        let (mut polls, mut logical_polls, mut completes) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut poll_attempts, mut retryable_failures, mut exhausted_calls) = (0, 0, 0);
+        let mut completed_tasks = Vec::new();
         let mut finished = started;
-        for (p, c, last) in results {
-            polls.extend(p);
-            completes.extend(c);
-            finished = finished.max(last);
+        for worker in progress {
+            polls.extend(worker.polls);
+            logical_polls.extend(worker.logical_polls);
+            completes.extend(worker.completes);
+            poll_attempts += worker.poll_counters.attempts;
+            retryable_failures += worker.poll_counters.retryable_failures;
+            exhausted_calls += worker.poll_counters.exhausted_calls;
+            completed_tasks.extend(worker.completions);
+            finished = finished.max(worker.last_done);
+        }
+        let transitions = completes.len();
+        polls.sort_unstable();
+        logical_polls.sort_unstable();
+        completes.sort_unstable();
+        let storage_causes = storage_diagnostics.counts().collect::<Vec<_>>();
+        if retryable_failures > 0 {
+            let safe_summary = if storage_causes.is_empty() {
+                "other=0".to_owned()
+            } else {
+                storage_causes
+                    .iter()
+                    .map(|(classification, observations)| {
+                        format!("{classification}={observations}")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",")
+            };
+            eprintln!(
+                "transition recovered retries: api_replicas={api_replicas} workers={workers} runs={runs} retryable_failures={retryable_failures} safe_storage_causes={safe_summary}"
+            );
+            waiting_on.push_str(&format!("; retry storage causes {safe_summary}"));
+        }
+        if let Some(failure) = failure {
+            body.push_str(&format!(
+                "| {api_replicas} | {workers} | {transitions} (incomplete) | n/a | {poll_attempts} / {retryable_failures} / {exhausted_calls} | {:.0} / {:.0} / {:.0} ms | {:.0} / {:.0} / {:.0} ms | {:.0} / {:.0} / {:.0} ms | {:.2} s | {waiting_on} |\n",
+                ms(percentile(&polls, 0.50)),
+                ms(percentile(&polls, 0.95)),
+                ms(percentile(&polls, 0.99)),
+                ms(percentile(&logical_polls, 0.50)),
+                ms(percentile(&logical_polls, 0.95)),
+                ms(percentile(&logical_polls, 0.99)),
+                ms(percentile(&completes, 0.50)),
+                ms(percentile(&completes, 0.95)),
+                ms(percentile(&completes, 0.99)),
+                config_wall.as_secs_f64(),
+            ));
+            body.push_str(&format!(
+                "\nConfiguration `{api_replicas}` API replicas / `{workers}` workers / `{runs}` runs is **incomplete**: worker {} failed during `{}` with safe application error variant `{}` (`retryable={}`) after {} attempt(s), {} retryable failure(s), exhausted={}, and {:.1} ms logical-call time. The failed logical call is not a successful latency sample. The transition count contains acknowledged completions only; no throughput result, integrity verdict or load-level verdict is reported for this configuration. Earlier rows remain complete.\n",
+                failure.worker,
+                failure.operation,
+                failure.variant,
+                failure.retryable,
+                failure.attempts,
+                failure.retryable_failures,
+                failure.exhausted,
+                ms(failure.logical_call_elapsed),
+            ));
+            section(
+                "Step transitions per second (BL02, BL04) — incomplete",
+                &body,
+            );
+            panic!(
+                "transition configuration failed: api_replicas={api_replicas} workers={workers} runs={runs} operation={} error_variant={} retryable={}",
+                failure.operation, failure.variant, failure.retryable
+            );
+        }
+        let deadlocks = storage_causes
+            .iter()
+            .find_map(|(classification, observations)| {
+                (*classification == "deadlock").then_some(*observations)
+            })
+            .unwrap_or(0);
+        let integrity = bounded_integrity_oracle(
+            INTEGRITY_ORACLE_LIMIT,
+            verify_transition_integrity(&w, &apis, &started_runs, &completed_tasks, deadlocks),
+        )
+        .await;
+        if let Err(failure) = integrity {
+            let label = failure.label();
+            body.push_str(&format!(
+                "| {api_replicas} | {workers} | {transitions} (incomplete) | n/a | {poll_attempts} / {retryable_failures} / {exhausted_calls} | {:.0} / {:.0} / {:.0} ms | {:.0} / {:.0} / {:.0} ms | {:.0} / {:.0} / {:.0} ms | {:.2} s | {waiting_on} |\n",
+                ms(percentile(&polls, 0.50)),
+                ms(percentile(&polls, 0.95)),
+                ms(percentile(&polls, 0.99)),
+                ms(percentile(&logical_polls, 0.50)),
+                ms(percentile(&logical_polls, 0.95)),
+                ms(percentile(&logical_polls, 0.99)),
+                ms(percentile(&completes, 0.50)),
+                ms(percentile(&completes, 0.95)),
+                ms(percentile(&completes, 0.99)),
+                config_wall.as_secs_f64(),
+            ));
+            body.push_str(&format!(
+                "\nConfiguration `{api_replicas}` API replicas / `{workers}` workers / `{runs}` runs is **incomplete** after all {transitions} acknowledged completions: the bounded integrity oracle reported fixed safe classification `{label}`. Poll counters and acknowledged latency samples are retained, but no throughput result, integrity verdict or load-level verdict is reported for this configuration. Earlier rows remain complete.\n"
+            ));
+            section(
+                "Step transitions per second (BL02, BL04) — incomplete",
+                &body,
+            );
+            panic!("transition integrity oracle failed: {label}");
         }
         let elapsed = finished - started;
-        let transitions = completes.len();
         let per_second = transitions as f64 / elapsed.as_secs_f64().max(1e-9);
         ceiling = ceiling.max(per_second);
-        polls.sort_unstable();
-        completes.sort_unstable();
         body.push_str(&format!(
-            "| {api_replicas} | {workers} | {transitions} | {per_second:.0} | {:.0} / {:.0} / {:.0} ms | {:.0} / {:.0} / {:.0} ms | {waiting_on} |\n",
+            "| {api_replicas} | {workers} | {transitions} | {per_second:.0} | {poll_attempts} / {retryable_failures} / {exhausted_calls} | {:.0} / {:.0} / {:.0} ms | {:.0} / {:.0} / {:.0} ms | {:.0} / {:.0} / {:.0} ms | {:.2} s | {waiting_on} |\n",
             ms(percentile(&polls, 0.50)),
             ms(percentile(&polls, 0.95)),
             ms(percentile(&polls, 0.99)),
+            ms(percentile(&logical_polls, 0.50)),
+            ms(percentile(&logical_polls, 0.95)),
+            ms(percentile(&logical_polls, 0.99)),
             ms(percentile(&completes, 0.50)),
             ms(percentile(&completes, 0.95)),
             ms(percentile(&completes, 0.99)),
+            config_wall.as_secs_f64(),
         ));
-        // The runs of this configuration are all finished; the next one starts its own.
-        assert_eq!(
-            transitions,
-            runs * 3,
-            "every run was carried through its three steps"
-        );
     }
     let mut verdicts = String::new();
     for target in [100.0, 1_000.0, 5_000.0] {

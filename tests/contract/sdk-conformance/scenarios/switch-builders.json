@@ -1,6 +1,6 @@
 {
   "name": "switch-builders",
-  "description": "WP-07: the five SDKs emit the same ordered v1 switch node, reject structural mistakes, and observe first-match, default and predicate-error runtime behavior.",
+  "description": "WP-07/WP-12: five public SDK builders preserve ordered switch behavior at the 32-case boundary, reject 33 cases and structural mistakes, and observe first-match, default and predicate-error runtime behavior.",
   "workflows": {
     "ordered": {
       "name": "switch-flow",
@@ -9,17 +9,196 @@
           "op": "switch",
           "id": "route",
           "cases": [
-            { "id": "nonnegative", "when": "input.amount >= 0", "target": "positive" },
-            { "id": "one", "when": "input.amount == 1", "target": "also-positive" }
+            {
+              "id": "nonnegative",
+              "when": "input.amount >= 0",
+              "target": "positive"
+            },
+            {
+              "id": "one",
+              "when": "input.amount == 1",
+              "target": "also-positive"
+            },
+            {
+              "id": "unselected-03",
+              "when": "false",
+              "target": "also-positive"
+            },
+            {
+              "id": "unselected-04",
+              "when": "false",
+              "target": "also-positive"
+            },
+            {
+              "id": "unselected-05",
+              "when": "false",
+              "target": "also-positive"
+            },
+            {
+              "id": "unselected-06",
+              "when": "false",
+              "target": "also-positive"
+            },
+            {
+              "id": "unselected-07",
+              "when": "false",
+              "target": "also-positive"
+            },
+            {
+              "id": "unselected-08",
+              "when": "false",
+              "target": "also-positive"
+            },
+            {
+              "id": "unselected-09",
+              "when": "false",
+              "target": "also-positive"
+            },
+            {
+              "id": "unselected-10",
+              "when": "false",
+              "target": "also-positive"
+            },
+            {
+              "id": "unselected-11",
+              "when": "false",
+              "target": "also-positive"
+            },
+            {
+              "id": "unselected-12",
+              "when": "false",
+              "target": "also-positive"
+            },
+            {
+              "id": "unselected-13",
+              "when": "false",
+              "target": "also-positive"
+            },
+            {
+              "id": "unselected-14",
+              "when": "false",
+              "target": "also-positive"
+            },
+            {
+              "id": "unselected-15",
+              "when": "false",
+              "target": "also-positive"
+            },
+            {
+              "id": "unselected-16",
+              "when": "false",
+              "target": "also-positive"
+            },
+            {
+              "id": "unselected-17",
+              "when": "false",
+              "target": "also-positive"
+            },
+            {
+              "id": "unselected-18",
+              "when": "false",
+              "target": "also-positive"
+            },
+            {
+              "id": "unselected-19",
+              "when": "false",
+              "target": "also-positive"
+            },
+            {
+              "id": "unselected-20",
+              "when": "false",
+              "target": "also-positive"
+            },
+            {
+              "id": "unselected-21",
+              "when": "false",
+              "target": "also-positive"
+            },
+            {
+              "id": "unselected-22",
+              "when": "false",
+              "target": "also-positive"
+            },
+            {
+              "id": "unselected-23",
+              "when": "false",
+              "target": "also-positive"
+            },
+            {
+              "id": "unselected-24",
+              "when": "false",
+              "target": "also-positive"
+            },
+            {
+              "id": "unselected-25",
+              "when": "false",
+              "target": "also-positive"
+            },
+            {
+              "id": "unselected-26",
+              "when": "false",
+              "target": "also-positive"
+            },
+            {
+              "id": "unselected-27",
+              "when": "false",
+              "target": "also-positive"
+            },
+            {
+              "id": "unselected-28",
+              "when": "false",
+              "target": "also-positive"
+            },
+            {
+              "id": "unselected-29",
+              "when": "false",
+              "target": "also-positive"
+            },
+            {
+              "id": "unselected-30",
+              "when": "false",
+              "target": "also-positive"
+            },
+            {
+              "id": "unselected-31",
+              "when": "false",
+              "target": "also-positive"
+            },
+            {
+              "id": "unselected-32",
+              "when": "false",
+              "target": "also-positive"
+            }
           ],
           "default": "fallback"
         },
-        { "op": "step", "id": "positive", "activity": "amount.positive" },
-        { "op": "end", "id": "positive-end" },
-        { "op": "step", "id": "also-positive", "activity": "amount.also-positive" },
-        { "op": "end", "id": "also-positive-end" },
-        { "op": "step", "id": "fallback", "activity": "amount.fallback" },
-        { "op": "end", "id": "fallback-end" }
+        {
+          "op": "step",
+          "id": "positive",
+          "activity": "amount.positive"
+        },
+        {
+          "op": "end",
+          "id": "positive-end"
+        },
+        {
+          "op": "step",
+          "id": "also-positive",
+          "activity": "amount.also-positive"
+        },
+        {
+          "op": "end",
+          "id": "also-positive-end"
+        },
+        {
+          "op": "step",
+          "id": "fallback",
+          "activity": "amount.fallback"
+        },
+        {
+          "op": "end",
+          "id": "fallback-end"
+        }
       ]
     }
   },
@@ -29,8 +208,17 @@
       "workflow": {
         "name": "empty-switch-cases",
         "program": [
-          { "op": "switch", "id": "route", "cases": [], "default": "fallback" },
-          { "op": "step", "id": "fallback", "activity": "amount.fallback" }
+          {
+            "op": "switch",
+            "id": "route",
+            "cases": [],
+            "default": "fallback"
+          },
+          {
+            "op": "step",
+            "id": "fallback",
+            "activity": "amount.fallback"
+          }
         ]
       }
     },
@@ -43,14 +231,34 @@
             "op": "switch",
             "id": "route",
             "cases": [
-              { "id": "same", "when": "true", "target": "first" },
-              { "id": "same", "when": "false", "target": "second" }
+              {
+                "id": "same",
+                "when": "true",
+                "target": "first"
+              },
+              {
+                "id": "same",
+                "when": "false",
+                "target": "second"
+              }
             ],
             "default": "fallback"
           },
-          { "op": "step", "id": "first", "activity": "amount.first" },
-          { "op": "step", "id": "second", "activity": "amount.second" },
-          { "op": "step", "id": "fallback", "activity": "amount.fallback" }
+          {
+            "op": "step",
+            "id": "first",
+            "activity": "amount.first"
+          },
+          {
+            "op": "step",
+            "id": "second",
+            "activity": "amount.second"
+          },
+          {
+            "op": "step",
+            "id": "fallback",
+            "activity": "amount.fallback"
+          }
         ]
       }
     },
@@ -62,10 +270,20 @@
           {
             "op": "switch",
             "id": "route",
-            "cases": [{ "id": "missing", "when": "true", "target": "nowhere" }],
+            "cases": [
+              {
+                "id": "missing",
+                "when": "true",
+                "target": "nowhere"
+              }
+            ],
             "default": "fallback"
           },
-          { "op": "step", "id": "fallback", "activity": "amount.fallback" }
+          {
+            "op": "step",
+            "id": "fallback",
+            "activity": "amount.fallback"
+          }
         ]
       }
     },
@@ -77,10 +295,227 @@
           {
             "op": "switch",
             "id": "route",
-            "cases": [{ "id": "known", "when": "true", "target": "known" }],
+            "cases": [
+              {
+                "id": "known",
+                "when": "true",
+                "target": "known"
+              }
+            ],
             "default": "nowhere"
           },
-          { "op": "step", "id": "known", "activity": "amount.known" }
+          {
+            "op": "step",
+            "id": "known",
+            "activity": "amount.known"
+          }
+        ]
+      }
+    },
+    "case-limit-exceeded": {
+      "contains": "between 1 and 32 cases",
+      "workflow": {
+        "name": "switch-over-case-limit",
+        "program": [
+          {
+            "op": "switch",
+            "id": "route",
+            "cases": [
+              {
+                "id": "nonnegative",
+                "when": "input.amount >= 0",
+                "target": "positive"
+              },
+              {
+                "id": "one",
+                "when": "input.amount == 1",
+                "target": "also-positive"
+              },
+              {
+                "id": "unselected-03",
+                "when": "false",
+                "target": "also-positive"
+              },
+              {
+                "id": "unselected-04",
+                "when": "false",
+                "target": "also-positive"
+              },
+              {
+                "id": "unselected-05",
+                "when": "false",
+                "target": "also-positive"
+              },
+              {
+                "id": "unselected-06",
+                "when": "false",
+                "target": "also-positive"
+              },
+              {
+                "id": "unselected-07",
+                "when": "false",
+                "target": "also-positive"
+              },
+              {
+                "id": "unselected-08",
+                "when": "false",
+                "target": "also-positive"
+              },
+              {
+                "id": "unselected-09",
+                "when": "false",
+                "target": "also-positive"
+              },
+              {
+                "id": "unselected-10",
+                "when": "false",
+                "target": "also-positive"
+              },
+              {
+                "id": "unselected-11",
+                "when": "false",
+                "target": "also-positive"
+              },
+              {
+                "id": "unselected-12",
+                "when": "false",
+                "target": "also-positive"
+              },
+              {
+                "id": "unselected-13",
+                "when": "false",
+                "target": "also-positive"
+              },
+              {
+                "id": "unselected-14",
+                "when": "false",
+                "target": "also-positive"
+              },
+              {
+                "id": "unselected-15",
+                "when": "false",
+                "target": "also-positive"
+              },
+              {
+                "id": "unselected-16",
+                "when": "false",
+                "target": "also-positive"
+              },
+              {
+                "id": "unselected-17",
+                "when": "false",
+                "target": "also-positive"
+              },
+              {
+                "id": "unselected-18",
+                "when": "false",
+                "target": "also-positive"
+              },
+              {
+                "id": "unselected-19",
+                "when": "false",
+                "target": "also-positive"
+              },
+              {
+                "id": "unselected-20",
+                "when": "false",
+                "target": "also-positive"
+              },
+              {
+                "id": "unselected-21",
+                "when": "false",
+                "target": "also-positive"
+              },
+              {
+                "id": "unselected-22",
+                "when": "false",
+                "target": "also-positive"
+              },
+              {
+                "id": "unselected-23",
+                "when": "false",
+                "target": "also-positive"
+              },
+              {
+                "id": "unselected-24",
+                "when": "false",
+                "target": "also-positive"
+              },
+              {
+                "id": "unselected-25",
+                "when": "false",
+                "target": "also-positive"
+              },
+              {
+                "id": "unselected-26",
+                "when": "false",
+                "target": "also-positive"
+              },
+              {
+                "id": "unselected-27",
+                "when": "false",
+                "target": "also-positive"
+              },
+              {
+                "id": "unselected-28",
+                "when": "false",
+                "target": "also-positive"
+              },
+              {
+                "id": "unselected-29",
+                "when": "false",
+                "target": "also-positive"
+              },
+              {
+                "id": "unselected-30",
+                "when": "false",
+                "target": "also-positive"
+              },
+              {
+                "id": "unselected-31",
+                "when": "false",
+                "target": "also-positive"
+              },
+              {
+                "id": "unselected-32",
+                "when": "false",
+                "target": "also-positive"
+              },
+              {
+                "id": "unselected-33",
+                "when": "false",
+                "target": "also-positive"
+              }
+            ],
+            "default": "fallback"
+          },
+          {
+            "op": "step",
+            "id": "positive",
+            "activity": "amount.positive"
+          },
+          {
+            "op": "end",
+            "id": "positive-end"
+          },
+          {
+            "op": "step",
+            "id": "also-positive",
+            "activity": "amount.also-positive"
+          },
+          {
+            "op": "end",
+            "id": "also-positive-end"
+          },
+          {
+            "op": "step",
+            "id": "fallback",
+            "activity": "amount.fallback"
+          },
+          {
+            "op": "end",
+            "id": "fallback-end"
+          }
         ]
       }
     }
@@ -92,9 +527,27 @@
       "maxInflight": 3,
       "heartbeatIntervalMs": 200,
       "activities": {
-        "amount.positive": { "behavior": { "returns": { "route": "positive" } } },
-        "amount.also-positive": { "behavior": { "returns": { "route": "also-positive" } } },
-        "amount.fallback": { "behavior": { "returns": { "route": "fallback" } } }
+        "amount.positive": {
+          "behavior": {
+            "returns": {
+              "route": "positive"
+            }
+          }
+        },
+        "amount.also-positive": {
+          "behavior": {
+            "returns": {
+              "route": "also-positive"
+            }
+          }
+        },
+        "amount.fallback": {
+          "behavior": {
+            "returns": {
+              "route": "fallback"
+            }
+          }
+        }
       }
     }
   },
@@ -103,7 +556,9 @@
       "id": "first-match",
       "op": "start",
       "workflow": "ordered",
-      "input": { "amount": 1 }
+      "input": {
+        "amount": 1
+      }
     },
     {
       "id": "first-match-done",
@@ -111,12 +566,18 @@
       "run": "first-match",
       "timeoutMs": 30000
     },
-    { "id": "first-match-journal", "op": "events", "run": "first-match" },
+    {
+      "id": "first-match-journal",
+      "op": "events",
+      "run": "first-match"
+    },
     {
       "id": "default",
       "op": "start",
       "workflow": "ordered",
-      "input": { "amount": -1 }
+      "input": {
+        "amount": -1
+      }
     },
     {
       "id": "default-done",
@@ -124,7 +585,11 @@
       "run": "default",
       "timeoutMs": 30000
     },
-    { "id": "default-journal", "op": "events", "run": "default" },
+    {
+      "id": "default-journal",
+      "op": "events",
+      "run": "default"
+    },
     {
       "id": "predicate-error",
       "op": "start",
@@ -137,6 +602,10 @@
       "run": "predicate-error",
       "timeoutMs": 30000
     },
-    { "id": "predicate-error-journal", "op": "events", "run": "predicate-error" }
+    {
+      "id": "predicate-error-journal",
+      "op": "events",
+      "run": "predicate-error"
+    }
   ]
 }

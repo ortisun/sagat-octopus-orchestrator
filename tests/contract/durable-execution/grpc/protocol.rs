@@ -450,6 +450,19 @@ async fn task_stream_lifetime_admission_survives_headers_and_is_released_on_drop
             .is_none()
     );
 
+    // Prepare delayed work outside either response window. A real run lock prevents its claim
+    // until the old watchdog's deadline passes, without spending the remaining window on REST.
+    let last_run = p
+        .start(&wf, &json!({"index": 4, "large": "x".repeat(180_000)}))
+        .await;
+    let mut last_guard = p.api.db.pool.begin().await.expect("survivor work barrier");
+    sqlx::query("SELECT id FROM runs WHERE tenant_id=$1 AND id=$2 FOR UPDATE")
+        .bind(p.tenant.as_uuid())
+        .bind(uuid::Uuid::parse_str(&last_run).expect("run id"))
+        .fetch_one(&mut *last_guard)
+        .await
+        .expect("hold survivor work");
+
     // A normally consumed body cancels its watchdog. A second stream on the same HTTP/2
     // connection remains alive past the first stream's former deadline and receives later work.
     tokio::time::sleep(Duration::from_secs(1)).await;

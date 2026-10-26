@@ -97,6 +97,12 @@ work durably waiting for fair scheduler admission; declared hard budget exhausti
 admission with the typed budget error. Reclaim only terminal/drained slots, transactionally.
 A policy reduction stops new admissions above its new ceiling but does not kill accepted work.
 
+The scheduler's `quota_ceilings.resource = 'iteration_concurrency'` remains valid alongside database
+policy resources when features 014 and 017 are combined. Additive migration
+`20261209000000_iteration_ceiling_compatibility` restores that combined allowlist without editing
+earlier migrations. Its rollback refuses existing iteration-ceiling configuration; an operator
+must withdraw it explicitly. Other quota configuration survives rollback and reapplication.
+
 `maxInstances` is a shared lifetime admission budget. Each forward activation charges one unit and
 reserves one for each possible declared compensation/reconciliation identity; reservations immediately
 consume budget and are not reused even if the derived work is never needed. A derived activation
@@ -281,15 +287,33 @@ content.
 For chain-capable runs, lock order is chain, its current run, then applicable ownership/admission fences and ordered
 subordinate resources. Preserve the existing run → shared drain fence → session row → sorted
 activity quota order; creation takes the tree-admission advisory lock before its subordinate
-resources. Handoff inserts a new successor and never locks two preexisting runs. Direct-run mutations
+resources. Handoff inserts a new successor without taking two existing run mutation locks. ADR-0037 permits
+only its early stable-parent identity KEY SHARE under immutable initial/head/link ancestry. Direct-run mutations
 for a chain member use the same chain-before-run order.
 
+Initial child reservation takes a parent `FOR NO KEY UPDATE` lock before the lifetime tree
+advisory lock. It still excludes parent mutation/duplicate reservation but admits foreign-key
+`KEY SHARE` checks on stable run identities. Creation and evaluated handoff retain new input
+and initial-state payload rows after namespace/tenant active-run admission; payload uniqueness
+can block on an uncommitted equal digest. The two focused admission barriers cover these edges.
+The [source inventory](../../tasks/project-completion/capacity-lock-inventory.md) separately records
+the accepted narrow ADR-0037 guard exception and remaining prefix gaps; this is not a complete
+lock-DAG acceptance or permission to activate nested groups.
+
 Parent transitions lock their own chain/run then child-instance links; child handoff/finalization
-locks its own chain/run then its link. Neither locks the other chain/run. Link cancellation/final
+locks its own chain/run then its link. Neither takes the other chain/run mutation lock. ADR-0037 permits the child handoff's early
+parent KEY SHARE solely for stable identity protection, without mutable-parent authority. Link cancellation/final
 outcome state is authoritative across rollover, preventing cancellation loss or premature parent
 completion. Legacy parent-first child creation and child-row UPDATE paths retain their behavior
 until explicitly migrated; do not mix their locks into this protocol or impose sorted run IDs on
 them. A scheduler parent notification checks the parent's shard fence.
+
+Current parent cancellation/settlement mutates a matching chain link without updating the child
+run's `parent_settled`/`parent_cancel` flags. The same transaction falls back to legacy flags only
+when no link exists, with tenant/child/own-parent predicates. Initial child creation/link insertion
+is excluded by the parent's existing lock. ADR-0037 accepts only the existing early parent identity
+guard, with immutable ancestry and no lock upgrade or mutable parent-state decisions. The
+remaining lock graph and group transaction design stay open; nested capacity is not enabled.
 
 No caller response acknowledges a mutation before commit. Query uses a consistent read snapshot;
 a read audit must succeed before returning its data, without adding a workflow transition.
@@ -311,3 +335,163 @@ Migration adds nullable/defaulted root identity and completion fields for old ro
 constraints and new primitive tables. Old journal events replay to the empty root path; never rewrite
 history or assign new meaning to old event types. New events are versioned. Rollback disables new
 starts/publications but retains compatible readers until all runs using the new capabilities have drained.
+
+
+## Current-instance charge projection (integrated execution)
+
+`run_instance_usage.charged_instances` materializes the exact predicate used by
+`RunState::charged_instances`: every scoped step contributes one; a root contributes unless its
+status is `PENDING` or `CANCELLED`. This is a current-state projection, so root cancellation can
+reduce it. It does not replace or release `admitted_instances`, `reserved_instances` or
+`retired_reservations`, which remain the lifetime admission authority.
+
+Migration `20261207000000` backfills under writer-excluding table locks taken in run/step/usage
+order, then installs an always-enabled trigger. Insert, status/path change and deletion update
+the tenant/run row in the same transaction as the step; rollback undoes both. Retry and heartbeat
+updates with an unchanged contribution add nothing. The scheduler frontier reads this single
+keyed row instead of counting all historical step entries. The migration pauses writers during
+the initial backfill; no online migration or bounded total runtime is implied. Other remaining
+bounded worker/control/finalization requirements remain tracked in tasks.md.
+
+
+## Bounded effect commands and global work facts (integration checkpoint)
+
+`PathExecutionState` and `RunState` share effect/review transition validation and mutation, plus
+one scoped command policy for failed attempts, lookup verdicts, retries and operator decisions.
+The complete run remains the replay oracle. A path never borrows another iteration's step or
+compensation authority. Unknown outcomes request the declared lookup or wait for a person under
+the existing policy; exhausting compensation retries never means success.
+
+`RunWorkSummary` retains four existential facts: active work (including pending), live work,
+waiting work and operator review. Its checked constructor rejects contradictory facts. A path
+snapshot contains the facts for **other paths**, plus the run-wide compensation flag; local work
+is folded into them after each event. Both representations use the same global status precedence.
+Resolving one local review therefore cannot hide an unresolved review elsewhere, and unrelated
+live work still keeps the run runnable. These facts do not decide global terminal finalization.
+
+PostgreSQL reads these facts with local/ancestor state, tenant/run predicates and partial indexes
+over open/live/review work. `load_path` prepares a read-only repeatable-read snapshot; `begin_path`
+compares that revision under the run lock before a prepared mutation. Metadata/worker commands
+instead use `begin_current_path`, locking the run before reading the complete current path on the
+same connection. Migration `20261208000000` adds the live/review/root-saga indexes; existing
+open/waiting/scoped-saga indexes are reused. Both paths sample mutation time after the required
+lock and preserve their distinct revision contracts.
+
+Scoped expiry/retry, claims, heartbeat and inline completion/failure now consume these ports.
+Inline compensation/reconciliation uses the shared pure policy; a completed loop's absent active
+iteration is a false ancestor-active flag, while derived saga authority remains independent.
+Reports consult `run_instance_usage.logical_output_bytes` under the run lock instead of loading
+historical values to check the aggregate budget. The writer keeps its independent exact byte
+charge, output references, journal, projection, outbox, audit and receipt in the same transaction.
+Provider output scans close the transaction before I/O, then recheck current authority/lease and
+secret version snapshots. Current membership, binding and echoed step identity precede receipt
+replay for ordinary Root and scoped reports.
+
+Scoped secret resolution shares one handoff policy with Root resolution over their respective
+transaction lifecycles. Both phases of a scoped resolution read only its current exact path,
+including live lease, current binding/membership, worker pools and publisher ACL/version snapshots.
+Provider reads happen between committed transactions; no value is handed out until a successful
+audit commits after rechecking authority and unchanged inputs. A scoped audit includes its complete
+logical step UUID, so repeated delivery within one attempt collapses without collapsing another
+iteration of the same definition node. Root audit text and legacy attempt semantics remain stable.
+
+Scoped blob read/upload checks and report-scope lookup also use current exact-path state. Actual
+blob bytes remain subject to the existing object/catalog service and namespace boundary. Uploads
+by steps declaring secrets retain their typed content-scanning refusal; no capability is granted
+over cancellation. Report-scope lookup intentionally needs current authority and identity without
+requiring an unexpired lease, because receipt replay has a separate lifecycle. These changes do
+not enable scoped blob completion.
+
+Blob completion, broader scoped control nodes, global/ancestor drain and root finalization still
+need their remaining consumer integration and larger workload/fault evidence. These current consumers do not establish a 10k/100k capacity claim.
+
+
+### Ordinary root sources for collections
+
+A plain root activity prefix may now precede the existing collection chain. Its inline array or
+committed output blob is selected by `steps.fetch.output` in the owner's root context, then captured
+by the existing bounded source port. A body may also name its activity `fetch`; the same expression
+in its return resolves its own path's output. Root and scoped outputs, binding checks, step UUIDs
+and task contexts retain their separate identities. Prefix error/effect/managed-database policies
+and activity successors remain unsupported. No persistence schema or worker minor changes.
+
+
+## Pure capacity lifecycle prerequisite — 2026-10-18
+
+The isolated A1 domain model adds `CapacityGroup` without changing persisted schema or enabling
+nesting. Its constant-size header contains immutable group/tenant identity, revision, possession
+epoch, active-member count and Vacant/Held(member)/Retired possession. Each command consumes only
+the selected member's group-bound NeverSeen/Active/Finished snapshot, provided consistently by a
+future own-authorized transaction. The complete logical registry is not loaded on every command.
+Joining/finishing advances revision; only changing possession/retirement advances its epoch.
+Finishing a holder leaves a recoverable vacancy; finishing a non-holder preserves the current
+holder epoch. Last-member settlement retires once. Failed/stale/foreign operations are inert,
+including integer exhaustion. Child CONTINUED does not settle its logical membership.
+
+`crates/domain/tests/capacity_groups.rs` compares these bounded transitions with a full-map registry
+oracle over1024 fixed-seed histories. This model supplies no execution permission or authority
+proof: actual registry uniqueness/restoration, caller quiescence/settlement, quota projections,
+full lock ordering, persistence/crash recovery and mixed-version fencing remain B/C prerequisites.
+No table or public usage-counter reinterpretation follows from this model alone; general nested
+publication remains closed. See `tasks/project-completion/capacity-group-lifecycle.md` and its
+bounded review/evidence rather than the rejected whole-protocol drafts.
+
+
+Chain scheduler fencing uses a transaction-typed SHARE guard followed by a fresh database clock
+comparison. It must not accept an expiry predicate sampled before a row-lock wait or release the
+guard in autocommit between guard acquisition and comparison. The independent evaluated deadline
+clock remains after the incoming child link. Other primitive adapters are tracked separately in
+the B0 source inventory; this narrow chain correction is not a complete lock-graph acceptance.
+
+
+### Collection/loop authority expiry during lock wait (2026-10-18)
+
+Refs:T014-040, FR-014-014/015. The collection and loop adapters retain their scheduler SHARE
+guard in the owning transaction and validate expiry using a database clock sampled after
+acquiring it. Wrong-shard and generation-conversion errors keep their existing precedence.
+A rejected entry changes no projection, payload, quota, timer, journal, outbox or audit. A supplied
+collection entry audit is inserted once through finish_version, atomically with the transition.
+Private runtime-role entry barriers reproduce the stale commits and verify rejection, fresh
+authority and replay. This is not a continuous wall-clock-until-commit guarantee or acceptance
+of nested scopes. Approval's separate check and B0 ordering remain pending. Existing fenced
+metrics use kind=collection/loop without tenant/run labels; the port tests do not test counters.
+Evidence: tasks/project-completion/evidence/scope-post-wait-fence-20261018/.
+
+
+### Approval scheduler authority after lock waits (2026-10-18)
+
+Refs:T014-040, FR-014-008/014. Open/expire retain a scheduler SHARE guard in their owning
+transaction and validate authority against a database clock sampled after acquiring it. An
+expired authority returns the existing typed fence error before request/timer/projection, journal,
+outbox, audit or telemetry queue effects. Oversized-generation storage errors keep precedence;
+decide uses its current-user authorization. No business-deadline clock or opening replay contract
+changes. Real runtime-role barriers cover both opening and genuinely due expiry; the atomic
+checkpoint includes the telemetry queue and approval tables. Existing fenced metrics use
+approval_open/approval_expire kinds without tenant/run labels; these port tests do not assert
+counters. This does not enable nested scopes or complete B0.
+Evidence: tasks/project-completion/evidence/approval-post-wait-fence-20261018/.
+
+
+### Approval member-chain writer guard (2026-10-18)
+
+Refs:T014-040, FR-014-008/014. Approval open/expire/decide acquire a tenant/namespace-scoped
+applicable membership chain before the exact own run, retaining both guards through commit.
+The shared transaction helper is the existing declared Run Update guard; it never forwards or
+grants head authority. Initial membership commits with new-run creation and later identity is
+immutable; live reparent/migration requires its own protocol. Decision authorization, typed
+errors, terminal/replay and audit/outbox boundaries remain unchanged. Native wait/final-audit
+barriers verify ordering and guard lifetime; no new public composition or B0 completion is
+inferred. Existing outcome metrics and sensitive-data-free logs keep their current mapping.
+Evidence: tasks/project-completion/evidence/approval-chain-prefix-20261018/.
+
+
+### Collection/loop member-chain serialization (2026-10-18)
+
+Refs:T014-040, FR-014-004/006/014. Collection entry/drain and loop writer helpers retain an
+applicable scoped membership chain before own-run UPDATE in their owning transaction. Existing
+CAS, fences, quota/deadline/drain rules, typed errors, audit/outbox and telemetry mapping stay
+unchanged. Native app-role barriers prove chain wait precedes own-run acquisition; fresh/replay
+controls cover persisted writes. Shared guard lifetime is separately proven by the approval
+final-audit barrier. These trusted storage fixtures grant no new public composition, head
+authority or nested eligibility; complete B0/group and resource gates remain pending.
+Evidence: tasks/project-completion/evidence/scope-chain-prefix-20261018/.

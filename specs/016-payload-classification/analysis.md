@@ -15,9 +15,9 @@ holds in an implementation.
 | Non-functional requirements | 6 |
 | Success criteria | 10 |
 | Requirement/criterion coverage by tasks | 45/45 (every FR, NFR and SC appears in the `Refs` of at least one task) |
-| Tasks | 65 (T016-001 to T016-065), 1 ticked (T016-002, the recording of the owner's answers) |
+| Tasks | 65 (T016-001 to T016-065). At the design review 1 was ticked (T016-002). On 2026-10-25: 62 ticked, 3 open (T016-001 closes when the set is merged; T016-053 and T016-054 are open, see the review below) |
 | Tasks without file paths or `Refs` | 0 |
-| Decisions / gaps | D261-D290 and D302-D306 (35) / G272-G293 (22) |
+| Decisions / gaps | D261-D290, D302-D306 and D660-D666 (42) / G272-G293 and G660-G664 (27); owner questions O660-O661 with defaults |
 | Product questions for the owner | 4 asked (P1-P4), 4 answered on 2026-10-17; none open |
 | Unresolved clarification markers | 0 |
 | Findings of the validation against ADRs and code | 15, all corrected in the documents or recorded as gaps; 3 of them were put to the owner and are now decided |
@@ -114,3 +114,68 @@ Checks run on this set (not on any implementation), from the repository root of 
 None of these proves that a design decision is right. The decisions that could be wrong in ways only
 building will show are the walker's soundness (D266-D268), the cost of validating per response (D280,
 D281) and the usability of the inheritance rule (D264). Each has a task that tests or measures it.
+
+
+## Implementation checkpoint — 2026-10-17
+
+The design reviews above are historical. Implementation is now in progress, with exact focused
+results and outstanding gates in `tasks/project-completion/integration-notes.md`. Current combined
+classification proof: 15 contract, 21 real PostgreSQL/HTTP, 2 deferred-audit failure tests and one
+actual Chromium disclosure journey. Full canary, process-crash, upgrade, runtime conformance and
+workspace release acceptance remain open. Canonical task checkboxes name only complete evidence.
+
+
+### Executed classification quickstart and guide reconciliation
+
+Added complete `specs/016-payload-classification/examples/` workflows (original/relaxed/invalid),
+synthetic input and a canned mock worker response. Actual standalone CLI validation passed both
+sound documents and refused the invalid one at the expected CLASSIFICATION_LOOSENED pointer.
+The new `quickstart::the_documented_classified_orders_complete_and_keep_their_original_pin`
+passed 1/1 in 21.00 s (`/tmp/sagat-completion-classification-quickstart-3.log`). It runs the actual
+`sagat` and `curl` processes against HTTP/gRPC/PostgreSQL and the production engine entry point:
+publish, worker-dev binding/execution, terminal result, actual step sequence, public/internal/PII
+reads, grant/revoke and refusal, republish/activate and unchanged old run pin. It also publishes an
+actual event, executes the four documented event/letter reads and checks the audit API for data
+absence. The retained paused-connector letter is explicitly an isolated fixture; no Kafka delivery
+is claimed by this walkthrough. The first compile needed named arrays for async CLI arguments;
+this was a harness lifetime correction before execution.
+
+The guide now points at real files, uses valid Cargo filter invocations, includes the worker/run
+commands and version activation and explains receiving-carrier secret declarations. Its spec
+prerequisite command passed (`/tmp/sagat-completion-classification-spec-prerequisites.log`); the
+PayloadDisclosure/WorkflowSettings tests passed 8/8 in 1.96 s
+(`/tmp/sagat-completion-classification-guide-ui.log`). Developer-experience references/links/CLI
+syntax/secret scan passed 8/8 (`/tmp/sagat-completion-classification-guide-references.log`); strict
+Clippy of the three classification targets passed with warnings denied in 27.81 s
+(`/tmp/sagat-completion-classification-final-focused-clippy.log`).
+
+The benchmark, transaction/process faults, actual old release/old Studio/five-client compatibility
+and Chromium commands in the guide have their separate executed evidence recorded above; those
+are reused where the tested production path is unchanged, not invented reruns. The requirements
+checklist now distinguishes executed local evidence from the still-open full workspace/release
+gates. T016-056 closes for the delivered guide and traceability; T016-054 remains open.
+
+
+## Review of the integrated branch — 2026-10-25
+
+Two independent read-only reviews (security and correctness) of the integrated branch found defects.
+The surface half is fixed on `feature/016-fix-surface` (publication, diff, events, grants, response
+types, specification and evidence); the engine half (walker, validator cache, disclosure store,
+decimals, budgets, audit of structure reads, keys admitted by `additionalProperties`) is recorded under
+D640+ by the branch that fixes it. The decisions are D660 to D666 and the gaps G660 to G664 in
+[research.md](./research.md#surface-fixes-after-the-two-independent-reviews-2026-10-25).
+
+What the review changed in this set:
+
+| Finding | Correction |
+|---|---|
+| T016-054 was ticked with no evidence while this file said it was open | Unticked; the gates run on the merged tree (G662) |
+| T016-053 was ticked while its own report says the target and the cache tests must pass first, and the cache holds about 26 times the weight it counts | Unticked (G662) |
+| T016-047 cited a test of the format of one `prepare` line for the diff findings | The evidence names `classification_diff.rs` and the other tests that prove it |
+| T016-050 cited a test that drives the grant helper, not a reveal | A test pauses a production reveal and revokes and deletes the membership while it runs |
+| T016-056 cited a test that hard-coded its commands | The test reads `quickstart.md` and compares |
+| 56 evidence lines cite `tasks/project-completion/`, which is not in git | Each says "(outside git)"; a tick stands on a test in the repository (G663) |
+| FR-016-009 said a `secret` node is withheld for everyone, the matrix and the code omit it for a caller without `run:payload:inspect` | The text says what the matrix says (D662) |
+| US01.6 did not say what republishing an identical legacy document does | It does, and `classificationRules` is returned (D661) |
+
+Nothing in this review is evidence that a requirement holds beyond the tests named in `tasks.md`.

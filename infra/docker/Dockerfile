@@ -10,6 +10,8 @@
 ARG RUST_VERSION=1.98.0
 
 FROM rust:${RUST_VERSION}-slim-bookworm AS builder
+# Keep the five-process release build usable on the documented local Docker memory budget.
+ARG CARGO_BUILD_JOBS=3
 WORKDIR /src
 # The whole workspace is needed to resolve member manifests; the lock file keeps the build exact.
 COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
@@ -28,7 +30,7 @@ COPY specs/001-platform-foundation/contracts specs/001-platform-foundation/contr
 RUN find crates apps tests specs rust-toolchain.toml Cargo.toml Cargo.lock -type f -exec touch {} +
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked \
+    cargo build --release --locked --jobs "${CARGO_BUILD_JOBS}" \
         -p sagat-control-plane --bin control-plane \
         -p sagat-execution-engine --bin execution-engine \
         -p sagat-sandbox-runner --bin sandbox-runner \

@@ -1045,7 +1045,7 @@ impl QuotaStore for PgRunStore {
                 .bind(tenant.as_uuid()).bind(namespace).fetch_one(&self.pool).await,
             QuotaResource::DatabaseConcurrency | QuotaResource::TenantDatabaseConcurrency => sqlx::query_scalar(
                 "SELECT count(*) FROM steps s JOIN run_database_connections b ON b.tenant_id=s.tenant_id AND b.run_id=s.run_id AND b.node_id=s.node
-                 WHERE s.tenant_id=$1 AND ($2::uuid IS NULL OR b.namespace_id=$2) AND s.status IN ('LEASED','RUNNING')")
+                 WHERE s.tenant_id=$1 AND cardinality(s.instance_path_nodes)=0 AND cardinality(s.instance_path_indices)=0 AND ($2::uuid IS NULL OR b.namespace_id=$2) AND s.status IN ('LEASED','RUNNING')")
                 .bind(tenant.as_uuid()).bind(if resource==QuotaResource::TenantDatabaseConcurrency {None} else {namespace}).fetch_one(&self.pool).await,
             QuotaResource::SecretProviderOperations => sqlx::query_scalar(
                 "SELECT count(*) FROM secret_provider_operations WHERE tenant_id=$1 AND namespace_id=$2 AND state='pending'")

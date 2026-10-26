@@ -53,6 +53,7 @@ type ApprovalPolicy struct {
 }
 
 var namePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{2,63}$`)
+var artifactDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 // Builder builds a workflow, or a nested flow (see Flow).
 type Builder struct {
@@ -63,6 +64,7 @@ type Builder struct {
 	input       map[string]any
 	output      map[string]any
 	state       map[string]any
+	limits      map[string]any
 	chainPolicy map[string]any
 	bodies      map[string]*Builder
 
@@ -151,6 +153,31 @@ func (b *Builder) OutputSchema(schema map[string]any) *Builder {
 	return b
 }
 
+// Limits lowers the workflow instance and nesting ceilings. Omitted fields keep the platform default.
+func (b *Builder) Limits(opts ...LimitOption) *Builder {
+	if b.err != nil {
+		return b
+	}
+	limits := map[string]any{}
+	for _, opt := range opts {
+		opt(limits)
+	}
+	if value, present := limits["maxInstances"]; present {
+		n := value.(int64)
+		if n < 1 || n > 100000 {
+			return b.fail(sagat.Invalid("limits maxInstances must be between 1 and 100000"))
+		}
+	}
+	if value, present := limits["maxDepth"]; present {
+		n := value.(int64)
+		if n < 1 || n > 8 {
+			return b.fail(sagat.Invalid("limits maxDepth must be between 1 and 8"))
+		}
+	}
+	b.limits = limits
+	return b
+}
+
 // ChainPolicy sets the finite lifetime shared by every run in a continuation chain.
 func (b *Builder) ChainPolicy(maxSegments int, timeout time.Duration) *Builder {
 	if b.err != nil {
@@ -193,6 +220,28 @@ func (b *Builder) Step(id, activity string, opts ...StepOption) *Builder {
 	n := node{"id": id, "type": "activity", "activity": activity}
 	for key, value := range spec.fields {
 		n[key] = value
+	}
+	return b.push(n)
+}
+
+// Script adds a pinned script artifact executed by an isolated runner.
+func (b *Builder) Script(id, artifactDigest string, opts ...ScriptOption) *Builder {
+	if b.err != nil {
+		return b
+	}
+	if !artifactDigestPattern.MatchString(artifactDigest) {
+		return b.fail(sagat.Invalid("script %s needs a sha256 artifact digest", id))
+	}
+	n := node{"id": id, "type": "script", "artifactDigest": artifactDigest}
+	for _, opt := range opts {
+		opt(n)
+	}
+	if secrets, ok := n["secrets"].([]any); ok {
+		for _, value := range secrets {
+			if name, ok := value.(string); !ok || !secretName.MatchString(name) {
+				return b.fail(sagat.Invalid("script %s names a secret that is not a name", id))
+			}
+		}
 	}
 	return b.push(n)
 }
@@ -745,6 +794,9 @@ func (b *Builder) Build() (map[string]any, error) {
 	}
 	if b.output != nil {
 		document["outputSchema"] = b.output
+	}
+	if b.limits != nil {
+		document["limits"] = b.limits
 	}
 	if b.state != nil {
 		document["state"] = clone(b.state)

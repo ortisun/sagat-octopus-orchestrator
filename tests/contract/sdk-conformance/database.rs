@@ -132,7 +132,7 @@ impl Fixture {
         super::write_private(&config_path, config.to_string().as_bytes()).expect("runner config");
         let binary = std::env::var_os("SAGAT_DATABASE_RUNNER_BIN")
             .map(PathBuf::from)
-            .unwrap_or_else(|| super::repo().join("target/debug/database-runner"));
+            .unwrap_or_else(|| crate::support::built_binary("database-runner"));
         assert!(
             binary.is_file(),
             "build database-runner before database SDK conformance"

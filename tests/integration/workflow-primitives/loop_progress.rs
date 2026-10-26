@@ -1133,6 +1133,90 @@ async fn repeat_until_always_admits_its_first_body_before_checking() {
 }
 
 #[tokio::test]
+async fn iteration_ceiling_coexists_with_database_policies_and_rollback_preserves_configuration() {
+    let fixture = seed_pending_loop("combined-iteration-ceiling").await;
+    let up = include_str!(
+        "../../../crates/infra-postgres/migrations/20261209000000_iteration_ceiling_compatibility.up.sql"
+    );
+    let down = include_str!(
+        "../../../crates/infra-postgres/migrations/20261209000000_iteration_ceiling_compatibility.down.sql"
+    );
+    sqlx::query(
+        "INSERT INTO quota_ceilings (tenant_id,resource,max_value,granted_by) \
+         VALUES ($1,'iteration_concurrency',1,'loop-test'), \
+                ($1,'database_connections',2,'loop-test')",
+    )
+    .bind(fixture.tenant)
+    .execute(&fixture.db.pool)
+    .await
+    .expect("both integrated resources remain valid");
+    let mut tx = fixture.db.pool.begin().await.expect("guarded rollback");
+    assert!(sqlx::raw_sql(down).execute(&mut *tx).await.is_err());
+    tx.rollback().await.expect("rollback the refused migration");
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM quota_ceilings WHERE tenant_id=$1")
+        .bind(fixture.tenant)
+        .fetch_one(&fixture.db.pool)
+        .await
+        .expect("retained configuration");
+    assert_eq!(count, 2);
+    sqlx::query(
+        "DELETE FROM quota_ceilings WHERE tenant_id=$1 AND resource='iteration_concurrency'",
+    )
+    .bind(fixture.tenant)
+    .execute(&fixture.db.pool)
+    .await
+    .expect("explicitly withdraw the incompatible ceiling");
+    let mut tx = fixture.db.pool.begin().await.expect("compatible rollback");
+    sqlx::raw_sql(down)
+        .execute(&mut *tx)
+        .await
+        .expect("rollback after explicit withdrawal");
+    tx.commit().await.expect("commit compatible rollback");
+    let refused = sqlx::query(
+        "INSERT INTO quota_ceilings (tenant_id,resource,max_value,granted_by) \
+         VALUES ($1,'iteration_concurrency',1,'loop-test')",
+    )
+    .bind(fixture.tenant)
+    .execute(&fixture.db.pool)
+    .await
+    .expect_err("prior schema still refuses the omitted resource");
+    assert_eq!(
+        refused
+            .as_database_error()
+            .and_then(|e| e.code())
+            .as_deref(),
+        Some("23514")
+    );
+    let mut tx = fixture
+        .db
+        .pool
+        .begin()
+        .await
+        .expect("restore current schema");
+    sqlx::raw_sql(up)
+        .execute(&mut *tx)
+        .await
+        .expect("reapply additive compatibility migration");
+    tx.commit().await.expect("commit current schema");
+    sqlx::query(
+        "INSERT INTO quota_ceilings (tenant_id,resource,max_value,granted_by) \
+         VALUES ($1,'iteration_concurrency',1,'loop-test')",
+    )
+    .bind(fixture.tenant)
+    .execute(&fixture.db.pool)
+    .await
+    .expect("current schema accepts the restored iteration ceiling");
+    let database_limit: i64 = sqlx::query_scalar(
+        "SELECT max_value FROM quota_ceilings WHERE tenant_id=$1 AND resource='database_connections'",
+    )
+    .bind(fixture.tenant)
+    .fetch_one(&fixture.db.pool)
+    .await
+    .expect("database ceiling survives both migrations");
+    assert_eq!(database_limit, 2);
+}
+
+#[tokio::test]
 async fn stale_fence_and_outbox_failure_leave_entry_unchanged() {
     let fixture = seed_pending_loop("loop-entry-rollback").await;
     let store = PgLoopProgressStore::new(fixture.db.pool.clone(), fixture.definitions.clone());
@@ -2187,6 +2271,23 @@ async fn expression_failure_drains_once_restarts_and_finishes_from_the_journal()
         .undo(&fixture.db.pool, BEFORE_LOOP_DRAIN)
         .await
         .expect_err("retained loop drain must block downgrade");
+    let error = if error
+        .to_string()
+        .contains("retired instance reservations cannot be refunded safely")
+    {
+        // Continue the isolated downgrade probe after acknowledging the newer lifetime-ledger
+        // guard; the older loop projection retains its own destructive rollback guard.
+        sqlx::query("UPDATE run_instance_usage SET retired_reservations=0")
+            .execute(&fixture.db.pool)
+            .await
+            .expect("clear the isolated downgrade probe's retired charge");
+        MIGRATOR
+            .undo(&fixture.db.pool, BEFORE_LOOP_DRAIN)
+            .await
+            .expect_err("retained loop drain must independently block downgrade")
+    } else {
+        error
+    };
     assert!(
         error
             .to_string()
@@ -3896,4 +3997,157 @@ async fn loop_entry_and_checkpoint_are_written_by_the_least_privilege_runtime_ro
         .await
         .expect("and replays the checkpoint");
     assert!(!replay.applied);
+}
+
+#[tokio::test]
+async fn scope_post_wait_fence_rejects_loop_entry_after_expiry_without_effects() {
+    assert_loop_entry_post_wait(false).await;
+}
+
+#[tokio::test]
+async fn scope_post_wait_fence_preserves_loop_generation_storage_error() {
+    assert_loop_entry_post_wait(true).await;
+}
+
+async fn assert_loop_entry_post_wait(overflow: bool) {
+    use crate::bounded_fences::{SchedulerExpiryBarrier, scope_checkpoint};
+    let fixture = seed_pending_loop("loop-postwait").await;
+    let store =
+        PgLoopProgressStore::new(fixture.db.runtime_pool().await, fixture.definitions.clone());
+    let authority = if overflow {
+        SchedulerAuthority::for_run(fixture.authority.owner(), fixture.run, u64::MAX)
+    } else {
+        fixture.authority.clone()
+    };
+    let outbox = Uuid::now_v7();
+    let carry_digest = digest(b"1");
+    let retained: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM payloads WHERE tenant_id=$1 AND digest=$2)",
+    )
+    .bind(fixture.tenant)
+    .bind(carry_digest.as_bytes().as_slice())
+    .fetch_one(&fixture.db.pool)
+    .await
+    .expect("novel carry check");
+    assert!(
+        !retained,
+        "the failed entry must not retain a new carry payload"
+    );
+    let command = |authority| {
+        let occurred_at = crate::support::now();
+        LoopEntryCommand::from_carry(
+            transition(&fixture, 1, authority, audit(&fixture), occurred_at),
+            LoopKind::While,
+            3,
+            occurred_at + Duration::minutes(1),
+            b"1".to_vec(),
+            Some(true),
+            Some(next_activity(&fixture, 0)),
+            outbox,
+        )
+        .expect("entry with new carry")
+    };
+    let prepared = command(authority);
+    let before = scope_checkpoint(&fixture.db.pool, fixture.tenant).await;
+    let result = if overflow {
+        store.enter_loop(&prepared).await
+    } else {
+        let barrier = SchedulerExpiryBarrier::hold(&fixture.db.pool, fixture.run).await;
+        let (result, ()) = tokio::join!(store.enter_loop(&prepared), barrier.expire_after_wait());
+        result
+    };
+    let error = result.expect_err("invalid scheduler authority must refuse loop entry");
+    if overflow {
+        assert!(matches!(
+            error,
+            LoopProgressError::Storage(StoreError::Internal { .. })
+        ));
+    } else {
+        assert_eq!(error, LoopProgressError::SchedulerFenceLost);
+    }
+    assert_eq!(
+        scope_checkpoint(&fixture.db.pool, fixture.tenant).await,
+        before
+    );
+    if !overflow {
+        let fresh = command(scheduler(&fixture.db.pool, fixture.run).await);
+        assert!(
+            store
+                .enter_loop(&fresh)
+                .await
+                .expect("fresh loop entry")
+                .applied
+        );
+        let committed = scope_checkpoint(&fixture.db.pool, fixture.tenant).await;
+        assert!(
+            !store
+                .enter_loop(&fresh)
+                .await
+                .expect("exact loop replay")
+                .applied
+        );
+        assert_eq!(
+            scope_checkpoint(&fixture.db.pool, fixture.tenant).await,
+            committed
+        );
+    }
+}
+
+#[tokio::test]
+async fn scope_chain_prefix_loop_entry_precedes_own_run_and_replays() {
+    use crate::bounded_fences::{initialize_member_chain, scope_checkpoint, through_member_chain};
+    let fixture = seed_pending_loop("loop-entry-chain-prefix").await;
+    let tenant = sagat_domain::identity::TenantId::new(fixture.tenant);
+    initialize_member_chain(&fixture.db.pool, tenant, fixture.namespace, fixture.run).await;
+    let version = run_version(&fixture).await;
+    assert_eq!(version, 2);
+    let occurred_at = crate::support::now();
+    let outbox = Uuid::now_v7();
+    let command = LoopEntryCommand::from_carry(
+        transition(
+            &fixture,
+            version,
+            fixture.authority.clone(),
+            audit(&fixture),
+            occurred_at,
+        ),
+        LoopKind::While,
+        3,
+        occurred_at + Duration::minutes(1),
+        b"1".to_vec(),
+        Some(true),
+        Some(next_activity(&fixture, 0)),
+        outbox,
+    )
+    .expect("entry after chain initialization");
+    let store =
+        PgLoopProgressStore::new(fixture.db.runtime_pool().await, fixture.definitions.clone());
+    let entered = through_member_chain(
+        &fixture.db.pool,
+        fixture.tenant,
+        fixture.run,
+        store.enter_loop(&command),
+    )
+    .await
+    .expect("loop entry under member chain");
+    assert!(entered.applied);
+    let effects: (i64,i64) = sqlx::query_as(
+        "SELECT \
+         (SELECT count(*) FROM run_events WHERE tenant_id=$1 AND run_id=$2 AND event_type='loop.entered'), \
+         (SELECT count(*) FROM event_outbox WHERE tenant_id=$1 AND id=$3)",
+    ).bind(fixture.tenant).bind(fixture.run.as_uuid()).bind(outbox)
+    .fetch_one(&fixture.db.pool).await.expect("loop entered once");
+    assert_eq!(effects, (1, 1));
+    let committed = scope_checkpoint(&fixture.db.pool, fixture.tenant).await;
+    assert!(
+        !store
+            .enter_loop(&command)
+            .await
+            .expect("loop entry replay")
+            .applied
+    );
+    assert_eq!(
+        scope_checkpoint(&fixture.db.pool, fixture.tenant).await,
+        committed
+    );
 }

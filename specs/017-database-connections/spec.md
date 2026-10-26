@@ -166,3 +166,36 @@ Integration tests require Docker/PostgreSQL and the repository's test configurat
 Out of scope: more database engines in this first delivery, Kafka target redesign, arbitrary scripts with direct database sockets, automatic schema/database provisioning, cross-step/customer-database distributed transactions, automatic account/password creation through OpenBao's database engine, full platform key/telemetry migration, and bulk result export.
 
 The user approved implementation on 2026-10-16. `plan.md` and `tasks.md` record the execution sequence; machine-readable contracts are updated with their implementation. No task or success criterion is complete merely because this document exists. See the [requirements checklist](checklists/requirements.md).
+
+
+## Integrated managed-session expiry correction (2026-10-18)
+
+The existing managed executor owner check now reads the matching session expiry under its
+SHARE guard, then samples the database clock on the owning run transaction. A session that
+expired during an unchanged-row wait cannot authorize heartbeat renewal. Keep the existing
+binding→session→namespace secret/catalog quota→current dedicated membership order and all
+tenant/namespace/rootnode/protocol filters. No TTL, wire, role or provider policy changes;
+the guarantee is validity at that post-lock sample, not continuously until commit.
+This is a focused existing-writer correction required by014 B0, not nested execution or a new
+017 delivery gate. Real public managed lease/heartbeat RED/GREEN and reconnect controls use
+PostgreSQL/OpenBao in tasks/project-completion/evidence/database-session-postwait-20261018/.
+Standalone reference evidence remains historical; integrated release gates remain separate.
+
+
+## Integrated managed report replay ordering (2026-10-18)
+
+An existing managed report receipt checks current binding before retaining the namespace
+Secrets quota and dedicated membership guards. Durable attempt ownership, permission, role,
+receipt fingerprint and binding remain required; a live session is not required to replay the
+accepted report. Live/missing-receipt and ordinary paths keep their existing behavior.
+A real PostgreSQL/OpenBao published-query fixture proves actual app-role binding wait while
+Secrets remains free, then exact receipt replay after session removal with unchanged execution,
+audit and credential-pin counts. Reconnect and subsequent public polling remain supported.
+This is the existing017 writer dependency of014 B0, not a new capability or full graph proof.
+The ordered barrier does not claim a reproduced three-party deadlock. Evidence:
+tasks/project-completion/evidence/managed-replay-prefix-20261018/.
+
+Rerun creation follows ADR-0039: exact source identity guard before managed admission; preserve
+missing-reference errors and own-transaction rollback. Terminal cleanup skips a guarded source.
+The real PostgreSQL/OpenBao source/catalog race and subsequent credential retention are covered
+in tasks/project-completion/evidence/rerun-source-identity-20261018.

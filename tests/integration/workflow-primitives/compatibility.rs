@@ -629,6 +629,8 @@ async fn combinations_the_reader_does_not_enable_are_refused_with_a_typed_reason
 #[derive(Debug)]
 struct ReaderWithoutPrimitives;
 
+const PARSER_DIAGNOSTIC_CANARY: &str = "PRIVATE-SCHEMA-DIAGNOSTIC-CANARY";
+
 impl IrCodec for ReaderWithoutPrimitives {
     fn check_draft(&self, document: &[u8]) -> Result<(), IrError> {
         IrCodec::check_draft(&JsonIrCodec, document)
@@ -642,7 +644,7 @@ impl IrCodec for ReaderWithoutPrimitives {
             .map(|field| IrIssue {
                 path: String::new(),
                 message: format!(
-                    "Additional properties are not allowed ('{field}' was unexpected)"
+                    "Additional properties are not allowed ('{field}' was unexpected): {PARSER_DIAGNOSTIC_CANARY}"
                 ),
             })
             .collect();
@@ -793,6 +795,8 @@ async fn a_reader_without_the_capability_leaves_an_active_structured_run_untouch
 /// answered `Internal`.
 #[tokio::test]
 async fn runs_a_reader_cannot_read_do_not_starve_the_ones_it_can() {
+    let collector = crate::support::collector::Collector::start().await;
+    let (_telemetry_guard, sink, logs) = collector.install_with_logs(1.0);
     let w = world().await;
     let mut unreadable = Vec::new();
     for n in 0..4 {
@@ -869,4 +873,13 @@ async fn runs_a_reader_cannot_read_do_not_starve_the_ones_it_can() {
             "a run the reader cannot read is left exactly as it was"
         );
     }
+    sink.shutdown(std::time::Duration::from_secs(5)).await;
+    assert!(
+        logs.text().contains("unreadable definition"),
+        "the skip must actually be logged"
+    );
+    assert!(
+        !logs.text().contains(PARSER_DIAGNOSTIC_CANARY),
+        "stored schema diagnostics reached logs"
+    );
 }

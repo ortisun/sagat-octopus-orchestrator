@@ -173,6 +173,12 @@ resolution failure, including mixed local/remote migration grace, so provider ou
 reactivate local authority. Exercise heartbeat/cancellation during blocked reads, snapshot rotation,
 durable receipt replay during provider outages and secret-bearing saga recovery.
 
+An explicit nonretryable `CANCELLED` failure may acknowledge the current cancelled ordinary-worker
+lease after internal secret-output scanning. It still requires current worker/binding authority,
+the matching unexpired lease and unchanged secret versions before and after provider I/O. This
+acknowledgement grants no new secret, blob or database capability. Complete and arbitrary failure
+reports retain the live cancellation fence, including cancellation during a blocked provider read.
+
 ## Deployment and recovery profiles (T017-023/024)
 
 - Add the managed runner as its own Docker build target: nonroot, read-only root filesystem,
@@ -203,3 +209,37 @@ Official sources: [OpenBao chart releases](https://github.com/openbao/openbao-he
 [Agent auto-auth](https://openbao.org/docs/agent-and-proxy/autoauth/),
 [projected token path](https://openbao.org/docs/agent-and-proxy/autoauth/methods/kubernetes/).
 The profile is implementation work; rendering alone is not proof of network/auth enforcement.
+
+
+## Integrated managed-session expiry correction (2026-10-18)
+
+The existing managed executor owner check now reads the matching session expiry under its
+SHARE guard, then samples the database clock on the owning run transaction. A session that
+expired during an unchanged-row wait cannot authorize heartbeat renewal. Keep the existing
+binding→session→namespace secret/catalog quota→current dedicated membership order and all
+tenant/namespace/rootnode/protocol filters. No TTL, wire, role or provider policy changes;
+the guarantee is validity at that post-lock sample, not continuously until commit.
+This is a focused existing-writer correction required by014 B0, not nested execution or a new
+017 delivery gate. Real public managed lease/heartbeat RED/GREEN and reconnect controls use
+PostgreSQL/OpenBao in tasks/project-completion/evidence/database-session-postwait-20261018/.
+Standalone reference evidence remains historical; integrated release gates remain separate.
+
+
+## Integrated managed report replay ordering (2026-10-18)
+
+An existing managed report receipt checks current binding before retaining the namespace
+Secrets quota and dedicated membership guards. Durable attempt ownership, permission, role,
+receipt fingerprint and binding remain required; a live session is not required to replay the
+accepted report. Live/missing-receipt and ordinary paths keep their existing behavior.
+A real PostgreSQL/OpenBao published-query fixture proves actual app-role binding wait while
+Secrets remains free, then exact receipt replay after session removal with unchanged execution,
+audit and credential-pin counts. Reconnect and subsequent public polling remain supported.
+This is the existing017 writer dependency of014 B0, not a new capability or full graph proof.
+The ordered barrier does not claim a reproduced three-party deadlock. Evidence:
+tasks/project-completion/evidence/managed-replay-prefix-20261018/.
+
+Rerun admission takes source identity KEY SHARE after existing receipt replay but before retained
+definition/catalog/active/payload admission (ADR-0039). Keep cleanup U SKIP LOCKED unchanged.
+Current reruns are unrelated roots and children have no rerun source; this is a writer invariant.
+Focused actual deadlock RED, corrected barrier, cancel/rollback and credential retention evidence:
+tasks/project-completion/evidence/rerun-source-identity-20261018.
