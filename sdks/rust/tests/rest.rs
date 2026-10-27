@@ -41,6 +41,9 @@ async fn answer(
         calls.len()
     };
     match state.mode {
+        "upload" if uri.path().ends_with("/runs") => (StatusCode::ACCEPTED,axum::Json(basic_run("RUNNING"))).into_response(),
+        "upload"|"upload-corrupt" => (StatusCode::CREATED,[("x-trace-id","0123456789abcdef0123456789abcdef")],axum::Json(json!({"id":RUN,"size":3,"sha256":if state.mode=="upload"{"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}else{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"contentType":"application/octet-stream"}))).into_response(),
+
         "bad-page" => (StatusCode::OK,[("x-trace-id","0123456789abcdef0123456789abcdef")],axum::Json(json!({"items":false}))).into_response(),
         "repeat-page" => (StatusCode::OK,[("x-trace-id","0123456789abcdef0123456789abcdef")],axum::Json(json!({"items":[basic_run("RUNNING")],"nextCursor":"same"}))).into_response(),
         "bad-query"|"bad-update" => (StatusCode::OK,[("x-trace-id","0123456789abcdef0123456789abcdef")],axum::Json(json!({"runId":RUN,"runVersion":1,"stateRevision":1}))).into_response(),
@@ -1197,6 +1200,73 @@ async fn chain_page_indices_outside_the_canonical_bound_are_protocol_failures() 
         .expect_err("index bound");
     assert_eq!(error.code, "PROTOCOL");
     assert_eq!(error.status, Some(200));
+    assert_eq!(
+        error.trace_id.as_deref(),
+        Some("0123456789abcdef0123456789abcdef")
+    );
+}
+
+#[tokio::test]
+async fn run_input_upload_is_single_pass_and_start_sends_only_the_blob_reference() {
+    use sagat_octopus_orchestrator_sdk::UploadRunInputOptions;
+    let server = server("upload").await;
+    let client =
+        Client::new(options(&server.base, TokenSource::bearer("fixture-token"))).expect("client");
+    let descriptor = client
+        .upload_run_input(&b"abc"[..], UploadRunInputOptions::default())
+        .await
+        .expect("upload");
+    assert_eq!(descriptor.size, 3);
+    assert_eq!(
+        descriptor.sha256,
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
+    client
+        .start_with_blob(WORKFLOW, &descriptor, CallOptions::default())
+        .await
+        .expect("start blob");
+    let calls = server.state.calls.lock().expect("calls");
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].1, b"abc");
+    assert!(!calls[0].0.contains_key("idempotency-key"));
+    let body: serde_json::Value = serde_json::from_slice(&calls[1].1).expect("body");
+    assert_eq!(body["inputBlobRef"], RUN);
+    assert!(body.get("input").is_none());
+}
+#[tokio::test]
+async fn failed_uploads_are_never_replayed_even_when_credentials_can_refresh() {
+    use sagat_octopus_orchestrator_sdk::UploadRunInputOptions;
+    let server = server("forged").await;
+    let count = Arc::new(AtomicUsize::new(0));
+    let tokens = count.clone();
+    let client = Client::new(options(
+        &server.base,
+        TokenSource::dynamic(move || {
+            tokens.fetch_add(1, Ordering::AcqRel);
+            async { Ok("fixture-token".into()) }
+        }),
+    ))
+    .expect("client");
+    let error = client
+        .upload_run_input(&b"abc"[..], UploadRunInputOptions::default())
+        .await
+        .expect_err("no upload retry");
+    assert_eq!(error.code, "UNAUTHENTICATED");
+    assert_eq!(count.load(Ordering::Acquire), 1);
+    assert_eq!(server.state.calls.lock().expect("calls").len(), 1);
+}
+#[tokio::test]
+async fn upload_descriptor_mismatch_is_a_protocol_failure_with_response_metadata() {
+    use sagat_octopus_orchestrator_sdk::UploadRunInputOptions;
+    let server = server("upload-corrupt").await;
+    let client =
+        Client::new(options(&server.base, TokenSource::bearer("fixture-token"))).expect("client");
+    let error = client
+        .upload_run_input(&b"abc"[..], UploadRunInputOptions::default())
+        .await
+        .expect_err("digest mismatch");
+    assert_eq!(error.code, "PROTOCOL");
+    assert_eq!(error.status, Some(201));
     assert_eq!(
         error.trace_id.as_deref(),
         Some("0123456789abcdef0123456789abcdef")

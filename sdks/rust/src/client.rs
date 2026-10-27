@@ -359,33 +359,12 @@ impl Client {
         input: &Value,
         options: impl Into<StartOptions>,
     ) -> Result<Run, SagatError> {
-        uuid(workflow_id)?;
         if !input.is_object() {
             return Err(validation());
         }
         let options = options.into();
-        let mut body = json!({"workflowId":workflow_id,"input":input});
-        if let Some(version) = options.version_id {
-            uuid(&version)?;
-            body["versionId"] = Value::String(version);
-        }
-        if let Some(correlation) = options.correlation_id {
-            body["correlationId"] = Value::String(correlation);
-        }
-        if let Some(deadline) = options.deadline {
-            let instant = match deadline {
-                RunDeadline::At(instant) => instant,
-                RunDeadline::After(duration) => OffsetDateTime::now_utc()
-                    .checked_add(time::Duration::try_from(duration).map_err(|_| validation())?)
-                    .ok_or_else(validation)?,
-            };
-            body["deadline"] = Value::String(
-                instant
-                    .to_offset(UtcOffset::UTC)
-                    .format(&Rfc3339)
-                    .map_err(|_| validation())?,
-            );
-        }
+        let mut body = start_body(workflow_id, &options)?;
+        body["input"] = input.clone();
         let request = WireRequest::new(Method::POST, &["runs"], 202)
             .json(&body)?
             .keyed(key(&options.call)?);
@@ -997,3 +976,32 @@ pub use approvals::ApprovalDecisionRequest;
 
 mod chains;
 pub use chains::{ChainCommand, ChainQueryRequest, ChainUpdateRequest};
+
+fn start_body(workflow: &str, options: &StartOptions) -> Result<Value, SagatError> {
+    uuid(workflow)?;
+    let mut body = json!({"workflowId":workflow});
+    if let Some(version) = &options.version_id {
+        uuid(version)?;
+        body["versionId"] = json!(version);
+    }
+    if let Some(correlation) = &options.correlation_id {
+        body["correlationId"] = json!(correlation);
+    }
+    if let Some(deadline) = &options.deadline {
+        let instant = match deadline {
+            RunDeadline::At(instant) => *instant,
+            RunDeadline::After(duration) => OffsetDateTime::now_utc()
+                .checked_add(time::Duration::try_from(*duration).map_err(|_| validation())?)
+                .ok_or_else(validation)?,
+        };
+        body["deadline"] = json!(
+            instant
+                .to_offset(UtcOffset::UTC)
+                .format(&Rfc3339)
+                .map_err(|_| validation())?
+        );
+    }
+    Ok(body)
+}
+mod blobs;
+pub use blobs::UploadRunInputOptions;

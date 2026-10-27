@@ -124,3 +124,16 @@ head is never silently retargeted and out-of-range segment indices fail with res
 74 total including 44 REST/catalog checks). Commands freeze expectedRunId and idempotency keys;
 Queries/Updates keep optional head preconditions and body-key semantics. Inspection/completion
 waits use server finalOutcome, and paged segment lineage stays lazy and typed.
+
+Run-input blob increment: `rust-sdk-upload-api-red` failed on missing public APIs, then
+`rust-sdk-upload-first-green` passed 47 REST/catalog checks. `rust-sdk-upload-io-boundaries`
+passed three owned-server/source cases: 500,000-byte single-pass input with <=256-KiB reads and
+precondition headers; a source held before EOF refuses an early descriptor; a failed source is
+not replayed and its error text is not exposed. A bounded read-only HTTP blob review found no
+concrete material violation; external review remains skipped by owner preference.
+`rust-sdk-upload-clippy` exited 0 (4.90 s); `rust-sdk-upload-tests` exited 0
+(15.47 s, 80 total); the consumer passed after normal lock resolution for the new pinned SHA-256
+and Tokio IO features (3.51 s). Source locks were updated through normal resolution, not regenerated.
+Upload performs no automatic retries; startWithBlob sends inputBlobRef without inline input and
+shares start version/correlation/deadline/idempotency handling. Worker blob capabilities and shared
+real-server blob/fault conformance remain open.

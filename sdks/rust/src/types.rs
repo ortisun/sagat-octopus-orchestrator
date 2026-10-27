@@ -626,3 +626,66 @@ impl ChainRun {
         Ok(value)
     }
 }
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlobDescriptor {
+    pub id: Uuid,
+    pub size: u64,
+    pub sha256: String,
+    pub content_type: String,
+    #[serde(skip)]
+    pub raw: Value,
+}
+impl std::fmt::Debug for BlobDescriptor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BlobDescriptor")
+            .field("size", &self.size)
+            .finish_non_exhaustive()
+    }
+}
+impl BlobDescriptor {
+    pub fn new(
+        id: Uuid,
+        size: u64,
+        sha256: impl Into<String>,
+        content_type: impl Into<String>,
+    ) -> Result<Self, SagatError> {
+        let value = Self {
+            id,
+            size,
+            sha256: sha256.into(),
+            content_type: content_type.into(),
+            raw: Value::Null,
+        };
+        value.check()?;
+        Ok(value)
+    }
+    pub(crate) fn check(&self) -> Result<(), SagatError> {
+        if self.size > i64::MAX as u64
+            || !valid_digest(&self.sha256)
+            || self.content_type.is_empty()
+            || self.content_type.len() > 127
+            || !self.content_type.is_ascii()
+            || self.content_type.bytes().any(|b| b.is_ascii_control())
+        {
+            return Err(SagatError::new(
+                "VALIDATION_FAILED",
+                "invalid blob descriptor",
+            ));
+        }
+        Ok(())
+    }
+    pub(crate) fn parse(raw: Value) -> Result<Self, SagatError> {
+        let mut value: Self = serde_json::from_value(raw.clone()).map_err(|_| protocol())?;
+        value.check().map_err(|_| protocol())?;
+        value.raw = raw;
+        Ok(value)
+    }
+}
+pub(crate) fn valid_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}

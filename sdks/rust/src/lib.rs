@@ -9,7 +9,7 @@ mod types;
 pub use client::{
     ApprovalDecisionRequest, CallOptions, ChainCommand, ChainQueryRequest, ChainUpdateRequest,
     Client, ClientOptions, ListOptions, OperationOptions, PageOptions, PublishEvent, RetryPolicy,
-    RunDeadline, StartOptions, StepOutcome, UpdateRequest, WaitOptions,
+    RunDeadline, StartOptions, StepOutcome, UpdateRequest, UploadRunInputOptions, WaitOptions,
 };
 pub use error::SagatError;
 pub use serde_json::{Value, json};
@@ -18,9 +18,9 @@ pub use token::{TokenProviderError, TokenSource};
 pub use tokio_util::sync::CancellationToken;
 pub use types::{
     ApprovalDecision, ApprovalDecisionReceipt, ApprovalListItem, ApprovalPage, ApprovalStatus,
-    Cause, ChainInspection, ChainLink, ChainRun, ChainRunPage, ChainSegment, CompletionKind,
-    EventReceipt, EventStatus, JournalEvent, JournalPage, OperationResult, Page, QueryResult, Run,
-    RunPage, RunParent, RunStatus, ScopeSegment, SignalResult, UpdateReceipt,
+    BlobDescriptor, Cause, ChainInspection, ChainLink, ChainRun, ChainRunPage, ChainSegment,
+    CompletionKind, EventReceipt, EventStatus, JournalEvent, JournalPage, OperationResult, Page,
+    QueryResult, Run, RunPage, RunParent, RunStatus, ScopeSegment, SignalResult, UpdateReceipt,
 };
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
