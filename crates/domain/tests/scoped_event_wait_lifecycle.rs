@@ -4,7 +4,7 @@ use sagat_domain::{
     execution::{
         AddressedPlan, AddressedRunEvent, CorrelationKey, ExecutionInstanceId, FailureCode,
         InstancePath, PathExecutionState, RunEvent, RunId, RunState, StepStatus, WaitingOn,
-        plan_addressed, plan_path,
+        plan_addressed, plan_path, start_event_wait_instance, start_event_wait_path_instance,
     },
     identity::Slug,
     workflow::{
@@ -27,6 +27,26 @@ fn wait(index: u32) -> ExecutionInstanceId {
 }
 
 fn definition() -> WorkflowDefinition {
+    definition_with_error_route(false)
+}
+
+fn definition_with_error_route(local_error: bool) -> WorkflowDefinition {
+    let waiting = Node::new(
+        id("notified"),
+        NodeKind::WaitEvent {
+            event_type: EventType::parse("payment.notified").expect("event type"),
+            correlation: Expression::parse("item.key").expect("correlation"),
+            timeout: Duration::from_secs(60),
+            on_timeout: Some(id("fallback")),
+            lookback: Duration::ZERO,
+        },
+    )
+    .with_next(id("returned"));
+    let waiting = if local_error {
+        waiting.with_on_error(id("fallback"))
+    } else {
+        waiting
+    };
     WorkflowDefinition::new_structured(
         Slug::parse("scoped-event").expect("name"),
         id("lines"),
@@ -49,17 +69,7 @@ fn definition() -> WorkflowDefinition {
                 id("body"),
                 id("notified"),
                 vec![
-                    Node::new(
-                        id("notified"),
-                        NodeKind::WaitEvent {
-                            event_type: EventType::parse("payment.notified").expect("event type"),
-                            correlation: Expression::parse("item.key").expect("correlation"),
-                            timeout: Duration::from_secs(60),
-                            on_timeout: Some(id("fallback")),
-                            lookback: Duration::ZERO,
-                        },
-                    )
-                    .with_next(id("returned")),
+                    waiting,
                     Node::new(
                         id("fallback"),
                         NodeKind::Timer {
@@ -420,5 +430,343 @@ fn invalid_wait_source_states_and_duplicate_cancellation_are_inert_in_both_model
             assert_eq!(full, before);
             assert_eq!(bounded, before_bounded);
         }
+    }
+}
+
+#[test]
+fn explicit_clock_start_records_only_its_member_key_and_deadline_in_both_models() {
+    let def = definition();
+    let mut full = state();
+    let sibling = full.instance(&wait(1)).expect("sibling").clone();
+    let mut bounded = PathExecutionState::from_run(&full, path(0)).expect("path");
+    let now = OffsetDateTime::UNIX_EPOCH;
+    let key = CorrelationKey::parse("order-explicit-clock").expect("key");
+    let progress = start_event_wait_instance(&def, &mut full, &wait(0), Ok(key.clone()), now)
+        .expect("explicit full start");
+    let path_progress =
+        start_event_wait_path_instance(&def, &mut bounded, &wait(0), Ok(key.clone()), now)
+            .expect("explicit bounded start");
+    assert_eq!(progress, path_progress);
+    assert_eq!(progress.events.len(), 1);
+    assert_eq!(
+        full.instance(&wait(0)).expect("wait").waiting_on(),
+        Some(&WaitingOn::Event {
+            correlation_key: key,
+            deadline: now + time::Duration::seconds(60)
+        })
+    );
+    assert_eq!(full.instance(&wait(1)), Some(&sibling));
+    assert_eq!(
+        bounded,
+        PathExecutionState::from_run(&full, path(0)).expect("oracle")
+    );
+}
+
+#[test]
+fn correlation_failure_records_one_local_expression_failure_without_starting_a_wait() {
+    let def = definition();
+    let mut full = state();
+    let sibling = full.instance(&wait(1)).expect("sibling").clone();
+    let mut bounded = PathExecutionState::from_run(&full, path(0)).expect("path");
+    let now = OffsetDateTime::UNIX_EPOCH;
+    let progress = start_event_wait_instance(&def, &mut full, &wait(0), Err(()), now)
+        .expect("record correlation failure");
+    assert_eq!(
+        progress,
+        start_event_wait_path_instance(&def, &mut bounded, &wait(0), Err(()), now)
+            .expect("bounded failure")
+    );
+    assert_eq!(
+        progress.events,
+        vec![
+            event(RunEvent::StepFailed {
+                node: id("notified"),
+                code: FailureCode::expression_error(),
+                fence: None,
+            }),
+            event(RunEvent::StepRouted {
+                node: id("notified"),
+                activated: vec![]
+            }),
+        ]
+    );
+    assert_eq!(
+        full.instance(&wait(0)).expect("failed").failure(),
+        Some(&FailureCode::expression_error())
+    );
+    assert_eq!(full.instance(&wait(0)).expect("failed").waiting_on(), None);
+    assert_eq!(full.instance(&wait(1)), Some(&sibling));
+    assert_eq!(
+        bounded,
+        PathExecutionState::from_run(&full, path(0)).expect("oracle")
+    );
+}
+
+#[test]
+fn start_refuses_duplicate_paused_stopped_or_draining_sources_without_mutation() {
+    for prefix in [
+        vec![started()],
+        vec![AddressedRunEvent::root(RunEvent::RunPaused)],
+        vec![AddressedRunEvent::root(RunEvent::RunStopRequested {
+            reason: sagat_domain::execution::StopReason::Cancelled,
+            code: None,
+        })],
+        vec![AddressedRunEvent::root(RunEvent::CollectionDrainStarted {
+            node: id("lines"),
+            reason: sagat_domain::execution::CollectionDrainReason::Cancelled,
+        })],
+        vec![event(RunEvent::StepCancelled {
+            node: id("notified"),
+        })],
+    ] {
+        let def = definition();
+        let mut full = state();
+        for recorded in prefix {
+            full.apply_addressed(&recorded).expect("guard fixture");
+        }
+        let mut bounded = PathExecutionState::from_run(&full, path(0)).expect("guard path");
+        let before = full.clone();
+        let bounded_before = bounded.clone();
+        let key = CorrelationKey::parse("replacement").expect("key");
+        for answer in [Ok(key), Err(())] {
+            assert!(
+                start_event_wait_instance(
+                    &def,
+                    &mut full,
+                    &wait(0),
+                    answer.clone(),
+                    OffsetDateTime::UNIX_EPOCH
+                )
+                .is_err()
+            );
+            assert!(
+                start_event_wait_path_instance(
+                    &def,
+                    &mut bounded,
+                    &wait(0),
+                    answer,
+                    OffsetDateTime::UNIX_EPOCH
+                )
+                .is_err()
+            );
+            assert_eq!(full, before);
+            assert_eq!(bounded, bounded_before);
+        }
+    }
+}
+
+#[test]
+fn overflowing_deadline_root_and_foreign_path_are_refused_before_recording() {
+    let def = definition();
+    let mut full = state();
+    let mut bounded = PathExecutionState::from_run(&full, path(0)).expect("path");
+    let before = full.clone();
+    let bounded_before = bounded.clone();
+    let key = CorrelationKey::parse("key").expect("key");
+    assert!(
+        start_event_wait_instance(
+            &def,
+            &mut full,
+            &wait(0),
+            Ok(key.clone()),
+            time::PrimitiveDateTime::MAX.assume_utc()
+        )
+        .is_err()
+    );
+    assert!(
+        start_event_wait_path_instance(
+            &def,
+            &mut bounded,
+            &wait(0),
+            Ok(key.clone()),
+            time::PrimitiveDateTime::MAX.assume_utc()
+        )
+        .is_err()
+    );
+    for candidate in [ExecutionInstanceId::root(id("notified")), wait(2)] {
+        assert!(
+            start_event_wait_instance(
+                &def,
+                &mut full,
+                &candidate,
+                Ok(key.clone()),
+                OffsetDateTime::UNIX_EPOCH
+            )
+            .is_err()
+        );
+        assert!(
+            start_event_wait_path_instance(
+                &def,
+                &mut bounded,
+                &candidate,
+                Ok(key.clone()),
+                OffsetDateTime::UNIX_EPOCH
+            )
+            .is_err()
+        );
+    }
+    assert_eq!(full, before);
+    assert_eq!(bounded, bounded_before);
+}
+
+#[test]
+fn malformed_pending_event_projection_cannot_authorize_success_or_failure_start() {
+    use sagat_domain::execution::{
+        CollectionIterationRestore, CollectionPhase, ExecutionError, StepState, SwitchSelection,
+    };
+    for field in 0..10 {
+        let source = state();
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let damaged = StepState::restore(
+            StepStatus::Pending,
+            u32::from(field == 0),
+            u64::from(field == 1),
+            field == 2,
+            field == 3,
+            (field == 4).then_some(now),
+            (field == 5).then_some(WaitingOn::Timer { due_at: now }),
+            (field == 6).then(FailureCode::expression_error),
+            (field == 7).then_some(false),
+            field == 8,
+        )
+        .with_restored_switch_selection((field == 9).then_some(SwitchSelection::Default));
+        let mut steps = source
+            .instances()
+            .map(|(id, step)| (id.clone(), step.clone()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        steps.insert(wait(0), damaged);
+        let mut full = RunState::restore_instances(
+            source.run_id(),
+            source.status(),
+            None,
+            false,
+            steps,
+            std::collections::BTreeMap::new(),
+            source.version(),
+        );
+        full.restore_collection(
+            ExecutionInstanceId::root(id("lines")),
+            CollectionPhase::Open,
+            2,
+            2,
+            2,
+            Digest::new([1; 32]),
+            None,
+            (0..2)
+                .map(|index| {
+                    CollectionIterationRestore::admitted(index, wait(index), Digest::new([2; 32]))
+                })
+                .collect(),
+        )
+        .expect("preserved genuine collection membership");
+        let mut bounded =
+            PathExecutionState::from_run(&full, path(0)).expect("malformed local projection");
+        let before = full.clone();
+        let bounded_before = bounded.clone();
+        let def = definition();
+        for answer in [Ok(CorrelationKey::parse("key").expect("key")), Err(())] {
+            assert!(
+                matches!(
+                    start_event_wait_instance(&def, &mut full, &wait(0), answer.clone(), now),
+                    Err(ExecutionError::Invariant(
+                        "invalid pending scoped event state"
+                    ))
+                ),
+                "field {field}"
+            );
+            assert!(
+                matches!(
+                    start_event_wait_path_instance(&def, &mut bounded, &wait(0), answer, now),
+                    Err(ExecutionError::Invariant(
+                        "invalid pending scoped event state"
+                    ))
+                ),
+                "bounded field {field}"
+            );
+            assert_eq!(full, before);
+            assert_eq!(bounded, bounded_before);
+        }
+    }
+}
+
+#[test]
+fn correlation_failure_takes_only_the_local_error_edge_and_cannot_start_a_timer_as_a_wait() {
+    let def = definition_with_error_route(true);
+    let mut full = state();
+    let sibling = full.instance(&wait(1)).expect("sibling").clone();
+    let mut bounded = PathExecutionState::from_run(&full, path(0)).expect("path");
+    let now = OffsetDateTime::UNIX_EPOCH;
+    let progress = start_event_wait_instance(&def, &mut full, &wait(0), Err(()), now)
+        .expect("handled failure");
+    assert_eq!(
+        progress,
+        start_event_wait_path_instance(&def, &mut bounded, &wait(0), Err(()), now)
+            .expect("bounded handled failure")
+    );
+    assert_eq!(
+        progress.events,
+        vec![
+            event(RunEvent::StepFailed {
+                node: id("notified"),
+                code: FailureCode::expression_error(),
+                fence: None
+            }),
+            event(RunEvent::StepRouted {
+                node: id("notified"),
+                activated: vec![id("fallback")]
+            }),
+        ]
+    );
+    let timer = ExecutionInstanceId::in_path(path(0), id("fallback"));
+    assert_eq!(
+        full.instance(&timer).expect("local error target").status(),
+        StepStatus::Pending
+    );
+    assert_eq!(full.instance(&wait(1)), Some(&sibling));
+    assert_eq!(
+        bounded,
+        PathExecutionState::from_run(&full, path(0)).expect("oracle")
+    );
+    let before = full.clone();
+    let bounded_before = bounded.clone();
+    assert!(matches!(
+        start_event_wait_instance(
+            &def,
+            &mut full,
+            &timer,
+            Ok(CorrelationKey::parse("key").expect("key")),
+            now
+        ),
+        Err(sagat_domain::execution::ExecutionError::Invariant(
+            "event start targeted another kind"
+        ))
+    ));
+    assert!(matches!(
+        start_event_wait_path_instance(&def, &mut bounded, &timer, Err(()), now),
+        Err(sagat_domain::execution::ExecutionError::Invariant(
+            "event start targeted another kind"
+        ))
+    ));
+    assert_eq!(full, before);
+    assert_eq!(bounded, bounded_before);
+}
+
+proptest::proptest! {
+    #[test]
+    fn explicit_start_matches_journal_and_bounded_replay_for_varied_keys_and_clocks(
+        index in 0_u32..2,
+        offset in -1_000_000_i64..1_000_000,
+        key in 0_u32..1_000_000,
+    ) {
+        let def = definition(); let mut full = state();
+        let sibling = full.instance(&wait(1-index)).expect("sibling").clone();
+        let mut bounded = PathExecutionState::from_run(&full,path(index)).expect("path");
+        let now = OffsetDateTime::UNIX_EPOCH + time::Duration::microseconds(offset);
+        let key = CorrelationKey::parse(&format!("order-{key}")).expect("key");
+        let progress = start_event_wait_instance(&def,&mut full,&wait(index),Ok(key.clone()),now).expect("start");
+        proptest::prop_assert_eq!(&progress,&start_event_wait_path_instance(&def,&mut bounded,&wait(index),Ok(key.clone()),now).expect("bounded start"));
+        proptest::prop_assert_eq!(progress.events,vec![AddressedRunEvent::in_path(path(index),RunEvent::WaitStarted {node:id("notified"),correlation_key:key,deadline:now+time::Duration::seconds(60)}).expect("event")]);
+        proptest::prop_assert_eq!(full.instance(&wait(1-index)),Some(&sibling));
+        proptest::prop_assert_eq!(bounded,PathExecutionState::from_run(&full,path(index)).expect("oracle"));
     }
 }

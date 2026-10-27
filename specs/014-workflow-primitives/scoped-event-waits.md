@@ -74,3 +74,20 @@ configuration/credentials (or use a separately proven compatible activation fenc
 show the retained event is delivered once by the new receiver after restart. No such runtime
 fence/test is implemented here. Scoped publication and creation remain closed until that
 mechanism and actual released-profile barrier pass; manual wording alone is not acceptance.
+
+
+## Pure explicit-clock start command
+
+start_event_wait_instance and its exact-path counterpart accept the evaluated correlation
+result and an explicit instant. They require the exact nonroot declared WaitEvent in pristine
+Pending state and current global/ancestor forward eligibility. A successful evaluation records
+the key and now+the pinned timeout. An expression failure records EXPRESSION_ERROR and the
+existing local error route (including the empty route for an unhandled failure). No sibling
+key/deadline or output is changed. Duplicate start, pause, stop/drain, cancellation, wrong
+kind/path, malformed Pending metadata and clock overflow are refused before recording.
+
+This is pure command preparation only: its caller must prove evaluation snapshot/CAS, native
+scheduler authority and the database clock before atomic journal/subscription persistence.
+It creates no subscription, event_since/scanned metadata, task, receipt or external authority.
+No native caller or public body capability is added. Timeout and external event acceptance,
+lookback, payload/classification/quota, rollback and mixed-version activation remain pending.

@@ -3934,3 +3934,14 @@ pass after three genuine RED assertions (legacy receipt construction, cursor and
 Existing root consumer/trigger metadata is unchanged. No scoped consumer or receipt is built,
 and no native start/timeout/receiver or public capability is enabled. Exact source gate results
 and limitations are in the implementation ledger; final integrated release gates remain open.
+
+
+### Pure explicit-clock scoped event start
+
+The start-only command passes15 focused tests, including varied keys/clocks and ten malformed
+Pending projection fields in both models. Full domain passes574/0/0 across42targets in38.79s;
+strict domain Clippy passes12.08s. The initial pending-command RED and one journal-expectation
+failure are retained in the implementation ledger. Read-only review found no required issue.
+This is not native subscription, timeout, event receipt or public capability evidence; callers
+still need database time, current scheduling authority and evaluation-snapshot CAS. No canonical
+task is closed by this preparation increment.

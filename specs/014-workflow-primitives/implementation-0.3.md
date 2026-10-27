@@ -704,3 +704,31 @@ regressions under sagat_app. Strict workspace/all-targets Clippy passed125.26s c
 Architecture24crates and agent configuration pass. These close the bounded candidate increment,
 not its future receiver or any canonical task. Root/trigger receipt construction retains the
 legacy columns and keys; nonroot construction remains explicitly refused.
+
+
+## Pure event-wait start command
+
+The new start-only command requires exact nonroot WaitEvent, pristine Pending state and
+active global/ancestor forward fences. It accepts the already evaluated correlation result
+and explicit time: a key records WaitStarted with the pinned timeout; an expression failure
+records the existing local error routing. No clock I/O or native subscription/receipt caller
+is introduced. Snapshot CAS, database time/authority and native persistence remain pending.
+
+The explicit unimplemented TDD boundary first compiled and failed1positive test with the named
+pending-command error; it was removed before the successful implementation. Focused9/0/0
+then passed. The first12-test extension passed11/failed1: its expected journal omitted the
+existing empty StepRouted after an unhandled failure. Reading plan_path confirmed that closure
+is intentional; the expected journal was corrected, with no production change, and12/0/0
+passed1.86s command. The malformed-projection extension passed13/0/0. Final15/0/0 passed
+1.98s command, covering ten independent Pending fields, both successful/failed evaluations,
+local error recovery/wrong kind, duplicate/paused/stop/drain/cancel/overflow/path guards,
+full/path equivalence and varied keys/clocks/member properties. Full-domain and strict-domain
+Clippy gates are in progress, with fresh read-only implementation review. All native event
+and canonical release tasks remain open; the pure command is not publication authorization.
+
+
+The final full domain invocation passed574/0failed/0ignored across42target summaries,
+38.79s command. Strict domain/all-targets Clippy passed12.08s. Fresh implementation review
+found no required issue; formatting, architecture24crates and agent configuration pass.
+The native dispatcher and full64 SDK gates remain separate snapshots, not acceptance of a
+new scoped wait receiver. This closes the pure start-only command increment.
