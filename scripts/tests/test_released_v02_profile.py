@@ -111,5 +111,33 @@ class SelectedPhaseOutcome(unittest.TestCase):
                 self.check(f'test current::selected ... ok\ntest result: {result}\n')
 
 
+class PhaseResultIdentity(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='sagat-phase-result-')
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.result = self.root / 'outcome' / 'result.json'
+        self.result.parent.mkdir()
+
+    def test_stale_generic_cutover_result_cannot_replace_missing_selected_result(self):
+        import json
+        (self.root / 'result.json').write_text(json.dumps({
+            'scenario': 'scoped-event-cutover', 'releaseCommit': RUNNER.RELEASE}))
+        with self.assertRaisesRegex(RuntimeError, 'missing'):
+            RUNNER.verify_phase_result(self.result, 'applied-lookup')
+
+    def test_wrong_scenario_or_release_is_refused(self):
+        import json
+        for scenario, release in [('scoped-event-cutover', RUNNER.RELEASE), ('applied-lookup', 'wrong')]:
+            self.result.write_text(json.dumps({'scenario': scenario, 'releaseCommit': release}))
+            with self.subTest(scenario=scenario, release=release), self.assertRaisesRegex(RuntimeError, 'identity'):
+                RUNNER.verify_phase_result(self.result, 'applied-lookup')
+
+    def test_selected_result_is_returned_with_its_content_hash(self):
+        import json
+        self.result.write_text(json.dumps({'scenario': 'applied-lookup', 'releaseCommit': RUNNER.RELEASE}))
+        self.assertEqual(RUNNER.verify_phase_result(self.result, 'applied-lookup'), RUNNER.sha(self.result))
+
+
 if __name__ == '__main__':
     unittest.main()

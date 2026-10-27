@@ -245,8 +245,8 @@ async fn released_v02_active_rows_upgrade_progress_and_remain_readable_by_the_re
         assert_eq!(legacy_receipt,format!("wait:{wait}/payment"));
         progress.enter("actual released REST and native reader after current progress");
         phase(&binary,"read_upgraded_profile_with_released_v02_code",&profile,&owner.admin_url).await;
-        let result=json!({"releaseCommit":RELEASE,"schemaBefore":before,"schemaAfter":after,"collection":"SUCCEEDED","rootWait":"SUCCEEDED","legacyConsumerUnchanged":true,"oldImmutablePrefixVerified":true});
-        std::fs::write(directory.join("result.json"),serde_json::to_vec_pretty(&result).expect("result metadata")).expect("write result metadata");
+        let result=json!({"scenario":"active-data","releaseCommit":RELEASE,"schemaBefore":before,"schemaAfter":after,"collection":"SUCCEEDED","rootWait":"SUCCEEDED","legacyConsumerUnchanged":true,"oldImmutablePrefixVerified":true});
+        std::fs::write(std::env::var_os("SAGAT_V02_RESULT").expect("selected phase result path"),serde_json::to_vec_pretty(&result).expect("result metadata")).expect("write result metadata");
         println!("released-v02 compatibility: schema {before} -> {after}; old/current producer-reader checks passed");
     }).await;
 }

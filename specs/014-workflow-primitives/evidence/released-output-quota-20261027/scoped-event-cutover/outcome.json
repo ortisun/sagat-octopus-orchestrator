@@ -1,0 +1,7 @@
+{
+  "scenario": "scoped-event-cutover",
+  "resultPath": "outcome-puxc3dqq/result.json",
+  "resultSha256": "b17d544708322c6d061e9674597fb3fa25be6d50c168763412d656fad0728bee",
+  "buildSha256": "a361dc34f32d236c0d21fe28224ed90069c24edf7b612f8ed030abc5cff46a9b",
+  "transcriptSha256": "82340e669e999073e4a59cae152cd6fe6416e1d0f169156af08fb92b2c7b1fb5"
+}

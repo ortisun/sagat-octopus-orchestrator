@@ -1554,3 +1554,23 @@ pass again separately on the lint-corrected source: cutover60.90s runner, active
 FORWARD8.43s, Applied8.41s. A missing CARGO_TARGET_DIR in one wrapper was refused before
 build/runtime; its0.09s setup failure is not a runtime RED. Exact receipts and source bindings
 are in evidence/public-scoped-events-20261027. No canonical or integrated release gate closes.
+
+
+## Actual released Applied output quota and ordered compensation — 2026-10-27
+
+The real v0.2 writer retains nine completed collection outputs and one reservation, then holds
+a genuine Applied lookup report whose output would exceed the run's 4 MiB budget. Normal current
+migration/report/replay refuses only that output, preserves known forward success and the exact
+receipt, and persists CANCELLING/RUN_DATA_LIMIT before any recovery tick. Current runtime-role
+workers compensate charge then reservation with their original provider keys, even after the
+namespace admission limit becomes zero. Exact identity/digest/length checks preserve all 19 prior
+output sources and the 4,030,018-byte ledger; no held slot or refused payload remains. The current
+verifier and actual old terminal reader both accept COMPENSATED.
+
+The final five actual-released profiles pass independently, including ordinary FORWARD/Applied,
+active data and dispatcher cutover. Details, reproducible commands, timings, source hashes, review
+corrections and original receipts are in [released-v02-output-quota.md](released-v02-output-quota.md).
+A stale supplemental result-copy bug is corrected with provenance; new per-invocation result paths
+and identity/hash checks prevent reuse. The Python verifier battery passes 16 tests. No production
+workflow semantics changed in this increment. Ledger item 1 remains open for the wider authority
+and uncertain-commit compositions; none of the eight canonical tasks is marked complete.

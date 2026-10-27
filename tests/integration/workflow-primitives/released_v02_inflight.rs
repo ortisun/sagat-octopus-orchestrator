@@ -98,6 +98,12 @@ async fn a_released_worker_reports_and_replays_its_old_applied_lookup_after_serv
     run_profile(control::ProfileMode::AppliedLookup).await;
 }
 
+#[tokio::test]
+#[ignore = "requires verified actual released source; use the released-v02 profile runner"]
+async fn a_released_applied_report_refuses_output_and_compensates_original_effects_over_quota() {
+    run_profile(control::ProfileMode::AppliedOutputQuota).await;
+}
+
 async fn run_profile(mode: control::ProfileMode) {
     let applied_lookup = mode.is_applied();
     assert!(
@@ -157,7 +163,7 @@ async fn run_profile(mode: control::ProfileMode) {
         progress.enter("old public producer retains live scoped capability");
         let witness=bounded::within("old leased-task barrier",Duration::from_secs(60),control::receive(&mut stream)).await;
         assert_eq!(witness["releaseCommit"],RELEASE);
-        assert_eq!(witness["appliedLookup"],applied_lookup);assert_eq!(witness["scenario"],mode.scenario());
+        assert_eq!(witness["appliedLookup"],applied_lookup);assert_eq!(witness["scenario"],mode.scenario());assert_eq!(witness["refusedOutput"],mode.refuses_output());
         let tenant=TenantId::new(witness["tenant"].as_str().expect("tenant").parse().expect("tenant UUID"));
         let run:RunId=witness["run"].as_str().expect("run").parse().expect("run UUID");
         let db=support::attach_existing_db(&owner.admin_url,witness["database"].as_str().expect("old owned database")).await;
@@ -174,6 +180,13 @@ async fn run_profile(mode: control::ProfileMode) {
         assert_eq!(role,"sagat_app");
         api.executions.verify_run(tenant,run).await.expect("current reader preserves old leased projection");
         let logical_before:i64=sqlx::query_scalar("SELECT logical_output_bytes FROM run_instance_usage WHERE tenant_id=$1 AND run_id=$2").bind(tenant.as_uuid()).bind(run.as_uuid()).fetch_one(&api.db.pool).await.expect("retained logical bytes before report");
+        if mode.refuses_output() {
+            assert_eq!(logical_before,4_030_018);
+            assert_eq!(control::quota_sources(&api.db.pool,tenant.as_uuid(),run.as_uuid()).await,witness["outputSources"]);
+            assert!(logical_before+control::QUOTA_RESULT_BYTES as i64>4_194_304);
+            let response=api.as_user(reqwest::Method::PUT,"/quotas/iteration_concurrency","alice","acme").json(&json!({"limit":0})).send().await.expect("zero policy after admission");
+            assert_eq!(response.status(),reqwest::StatusCode::OK);
+        }
         // Check again immediately before GO; inline report acceptance alone does not prove liveness.
         live_lease(&api.db.pool,tenant,run,&witness,leased_node).await;
         forward_before(&api.db.pool,tenant,run,&witness,applied_lookup).await;
@@ -187,7 +200,7 @@ async fn run_profile(mode: control::ProfileMode) {
         assert!(status.success(),"released worker phase failed");
         let (head,run_status):(i64,String)=sqlx::query_as("SELECT run_version,status FROM runs WHERE tenant_id=$1 AND id=$2").bind(tenant.as_uuid()).bind(run.as_uuid()).fetch_one(&api.db.pool).await.expect("committed report head");
         assert_eq!(acknowledged["command"],format!("{run}:{head}"));
-        assert_eq!(run_status,"RUNNING","worker report must leave actual work for the current scheduler");
+        assert_eq!(run_status,mode.report_status(),"worker report must leave actual work for the current scheduler");
         let physical:(i32,i64,String,bool,String,bool,bool)=sqlx::query_as("SELECT attempt,generation,encode(reported_lease_token_hash,'hex'),lease_token_hash IS NULL AND lease_expires_at IS NULL AND leased_by IS NULL AND attempt_deadline_at IS NULL,status,waiting_kind IS NULL AND failure_code IS NULL,output_digest IS NULL FROM steps WHERE tenant_id=$1 AND run_id=$2 AND step_id=$3").bind(tenant.as_uuid()).bind(run.as_uuid()).bind(witness["step"].as_str().expect("step").parse::<Uuid>().expect("UUID")).fetch_one(&api.db.pool).await.expect("durable original capability receipt");
         assert_eq!(i64::from(physical.0),witness["attempt"].as_i64().expect("attempt"));
         assert_eq!(physical.1,witness["generation"].as_i64().expect("generation"));
@@ -203,14 +216,23 @@ async fn run_profile(mode: control::ProfileMode) {
         let token_prefix=witness["tokenSha256"].as_str().expect("validated old token commitment").get(..16).expect("token hash prefix");
         let receipt_scope=format!("step:{run}:scoped:5:lines:0;{}:{leased_node}:{token_prefix}",leased_node.len());
         let receipt_resource=format!("SUCCEEDED|{run_status}|{head}");
-        let report:(String,Vec<u8>,i64,i64,i64)=sqlx::query_as("SELECT s.status,p.content,u.logical_output_bytes,(SELECT count(*) FROM run_events e WHERE e.tenant_id=s.tenant_id AND e.run_id=s.run_id AND e.node=$7 AND e.instance_path_nodes=s.instance_path_nodes AND e.instance_path_indices=s.instance_path_indices AND e.event_type='step.completed'),(SELECT count(*) FROM command_dedupe d WHERE d.tenant_id=s.tenant_id AND d.idempotency_key='released-inflight-report' AND d.scope=$4 AND d.resource_id=$5 AND encode(d.request_hash,'hex')=$6) FROM steps s JOIN payloads p ON p.tenant_id=s.tenant_id AND p.digest=s.output_digest JOIN run_instance_usage u ON u.tenant_id=s.tenant_id AND u.run_id=s.run_id WHERE s.tenant_id=$1 AND s.run_id=$2 AND s.step_id=$3")
+        let report:(String,Option<Vec<u8>>,i64,i64,i64)=sqlx::query_as("SELECT s.status,p.content,u.logical_output_bytes,(SELECT count(*) FROM run_events e WHERE e.tenant_id=s.tenant_id AND e.run_id=s.run_id AND e.node=$7 AND e.instance_path_nodes=s.instance_path_nodes AND e.instance_path_indices=s.instance_path_indices AND e.event_type='step.completed'),(SELECT count(*) FROM command_dedupe d WHERE d.tenant_id=s.tenant_id AND d.idempotency_key='released-inflight-report' AND d.scope=$4 AND d.resource_id=$5 AND encode(d.request_hash,'hex')=$6) FROM steps s LEFT JOIN payloads p ON p.tenant_id=s.tenant_id AND p.digest=s.output_digest JOIN run_instance_usage u ON u.tenant_id=s.tenant_id AND u.run_id=s.run_id WHERE s.tenant_id=$1 AND s.run_id=$2 AND s.step_id=$3")
             .bind(tenant.as_uuid()).bind(run.as_uuid()).bind(witness["forwardStep"].as_str().expect("original forward step").parse::<Uuid>().expect("UUID")).bind(&receipt_scope).bind(&receipt_resource).bind(&request_hash).bind(leased_node).fetch_one(&api.db.pool).await.expect("one durable report and exact retained output");
-        assert_eq!(report.0,"SUCCEEDED");assert_eq!(report.1,retained_output.as_bytes());
-        assert_eq!(report.2-logical_before,i64::try_from(retained_output.len()).expect("bounded output length"));
+        assert_eq!(report.0,"SUCCEEDED");assert_eq!(report.1.as_ref().map(Vec::len),retained_output.map(str::len));
+        if let (Some(actual),Some(expected))=(&report.1,retained_output) {assert_eq!(control::sha(actual),control::sha(expected.as_bytes()));}
+        assert_eq!(report.2-logical_before,i64::try_from(retained_output.map_or(0,str::len)).expect("bounded output length"));
         assert_eq!((report.3,report.4),(1,1));
+        if mode.refuses_output() {
+            let stop:String=sqlx::query_scalar("SELECT stop_code FROM runs WHERE tenant_id=$1 AND id=$2").bind(tenant.as_uuid()).bind(run.as_uuid()).fetch_one(&api.db.pool).await.expect("immediate report transaction stop code");
+            assert_eq!(stop,"RUN_DATA_LIMIT");
+            assert_eq!(control::quota_sources(&api.db.pool,tenant.as_uuid(),run.as_uuid()).await,witness["outputSources"]);
+            let refused=format!("\"{}\"","q".repeat(control::QUOTA_RESULT_BYTES-2));
+            let retained:i64=sqlx::query_scalar("SELECT count(*) FROM payloads WHERE tenant_id=$1 AND digest=decode($2,'hex')").bind(tenant.as_uuid()).bind(control::sha(refused.as_bytes())).fetch_one(&api.db.pool).await.expect("refused inline value is not stored as an orphan either");
+            assert_eq!(retained,0);
+        }
         forward_after(&api.db.pool,tenant,run,&witness,applied_lookup).await;
         let receipt_count:i64=sqlx::query_scalar("SELECT count(*) FROM command_dedupe WHERE tenant_id=$1 AND idempotency_key='released-inflight-report'").bind(tenant.as_uuid()).fetch_one(&api.db.pool).await.expect("one total report receipt");assert_eq!(receipt_count,1);
-        if applied_lookup {
+        if applied_lookup && !mode.refuses_output() {
             let payloads:(i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM run_events e WHERE e.tenant_id=$1 AND e.run_id=$2 AND e.node='charge~r' AND e.instance_path_nodes=ARRAY['lines']::text[] AND e.instance_path_indices=ARRAY[0]::int[] AND e.event_type='step.completed' AND e.payload_digest IS NULL),(SELECT count(*) FROM run_events e JOIN steps s ON s.tenant_id=e.tenant_id AND s.run_id=e.run_id AND s.node=e.node AND s.instance_path_nodes=e.instance_path_nodes AND s.instance_path_indices=e.instance_path_indices WHERE e.tenant_id=$1 AND e.run_id=$2 AND e.node='charge' AND e.instance_path_nodes=ARRAY['lines']::text[] AND e.instance_path_indices=ARRAY[0]::int[] AND e.event_type='reconciliation.concluded' AND e.payload_digest=s.output_digest AND s.output_digest IS NOT NULL)").bind(tenant.as_uuid()).bind(run.as_uuid()).fetch_one(&api.db.pool).await.expect("payload belongs only to the reconciled forward outcome");
             assert_eq!(payloads,(1,1));
         }
@@ -225,7 +247,7 @@ async fn run_profile(mode: control::ProfileMode) {
         assert_eq!(takeover.0,placement.owner());assert!(takeover.1>old_generation && takeover.2);
         let scheduler=Scheduler::new(api.executions.clone(),Engine::new(JsonEvaluator),SystemEntropy,SchedulerSettings::default()).with_placement(placement);
         let mut settled=false;
-        let mut worked=0;
+        let mut worked=if mode.refuses_output() { drain_quota_effects(&api,tenant,run,&witness,&scheduler).await } else {0};
         for _ in 0..32 {
             let report=scheduler.tick().await;assert_eq!(report.failed,0);
             if !report.did_work(){settled=true;break;}
@@ -233,15 +255,170 @@ async fn run_profile(mode: control::ProfileMode) {
         }
         assert!(settled,"current scheduler exceeded the bounded finish loop");
         assert!(worked>0,"current scheduler must do actual post-report work");
-        let status:String=sqlx::query_scalar("SELECT status FROM runs WHERE tenant_id=$1 AND id=$2").bind(tenant.as_uuid()).bind(run.as_uuid()).fetch_one(&api.db.pool).await.expect("terminal run");assert_eq!(status,"SUCCEEDED");
+        let status:String=sqlx::query_scalar("SELECT status FROM runs WHERE tenant_id=$1 AND id=$2").bind(tenant.as_uuid()).bind(run.as_uuid()).fetch_one(&api.db.pool).await.expect("terminal run");assert_eq!(status,mode.terminal_status());
         api.executions.verify_run(tenant,run).await.expect("full terminal replay after old in-flight report");
         progress.enter("actual released terminal REST/native reader and prefix recheck");
         released_terminal_reader(&binary,&owner.admin_url,&witness).await;
-        let result=json!({"releaseCommit":RELEASE,"oldWorkerReport":true,"appliedLookup":applied_lookup,"scenario":mode.scenario(),"exactReceiptReplay":true,"singleReportTransaction":true,"singleLookupCompletion":applied_lookup,"singleAppliedVerdict":applied_lookup,"logicalBytesChargedOnce":true,"oldImmutablePrefix":true,"oldTerminalReader":true,"prefixVerifiedAfterFinalization":true,"schemaBefore":before,"schemaAfter":after,"currentSchedulerWorkingTicks":worked,"run":"SUCCEEDED"});
-        let directory=tempfile::Builder::new().prefix(if applied_lookup {"applied-result-"} else {"inflight-result-"}).tempdir_in(build_path.parent().expect("owned artifact parent")).expect("metadata directory").keep();
-        std::fs::write(directory.join("result.json"),serde_json::to_vec_pretty(&result).expect("result metadata")).expect("write non-sensitive result");
+        let result=json!({"releaseCommit":RELEASE,"oldWorkerReport":true,"appliedLookup":applied_lookup,"scenario":mode.scenario(),"exactReceiptReplay":true,"singleReportTransaction":true,"singleLookupCompletion":applied_lookup,"singleAppliedVerdict":applied_lookup,"logicalBytesChargedOnce":!mode.refuses_output(),"noRefusedOutputCharge":mode.refuses_output(),"oldImmutablePrefix":true,"oldTerminalReader":true,"prefixVerifiedAfterFinalization":true,"schemaBefore":before,"schemaAfter":after,"currentSchedulerWorkingTicks":worked,"run":mode.terminal_status(),"outputRefused":mode.refuses_output()});
+        std::fs::write(std::env::var_os("SAGAT_V02_RESULT").expect("selected phase result path"),serde_json::to_vec_pretty(&result).expect("result metadata")).expect("write non-sensitive result");
         println!("released-v02 in-flight: actual released report/replay, current finalization and released terminal reader passed");
     }).await;
+}
+
+async fn drain_quota_effects(
+    api: &support::api::TestApi,
+    tenant: TenantId,
+    run: RunId,
+    witness: &Value,
+    scheduler: &Scheduler<sagat_infra_postgres::PgRunStore, JsonEvaluator, SystemEntropy>,
+) -> u32 {
+    use sagat_api_grpc::pb::{
+        PollTasksRequest, RegisterWorkerRequest, WorkerCapabilities,
+        worker_service_client::WorkerServiceClient,
+    };
+    fn request<T>(api: &support::api::TestApi, message: T) -> tonic::Request<T> {
+        let token = api.idp.token("released-inflight-worker", "acme").build();
+        let mut request = tonic::Request::new(message);
+        request.metadata_mut().insert(
+            "authorization",
+            format!("Bearer {token}")
+                .parse()
+                .expect("fixture worker authorization"),
+        );
+        request
+    }
+    let mut worker = WorkerServiceClient::connect(api.grpc_url.clone())
+        .await
+        .expect("current drain worker endpoint");
+    let registered = worker
+        .register_worker(request(
+            api,
+            RegisterWorkerRequest {
+                worker_name: "released-output-quota-drain".into(),
+                namespace: "payments".into(),
+                capabilities: Some(WorkerCapabilities {
+                    languages: vec!["rust".into()],
+                    activities: support::scope_flow::ACTIVITIES
+                        .iter()
+                        .map(|name| (*name).to_owned())
+                        .collect(),
+                    pools: Vec::new(),
+                    max_inflight: 2,
+                    protocol_version: "1.5".into(),
+                }),
+            },
+        ))
+        .await
+        .expect("register under the old subject's current binding")
+        .into_inner();
+    let mut completed = Vec::new();
+    let mut worked = 0;
+    for _ in 0..64 {
+        let round = scheduler.tick().await;
+        assert_eq!(round.failed, 0);
+        worked += u32::from(round.did_work());
+        let tasks = worker
+            .poll_tasks(request(
+                api,
+                PollTasksRequest {
+                    worker_id: registered.worker_id.clone(),
+                    session_token: registered.session_token.clone(),
+                    max_tasks: 2,
+                },
+            ))
+            .await
+            .expect("current compensation polling")
+            .into_inner()
+            .tasks;
+        assert!(
+            tasks.len() <= 1,
+            "dependent compensations cannot be leased in one batch"
+        );
+        for task in tasks {
+            assert_eq!(task.run_id, run.to_string());
+            assert_eq!(task.task_kind, "COMPENSATION");
+            let (expected, key) = match completed.len() {
+                0 => ("charge", "forwardKeySha256"),
+                1 => ("reserve", "reserveKeySha256"),
+                _ => panic!("unexpected extra compensation"),
+            };
+            assert_eq!(task.target_node, expected);
+            assert_eq!(support::scope_flow::node(&task), format!("{expected}~c"));
+            assert_eq!(
+                control::sha(task.target_idempotency_key.as_bytes()),
+                witness[key]
+            );
+            let identity = task
+                .instance
+                .as_ref()
+                .expect("scoped compensation identity");
+            assert_eq!(identity.instance_path.len(), 1);
+            assert_eq!(identity.instance_path[0].scope_node_id, "lines");
+            assert_eq!(identity.instance_path[0].iteration_index, 0);
+            let input: Value =
+                serde_json::from_str(&task.input_json).expect("current exact scoped context");
+            assert!(
+                input.pointer("/steps/charge/output").is_none(),
+                "refused forward output must not reappear in a worker context"
+            );
+            if completed.is_empty() {
+                let next = worker
+                    .poll_tasks(request(
+                        api,
+                        PollTasksRequest {
+                            worker_id: registered.worker_id.clone(),
+                            session_token: registered.session_token.clone(),
+                            max_tasks: 2,
+                        },
+                    ))
+                    .await
+                    .expect("poll while original charge compensation is held")
+                    .into_inner()
+                    .tasks;
+                assert!(
+                    next.is_empty(),
+                    "reservation compensation must await successful charge compensation"
+                );
+            }
+            let reply = worker
+                .complete_step(request(
+                    api,
+                    support::worker::Worker::complete_message(&task, r#"{"undone":true}"#),
+                ))
+                .await
+                .expect("real compensation completion")
+                .into_inner();
+            assert_eq!(reply.step_status, "SUCCEEDED");
+            completed.push(expected);
+        }
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM runs WHERE tenant_id=$1 AND id=$2")
+                .bind(tenant.as_uuid())
+                .bind(run.as_uuid())
+                .fetch_one(&api.db.pool)
+                .await
+                .expect("drain status");
+        if status == "COMPENSATED" {
+            assert_eq!(completed, ["charge", "reserve"]);
+            let settled:(i64,i64,i64,String)=sqlx::query_as("SELECT u.logical_output_bytes,(SELECT count(*) FROM steps s WHERE s.tenant_id=u.tenant_id AND s.run_id=u.run_id AND s.instance_path_nodes='{}' AND s.node LIKE 'history%' AND s.output_digest IS NOT NULL),(SELECT count(*) FROM collection_iterations i WHERE i.tenant_id=u.tenant_id AND i.run_id=u.run_id AND i.slot_held),r.stop_code FROM run_instance_usage u JOIN runs r ON r.tenant_id=u.tenant_id AND r.id=u.run_id WHERE u.tenant_id=$1 AND u.run_id=$2")
+                .bind(tenant.as_uuid()).bind(run.as_uuid()).fetch_one(&api.db.pool).await.expect("quota-safe settled accounting");
+            assert_eq!(settled, (4_030_018, 9, 0, "RUN_DATA_LIMIT".into()));
+            let policy: i32 = sqlx::query_scalar(
+                "SELECT max_active_iterations FROM tenant_collection_policies WHERE tenant_id=$1",
+            )
+            .bind(tenant.as_uuid())
+            .fetch_one(&api.db.pool)
+            .await
+            .expect("retained zero policy");
+            assert_eq!(policy, 0);
+            assert_eq!(
+                control::quota_sources(&api.db.pool, tenant.as_uuid(), run.as_uuid()).await,
+                witness["outputSources"]
+            );
+            return worked;
+        }
+    }
+    panic!("current quota drain did not finish in bounded scheduler rounds");
 }
 
 async fn forward_before(

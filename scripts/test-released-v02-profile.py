@@ -24,6 +24,8 @@ MAIN = 'tests/integration/workflow-primitives/main.rs'
 SUFFIX = b'\n#[path = "../../fixtures/released-v02/phase.rs"]\nmod released_v02_phase;\n'
 TARGET = 'integration_workflow_primitives'
 SCENARIOS = {
+    'applied-output-quota': ('released_v02_inflight::a_released_applied_report_refuses_output_and_compensates_original_effects_over_quota',
+                              'tests/integration/workflow-primitives/released_v02_inflight.rs', 'applied-output-quota.txt'),
     'scoped-event-cutover': ('released_v02_cutover::released_dispatcher_credentials_and_process_are_fenced_before_public_scoped_events',
                              'tests/integration/workflow-primitives/released_v02_cutover.rs', 'scoped-event-cutover.txt'),
     'active-data': ('released_v02_upgrade::released_v02_active_rows_upgrade_progress_and_remain_readable_by_the_release',
@@ -122,6 +124,15 @@ def verify_selected_phase(log: Path, case: str) -> None:
     if (f'test {case} ...' not in output or not summaries
             or not summaries[-1].startswith('test result: ok. 1 passed; 0 failed; 0 ignored;')):
         raise RuntimeError('the selected phase must execute exactly one successful outer test')
+
+
+def verify_phase_result(result: Path, scenario: str) -> str:
+    if not result.is_file():
+        raise RuntimeError('selected phase result is missing')
+    value = json.loads(result.read_text())
+    if value.get('scenario') != scenario or value.get('releaseCommit') != RELEASE:
+        raise RuntimeError('selected phase result identity does not match the executed scenario')
+    return sha(result)
 
 
 def artifact(log: Path, source: Path) -> dict:
@@ -243,10 +254,17 @@ def main() -> None:
     build['coordinatorPath'] = coordinator
     build['coordinatorSha256'] = next(entry['sha256'] for entry in current_before if entry['path'] == coordinator)
     build_path.write_text(json.dumps(build, indent=2) + '\n')
-    gate_env = dict(env, SAGAT_V02_BUILD=str(build_path), SAGAT_TEST_AS_RUNTIME_ROLE='1', RUST_TEST_THREADS='1')
+    result = Path(tempfile.mkdtemp(prefix='outcome-', dir=root)) / 'result.json'
+    gate_env = dict(env, SAGAT_V02_BUILD=str(build_path), SAGAT_V02_RESULT=str(result),
+                    SAGAT_TEST_AS_RUNTIME_ROLE='1', RUST_TEST_THREADS='1')
     transcript = root / transcript_name
     run([str(current_binary), case, '--ignored', '--exact', '--nocapture'], repo, gate_env, transcript, 360)
     verify_selected_phase(transcript, case)
+    result_sha = verify_phase_result(result, args.scenario)
+    (root / 'outcome.json').write_text(json.dumps({
+        'scenario': args.scenario, 'resultPath': str(result.relative_to(root)),
+        'resultSha256': result_sha, 'buildSha256': sha(build_path),
+        'transcriptSha256': sha(transcript)}, indent=2) + '\n')
     print(f'Released-source compatibility evidence: {root}')
     print('\n'.join(transcript.read_text().splitlines()[-12:]))
 

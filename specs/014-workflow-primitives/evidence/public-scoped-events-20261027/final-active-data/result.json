@@ -1,10 +1,9 @@
 {
-  "existingOldSessionsTerminated": true,
-  "mixedVersionSafety": false,
-  "newScopedEventsDelivered": 2,
-  "oldAndNewRunsReplay": true,
-  "oldDispatcherWrote": true,
-  "oldLoginRevoked": true,
-  "oldProcessJoinedBeforePublication": true,
-  "releaseCommit": "bfda342073db71e84f30bdc79ccf3fbc97a7153c"
+  "collection": "SUCCEEDED",
+  "legacyConsumerUnchanged": true,
+  "oldImmutablePrefixVerified": true,
+  "releaseCommit": "bfda342073db71e84f30bdc79ccf3fbc97a7153c",
+  "rootWait": "SUCCEEDED",
+  "schemaAfter": 20261223000000,
+  "schemaBefore": 20261220000000
 }

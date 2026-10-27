@@ -153,7 +153,7 @@ async fn released_dispatcher_credentials_and_process_are_fenced_before_public_sc
         assert_eq!(status,"SUCCEEDED");
         api.executions.verify_run(tenant,run).await.expect("new scoped run replay after cutover");
         api.executions.verify_run(tenant,old_run).await.expect("unchanged old run replay after new execution");
-        let result=json!({"releaseCommit":RELEASE,"oldDispatcherWrote":true,"oldLoginRevoked":true,"existingOldSessionsTerminated":true,"oldProcessJoinedBeforePublication":true,"newScopedEventsDelivered":2,"oldAndNewRunsReplay":true,"mixedVersionSafety":false});
-        std::fs::write(manifest.with_file_name("result.json"),serde_json::to_vec_pretty(&result).expect("result JSON")).expect("bounded result evidence");
+        let result=json!({"scenario":"scoped-event-cutover","releaseCommit":RELEASE,"oldDispatcherWrote":true,"oldLoginRevoked":true,"existingOldSessionsTerminated":true,"oldProcessJoinedBeforePublication":true,"newScopedEventsDelivered":2,"oldAndNewRunsReplay":true,"mixedVersionSafety":false});
+        std::fs::write(std::env::var_os("SAGAT_V02_RESULT").expect("selected phase result path"),serde_json::to_vec_pretty(&result).expect("result JSON")).expect("bounded result evidence");
     }).await;
 }
