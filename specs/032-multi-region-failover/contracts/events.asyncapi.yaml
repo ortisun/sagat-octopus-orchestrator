@@ -1,0 +1,82 @@
+# Draft fragment for feature 032. NOT canonical and NOT implemented. T032-050 merges it into
+# specs/001-platform-foundation/contracts/events.asyncapi.yaml (minor version bump: a message and an
+# enumeration value are added; nothing is removed or retyped — docs/event-schema-evolution.md) and
+# regenerates events.baseline.json after the diff is read.
+#
+# Also changed on merge (additive):
+#   - the subscription `events` enumerations in openapi.yaml gain `ops.region.activated` wherever
+#     `ops.alert.fired` is accepted today (BrokerSubscription, CreateBrokerSubscriptionRequest,
+#     UpdateBrokerSubscriptionRequest at 70f09435). WebhookSubscription and
+#     CreateWebhookSubscriptionRequest list only `run.finished` at 70f09435 although the database
+#     constraint and this AsyncAPI channel already carry operational alerts to webhooks; T032-050 records
+#     that existing discrepancy and adds the new value to the same schemas the alerts end up in;
+#   - channel `outboundWebhook` and channel `outboundBroker` list the new message.
+asyncapi: 3.0.0
+info:
+  title: Sagat Octopus Orchestrator — feature 032 fragment
+  version: 0.0.0-draft
+channels:
+  outboundWebhook:
+    address: '{subscriberUrl}'
+    parameters:
+      subscriberUrl:
+        description: The URL of a webhook subscription.
+    messages:
+      regionActivatedWebhook:
+        $ref: '#/components/messages/RegionActivatedWebhook'
+operations:
+  sendRegionActivatedWebhook:
+    action: send
+    channel: {$ref: '#/channels/outboundWebhook'}
+    messages: [{$ref: '#/channels/outboundWebhook/messages/regionActivatedWebhook'}]
+components:
+  messages:
+    RegionActivatedWebhook:
+      name: RegionActivatedWebhook
+      title: A region of the namespace's cell was activated
+      summary: >-
+        Sent once per namespace and epoch to the subscriptions that ask for `ops.region.activated`, after an
+        operator activated a region (planned switchover or unplanned failover). It tells an integrator that
+        events after `cutPointAt` delivered by the former region may describe work the platform no longer
+        has, and that deliveries pending at the cut point may arrive again with the same ids. It carries no
+        run data. At least once; `X-Octopus-Event-Id` is the same on every repeat.
+      contentType: application/json
+      headers:
+        type: object
+        required: [X-Octopus-Signature, X-Octopus-Timestamp, X-Octopus-Event-Id, X-Octopus-Event-Type, X-Octopus-Delivery-Id, X-Octopus-Attempt, X-Octopus-Schema-Version]
+        properties:
+          X-Octopus-Signature: {type: string, description: 'As for the delivery of a finished run.'}
+          X-Octopus-Timestamp: {type: string}
+          X-Octopus-Event-Id: {type: string, description: 'UUIDv5 over the cell, the epoch and the namespace: one per namespace and epoch.'}
+          X-Octopus-Event-Type: {type: string, enum: [ops.region.activated]}
+          X-Octopus-Delivery-Id: {type: string, format: uuid}
+          X-Octopus-Attempt: {type: string, pattern: '^[0-9]+$'}
+          X-Octopus-Schema-Version: {type: string}
+      payload:
+        type: object
+        required: [id, type, time, data]
+        properties:
+          id: {type: string}
+          type: {type: string, enum: [ops.region.activated]}
+          time: {type: string, format: date-time}
+          data:
+            type: object
+            description: 'Region, epoch and times; never data of a run, a tenant name or an attestation.'
+            required: [tenantId, namespaceId, cell, epoch, activeRegion, previousRegion, kind, replicationMode, activatedAt, runbook]
+            properties:
+              tenantId: {type: string, format: uuid}
+              namespaceId: {type: string, format: uuid}
+              cell: {type: string, maxLength: 32}
+              epoch: {type: integer, minimum: 2}
+              activeRegion: {type: string, maxLength: 32}
+              previousRegion: {type: string, maxLength: 32}
+              kind: {type: string, enum: [PLANNED, UNPLANNED]}
+              replicationMode: {type: string, enum: [SYNC_QUORUM, ASYNC]}
+              cutPointAt:
+                type: [string, 'null']
+                format: date-time
+                description: >-
+                  Commit time, on the former primary's clock, of the last transaction the new authority replayed.
+                  Null when the server could not report it.
+              activatedAt: {type: string, format: date-time}
+              runbook: {type: string, description: 'A link to the operator runbook section for integrators.'}
