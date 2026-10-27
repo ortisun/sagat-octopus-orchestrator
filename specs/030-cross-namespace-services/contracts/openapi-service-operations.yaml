@@ -1,0 +1,553 @@
+openapi: 3.1.0
+info:
+  title: DRAFT fragment — feature 030 cross-namespace service operations
+  version: 0.0.0-draft.030
+  description: |
+    Not canonical and not implemented. T030-007 merges these paths and schemas into
+    specs/001-platform-foundation/contracts/openapi.yaml under /v1, additively, marked
+    `x-proposed: '030'` until implemented. The `components.parameters` and `components.responses`
+    below are stand-ins with the same names as the canonical components; at merge the canonical
+    ones are used and these stubs are dropped.
+
+    Rules shared by every operation: the tenant comes from the token; a namespace, service,
+    endpoint, run or operation of another tenant (or none) is `NOT_FOUND`; every write takes an
+    `Idempotency-Key` (same key and body replays the original answer, a different body is `409`
+    with reason `IDEMPOTENCY_KEY_REUSED`); answers carry no input, result or free text from a
+    caller; listings are paginated. Contract documents and schemas are definitions, not payloads.
+servers:
+  - url: https://api.sagat-octopus-orchestrator.example/v1
+tags:
+  - name: Services
+paths:
+  /namespaces/{namespaceId}/services:
+    get:
+      operationId: listServices
+      tags: [Services]
+      x-proposed: '030'
+      summary: List the services owned by a handler namespace
+      description: Requires service:read. Deleted services are omitted unless includeDeleted=true.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+        - {name: includeDeleted, in: query, schema: {type: boolean, default: false}}
+      responses:
+        '200': {description: Services, content: {application/json: {schema: {$ref: '#/components/schemas/ServiceList'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /namespaces/{namespaceId}/services/{serviceName}:
+    get:
+      operationId: getService
+      tags: [Services]
+      x-proposed: '030'
+      summary: Read a service and its current revision number
+      description: Requires service:read.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ServiceName'}
+      responses:
+        '200': {description: Service, content: {application/json: {schema: {$ref: '#/components/schemas/Service'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+    delete:
+      operationId: deleteService
+      tags: [Services]
+      x-proposed: '030'
+      summary: Tombstone a service
+      description: >-
+        Requires service:publish. Refused with 409 reason SERVICE_IN_USE while a non-deleted endpoint
+        exposes it. Revisions referenced by caller pins are retained. Audited as service.deleted.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ServiceName'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      responses:
+        '204': {description: Tombstoned}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /namespaces/{namespaceId}/services/{serviceName}/revisions:
+    get:
+      operationId: listServiceRevisions
+      tags: [Services]
+      x-proposed: '030'
+      summary: List the immutable revisions of a service
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ServiceName'}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200': {description: Revisions, content: {application/json: {schema: {$ref: '#/components/schemas/ServiceRevisionList'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      operationId: publishServiceRevision
+      tags: [Services]
+      x-proposed: '030'
+      summary: Publish a contract document as a new immutable revision
+      description: >-
+        Requires service:publish. The body is a Service document (service.schema.json) whose
+        metadata.name equals serviceName; the service is created on first publication. A document
+        whose canonical digest equals an existing revision returns it with created=false. Refusals are
+        422 VALIDATION_FAILED with details.reason from contracts/errors.md and a JSON pointer.
+        Audited as service.revision_published in the same transaction.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ServiceName'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, description: 'A Service document; see service.schema.json.'}}}
+      responses:
+        '201': {description: Published, content: {application/json: {schema: {$ref: '#/components/schemas/ServiceRevision'}}}}
+        '200': {description: Same digest as an existing revision, content: {application/json: {schema: {$ref: '#/components/schemas/ServiceRevision'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /namespaces/{namespaceId}/services/{serviceName}/revisions/{revision}:
+    get:
+      operationId: getServiceRevision
+      tags: [Services]
+      x-proposed: '030'
+      summary: Read one revision, including its canonical document
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ServiceName'}
+        - {name: revision, in: path, required: true, schema: {type: integer, minimum: 1}}
+      responses:
+        '200': {description: Revision, content: {application/json: {schema: {$ref: '#/components/schemas/ServiceRevision'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /namespaces/{namespaceId}/service-endpoints:
+    get:
+      operationId: listOwnedServiceEndpoints
+      tags: [Services]
+      x-proposed: '030'
+      summary: List the endpoints owned by a handler namespace
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200': {description: Endpoints, content: {application/json: {schema: {$ref: '#/components/schemas/ServiceEndpointList'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      operationId: createServiceEndpoint
+      tags: [Services]
+      x-proposed: '030'
+      summary: Register an endpoint for a service of this namespace
+      description: >-
+        Requires service:endpoint:manage. The name is unique in the tenant (409 reason
+        SERVICE_ENDPOINT_NAME_TAKEN). Every operation of every served revision needs a binding;
+        bindings are validated (FR-030-005). Allow-list namespaces outside the tenant are 404.
+        Audited as service.endpoint_created and one service.endpoint_caller_allowed per entry.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/ServiceEndpointWrite'}}}
+      responses:
+        '201': {description: Created, content: {application/json: {schema: {$ref: '#/components/schemas/ServiceEndpoint'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /namespaces/{namespaceId}/service-endpoints/{endpointName}:
+    get:
+      operationId: getOwnedServiceEndpoint
+      tags: [Services]
+      x-proposed: '030'
+      summary: Read an endpoint, its current revision, allow-list and binding health
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ServiceEndpointName'}
+      responses:
+        '200': {description: Endpoint, content: {application/json: {schema: {$ref: '#/components/schemas/ServiceEndpoint'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+    put:
+      operationId: updateServiceEndpoint
+      tags: [Services]
+      x-proposed: '030'
+      summary: Create a new endpoint revision (served revisions, bindings, limits)
+      description: >-
+        Requires service:endpoint:manage and expectedRevision equal to the current revision (409
+        reason REVISION_CONFLICT otherwise). Operations in flight keep their admitted handler run.
+        Audited as service.endpoint_changed.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ServiceEndpointName'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/ServiceEndpointWrite'}}}
+      responses:
+        '200': {description: New revision, content: {application/json: {schema: {$ref: '#/components/schemas/ServiceEndpoint'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+    delete:
+      operationId: deleteServiceEndpoint
+      tags: [Services]
+      x-proposed: '030'
+      summary: Tombstone an endpoint
+      description: >-
+        Requires service:endpoint:manage. New starts are refused (OPERATION_ENDPOINT_UNAVAILABLE);
+        completions of operations in flight carry OPERATION_ACCESS_REVOKED and no result (O1481
+        default). The name may be reused by a new endpoint; pinned callers never follow it.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ServiceEndpointName'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      responses:
+        '204': {description: Tombstoned}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /namespaces/{namespaceId}/service-endpoints/{endpointName}/pause:
+    post:
+      operationId: pauseServiceEndpoint
+      tags: [Services]
+      x-proposed: '030'
+      summary: Defer new starts; operations in flight are unaffected
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ServiceEndpointName'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/ReasonedAction'}}}
+      responses:
+        '200': {description: Paused, content: {application/json: {schema: {$ref: '#/components/schemas/ServiceEndpoint'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /namespaces/{namespaceId}/service-endpoints/{endpointName}/resume:
+    post:
+      operationId: resumeServiceEndpoint
+      tags: [Services]
+      x-proposed: '030'
+      summary: Admit deferred and new starts again
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ServiceEndpointName'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/ReasonedAction'}}}
+      responses:
+        '200': {description: Resumed, content: {application/json: {schema: {$ref: '#/components/schemas/ServiceEndpoint'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /namespaces/{namespaceId}/service-endpoints/{endpointName}/callers:
+    get:
+      operationId: listServiceEndpointCallers
+      tags: [Services]
+      x-proposed: '030'
+      summary: List the allow-listed caller namespaces
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ServiceEndpointName'}
+      responses:
+        '200': {description: Allow-list, content: {application/json: {schema: {$ref: '#/components/schemas/ServiceEndpointCallerList'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /namespaces/{namespaceId}/service-endpoints/{endpointName}/callers/{callerNamespaceId}:
+    put:
+      operationId: allowServiceEndpointCaller
+      tags: [Services]
+      x-proposed: '030'
+      summary: Add a caller namespace of the same tenant to the allow-list
+      description: Requires service:endpoint:manage. A namespace outside the tenant is 404, audited. Idempotent.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ServiceEndpointName'}
+        - {name: callerNamespaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      responses:
+        '204': {description: Allowed}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+    delete:
+      operationId: removeServiceEndpointCaller
+      tags: [Services]
+      x-proposed: '030'
+      summary: Remove a caller namespace from the allow-list
+      description: >-
+        Requires service:endpoint:manage. New starts from that namespace are refused; completions of
+        its operations in flight carry OPERATION_ACCESS_REVOKED and no result (O1481 default).
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ServiceEndpointName'}
+        - {name: callerNamespaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      responses:
+        '204': {description: Removed}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /service-endpoints:
+    get:
+      operationId: listServiceEndpointRegistry
+      tags: [Services]
+      x-proposed: '030'
+      summary: The tenant's endpoint registry
+      description: >-
+        Requires service:read. Filter callerNamespaceId lists only endpoints that allow that namespace.
+        Shows name, handler namespace id, service, served revisions, state and binding health; never
+        handler run data.
+      parameters:
+        - {name: callerNamespaceId, in: query, schema: {type: string, format: uuid}}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200': {description: Registry, content: {application/json: {schema: {$ref: '#/components/schemas/ServiceEndpointList'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /service-endpoints/{endpointName}:
+    get:
+      operationId: getServiceEndpointRegistryEntry
+      tags: [Services]
+      x-proposed: '030'
+      summary: Read one registry entry by tenant-unique name
+      parameters:
+        - {$ref: '#/components/parameters/ServiceEndpointName'}
+      responses:
+        '200': {description: Entry, content: {application/json: {schema: {$ref: '#/components/schemas/ServiceEndpoint'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /namespaces/{namespaceId}/service-operations:
+    get:
+      operationId: listServiceOperations
+      tags: [Services]
+      x-proposed: '030'
+      summary: List outbound calls or inbound operations of a namespace
+      description: Requires run:read in the namespace. Payload-free. Ordered newest first.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {name: direction, in: query, required: true, schema: {enum: [outbound, inbound]}}
+        - {name: state, in: query, schema: {$ref: '#/components/schemas/ServiceOperationState'}}
+        - {name: endpointName, in: query, schema: {type: string}}
+        - {name: messageState, in: query, schema: {enum: [PENDING, DEAD]}}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200': {description: Operations, content: {application/json: {schema: {$ref: '#/components/schemas/ServiceOperationList'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /namespaces/{namespaceId}/service-operations/{operationId}:
+    get:
+      operationId: getServiceOperation
+      tags: [Services]
+      x-proposed: '030'
+      summary: Read one operation as seen from this namespace
+      description: >-
+        Requires run:read in the namespace. The caller namespace sees its caller record; the handler
+        namespace sees its execution record. Link fields are ids; reading the other side needs run:read
+        there. No input or result value is returned; disclosure of the caller step result is feature
+        016's payload-disclosure operation on the caller run.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {name: operationId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Operation, content: {application/json: {schema: {$ref: '#/components/schemas/ServiceOperation'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /namespaces/{namespaceId}/service-operations/{operationId}/messages/{kind}/redrive:
+    post:
+      operationId: redriveServiceOperationMessage
+      tags: [Services]
+      x-proposed: '030'
+      summary: Put a DEAD message back to PENDING
+      description: >-
+        Requires run:operate in the namespace that receives the message, and a reason. Only DEAD
+        messages; 409 otherwise. Audited as service.message_redriven.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {name: operationId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: kind, in: path, required: true, schema: {enum: [CANCEL, STARTED, START_REFUSED, COMPLETED]}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/ReasonedAction'}}}
+      responses:
+        '202': {description: Redriven}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+components:
+  parameters:
+    NamespaceId: {name: namespaceId, in: path, required: true, schema: {type: string, format: uuid}}
+    ServiceName: {name: serviceName, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9-]{2,63}$'}}
+    ServiceEndpointName: {name: endpointName, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9-]{2,63}$'}}
+    IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 8, maxLength: 160}}
+    Cursor: {name: cursor, in: query, schema: {type: string}}
+    Limit: {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 50}}
+  responses:
+    Forbidden: {description: 'Stand-in for the canonical response', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    NotFound: {description: 'Stand-in for the canonical response', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    Conflict: {description: 'Stand-in for the canonical response', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    ValidationError: {description: 'Stand-in for the canonical response', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    TooManyRequests: {description: 'Stand-in for the canonical response', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  schemas:
+    Error: {type: object, description: 'Stand-in for the canonical Error envelope (closed code set; reasons in contracts/errors.md).'}
+    ReasonedAction:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason: {type: string, minLength: 1, maxLength: 200, description: 'Audited justification; never logged as a value elsewhere.'}
+    Service:
+      type: object
+      required: [id, namespaceId, name, currentRevision, state, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        namespaceId: {type: string, format: uuid}
+        name: {type: string}
+        currentRevision: {type: integer, minimum: 1}
+        state: {enum: [ACTIVE, DELETED]}
+        createdAt: {type: string, format: date-time}
+    ServiceList:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Service'}}
+        nextCursor: {type: string}
+    ServiceRevision:
+      type: object
+      required: [serviceId, revision, digest, operations, publishedBy, publishedAt, created]
+      properties:
+        serviceId: {type: string, format: uuid}
+        revision: {type: integer, minimum: 1}
+        digest: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        operations:
+          type: array
+          items:
+            type: object
+            required: [name, mode]
+            properties:
+              name: {type: string}
+              mode: {enum: [async, sync]}
+        document: {type: object, description: 'The canonical Service document (definitions only); present on getServiceRevision.'}
+        publishedBy: {type: string}
+        publishedAt: {type: string, format: date-time}
+        created: {type: boolean}
+    ServiceRevisionList:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/ServiceRevision'}}
+        nextCursor: {type: string}
+    HandlerBinding:
+      type: object
+      additionalProperties: false
+      required: [contractRevision, operation, workflow, policy]
+      properties:
+        contractRevision: {type: integer, minimum: 1}
+        operation: {type: string}
+        workflow: {type: string, pattern: '^[a-z][a-z0-9-]{2,63}$'}
+        policy: {enum: [pinned, active], description: 'sync operations require pinned.'}
+        version: {type: integer, minimum: 1, description: 'Required when policy is pinned.'}
+    ServiceEndpointWrite:
+      type: object
+      additionalProperties: false
+      required: [name, service, servedRevisions, bindings]
+      properties:
+        name: {type: string, pattern: '^[a-z][a-z0-9-]{2,63}$'}
+        service: {type: string, pattern: '^[a-z][a-z0-9-]{2,63}$'}
+        servedRevisions: {type: array, minItems: 1, maxItems: 4, uniqueItems: true, items: {type: integer, minimum: 1}}
+        bindings: {type: array, minItems: 1, maxItems: 128, items: {$ref: '#/components/schemas/HandlerBinding'}}
+        callers: {type: array, maxItems: 256, uniqueItems: true, items: {type: string, format: uuid}, description: 'Initial allow-list on create only; later changes use the callers routes.'}
+        maxConcurrent: {type: integer, minimum: 0, maximum: 1000}
+        startsPerSecond: {type: integer, minimum: 0, maximum: 500}
+        expectedRevision: {type: integer, minimum: 1, description: 'Required on update.'}
+    BindingHealth:
+      type: object
+      required: [contractRevision, operation, status]
+      properties:
+        contractRevision: {type: integer}
+        operation: {type: string}
+        status: {enum: [COMPATIBLE, INCOMPATIBLE_ACTIVE_VERSION, WORKFLOW_MISSING]}
+    ServiceEndpoint:
+      type: object
+      required: [id, name, namespaceId, serviceId, service, revision, state, servedRevisions, bindings, callerCount, maxConcurrent, startsPerSecond, createdAt, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        namespaceId: {type: string, format: uuid, description: 'The handler namespace.'}
+        serviceId: {type: string, format: uuid}
+        service: {type: string}
+        revision: {type: integer, minimum: 1}
+        state: {enum: [ACTIVE, PAUSED, DELETED]}
+        servedRevisions: {type: array, items: {type: integer}}
+        bindings: {type: array, items: {$ref: '#/components/schemas/HandlerBinding'}}
+        bindingHealth: {type: array, items: {$ref: '#/components/schemas/BindingHealth'}}
+        callerCount: {type: integer, minimum: 0}
+        maxConcurrent: {type: integer}
+        startsPerSecond: {type: integer}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    ServiceEndpointList:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/ServiceEndpoint'}}
+        nextCursor: {type: string}
+    ServiceEndpointCallerList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [namespaceId, addedBy, addedAt]
+            properties:
+              namespaceId: {type: string, format: uuid}
+              addedBy: {type: string}
+              addedAt: {type: string, format: date-time}
+    ServiceOperationState:
+      enum: [SCHEDULED, STARTED, CANCELLING, LOOKING_UP, SUCCEEDED, FAILED, CANCELLED, TIMED_OUT, START_TIMED_OUT, ACTIVE, CANCEL_REQUESTED, COMPLETED]
+      description: 'SCHEDULED..START_TIMED_OUT are caller-record states (LOOKING_UP: the caller deadline passed after admission and the outcome is being looked up); ACTIVE, CANCEL_REQUESTED, COMPLETED are handler-record states. Clients must accept new values.'
+    ServiceOperationEffect:
+      enum: [none, failed, applied, partial, unknown]
+      description: 'What the caller side knows about the handler-side effect when the call settled (contracts/errors.md). applied, partial and unknown are effect-possible: compensated in a saga, manual review otherwise.'
+    ServiceOperationMessage:
+      type: object
+      required: [kind, state, attempts]
+      properties:
+        kind: {enum: [START, CANCEL, STARTED, START_REFUSED, COMPLETED]}
+        state: {enum: [PENDING, APPLIED, WITHDRAWN, REFUSED, DISCARDED, DEAD]}
+        attempts: {type: integer, minimum: 0}
+        nextAttemptAt: {type: string, format: date-time}
+        deferralReason: {enum: [endpoint_paused, namespace_active_runs, namespace_operations, endpoint_concurrency, endpoint_rate, transient]}
+        effect: {$ref: '#/components/schemas/ServiceOperationEffect'}
+    ServiceOperation:
+      type: object
+      required: [operationId, direction, endpointId, service, operation, mode, contractRevision, state, callerNamespaceId, handlerNamespaceId, createdAt]
+      properties:
+        operationId: {type: string, format: uuid}
+        direction: {enum: [outbound, inbound]}
+        endpointId: {type: string, format: uuid}
+        endpointName: {type: string}
+        service: {type: string}
+        operation: {type: string}
+        mode: {enum: [async, sync]}
+        contractRevision: {type: integer}
+        state: {$ref: '#/components/schemas/ServiceOperationState'}
+        outcomeCode: {type: string, description: 'A code of contracts/errors.md or a code the operation declares.'}
+        attempt: {type: integer, minimum: 1, maximum: 16, description: 'Call attempt; an operator RETRY_STEP starts the next one with a new operationId.'}
+        effect: {$ref: '#/components/schemas/ServiceOperationEffect'}
+        lookupDeadlineAt: {type: string, format: date-time, description: 'Caller side, LOOKING_UP only: end of the outcome lookup window.'}
+        lateOutcomeCode: {type: string, description: 'Caller side: outcome of a COMPLETED that arrived after the call settled (written once, for lookup); never a value.'}
+        lateEffect: {$ref: '#/components/schemas/ServiceOperationEffect'}
+        lateOutcomeAt: {type: string, format: date-time}
+        cancelPolicy: {enum: [abandon, request_cancel, wait_cancelled]}
+        callerNamespaceId: {type: string, format: uuid}
+        callerRunId: {type: string, format: uuid}
+        callerNode: {type: string}
+        handlerNamespaceId: {type: string, format: uuid}
+        handlerRunId: {type: string, format: uuid}
+        callDepth: {type: integer, minimum: 1, maximum: 8}
+        deadlineAt: {type: string, format: date-time}
+        startDeadlineAt: {type: string, format: date-time}
+        resultDisclosed: {type: boolean, description: 'Handler side only: whether a result crossed the boundary.'}
+        messages: {type: array, items: {$ref: '#/components/schemas/ServiceOperationMessage'}}
+        traceId: {type: string, pattern: '^[0-9a-f]{32}$'}
+        createdAt: {type: string, format: date-time}
+        finishedAt: {type: string, format: date-time}
+    ServiceOperationList:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/ServiceOperation'}}
+        nextCursor: {type: string}
