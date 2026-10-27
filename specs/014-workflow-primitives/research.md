@@ -1770,14 +1770,16 @@ principals and retains33 refusal. Focused all-five results and exact commands ar
 `tasks/project-completion/evidence/sdk-public-gaps-20261018`; full60 integration remains separate.
 
 
-## Nested capacity eligibility (B1c) — D701–D703, G701–G712, O701–O704
+## Nested capacity after a policy reduction (B1c) — D701–D705, G706–G713, O701–O704
 
-Range reserved for the nested-capacity lane (branch `feature/014-capacity-protocol`) so it cannot clash
-with `feature/014-v0.3-completion`. Full text, rules, evidence and review history:
-[capacity-eligibility.md](./capacity-eligibility.md).
+Range D701–D799 / G701–G799 / O701–O799 is reserved for the nested-capacity lane (branch
+`feature/014-capacity-protocol`) so it cannot clash with `feature/014-v0.3-completion`. Text, rationale and
+what remains: [capacity-eligibility.md](./capacity-eligibility.md). Owner answer to O701 recorded in
+`docs/owner-decisions.md` (2026-10-26).
 
-- **D701 (proposed)** — Reserved drain does not depend on the limit; above the bound one drain lane per tenant.
-- **D702 (proposed, pending O701)** — A reduction revokes no enabled group but stops new forward claims and re-enabling while `enabled > limit`. Stricter than the released contract (`data-model.md`, runbook).
-- **D703** — Parked groups keep counting against fresh allocation (flat `active_iterations` semantics).
-- **G701** holders with no claimable work must park/retire; **G702** which group parks, enable queue, fairness (B1d); **G703** drain throughput unmeasured; **G704** counters are a projection with a lock position (B0 order) and possession/enablement are separate axes; **G705** work class derived from consumed reservations; **G706** only root/top-level admissions allocate, descendants join; **G707** no lane→forward promotion; **G708** a parked group blocks fresh admission; **G709** lost wake-up unless the enable queue is scanned in the same transaction; **G710** hot tenant row; **G711** closed telemetry vocabulary; **G712** the drain lane has no lease.
-- **O701** After a reduction of `iteration_concurrency` (including 0), may already admitted work be paused? **O702** May a tenant execute above its limit, and by how much? **O703** At limit 0 must accepted compensation keep running? **O704** Does a parked group's unit count against the quota, and is serial drain above the bound acceptable?
+- **D701, D702 (withdrawn)** — drain lane and pausing admitted work; rejected by the owner through O701 (answer: do not pause).
+- **D703 (confirmed)** — a retained group counts against fresh admission until it settles, as a flat iteration counts in `active_iterations`.
+- **D704** — The only tenant-level capacity gate is fresh admission, `retained < limit`; no new tenant counter, enabled/parked state, drain lane or enable queue. A reduction never touches admitted work.
+- **D705** — A nested descendant joins an existing group and never allocates one; joining charges no tenant unit.
+- **G706** (open) descendants must join, with a nested limit-1 test at wiring; **G708** (open) a retained group blocks fresh admission, as in flat; **G711** (open) telemetry/audit vocabulary for join/vacate/acquire; **G713** (open) fairness among members of one group may be unnecessary. G701–G705, G707, G709, G710, G712 were obligations of the withdrawn model and are void.
+- **O701 (answered 2026-10-26: do not pause admitted work)**, **O702–O704 (derived from it, open to correction)**: a tenant may run above a reduced limit while its admitted work lasts; accepted compensation continues at limit 0; a retained idle group's unit counts against the quota and there is no serial drain lane.

@@ -6,7 +6,6 @@
 
 mod approval;
 mod capacity;
-mod capacity_eligibility;
 mod command;
 mod continuation;
 mod error;
@@ -28,9 +27,6 @@ pub use approval::{
 pub use capacity::{
     CapacityGroup, CapacityGroupError, CapacityGroupId, CapacityMemberId, CapacityMemberSnapshot,
     CapacityMembership, CapacityPossession,
-};
-pub use capacity_eligibility::{
-    CapacityEligibilityError, CapacityEnablement, CapacityWork, TenantCapacity,
 };
 pub use command::{
     AddressedProgress, Expiry, Failure, Heartbeat, InstanceHeartbeat, Progress, Resolution,

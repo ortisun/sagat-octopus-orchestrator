@@ -3870,21 +3870,14 @@ fault/OS/COMMIT recovery/outputdependentcomp/quota/Q10c/rollout/nesting/canonica
 remainopen; productionactivation staysclosed/noexternalprovidereffectorundoguarantee.
 
 
-## Capacity eligibility model (B1c) — 2026-10-26
+## Capacity eligibility after a policy reduction (B1c) — 2026-10-26
 
-Pure domain model only (`crates/domain/src/execution/capacity_eligibility.rs`); nothing is wired and
-nesting stays closed. Decision record, rules and obligations: [capacity-eligibility.md](./capacity-eligibility.md).
-Canonical tasks T014-014..017, 040, 042-044 stay unchecked.
-
-- Red first: 13 tests against a refuse-everything stub: 13 failed, 0 passed. After independent review,
-  the `claim` counter check, the extreme projection and the restored-state reference model were red
-  first: 3 failed, 14 passed, then 17 passed.
-- `RUST_TEST_THREADS` default, `cargo test -p sagat-domain --locked`: 561 passed, 0 failed, 0 ignored,
-  40 targets (544 baseline + 17). `cargo clippy --workspace --all-targets --locked -- -D warnings`,
-  `cargo fmt --check`, `scripts/check-architecture.py` (24 crates) and `scripts/check-agent-config.py` pass.
-- Eight manual mutations of the rules were each killed by at least two tests (named in the decision
-  record). The property oracle is a reference model; the policy is pinned by scenario tests.
-- Reviews by read-only agents (correctness, architecture): no code defect; documentation, obligation
-  and owner-question findings are recorded as G701-G712 and O701-O704. **Open owner question O701
-  (may a reduction pause admitted work?) decides whether this model is kept or shrinks to
-  `retained < limit`.** Not run: PostgreSQL, SDK or runtime-role suites (no storage is touched).
+Decision only; no production code. The owner answered O701: a reduction does not pause admitted work
+(`docs/owner-decisions.md`). A pause-based pure model built first (`d917a54f`) was therefore withdrawn
+and removed; it is history, not a delivered capability. Decision record and open obligations:
+[capacity-eligibility.md](./capacity-eligibility.md). Canonical tasks T014-014..017, 040, 042-044 stay
+unchecked. Evidence of the withdrawn model, for the record: red first (13 failed against a stub, then 3
+more after review), 17 green, eight named mutations killed, domain suite 561 passed; two read-only
+reviews found no code defect, and the architecture review exposed the conflict with the released
+reduction contract that led to O701. Gates re-run on the tree after removal are listed in the commit
+that removes it.
