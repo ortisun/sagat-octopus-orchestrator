@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sagat-octopus-orchestrator.io/drafts/022/workflow-ir-fragment.schema.json",
+  "title": "Feature 022 additive IR fragment (DRAFT, not implemented)",
+  "description": "Additive v1 IR shapes to merge into specs/001-platform-foundation/contracts/workflow.schema.json at implementation (task T022-060). apiVersion stays sagat-octopus-orchestrator.io/v1 (ADR-0032). Merge instructions: (1) add `cache` and `concurrency` to the properties of `activity` and `script` (root nodes only; the body variants `bodyActivity`/`bodyScript` do NOT gain them: UNSUPPORTED_NODE with dependency SCOPED_CACHE / SCOPED_CONCURRENCY); (2) add top-level properties `concurrency` and `onFailure`; (3) add `earlyReturn` to the `node` oneOf (not to `bodyNode`). Schema acceptance does not enable a capability: publication also checks stepCache, earlyReturn, failureHandler and concurrencyKeys and the semantic rules named in each description. `$ref`s below name the canonical $defs of the merged document.",
+  "$defs": {
+    "cachePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "ttlSeconds"],
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/expression",
+          "description": "Evaluated over the committed run data when the step becomes ready; its canonical JSON value (at most 1 KiB by default, 4 KiB ceiling) is digested with the deployment's keyed digest. An evaluation error or oversized value bypasses the cache; it never fails the run. A key over an encoded location (feature 031 registry) is refused with ENCODING_READ_BY_CACHE_KEY."
+        },
+        "ttlSeconds": {"type": "integer", "minimum": 1, "maximum": 2592000},
+        "scope": {
+          "enum": ["version", "workflow", "namespace"],
+          "default": "version",
+          "description": "version: runs of the same published version; workflow: versions of this workflow with an identical node fingerprint; namespace: workflows of the namespace that declare the same `name` and fingerprint. Never across namespaces or tenants."
+        },
+        "name": {"type": "string", "pattern": "^[a-z][a-z0-9.-]{0,63}$", "description": "Required when scope is namespace; forbidden otherwise."},
+        "version": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$", "description": "Author-controlled separator: changing it starts a fresh set of entries."}
+      },
+      "allOf": [
+        {"if": {"properties": {"scope": {"const": "namespace"}}, "required": ["scope"]}, "then": {"required": ["name"]}, "else": {"not": {"required": ["name"]}}}
+      ],
+      "x-semantic-rules": [
+        "CACHE_WITH_EFFECT: refused on a node with compensateWith, reconcileWith, irreversible or highRisk, and on database nodes.",
+        "At most 32 cached nodes per definition by default (256 ceiling)."
+      ]
+    },
+    "concurrencyPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["limit"],
+      "properties": {
+        "limit": {"type": "integer", "minimum": 1, "maximum": 10000, "description": "Maximum holders of one key, compared at acquisition (the acquiring definition's value, clamped by policy)."},
+        "key": {
+          "$ref": "#/$defs/expression",
+          "description": "Top level: over `input`. Node level: over the run data when the step becomes ready. Canonical value at most 256 bytes; digested with the keyed digest. Absent: one key for the whole group. A top-level key that cannot be evaluated ends the new run FAILED with EXPRESSION_ERROR. A key over an encoded location (feature 031 registry) is refused with ENCODING_READ_BY_CONCURRENCY_KEY."
+        },
+        "group": {"type": "string", "pattern": "^[a-z][a-z0-9.-]{0,63}$", "description": "Default: derived from the workflow name (top level) or the workflow name and node id (node level). Definitions of one namespace that name the same group at the same level share its keys; run and step permits never share a semaphore."},
+        "queueTimeoutMs": {"type": "integer", "minimum": 1, "maximum": 86400000, "default": 600000, "description": "How long a run (top level) or a ready step (node level) waits for a permit before failing with CONCURRENCY_WAIT_TIMEOUT. Must not exceed the run deadline."}
+      },
+      "x-semantic-rules": [
+        "Refused together with continueAsNew (FLOW_CONTROL_COMBINATION).",
+        "Warning CONCURRENCY_SELF_CHILD when a child node names this workflow and the group/key can coincide.",
+        "At most one top-level and 16 node-level declarations by default (64 ceiling)."
+      ]
+    },
+    "onFailure": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "node": {"$ref": "#/$defs/nodeId", "description": "Entry of the handler region: a root node not reachable from the entrypoint; everything reachable from it is the region."},
+        "workflow": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$", "description": "A workflow of the same namespace started as a derived child run (origin failure-handler)."},
+        "version": {"type": "integer", "minimum": 1, "description": "Child form only: a pinned version; the active version at handler start when absent."},
+        "input": {"$ref": "#/$defs/expression", "description": "Child form only: evaluated over the run data plus `failure`; must yield a JSON object. Default: {\"failure\": failure}."},
+        "on": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"enum": ["FAILED", "TIMED_OUT", "COMPENSATED", "PARTIAL", "COMPENSATION_FAILED"]},
+          "description": "Pending terminal statuses that start the handler; all five when absent. CANCELLED never does."
+        },
+        "timeoutMs": {"type": "integer", "minimum": 1, "maximum": 3600000, "default": 300000}
+      },
+      "oneOf": [
+        {"required": ["node"], "not": {"anyOf": [{"required": ["workflow"]}, {"required": ["version"]}, {"required": ["input"]}]}},
+        {"required": ["workflow"], "not": {"required": ["node"]}}
+      ],
+      "x-semantic-rules": [
+        "FAILURE_HANDLER_REGION: the region is disjoint from the graph reachable from the entrypoint and holds only activity, script, condition, switch, timer, parallel, child and end nodes; its end nodes declare no outputExpr; no saga, earlyReturn, waitEvent, approval, forEach, while, repeatUntil or continueAsNew.",
+        "Refused together with continueAsNew (FLOW_CONTROL_COMBINATION).",
+        "Handler expressions see `failure`: {status, code, node, attempt, kind, occurredAt} (closed, payload-free)."
+      ]
+    },
+    "earlyReturn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "result", "next"],
+      "properties": {
+        "id": {"$ref": "#/$defs/nodeId"},
+        "type": {"const": "earlyReturn"},
+        "result": {"$ref": "#/$defs/expression", "description": "The run result (any JSON, at most 256 KiB), stored as runs.result_digest and disclosed under the workflow outputSchema carrier. EXPRESSION_ERROR or RUN_DATA_LIMIT fail the run, as for end.outputExpr. With feature 031 it is a carriage position checked against outputSchema (ENCODING_CARRIAGE_MISMATCH)."},
+        "next": {"$ref": "#/$defs/nodeId"}
+      },
+      "x-semantic-rules": [
+        "EARLY_RETURN_PLACEMENT: root graph only; not in a saga body, parallel branch, body or handler region; not reachable from another earlyReturn; no end with outputExpr reachable from it; not with continueAsNew.",
+        "At most 16 per definition by default (64 ceiling)."
+      ]
+    },
+    "expression": {"$comment": "Canonical #/$defs/expression of workflow.schema.json; repeated here only so this fragment compiles alone.", "type": "string", "minLength": 1, "maxLength": 1024},
+    "nodeId": {"$comment": "Canonical #/$defs/nodeId.", "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"}
+  },
+  "examples": [
+    {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "kind": "Workflow",
+      "metadata": {"name": "order-intake"},
+      "entrypoint": "price",
+      "concurrency": {"group": "orders-by-account", "key": "input.accountId", "limit": 1, "queueTimeoutMs": 600000},
+      "onFailure": {"workflow": "notify-failure", "on": ["FAILED", "COMPENSATED", "PARTIAL"]},
+      "nodes": [
+        {"id": "price", "type": "activity", "activity": "catalog.price", "cache": {"key": "input.sku", "ttlSeconds": 300}, "next": "ack"},
+        {"id": "ack", "type": "earlyReturn", "result": "steps.price.output", "next": "notify"},
+        {"id": "notify", "type": "activity", "activity": "crm.notify", "concurrency": {"key": "input.accountId", "limit": 2}, "next": "done"},
+        {"id": "done", "type": "end"}
+      ]
+    }
+  ]
+}
