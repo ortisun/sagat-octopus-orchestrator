@@ -109,3 +109,21 @@ authority to retain an external event. Native timeout production still needs cur
 post-wait database time, revision/physical binding CAS, subscription update and atomic routing;
 the future receiver needs its separate current ingress/own-run authority and payload receipt.
 No new native caller, public capability, scoped consumer or mixed-version activation is enabled.
+
+
+## Exact-context correlation evaluation
+
+The additive ExpressionEvaluator correlation_key_instance port preserves root delegation;
+legacy adapters refuse nonroot calls until they implement the new method. JsonEvaluator uses
+the existing bounded canonical environment for the exact instance path. Collection item/index,
+loop carry/iteration and local step outputs use their own path; a same-name root or sibling
+output is never fallback. Existing scalar conversion and 256-byte/control-character correlation
+key validation are unchanged, including UTF-8 byte limits and numeric/boolean keys.
+
+Evaluation remains lazy over requested variable roots. Constants and explicit own run
+input/state/id can evaluate without scope_inputs; that result grants no membership or execution
+authority. Requested item/index/carry/iteration must exist in the proper context. The future
+native caller must validate membership, immutable captured input, snapshot revision, current
+scheduler authority and post-wait database time before invoking the pure start command.
+No native caller or public shape is enabled by the evaluator port. Invalid computed lookup
+values retain the interpreter's existing canonical masking; no separate logging path is added.

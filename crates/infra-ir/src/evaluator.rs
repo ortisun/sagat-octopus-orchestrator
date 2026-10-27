@@ -172,6 +172,21 @@ impl ExpressionEvaluator for JsonEvaluator {
         CorrelationKey::parse(&key).map_err(failure)
     }
 
+    fn correlation_key_instance(
+        &self,
+        expression: &Expression,
+        data: &RunData,
+        instance: &ExecutionInstanceId,
+    ) -> Result<CorrelationKey, ExpressionFailure> {
+        if instance.path().is_root() {
+            return self.correlation_key(expression, data);
+        }
+        let compiled = Compiled::compile(expression.as_str()).map_err(failure)?;
+        let env = environment(&compiled.variables(), data, Some(instance))?;
+        let key = compiled.eval_key(&env).map_err(failure)?;
+        CorrelationKey::parse(&key).map_err(failure)
+    }
+
     fn idempotency_key(
         &self,
         template: &Expression,

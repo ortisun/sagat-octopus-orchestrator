@@ -780,3 +780,31 @@ Full domain passed582/0failed/0ignored across42target summaries,37.29s command.
 Strict domain/all-targets Clippy passed11.11s command. Architecture24crates, agent config
 and formatting pass. This closes the pure timeout command increment. The retained64-SDK
 checkpoint and earlier native root dispatcher gates remain separately sourced evidence.
+
+
+## Exact-context correlation evaluator preparation
+
+The additive internal evaluator method delegates roots unchanged and refuses scopes by default.
+JsonEvaluator explicitly reuses the existing exact-path environment and scalar/key validation.
+The initial correlation-only gate passed1root test/failed1scoped test for the real unsupported
+compatibility default. The implementation then passed13evaluator tests. The first expanded
+suite passed16; full application+IR passed434/0/0 across36target summaries,46.34s command,
+and strict application+IR/all-target Clippy passed31.21s. These precede the final test tranche.
+
+Fresh review found2valid coverage gaps: the production override did not exercise the prior
+adapter default, and no positive test pinned lazy own input/state/run evaluation without an
+iteration input. Both now pass in the18-test evaluator invocation. A further candidate concern
+about dynamic missing-key values was tested, but that diagnostic was GREEN1/0 at1.60s:
+infra-expr already substitutes <computed> for payload-derived lookup keys. No privacy defect
+or new sanitizer is claimed; the regression retains the canonical existing protection. The
+misleading red-named temporary log is preserved as an observed pass, not a RED. A final review
+found no remaining required issue, including the prior-adapter fixture and lazy context cases.
+The complete corrected gate and strict lint results follow separately. This port has no native
+start caller/public body capability; it does not prove membership, snapshot CAS or db authority.
+
+
+The corrected full application+IR gate passed437/0failed/0ignored across36target summaries,
+5.13s command, including19evaluator tests. Strict application+IR/all-targets Clippy passed2.09s.
+The second bounded review found no remaining required issue. Formatting, architecture24crates
+and agent configuration pass. No native scheduler call, subscription, external event authority
+or public shape was added. This closes only exact-context evaluator preparation.

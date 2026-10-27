@@ -375,6 +375,23 @@ pub trait ExpressionEvaluator: Send + Sync {
         data: &RunData,
     ) -> Result<CorrelationKey, ExpressionFailure>;
 
+    /// Evaluates a correlation key in the exact instance context. Legacy adapters preserve
+    /// root behavior and refuse scoped evaluation until they explicitly support it.
+    fn correlation_key_instance(
+        &self,
+        expression: &Expression,
+        data: &RunData,
+        instance: &ExecutionInstanceId,
+    ) -> Result<CorrelationKey, ExpressionFailure> {
+        if instance.path().is_root() {
+            self.correlation_key(expression, data)
+        } else {
+            Err(ExpressionFailure(
+                "scoped correlation evaluation is unsupported".into(),
+            ))
+        }
+    }
+
     /// Renders an idempotency-key template for `node`.
     ///
     /// # Errors

@@ -3966,3 +3966,14 @@ uses the recorded deadline/pinned route, preserves paused deferred routing, and 
 stale/foreign/malformed/stopped sources. Pure ordering and boundary properties do not replace
 native PostgreSQL races or database-time/current-authority proofs. No native subscription,
 receiver, public shape or canonical task is enabled by this increment.
+
+
+### Exact-context correlation evaluator
+
+The additive internal port preserves root delegation and defaults legacy adapters to scoped
+refusal. The real interpreter uses its existing exact-path/lazy context and key conversion.
+Corrected full application+IR passes437/0/0 across36targets in5.13s, including19evaluator tests;
+strict all-target lint for those crates passes2.09s. The unsupported-scoped RED, two required
+test corrections, and already-green computed-key masking diagnostic are recorded separately
+in the implementation ledger. Final review found no required issue. No native start caller,
+public body or admission/receipt authority is enabled by this evaluator preparation.
