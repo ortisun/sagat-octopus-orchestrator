@@ -152,7 +152,7 @@ pub struct Report {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CollectionAdvance {
     Entered,
-    /// One local condition/switch answer and its selected successor committed atomically.
+    /// One scheduler-owned body transition committed atomically.
     BodyProgress,
     Admitted {
         index: u32,
@@ -2266,16 +2266,17 @@ where
                 reserved_instances,
                 uuid::Uuid::now_v7(),
             )?,
-            NodeKind::Condition { .. } | NodeKind::Switch { .. } | NodeKind::Timer { .. } => {
-                CollectionAdmission::scheduler_from_item(
-                    transition.clone(),
-                    scope_id,
-                    index,
-                    entry,
-                    item,
-                    reserved_instances,
-                )?
-            }
+            NodeKind::Condition { .. }
+            | NodeKind::Switch { .. }
+            | NodeKind::Timer { .. }
+            | NodeKind::WaitEvent { .. } => CollectionAdmission::scheduler_from_item(
+                transition.clone(),
+                scope_id,
+                index,
+                entry,
+                item,
+                reserved_instances,
+            )?,
             _ => return Err(CollectionAdvanceError::InvalidProgress),
         };
         match self.store.admit_collection_member(&admission).await {

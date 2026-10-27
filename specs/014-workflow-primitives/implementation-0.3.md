@@ -1281,3 +1281,53 @@ unchanged after the nine-case gate and during the complete79-case executable run
 agent configuration, formatting and diff checks pass. External delivery is now connected for
 these internal pinned fixtures; entry/public/old-reader activation and all canonical remainder
 boundaries above still apply.
+
+
+## Scheduler-owned event entry admission (2026-10-27)
+
+Three existing kind checks now accept a pinned WaitEvent entry as Scheduler dispatch: the
+collection scheduler's admission builder, native immutable-definition admission and the shared
+cold-reader dispatch validator. Native membership/step creation remains PENDING, with null
+activity/outbox, no worker hint or subscription/clock fields and the existing complete body
+reservation. Activity dispatch still cannot match a WaitEvent declaration. No migration, grant,
+public publication guard or worker protocol changes.
+
+Actual full/frontier collection entry → admission tests first fail2 with InvalidProgress
+(5.20s harness/61.50s command), then pass2/0/0 (5.54s/72.55s) after those checks. Each immutable
+internal fixture has only WaitEvent → Return and root End: cold full/path reads succeed, two
+item-specific subscriptions receive actual EventDispatcher admissions, the whole Run finishes
+and no task.ready hint or held iteration slot remains. These are not public parser fixtures.
+
+The expanded gate initially passes5/fails2 (22.18s/76.16s). Its paused/zero controls incorrectly
+expected Waiting instead of the existing direct-command typed refusals: Primitive(InvalidTransition)
+and Primitive(AtCapacity). The scheduler's real discovery excludes paused runs; its sweep treats
+capacity as skipped. Corrected tests require the exact errors, unchanged execution state and an
+actual tick with failed=0. No production error mapping changes and no behavioral RED is claimed
+for those assertion mistakes. Seven cases then pass7/0/0 (26.64s/81.05s), including pause/resume,
+current explicit zero preserving admitted progress while blocking the next member, pending-entry
+cancellation retiring its return reservation, full native admission journal-fault rollback/retry
+and CHECK-valid worker-dispatch corruption rejected by full/path/frontier readers.
+
+A fresh bounded reviewer finds no issue in the three production checks and runs no tests.
+A separate later cold-start case recreates cache/store with one connection, proves durable
+collection_candidates discovery and uses actual scheduler ticks to start both waits without
+worker hints. It passes1/0/0 (2.46s/60.18s). It was added only after the prior fixed native
+executable was already running; it belongs to this later invocation and is not counted as part
+of an87-case aggregate. Receiver code is unchanged except test-helper visibility.
+
+Workspace/all-target Clippy passes76.45s; control regression23/0/0 passes97.74s/97.75s and
+contracts49/0/0 pass0.58s/67.26s. The completed86-case event executable and final targeted lint
+are recorded below on completion. The later source change to BodyProgress is documentation only.
+The complete bounded contract is scoped-event-entry.md. Public event bodies/entries, actual
+released-v0.2 cutover, loops/nesting/capacity, final SDK/fault/resource/release gates and all
+eight canonical tasks remain open.
+
+
+The completed fixed event executable passes86/0/0 (338.78s harness/338.79s command), using
+SHA256 d1df40a9992d1c9bf3241c732caddafc518ee6aa3c29affed513b9eaba27ebab. Its source includes
+the seven entry cases. The later cold-only test passes separately and its rebuilt executable
+has SHA2564a638270b16cfe1887aff2b97e94c0c86ee86ead0d6a5bc013707ddb0984cbac; no87-case aggregate
+was run or claimed. No production behavior changed between those invocations. Final targeted
+Clippy for the enlarged integration target passes30.65s after the cold test and doc comment;
+architecture/agent/format/diff checks pass. Public activation and the eight canonical tasks
+remain pending.

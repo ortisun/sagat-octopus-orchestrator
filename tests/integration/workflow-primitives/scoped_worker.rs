@@ -168,6 +168,14 @@ pub(super) async fn fixture_with_document(name: &str, document: serde_json::Valu
     fixture_document_with_progress(name, true, document, 0).await
 }
 
+/// Internal immutable definition before any collection entry or member admission.
+pub(super) async fn fixture_with_unadmitted_document(
+    name: &str,
+    document: serde_json::Value,
+) -> Fixture {
+    fixture_document_with_progress(name, false, document, 0).await
+}
+
 /// Immutable version with current classification rules; still an internal codec fixture.
 pub(super) async fn fixture_with_classified_document(
     name: &str,

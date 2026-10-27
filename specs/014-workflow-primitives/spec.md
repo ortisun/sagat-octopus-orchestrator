@@ -37,7 +37,8 @@ or notification identity; its durable journal and membership permit cold schedul
 Waits, children and nested scopes remain separately gated. The v0.3 implementation checkpoint
 connects internal pinned scoped event subscriptions, automatic deadlines and the production
 dispatcher/lookback to exact-path receipt/value transactions; this does not activate public
-wait bodies or event entry admission. Its evidence and remaining rollout boundary are in
+wait bodies. Internal event entry admission is additionally covered in
+[scoped-event-entry.md](./scoped-event-entry.md). Its evidence and remaining rollout boundary are in
 [scoped-event-receiver.md](./scoped-event-receiver.md). A body
 activity may declare `compensateWith`, `reconcileWith`, `irreversible` and `highRisk`, and a failed or
 cancelled scope then compensates its completed iterations (FR-014-005, FR-014-006). A source prefix

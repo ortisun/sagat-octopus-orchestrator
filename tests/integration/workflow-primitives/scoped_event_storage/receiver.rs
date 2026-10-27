@@ -4,7 +4,7 @@ use sagat_application::{entropy::SystemEntropy, events::PublishRequest, executio
 use sagat_domain::{events::EventId, workflow::EventType};
 use sagat_scheduler::{CollectionAdvance, EventDispatchSettings, EventDispatcher};
 
-fn dispatcher(
+pub(super) fn dispatcher(
     store: &PgRunStore,
     scan_batch: u32,
     batch: u32,
@@ -27,7 +27,7 @@ async fn publish(fixture: &Fixture, key: &str) {
     publish_id(fixture, key, "collection-receiver-event").await;
 }
 
-async fn publish_id(fixture: &Fixture, key: &str, id: &str) {
+pub(super) async fn publish_id(fixture: &Fixture, key: &str, id: &str) {
     fixture
         .world
         .events

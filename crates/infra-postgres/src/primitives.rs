@@ -1830,6 +1830,9 @@ impl CollectionStore for PgCollectionStore {
                 (CollectionEntryDispatch::Scheduler, NodeKind::Timer { .. }) => {
                     ("SCHEDULER", None, None, "timer")
                 }
+                (CollectionEntryDispatch::Scheduler, NodeKind::WaitEvent { .. }) => {
+                    ("SCHEDULER", None, None, "waitEvent")
+                }
                 _ => return Err(PrimitiveStoreError::InvalidTransition),
             };
         if admission.entry.node() != body.entrypoint()

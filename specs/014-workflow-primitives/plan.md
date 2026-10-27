@@ -648,6 +648,15 @@ The bounded contracts in scoped-event-scheduling.md, scoped-event-deadlines.md a
 scoped-event-receiver.md now have current native caller evidence. External delivery uses
 current exact-path receipt/value transactions; lookback uses bounded tenant-qualified traversal.
 Index-only migration20261223000000 retains legacy lookup support and documents build locking.
-This does not activate public scoped event bodies or entry admission. Released-v0.2 cutover,
+This does not activate public scoped event bodies or their entry shapes. Released-v0.2 cutover,
 remaining node kinds/nesting/capacity and canonical release acceptance remain pending in the
 implementation ledger and validation report.
+
+
+### Scheduler-owned scoped event entry — 2026-10-27
+
+scoped-event-entry.md extends the existing Scheduler admission kind to pinned WaitEvent entries,
+with unchanged Run/tenant reservations and authority. Pending admission owns no worker or event
+clock; the accepted subscription pass starts it later. Full/path/frontier reads enforce the same
+exact dispatch/journal identity. Focused native and cold discovery evidence is in the0.3 ledger;
+public activation and released-profile/SDK/final acceptance remain separate.

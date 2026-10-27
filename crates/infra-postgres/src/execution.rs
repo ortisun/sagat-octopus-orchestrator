@@ -2151,7 +2151,12 @@ pub(crate) fn validate_collection_entry_dispatch(
                 && outbox.is_some()
                 && journal.as_deref().is_none_or(|kind| kind == "ACTIVITY")
         }
-        Some(NodeKind::Condition { .. } | NodeKind::Switch { .. } | NodeKind::Timer { .. }) => {
+        Some(
+            NodeKind::Condition { .. }
+            | NodeKind::Switch { .. }
+            | NodeKind::Timer { .. }
+            | NodeKind::WaitEvent { .. },
+        ) => {
             dispatch == "SCHEDULER"
                 && activity.is_none()
                 && outbox.is_none()

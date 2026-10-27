@@ -990,3 +990,13 @@ legacy dispatch24, contracts49, migrations5 and strict lint pass. The repaired p
 function separately passes42 and retains its RED/review trail in sql-privilege-audit.md. Exact
 commands/results and source identity are in the0.3 ledger; public/old-reader activation and
 canonical release tasks remain open.
+
+
+### 2026-10-27 scheduler-owned event body entry
+
+T014-014–017/040, FR-014-004/005/014/015/017: scoped_event_storage::entry proves actual full/
+frontier PENDING admission, worker-free event completion, pause/resume, cancellation/reservation
+retirement, zero policy, admission fault rollback and dispatch-corruption refusal. A separate
+cold one-connection test proves discovery/ticks without hints. Event gate86, later cold case1,
+controls23, contracts49 and lint pass in distinct invocations; provenance and corrected test
+assumptions are in the0.3 ledger. Public/old-reader/final release acceptance remains open.

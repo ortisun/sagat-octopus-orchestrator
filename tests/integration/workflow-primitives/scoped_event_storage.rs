@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 mod cancellation;
 mod deadline_processing;
+mod entry;
 mod guards;
 mod receipts;
 mod receiver;

@@ -4139,3 +4139,20 @@ Exact provenance/source hash and static checks are in the implementation ledger.
 These remain immutable internal structured-codec fixtures, not public wait entry/body or
 released-v0.2 cutover evidence. General loops/nesting/capacity, SDK/fault/resource/release
 acceptance and all eight canonical tasks remain open.
+
+
+### Scheduler-owned event entry admission
+
+Pinned WaitEvent entries now use the existing Scheduler admission, PENDING without worker or
+subscription authority, and the same exact dispatch/journal validation in full/path/frontier
+reads. Two genuine native admission REDs become full/frontier worker-free end-to-end success.
+Seven focused cases pass26.64s/81.05s; expanded pause/zero assertions were corrected to existing
+typed refusals, preserving actual tick failed=0. Cancellation retires the unstarted return,
+admission journal faults roll back all state and current wrong dispatch metadata fails closed.
+
+The fixed event gate passes86/0/0 (338.78s/338.79s). A later, separate cold single-connection
+case passes1/0/0 (2.46s/60.18s), proving durable discovery and actual subscription ticks without
+worker hints. These are separate invocations, not an87-case aggregate. Controls23/0/0
+(97.74s/97.75s), contracts49/0/0 (0.58s/67.26s), workspace lint76.45s and final targeted lint
+30.65s pass. The0.3 ledger retains exact executable identities and bounded-review evidence.
+No public wait body/entry activation, released-v0.2 cutover or canonical task closure is claimed.
