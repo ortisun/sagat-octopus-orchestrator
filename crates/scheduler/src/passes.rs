@@ -1792,6 +1792,13 @@ where
                                     .node_for_instance(instance)
                                     .map(sagat_domain::workflow::Node::kind),
                                 Some(NodeKind::Timer { .. })
+                            ))
+                        || (step.is_valid_scoped_event_suspension()
+                            && matches!(
+                                definition
+                                    .node_for_instance(instance)
+                                    .map(sagat_domain::workflow::Node::kind),
+                                Some(NodeKind::WaitEvent { .. })
                             ));
                     step.status().is_terminal() && !instance.node().is_derived()
                         || settled_derived
@@ -5439,6 +5446,14 @@ fn member_is_safe_to_drain(
                         .node_for_instance(instance)
                         .map(sagat_domain::workflow::Node::kind),
                     Some(NodeKind::Timer { .. })
+                ))
+            || (ready_is_safe
+                && step.is_valid_scoped_event_suspension()
+                && matches!(
+                    definition
+                        .node_for_instance(instance)
+                        .map(sagat_domain::workflow::Node::kind),
+                    Some(NodeKind::WaitEvent { .. })
                 ));
         step.status().is_terminal() && !instance.node().is_derived()
             || settled_derived

@@ -213,7 +213,16 @@ async fn member_steps(
             &step,
             row,
         )?;
-        validate_scoped_event_identity(&scope_run.definition, &scope_run.info, &instance, row)?;
+        validate_scoped_event_identity(
+            scope_run.definition.node_for_instance(&instance),
+            scope_run.info.namespace_id,
+            sagat_application::execution::instance_step_id(
+                scope_run.info.version_id,
+                scope_run.info.run_id,
+                &instance,
+            ),
+            row,
+        )?;
         by_member.entry(last).or_default().insert(instance, step);
     }
     Ok(by_member)

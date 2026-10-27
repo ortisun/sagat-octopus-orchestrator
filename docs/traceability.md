@@ -912,3 +912,16 @@ path command routes once. A projection-trigger failure rolls back preceding jour
 all observed state. The20-case gate and corrected isolated one-case authority test are separate
 invocations; see the implementation ledger for timings and limits. This introduces no scheduler
 producer, external receipt, public body or canonical task closure.
+
+### 2026-10-27 scoped event-wait collection drain
+
+T014-014–017/040, FR-014-004/005/014/015/017: `scoped_event_storage::cancellation` and the
+domain lifecycle cancellation module prove workerless suspension drain across the reducer,
+both scheduler paths and the independent native writer. Full/frontier transitions and journal
+match; actual sibling failure, both held-Run timeout/cancel commit orders, malformed binding/
+identity, current authority/revision, duplicate receipt, late rollback and reservation/tenant
+counter preservation are covered. Full domain587, combined native lifecycle26, final expanded
+cancellation7, unchanged timer13/control23/transaction15 regressions and strict lint pass in
+separate invocations. See the ledger for exact source/hash/timing and retained failures.
+Public event bodies, scoped receiver/producer, loop event drain, nested capacity and final
+SDK/rollout/resource/release gates remain open; no canonical task is checked here.

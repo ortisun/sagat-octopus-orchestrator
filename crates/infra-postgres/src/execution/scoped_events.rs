@@ -2,19 +2,14 @@
 use super::*;
 
 pub(crate) fn validate_scoped_event_identity(
-    definition: &WorkflowDefinition,
-    info: &RunInfo,
-    instance: &ExecutionInstanceId,
+    node: Option<&Node>,
+    namespace: sagat_domain::identity::NamespaceId,
+    step_id: Uuid,
     row: &PgRow,
 ) -> Result<(), StoreError> {
-    if !instance.path().is_root()
-        && matches!(
-            definition.node_for_instance(instance).map(Node::kind),
-            Some(NodeKind::WaitEvent { .. })
-        )
-        && (col::<Uuid>(row, "namespace_id")? != info.namespace_id.as_uuid()
-            || col::<Uuid>(row, "step_id")?
-                != instance_step_id(info.version_id, info.run_id, instance))
+    if matches!(node.map(Node::kind), Some(NodeKind::WaitEvent { .. }))
+        && (col::<Uuid>(row, "namespace_id")? != namespace.as_uuid()
+            || col::<Uuid>(row, "step_id")? != step_id)
     {
         return Err(corrupt("scoped event physical identity"));
     }

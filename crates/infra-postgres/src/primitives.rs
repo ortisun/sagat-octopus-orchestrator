@@ -32,6 +32,7 @@ use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use sqlx::postgres::PgRow;
 use sqlx::{PgConnection, PgPool, Postgres, Row, Transaction};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::collection_outputs;
@@ -3006,8 +3007,9 @@ impl CollectionStore for PgCollectionStore {
         let member_steps = sqlx::query(concat!(
             "SELECT s.node,s.status,s.attempt,s.generation,s.cancel_requested,s.routed,s.condition,s.switch_case_id, \
                 s.timed_out,s.failure_code,s.next_attempt_at,s.waiting_kind,s.due_at,s.correlation_key, \
-                s.child_run_id,s.approval_request_id,s.node_kind AS stored_node_kind, (",
-            crate::execution::scoped_timer_metadata_valid!(),") AS timer_metadata_valid \
+                s.child_run_id,s.approval_request_id,s.namespace_id,s.step_id,s.event_type,s.event_since,s.node_kind AS stored_node_kind, (",
+            crate::execution::scoped_timer_metadata_valid!(),") AS timer_metadata_valid, (",
+            crate::execution::scoped_event_metadata_valid!(),") AS event_metadata_valid \
              FROM steps s WHERE tenant_id=$1 AND run_id=$2 \
                AND instance_path_nodes=$3 AND instance_path_indices=$4 ORDER BY node FOR UPDATE",
         ))
@@ -3027,6 +3029,7 @@ impl CollectionStore for PgCollectionStore {
             "collection drain path",
         )
         .map_err(PrimitiveStoreError::Storage)?;
+        let mut event_waits = Vec::new();
         for step in &member_steps {
             let node = NodeId::parse_stored(&step.get::<String, _>("node"))
                 .map_err(|_| invalid_storage("collection member node"))?;
@@ -3042,9 +3045,9 @@ impl CollectionStore for PgCollectionStore {
                 && step.get::<i32, _>("attempt") == 0)
                 || matches!(status.as_str(), "READY" | "RETRY_WAIT");
             let instance = ExecutionInstanceId::in_path(member_path.clone(), node.clone());
-            let timer_wait = if matches!(
+            let waiting_suspension = if matches!(
                 definition.node_for_instance(&instance).map(Node::kind),
-                Some(NodeKind::Timer { .. })
+                Some(NodeKind::Timer { .. } | NodeKind::WaitEvent { .. })
             ) {
                 let state =
                     crate::execution::step_state(step).map_err(PrimitiveStoreError::Storage)?;
@@ -3054,12 +3057,27 @@ impl CollectionStore for PgCollectionStore {
                     step,
                 )
                 .map_err(PrimitiveStoreError::Storage)?;
+                crate::execution::validate_scoped_event_identity(
+                    definition.node_for_instance(&instance),
+                    locked.run.namespace_id,
+                    instance_step_id(locked.run.version_id, drain.transition.run_id(), &instance),
+                    step,
+                )
+                .map_err(PrimitiveStoreError::Storage)?;
+                if status == "WAITING"
+                    && matches!(
+                        definition.node_for_instance(&instance).map(Node::kind),
+                        Some(NodeKind::WaitEvent { .. })
+                    )
+                {
+                    event_waits.push((node.clone(), step));
+                }
                 status == "WAITING"
             } else {
                 false
             };
             if (node.is_derived() && !matches!(status.as_str(), "SUCCEEDED" | "SKIPPED"))
-                || (!terminal && !safe_unstarted && !timer_wait)
+                || (!terminal && !safe_unstarted && !waiting_suspension)
             {
                 return Err(PrimitiveStoreError::InvalidTransition);
             }
@@ -3069,10 +3087,46 @@ impl CollectionStore for PgCollectionStore {
             && scope.get::<Option<i32>, _>("drain_iteration")
                 == Some(i32::try_from(drain.index).unwrap_or(i32::MAX));
         let failure_code = scope.get::<Option<String>, _>("drain_failure_code");
+        if failure_entry
+            && event_waits
+                .iter()
+                .any(|(node, _)| node.as_str() == entry_node)
+        {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        }
+        for (node, step) in event_waits {
+            let updated = sqlx::query(concat!(
+                "UPDATE steps s SET status='CANCELLED',routed=true,failure_code=NULL, \
+                    waiting_kind=NULL,due_at=NULL,event_type=NULL,correlation_key=NULL,event_since=NULL,event_scanned_at=NULL, \
+                    next_attempt_at=NULL,cancel_requested=false,updated_at=$12 \
+                 WHERE tenant_id=$1 AND run_id=$2 AND namespace_id=$3 AND instance_path_nodes=$4 AND instance_path_indices=$5 \
+                   AND node=$6 AND step_id=$7 AND node_kind='waitEvent' AND status='WAITING' AND NOT routed \
+                   AND event_type=$8 AND correlation_key=$9 AND due_at=$10 AND event_since=$11 AND (",
+                crate::execution::scoped_event_metadata_valid!(),")"))
+                .bind(drain.transition.tenant_id().as_uuid())
+                .bind(drain.transition.run_id().as_uuid())
+                .bind(locked.run.namespace_id.as_uuid())
+                .bind(&path_nodes)
+                .bind(&path_indices)
+                .bind(node.as_str())
+                .bind(step.get::<Uuid, _>("step_id"))
+                .bind(step.get::<String, _>("event_type"))
+                .bind(step.get::<String, _>("correlation_key"))
+                .bind(step.get::<OffsetDateTime, _>("due_at"))
+                .bind(step.get::<OffsetDateTime, _>("event_since"))
+                .bind(drain.transition.occurred_at())
+                .execute(&mut *tx)
+                .await
+                .map_err(store_error)?
+                .rows_affected();
+            if updated != 1 {
+                return Err(invalid_storage("collection event wait drain binding"));
+            }
+        }
         sqlx::query(
             "UPDATE steps SET status=CASE WHEN $5 AND node=$6 THEN 'FAILED' ELSE 'CANCELLED' END, \
                     failure_code=CASE WHEN $5 AND node=$6 THEN $7 ELSE failure_code END, \
-                    routed=true,waiting_kind=NULL,due_at=NULL,event_type=NULL,correlation_key=NULL, \
+                    routed=true,waiting_kind=NULL,due_at=NULL,event_type=NULL,correlation_key=NULL,event_since=NULL,event_scanned_at=NULL, \
                     next_attempt_at=NULL,cancel_requested=false,updated_at=$8 \
              WHERE tenant_id=$1 AND run_id=$2 AND instance_path_nodes=$3 \
                AND instance_path_indices=$4 \

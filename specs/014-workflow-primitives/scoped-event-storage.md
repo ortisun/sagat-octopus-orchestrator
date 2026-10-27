@@ -80,15 +80,15 @@ proofs. External event/timeout/cancel races belong to the later receiver/drain c
 Paused cold routing here uses an explicit native path command after the actual audited Resume;
 it does not establish automatic scheduler discovery of a scoped event wait.
 
-## Separate required drain increment
+## Collection drain checkpoint
 
-This storage boundary does not claim collection cancellation/drain completion. Current domain
-and scheduler eligibility (two scheduler guards) recognize waiting timers; the independent
-PgCollectionStore drain writer also has timer-only eligibility and does not clear event_since/
-event_scanned_at. It must gain exact event-binding read-set/cleanup and real cancellation/failure
-race evidence in a separate increment before public event waits can be activated. Low-level
-projection formatting or a pure StepCancelled replay cannot close this coordinator obligation.
-Stop/drain must already refuse new clocked work here, even while that lifecycle remains pending.
+The later bounded [collection drain checkpoint](./scoped-event-drain.md) extends the reducer,
+both scheduler eligibility guards and the independent PgCollectionStore writer together. It
+validates the current locked binding and deterministic identity, clears since/scan with the
+subscription, retires reservations atomically and preserves the timeout-first outcome. Real
+cancellation-first/timeout-first Run-lock barriers, sibling failure, native rollback and
+full/frontier journal parity are recorded in the ledger. This goes beyond projection formatting
+or pure StepCancelled replay. No public body, loop event drain or external receiver is activated.
 
 The later receiver still needs exact consumer/receipt identity, current ingress/own-run authority,
 payload classification/retention/quota, lookback and real event/timeout/cancel lock orders. Production

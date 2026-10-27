@@ -127,3 +127,19 @@ native caller must validate membership, immutable captured input, snapshot revis
 scheduler authority and post-wait database time before invoking the pure start command.
 No native caller or public shape is enabled by the evaluator port. Invalid computed lookup
 values retain the interpreter's existing canonical masking; no separate logging path is added.
+
+## Native lifecycle checkpoints
+
+The subsequent explicit native transaction ports now persist scoped wait start and timeout with
+own-shard post-lock database time and exact binding CAS; the collection drain coordinator also
+disposes those bindings with canonical identity checks and atomic reservation/slot retirement.
+These use the named immutable structured-codec fixture and real admission/activity completion.
+The lifecycle gate covers start, timeout, pause/cold explicit routing, malformed source, rollback,
+user cancellation, fail-fast sibling drain, both timeout/cancel Run-lock orders and full/frontier
+journal parity. See [storage](./scoped-event-storage.md), [drain](./scoped-event-drain.md) and the
+[command/results ledger](./implementation-0.3.md) for exact evidence and limitations.
+
+No dispatcher candidate discovery, scoped receipt/payload receiver, public body, SDK capability
+or automatic event-wait scheduler producer is enabled by these checkpoints. The enforceable
+old-dispatcher cutover, actual released-profile proof and final resource/SDK/release gates remain
+required before production scoped EVENT activation.

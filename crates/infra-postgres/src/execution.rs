@@ -322,7 +322,12 @@ impl PgRunStore {
                     .instance(&instance)
                     .ok_or_else(|| corrupt("scoped step identity"))?;
                 validate_scoped_control_row(definition.node_for_instance(&instance), step, row)?;
-                validate_scoped_event_identity(&definition, &record.info, &instance, row)?;
+                validate_scoped_event_identity(
+                    definition.node_for_instance(&instance),
+                    record.info.namespace_id,
+                    instance_step_id(record.info.version_id, run, &instance),
+                    row,
+                )?;
             }
         }
         let timer_read_states = state

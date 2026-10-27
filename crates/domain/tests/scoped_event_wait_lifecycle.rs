@@ -779,5 +779,7 @@ proptest::proptest! {
     }
 }
 
+#[path = "scoped_event_wait_lifecycle/cancellation.rs"]
+mod cancellation;
 #[path = "scoped_event_wait_lifecycle/timeouts.rs"]
 mod timeouts;

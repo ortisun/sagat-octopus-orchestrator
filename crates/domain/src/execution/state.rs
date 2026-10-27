@@ -1369,6 +1369,27 @@ impl StepState {
         }
     }
 
+    /// An open event suspension owns no worker/retry/control capability. Declaration and
+    /// current collection/Run authority must still be checked by the drain coordinator.
+    #[must_use]
+    pub fn is_valid_scoped_event_suspension(&self) -> bool {
+        self.valid_scoped_event_fields()
+            && self.status == StepStatus::Waiting
+            && !self.routed
+            && !self.timed_out
+            && self.failure.is_none()
+            && matches!(self.waiting, Some(WaitingOn::Event { .. }))
+    }
+
+    fn valid_scoped_event_fields(&self) -> bool {
+        self.attempt == 0
+            && self.generation == 0
+            && !self.cancel_requested
+            && self.next_attempt_at.is_none()
+            && self.condition.is_none()
+            && self.switch_selection.is_none()
+    }
+
     /// Complete logical lifecycle of a scoped event wait. Delivery/clock authority belongs to
     /// its caller; this validates projection shape, not permission or journal provenance.
     #[must_use]
@@ -1376,25 +1397,14 @@ impl StepState {
         let crate::workflow::NodeKind::WaitEvent { on_timeout, .. } = node.kind() else {
             return false;
         };
-        if self.attempt != 0
-            || self.generation != 0
-            || self.cancel_requested
-            || self.next_attempt_at.is_some()
-            || self.condition.is_some()
-            || self.switch_selection.is_some()
-        {
+        if !self.valid_scoped_event_fields() {
             return false;
         }
         match self.status {
             StepStatus::Pending => {
                 !self.routed && !self.timed_out && self.waiting.is_none() && self.failure.is_none()
             }
-            StepStatus::Waiting => {
-                !self.routed
-                    && !self.timed_out
-                    && self.failure.is_none()
-                    && matches!(self.waiting, Some(WaitingOn::Event { .. }))
-            }
+            StepStatus::Waiting => self.is_valid_scoped_event_suspension(),
             StepStatus::Succeeded => {
                 self.waiting.is_none()
                     && self.failure.is_none()
@@ -3030,6 +3040,17 @@ impl RunState {
                         index: *index,
                     },
                 )?;
+                if matches!(&reason, CollectionDrainReason::Failed { iteration, .. } if iteration == index)
+                    && self
+                        .steps
+                        .get(&entry)
+                        .is_some_and(StepState::is_valid_scoped_event_suspension)
+                {
+                    return Err(ExecutionError::IllegalCollectionTransition {
+                        collection: collection.clone(),
+                        event: name,
+                    });
+                }
                 let mut found = false;
                 for (instance, step) in self.steps.iter().filter(|(id, _)| id.path() == &path) {
                     found = true;
@@ -3041,7 +3062,8 @@ impl RunState {
                         && matches!(step.status, StepStatus::Pending | StepStatus::Ready))
                         || matches!(step.status, StepStatus::Ready | StepStatus::RetryWait)
                         || (matches!(step.waiting_on(), Some(WaitingOn::Timer { .. }))
-                            && step.is_valid_scoped_timer());
+                            && step.is_valid_scoped_timer())
+                        || step.is_valid_scoped_event_suspension();
                     if unresolved_derived || (!step.status.is_terminal() && !safe_to_stop) {
                         return Err(ExecutionError::IllegalCollectionTransition {
                             collection: collection.clone(),

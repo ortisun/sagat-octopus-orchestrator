@@ -1,7 +1,7 @@
 //! Clocked native timeout closure, not an external event receiver or public activation.
 use super::*;
 
-async fn waiting(name: &str, handled: bool) -> (Fixture, PgRunStore) {
+pub(super) async fn waiting(name: &str, handled: bool) -> (Fixture, PgRunStore) {
     let (fixture, store) = pending_wait_with_timeout(name, handled, 1).await;
     guards::start(&fixture, &store, false)
         .await
@@ -263,7 +263,7 @@ async fn native_timeouts_refuse_missing_authority_early_clocks_and_the_wrong_pin
     }
 }
 
-async fn operate(
+pub(super) async fn operate(
     fixture: &Fixture,
     store: &PgRunStore,
     operation: sagat_application::runs::RunOperation,
@@ -280,7 +280,7 @@ async fn operate(
         &fixture.world.admin,
         fixture.run,
         operation,
-        "native event wait pause/resume proof",
+        "native event wait lifecycle proof",
         None,
         key,
         &crate::support::engine::ctx(),

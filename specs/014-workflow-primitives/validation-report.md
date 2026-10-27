@@ -4005,3 +4005,23 @@ and key/type/coherent-window source CAS without Run revision. Strict adapter+tes
 read-only mechanism review found no required issue. This is private structured-codec/native-port
 evidence. Scheduler production/discovery, external receipt/value handling, cancellation/drain,
 old-dispatcher cutover and final SDK/rollout/resource/release acceptance remain open.
+
+### Scoped event-wait collection drain
+
+The new native cancellation case first failed with a run stuck CANCELLING. The reducer, both
+scheduler eligibility paths and independent PgCollectionStore writer now agree on a workerless
+event suspension, validate its current complete locked binding and canonical identity, clear the
+subscription/scan fields and retire reservations/slots atomically. A reviewed failure-entry
+replay mismatch was reproduced and fixed before acceptance; Pending-entry behavior is retained.
+
+Full domain587/0/0 across42target summaries passes36.59s command. The combined native lifecycle
+filter passes26/0/0 in97.65s harness/97.66s command. Native drain6 then final7cases additionally
+cover full/frontier journal parity, actual sibling-expression failure, both held-Run timeout/
+cancel orders, source corruption, current authority/revision, duplicate receipt and late
+post-cleanup journal failure with rollback of tenant capacity as well as all previous observations.
+The final7pass21.89s harness/97.83s command; this is separate from26, not33distinct cases.
+Strict workspace Clippy90.15s and final test-target lint26.93s pass. Runtime-role regressions
+pass timers13, controls23 and native transactions15 on the same executable; exact timings,
+hashes, fixture/compile failures and review correction are in implementation-0.3.md.
+Formatting, architecture and agent checks pass. No canonical task, loop event drain, external
+event receiver/producer/public body, nested-capacity or release acceptance is closed.

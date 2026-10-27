@@ -17,6 +17,7 @@ use sagat_infra_postgres::PgRunStore;
 use serde_json::json;
 use std::sync::Arc;
 
+mod cancellation;
 mod guards;
 mod timeouts;
 

@@ -89,6 +89,7 @@ pub(super) async fn snapshot(fixture: &Fixture) -> serde_json::Value {
           'scopes',(SELECT jsonb_agg(to_jsonb(s) ORDER BY scope_id) FROM iteration_scopes s WHERE s.tenant_id=r.tenant_id AND s.run_id=r.id), \
           'members',(SELECT jsonb_agg(to_jsonb(i) ORDER BY scope_id,iteration_index) FROM collection_iterations i WHERE i.tenant_id=r.tenant_id AND i.run_id=r.id), \
           'usage',(SELECT to_jsonb(u) FROM run_instance_usage u WHERE u.tenant_id=r.tenant_id AND u.run_id=r.id), \
+          'tenantIterations',(SELECT to_jsonb(u) FROM tenant_iteration_usage u WHERE u.tenant_id=r.tenant_id), \
           'retained',(SELECT to_jsonb(u) FROM tenant_retained_usage u WHERE u.tenant_id=r.tenant_id), \
           'payloads',(SELECT jsonb_agg(to_jsonb(p) ORDER BY digest) FROM payloads p WHERE p.tenant_id=r.tenant_id), \
           'audit',(SELECT jsonb_agg(to_jsonb(a) ORDER BY id) FROM audit_records a WHERE a.tenant_id=r.tenant_id), \

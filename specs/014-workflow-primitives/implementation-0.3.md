@@ -902,3 +902,64 @@ The corrected final integration test target passes strict Clippy in43.13s comman
 its shared build-lock wait. Formatting, diff, architecture24crates and agent configuration
 checks pass. This accepts only native timeout storage. Cancellation/drain is the next required
 bounded lifecycle increment; receiver, scheduler activation and release remain closed.
+
+## Scoped event-wait collection drain (in progress)
+
+The new [bounded drain contract](./scoped-event-drain.md) covers the reducer, both scheduler
+eligibility paths and the independent native coordinator. Native user cancellation first
+failed1 in2.91s harness/55.41s command: the run remained CANCELLING on its workerless event
+suspension. The first domain invocation failed compilation because the new test module needed
+an explicit path, not because behavior was disproved. After correcting only that path, the
+focused domain gate passed2/failed1 in0.98s command: a healthy waiting member could not drain,
+while malformed waiting fields and the existing cancellation regression passed.
+
+The intrinsic suspension predicate, pinned scheduler checks and native exact locked-row update
+then passed26domain cases in4.01s command. The first native correction attempt failed compilation
+for a missing OffsetDateTime import (17.02s command); the corrected native case passed1/0/0
+in2.59s harness/62.79s command. A fresh implementation review found a valid domain/native
+mismatch: failed drain could still manufacture generic failure from a waiting entry. The new
+focused case failed1 in1.18s command before adding the pre-mutation refusal. The corrected
+focused domain gate passed27; an additional positive case preserves Pending-entry failure.
+The third bounded review found no remaining issue in that correction.
+
+The first extended native gate passed1/failed2 in9.34s harness/80.82s command: the direct-port
+fixtures had not actually started collection drain, so even their positive control returned
+InvalidTransition. These failures are fixture setup errors, not production or malformed-row
+acceptance evidence. The fixture now runs the real fenced coordinator DrainStarted transition
+before preparing the direct request. Corrected native cases passed3/0/0 in10.72s harness/
+62.12s command: full/frontier progress and normalized drain journal parity, independent writer
+refusal of worker/type/since/namespace/UUID corruption, unchanged state on refusal, stable
+duplicate receipt, and an actual post-cleanup journal fault rolling back binding/counters/
+outbox before a successful same-receipt retry. All native services use sagat_app.
+
+Full domain regression, held-Run timeout/cancel ordering and real sibling-expression failure
+drain are being completed. No canonical task or public event body/delivery/producer is enabled.
+
+Full domain passed587/0/0 across42target summaries in36.59s command. The six-case native
+cancellation gate passed6/0/0 in19.14s harness/69.30s command: both actual held-Run timeout/
+cancel orders (including queued public cancellation), actual member-specific correlation
+failure and full/frontier drain, plus earlier parity/source/rollback cases. No sleeps order
+these races; exact backend identity and pg_blocking_pids prove the wait edges inside bounded
+stages. The complete same-source native lifecycle filter passed26/0/0 in97.65s harness/
+97.66s command. Strict workspace/all-target Clippy passed90.15s.
+
+Unchanged direct-harness regressions passed under sagat_app: timers13/0/0 in52.91s harness/
+52.93s command, controls23/0/0 in84.31s/84.32s, and native primitive transactions15/0/0
+in30.48s/30.49s (including stale/expired authority and capacity/storage regressions). All four
+direct filters used executable SHA256
+f4c923fd963889ba4bd509c09e04aced2b6628c507dadcc53caa9265e0bc857e;
+none was launched from a subsequently replaced executable.
+
+After those filters completed, the shared test snapshot additionally captured the tenant
+iteration counter. Its strengthened late journal-abort test passed1/0/0 in2.55s harness/
+53.73s command, with unchanged tenant active capacity as well as the previous observations.
+The final independent native authority/revision case and corrected test-target lint are now
+running. This test-only strengthening is separate from the preceding26-case invocation.
+
+The final cancellation profile passed7/0/0 in21.89s harness/97.83s command (including Cargo
+lock wait), with explicit native SchedulerFenceLost and RevisionConflict refusals, unchanged
+state/capacity on each refusal and a current-source positive control. All seven use the expanded
+tenant-iteration snapshot. Final test-target Clippy passed26.93s; formatting, diff, architecture
+24crates and agent configuration pass. This accepts collection event-wait drain, not loop event
+drain, receiver/discovery/producer/public body, nested capacity or release acceptance. The
+preceding26-case and final7-case runs are separate, not33distinct cases of one suite.
