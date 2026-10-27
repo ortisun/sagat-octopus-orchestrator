@@ -1,0 +1,1026 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sagat-octopus-orchestrator.io/schemas/app/v1.json",
+  "title": "Sagat app document (draft fragment, feature 027)",
+  "description": "Draft contract fragment, not merged and not implemented. To be merged as specs/001-platform-foundation/contracts/app.schema.json (T027-004). Shape checks only: the server codec (crates/infra-ir/src/apps/) also enforces depth of predicates, count ceilings, reference resolution, binding target compatibility, accessibility rules and the classification passing rule. Unknown fields are refused everywhere.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "pages"
+  ],
+  "properties": {
+    "apiVersion": {
+      "const": "sagat-octopus-orchestrator.io/v1"
+    },
+    "kind": {
+      "const": "App"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "title"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/slug"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 1000
+        }
+      }
+    },
+    "parameters": {
+      "description": "Declared URL query parameters. Never pii or secret: a URL is logged and shared.",
+      "type": "object",
+      "maxProperties": 32,
+      "propertyNames": {
+        "$ref": "#/$defs/id"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "classification"
+        ],
+        "properties": {
+          "schema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "enum": [
+                  "string",
+                  "integer",
+                  "boolean"
+                ]
+              },
+              "maxLength": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 256
+              },
+              "pattern": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "enum": {
+                "type": "array",
+                "maxItems": 64
+              }
+            }
+          },
+          "classification": {
+            "enum": [
+              "public",
+              "internal"
+            ]
+          }
+        }
+      }
+    },
+    "bindings": {
+      "type": "object",
+      "maxProperties": 256,
+      "propertyNames": {
+        "$ref": "#/$defs/bindingId"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/binding"
+      }
+    },
+    "customComponents": {
+      "description": "Pinned custom component versions. Allowed only when the namespace app policy enables them.",
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "version",
+          "digest"
+        ],
+        "properties": {
+          "name": {
+            "$ref": "#/$defs/slug"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "digest": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    "pages": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "$ref": "#/$defs/page"
+      }
+    }
+  },
+  "$defs": {
+    "slug": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 63,
+      "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$"
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "ref": {
+      "description": "A dotted path into component state, binding results, declared parameters or the session context (subject display, namespace slug, app version).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref"
+      ],
+      "properties": {
+        "ref": {
+          "type": "string",
+          "maxLength": 256,
+          "pattern": "^(components|bindings|params|session)(\\.[A-Za-z0-9_-]{1,64}){1,15}$"
+        }
+      }
+    },
+    "literal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "literal"
+      ],
+      "properties": {
+        "literal": {}
+      }
+    },
+    "template": {
+      "description": "Text with positional placeholders {0}..{7}, rendered as text, never as HTML.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "template"
+      ],
+      "properties": {
+        "template": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "args": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/ref"
+          }
+        }
+      }
+    },
+    "value": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ref"
+        },
+        {
+          "$ref": "#/$defs/literal"
+        }
+      ]
+    },
+    "mapping": {
+      "description": "Argument or input mapping: an object whose leaves are values. Validated by the server against the target schema.",
+      "type": "object",
+      "maxProperties": 64,
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/value"
+          },
+          {
+            "$ref": "#/$defs/mapping"
+          }
+        ]
+      }
+    },
+    "predicate": {
+      "description": "Presentation only (visibility, enablement); never an access decision. Depth at most 4, checked by the codec.",
+      "type": "object",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "ref"
+          ],
+          "properties": {
+            "op": {
+              "const": "notEmpty"
+            },
+            "ref": {
+              "$ref": "#/$defs/ref"
+            }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "left",
+            "right"
+          ],
+          "properties": {
+            "op": {
+              "enum": [
+                "eq",
+                "neq"
+              ]
+            },
+            "left": {
+              "$ref": "#/$defs/value"
+            },
+            "right": {
+              "$ref": "#/$defs/value"
+            }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "value",
+            "values"
+          ],
+          "properties": {
+            "op": {
+              "const": "in"
+            },
+            "value": {
+              "$ref": "#/$defs/value"
+            },
+            "values": {
+              "type": "array",
+              "maxItems": 64
+            }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "of"
+          ],
+          "properties": {
+            "op": {
+              "enum": [
+                "and",
+                "or"
+              ]
+            },
+            "of": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 8,
+              "items": {
+                "$ref": "#/$defs/predicate"
+              }
+            }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "of"
+          ],
+          "properties": {
+            "op": {
+              "const": "not"
+            },
+            "of": {
+              "$ref": "#/$defs/predicate"
+            }
+          }
+        }
+      ]
+    },
+    "trigger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "on"
+      ],
+      "properties": {
+        "on": {
+          "enum": [
+            "load",
+            "change",
+            "action",
+            "interval"
+          ]
+        },
+        "refs": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/ref"
+          }
+        },
+        "intervalSeconds": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 3600
+        }
+      }
+    },
+    "runTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": [
+            "run"
+          ]
+        },
+        {
+          "required": [
+            "chain"
+          ]
+        }
+      ],
+      "properties": {
+        "run": {
+          "$ref": "#/$defs/value"
+        },
+        "chain": {
+          "$ref": "#/$defs/value"
+        }
+      }
+    },
+    "binding": {
+      "type": "object",
+      "required": [
+        "kind",
+        "workflow"
+      ],
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "workflow",
+            "target",
+            "operation"
+          ],
+          "properties": {
+            "kind": {
+              "const": "query"
+            },
+            "workflow": {
+              "$ref": "#/$defs/slug"
+            },
+            "target": {
+              "$ref": "#/$defs/runTarget"
+            },
+            "operation": {
+              "$ref": "#/$defs/id"
+            },
+            "args": {
+              "$ref": "#/$defs/mapping"
+            },
+            "trigger": {
+              "$ref": "#/$defs/trigger"
+            }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "workflow",
+            "target",
+            "operation",
+            "label"
+          ],
+          "properties": {
+            "kind": {
+              "const": "update"
+            },
+            "workflow": {
+              "$ref": "#/$defs/slug"
+            },
+            "target": {
+              "$ref": "#/$defs/runTarget"
+            },
+            "operation": {
+              "$ref": "#/$defs/id"
+            },
+            "args": {
+              "$ref": "#/$defs/mapping"
+            },
+            "expectedStateRevision": {
+              "$ref": "#/$defs/ref"
+            },
+            "label": {
+              "$ref": "#/$defs/label"
+            }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "workflow",
+            "label"
+          ],
+          "properties": {
+            "kind": {
+              "const": "start"
+            },
+            "workflow": {
+              "$ref": "#/$defs/slug"
+            },
+            "version": {
+              "description": "Absent: the active version at invocation time.",
+              "type": "integer",
+              "minimum": 1
+            },
+            "input": {
+              "$ref": "#/$defs/mapping"
+            },
+            "label": {
+              "$ref": "#/$defs/label"
+            }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "workflow"
+          ],
+          "properties": {
+            "kind": {
+              "const": "listRuns"
+            },
+            "workflow": {
+              "$ref": "#/$defs/slug"
+            },
+            "status": {
+              "type": "array",
+              "maxItems": 13,
+              "items": {
+                "type": "string"
+              }
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "trigger": {
+              "$ref": "#/$defs/trigger"
+            }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "workflow",
+            "target",
+            "source"
+          ],
+          "properties": {
+            "kind": {
+              "const": "runResult"
+            },
+            "workflow": {
+              "$ref": "#/$defs/slug"
+            },
+            "target": {
+              "$ref": "#/$defs/runTarget"
+            },
+            "source": {
+              "enum": [
+                "input",
+                "result"
+              ]
+            },
+            "trigger": {
+              "$ref": "#/$defs/trigger"
+            }
+          }
+        },
+        {
+          "description": "Reserved for features 021/022; the server refuses it with BINDING_CAPABILITY_UNAVAILABLE until a standalone operation API exists.",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "workflow",
+            "operationRef"
+          ],
+          "properties": {
+            "kind": {
+              "const": "operation"
+            },
+            "workflow": {
+              "$ref": "#/$defs/slug"
+            },
+            "operationRef": {
+              "type": "string",
+              "maxLength": 128
+            }
+          }
+        }
+      ]
+    },
+    "layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "col",
+        "row",
+        "width",
+        "height"
+      ],
+      "properties": {
+        "col": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 12
+        },
+        "row": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 512
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 12
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        }
+      }
+    },
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "components"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "title": {
+          "$ref": "#/$defs/label"
+        },
+        "components": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "$ref": "#/$defs/component"
+          }
+        }
+      }
+    },
+    "component": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "layout"
+      ],
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "kind",
+            "layout"
+          ],
+          "properties": {
+            "id": true,
+            "layout": true,
+            "visibleWhen": true,
+            "kind": {
+              "const": "text"
+            },
+            "content": {
+              "type": "string",
+              "maxLength": 8000,
+              "description": "Closed Markdown subset; raw HTML is not rendered."
+            },
+            "value": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/template"
+                },
+                {
+                  "$ref": "#/$defs/ref"
+                }
+              ]
+            },
+            "headingLevel": {
+              "type": "integer",
+              "minimum": 2,
+              "maximum": 4
+            }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "kind",
+            "layout",
+            "caption",
+            "data",
+            "columns"
+          ],
+          "properties": {
+            "id": true,
+            "layout": true,
+            "visibleWhen": true,
+            "kind": {
+              "const": "table"
+            },
+            "caption": {
+              "$ref": "#/$defs/label"
+            },
+            "data": {
+              "$ref": "#/$defs/ref"
+            },
+            "columns": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 32,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "path",
+                  "label"
+                ],
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "maxLength": 256,
+                    "pattern": "^[A-Za-z0-9_-]{1,64}(\\.[A-Za-z0-9_-]{1,64}){0,15}$"
+                  },
+                  "label": {
+                    "$ref": "#/$defs/label"
+                  },
+                  "format": {
+                    "enum": [
+                      "text",
+                      "number",
+                      "datetime",
+                      "status",
+                      "boolean"
+                    ]
+                  }
+                }
+              }
+            },
+            "selection": {
+              "enum": [
+                "none",
+                "single"
+              ]
+            }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "kind",
+            "layout",
+            "label",
+            "submit"
+          ],
+          "properties": {
+            "id": true,
+            "layout": true,
+            "visibleWhen": true,
+            "kind": {
+              "const": "form"
+            },
+            "label": {
+              "$ref": "#/$defs/label"
+            },
+            "submit": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "binding",
+                "label"
+              ],
+              "properties": {
+                "binding": {
+                  "$ref": "#/$defs/bindingId"
+                },
+                "label": {
+                  "$ref": "#/$defs/label"
+                }
+              }
+            },
+            "hiddenFields": {
+              "type": "array",
+              "maxItems": 32,
+              "items": {
+                "type": "string",
+                "maxLength": 256
+              }
+            }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "kind",
+            "layout",
+            "title",
+            "chartType",
+            "data",
+            "x",
+            "y"
+          ],
+          "properties": {
+            "id": true,
+            "layout": true,
+            "visibleWhen": true,
+            "kind": {
+              "const": "chart"
+            },
+            "title": {
+              "$ref": "#/$defs/label"
+            },
+            "chartType": {
+              "enum": [
+                "bar",
+                "line"
+              ]
+            },
+            "data": {
+              "$ref": "#/$defs/ref"
+            },
+            "x": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "label"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "maxLength": 256
+                },
+                "label": {
+                  "$ref": "#/$defs/label"
+                }
+              }
+            },
+            "y": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "path",
+                  "label"
+                ],
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "maxLength": 256
+                  },
+                  "label": {
+                    "$ref": "#/$defs/label"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "kind",
+            "layout",
+            "label",
+            "action"
+          ],
+          "properties": {
+            "id": true,
+            "layout": true,
+            "visibleWhen": true,
+            "kind": {
+              "const": "button"
+            },
+            "label": {
+              "$ref": "#/$defs/label"
+            },
+            "variant": {
+              "enum": [
+                "primary",
+                "secondary",
+                "danger"
+              ]
+            },
+            "action": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "binding"
+              ],
+              "properties": {
+                "binding": {
+                  "$ref": "#/$defs/bindingId"
+                }
+              }
+            },
+            "enabledWhen": {
+              "$ref": "#/$defs/predicate"
+            }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "kind",
+            "layout",
+            "label",
+            "tabs"
+          ],
+          "properties": {
+            "id": true,
+            "layout": true,
+            "visibleWhen": true,
+            "kind": {
+              "const": "tabs"
+            },
+            "label": {
+              "$ref": "#/$defs/label"
+            },
+            "tabs": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 12,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "label",
+                  "components"
+                ],
+                "properties": {
+                  "id": {
+                    "$ref": "#/$defs/id"
+                  },
+                  "label": {
+                    "$ref": "#/$defs/label"
+                  },
+                  "components": {
+                    "type": "array",
+                    "maxItems": 64,
+                    "items": {
+                      "$ref": "#/$defs/component"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "kind",
+            "layout",
+            "component",
+            "title"
+          ],
+          "properties": {
+            "id": true,
+            "layout": true,
+            "visibleWhen": true,
+            "kind": {
+              "const": "custom"
+            },
+            "component": {
+              "$ref": "#/$defs/slug"
+            },
+            "title": {
+              "$ref": "#/$defs/label"
+            },
+            "props": {
+              "type": "object",
+              "maxProperties": 32,
+              "propertyNames": {
+                "$ref": "#/$defs/id"
+              },
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "value"
+                ],
+                "properties": {
+                  "value": {
+                    "$ref": "#/$defs/value"
+                  },
+                  "allowPii": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Allows a pii value in this property only; the publisher and the component version's uploader must hold the reveal grant (COMPONENT_AUTHOR_LEVEL)."
+                  }
+                }
+              }
+            },
+            "events": {
+              "type": "object",
+              "maxProperties": 16,
+              "propertyNames": {
+                "$ref": "#/$defs/id"
+              },
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": false,
+                "oneOf": [
+                  {
+                    "required": [
+                      "setState"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "invoke"
+                    ]
+                  }
+                ],
+                "properties": {
+                  "setState": {
+                    "$ref": "#/$defs/id"
+                  },
+                  "invoke": {
+                    "$ref": "#/$defs/bindingId"
+                  }
+                }
+              },
+              "description": "setState writes the component's own state key; values it sets and event payloads are frame-tainted (D1399): the codec refuses them in the target or arguments of any binding whose result can reach a frame and of any write binding (FRAME_TAINTED_FLOW)."
+            }
+          }
+        }
+      ]
+    },
+    "bindingId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 48,
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,47}$",
+      "description": "At most 48 characters and no ':' so the derived key app:<app-id>:<binding-id>:<action-key> stays within 118 characters (D1365)."
+    }
+  }
+}
