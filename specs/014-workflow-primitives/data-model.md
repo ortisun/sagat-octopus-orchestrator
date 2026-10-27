@@ -436,6 +436,16 @@ No table or public usage-counter reinterpretation follows from this model alone;
 publication remains closed. See `tasks/project-completion/capacity-group-lifecycle.md` and its
 bounded review/evidence rather than the rejected whole-protocol drafts.
 
+## Pure capacity eligibility prerequisite — 2026-10-26
+
+`TenantCapacity` (domain, constant-size counters `retained/enabled/draining`) models fresh-group
+admission, re-enabling, a single drain lane and read-only forward/reserved-drain claims against a
+trusted effective `iteration_concurrency` limit, including zero. It adds no table or column, changes
+no public usage counter and is not called by the scheduler, so flat iteration admission keeps the
+contract stated above (a reduction blocks new admissions and does not kill accepted work). Pausing
+admitted work after a reduction (D702) is a proposal pending owner question O701. See
+[capacity-eligibility.md](./capacity-eligibility.md).
+
 
 Chain scheduler fencing uses a transaction-typed SHARE guard followed by a fresh database clock
 comparison. It must not accept an expiry predicate sampled before a row-lock wait or release the

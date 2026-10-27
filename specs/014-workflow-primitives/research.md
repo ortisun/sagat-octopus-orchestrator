@@ -1768,3 +1768,16 @@ expression case adds distinct query result-schema failure, raw canary redaction 
 Run/state versions, plus actual publication of32queries/32updates. Approval authoring accepts32
 principals and retains33 refusal. Focused all-five results and exact commands are retained in
 `tasks/project-completion/evidence/sdk-public-gaps-20261018`; full60 integration remains separate.
+
+
+## Nested capacity eligibility (B1c) — D701–D703, G701–G712, O701–O704
+
+Range reserved for the nested-capacity lane (branch `feature/014-capacity-protocol`) so it cannot clash
+with `feature/014-v0.3-completion`. Full text, rules, evidence and review history:
+[capacity-eligibility.md](./capacity-eligibility.md).
+
+- **D701 (proposed)** — Reserved drain does not depend on the limit; above the bound one drain lane per tenant.
+- **D702 (proposed, pending O701)** — A reduction revokes no enabled group but stops new forward claims and re-enabling while `enabled > limit`. Stricter than the released contract (`data-model.md`, runbook).
+- **D703** — Parked groups keep counting against fresh allocation (flat `active_iterations` semantics).
+- **G701** holders with no claimable work must park/retire; **G702** which group parks, enable queue, fairness (B1d); **G703** drain throughput unmeasured; **G704** counters are a projection with a lock position (B0 order) and possession/enablement are separate axes; **G705** work class derived from consumed reservations; **G706** only root/top-level admissions allocate, descendants join; **G707** no lane→forward promotion; **G708** a parked group blocks fresh admission; **G709** lost wake-up unless the enable queue is scanned in the same transaction; **G710** hot tenant row; **G711** closed telemetry vocabulary; **G712** the drain lane has no lease.
+- **O701** After a reduction of `iteration_concurrency` (including 0), may already admitted work be paused? **O702** May a tenant execute above its limit, and by how much? **O703** At limit 0 must accepted compensation keep running? **O704** Does a parked group's unit count against the quota, and is serial drain above the bound acceptable?
