@@ -1033,3 +1033,15 @@ native/prefix verification pass1 coordinator in6.37s. Separate FORWARD6.55s/acti
 regressions and strict lint pass. Exact identities and all separate results are in
 released-v02-applied-20261027. Quota/drain frontier, mixed-dispatcher/public activation and
 canonical release tasks remain open.
+
+
+### Public scoped-event acceptance (feature014, 2026-10-27)
+
+FR-014-004/005/014/015/017 → collection_events six real runtime-role tests → unchanged canonical
+waitEvent/event-publish contracts with bounded public collection-body guard → existing exact-path
+receipt/outcome/audit/metrics → scoped-event-publication.md and its public happy/timeout/cancel/
+compensation demos. Actual released dispatcher login revocation, session termination and process
+join precede current publication in released_v02_cutover; old/new replay passes. Common
+collection-events passes all existing five SDKs without blessing. This is partial T014-014–017/
+040/043/044 evidence; nesting/capacity, final resource/fault and integrated six-SDK release gates
+remain open. No mixed-version or automatic operator-fencing claim is added.

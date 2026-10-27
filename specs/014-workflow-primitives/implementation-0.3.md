@@ -1513,3 +1513,44 @@ FORWARD1/0/0 in5.53s (8.31s runner), Applied1/0/0 in5.35s (8.63s runner). Rust i
 unchanged from bd4f611d; no repeated Rust lint claim is needed for this Python-only fix.
 [evidence/released-v02-selector-20261027](./evidence/released-v02-selector-20261027/README.md)
 retains the fault injection, RED/green and all positive outputs. No canonical task closes.
+
+
+## Public collection event waits and actual old-dispatcher cutover — 2026-10-27
+
+The public body guard now permits bounded event waits, reusing native admission/start, receipt,
+lookback, automatic deadline and stop/drain logic. Initial public RED:3failed at unsupported
+publication. An intermediate guard still refused Node.timeout populated from timeoutMs; using
+its existing validated event timeout corrected it. Final native public gate passes6/0/0 in16.20s
+(67.66s command): delivery/order/receipts, activity lookback, worker-free deadline, cancellation,
+original-effect compensation and control→event→control→activity with isolated local output.
+
+Actual released dispatcher uses its own inherited runtime login to complete a root wait. The
+coordinator proves login/current-connection access before NOLOGIN and session termination,
+refuses existing/fresh old connections, acknowledges stop and joins the real old process before
+current public publication. Both new waits deliver and old/new native replay pass. Preflight
+correctly failed at the closed publication guard; final1/0/0 passes5.36s (31.13s runner), including
+one nested old phase1/0/0 in1.39s, not a two-case aggregate. One bounded read-only review found
+no substantive issue. This is an explicit operator sequence, not mixed-version safety.
+
+Common collection-events first exposed non-deterministic concurrent journal ordering and a
+matching retained event in the deadline fixture. Concurrency1 and distinct deadline keys correct
+those fixture assumptions; native tests retain concurrency2. The next all-five observation was
+identical and failed only for missing references. Root inspected canonical IR, complete journals,
+two actual worker calls, scope outputs/peak1 and native projections before recording references.
+The no-bless all-five gate passed1aggregate/0failed in28.12s. Rust must join after feature034
+integration. No SDK/server assertions or normalized journal fields were removed.
+
+Details, commands and preserved failures/results: scoped-event-publication.md and its linked
+evidence. The eight canonical tasks remain open; this does not accept general loops, approvals,
+children/nesting/capacity, the full resource/fault matrix or final integrated release gates.
+
+
+Final public-event regression: native scoped_event_storage83/0/0 in296.59s, IR188/0/0,
+contracts49/0/0 plus SDK registry2/0/1ignored, strict workspace/all-target Clippy exit0 in73.87s,
+format/architecture24/agent checks and13Python profile verifiers pass. Initial Clippy rejected
+duplicate phase-module loading and err().expect(); one shared module and let-else correct
+those test-only issues without changing production behavior. All four actual released profiles
+pass again separately on the lint-corrected source: cutover60.90s runner, active-data9.66s,
+FORWARD8.43s, Applied8.41s. A missing CARGO_TARGET_DIR in one wrapper was refused before
+build/runtime; its0.09s setup failure is not a runtime RED. Exact receipts and source bindings
+are in evidence/public-scoped-events-20261027. No canonical or integrated release gate closes.

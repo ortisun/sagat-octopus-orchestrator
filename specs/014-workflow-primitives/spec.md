@@ -34,12 +34,15 @@ reservations without refunding lifetime instance budget. Local decisions read on
 iteration's item/index and outputs; the recorded answer and chosen route commit together under
 the Run revision and scheduler fence. A control entry is admitted PENDING without a worker task
 or notification identity; its durable journal and membership permit cold scheduler discovery.
-Waits, children and nested scopes remain separately gated. The v0.3 implementation checkpoint
-connects internal pinned scoped event subscriptions, automatic deadlines and the production
-dispatcher/lookback to exact-path receipt/value transactions; this does not activate public
-wait bodies. Internal event entry admission is additionally covered in
-[scoped-event-entry.md](./scoped-event-entry.md). Its evidence and remaining rollout boundary are in
-[scoped-event-receiver.md](./scoped-event-receiver.md). A body
+Children, approvals and nested scopes remain separately gated. The v0.3 public collection subset also permits `waitEvent` at entry or on a local route,
+using captured item/index correlation, durable lookback, qualified automatic deadlines and
+exact-instance receipts. Public HTTP/runtime-role tests prove delivery, timeout, cancellation
+and compensation; the `collection-events` common scenario proves the existing five SDKs.
+The actual released-source cold-cutover profile revokes the old dispatcher's distinct database
+login, terminates its existing sessions and joins its process before current publication.
+Operators must perform that sequence for every old service; this is no mixed-version safety
+claim. Root-addressed signals do not gain scoped-instance addressing. See
+[scoped-event-publication.md](./scoped-event-publication.md). A body
 activity may declare `compensateWith`, `reconcileWith`, `irreversible` and `highRisk`, and a failed or
 cancelled scope then compensates its completed iterations (FR-014-005, FR-014-006). A source prefix
 may supply an inline array or its own committed blob through `steps.fetch.output`; source-prefix

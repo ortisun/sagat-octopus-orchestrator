@@ -18,11 +18,14 @@ from urllib.parse import unquote, urlparse
 
 RELEASE = 'bfda342073db71e84f30bdc79ccf3fbc97a7153c'
 OVERLAYS = ('tests/fixtures/released-v02/phase.rs', 'tests/fixtures/released-v02/wait-state.sql',
-            'tests/fixtures/released-v02/inflight.rs', 'tests/fixtures/released-v02/control.rs')
+            'tests/fixtures/released-v02/inflight.rs', 'tests/fixtures/released-v02/control.rs',
+            'tests/fixtures/released-v02/cutover.rs')
 MAIN = 'tests/integration/workflow-primitives/main.rs'
 SUFFIX = b'\n#[path = "../../fixtures/released-v02/phase.rs"]\nmod released_v02_phase;\n'
 TARGET = 'integration_workflow_primitives'
 SCENARIOS = {
+    'scoped-event-cutover': ('released_v02_cutover::released_dispatcher_credentials_and_process_are_fenced_before_public_scoped_events',
+                             'tests/integration/workflow-primitives/released_v02_cutover.rs', 'scoped-event-cutover.txt'),
     'active-data': ('released_v02_upgrade::released_v02_active_rows_upgrade_progress_and_remain_readable_by_the_release',
                     'tests/integration/workflow-primitives/released_v02_upgrade.rs', 'upgrade.txt'),
     'inflight-worker': ('released_v02_inflight::a_released_worker_reports_and_replays_its_old_lease_after_server_upgrade',

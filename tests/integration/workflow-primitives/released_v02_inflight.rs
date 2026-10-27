@@ -10,12 +10,16 @@ use tokio::net::UnixStream;
 use uuid::Uuid;
 
 #[path = "../../fixtures/released-v02/control.rs"]
-mod control;
+pub(super) mod control;
 const RELEASE: &str = "bfda342073db71e84f30bdc79ccf3fbc97a7153c";
 
-fn verify_overlays(build: &Value) {
+pub(super) fn verify_overlays(build: &Value) {
     let overlays = build["overlays"].as_array().expect("verified overlay list");
-    let expected: [(&str, &[u8]); 4] = [
+    let expected: [(&str, &[u8]); 5] = [
+        (
+            "tests/fixtures/released-v02/cutover.rs",
+            include_bytes!("../../fixtures/released-v02/cutover.rs"),
+        ),
         (
             "tests/fixtures/released-v02/phase.rs",
             include_bytes!("../../fixtures/released-v02/phase.rs"),

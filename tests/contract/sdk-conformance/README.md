@@ -721,3 +721,14 @@ qualified timer graph nodes have attempt0 and cleared waits. The authored instan
 6/8/8 and depth1 are preserved in both reviewed canonical and workflow documents. Native
 transaction tests separately cover pause/cold resume, cancellation races, malformed state,
 prepared-write guards and rollback. A focused case is not complete64-scenario acceptance.
+
+
+`collection-events.json` exercises public `waitForEvent` inside collection bodies, directly at
+entry and after a real activity, plus handled deadlines. Namespace events precede execution and
+use distinct keys; lookback can satisfy each instance with its own durable receipt. A repeated
+event ID is DUPLICATE. The shared journal uses maxConcurrency 1 to avoid imposing an order on
+independent iterations; native public tests separately use concurrency 2. Timeout keys cannot
+match those previously published. Reviewed outputs retain journals, instance-aware worker calls,
+ordered scope results, peak active count and independent persisted server state. Rust joins this
+case through the release integration with feature034; existing five-language results are not a
+new all-six acceptance claim.

@@ -210,8 +210,7 @@ fn collection_publication_keeps_nested_bodies_closed() {
 }
 
 #[test]
-fn recorded_event_lifecycle_does_not_enable_unproven_collection_wait_delivery() {
-    use sagat_application::definitions::IrError;
+fn bounded_collection_event_waits_publish_at_entry_and_after_an_activity() {
     for at_entry in [true, false] {
         let mut document = chain_of(1, &serde_json::json!({}));
         let wait = serde_json::json!({"id":"notified","type":"waitEvent","eventType":"payment.notified","correlationExpr":"item.key","timeoutMs":60000,"lookbackMs":0,"next":"return-line"});
@@ -230,9 +229,8 @@ fn recorded_event_lifecycle_does_not_enable_unproven_collection_wait_delivery() 
         JsonIrCodec
             .parse_structured(&bytes)
             .expect("the internal model retains the event shape");
-        assert!(
-            matches!(JsonIrCodec.parse(&bytes), Err(IrError::Unsupported { .. })),
-            "entry={at_entry}: publication needs exact-instance native delivery and runtime evidence"
-        );
+        JsonIrCodec
+            .parse(&bytes)
+            .expect("bounded public scoped event wait");
     }
 }

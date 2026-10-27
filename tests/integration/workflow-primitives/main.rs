@@ -36,6 +36,7 @@ mod collection_data_limit_readers;
 mod collection_data_limit_schema;
 mod collection_empty_quota;
 mod collection_end_result;
+mod collection_events;
 mod collection_finish_atomic;
 mod collection_pipeline;
 mod collection_recovery;
@@ -65,6 +66,8 @@ mod projection;
 mod public_refusal_commit_loss;
 mod publication_rejections;
 mod refusal_secret_versions;
+#[cfg(unix)]
+mod released_v02_cutover;
 #[cfg(unix)]
 mod released_v02_inflight;
 mod released_v02_upgrade;

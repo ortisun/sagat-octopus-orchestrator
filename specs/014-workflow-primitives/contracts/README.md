@@ -143,9 +143,9 @@ fails the run with `EXPRESSION_ERROR`.
 
 ### Bodies that compensate (T014-014..021, D380-D389)
 
-On the unreleased 0.3 branch a collection body starts with an activity, condition, switch or timer,
+On the unreleased 0.3 branch a collection body starts with an activity, condition, switch, timer or event wait,
 contains one to eight executable nodes
-(activities, `condition`, `switch`, `timer`) and one terminal `return`.
+(activities, `condition`, `switch`, `timer`, `waitEvent`) and one terminal `return`.
 The 0.3 increment permits local acyclic success/error routes; all paths stay inside
 that body. A committed handled error does not fail the collection. An unhandled recovery
 failure retains its own failure code and uses the normal drain/compensation path. Each
@@ -168,9 +168,9 @@ the subsequent control transaction. Stored dispatch is checked against the pinne
 immutable journal marker by full/path/frontier readers. Migration 20261221000000 backfills old
 activity members; downgrade refuses retained scheduler admissions in either membership or
 append-only journal, including completed runs. OrdinaryLeafV1 certification stays activity-only.
-`saga`, event waits, child workflows and nested scopes remain closed. IR fields and worker minor1.5
+`saga`, approvals, child workflows and nested scopes remain closed. IR fields and worker minor1.5
 are unchanged. `collection-local-recovery`, `collection-control-routing` and
-`collection-control-entry` and `collection-timers` cover the focused common five-SDK contracts. This is not rolling
+`collection-control-entry`, `collection-timers` and `collection-events` cover the focused common five-SDK contracts. This is not rolling
 execution compatibility with a 0.2 scheduler; release must fence/drain old scheduler authority
 before admitting new 0.3 definitions and prove continued execution of pinned 0.2 runs.
 
@@ -712,3 +712,15 @@ handled timeout to its local onTimeout edge. This is trusted recorded replay onl
 fitness test retains public refusal for both WaitEvent entry and activity→WaitEvent bodies;
 qualified native dispatch/receipt/value authority and all-five runtime evidence remain required.
 See scoped-event-waits.md and implementation-0.3.md for exact pending boundaries and results.
+
+
+### Public collection event waits — 2026-10-27
+
+The public bounded collection body now accepts event waits at entry or on local routes. Exact
+instance receipts, lookback, automatic deadlines and canonical output use the existing native
+transactions; namespace event publishing is unchanged. Run/chain signals retain root addressing.
+The source-verified `scoped-event-cutover` profile revokes and terminates a distinct old database
+login, joins the actual released dispatcher process, then publishes and finishes new scoped waits.
+Operators must apply that cold-cutover sequence to all old control-plane/engine processes;
+this does not prove mixed-version operation. See scoped-event-publication.md for evidence and
+remaining release limits. No public wire field, migration, grant or worker minor is added.

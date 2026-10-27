@@ -14,7 +14,7 @@ use serde_json::json;
 use std::time::Duration;
 
 #[path = "control.rs"]
-mod control;
+pub(super) mod control;
 
 #[tokio::test]
 async fn report_old_lease_to_current_server() {

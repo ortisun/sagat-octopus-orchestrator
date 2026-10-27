@@ -1,0 +1,36 @@
+   Compiling sagat-tests v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/tests)
+    Finished `test` profile [unoptimized] target(s) in 50.38s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs/debug/deps/integration_workflow_primitives-7df55b39987620ef)
+
+running 3 tests
+test collection_events::public_activity_event_bodies_recover_already_dispatched_events_with_a_cold_receiver ... FAILED
+test collection_events::public_event_deadlines_route_without_worker_tasks ... FAILED
+test collection_events::public_event_entries_finish_in_input_order_with_scoped_receipts ... FAILED
+
+failures:
+
+---- collection_events::public_activity_event_bodies_recover_already_dispatched_events_with_a_cold_receiver stdout ----
+
+thread 'collection_events::public_activity_event_bodies_recover_already_dispatched_events_with_a_cold_receiver' (473031325) panicked at tests/integration/workflow-primitives/../../support/scope_flow.rs:166:14:
+the compensating collection publishes: Object {"code": String("VALIDATION_FAILED"), "details": Object {"kind": String("body"), "node": String("line"), "reason": String("UNSUPPORTED_NODE")}, "message": String("node 'line' is a 'body', which is not supported yet: the runtime supports a collection body of one to eight activities/conditions/switches/timers with local routes and one return"), "remediation": String("Correct what `details` names (a problem, a path) and send the request again."), "requestId": String("07f11a2d82e64a6e97e115f16802508c"), "retryable": Bool(false), "traceId": String("ff9698aa3332419984e00a2603204e4b")}
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- collection_events::public_event_deadlines_route_without_worker_tasks stdout ----
+
+thread 'collection_events::public_event_deadlines_route_without_worker_tasks' (473033118) panicked at tests/integration/workflow-primitives/../../support/scope_flow.rs:166:14:
+the compensating collection publishes: Object {"code": String("VALIDATION_FAILED"), "details": Object {"kind": String("body"), "node": String("line"), "reason": String("UNSUPPORTED_NODE")}, "message": String("node 'line' is a 'body', which is not supported yet: the runtime supports a collection body of one to eight activities/conditions/switches/timers with local routes and one return"), "remediation": String("Correct what `details` names (a problem, a path) and send the request again."), "requestId": String("eccfae87185a47809a237c35fe36b068"), "retryable": Bool(false), "traceId": String("77f80e2e01cf4561b6029493ae4f4f4b")}
+
+---- collection_events::public_event_entries_finish_in_input_order_with_scoped_receipts stdout ----
+
+thread 'collection_events::public_event_entries_finish_in_input_order_with_scoped_receipts' (473034053) panicked at tests/integration/workflow-primitives/../../support/scope_flow.rs:166:14:
+the compensating collection publishes: Object {"code": String("VALIDATION_FAILED"), "details": Object {"kind": String("body"), "node": String("line"), "reason": String("UNSUPPORTED_NODE")}, "message": String("node 'line' is a 'body', which is not supported yet: the runtime supports a collection body of one to eight activities/conditions/switches/timers with local routes and one return"), "remediation": String("Correct what `details` names (a problem, a path) and send the request again."), "requestId": String("dd7dd1aaf1c74925bc58dd80e27c6995"), "retryable": Bool(false), "traceId": String("7bb8d2f9e0264061a8c0ca78e1e1fc2f")}
+
+
+failures:
+    collection_events::public_activity_event_bodies_recover_already_dispatched_events_with_a_cold_receiver
+    collection_events::public_event_deadlines_route_without_worker_tasks
+    collection_events::public_event_entries_finish_in_input_order_with_scoped_receipts
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 690 filtered out; finished in 5.01s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

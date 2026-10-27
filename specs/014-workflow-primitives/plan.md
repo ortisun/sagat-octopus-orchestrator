@@ -693,3 +693,14 @@ capabilities, exact event/output/receipt/accounting and current scheduler finali
 old process verifies terminal REST/native history and the original prefix afterwards. Shared
 typed mode binds all phases. Quota/drain frontier, cold-dispatcher activation and the remaining
 complete runtime/resource/SDK/release guarantees stay open in the0.3 ledger.
+
+
+### Public scoped event acceptance — 2026-10-27
+
+The next bounded increment opens collection `waitEvent` entry/local routes after actual released
+old-dispatcher credential revocation, established-session termination and process join. Reuse the
+native exact-path receiver/deadline/scheduler implementations; change only the public body-kind
+guard. Keep the eight-node bound and existing graph/schema/tenant rules. Root signals, loops,
+approvals/children/nesting/capacity remain separately gated. Public and common-SDK evidence and
+observed failures are in scoped-event-publication.md and implementation-0.3.md. No canonical task
+closes through this partial increment; final integrated six-language and release gates remain.

@@ -4224,3 +4224,26 @@ RED4.43s); the exact-case/final-outer-summary guard rejects it (green2.82s). Ver
 pass0.081s. Actual active-data, FORWARD and Applied profiles separately pass1/0/0 in6.47s,5.53s
 and5.35s under the fixed guard. Rust fixtures are unchanged from bd4f611d. The ledger and
 released-v02-selector-20261027 retain exact outputs and the genuine negative control.
+
+
+### Public collection event waits and released-process cutover — 2026-10-27
+
+Six public runtime-role native cases pass6/0/0 in16.20s. The actual released dispatcher cold-cutover
+profile passes1/0/0 in5.36s after real credential revocation/session termination/process join;
+its old nested phase is a separate1/0/0, not an aggregate. The focused common five-SDK scenario
+passes1aggregate/0failed without blessing in28.12s after inspecting identical outputs. Initial
+publication and fixture failures, review, exact source/phase identity and limitations are in
+scoped-event-publication.md and evidence/public-scoped-events-20261027. Root/chain signals retain
+root addressing. General nesting/capacity and final all-six release gates remain open; no canonical
+task closes through this bounded increment.
+
+
+Final public-event regression: native scoped_event_storage83/0/0 in296.59s, IR188/0/0,
+contracts49/0/0 plus SDK registry2/0/1ignored, strict workspace/all-target Clippy exit0 in73.87s,
+format/architecture24/agent checks and13Python profile verifiers pass. Initial Clippy rejected
+duplicate phase-module loading and err().expect(); one shared module and let-else correct
+those test-only issues without changing production behavior. All four actual released profiles
+pass again separately on the lint-corrected source: cutover60.90s runner, active-data9.66s,
+FORWARD8.43s, Applied8.41s. A missing CARGO_TARGET_DIR in one wrapper was refused before
+build/runtime; its0.09s setup failure is not a runtime RED. Exact receipts and source bindings
+are in evidence/public-scoped-events-20261027. No canonical or integrated release gate closes.

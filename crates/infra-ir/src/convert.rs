@@ -676,7 +676,8 @@ fn is_activity_chain(body: &sagat_domain::workflow::BodyDefinition, limit: usize
 /// A validated body is already acyclic, reachable, closed and has exactly one terminal return.
 /// One local branch executes at a time. Entry dispatch distinguishes worker activities from
 /// scheduler-owned controls; conditions/switches use a revision-fenced exact-path snapshot.
-/// Waits and nesting retain their separate admission gates.
+/// Event waits use the same scheduler-owned admission and exact-path receiver as timers.
+/// Children, approvals and nesting retain their separate admission gates.
 fn is_collection_body(body: &sagat_domain::workflow::BodyDefinition) -> bool {
     if !body.node(body.entrypoint()).is_some_and(|node| {
         matches!(
@@ -685,6 +686,7 @@ fn is_collection_body(body: &sagat_domain::workflow::BodyDefinition) -> bool {
                 | NodeKind::Condition { .. }
                 | NodeKind::Switch { .. }
                 | NodeKind::Timer { .. }
+                | NodeKind::WaitEvent { .. }
         )
     }) {
         return false;
@@ -700,6 +702,7 @@ fn is_collection_body(body: &sagat_domain::workflow::BodyDefinition) -> bool {
             NodeKind::Timer { .. } if node.next().is_some() && node.timeout().is_none() => {
                 steps += 1
             }
+            NodeKind::WaitEvent { .. } if node.next().is_some() => steps += 1,
             NodeKind::Return { .. } => {}
             _ => return false,
         }
@@ -819,7 +822,7 @@ pub(crate) fn published_collection_definition(
             return Err(IrError::Unsupported {
                 node: body.name().as_str().to_owned(),
                 kind: "body".to_owned(),
-                reason: "the runtime supports a collection body of one to eight activities/conditions/switches/timers with local routes and one return",
+                reason: "the runtime supports a collection body of one to eight activities/conditions/switches/timers/event waits with local routes and one return",
             });
         }
     }

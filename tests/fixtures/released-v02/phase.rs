@@ -11,6 +11,8 @@ use uuid::Uuid;
 
 const RELEASE: &str = "bfda342073db71e84f30bdc79ccf3fbc97a7153c";
 
+mod cutover;
+
 fn profile_path() -> std::path::PathBuf {
     assert_eq!(
         env!("SAGAT_RELEASE_PROFILE_COMMIT"),

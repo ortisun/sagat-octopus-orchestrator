@@ -340,7 +340,7 @@ SAGAT_SDK_SCENARIO=collection-control-routing cargo test -p sagat-tests --test s
 ```
 
 The published body has an activity/condition/switch entry, up to eight executable activity/condition/switch
-nodes and one Return. Control entry, waits, children and nesting remain gated. The existing
+nodes and one Return. Conditions, switches, timers and event waits may be scheduler-owned entries. Children, approvals and nesting remain gated. The existing
 wire fields and worker minor1.5 are unchanged; a full release-wide compatibility matrix
 remains required before shipping.
 
@@ -656,9 +656,13 @@ source/executable hashes and phase results in a private artifact directory. Allo
 8 GiB free before building. No production database or credentials are required.
 
 This profile covers old admitted READY/unleased activities and root event waits. It does not
-authorize old execution processes against newly enabled scoped waits. Keep scoped-event
-publication closed until the old-dispatcher stop/join/credential fence and public/SDK gates
-are proven; a successful root-wait upgrade alone does not meet that cutover prerequisite.
+authorize old execution processes against newly enabled scoped waits. The separate `scoped-event-cutover` profile now proves the old dispatcher credential fence,
+stop/join and public scoped delivery. A successful root-wait upgrade alone is still insufficient.
+Before enabling these workflows in production, revoke every old deployment login, terminate
+its established database sessions and stop/join every old control-plane/engine process; use
+distinct runtime logins per deployment generation. A shared unchanged database login does not
+provide that credential fence. Workers using the supported old protocol may reconnect to
+current services; this does not authorize old control-plane or engine binaries.
 See the [bounded contract](../../specs/014-workflow-primitives/released-v02-profile.md) and
 [actual evidence](../../specs/014-workflow-primitives/evidence/released-v02-20261027/README.md).
 
@@ -691,3 +695,26 @@ runs a second REST/native reader and rechecks the original prefix. The report re
 the nested forward result, with one fingerprinted receipt and logical-output charge before
 aggregation. This proves released-source compatibility for that shape; quota/drain/frontier
 compensation, dispatcher cutover, public scoped events and full release readiness remain open.
+
+
+### Public collection event waits (v0.3)
+
+A bounded collection body may start at `waitEvent`, or route to it after its own activities,
+conditions, switches or timers. Correlation reads the captured `item`, `index` and local step
+outputs. `lookbackMs` permits an earlier namespace event; each wait has its own durable receipt.
+`onTimeout` is a local body edge; an unhandled timeout drains the collection and compensates
+known completed effects. A suspended wait has no worker lease. Run/chain signals retain their
+existing root addressing; publish a namespace event to satisfy a scoped event wait.
+
+Run the current public/SDK checks and the actual old-process cutover fixture:
+
+```sh
+SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test -p sagat-tests --test integration_workflow_primitives --locked -- collection_events::
+SAGAT_SDK_SCENARIO=collection-events cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+CARGO_TARGET_DIR=<owned-absolute-target-outside-repository> python3 scripts/test-released-v02-profile.py --scenario scoped-event-cutover
+```
+
+The common scenario uses concurrency 1 to compare a deterministic journal. The native tests
+use concurrency 2 and independently inspect correlation, retained values, ordered results,
+receipts, replay and slot release. Do not roll back to an old execution binary while unsupported
+new records remain; use a compatible current reader and roll forward to recover.
