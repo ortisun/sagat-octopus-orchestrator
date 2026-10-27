@@ -12,10 +12,9 @@ start action. Recorded replay is not itself authority to accept an external deli
 
 Before native activation, preserve the exact pinned kind, complete path, evaluation snapshot,
 current Run/shard/ancestor authority and database time through atomic journal/projection, event
-binding, payload/classification/quota, receipt/delivery and routing commit. The current dispatcher
-WaitingStep/cursor/consumer identity is run+node only: it must retain qualified path identity,
-paginate without skipping siblings and deduplicate delivery per exact instance while preserving
-root compatibility. No body publication is enabled by merely persisting waiting_kind=EVENT.
+binding, payload/classification/quota, receipt/delivery and routing commit. Qualified candidate preparation below retains the complete path and physical UUID, while
+receipt construction and native discovery stay root-only. The future receiver must deduplicate
+delivery per exact instance while preserving root compatibility. No body publication is enabled by merely persisting waiting_kind=EVENT.
 
 Prove event-before-wait/lookback, event/timeout/cancel lock orders, stale prepared state and
 post-wait authority, duplicate receipt, rollback/lost acknowledgement, tenant/namespace boundaries,
@@ -24,10 +23,10 @@ OrdinaryLeafV1 closed and compare full/frontier runtime journals. Existing root 
 wire semantics remain unchanged. Native/scoped compensation, general nesting, released-profile
 rollout and complete release gates remain separately open.
 
-## Next bounded interface: qualified dispatch identity (proposal)
+## Qualified dispatch candidate preparation
 
-WaitingStep will carry the existing shared ExecutionInstanceId plus the stored step UUID,
-keeping tenant/namespace/run/event type/correlation/since. The dispatcher cursor becomes
+WaitingStep carries the existing shared ExecutionInstanceId plus the stored step UUID,
+keeping tenant/namespace/run/event type/correlation/since. The dispatcher cursor uses
 (run,instance), ordered in SQL by run, path-node array, path-index array and definition node;
 the same tuple controls ORDER BY and the strict after predicate. This is database tuple
 ordering, not the derived Rust ExecutionInstanceId::Ord (which interleaves path segments).
@@ -37,11 +36,17 @@ status=WAITING, waiting_kind=EVENT, event type/correlation/since and event_scann
 It preserves sibling markers and refuses a stale or foreign candidate. Tenant identity is
 explicit even when another tenant reuses UUIDs.
 
-Legacy root delivery consumers stay byte-for-byte wait:{run}/{node}. A scoped consumer uses
-a disjoint bounded namespace wait-instance:{run}/{stepUuid}; the existing instance UUID/path
-columns in event_deliveries are available for later native receipt evidence. Trigger keys stay
-unchanged. The eventual transactional writer must validate consumer and instance metadata
-against its pinned own snapshot before recording; a candidate is not execution authority.
+Legacy root delivery consumers stay byte-for-byte wait:{run}/{node}; trigger keys and receipt
+metadata stay unchanged. DeliveryRef::to_wait now returns None for nonroot candidates, and
+undelivered_event_for refuses them without querying the inbox. Scheduler wake refuses them
+before opening its root RunTx and verifies a root candidate's UUID against the transaction's
+pinned version/run/instance before any receipt/output. Candidate identity grants no execution
+authority. Scan marker comparison includes the selected stored UUID and exact path arrays.
+
+The future scoped receiver and receipt writer must introduce the disjoint bounded namespace
+wait-instance:{run}/{stepUuid} together, validate its metadata against the pinned current own
+snapshot, and atomically retain the existing instance UUID/path columns in event_deliveries.
+No scoped consumer or receipt metadata is constructed by this preparation increment.
 
 The preceding preparation guard restricts native discovery to root paths and adds no scoped
 receiver. Both waits_for_event and unscanned_waits require empty path arrays;
@@ -49,7 +54,7 @@ mark_wait_scanned keeps the same guard and compares the selected event binding a
 Native tests prove injected scoped rows neither consume a root cursor page nor receive scan
 markers. The legitimate root is marked; each independently changed type/key/since and foreign
 tenant/namespace candidate is inert. These are storage sentinels, not an executable scoped wait.
-That avoids projecting a qualified candidate through the existing root-only wake command.
+This prevents projecting a qualified candidate through the existing root-only wake command.
 Only the later proven scoped receiver may widen discovery. External event completion follows
 the existing ingress/own-Run receipt authority; scheduler-owned start/timeout additionally
 need current shard authority. Applicable ancestor/stop/group eligibility still guards routing.

@@ -3922,3 +3922,15 @@ fencing and public scoped waits remain pending. Full64 on38d7b3f0 initially fail
 missing database-runner prerequisite; the prerequisite build and focused five-language database
 scenario now pass, with full64 retry still running. See the implementation ledger for exact
 source, executable hashes, command timings and retained failures. No canonical task closes.
+
+
+### Qualified event candidates, receiver still closed
+
+The candidate port now carries canonical path/node plus stored UUID, and its explicit SQL
+cursor tuple is preserved by scheduler pagination. Root receipt construction, wake and lookback
+refuse nonroot candidates. A current root wake checks UUID against its pinned version/run;
+scan CAS also pins physical/logical identity. Four application and four app-role native tests
+pass after three genuine RED assertions (legacy receipt construction, cursor and UUID/path CAS).
+Existing root consumer/trigger metadata is unchanged. No scoped consumer or receipt is built,
+and no native start/timeout/receiver or public capability is enabled. Exact source gate results
+and limitations are in the implementation ledger; final integrated release gates remain open.

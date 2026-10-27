@@ -1810,7 +1810,7 @@ pub(crate) fn instance_path(
     Ok(path)
 }
 
-fn stored_path_parts(path: &InstancePath) -> (Vec<String>, Vec<i32>) {
+pub(crate) fn stored_path_parts(path: &InstancePath) -> (Vec<String>, Vec<i32>) {
     path.segments()
         .iter()
         .map(|segment| {

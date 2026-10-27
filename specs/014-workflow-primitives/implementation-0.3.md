@@ -668,3 +668,39 @@ review found the lookback test did not independently prove filtering before LIMI
 sentinels now sort earlier and lookback uses limit1 with an exact root-node assertion.
 This is a test-strengthening correction; no production query changed. Final lookback-strengthened focused gate passed2/0/0,4.27s harness/65.76s command. The separate broader qualified-interface design
 keeps scoped delivery construction closed until its native receiver exists.
+
+
+## Qualified event candidate preparation
+
+The bounded interface design received a fresh read-only review with no required issue. It
+retains complete WaitingStep.instance and stored step_id, uses the same SQL tuple for cursor
+seek/order, and preserves root-only discovery and delivery. It does not introduce a scoped
+consumer or receipt writer: those must arrive together with actual receiver authority.
+A root receiver also verifies the candidate UUID against its own pinned version/run/instance;
+nonroot candidates are refused before opening the root RunTx. The existing canonical stored
+path encoder/parser is reused instead of introducing another mapper or a second identity.
+
+Mechanical interface adaptation preserved the old behavior long enough to observe genuine
+failures: event-candidate-root-delivery-red passed2 and failed1 when a scoped candidate made
+a legacy root receipt. event-candidate-identity-red passed2 and failed2: root was returned
+after a scoped cursor, and wrong UUID/path candidates both marked root ([true,true]). These
+are actual behavior failures, not compilation or infrastructure errors. Corrected application
+and native gates are recorded below once complete. Public scoped waits, start/timeout clocks,
+new receipt/value ownership and the old-dispatcher activation fence remain unimplemented.
+
+
+Corrected application gate passed4/0/0 in5.25s command. The runtime-role native gate passed
+4/0/0 in9.57s harness/87.91s command: exact cursor tuple, root discovery/lookback pages,
+current binding markers, physical/logical candidate CAS and closed scoped lookback all pass.
+These are candidate/storage preparation tests, not event acceptance by a scoped receiver.
+Existing root dispatcher regressions and strict workspace Clippy are rerunning for the new
+UUID guard and changed port signature before this increment is accepted. New full64 remains
+tied to38d7b3f0; its SDK sources/prerequisites are fixed separately from the working tree.
+
+
+Final candidate implementation review found no required issue. Existing root dispatch passed
+24/0/0 in80.87s harness/120.55s command, including real event/timeout, fan-out and lookback
+regressions under sagat_app. Strict workspace/all-targets Clippy passed125.26s command.
+Architecture24crates and agent configuration pass. These close the bounded candidate increment,
+not its future receiver or any canonical task. Root/trigger receipt construction retains the
+legacy columns and keys; nonroot construction remains explicitly refused.

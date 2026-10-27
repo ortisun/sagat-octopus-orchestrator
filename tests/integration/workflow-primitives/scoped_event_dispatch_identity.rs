@@ -7,8 +7,8 @@ use sagat_application::{
 };
 use sagat_domain::{
     events::EventId,
-    execution::{CorrelationKey, RunId},
-    workflow::EventType,
+    execution::{CorrelationKey, ExecutionInstanceId, InstancePath, RunId},
+    workflow::{EventType, NodeId},
 };
 use sagat_infra_postgres::PgRunStore;
 use serde_json::json;
@@ -98,12 +98,12 @@ async fn root_event_discovery_excludes_scoped_rows_before_taking_a_cursor_page()
         .expect("first root page");
     assert_eq!(first.len(), 1);
     assert_eq!(
-        first[0].node.as_str(),
+        first[0].instance.node().as_str(),
         "pay",
         "scoped aaa must not consume the root page"
     );
     let next = matcher
-        .waits_for_event(&event, Some((run, &first[0].node)), 1)
+        .waits_for_event(&event, Some((run, &first[0].instance)), 1)
         .await
         .expect("after root cursor");
     assert!(next.is_empty());
@@ -116,7 +116,7 @@ async fn root_event_discovery_excludes_scoped_rows_before_taking_a_cursor_page()
         1,
         "earlier scoped rows must not consume the root lookback page"
     );
-    assert_eq!(unscanned[0].node.as_str(), "pay");
+    assert_eq!(unscanned[0].instance.node().as_str(), "pay");
     assert_eq!(metadata_snapshot(&w, run).await, before);
 }
 
@@ -181,5 +181,75 @@ async fn root_scan_markers_refuse_siblings_foreign_scope_and_changed_bindings() 
             .bind(w.admin.tenant_id().as_uuid()).bind(run.as_uuid()).bind(wait.correlation_key.as_str()).bind(wait.event_type.as_str()).bind(wait.since).execute(&w.db.pool).await.expect("restore owned binding fixture");
         assert_eq!(metadata_snapshot(&w, run).await, before);
     }
+    assert_eq!(metadata_snapshot(&w, run).await, before);
+}
+
+#[tokio::test]
+async fn scan_markers_refuse_changed_physical_or_logical_candidate_identity() {
+    let (w, matcher, run, event, before) = fixture("root-event-candidate-cas", "pay").await;
+    let wait = matcher
+        .waits_for_event(&event, None, 1)
+        .await
+        .expect("candidate")
+        .remove(0);
+    let mut wrong_id = wait.clone();
+    wrong_id.step_id = Uuid::new_v4();
+    let mut wrong_path = wait.clone();
+    wrong_path.instance = ExecutionInstanceId::in_path(
+        InstancePath::root()
+            .child(NodeId::parse("lines").expect("scope"), 0)
+            .expect("path"),
+        wait.instance.node().clone(),
+    );
+    assert!(
+        matcher
+            .undelivered_event_for(&wait)
+            .await
+            .expect("root lookback")
+            .is_some()
+    );
+    assert!(
+        matcher
+            .undelivered_event_for(&wrong_path)
+            .await
+            .expect("closed scoped lookback")
+            .is_none()
+    );
+    let mut marked = Vec::new();
+    for candidate in [wrong_id, wrong_path] {
+        matcher
+            .mark_wait_scanned(&candidate)
+            .await
+            .expect("stale identity is inert");
+        marked.push(root_marked(&w, run).await);
+        sqlx::query("UPDATE steps SET event_scanned_at=NULL WHERE tenant_id=$1 AND run_id=$2 AND cardinality(instance_path_nodes)=0")
+            .bind(w.admin.tenant_id().as_uuid()).bind(run.as_uuid()).execute(&w.db.pool).await.expect("reset owned marker");
+    }
+    assert_eq!(
+        marked,
+        vec![false, false],
+        "neither wrong UUID nor wrong path may mark root"
+    );
+    assert_eq!(metadata_snapshot(&w, run).await, before);
+}
+
+#[tokio::test]
+async fn event_cursor_uses_complete_database_tuple_even_while_discovery_is_root_only() {
+    let (w, matcher, run, event, before) = fixture("root-event-candidate-cursor", "aaa").await;
+    let scoped = ExecutionInstanceId::in_path(
+        InstancePath::root()
+            .child(NodeId::parse("lines").expect("scope"), 0)
+            .expect("path"),
+        NodeId::parse("aaa").expect("node"),
+    );
+    // Empty path arrays sort before nonempty ones, irrespective of the local node name.
+    let after = matcher
+        .waits_for_event(&event, Some((run, &scoped)), 1)
+        .await
+        .expect("qualified cursor");
+    assert!(
+        after.is_empty(),
+        "the root is before the scoped cursor, not after local node aaa"
+    );
     assert_eq!(metadata_snapshot(&w, run).await, before);
 }

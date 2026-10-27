@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::events::EventEnvelope;
-use sagat_domain::execution::{CorrelationKey, RunId};
+use sagat_domain::execution::{CorrelationKey, ExecutionInstanceId, RunId};
 use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_domain::triggers::{CronSpec, Trigger, TriggerKind};
 use sagat_domain::workflow::{EventType, Expression, NodeId, WorkflowDefinition};
@@ -183,11 +183,24 @@ pub struct WaitingStep {
     pub tenant_id: TenantId,
     pub namespace_id: NamespaceId,
     pub run_id: RunId,
-    pub node: NodeId,
+    pub instance: ExecutionInstanceId,
+    pub step_id: Uuid,
     pub event_type: EventType,
     pub correlation_key: CorrelationKey,
     /// The wait accepts events received at or after this instant.
     pub since: OffsetDateTime,
+}
+
+impl WaitingStep {
+    /// A root-only receiver may use this candidate only with its pinned physical identity.
+    /// This check grants no authority to deliver; the caller still owns the current run lock.
+    #[must_use]
+    pub fn root_node(&self, version: WorkflowVersionId) -> Option<&NodeId> {
+        (self.instance.path().is_root()
+            && self.step_id
+                == crate::execution::instance_step_id(version, self.run_id, &self.instance))
+        .then_some(self.instance.node())
+    }
 }
 
 /// What recording a delivery needs to know about its consumer.
@@ -204,18 +217,21 @@ pub struct DeliveryRef {
 }
 
 impl DeliveryRef {
-    /// The delivery of `event` to the wait `step`.
+    /// The legacy root delivery of `event` to `step`; scoped delivery has no native receiver yet.
     #[must_use]
-    pub fn to_wait(event: &ClaimedEvent, step: &WaitingStep) -> Self {
-        Self {
+    pub fn to_wait(event: &ClaimedEvent, step: &WaitingStep) -> Option<Self> {
+        if !step.instance.path().is_root() {
+            return None;
+        }
+        Some(Self {
             namespace_id: event.namespace_id,
             source: event.envelope.key.source.to_string(),
             event_id: event.envelope.key.event_id.to_string(),
-            consumer: format!("wait:{}/{}", step.run_id, step.node),
+            consumer: format!("wait:{}/{}", step.run_id, step.instance.node()),
             run_id: Some(step.run_id),
-            node: Some(step.node.as_str().to_owned()),
+            node: Some(step.instance.node().as_str().to_owned()),
             trigger_id: None,
-        }
+        })
     }
 
     /// The delivery of `event` to the trigger `id`, which starts `run`.
@@ -269,12 +285,14 @@ pub trait EventDispatchStore: Send + Sync {
     ) -> impl Future<Output = Result<Vec<StoredTrigger>, StoreError>> + Send;
 
     /// Steps waiting for exactly this event: same namespace, type and correlation key, and a wait
-    /// that began early enough to accept it. In order of (run, node), after `after`, at most
-    /// `limit`: a fan-out larger than a page is walked page by page.
+    /// that began early enough to accept it. In SQL tuple order of (run, path nodes, path
+    /// indices, node), after `after`, at most
+    /// `limit`: a fan-out larger than a page is walked page by page. This is not the derived
+    /// Rust instance order. Discovery stays root-only until qualified delivery is implemented.
     fn waits_for_event(
         &self,
         event: &ClaimedEvent,
-        after: Option<(RunId, &NodeId)>,
+        after: Option<(RunId, &ExecutionInstanceId)>,
         limit: u32,
     ) -> impl Future<Output = Result<Vec<WaitingStep>, StoreError>> + Send;
 

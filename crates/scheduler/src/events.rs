@@ -315,7 +315,7 @@ where
         // The waits that want this event, a page at a time. A wait that is woken is no longer a
         // wait, but one that is not (it lost a race, or already had the event) stays, so the walk
         // goes on from where the last page ended and not from the start.
-        let mut after: Option<(RunId, sagat_domain::workflow::NodeId)> = None;
+        let mut after: Option<(RunId, sagat_domain::execution::ExecutionInstanceId)> = None;
         loop {
             let waits = self
                 .store
@@ -325,14 +325,14 @@ where
                     self.settings.fan_out,
                 )
                 .await?;
-            let last = waits.last().map(|w| (w.run_id, w.node.clone()));
+            let last = waits.last().map(|w| (w.run_id, w.instance.clone()));
             let page = waits.len();
             for step in waits {
                 match self.wake(&step, event, &document, "event").await {
                     Ok(Woken::Yes) => round.steps_woken += 1,
                     Ok(Woken::No | Woken::Refused) => {}
                     Err(error) => {
-                        tracing::warn!(%error, run = %step.run_id, node = %step.node, "waking a step failed");
+                        tracing::warn!(%error, run = %step.run_id, node = %step.instance.node(), "waking a step failed");
                         failure.get_or_insert(error);
                     }
                 }
@@ -511,6 +511,9 @@ where
         document: &[u8],
         via: &'static str,
     ) -> Result<Woken, EngineError> {
+        if !step.instance.path().is_root() {
+            return Ok(Woken::No);
+        }
         let Some(mut tx) = self
             .store
             .begin(step.tenant_id, step.run_id, Lock::Wait)
@@ -518,10 +521,13 @@ where
         else {
             return Ok(Woken::No);
         };
+        if step.root_node(tx.info().version_id).is_none() {
+            return Ok(Woken::No);
+        }
         // Under the run's lock, is the step still waiting for exactly this?
         let still_waiting = {
             let (def, state) = tx.parts();
-            let waiting = state.step(&step.node).is_some_and(|s| {
+            let waiting = state.step(step.instance.node()).is_some_and(|s| {
                 s.status() == StepStatus::Waiting
                     && matches!(
                         s.waiting_on(),
@@ -531,23 +537,23 @@ where
             });
             waiting
                 && matches!(
-                    def.node(&step.node).map(Node::kind),
+                    def.node(step.instance.node()).map(Node::kind),
                     Some(NodeKind::WaitEvent { event_type, .. }) if *event_type == step.event_type
                 )
         };
         if !still_waiting {
             return Ok(Woken::No);
         }
-        if !tx
-            .record_delivery(&DeliveryRef::to_wait(event, step))
-            .await?
-        {
+        let Some(delivery) = DeliveryRef::to_wait(event, step) else {
+            return Ok(Woken::No);
+        };
+        if !tx.record_delivery(&delivery).await? {
             return Ok(Woken::No);
         }
         // What a run retains is bounded (every lease carries it).
         let retained: usize = tx.data().await?.outputs.values().map(Vec::len).sum();
         if retained.saturating_add(document.len()) > MAX_RUN_OUTPUT_BYTES {
-            tracing::warn!(run = %step.run_id, node = %step.node, "an event was not delivered: the run keeps too much output");
+            tracing::warn!(run = %step.run_id, node = %step.instance.node(), "an event was not delivered: the run keeps too much output");
             metrics::counter!("event_wakeups_total", "outcome" => "refused").increment(1);
             return Ok(Woken::Refused);
         }
@@ -559,13 +565,15 @@ where
             step.run_id.to_string(),
             format!(
                 "event '{}/{}' woke '{}'",
-                event.envelope.key.source, event.envelope.key.event_id, step.node
+                event.envelope.key.source,
+                event.envelope.key.event_id,
+                step.instance.node()
             ),
             None,
             OffsetDateTime::now_utc(),
         ));
-        effects.outputs = vec![(step.node.clone(), document.to_vec())];
-        let node = step.node.clone();
+        effects.outputs = vec![(step.instance.node().clone(), document.to_vec())];
+        let node = step.instance.node().clone();
         match self
             .engine
             .run(&mut tx, effects, move |def, state, now| {
@@ -718,7 +726,7 @@ where
                 Ok(Woken::No | Woken::Refused) => {}
                 Err(error) => {
                     // Leave it unscanned: the next round looks again.
-                    tracing::warn!(%error, run = %step.run_id, node = %step.node, "delivering a past event failed");
+                    tracing::warn!(%error, run = %step.run_id, node = %step.instance.node(), "delivering a past event failed");
                     continue;
                 }
             }
