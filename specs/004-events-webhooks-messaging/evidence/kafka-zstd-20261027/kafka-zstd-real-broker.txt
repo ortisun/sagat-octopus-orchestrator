@@ -654,4 +654,3 @@ running 1 test
 test us03::us03_kafka_redelivery_poison_messages_and_a_lost_offset_commit_leave_one_run_per_event ... ok
 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 6.26s
-

@@ -26,3 +26,5 @@ reports are not runtime evidence. Owner-selected same-model review only, no exte
 
 This is focused dependency/compatibility evidence, not a full integrated v0.3 release pass.
 CI, merge and final release-tree gates remain separate.
+
+Stored text receipts normalize only final blank lines. transcripts.json binds original and stored SHA256 values.
