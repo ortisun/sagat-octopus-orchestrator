@@ -231,3 +231,14 @@ proves extra CA trust, name validation and mutual client identity, including thr
 missing new canonical-number dependency; normal resolution added only ryu-js, then --locked
 passed (0.11 s). No lockfile was regenerated. Architecture (24 crates), agent configuration,
 bash syntax and actionlint for the three changed workflows passed.
+
+Package acceptance: `rust-sdk-committed-artifact-consumer` exited 0 (12.24 s), source cefbde24,
+84,777-byte `sagat-octopus-orchestrator-sdk-0.3.0.crate`, SHA256
+1073709e5a5d93c01e58a1c4c278e0e847e5c62db5e128de5b7120ce5d1c359a. Cargo verified the archive;
+a separate consumer built and ran from its extracted contents, resolved its new lock normally,
+then ran --locked. SDK dependency audit exited 0 against 1,380 current RustSec advisories
+(227 dependencies). Workflow actionlint and shell syntax passed.
+Workspace Clippy using the previously owned Redis target saw a phantom Redis enum variant not
+present in this checkout's domain source; that target had been reused across worktrees. No source
+was changed to satisfy stale metadata. A newly created, worktree-specific platform target is
+rebuilding the workspace gate; the failure and isolated result are distinct receipts.

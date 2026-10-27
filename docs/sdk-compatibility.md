@@ -6,7 +6,7 @@ reviewed-golden hashes and35 independently compared runtime artifacts are record
 `tasks/project-completion/evidence/chain-sdk-20261017.json`. Segment waits retain their exact-run
 behavior; explicit chain waits follow the final outcome. Shared release gates remain open.
 
-The five official SDKs report version `0.2.0`. They use the additive
+The five released SDKs report version `0.2.0`; the new official Rust SDK is a `0.3.0` candidate tracked by feature 034. They use the additive
 `sagat-octopus-orchestrator.io/v1` workflow document and offer worker protocol `1.5` by default.
 These versions describe different boundaries:
 
@@ -26,6 +26,7 @@ These versions describe different boundaries:
 | Python | 0.2.0 | 1.5 | additive v1 |
 | .NET/C# | 0.2.0 | 1.5 | additive v1 |
 | Java | 0.2.0 | 1.5 | additive v1 |
+| Rust candidate | 0.3.0 | 1.5 | additive v1 |
 
 ## Current public compatibility matrix
 

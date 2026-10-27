@@ -31,5 +31,13 @@
   `rust-sdk-user-stories-and-faults` exit 0 (126.11 s), 6 e2e + 9 fault cases. Existing SDK
   native/type/style gates all passed (`rust-sdk-regression-*`); no backend semantic change.
   The integrated six-language release run remains a release gate, not claimed by this Rust-only receipt.
-- [ ] T034-007 Add package/clean-consumer/CI/version/runtime-matrix/readme examples; run format,
+- [x] T034-007 Add package/clean-consumer/CI/version/runtime-matrix/readme examples; run format,
   clippy/tests/conformance/package and record actual evidence before acceptance or release.
+
+  Evidence: `rust-sdk-committed-artifact-consumer` exit 0 (12.24 s), immutable SDK source
+  cefbde24, `.crate` SHA256 `1073709e5a5d93c01e58a1c4c278e0e847e5c62db5e128de5b7120ce5d1c359a`;
+  extracted-artifact consumer resolves once and runs again --locked. SDK/runner strict Clippy,
+  Rust unit/TLS suites, all 60 Rust common scenarios, e2e/fault suites and existing-five native
+  gates passed. CI/package/compatibility docs updated; actionlint/bash syntax/architecture pass.
+  SDK dependency audit exit 0 (227 dependencies). Product release integration, its all-six live
+  run, feature 014 acceptance and Redis 033 cold-cutover remain separate release work.

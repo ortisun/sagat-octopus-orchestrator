@@ -393,7 +393,7 @@ or the ecosystem's standard (C#: `System.Diagnostics.Metrics`).
 Pure, deterministic constructors of the IR. `build()` returns the document (the language's JSON value)
 and `toJson()` the canonical text: **RFC 8785** (JSON Canonicalization Scheme) — UTF-8, no insignificant
 whitespace, the keys of every object sorted by their **UTF-16 code units**, numbers as ECMAScript prints them
-(`1.0` is `1`, `600000` stays `600000`, never `6e5`). The same program in the five languages **MUST** produce
+(`1.0` is `1`, `600000` stays `600000`, never `6e5`). The same program in the six languages **MUST** produce
 byte-identical canonical text. (Keys that differ only above U+FFFF sort differently by code point than by UTF-16
 code unit; the rule is the UTF-16 one.)
 
@@ -436,7 +436,7 @@ Linking (the whole algorithm — it is why the output is the same everywhere):
 
 ### 7.1 Managed database operations (feature 017)
 
-All five SDKs emit the same canonical `type: database` node. `connectionRef` is
+All six SDKs emit the same canonical `type: database` node. `connectionRef` is
 `{name, revision?}` within the workflow namespace, never a DSN, password or provider
 path. `operation` is `query` or `execute`. Parameters are either
 `{literal: {type, value}}` or `{type, expression}`. Tags are `null`, `boolean`,
