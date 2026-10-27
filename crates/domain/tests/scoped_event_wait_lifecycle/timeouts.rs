@@ -399,3 +399,79 @@ proptest::proptest! {
         }
     }
 }
+
+#[test]
+fn event_lifecycle_projection_checks_the_pinned_timeout_policy_and_terminal_metadata() {
+    for timeout_route in [false, true] {
+        let def = definition_with_routes(false, timeout_route);
+        let member = wait(0);
+        let declared = def.node_for_instance(&member).expect("wait declaration");
+        let mut full = state();
+        assert!(
+            full.instance(&member)
+                .expect("pending")
+                .is_valid_scoped_event_wait(declared)
+        );
+        full.apply_addressed(&started()).expect("waiting");
+        assert!(
+            full.instance(&member)
+                .expect("waiting")
+                .is_valid_scoped_event_wait(declared)
+        );
+        for outcome in [
+            RunEvent::WaitSatisfied {
+                node: id("notified"),
+            },
+            RunEvent::WaitTimedOut {
+                node: id("notified"),
+                handled: timeout_route,
+            },
+            RunEvent::StepFailed {
+                node: id("notified"),
+                code: FailureCode::expression_error(),
+                fence: None,
+            },
+            RunEvent::StepCancelled {
+                node: id("notified"),
+            },
+        ] {
+            let mut settled = full.clone();
+            settled
+                .apply_addressed(&event(outcome))
+                .expect("recorded terminal projection");
+            assert!(
+                settled
+                    .instance(&member)
+                    .expect("terminal")
+                    .is_valid_scoped_event_wait(declared)
+            );
+        }
+        let mut wrong = full.clone();
+        wrong
+            .apply_addressed(&event(RunEvent::WaitTimedOut {
+                node: id("notified"),
+                handled: !timeout_route,
+            }))
+            .expect("malformed policy projection");
+        assert!(
+            !wrong
+                .instance(&member)
+                .expect("wrong policy")
+                .is_valid_scoped_event_wait(declared)
+        );
+        let mut wrong = full.clone();
+        wrong
+            .apply_addressed(&event(RunEvent::StepFailed {
+                node: id("notified"),
+                code: FailureCode::parse("OTHER_FAILURE").expect("code"),
+                fence: None,
+            }))
+            .expect("unknown failure projection");
+        assert!(
+            !wrong
+                .instance(&member)
+                .expect("wrong failure")
+                .is_valid_scoped_event_wait(declared)
+        );
+    }
+}

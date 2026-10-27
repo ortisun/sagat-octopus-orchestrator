@@ -62,7 +62,7 @@ impl IrCodec for StructuredJsonIrCodec {
     }
 }
 
-fn structured_workflow(name: &str) -> serde_json::Value {
+pub(super) fn structured_workflow(name: &str) -> serde_json::Value {
     json!({
         "apiVersion": "sagat-octopus-orchestrator.io/v1",
         "kind": "Workflow",
@@ -160,12 +160,25 @@ fn collection_transition(
 }
 
 async fn fixture_with_progress(name: &str, prepare_collection: bool) -> Fixture {
+    fixture_document_with_progress(name, prepare_collection, structured_workflow(name)).await
+}
+
+/// Internal structured-codec fixture only; this does not enable public publication.
+pub(super) async fn fixture_with_document(name: &str, document: serde_json::Value) -> Fixture {
+    fixture_document_with_progress(name, true, document).await
+}
+
+async fn fixture_document_with_progress(
+    name: &str,
+    prepare_collection: bool,
+    document: serde_json::Value,
+) -> Fixture {
     let world = world().await;
     world.put_secret("root-key", "root-secret-value").await;
     world.put_secret("scoped-key", "scoped-secret-value").await;
     let (workflow, _) = world.publish(chain(name)).await;
     let tenant = world.admin.tenant_id().as_uuid();
-    let document = serde_json::to_vec(&structured_workflow(name)).expect("structured document");
+    let document = serde_json::to_vec(&document).expect("structured document");
     StructuredJsonIrCodec
         .parse(&document)
         .expect("valid structured document");

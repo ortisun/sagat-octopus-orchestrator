@@ -1369,6 +1369,51 @@ impl StepState {
         }
     }
 
+    /// Complete logical lifecycle of a scoped event wait. Delivery/clock authority belongs to
+    /// its caller; this validates projection shape, not permission or journal provenance.
+    #[must_use]
+    pub fn is_valid_scoped_event_wait(&self, node: &crate::workflow::Node) -> bool {
+        let crate::workflow::NodeKind::WaitEvent { on_timeout, .. } = node.kind() else {
+            return false;
+        };
+        if self.attempt != 0
+            || self.generation != 0
+            || self.cancel_requested
+            || self.next_attempt_at.is_some()
+            || self.condition.is_some()
+            || self.switch_selection.is_some()
+        {
+            return false;
+        }
+        match self.status {
+            StepStatus::Pending => {
+                !self.routed && !self.timed_out && self.waiting.is_none() && self.failure.is_none()
+            }
+            StepStatus::Waiting => {
+                !self.routed
+                    && !self.timed_out
+                    && self.failure.is_none()
+                    && matches!(self.waiting, Some(WaitingOn::Event { .. }))
+            }
+            StepStatus::Succeeded => {
+                self.waiting.is_none()
+                    && self.failure.is_none()
+                    && (!self.timed_out || on_timeout.is_some())
+            }
+            StepStatus::Failed => {
+                self.waiting.is_none()
+                    && !self.timed_out
+                    && (self.failure.as_ref() == Some(&FailureCode::expression_error())
+                        || (on_timeout.is_none()
+                            && self.failure.as_ref() == Some(&FailureCode::wait_timed_out())))
+            }
+            StepStatus::Cancelled => {
+                self.routed && !self.timed_out && self.waiting.is_none() && self.failure.is_none()
+            }
+            _ => false,
+        }
+    }
+
     /// Rebuilds a step from trusted storage (a projection row). The reducer's checks do not run:
     /// the rows were written from states the reducer produced, and tests compare the result with a
     /// replay of the journal.

@@ -1,7 +1,7 @@
 //! Pure preparation of qualified event waits; no subscription or external delivery authority.
 use super::{
     AddressedProgress, AddressedRunEvent, CorrelationKey, ExecutionError, ExecutionInstanceId,
-    FailureCode, PathExecutionState, RunEvent, RunState, StepState, StepStatus, WaitingOn,
+    FailureCode, PathExecutionState, RunEvent, RunState, StepStatus, WaitingOn,
 };
 use crate::workflow::{NodeKind, WorkflowDefinition};
 use time::OffsetDateTime;
@@ -68,7 +68,7 @@ fn prepared_start(
             "event start targeted another kind",
         ));
     };
-    if !valid_event_scheduler_fields(step) || step.waiting_on().is_some() {
+    if !step.is_valid_scoped_event_wait(declared) {
         return Err(ExecutionError::Invariant(
             "invalid pending scoped event state",
         ));
@@ -120,19 +120,6 @@ pub fn time_out_event_wait_path_instance(
     super::command::settle_path(definition, state, vec![event])
 }
 
-// Open event waits never own attempts, retries, control choices or a pending cancellation.
-fn valid_event_scheduler_fields(step: &StepState) -> bool {
-    step.attempt() == 0
-        && step.generation() == 0
-        && !step.cancel_requested()
-        && !step.routed()
-        && !step.timed_out()
-        && step.next_attempt_at().is_none()
-        && step.failure().is_none()
-        && step.condition().is_none()
-        && step.switch_selection().is_none()
-}
-
 fn prepared_timeout(
     definition: &WorkflowDefinition,
     state: &PathExecutionState,
@@ -167,16 +154,16 @@ fn prepared_timeout(
             "event timeout targeted another kind",
         ));
     };
-    if !valid_event_scheduler_fields(step) {
-        return Err(ExecutionError::Invariant(
-            "invalid scoped event waiting state",
-        ));
-    }
     let Some(WaitingOn::Event { deadline, .. }) = step.waiting_on() else {
         return Err(ExecutionError::Invariant(
             "event timeout requires an event binding",
         ));
     };
+    if !step.is_valid_scoped_event_wait(declared) {
+        return Err(ExecutionError::Invariant(
+            "invalid scoped event waiting state",
+        ));
+    }
     if *deadline > now {
         return Err(ExecutionError::NotYetDue(instance.node().clone()));
     }

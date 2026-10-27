@@ -26,23 +26,26 @@ use uuid::Uuid;
 use crate::collection_outputs;
 use crate::execution::{
     PgRunStore, RUN_SNAPSHOT, instance_path, run_record, scoped_control_metadata_empty,
-    scoped_timer_metadata_valid, step_instance_path, step_state,
+    scoped_event_metadata_valid, scoped_timer_metadata_valid, step_instance_path, step_state,
     validate_collection_entry_dispatch, validate_scoped_control_row,
+    validate_scoped_event_identity,
 };
 use crate::identity::{col, corrupt, store_error};
 use crate::pool::BeginSafely;
 
 /// The columns of a step that `step_state` reads, plus the identity and the retained output.
 const MEMBER_STEPS: &str = concat!(
-    "SELECT s.node, s.instance_path_nodes, s.instance_path_indices, \
+    "SELECT s.node, s.instance_path_nodes, s.instance_path_indices, s.namespace_id, s.step_id, \
         s.status, s.attempt, s.generation, s.cancel_requested, s.routed, s.condition, \
         s.switch_case_id, s.timed_out, s.failure_code, s.next_attempt_at, s.waiting_kind, \
-        s.due_at, s.correlation_key, s.child_run_id, s.approval_request_id, p.content AS output, \
+        s.due_at, s.correlation_key, s.event_type, s.event_since, s.child_run_id, s.approval_request_id, p.content AS output, \
         s.node_kind AS stored_node_kind, (",
     scoped_control_metadata_empty!(),
     ") AS control_metadata_empty, (",
     scoped_timer_metadata_valid!(),
-    ") AS timer_metadata_valid \
+    ") AS timer_metadata_valid, (",
+    scoped_event_metadata_valid!(),
+    ") AS event_metadata_valid \
      FROM unnest($4::int[]) AS member(last_index) \
      JOIN steps s ON s.tenant_id = $1 AND s.run_id = $2 \
       AND s.instance_path_nodes = $3 \
@@ -210,6 +213,7 @@ async fn member_steps(
             &step,
             row,
         )?;
+        validate_scoped_event_identity(&scope_run.definition, &scope_run.info, &instance, row)?;
         by_member.entry(last).or_default().insert(instance, step);
     }
     Ok(by_member)

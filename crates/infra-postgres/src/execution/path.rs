@@ -57,12 +57,14 @@ impl PathExecutionTx for PgPathExecutionTx {
         owner: &str,
         lease: sagat_application::shards::Lease,
     ) -> Result<bool, StoreError> {
+        self.own_scheduler_time = None;
         let Some(now) =
             locked_scheduler_time(&mut self.tx, self.snapshot.info.run_id, owner, lease).await?
         else {
             return Ok(false);
         };
         self.now = now;
+        self.own_scheduler_time = Some(now);
         Ok(true)
     }
 
@@ -345,6 +347,13 @@ impl PgPathExecutionTx {
                 detail: "a bounded write contains root-only effects".into(),
             });
         }
+        scoped_events::require_scoped_event_clock(
+            &self.snapshot.definition,
+            events,
+            &self.event_wait_read_states,
+            self.own_scheduler_time,
+            self.now,
+        )?;
         if events.iter().any(|event| {
             !matches!(
                 event.event(),
@@ -354,6 +363,7 @@ impl PgPathExecutionTx {
                     | RunEvent::StepFailed { .. }
                     | RunEvent::ConditionEvaluated { .. }
                     | RunEvent::SwitchEvaluated { .. }
+                    | RunEvent::WaitStarted { .. }
                     | RunEvent::TimerStarted { .. }
                     | RunEvent::TimerFired { .. }
                     | RunEvent::StepRouted { .. }
@@ -1029,12 +1039,35 @@ impl PgPathExecutionTx {
             Some(WaitingOn::Reconciliation) => (Some("RECONCILIATION"), None),
             Some(WaitingOn::Operator { .. }) => (Some("OPERATOR"), None),
             Some(WaitingOn::Timer { due_at }) => (Some("TIMER"), Some(*due_at)),
+            Some(WaitingOn::Event { deadline, .. }) => (Some("EVENT"), Some(*deadline)),
             Some(_) => return Err(corrupt("bounded step waiting kind")),
         };
         let declared = self.snapshot.definition.node_for_instance(instance);
         validate_scoped_control_projection(declared, &step)?;
         let kind = declared.map_or("FORWARD", |node| node.origin().label());
         let node_kind = declared.map_or("activity", |node| node.kind().label());
+        let pinned = self.snapshot.definition.node_for_instance(instance);
+        let next_event = EventWaitReadState::from_step(&step);
+        let old_event = self.event_wait_read_states.get(instance).cloned();
+        let event_type = next_event.event_type(pinned).map(str::to_owned);
+        let event_since = if node_kind == "waitEvent" {
+            next_event.since(pinned)?
+        } else {
+            None
+        };
+        let old_event_type = old_event
+            .as_ref()
+            .and_then(|read| read.event_type(pinned))
+            .map(str::to_owned);
+        let old_event_since = if node_kind == "waitEvent" {
+            old_event
+                .as_ref()
+                .map(|read| read.since(pinned))
+                .transpose()?
+                .flatten()
+        } else {
+            None
+        };
         let status = step.status().as_str();
         let attempt = i32::try_from(step.attempt()).map_err(|_| corrupt("attempt"))?;
         let generation = i64::try_from(step.generation()).map_err(|_| corrupt("generation"))?;
@@ -1121,10 +1154,14 @@ impl PgPathExecutionTx {
                 self.timer_read_states
                     .insert(instance.clone(), TimerReadState::from_step(&step));
             }
+            if node_kind == "waitEvent" {
+                self.event_wait_read_states
+                    .insert(instance.clone(), next_event);
+            }
             return Ok(());
         }
 
-        if node_kind != "timer" {
+        if !matches!(node_kind, "timer" | "waitEvent") {
             self.ensure_path_node_kind(instance, node_kind).await?;
         }
         let updated = sqlx::query(concat!(
@@ -1148,15 +1185,24 @@ impl PgPathExecutionTx {
                     reported_lease_token_hash=CASE WHEN $6 IN ('LEASED','RUNNING') THEN NULL \
                       WHEN $25::bytea IS NOT NULL THEN $25 ELSE reported_lease_token_hash END, \
                     output_digest=COALESCE($16,output_digest),waiting_kind=$26,updated_at=$14, \
-                    condition=$27,switch_case_id=$28,due_at=$31 \
+                    condition=$27,switch_case_id=$28,due_at=$31, \
+                    event_type=CASE WHEN $30='waitEvent' THEN $35 ELSE s.event_type END, \
+                    correlation_key=CASE WHEN $30='waitEvent' THEN $36 ELSE s.correlation_key END, \
+                    event_since=CASE WHEN $30='waitEvent' THEN $37 ELSE s.event_since END, \
+                    event_scanned_at=CASE WHEN $30='waitEvent' THEN NULL ELSE s.event_scanned_at END \
              WHERE tenant_id=$1 AND run_id=$2 AND node=$3 AND step_id=$4 AND namespace_id=$5 \
                AND instance_path_nodes=$17 AND instance_path_indices=$18 \
                AND (NOT $29 OR (s.node_kind=$30 AND (($30='timer' AND (",
             scoped_timer_metadata_valid!(),
             ")) OR ($30 IN ('condition','switch') AND (",
             scoped_control_metadata_empty!(),
+            ")) OR ($30='waitEvent' AND (",
+            scoped_event_metadata_valid!(),
             "))))) AND ($30<>'timer' OR (s.due_at IS NOT DISTINCT FROM $32 \
-              AND s.status=$33 AND s.routed=$34))",
+              AND s.status=$33 AND s.routed=$34)) \
+               AND ($30<>'waitEvent' OR (s.due_at IS NOT DISTINCT FROM $38 AND s.status=$39 AND s.routed=$40 \
+                 AND s.event_type IS NOT DISTINCT FROM $41 AND s.correlation_key IS NOT DISTINCT FROM $42 \
+                 AND s.event_since IS NOT DISTINCT FROM $43))",
         ))
         .bind(self.snapshot.info.tenant_id.as_uuid())
         .bind(self.snapshot.info.run_id.as_uuid())
@@ -1186,12 +1232,21 @@ impl PgPathExecutionTx {
         .bind(waiting_kind)
         .bind(step.condition())
         .bind(stored_switch_case_id(&step))
-        .bind(matches!(node_kind, "condition" | "switch" | "timer"))
+        .bind(matches!(node_kind, "condition" | "switch" | "timer" | "waitEvent"))
         .bind(node_kind)
         .bind(due_at)
         .bind(self.timer_read_states.get(instance).and_then(|read| read.due_at))
         .bind(self.timer_read_states.get(instance).map(|read| read.status.as_str()))
         .bind(self.timer_read_states.get(instance).map(|read| read.routed))
+        .bind(event_type.as_deref())
+        .bind(next_event.key.as_ref().map(CorrelationKey::as_str))
+        .bind(event_since)
+        .bind(old_event.as_ref().and_then(|read|read.deadline))
+        .bind(old_event.as_ref().map(|read|read.status.as_str()))
+        .bind(old_event.as_ref().map(|read|read.routed))
+        .bind(old_event_type.as_deref())
+        .bind(old_event.as_ref().and_then(|read|read.key.as_ref()).map(CorrelationKey::as_str))
+        .bind(old_event_since)
         .execute(&mut *self.tx)
         .await
         .map_err(store_error)?
@@ -1202,6 +1257,10 @@ impl PgPathExecutionTx {
         if node_kind == "timer" {
             self.timer_read_states
                 .insert(instance.clone(), TimerReadState::from_step(&step));
+        }
+        if node_kind == "waitEvent" {
+            self.event_wait_read_states
+                .insert(instance.clone(), next_event);
         }
         Ok(())
     }

@@ -808,3 +808,58 @@ The corrected full application+IR gate passed437/0failed/0ignored across36target
 The second bounded review found no remaining required issue. Formatting, architecture24crates
 and agent configuration pass. No native scheduler call, subscription, external event authority
 or public shape was added. This closes only exact-context evaluator preparation.
+
+## Native scoped event-wait start storage (in progress)
+
+The internal immutable structured-codec fixture now reaches a real Pending wait by collection
+admission and scoped worker completion. No published version is rewritten. Both native writers
+preserve the exact binding, derive its lookback boundary from the pinned timeout/deadline, and
+require acknowledged own-run scheduler authority. Public bodies, discovery and external delivery
+remain closed; native timeout persistence and cancellation/drain are separate pending increments.
+The contract is [scoped-event-storage.md](./scoped-event-storage.md).
+
+Observed REDs: the initial native start reached the unsupported path-storage event (85.62s
+command); the two-case authority gate failed both unsupported start and an actually committed
+unfenced EXPRESSION_ERROR start (64.06s command). After implementing clock acknowledgement and
+binding storage, the first three cases passed. Expanded event-wait-start-binding-red passed4/
+failed1 in12.88s harness/72.23s command: generic StepFailed(WAIT_TIMED_OUT) really committed
+without timeout authority. The corrected guard rejects every scoped event-wait StepFailed
+except the clocked Pending EXPRESSION_ERROR shape. Its five-case gate passed5/0/0 in12.34s
+harness/79.05s command. A fresh bounded authority review found no remaining concrete issue.
+
+event-wait-start-guards passed9/0/0 in31.91s harness/104.16s command. Named cases cover both
+writers, missing and successful-then-refused own acknowledgement for both start shapes,
+pre-guard clock refusal, checked sibling/lookback/worker absence, cold full replay, five
+independent orphan fields across full/path/frontier readers, and actual journal-trigger failure
+with unchanged run/steps/scopes/members/usage/retention/payloads/audit/outbox/telemetry. Only the
+new start store is explicitly sagat_app in that invocation; the final service-wide runtime-role
+profile is separate. No timer or event outcome race is inferred from these start tests.
+
+Fresh binding review exposed missing namespace/UUID checks in the read-only paths. The new
+all_readers_refuse_a_same_tenant_wrong_namespace_or_invented_step_uuid test failed for both
+independent CHECK-valid corruptions: all three readers accepted each one. The gate failed1
+in3.04s harness/62.48s command. The shared identity validation correction and complete focused
+runtime-role gate are in progress. A failed patch application changed no file and ran no gate;
+the subsequent exact patch applied. All eight canonical tasks remain unchecked.
+
+The corrected service-wide sagat_app gate passed10/0/0 in36.01s harness/103.82s command.
+The second binding review found no remaining issue in namespace/UUID selection and comparison.
+The final expanded native start gate passed11/0/0 in40.06s harness/97.72s command: six independent
+physical changes after preparation (key/type/since/routed/kind/attempt), in both writers and with
+an independently unchanged Run revision, are refused without overwriting the changed source.
+Full domain passed583/0/0 across42target summaries in39.47s command; strict workspace/all-targets
+Clippy passed130.39s. Canonical primitive contracts passed49/0/0 in0.60s harness/3.02s command,
+including refusal of both unproven public event-wait body shapes. Timer regression passed13/0/0
+in57.79s harness/57.81s command under the complete runtime-role profile. The direct harness is
+the unchanged executable compiled by the final11-test gate, SHA256
+2ea0af83a7e7bde04c22ccd57a51c05c24a0728016d4eceafadbd8ae041ca54a.
+Control, common fence and root-dispatch regressions are separately completing before commit.
+
+The remaining regressions pass under sagat_app: controls23/0/0 in84.56s harness/84.57s
+command, common bounded/full fences10/0/0 in34.02s/34.04s (including actual held-lock expiry
+and parent-creation refusal), root dispatch24/0/0 in59.84s/90.47s. Both direct native filters
+use the same SHA256-pinned11-test executable, not a subsequently rebuilt test target.
+Formatting, diff checks, architecture24crates and agent configuration pass. This accepts only
+native start storage; no canonical task, public event body, native timeout/receiver/drain,
+mixed-version cutover or release is accepted. The original frozen timer and full64 SDK gates
+remain independently sourced earlier checkpoints.

@@ -32,10 +32,10 @@ impl PgRunStore {
         let (path_nodes, path_indices) = stored_path_parts(&path);
         let rows = sqlx::query(concat!(
             "SELECT node,status,attempt,generation,cancel_requested,routed,condition,switch_case_id, \
-                    timed_out,failure_code,next_attempt_at,waiting_kind,due_at,correlation_key, \
-                    child_run_id,approval_request_id,s.node_kind AS stored_node_kind, (",
+                    timed_out,failure_code,next_attempt_at,waiting_kind,due_at,correlation_key,event_type,event_since, \
+                    child_run_id,approval_request_id,s.namespace_id,s.step_id,s.node_kind AS stored_node_kind, (",
             scoped_control_metadata_empty!(),
-            ") AS control_metadata_empty, (",scoped_timer_metadata_valid!(),") AS timer_metadata_valid \
+            ") AS control_metadata_empty, (",scoped_timer_metadata_valid!(),") AS timer_metadata_valid, (",scoped_event_metadata_valid!(),") AS event_metadata_valid \
              FROM steps s WHERE tenant_id=$1 AND run_id=$2 \
                AND instance_path_nodes=$3 AND instance_path_indices=$4 ORDER BY node",
         ))
@@ -637,6 +637,7 @@ impl PgRunStore {
                 .get(&node)
                 .ok_or_else(|| corrupt("bounded step identity"))?;
             validate_scoped_control_row(definition.node_for_instance(&instance), step, row)?;
+            validate_scoped_event_identity(&definition, &record.info, &instance, row)?;
         }
         for node in collections.keys() {
             let owner = ExecutionInstanceId::in_path(path.clone(), node.clone());

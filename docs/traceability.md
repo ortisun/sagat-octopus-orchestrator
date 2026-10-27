@@ -888,3 +888,16 @@ uses the same helper; the complete domain gate passed566 before the final additi
 matrix, which independently passed in the8-test target. The public contract refuses both
 unproven body-wait entry forms. Native delivery/receipt/value/authority, telemetry, SDK and
 complete release acceptance remain pending; no canonical task closes.
+
+### 2026-10-27 native scoped event-wait start preparation
+
+T014-014–017/040, FR-014-004/005/014/015/017: `scoped_event_storage` reaches a Pending wait
+through real admission/activity completion, writes start or correlation failure in full/path
+transactions with own-shard database time, checks sibling/lookback/worker absence and cold replay,
+and refuses missing/refused authority, earlier clocks, physical drift and foreign namespace/UUID.
+Injected journal failure preserves projection, usage, payloads, audit, outbox and telemetry.
+The complete runtime-role focused gate passes11/0/0; domain583, contracts49 and strict workspace
+Clippy pass separately. Exact failures, commands, timings, review corrections and subsequent
+regressions are in `specs/014-workflow-primitives/implementation-0.3.md`. Public bodies and scoped
+delivery remain closed; native timeout, drain, receiver, SDK/rollout/resource acceptance remain
+pending. This checkpoint closes no canonical runtime or release task.

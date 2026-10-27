@@ -73,3 +73,5 @@ mod security;
 mod switch_storage;
 
 mod scoped_event_dispatch_identity;
+
+mod scoped_event_storage;

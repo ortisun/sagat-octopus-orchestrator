@@ -3977,3 +3977,18 @@ strict all-target lint for those crates passes2.09s. The unsupported-scoped RED,
 test corrections, and already-green computed-key masking diagnostic are recorded separately
 in the implementation ledger. Final review found no required issue. No native start caller,
 public body or admission/receipt authority is enabled by this evaluator preparation.
+
+### Native scoped event-wait start storage
+
+The real admitted-activity → Pending-wait structured-codec fixture now proves full/path start
+storage and correlation failure with exact binding/lookback and own-shard database time.
+The corrected focused runtime-role gate passes11/0/0 in40.06s harness/97.72s command; full
+domain583, contracts49, timer13, control23, common fences10 and root dispatch24 pass in separate
+invocations. Strict workspace/all-target Clippy passes130.39s. Two real review/TDD defects were
+fixed: generic timeout-code failure bypassed clock authority, and all three readers accepted
+wrong namespace/UUID. Physical source changes without a Run revision and journal-trigger
+failure are refused/rolled back without repairing their source. Read-only corrections are
+reviewed; exact commands, failures, counts, source limits and executable SHA are in the ledger.
+All-services sagat_app is explicit for final native/regression profiles. This uses the named
+internal structured codec, not public publication or released-profile proof. Native timeout,
+receiver/drain, nesting/capacity lifecycle and final release gates remain open; no task closes.
