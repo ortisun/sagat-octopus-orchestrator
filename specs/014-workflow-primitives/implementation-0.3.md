@@ -963,3 +963,35 @@ tenant-iteration snapshot. Final test-target Clippy passed26.93s; formatting, di
 24crates and agent configuration pass. This accepts collection event-wait drain, not loop event
 drain, receiver/discovery/producer/public body, nested capacity or release acceptance. The
 preceding26-case and final7-case runs are separate, not33distinct cases of one suite.
+
+## Pure scoped event satisfaction and canonical window
+
+The explicit pending-command TDD boundary first passed2existing cases/failed2new positives
+in4.01s command. Implementing full/path matching and the checked canonical lower bound then
+passed30focused cases. A new typed EventNotMatching refusal has only the exact instance, not
+event values; its test first failed1in4.01s because ordinary mismatch was incorrectly treated
+as Invariant. The corrected gate passed31. The expanded fixture initially failed compilation
+for calling paused instead of is_paused (0.30s); fixing that test call passed37/0/0 in1.09s.
+
+The commands check the pinned type/key, inclusive received_at window and exact live member,
+allow paused outcome/deferred route and preserve first-commit behavior after the deadline.
+The native window adapter now reuses scoped_event_wait_since; root legacy windows stay separate.
+Before review corrections, combined domain+application+IR passed1033/0/0 across78target
+summaries in127.96s command; native lifecycle passed27/0/0 in96.51s harness/164.97s command
+with that canonical window. These invocations are not acceptance of the later pure corrections.
+
+Fresh adversarial review found2real issues: a duplicate pre-existing successor could make
+settlement fail after mutating the wait, and root/unadmitted full candidates produced Invariant
+where the bounded command produced UnknownInstance. The two added regressions genuinely
+failed0pass/2fail in1.17s command. Full now checks root/existence before projection; both
+commands apply and settle on a scratch state, assigning it only after complete success.
+The path copy is bounded; the full counterpart intentionally copies the whole restored model.
+The corrected focused gate passes39/0/0 in4.11s command. Second review found no remaining issue.
+
+Final combined domain+application+IR passes1035/0/0 across78target summaries in65.44s command;
+strict workspace/all-target Clippy passes106.70s. Primitive contracts pass49/0/0 in0.59s
+harness/21.91s command, including continued public event-body refusal. Formatting, diff,
+architecture24crates and agent configuration pass. No pending stub remains. This is matching/
+window preparation only: current ingress/own-Run receipt, retained classified payload/quota,
+scoped delivery/discovery, native WaitSatisfied persistence, scheduler producer, old-dispatcher
+cutover and final release gates remain open. No canonical task is checked by this increment.

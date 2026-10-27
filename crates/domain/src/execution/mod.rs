@@ -76,6 +76,7 @@ pub use path_state::{
 pub use plan::{AddressedPlan, Evaluation, Plan, plan, plan_addressed, plan_path};
 pub use scoped_controls::{resolve_control_instance, resolve_control_path_instance};
 pub use scoped_event_waits::{
+    satisfy_event_wait_instance, satisfy_event_wait_path_instance, scoped_event_wait_since,
     start_event_wait_instance, start_event_wait_path_instance, time_out_event_wait_instance,
     time_out_event_wait_path_instance,
 };

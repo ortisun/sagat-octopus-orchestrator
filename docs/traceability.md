@@ -925,3 +925,14 @@ cancellation7, unchanged timer13/control23/transaction15 regressions and strict 
 separate invocations. See the ledger for exact source/hash/timing and retained failures.
 Public event bodies, scoped receiver/producer, loop event drain, nested capacity and final
 SDK/rollout/resource/release gates remain open; no canonical task is checked here.
+
+### 2026-10-27 pure scoped event satisfaction
+
+T014-014–017/040, FR-014-004/005/014/015/017: `scoped_event_wait_lifecycle::satisfaction`
+proves exact typed matching, inclusive lookback boundary, no upper deadline before another
+outcome commits, paused deferred normal route, malformed/stopped/foreign refusals and full/path
+parity. Routing failure is atomic and root/unadmitted candidates use UnknownInstance rather than
+an internal invariant. Native window validation reuses the same checked domain helper. Final
+core1035, focused39, contracts49 and strict workspace lint pass separately; the implementation
+ledger records timings and the earlier native27window checkpoint. Current ingress/receipt,
+classified value/quota, native satisfaction writer and public activation remain pending.

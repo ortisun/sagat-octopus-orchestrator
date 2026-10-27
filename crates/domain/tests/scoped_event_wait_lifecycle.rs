@@ -35,6 +35,14 @@ fn definition_with_error_route(local_error: bool) -> WorkflowDefinition {
 }
 
 fn definition_with_routes(local_error: bool, timeout_route: bool) -> WorkflowDefinition {
+    definition_with_window(local_error, timeout_route, Duration::ZERO)
+}
+
+fn definition_with_window(
+    local_error: bool,
+    timeout_route: bool,
+    lookback: Duration,
+) -> WorkflowDefinition {
     let waiting = Node::new(
         id("notified"),
         NodeKind::WaitEvent {
@@ -42,7 +50,7 @@ fn definition_with_routes(local_error: bool, timeout_route: bool) -> WorkflowDef
             correlation: Expression::parse("item.key").expect("correlation"),
             timeout: Duration::from_secs(60),
             on_timeout: timeout_route.then(|| id("fallback")),
-            lookback: Duration::ZERO,
+            lookback,
         },
     )
     .with_next(id("returned"));
@@ -614,12 +622,20 @@ fn restored_member_projection(
     source: &RunState,
     damaged: sagat_domain::execution::StepState,
 ) -> RunState {
+    restored_local_projection(source, wait(0), damaged)
+}
+
+fn restored_local_projection(
+    source: &RunState,
+    instance: ExecutionInstanceId,
+    damaged: sagat_domain::execution::StepState,
+) -> RunState {
     use sagat_domain::execution::{CollectionIterationRestore, CollectionPhase};
     let mut steps = source
         .instances()
         .map(|(id, step)| (id.clone(), step.clone()))
         .collect::<std::collections::BTreeMap<_, _>>();
-    steps.insert(wait(0), damaged);
+    steps.insert(instance, damaged);
     let mut full = RunState::restore_instances(
         source.run_id(),
         source.status(),
@@ -781,5 +797,7 @@ proptest::proptest! {
 
 #[path = "scoped_event_wait_lifecycle/cancellation.rs"]
 mod cancellation;
+#[path = "scoped_event_wait_lifecycle/satisfaction.rs"]
+mod satisfaction;
 #[path = "scoped_event_wait_lifecycle/timeouts.rs"]
 mod timeouts;

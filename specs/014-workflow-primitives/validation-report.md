@@ -4025,3 +4025,17 @@ pass timers13, controls23 and native transactions15 on the same executable; exac
 hashes, fixture/compile failures and review correction are in implementation-0.3.md.
 Formatting, architecture and agent checks pass. No canonical task, loop event drain, external
 event receiver/producer/public body, nested-capacity or release acceptance is closed.
+
+### Pure scoped event satisfaction and canonical lower bound
+
+Typed full/path commands now match the exact current instance/type/key and inclusive received
+window, preserve paused deferred routing and first-commit semantics, and leave both models
+unchanged on failure. The checked lower-bound calculation is shared with native metadata
+validation; root legacy behavior remains separate. The focused gate passes39/0/0 after two
+review findings were reproduced and corrected (partial mutation on route failure; wrong typed
+root/unadmitted error). Final core domain+application+IR passes1035/0/0 across78targets in65.44s
+command, strict workspace Clippy106.70s and contracts49/0/0 pass. Before the final pure-only
+corrections, native lifecycle27passes96.51s harness with the same canonical window helper;
+that is separate source evidence. The ledger retains every RED/compile/coverage correction.
+No native receipt/payload authority, WaitSatisfied persistence, discovery/producer/public body
+or canonical runtime/release task is enabled by this pure preparation.

@@ -155,21 +155,10 @@ impl EventWaitReadState {
         let Some(deadline) = self.deadline else {
             return Ok(None);
         };
-        let Some(NodeKind::WaitEvent {
-            timeout, lookback, ..
-        }) = node.map(Node::kind)
-        else {
-            return Err(corrupt("event binding requires its pinned declaration"));
-        };
-        let timeout =
-            time::Duration::try_from(*timeout).map_err(|_| corrupt("event timeout duration"))?;
-        let lookback =
-            time::Duration::try_from(*lookback).map_err(|_| corrupt("event lookback duration"))?;
-        deadline
-            .checked_sub(timeout)
-            .and_then(|at| at.checked_sub(lookback))
+        let node = node.ok_or_else(|| corrupt("event binding requires its pinned declaration"))?;
+        sagat_domain::execution::scoped_event_wait_since(node, deadline)
             .map(Some)
-            .ok_or_else(|| corrupt("event lower bound overflow"))
+            .map_err(|_| corrupt("invalid scoped event window"))
     }
 }
 

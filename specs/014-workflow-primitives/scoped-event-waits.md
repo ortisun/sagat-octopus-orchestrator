@@ -143,3 +143,21 @@ No dispatcher candidate discovery, scoped receipt/payload receiver, public body,
 or automatic event-wait scheduler producer is enabled by these checkpoints. The enforceable
 old-dispatcher cutover, actual released-profile proof and final resource/SDK/release gates remain
 required before production scoped EVENT activation.
+
+## Pure event satisfaction preparation
+
+The next command accepts the exact nonroot instance, typed event type/correlation and the
+event's received_at. It matches a valid open WaitEvent with the pinned declaration/key and
+received_at >= recorded deadline − pinned timeout − pinned lookback, using checked arithmetic.
+The inclusive lower bound is shared with native subscription validation; legacy root-window
+behavior is unchanged. There is deliberately no upper deadline check: the first committed
+outcome wins while the instance is still Waiting. Paused runs may record the outcome while
+routing remains deferred. Terminal/stopped/draining, wrong-path/kind/binding or malformed
+sources refuse before mutation. Full/path commands record the same WaitSatisfied/normal route.
+
+This pure command grants no external receipt authority. A later native receiver must pin the
+current tenant/namespace ingress, immutable envelope/payload and received_at, current own Run/
+ancestor state, exact physical binding and snapshot, classified value retention/quota, unique
+per-instance receipt and atomic journal/output/routing commit. The command's received_at is
+not a substitute for that ingress proof. Public bodies, discovery, receipt construction and
+scoped WaitSatisfied native persistence remain closed until that transaction is implemented.
