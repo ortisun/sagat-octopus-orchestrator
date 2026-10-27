@@ -248,3 +248,16 @@ The isolated worktree-specific workspace Clippy completed successfully:
 (`cargo clippy --workspace --all-targets --locked -- -D warnings`).
 The earlier shared-target failure remains recorded separately. Draft PR:
 https://github.com/ortisun/sagat-octopus-orchestrator/pull/54.
+
+
+Post-integration verification: merge7c445f04 includes the independently reviewed Kafka codec
+security correction from PR55, without changing Rust SDK library source. Root audit passes with
+patched Zstandard and no new ignore. The first Rust common rerun in the new private platform
+target stopped at database-connections because its database-runner executable had not been
+built there; this is a local prerequisite omission, not60-scenario acceptance. The documented
+helper build then passed73.20s. `rust-sdk-with-kafka-fix-shared-suite-final` passed all60shared
+Rust scenarios, real runtime-role PostgreSQL, unchanged goldens,200.11s runtime/200.51s command.
+The CI55 SDK job separately exposed an existing C# credential-test callback-observation race;
+its fix is isolated under bugfix/dotnet-secret-wipe-test-barrier. It is not attributed to codec
+or Rust library behavior, and no failing assertion is removed. Final integrated release gates
+remain separate from these60-scenario receipts.
