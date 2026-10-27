@@ -1,0 +1,135 @@
+openapi: 3.1.0
+info:
+  title: Sagat Octopus Orchestrator — curated template catalog (draft fragment, feature 028)
+  version: 0.1.0-draft
+  description: >-
+    Additive operations to merge into `specs/001-platform-foundation/contracts/openapi.yaml`. The catalog is
+    deployment-level and read-only through the API: indexes are the release-bundled one and those the operator
+    configures (`SAGAT_TEMPLATE_INDEXES`). Only entries whose index verified (signature, version, expiry, digests) are
+    listed. An import creates a draft and nothing else.
+paths:
+  /template-catalog/entries:
+    get:
+      operationId: listTemplateEntries
+      tags: [Templates]
+      x-implemented: 'no (028)'
+      summary: Verified entries, filtered by kind and text (definition:read)
+      parameters:
+        - {name: kind, in: query, schema: {type: string, enum: [WORKFLOW, SCRIPT, RESOURCE_TYPE]}}
+        - {name: q, in: query, schema: {type: string, maxLength: 128}, description: 'Matched against id, title and tags.'}
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/Cursor'}
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/Limit'}
+      responses:
+        '200': {description: Page, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: '#/components/schemas/TemplateSummary'}}, nextCursor: {type: [string, 'null']}}}}}}
+  /template-catalog/entries/{templateId}/versions/{version}:
+    parameters:
+      - {name: templateId, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9]*(-[a-z0-9]+)*(/[a-z][a-z0-9]*(-[a-z0-9]+)*)?$', maxLength: 128}}
+      - {name: version, in: path, required: true, schema: {type: string, maxLength: 64, description: 'SemVer 2.0.0'}}
+    get:
+      operationId: getTemplateEntry
+      tags: [Templates]
+      x-implemented: 'no (028)'
+      summary: One entry with its files list, requirements and provenance (definition:read)
+      responses:
+        '200': {description: Entry, content: {application/json: {schema: {$ref: '#/components/schemas/TemplateEntry'}}}}
+        '404': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/NotFound'}
+  /template-catalog/entries/{templateId}/versions/{version}/files/{fileName}:
+    parameters:
+      - {name: templateId, in: path, required: true, schema: {type: string, maxLength: 128}}
+      - {name: version, in: path, required: true, schema: {type: string, maxLength: 64}}
+      - {name: fileName, in: path, required: true, schema: {type: string, maxLength: 255, pattern: '^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$'}}
+    get:
+      operationId: getTemplateFile
+      tags: [Templates]
+      x-implemented: 'no (028)'
+      summary: The verified bytes of one file, as text (definition:read)
+      description: '`Content-Type: text/plain; charset=utf-8`, `X-Content-Type-Options: nosniff`, `Content-Disposition: attachment`; never rendered as HTML.'
+      responses:
+        '200': {description: File, content: {text/plain: {schema: {type: string}}}}
+        '404': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/NotFound'}
+  /namespaces/{namespaceId}/template-imports:
+    parameters: [{name: namespaceId, in: path, required: true, schema: {type: string, format: uuid}}]
+    post:
+      operationId: importTemplate
+      tags: [Templates]
+      x-implemented: 'no (028)'
+      summary: Import an entry as a draft (definition:write for WORKFLOW, script:write for SCRIPT)
+      description: >-
+        Re-verifies the entry against the stored index, validates with the platform codec (or the script rules of
+        feature 005), creates the workflow or script draft with provenance and returns what must be prepared. Never
+        publishes, binds, creates secrets or executes. Same key and body replays; a changed body conflicts.
+      parameters: [{$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [templateId, version, name]
+              properties:
+                templateId: {type: string, maxLength: 128}
+                version: {type: string, maxLength: 64}
+                name: {type: string, minLength: 3, maxLength: 63, pattern: '^[a-z][a-z0-9]*(-[a-z0-9]+)*$'}
+      responses:
+        '201': {description: Imported, content: {application/json: {schema: {$ref: '#/components/schemas/TemplateImport'}}}}
+        '409': {description: 'CONFLICT: NAME_TAKEN, IDEMPOTENCY_KEY_REUSED'}
+        '422': {description: 'VALIDATION_FAILED: TEMPLATE_SIGNATURE_INVALID, TEMPLATE_INDEX_EXPIRED, TEMPLATE_INDEX_ROLLBACK, TEMPLATE_DIGEST_MISMATCH, TEMPLATE_KIND_UNSUPPORTED, TEMPLATE_PLATFORM_TOO_OLD, TEMPLATE_DOCUMENT_INVALID'}
+        '429': {description: 'QUOTA_EXCEEDED (workflows, scripts, content) or RATE_LIMITED (imports per hour)'}
+  /namespaces/{namespaceId}/template-imports/{importId}:
+    parameters:
+      - {name: namespaceId, in: path, required: true, schema: {type: string, format: uuid}}
+      - {name: importId, in: path, required: true, schema: {type: string, format: uuid}}
+    get:
+      operationId: getTemplateImport
+      tags: [Templates]
+      x-implemented: 'no (028)'
+      summary: An import record (definition:read)
+      responses:
+        '200': {description: Import, content: {application/json: {schema: {$ref: '#/components/schemas/TemplateImport'}}}}
+components:
+  schemas:
+    TemplateSummary:
+      type: object
+      required: [templateId, version, kind, title, indexId]
+      properties:
+        templateId: {type: string}
+        version: {type: string}
+        kind: {type: string, enum: [WORKFLOW, SCRIPT, RESOURCE_TYPE]}
+        title: {type: string, maxLength: 120}
+        summary: {type: string, maxLength: 500}
+        tags: {type: array, maxItems: 16, items: {type: string, maxLength: 32}}
+        indexId: {type: string}
+    TemplateEntry:
+      allOf:
+        - {$ref: '#/components/schemas/TemplateSummary'}
+        - type: object
+          required: [files, requirements, provenance]
+          properties:
+            license: {type: string, description: 'SPDX identifier'}
+            files: {type: array, maxItems: 64, items: {type: object, required: [name, sha256, size], properties: {name: {type: string}, sha256: {type: string, pattern: '^[0-9a-f]{64}$'}, size: {type: integer, maximum: 1048576}}}}
+            requirements: {$ref: '#/components/schemas/Requirements'}
+            provenance: {type: object, required: [indexVersion, signerKeyId, signedAt, expiresAt], properties: {indexVersion: {type: integer}, signerKeyId: {type: string}, signedAt: {type: string, format: date-time}, expiresAt: {type: string, format: date-time}}}
+    Requirements:
+      type: object
+      description: What the importing namespace must prepare. Names only; never values.
+      properties:
+        activities: {type: array, maxItems: 256, items: {type: string}}
+        secrets: {type: array, maxItems: 64, items: {type: string}}
+        resourceTypes: {type: array, maxItems: 64, items: {type: string}}
+        capabilities: {type: array, maxItems: 64, items: {type: string}}
+        minimumPlatformVersion: {type: [string, 'null']}
+    TemplateImport:
+      type: object
+      required: [id, templateId, version, entryDigest, signerKeyId, targetKind, targetId, toPrepare]
+      properties:
+        id: {type: string, format: uuid}
+        templateId: {type: string}
+        version: {type: string}
+        entryDigest: {type: string, pattern: '^[0-9a-f]{64}$'}
+        signerKeyId: {type: string}
+        targetKind: {type: string, enum: [WORKFLOW, SCRIPT]}
+        targetId: {type: string, format: uuid}
+        draftRevision: {type: integer}
+        findings: {type: array, description: 'Validation findings of the draft (code, nodeId, path, message), as the validate endpoint returns them.', items: {type: object}}
+        toPrepare: {$ref: '#/components/schemas/Requirements'}

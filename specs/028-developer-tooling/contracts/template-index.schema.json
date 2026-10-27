@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sagat-octopus-orchestrator.io/schemas/template-index/v1.json",
+  "title": "Sagat curated template index (draft, feature 028)",
+  "description": "A signed, versioned and expiring list of curated templates. The signature is Ed25519 over the RFC 8785 canonical form of `signed`; the envelope is not signed. The platform verifies the signature against keys the operator pinned for this index, refuses a `version` lower than the highest it has stored for the index id (rollback) and an index whose `expiresAt` has passed (freeze), refuses `expiresAt - signedAt` above 365 days, and verifies the SHA-256 of every file it fetches. Cross-field rules (unique ids, file names, the 4 MiB per-entry total) are checked by the verifier.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["signed", "signatures"],
+  "properties": {
+    "signed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["apiVersion", "kind", "indexId", "version", "signedAt", "expiresAt", "entries"],
+      "properties": {
+        "apiVersion": { "const": "sagat-octopus-orchestrator.io/v1" },
+        "kind": { "const": "TemplateIndex" },
+        "indexId": { "$ref": "#/$defs/slug" },
+        "version": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "signedAt": { "type": "string", "format": "date-time" },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "entries": { "type": "array", "maxItems": 2000, "items": { "$ref": "#/$defs/entry" } }
+      }
+    },
+    "signatures": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["keyId", "algorithm", "signature"],
+        "properties": {
+          "keyId": { "type": "string", "pattern": "^[0-9a-f]{16,64}$", "description": "The first bytes (hex) of the SHA-256 of the raw public key." },
+          "algorithm": { "const": "ed25519" },
+          "signature": { "type": "string", "contentEncoding": "base64", "minLength": 86, "maxLength": 88 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "slug": { "type": "string", "minLength": 3, "maxLength": 63, "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$" },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["templateId", "version", "kind", "title", "files", "requirements", "license"],
+      "properties": {
+        "templateId": { "type": "string", "maxLength": 128, "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*(/[a-z][a-z0-9]*(-[a-z0-9]+)*)?$" },
+        "version": { "type": "string", "maxLength": 64, "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(-[0-9A-Za-z.-]+)?$" },
+        "kind": { "enum": ["WORKFLOW", "SCRIPT", "RESOURCE_TYPE"] },
+        "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "summary": { "type": "string", "maxLength": 500 },
+        "tags": { "type": "array", "maxItems": 16, "uniqueItems": true, "items": { "type": "string", "pattern": "^[a-z0-9-]{1,32}$" } },
+        "license": { "type": "string", "maxLength": 64, "description": "An SPDX license identifier." },
+        "maintainer": { "type": "string", "maxLength": 120 },
+        "files": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "sha256", "size", "role"],
+            "properties": {
+              "name": { "type": "string", "maxLength": 255, "pattern": "^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$" },
+              "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+              "size": { "type": "integer", "minimum": 1, "maximum": 1048576 },
+              "role": { "enum": ["WORKFLOW_DOCUMENT", "SCRIPT_SOURCE", "SCRIPT_LOCKFILE", "RESOURCE_TYPE_DEFINITION", "ANSWERS", "README"] }
+            }
+          }
+        },
+        "requirements": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "activities": { "type": "array", "maxItems": 256, "items": { "type": "string", "maxLength": 128 } },
+            "secrets": { "type": "array", "maxItems": 64, "items": { "type": "string", "maxLength": 128 }, "description": "Names the author must create; never values." },
+            "resourceTypes": { "type": "array", "maxItems": 64, "items": { "type": "string", "maxLength": 128 } },
+            "capabilities": { "type": "array", "maxItems": 64, "items": { "type": "string", "maxLength": 64 } },
+            "scriptLanguage": { "type": "string", "maxLength": 32 },
+            "minimumPlatformVersion": { "type": "string", "maxLength": 64 }
+          }
+        }
+      }
+    }
+  }
+}
