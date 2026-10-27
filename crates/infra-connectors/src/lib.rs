@@ -15,3 +15,5 @@ pub mod publish;
 pub mod sqs;
 pub mod supervisor;
 pub mod webhook;
+
+pub mod redis;

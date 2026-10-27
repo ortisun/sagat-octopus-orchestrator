@@ -796,3 +796,11 @@ SDK/resource/release gates remain open. Exact tests/reviews/source provenance ar
 capacity-finish-schema-20261018, capacity-native-finish-20261018, capacity-finish-barriers-20261018,
 capacity-finish-commit-loss-20261018, capacity-finish-races-20261018 and
 capacity-finish-observations-20261018.
+
+
+Feature033 (`FR-033-001..009`, `SC-033-001..004`) targets release0.3. Internal transport, public
+callback management, real delivery, TLS/ACL/rotation/namespace checks, crash/fencing and migration
+proofs live in `tests/integration/redis-streams/`; configuration tests live in both process apps,
+settings round-trip properties in `crates/domain/tests/outbound_redis_properties.rs`, and chart
+contracts in `tests/contract/scalability-ha/redis_chart.rs`. Acceptance remains tracked by
+[feature033 tasks](../specs/033-redis-streams/tasks.md); use named, completed gates before release.
