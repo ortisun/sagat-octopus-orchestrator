@@ -1,7 +1,7 @@
 # SDK specification (v1)
 
 The normative description of what every Sagat Octopus Orchestrator SDK does — TypeScript, Go, Python,
-C#/.NET and Java — so that the five behave the same where it matters and differ only in idiom
+C#/.NET, Java and Rust — so that the six behave the same where it matters and differ only in idiom
 (`FR-006-001..008`, ADR-0015). A statement with **MUST** is checked by the conformance suite
 (`tests/contract/sdk-conformance/`) unless it says otherwise. Naming below is language neutral; each
 SDK uses its own conventions (`startRun` / `StartRun` / `start_run` / `StartAsync`).
@@ -219,7 +219,7 @@ policy (the node's `retry`).
 `register` sends `RegisterWorkerRequest{worker_name, namespace, capabilities{languages, activities,
 pools, max_inflight, protocol_version}}`:
 
-- `languages`: one entry naming the SDK's language (`typescript`, `go`, `python`, `csharp`, `java`).
+- `languages`: one entry naming the SDK's language (`typescript`, `go`, `python`, `csharp`, `java`, `rust`).
 - `activities`: every activity name with a handler (forward, compensation and reconciliation alike),
   1 to 256.
 - `max_inflight`: the host's concurrency limit, 1 to 1000 (default 10).
@@ -541,3 +541,12 @@ The stream has a five-second server lifetime; clients additionally bound receivi
 seconds or their shorter configured call timeout. A normal underfilled window ends with a
 positive empty retry hint. An unexpected underfilled EOF MUST wait before reconnecting.
 Protocol version changes do not themselves change package SemVer.
+
+
+## Approved Rust extension (release 0.3)
+
+[Feature 034](../specs/034-rust-sdk/spec.md) adds Rust as the sixth official SDK under this same
+contract. Historical five-language results remain historical; Rust/six-language acceptance needs
+new named conformance, fault and packaging results. Rust uses Tokio/tonic, native typed values,
+lossless JSON and idiomatic Result/cancellation APIs. Its public crate is independent of backend
+workspaces and contains its own checked canonical protocol/catalog for clean consumers.
