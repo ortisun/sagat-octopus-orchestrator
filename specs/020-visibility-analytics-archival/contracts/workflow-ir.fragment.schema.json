@@ -1,0 +1,316 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sagat-octopus-orchestrator.example/schemas/workflow/v1/fragments/020-visibility-analytics.json",
+  "title": "Feature 020 additive IR fragment (draft)",
+  "description": "Draft additions to specs/001-platform-foundation/contracts/workflow.schema.json under ADR-0032 (same apiVersion, additive keys, capability-gated). Merged by T020-005. Not implemented. A publisher that does not enable the capability refuses documents that use these keys; it never ignores them.",
+  "$defs": {
+    "rootAdditions": {
+      "type": "object",
+      "properties": {
+        "searchAttributes": {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": {
+            "pattern": "^[a-z][a-zA-Z0-9_]{0,63}$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/searchAttributeDeclaration"
+          },
+          "description": "Custom search attributes this version sets. Each name is registered in the namespace on first publication with this type and level; a later version must declare the same type and level (FR-020-002)."
+        }
+      }
+    },
+    "searchAttributeDeclaration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "level"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "keyword",
+            "text",
+            "int",
+            "double",
+            "bool",
+            "datetime",
+            "keywordList"
+          ]
+        },
+        "level": {
+          "enum": [
+            "public",
+            "internal",
+            "pii"
+          ],
+          "description": "Classification of every value (ADR-0033). `secret` is not allowed. Must be at least the strictest carrier level the `from` expression reads."
+        },
+        "from": {
+          "$ref": "workflow.schema.json#/$defs/expression",
+          "description": "Optional expression over `input`, evaluated at admission. An explicit value in startRun.searchAttributes wins. A registered position of 031's encoded-field registry (specs/031-client-side-encryption/contracts/workflow-encoding.md): reading an encoded location is refused ENCODING_READ_BY_SEARCH_ATTRIBUTE."
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "export": {
+          "const": "declared-analytics-export-v1",
+          "description": "Explicit consent that this attribute's values may leave to analytics sinks whose maxLevel allows the level (ADR-0053 decision 7). Absent: sinks receive the name with a withheld marker. Pinned with the version."
+        }
+      }
+    },
+    "nodeAdditions": {
+      "description": "Additive properties of activity, script, waitEvent and child nodes (and their body variants).",
+      "type": "object",
+      "properties": {
+        "upsertSearchAttributes": {
+          "type": "object",
+          "maxProperties": 16,
+          "propertyNames": {
+            "pattern": "^[a-z][a-zA-Z0-9_]{0,63}$"
+          },
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "$ref": "workflow.schema.json#/$defs/expression"
+              },
+              {
+                "type": "null",
+                "description": "Removes the attribute from the run."
+              }
+            ]
+          },
+          "description": "Evaluated by the engine over this node's committed output in its completion transaction; names must be declared in the root `searchAttributes`."
+        },
+        "analytics": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/analyticsDeclaration"
+          }
+        }
+      }
+    },
+    "analyticsDeclaration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "disclosure",
+        "record",
+        "schema",
+        "project"
+      ],
+      "properties": {
+        "disclosure": {
+          "const": "declared-analytics-export-v1",
+          "description": "Explicit consent that the projected values may leave the platform to sinks whose level allows them. There is no implicit value."
+        },
+        "record": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,62}$",
+          "description": "Record name; unique per node."
+        },
+        "schema": {
+          "$ref": "#/$defs/analyticsRecordSchema"
+        },
+        "project": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 128,
+          "propertyNames": {
+            "pattern": "^[a-z][a-zA-Z0-9_]{0,63}$"
+          },
+          "additionalProperties": {
+            "$ref": "workflow.schema.json#/$defs/expression"
+          },
+          "description": "One expression per top-level field of `schema` (the evaluator has no object literal). Expressions see `input` and `steps.<id>.output` of completed steps, this node included; no secret, capability, network or blob content. Registered in 031's encoded-field registry: reading an encoded location is refused ENCODING_READ_BY_ANALYTICS."
+        }
+      }
+    },
+    "analyticsRecordSchema": {
+      "description": "A closed, bounded classification carrier: the resultSchema shape of ADR-0031 plus an optional `x-sagat-classification` on any node (FR-016-001 levels; `secret` refused). Unannotated means `pii`. A field's effective level is the stricter of its annotation and every carrier path its expression reads (D1091).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "properties",
+        "additionalProperties"
+      ],
+      "properties": {
+        "type": {
+          "const": "object"
+        },
+        "properties": {
+          "type": "object",
+          "maxProperties": 128,
+          "additionalProperties": {
+            "$ref": "#/$defs/analyticsField"
+          }
+        },
+        "required": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 128,
+          "uniqueItems": true
+        },
+        "additionalProperties": {
+          "const": false
+        },
+        "x-sagat-classification": {
+          "enum": [
+            "public",
+            "internal",
+            "pii"
+          ]
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      }
+    },
+    "analyticsField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "string",
+            "integer",
+            "number",
+            "boolean",
+            "array"
+          ]
+        },
+        "format": {
+          "enum": [
+            "date-time",
+            "uuid"
+          ]
+        },
+        "maxLength": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16384
+        },
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "enum": [
+                "string",
+                "integer",
+                "number",
+                "boolean"
+              ]
+            },
+            "maxLength": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1024
+            }
+          }
+        },
+        "maxItems": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 256
+        },
+        "x-sagat-classification": {
+          "enum": [
+            "public",
+            "internal",
+            "pii"
+          ]
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "searchAttributes": {
+        "customerId": {
+          "type": "keyword",
+          "level": "internal",
+          "from": "input.customer.id",
+          "export": "declared-analytics-export-v1"
+        },
+        "orderTotal": {
+          "type": "double",
+          "level": "internal",
+          "from": "input.total"
+        },
+        "fulfilmentState": {
+          "type": "keyword",
+          "level": "internal"
+        }
+      },
+      "nodes": [
+        {
+          "id": "ship",
+          "type": "activity",
+          "activity": "order.ship",
+          "outputSchema": {
+            "type": "object",
+            "x-sagat-classification": "internal",
+            "properties": {
+              "state": {
+                "type": "string"
+              },
+              "carrier": {
+                "type": "string"
+              }
+            }
+          },
+          "upsertSearchAttributes": {
+            "fulfilmentState": "steps.ship.output.state"
+          },
+          "analytics": [
+            {
+              "disclosure": "declared-analytics-export-v1",
+              "record": "shipment",
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "state": {
+                    "type": "string",
+                    "maxLength": 32,
+                    "x-sagat-classification": "internal"
+                  },
+                  "carrier": {
+                    "type": "string",
+                    "maxLength": 64,
+                    "x-sagat-classification": "internal"
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              },
+              "project": {
+                "state": "steps.ship.output.state",
+                "carrier": "steps.ship.output.carrier"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
