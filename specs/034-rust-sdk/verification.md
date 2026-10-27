@@ -242,3 +242,9 @@ Workspace Clippy using the previously owned Redis target saw a phantom Redis enu
 present in this checkout's domain source; that target had been reused across worktrees. No source
 was changed to satisfy stale metadata. A newly created, worktree-specific platform target is
 rebuilding the workspace gate; the failure and isolated result are distinct receipts.
+
+The isolated worktree-specific workspace Clippy completed successfully:
+`rust-sdk-workspace-clippy-isolated` exited 0 in 371.65 s
+(`cargo clippy --workspace --all-targets --locked -- -D warnings`).
+The earlier shared-target failure remains recorded separately. Draft PR:
+https://github.com/ortisun/sagat-octopus-orchestrator/pull/54.
