@@ -38,6 +38,8 @@ pub struct WorkerOptions {
     pub heartbeat_interval: Option<Duration>,
     pub retry: RetryPolicy,
     pub tls: TlsOptions,
+    pub telemetry: crate::Telemetry,
+    pub user_agent_suffix: Option<String>,
 }
 impl WorkerOptions {
     pub fn new(
@@ -59,6 +61,8 @@ impl WorkerOptions {
             heartbeat_interval: None,
             retry: RetryPolicy::default(),
             tls: TlsOptions::default(),
+            telemetry: crate::Telemetry::default(),
+            user_agent_suffix: None,
         }
     }
 }
@@ -154,6 +158,11 @@ fn minor(version: &str) -> Option<u32> {
 }
 impl WorkerHost {
     pub fn new(options: WorkerOptions) -> Result<Self, SagatError> {
+        if options.user_agent_suffix.as_deref().is_some_and(|s| {
+            s.len() > 128 || !s.is_ascii() || s.bytes().any(|b| b.is_ascii_control())
+        }) {
+            return Err(invalid());
+        }
         let url = url::Url::parse(&options.grpc_url).map_err(|_| invalid())?;
         if !matches!(url.scheme(), "http" | "https")
             || url.host_str().is_none()
@@ -333,6 +342,8 @@ impl WorkerHost {
             self.options.token.clone(),
             self.options.timeout,
             &self.options.tls,
+            self.options.telemetry.clone(),
+            self.options.user_agent_suffix.as_deref(),
         )
         .await?;
         let core = Core {
@@ -470,6 +481,13 @@ async fn register(core: &Core, mut rpc: Rpc) -> Result<Session, SagatError> {
                 if let Ok(mut value) = core.protocol.lock() {
                     *value = reply.accepted_protocol_version;
                 }
+                core.options.telemetry.emit(
+                    crate::EventKind::Registered,
+                    "register",
+                    crate::SdkTransport::Grpc,
+                    None,
+                    None,
+                );
                 return Ok(Session {
                     rpc,
                     worker_id: reply.worker_id,
@@ -522,6 +540,13 @@ async fn receive_loop(
             wait(&core, &receive, Duration::from_secs(1)).await;
             continue;
         }
+        core.options.telemetry.emit(
+            crate::EventKind::Started,
+            "receive",
+            crate::SdkTransport::Grpc,
+            None,
+            None,
+        );
         let request = pb::PollTasksRequest {
             worker_id: session.worker_id.clone(),
             session_token: session.session_token.clone(),
@@ -605,6 +630,13 @@ async fn receive_loop(
                     .await;
                     failures = failures.saturating_add(1);
                 }
+                core.options.telemetry.emit(
+                    crate::EventKind::Reconnect,
+                    "receive",
+                    crate::SdkTransport::Grpc,
+                    None,
+                    Some(error.code),
+                );
                 let next = tokio::select! {biased;_=receive.cancelled()=>break,result=register(&core,session.rpc.clone())=>result};
                 match next {
                     Ok(next) => {
@@ -743,10 +775,18 @@ fn dispatch(
     let core = core.clone();
     let session = session.clone();
     let life = life.clone();
+    core.options.telemetry.emit(
+        crate::EventKind::Received,
+        "activity",
+        crate::SdkTransport::Grpc,
+        None,
+        None,
+    );
     tracker.spawn(async move {
+        let started=std::time::Instant::now();
         let _guard=ctx.capabilities.as_ref().map(|cap|crate::capabilities::AttemptGuard(cap.clone()));
         let finish=CancellationToken::new();
-        let heartbeat=tokio::spawn(heartbeat(session.clone(),lease.clone(),ctx.clone(),core.options.heartbeat_interval,finish.clone(),life.clone()));
+        let heartbeat=tokio::spawn(heartbeat(session.clone(),lease.clone(),ctx.clone(),core.options.heartbeat_interval,core.options.telemetry.clone(),finish.clone(),life.clone()));
         let handler=core.handlers.get(&lease.activity_name).cloned();
         let result=match (handler,document) {
             (None,_)=>Err(ActivityFailure::permanent("NO_HANDLER","the worker has no handler for this activity")),
@@ -756,6 +796,7 @@ fn dispatch(
                 match future {Ok(future)=>AssertUnwindSafe(future).catch_unwind().await.unwrap_or_else(|_|Err(ActivityFailure::retryable("ACTIVITY_ERROR","the activity panicked"))),Err(_)=>Err(ActivityFailure::retryable("ACTIVITY_ERROR","the activity panicked"))}
             }
         };
+        core.options.telemetry.emit(crate::EventKind::ActivityDuration,"activity",crate::SdkTransport::Grpc,Some(started.elapsed()),result.as_ref().err().map(|_|"ACTIVITY_ERROR"));
         if let Some(cap)=&ctx.capabilities {cap.invalidate();}
         if !ctx.lost.load(Ordering::Acquire) && !matches!(&result,Err(e) if e.cancelled && ctx.cancellation_reason()==Some(CancellationReason::Shutdown)) {
             report(&core,&session,&lease,&ctx,result).await;
@@ -770,6 +811,7 @@ async fn heartbeat(
     lease: pb::TaskLease,
     ctx: ActivityContext,
     override_interval: Option<Duration>,
+    telemetry: crate::Telemetry,
     finish: CancellationToken,
     life: CancellationToken,
 ) {
@@ -815,6 +857,13 @@ async fn heartbeat(
                 .map_err(|e| error_of("Heartbeat", e))
         };
         let result = tokio::select! {biased;_=finish.cancelled()=>break,_=life.cancelled()=>break,result=beat=>result};
+        telemetry.emit(
+            crate::EventKind::Heartbeat,
+            "heartbeat",
+            crate::SdkTransport::Grpc,
+            None,
+            result.as_ref().err().map(|e| e.code),
+        );
         match result {
             Ok(reply) => {
                 if reply.lease_expires_at_epoch_ms > 0 {
@@ -929,8 +978,28 @@ async fn report(
             return;
         };
         match result {
-            Ok(_) => return,
+            Ok(_) => {
+                core.options.telemetry.emit(
+                    if complete.is_some() {
+                        crate::EventKind::Completed
+                    } else {
+                        crate::EventKind::Failed
+                    },
+                    "report",
+                    crate::SdkTransport::Grpc,
+                    None,
+                    None,
+                );
+                return;
+            }
             Err(error) if error.code == "STALE_ATTEMPT" => {
+                core.options.telemetry.emit(
+                    crate::EventKind::Stale,
+                    "report",
+                    crate::SdkTransport::Grpc,
+                    None,
+                    Some(error.code),
+                );
                 ctx.cancel(CancellationReason::LeaseLost);
                 return;
             }

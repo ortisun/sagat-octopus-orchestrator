@@ -51,3 +51,6 @@ pub use blob::{BlobOutput, WriteBlobOptions};
 pub use capabilities::BlobReader;
 
 pub use activity::Verdict;
+
+mod telemetry;
+pub use telemetry::{EventKind, SdkEvent, SdkTransport, Telemetry};

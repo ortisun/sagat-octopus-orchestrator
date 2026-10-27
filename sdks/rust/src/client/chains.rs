@@ -219,7 +219,7 @@ impl Client {
             call,
         )
         .await
-        .map(|_| ())
+        .and_then(|reply| reply.parse(|_| Ok(())))
     }
     pub async fn wait_for_chain_completion(
         &self,

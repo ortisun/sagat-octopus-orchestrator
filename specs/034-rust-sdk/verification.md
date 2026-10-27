@@ -154,3 +154,9 @@ rejects untyped lookalikes and preserves the original effect target; compensatio
 lease lifecycle. `rust-sdk-worker-capability-clippy` exited 0 (3.04 s) and
 `rust-sdk-worker-capability-tests` exited 0 (15.99 s, 90 total). Shared real-server capability/fault
 conformance, observability hooks and full streaming acceptance remain open.
+
+Telemetry batch: `rust-sdk-telemetry-typed-failure-red` reproduced a successful metric emitted
+before typed decoding; events now reflect the completed typed operation. Ambient trace hooks,
+explicit parent precedence, bounded labels and a panicking worker observer are tested.
+`rust-sdk-telemetry-clippy` exited 0 (3.30 s); `rust-sdk-telemetry-tests` exited 0
+(16.34 s). These are native REST/gRPC fixture results, not shared real-server conformance.

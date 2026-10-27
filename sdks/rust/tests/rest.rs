@@ -1272,3 +1272,90 @@ async fn upload_descriptor_mismatch_is_a_protocol_failure_with_response_metadata
         Some("0123456789abcdef0123456789abcdef")
     );
 }
+
+#[tokio::test]
+async fn ambient_trace_hooks_and_metrics_callbacks_are_safe_and_explicit_trace_wins() {
+    use sagat_octopus_orchestrator_sdk::{EventKind, Telemetry};
+    let server = server("query").await;
+    let traces = Arc::new(AtomicUsize::new(0));
+    let trace_calls = traces.clone();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let seen = events.clone();
+    let mut config = options(&server.base, TokenSource::bearer("fixture-token"));
+    config.telemetry = Telemetry {
+        trace_context: Some(Arc::new(move || {
+            trace_calls.fetch_add(1, Ordering::AcqRel);
+            Some("00-0123456789abcdef0123456789abcdef-0123456789abcdef-01".into())
+        })),
+        on_event: Some(Arc::new(move |event| {
+            seen.lock().expect("events").push(event)
+        })),
+    };
+    let client = Client::new(config).expect("client");
+    client
+        .query(RUN, "summary", &json!({}), CallOptions::default())
+        .await
+        .expect("ambient trace");
+    client
+        .query(
+            RUN,
+            "summary",
+            &json!({}),
+            CallOptions {
+                traceparent: Some("00-abcdef0123456789abcdef0123456789-abcdef0123456789-01".into()),
+                ..CallOptions::default()
+            },
+        )
+        .await
+        .expect("explicit trace");
+    assert_eq!(traces.load(Ordering::Acquire), 1);
+    let calls = server.state.calls.lock().expect("calls");
+    assert_eq!(
+        calls[0].0["traceparent"],
+        "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
+    );
+    assert_eq!(
+        calls[1].0["traceparent"],
+        "00-abcdef0123456789abcdef0123456789-abcdef0123456789-01"
+    );
+    let events = events.lock().expect("events");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.kind == EventKind::Succeeded)
+            .count(),
+        2
+    );
+    assert!(events.iter().all(|e| e.operation == "query"));
+    assert!(!format!("{events:?}").contains(RUN));
+}
+#[tokio::test]
+async fn typed_response_failures_are_not_counted_as_successful_sdk_calls() {
+    use sagat_octopus_orchestrator_sdk::{EventKind, ListOptions, Telemetry};
+    let server = server("bad-page").await;
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let seen = events.clone();
+    let mut config = options(&server.base, TokenSource::bearer("fixture-token"));
+    config.telemetry = Telemetry {
+        on_event: Some(Arc::new(move |event| {
+            seen.lock().expect("events").push(event)
+        })),
+        ..Telemetry::default()
+    };
+    Client::new(config)
+        .expect("client")
+        .list(ListOptions::default(), CallOptions::default())
+        .await
+        .expect_err("malformed page");
+    let events = events.lock().expect("events");
+    assert!(
+        !events
+            .iter()
+            .any(|event| event.kind == EventKind::Succeeded)
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.kind == EventKind::Failed && event.code == Some("PROTOCOL"))
+    );
+}

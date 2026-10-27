@@ -125,6 +125,7 @@ pub(crate) struct Rpc {
     pub client: WorkerServiceClient<Channel>,
     token: TokenSource,
     timeout: Duration,
+    telemetry: crate::Telemetry,
 }
 impl Rpc {
     pub fn timeout(&self) -> Duration {
@@ -135,12 +136,17 @@ impl Rpc {
         token: TokenSource,
         timeout: Duration,
         tls: &crate::TlsOptions,
+        telemetry: crate::Telemetry,
+        suffix: Option<&str>,
     ) -> Result<Self, SagatError> {
         let mut endpoint = Endpoint::from_shared(url.to_owned())
             .map_err(|_| SagatError::new("VALIDATION_FAILED", "invalid worker endpoint"))?
             .connect_timeout(timeout)
             .timeout(timeout)
-            .user_agent(concat!("sagat-sdk-rust/", env!("CARGO_PKG_VERSION")))
+            .user_agent(suffix.filter(|s| !s.is_empty()).map_or_else(
+                || format!("sagat-sdk-rust/{}", crate::VERSION),
+                |s| format!("sagat-sdk-rust/{} {s}", crate::VERSION),
+            ))
             .map_err(|_| SagatError::new("VALIDATION_FAILED", "invalid user agent"))?;
         if url.starts_with("https://") {
             endpoint = endpoint
@@ -157,6 +163,7 @@ impl Rpc {
             client: WorkerServiceClient::new(channel).max_decoding_message_size(16 * 1024 * 1024),
             token,
             timeout,
+            telemetry,
         })
     }
     pub async fn request<T>(&self, value: T, traceparent: &str) -> Result<Request<T>, SagatError> {
@@ -179,7 +186,10 @@ impl Rpc {
                 .map_err(|_| SagatError::provider_failure())?;
         bearer.set_sensitive(true);
         request.metadata_mut().insert("authorization", bearer);
-        if crate::client::valid_traceparent(traceparent) {
+        let traceparent = self
+            .telemetry
+            .trace(crate::client::valid_traceparent(traceparent).then(|| traceparent.to_owned()));
+        if let Some(traceparent) = traceparent {
             request.metadata_mut().insert(
                 "traceparent",
                 traceparent
@@ -277,6 +287,7 @@ mod deferred_request_tests {
             client: WorkerServiceClient::new(channel),
             token,
             timeout: Duration::from_secs(30),
+            telemetry: crate::Telemetry::default(),
         };
         let constructed = std::sync::atomic::AtomicBool::new(false);
         let result = tokio::time::timeout(

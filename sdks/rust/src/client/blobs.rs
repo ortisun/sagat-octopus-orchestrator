@@ -57,6 +57,34 @@ impl Client {
     pub async fn upload_run_input<R: AsyncRead + Unpin + Send + 'static>(
         &self,
         source: R,
+        mut options: UploadRunInputOptions,
+    ) -> Result<crate::BlobDescriptor, SagatError> {
+        options.call.traceparent = self.options.telemetry.trace(options.call.traceparent);
+        let started = std::time::Instant::now();
+        self.options.telemetry.emit(
+            crate::EventKind::Started,
+            "upload",
+            crate::SdkTransport::Rest,
+            None,
+            None,
+        );
+        let result = self.upload_once(source, options).await;
+        self.options.telemetry.emit(
+            if result.is_ok() {
+                crate::EventKind::Succeeded
+            } else {
+                crate::EventKind::Failed
+            },
+            "upload",
+            crate::SdkTransport::Rest,
+            Some(started.elapsed()),
+            result.as_ref().err().map(|e| e.code),
+        );
+        result
+    }
+    async fn upload_once<R: AsyncRead + Unpin + Send + 'static>(
+        &self,
+        source: R,
         options: UploadRunInputOptions,
     ) -> Result<crate::BlobDescriptor, SagatError> {
         if options.call.cancel.is_cancelled() {

@@ -1136,3 +1136,32 @@ async fn compensation_preserves_its_forward_target_and_uses_the_same_lease_proto
     assert!(result.output_json.is_empty());
     host.stop(Duration::from_secs(1)).await.expect("drain");
 }
+
+#[tokio::test]
+async fn a_panicking_metrics_observer_does_not_drop_a_leased_activity() {
+    let mut fixture = fixture(0).await;
+    let mut options = fixture.options.clone();
+    options.transport = WorkerTransport::Poll;
+    let count = Arc::new(AtomicUsize::new(0));
+    let observed = count.clone();
+    options.telemetry.on_event = Some(Arc::new(move |_| {
+        observed.fetch_add(1, Ordering::AcqRel);
+        panic!("observer failure");
+    }));
+    let mut host = WorkerHost::new(options).expect("host");
+    host.activity("held", |_: ActivityContext, _: Value| async {
+        Ok(json!({"done":true}))
+    })
+    .expect("handler");
+    host.start().await.expect("start survives observer");
+    let complete = tokio::time::timeout(Duration::from_secs(3), fixture.complete.recv())
+        .await
+        .expect("report")
+        .expect("complete");
+    assert_eq!(
+        serde_json::from_str::<Value>(&complete.output_json).expect("output"),
+        json!({"done":true})
+    );
+    host.stop(Duration::from_secs(1)).await.expect("drain");
+    assert!(count.load(Ordering::Acquire) >= 4);
+}

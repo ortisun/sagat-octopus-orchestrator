@@ -10,7 +10,7 @@ start/get/list/cancel/operate/signal, journal pages and completion waits, verifi
 fresh credentials, declared Queries/Updates, event publication, approval pages/decisions, chain inspection/commands/waits, single-pass input uploads and an activity host,
 protocol negotiation, heartbeat, cooperative cancellation, attempt-scoped secrets/blobs and typed
 compensation/reconciliation handlers.
-Builders, safe observer hooks,
+Builders,
 the shared six-language conformance suite and packaged-consumer release acceptance are pending.
 Do not infer complete SDK parity from the local client/worker tests.
 
@@ -58,3 +58,8 @@ For repository checks use the private external `CARGO_TARGET_DIR` required by `s
 `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`.
 The package embeds its protobuf and error catalog; native drift tests compare them to the canonical
 repository files. The standalone consumer is a separate Cargo workspace under `consumer/`.
+
+`Telemetry` provides an optional ambient trace-context hook and bounded request/worker events for
+OpenTelemetry adapters. Explicit traceparent wins. Observer failures are isolated; events carry
+fixed operation/code labels and durations, without run IDs, URLs, tokens or payloads. The SDK does
+not install a global telemetry provider or replace the application's Rust panic hook.

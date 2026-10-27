@@ -188,6 +188,7 @@ fn operation_name(name: &str) -> Result<(), SagatError> {
     Ok(())
 }
 struct WireReply {
+    metric: Option<(crate::Telemetry, &'static str, std::time::Instant)>,
     value: Value,
     status: u16,
     trace_id: Option<String>,
@@ -197,11 +198,25 @@ impl WireReply {
         self,
         parser: impl FnOnce(Value) -> Result<T, SagatError>,
     ) -> Result<T, SagatError> {
-        parser(self.value).map_err(|mut error| {
+        let result = parser(self.value).map_err(|mut error| {
             error.status = Some(self.status);
             error.trace_id = self.trace_id;
             error
-        })
+        });
+        if let Some((telemetry, operation, started)) = self.metric {
+            telemetry.emit(
+                if result.is_ok() {
+                    crate::EventKind::Succeeded
+                } else {
+                    crate::EventKind::Failed
+                },
+                operation,
+                crate::SdkTransport::Rest,
+                Some(started.elapsed()),
+                result.as_ref().err().map(|e| e.code),
+            );
+        }
+        result
     }
 }
 
@@ -215,6 +230,7 @@ pub struct ClientOptions {
     pub max_response_bytes: usize,
     pub tls: crate::TlsOptions,
     pub user_agent_suffix: Option<String>,
+    pub telemetry: crate::Telemetry,
 }
 impl ClientOptions {
     pub fn new(
@@ -231,6 +247,7 @@ impl ClientOptions {
             max_response_bytes: MAX_RESPONSE,
             tls: crate::TlsOptions::default(),
             user_agent_suffix: None,
+            telemetry: crate::Telemetry::default(),
         }
     }
 }
@@ -284,6 +301,29 @@ impl WireRequest {
             key: None,
             repeatable,
             expected,
+        }
+    }
+    fn operation(&self) -> &'static str {
+        let path: Vec<_> = self.path.iter().map(String::as_str).collect();
+        match path.as_slice() {
+            ["runs"] if self.method == Method::POST => "start",
+            ["runs"] => "list",
+            ["runs", _] => "get",
+            ["runs", _, "operations"] => "operate",
+            ["runs", _, "signals", _] => "signal",
+            ["runs", _, "queries", _] => "query",
+            ["runs", _, "updates", _] => "update",
+            ["runs", _, "events"] => "events",
+            ["runs", _, "approvals"] => "approvals",
+            ["approvals", _, "decisions"] => "decide_approval",
+            ["events"] => "publish_event",
+            ["namespaces", _, "chains", _, "queries", _] => "query_chain",
+            ["namespaces", _, "chains", _, "updates", _] => "update_chain",
+            ["namespaces", _, "chains", _, "signals", _] => "signal_chain",
+            ["namespaces", _, "chains", _, "cancel"] => "cancel_chain",
+            ["namespaces", _, "chains", _, "runs"] => "list_chain_runs",
+            ["namespaces", _, "chains", _] => "inspect_chain",
+            _ => "request",
         }
     }
     fn query(mut self, pairs: Vec<(String, String)>) -> Self {
@@ -696,8 +736,9 @@ impl Client {
     async fn execute(
         &self,
         request: WireRequest,
-        options: CallOptions,
+        mut options: CallOptions,
     ) -> Result<WireReply, SagatError> {
+        options.traceparent = self.options.telemetry.trace(options.traceparent);
         if options.cancel.is_cancelled() {
             return Err(cancelled());
         }
@@ -720,11 +761,39 @@ impl Client {
         } else {
             1
         };
+        let operation = request.operation();
         for attempt in 0..attempts {
+            let started = std::time::Instant::now();
+            self.options.telemetry.emit(
+                crate::EventKind::Started,
+                operation,
+                crate::SdkTransport::Rest,
+                None,
+                None,
+            );
             let result = self.once(&request, &options, timeout).await;
+            if let Err(error) = &result {
+                self.options.telemetry.emit(
+                    crate::EventKind::Failed,
+                    operation,
+                    crate::SdkTransport::Rest,
+                    Some(started.elapsed()),
+                    Some(error.code),
+                );
+            }
             match result {
-                Ok(value) => return Ok(value),
+                Ok(mut value) => {
+                    value.metric = Some((self.options.telemetry.clone(), operation, started));
+                    return Ok(value);
+                }
                 Err(error) if error.may_retry() && attempt + 1 < attempts => {
+                    self.options.telemetry.emit(
+                        crate::EventKind::Retry,
+                        operation,
+                        crate::SdkTransport::Rest,
+                        None,
+                        Some(error.code),
+                    );
                     let wait = self.options.retry.after(attempt, error.retry_after);
                     tokio::select! { biased; _=options.cancel.cancelled()=>return Err(cancelled()), _=tokio::time::sleep(wait)=>{} }
                 }
@@ -841,6 +910,7 @@ impl Client {
                 serde_json::from_slice(&bytes).map_err(|_| protocol())?
             };
             Ok(WireReply {
+                metric: None,
                 value,
                 status,
                 trace_id: trace_id.clone(),
