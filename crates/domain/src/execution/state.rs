@@ -1516,6 +1516,40 @@ impl StepState {
                 self.status = Succeeded;
                 self.switch_selection = Some(selection.clone());
             }
+            RunEvent::WaitStarted {
+                correlation_key,
+                deadline,
+                ..
+            } => {
+                require(self, &[Pending])?;
+                self.status = Waiting;
+                self.waiting = Some(WaitingOn::Event {
+                    correlation_key: correlation_key.clone(),
+                    deadline: *deadline,
+                });
+            }
+            RunEvent::WaitSatisfied { .. } => {
+                require(self, &[Waiting])?;
+                if !matches!(self.waiting, Some(WaitingOn::Event { .. })) {
+                    return Err(illegal_transition(instance, self.status, name));
+                }
+                self.status = Succeeded;
+                self.waiting = None;
+            }
+            RunEvent::WaitTimedOut { handled, .. } => {
+                require(self, &[Waiting])?;
+                if !matches!(self.waiting, Some(WaitingOn::Event { .. })) {
+                    return Err(illegal_transition(instance, self.status, name));
+                }
+                self.waiting = None;
+                if *handled {
+                    self.status = Succeeded;
+                    self.timed_out = true;
+                } else {
+                    self.status = Failed;
+                    self.failure = Some(FailureCode::wait_timed_out());
+                }
+            }
             RunEvent::TimerStarted { due_at, .. } => {
                 require(self, &[Pending])?;
                 self.status = Waiting;
@@ -4239,6 +4273,9 @@ impl RunState {
             | RunEvent::SwitchEvaluated { .. }
             | RunEvent::TimerStarted { .. }
             | RunEvent::TimerFired { .. }
+            | RunEvent::WaitStarted { .. }
+            | RunEvent::WaitSatisfied { .. }
+            | RunEvent::WaitTimedOut { .. }
             | RunEvent::StepCancelRequested { .. }
             | RunEvent::StepCancelled { .. }) => {
                 self.steps

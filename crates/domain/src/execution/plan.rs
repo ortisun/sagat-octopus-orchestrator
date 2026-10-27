@@ -113,7 +113,7 @@ pub fn plan_addressed(
             Vec::new()
         } else if step.status() == StepStatus::Failed {
             declared.on_error().cloned().into_iter().collect()
-        } else if let Some(targets) = control_successors(declared, step)? {
+        } else if let Some(targets) = recorded_successors(declared, step)? {
             targets
         } else {
             declared.next().cloned().into_iter().collect()
@@ -152,6 +152,7 @@ pub fn plan_addressed(
                 | NodeKind::Condition { .. }
                 | NodeKind::Switch { .. }
                 | NodeKind::Timer { .. }
+                | NodeKind::WaitEvent { .. }
                 | NodeKind::Approval { .. }
                 | NodeKind::While { .. }
                 | NodeKind::RepeatUntil { .. }
@@ -198,7 +199,7 @@ pub fn plan_path(
             Vec::new()
         } else if step.status() == StepStatus::Failed {
             declared.on_error().cloned().into_iter().collect()
-        } else if let Some(targets) = control_successors(declared, step)? {
+        } else if let Some(targets) = recorded_successors(declared, step)? {
             targets
         } else {
             declared.next().cloned().into_iter().collect()
@@ -233,6 +234,7 @@ pub fn plan_path(
             | NodeKind::Condition { .. }
             | NodeKind::Switch { .. }
             | NodeKind::Timer { .. }
+            | NodeKind::WaitEvent { .. }
             | NodeKind::Approval { .. }
             | NodeKind::While { .. }
             | NodeKind::RepeatUntil { .. }
@@ -630,12 +632,15 @@ fn cancel_joined_leftovers(def: &WorkflowDefinition, state: &RunState) -> Option
     None
 }
 
-/// A control node routes from its recorded choice, in either full or exact-path planning.
-fn control_successors(
+/// Routes a recorded branch outcome identically in root, full and exact-path planning.
+fn recorded_successors(
     node: &Node,
     step: &StepState,
 ) -> Result<Option<Vec<NodeId>>, ExecutionError> {
     Ok(Some(match node.kind() {
+        NodeKind::WaitEvent { on_timeout, .. } if step.timed_out() => {
+            on_timeout.iter().cloned().collect()
+        }
         NodeKind::Condition {
             if_true, if_false, ..
         } => vec![if step.condition() == Some(true) {
@@ -684,13 +689,10 @@ fn successors_after(
             Vec::new()
         });
     }
-    if let Some(targets) = control_successors(def_node, step)? {
+    if let Some(targets) = recorded_successors(def_node, step)? {
         return Ok(targets);
     }
     Ok(match def_node.kind() {
-        NodeKind::WaitEvent { on_timeout, .. } if step.timed_out() => {
-            on_timeout.iter().cloned().collect()
-        }
         NodeKind::End { .. } => Vec::new(),
         _ => def_node.next().cloned().into_iter().collect(),
     })

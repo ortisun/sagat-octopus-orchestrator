@@ -704,3 +704,11 @@ producer composition, native End/scheduler activation, full old-binary rollout, 
 nested capacity and final release gates remain open. No canonical runtime task is closed by Q5.
 Evidence: `tasks/project-completion/evidence/legacy-output-view-20261018/reproduce.md` and
 `scoped-output-refusal-red-20261018/reproduce.md`.
+
+### Scoped event-wait preparation stays internal
+
+The0.3 pure model records addressed wait.started/wait.satisfied/wait.timed_out and routes a
+handled timeout to its local onTimeout edge. This is trusted recorded replay only. A contract
+fitness test retains public refusal for both WaitEvent entry and activity→WaitEvent bodies;
+qualified native dispatch/receipt/value authority and all-five runtime evidence remain required.
+See scoped-event-waits.md and implementation-0.3.md for exact pending boundaries and results.

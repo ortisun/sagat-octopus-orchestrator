@@ -551,3 +551,39 @@ awkward explicit-zero term; both are corrected to D704's exact retained<limit ru
 required storage/locking/range/permission defect remained in that final review. This closes
 only the explicit-zero increment; full fixed-source native/SDK/upgrade/resource and release
 gates remain open.
+
+## Sixth increment preparation: recorded scoped event waits
+
+Public event-wait bodies remain closed, enforced by the new contract test
+recorded_event_lifecycle_does_not_enable_unproven_collection_wait_delivery for both entry
+and activity→wait shapes. The internal typed model can record the shape; this is not a
+native subscription, accepted external delivery or timeout producer.
+
+`scoped-event-recorded-red` failed5tests for actual unsupported scoped pending planning/
+wait.started. After sharing recorded lifecycle, `scoped-event-timeout-routing-red` passed4
+and failed1: a handled timeout incorrectly activated normal next instead of onTimeout.
+The shared recorded_successors helper now selects the same recorded timeout/control branches
+for root, full and exact-path planning. No root outcome or wire semantics are changed.
+
+`scoped-event-recorded-green` passed7tests,0failed/ignored, including exact sibling identity,
+correlation/deadline replay properties, event/timeout mutual exclusion, cancellation, pause
+completion and resume routing. `scoped-event-domain-full` passed566tests/0failed/0ignored
+across42targets,48.31s command. Strict domain/all-targets Clippy passed15.58s command including
+build-lock wait (15.34s build output). A fresh read-only review found no implementation defect and requested
+negative source-state coverage; a bounded full/path matrix now rejects duplicate start,
+non-Event waiting outcomes, pending outcomes and duplicate cancellation without mutation.
+`scoped-event-recorded-final` passed8tests/0failed,2.05s command; this is a separate focused
+run, not a claim of567full-suite tests. Final focused-target strict Clippy passed0.93s.
+`scoped-event-public-gate` passed1contract test/0failed,29.75s command including compilation.
+No public parsing capability was widened; no golden or SDK protocol changed.
+
+The next native boundary must replace the dispatcher's run+node-only wait/cursor/delivery
+identity with exact member identity while preserving root receipts. Clock/evaluation fences,
+physical metadata, event binding/receipt/payload quota+classification atomicity, lookback,
+actual event/timeout/cancel races, paused cold recovery and five-SDK runtime acceptance remain
+pending in scoped-event-waits.md. All canonical tasks and release gates remain open.
+
+Strict contract-target Clippy also passed35.62s after the publication-gate addition.
+The pure event increment introduces no native caller; recorded event replay cannot authorize
+an external delivery. The immutable timer integration run remains a separate older-profile
+invocation, not acceptance for this later pure event code or the new zero-policy migration.

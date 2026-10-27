@@ -878,3 +878,13 @@ regressions (the new1025/default1024 HTTP ceiling check has a separately recorde
 The OpenAPI quota description and generated Studio API comment match; ordinary
 quota.changed audit and existing capacity refusal vocabulary remain in use. Exact failed and
 passed invocations are in implementation-0.3.md; nested/runtime/release tasks stay open.
+
+### 2026-10-27 scoped event-wait recorded preparation
+
+T014-014–017/040, FR-014-004/005/014/015: scoped_event_wait_lifecycle tests recorded
+correlation/deadline, exact member isolation, event/timeout outcomes and local timeout edge,
+pause/resume and inert invalid/duplicate events in full/path replay. Root branch selection
+uses the same helper; the complete domain gate passed566 before the final additional negative
+matrix, which independently passed in the8-test target. The public contract refuses both
+unproven body-wait entry forms. Native delivery/receipt/value/authority, telemetry, SDK and
+complete release acceptance remain pending; no canonical task closes.

@@ -208,3 +208,31 @@ fn collection_publication_keeps_nested_bodies_closed() {
         "publication must stay closed for nested collections"
     );
 }
+
+#[test]
+fn recorded_event_lifecycle_does_not_enable_unproven_collection_wait_delivery() {
+    use sagat_application::definitions::IrError;
+    for at_entry in [true, false] {
+        let mut document = chain_of(1, &serde_json::json!({}));
+        let wait = serde_json::json!({"id":"notified","type":"waitEvent","eventType":"payment.notified","correlationExpr":"item.key","timeoutMs":60000,"lookbackMs":0,"next":"return-line"});
+        if at_entry {
+            document["bodies"]["line"]["entrypoint"] = serde_json::json!("notified");
+            document["bodies"]["line"]["nodes"] =
+                serde_json::json!([wait,{"id":"return-line","type":"return","result":"item"}]);
+        } else {
+            document["bodies"]["line"]["nodes"][0]["next"] = serde_json::json!("notified");
+            document["bodies"]["line"]["nodes"]
+                .as_array_mut()
+                .expect("body nodes")
+                .insert(1, wait);
+        }
+        let bytes = serde_json::to_vec(&document).expect("definition");
+        JsonIrCodec
+            .parse_structured(&bytes)
+            .expect("the internal model retains the event shape");
+        assert!(
+            matches!(JsonIrCodec.parse(&bytes), Err(IrError::Unsupported { .. })),
+            "entry={at_entry}: publication needs exact-instance native delivery and runtime evidence"
+        );
+    }
+}

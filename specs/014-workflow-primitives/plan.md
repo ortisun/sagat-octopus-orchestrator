@@ -632,3 +632,11 @@ meaning of zero. Keep default/absent versus explicit tenant policy distinct, reu
 policy/run/usage locks and admission comparison, and preserve accepted progress and drain.
 An additive positive→nonnegative CHECK has a retained-zero downgrade guard; deploy schema
 first and fence zero-capable writers before rollback. This adds no group runtime or counter.
+
+### Scoped event-wait recorded preparation
+
+[scoped-event-waits.md](./scoped-event-waits.md) separates pure recorded lifecycle/branch
+selection from native correlation, clock and delivery authority. Root/full/path planners share
+recorded branch selection; Pending waits remain scheduler-owned. Public wait bodies stay closed
+under a contract fitness test until qualified dispatcher identity, persistence/receipt/value
+atomicity, races and all-five runtime evidence pass. Native/group activation is not inferred.
