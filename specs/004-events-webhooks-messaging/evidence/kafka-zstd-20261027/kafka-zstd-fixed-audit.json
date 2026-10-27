@@ -1,0 +1,15 @@
+{
+  "command": [
+    "cargo",
+    "audit",
+    "--deny",
+    "warnings"
+  ],
+  "exit_code": 0,
+  "seconds": 1.71,
+  "wall_seconds": 1.71,
+  "wall_minus_monotonic_seconds": -0.0,
+  "started_utc": "2026-10-27T21:19:27.569814+00:00",
+  "finished_utc": "2026-10-27T21:19:29.283213+00:00",
+  "log": "kafka-zstd-fixed-audit.txt"
+}

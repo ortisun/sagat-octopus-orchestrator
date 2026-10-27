@@ -71,6 +71,7 @@ jobs:
       - run: rustup show active-toolchain
       - run: python3 -m unittest discover -s scripts/tests -v
       - run: python3 scripts/check-architecture.py
+      - run: python3 scripts/check-vendor.py
       - run: python3 scripts/check-agent-config.py
 
   sdks:
