@@ -1078,3 +1078,36 @@ acknowledgement is claimed by that cold duplicate check. Root dispatch passes24/
 invocations retain fixed sources; tests added only after a prior single-target binary was
 already executing belong to their later invocations. Formatting/diff/architecture/agent checks
 pass. Native executable SHA256: a88a6c3432f45db3e5cf85910c56440057c983f9c364d6cec3f298c484cedbc3.
+
+
+## Native scoped event outcome/cleanup ordering (2026-10-27)
+
+On unchanged production source80ae824a, actual held-Run tests prove both commit orders for
+scoped event versus due timeout and cancellation. Event-first cancellation queues the actual
+public audited RunOperation; cancellation-first stages the real system stop command under own
+Run/shard authority and proves the waiting ingress refuses current stop state. The actual
+collection scheduler finishes both cancelled drains. Exact PID+backend_start and
+pg_blocking_pids show the contender waiting on the holder's Run lock; a bounded join releases
+only after observing the real edge. No sleep races, old-process or public body proof is claimed.
+
+Actual purge_events also queues on the receiver's locked inbox row until canonical value commit.
+The purge then removes inbox and FK-cascaded receipts while the retained run value and journal
+replay remain valid. A separate cleanup-first committed control leaves both native writers with
+no value for the stale claim. A prepared bounded snapshot additionally waits on a held timeout
+and must fail the changed Run revision before any receipt. Six original order cases pass15.06s
+harness/65.49s command, then all seven pass16.58s/66.49s. These are overlapping invocations.
+The prepared-path assertion is tightened to the typed RevisionConflict and verified separately
+below. Test-target strict Clippy passes36.05s, then16.29s after the seventh case.
+
+The new current-row corruption test initially failed during fixture setup because PostgreSQL
+already enforces inbox_events_payload_limit (23514),2.35s/51.73s. This is not a behavioral RED
+or a production size-check defect. The corrected test asserts that existing database boundary
+and exercises CHECK-valid wrong fingerprints, scalar and malformed JSON in both native writers,
+then validates the restored real admission. It passes1/0/0 in2.40s/3.06s; no duplicate production
+bound or migration is added. Native receipt/outcome/cleanup ordering now has this focused proof;
+actual production callers, timeout discovery/public activation, released-v0.2 rollout and the
+remaining canonical SDK/nesting/capacity/resource/fault/release gates remain open.
+
+The tightened prepared-path case passes1/0/0 in2.45s harness/52.89s command, requiring
+RevisionConflict exactly. It overlaps the seven-case gate and is not an eighth race. Only
+tests/helper visibility and evidence changed after80ae824a; production behavior is unchanged.

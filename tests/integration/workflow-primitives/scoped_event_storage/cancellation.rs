@@ -13,7 +13,7 @@ async fn user_cancellation_drains_a_subscribed_member_and_retires_its_reservatio
     );
 }
 
-fn scheduler(
+pub(super) fn scheduler(
     fixture: &Fixture,
     store: &PgRunStore,
 ) -> Scheduler<PgRunStore, JsonEvaluator, SystemEntropy> {
@@ -304,7 +304,7 @@ async fn a_late_native_drain_journal_failure_rolls_back_binding_usage_and_outbox
         .expect("cold replay after native rollback/retry");
 }
 
-async fn observe_run_waiter(fixture: &Fixture, holder: (i32, time::OffsetDateTime)) {
+pub(super) async fn observe_run_waiter(fixture: &Fixture, holder: (i32, time::OffsetDateTime)) {
     loop {
         let observed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity waiter JOIN pg_stat_activity holder ON holder.pid=$1 AND holder.backend_start=$2 WHERE waiter.datname=current_database() AND waiter.usename='sagat_app' AND waiter.wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(waiter.pid)) AND waiter.query LIKE '%FROM runs%' AND waiter.query LIKE '%FOR UPDATE%')")
             .bind(holder.0).bind(holder.1).fetch_one(&fixture.world.db.pool).await.expect("exact current native Run lock wait edge");

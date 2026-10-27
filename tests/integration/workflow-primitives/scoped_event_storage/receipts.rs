@@ -6,6 +6,9 @@ use sagat_application::{
 };
 use sagat_domain::{events::EventId, workflow::EventType};
 
+mod admission;
+mod races;
+
 async fn source(name: &str) -> (Fixture, PgRunStore, WaitingStep, ClaimedEvent) {
     source_document(name, wait_document(name, true, 60000)).await
 }

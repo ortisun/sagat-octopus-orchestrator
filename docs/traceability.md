@@ -948,3 +948,13 @@ quota rollback, paused cold routing/duplicate and pinned public/PII/secret journ
 The completed lifecycle gate passes43, root dispatch24, contracts49 and workspace lint; exact
 commands/timings/REDs and fixture limitations are in the0.3 implementation ledger. Production
 callers, native event races/cleanup, public activation and canonical release tasks remain open.
+
+
+### 2026-10-27 scoped event commit-order and inbox-retention proof
+
+T014-014–017/040, FR-014-004/005/014/015/017: receipts::races proves both event/timeout/cancel
+Run-lock orders, current inbox lock versus actual purge, retained value after receipt cascade,
+stale-claim refusal and queued bounded RevisionConflict. receipts::admission proves current
+JSON/fingerprint refusal and the existing database body limit. Native tests pass7 plus1current
+row case (with one tightened overlapping race rerun); timings/fixture limits live in the0.3
+ledger. These tests extend80ae824a with no production change or public/release activation.

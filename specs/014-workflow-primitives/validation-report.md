@@ -4069,3 +4069,19 @@ with one logical charge and actual classified journal disclosure under pinned ru
 (public/PII/secret). This is an internal structured-codec checkpoint, not public or released
 upgrade proof. Native event/outcome/cleanup races and producer/receiver activation, rollout,
 nested capacity, final SDK/resource/release gates and all eight canonical tasks remain open.
+
+
+### Native scoped event outcome and cleanup ordering
+
+On production80ae824a, held Run locks prove both event/timeout and event/cancellation orders;
+actual public cancellation queues behind the event-first commit, and native cancellation-first
+refuses the queued event before its receipt. Real scheduler drain/replay verifies finality.
+Actual purge_events waits for the receiver's inbox lock, then removes inbox/receipt while the
+retained run value and replay survive. Cleanup-first refuses stale claims in both writers.
+A prepared bounded entry queued behind timeout must return typed RevisionConflict. Exact
+backend identity/blocking edges and bounded joins replace timing sleeps. Seven cases pass
+16.58s/66.49s; the tightened typed-error assertion passes1/0/0 in2.45s/52.89s separately.
+Current-row fingerprint/JSON-object corruption and existing PostgreSQL size-bound coverage
+pass1/0/0 in2.40s/3.06s after a documented fixture-setup error. Test-target strict lint passes
+16.29s before the final assertion tightening. No production code, public activation or
+canonical release task changes; broader faults, production callers and rollout remain open.
