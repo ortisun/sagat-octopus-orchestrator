@@ -3945,3 +3945,14 @@ failure are retained in the implementation ledger. Read-only review found no req
 This is not native subscription, timeout, event receipt or public capability evidence; callers
 still need database time, current scheduling authority and evaluation-snapshot CAS. No canonical
 task is closed by this preparation increment.
+
+
+### Complete64-scenario SDK checkpoint
+
+Immutable38d7b3f0 passed64scenarios across all five SDKs,1aggregate/0failed/0ignored,
+1396.68s harness/1399.68s command. Root independently confirmed290complete normalized outputs
+from58scenarios equal their exact goldens; six authoring-only scenarios remain separately
+identified. No bless or selection filter; prepared SDK reuse after the initial missing-runner
+failure is explicit. [Command, log, hashes and limitations](./evidence/sdk64-20261027/README.md)
+are retained. This strengthens timer/control/recovery and zero-policy snapshot evidence; it is
+not acceptance for later event preparations, native scoped events, nesting or release0.3.

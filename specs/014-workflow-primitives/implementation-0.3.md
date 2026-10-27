@@ -732,3 +732,23 @@ The final full domain invocation passed574/0failed/0ignored across42target summa
 found no required issue; formatting, architecture24crates and agent configuration pass.
 The native dispatcher and full64 SDK gates remain separate snapshots, not acceptance of a
 new scoped wait receiver. This closes the pure start-only command increment.
+
+
+## Complete64-scenario five-SDK checkpoint
+
+The corrected fixed-source38d7b3f0 invocation completed1aggregate/0failed/0ignored:
+64scenarios ×5languages,1396.68s harness/1399.68s command,1399.69s wall/gap0.01s.
+Six scenarios are authoring-only;58 produce290normalized observations, including publication
+checks. Root independently parsed all290complete observations and compared them to their exact
+committed goldens (58 per language), with no difference. The tracked source checkout is clean;
+no blessing, language/scenario filter or external database was used. The final retry reused the
+five SDKs already prepared unchanged by the initial invocation. Local Node26/Java23 are not
+a pinned CI toolchain claim. The prerequisite failure and focused database success remain
+recorded separately, not reclassified as passes of the initial aggregate.
+
+Durable evidence: [sdk64-20261027](./evidence/sdk64-20261027/README.md), actual command/log,
+manifest and290comparison hashes. Comparison manifest SHA256:
+f325991582864acea425e4f1ab4f7e571d2f011d84806acc17125673832b6bcd.
+The gate covers migration22 and recorded-event replay at38d7b3f0, not later root dispatch
+candidate changes or pure start/timeout commands. Final-tree/native receiver/upgrade/resource
+and release gates remain open. Its owned temporary checkout is retired after evidence capture.

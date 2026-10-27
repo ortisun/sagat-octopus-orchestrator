@@ -1,5 +1,13 @@
 # SDK and protocol compatibility
 
+The 0.3 development snapshot `38d7b3f0` passes all 64 registered scenarios in all five SDKs,
+without blessing or selection filters. Root independently compared 290 complete normalized
+outputs from 58 scenarios to their goldens; six scenarios are authoring-only. The retry reused
+unchanged SDK builds after correcting the missing database-runner prerequisite. Exact source,
+commands and limits are in [the 64-scenario evidence](../specs/014-workflow-primitives/evidence/sdk64-20261027/README.md).
+Later event-candidate and pure-command work, native scoped event delivery and released-profile
+rollout retain separate gates; this checkpoint does not authorize release 0.3.
+
 Chain clients, including the Python blocking facade, have current all-five evidence for
 continuation authoring and seven chain runtime scenarios (T014-038). The exact scenario list,
 reviewed-golden hashes and35 independently compared runtime artifacts are recorded in
