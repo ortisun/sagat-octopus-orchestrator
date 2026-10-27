@@ -39,3 +39,7 @@ relies on another project's or a manually started database.
 The later [in-flight FORWARD profile](./released-v02-inflight-profile.md) has separate evidence
 for a real old leased report/replay; it does not broaden this first active-data checkpoint
 or supply the scoped-event dispatcher cutover fence.
+
+The runner accepts only the exact selected coordinator and a final outer summary of
+1passed/0failed/0ignored; exit0 with zero matching tests is refused. Nested old test phases
+do not substitute for the outer result. These fixtures require a Unix host.

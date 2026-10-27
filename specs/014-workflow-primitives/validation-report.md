@@ -4215,3 +4215,12 @@ lint19.57s, verifier8cases0.098s and static checks pass. The ledger and
 [evidence](./evidence/released-v02-applied-20261027/README.md) retain weaker preflights, an
 explicitly interrupted fixture compile and three scoped reviews. No production code changes,
 canonical closure, quota/drain frontier, mixed dispatcher/public activation or release acceptance.
+
+
+### Selected-test false-success refusal
+
+A real zero-match selector reproduces the runner's former false success (required-rejection
+RED4.43s); the exact-case/final-outer-summary guard rejects it (green2.82s). Verifier tests13/0
+pass0.081s. Actual active-data, FORWARD and Applied profiles separately pass1/0/0 in6.47s,5.53s
+and5.35s under the fixed guard. Rust fixtures are unchanged from bd4f611d. The ledger and
+released-v02-selector-20261027 retain exact outputs and the genuine negative control.

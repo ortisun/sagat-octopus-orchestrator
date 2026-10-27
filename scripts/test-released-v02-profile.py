@@ -113,6 +113,14 @@ def run(command: list[str], cwd: Path, env: dict[str, str], log: Path, limit: in
         raise RuntimeError(f'phase failed with exit {code}; private diagnostics: {log}')
 
 
+def verify_selected_phase(log: Path, case: str) -> None:
+    output = log.read_text()
+    summaries = [line for line in output.splitlines() if line.startswith('test result:')]
+    if (f'test {case} ...' not in output or not summaries
+            or not summaries[-1].startswith('test result: ok. 1 passed; 0 failed; 0 ignored;')):
+        raise RuntimeError('the selected phase must execute exactly one successful outer test')
+
+
 def artifact(log: Path, source: Path) -> dict:
     matches = []
     for line in log.read_text().splitlines():
@@ -139,6 +147,8 @@ def main() -> None:
     parser.add_argument('--prepared-run', type=Path, help='reuse this agent-owned verified archive/build cache')
     parser.add_argument('--scenario', choices=tuple(SCENARIOS), default='active-data')
     args = parser.parse_args()
+    if os.name != 'posix':
+        raise RuntimeError('the released-source fixtures require a Unix host')
     case, coordinator, transcript_name = SCENARIOS[args.scenario]
     repo = Path(subprocess.check_output(['git', 'rev-parse', '--show-toplevel'], text=True).strip()).resolve()
     if subprocess.check_output(['git', 'rev-parse', 'v0.2.0^{commit}'], cwd=repo, text=True).strip() != RELEASE:
@@ -233,6 +243,7 @@ def main() -> None:
     gate_env = dict(env, SAGAT_V02_BUILD=str(build_path), SAGAT_TEST_AS_RUNTIME_ROLE='1', RUST_TEST_THREADS='1')
     transcript = root / transcript_name
     run([str(current_binary), case, '--ignored', '--exact', '--nocapture'], repo, gate_env, transcript, 360)
+    verify_selected_phase(transcript, case)
     print(f'Released-source compatibility evidence: {root}')
     print('\n'.join(transcript.read_text().splitlines()[-12:]))
 

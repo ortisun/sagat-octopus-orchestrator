@@ -1496,3 +1496,20 @@ This accepts a genuine released Applied report/replay and post-final old reading
 drain/original-forward compensation frontier, expired/stale reports, old-dispatcher credential
 fencing/public activation, five SDKs, general loops/nesting/capacity and final resource/release
 gates remain open. No canonical task is ticked and no external effect is claimed exactly once.
+
+
+## Exact selected-test acceptance guard — 2026-10-27
+
+A real negative control injects a nonexistent case into the runner's in-memory scenario mapping
+without changing the verified Rust source/build. Before the fix, libtest returns exit0/running0
+tests and the runner falsely prints evidence success. The control's required rejection assertion
+fails in4.43s. This is a genuine tooling RED, not a platform test or a compatibility pass.
+The fixed runner requires the exact selected case marker and final outer1passed/0failed/0ignored
+summary before success; nested old phases cannot hide an empty/failed/multiple outer gate.
+Unix-only fixtures now refuse unsupported hosts explicitly. The same actual negative control
+passes2.82s after rejection. Five focused outcome controls plus eight source controls pass13/0
+in0.081s. All actual scenarios pass separately again: active-data1/0/0 in6.47s (9.43s runner),
+FORWARD1/0/0 in5.53s (8.31s runner), Applied1/0/0 in5.35s (8.63s runner). Rust inputs remain
+unchanged from bd4f611d; no repeated Rust lint claim is needed for this Python-only fix.
+[evidence/released-v02-selector-20261027](./evidence/released-v02-selector-20261027/README.md)
+retains the fault injection, RED/green and all positive outputs. No canonical task closes.

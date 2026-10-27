@@ -76,5 +76,40 @@ class ReleaseSourceBoundary(unittest.TestCase):
         self.assertNotEqual(RUNNER.current_manifest(repo), before)
 
 
+class SelectedPhaseOutcome(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='sagat-phase-outcome-')
+        self.addCleanup(self.temp.cleanup)
+        self.log = Path(self.temp.name) / 'phase.txt'
+        self.case = 'current::selected'
+
+    def check(self, output):
+        self.log.write_text(output)
+        RUNNER.verify_selected_phase(self.log, self.case)
+
+    def test_nested_old_phases_do_not_inflate_the_one_outer_case(self):
+        self.check('test current::selected ... \nrunning 1 test\ntest old::phase ... ok\n'
+                   'test result: ok. 1 passed; 0 failed; 0 ignored; 4 filtered out\n'
+                   'ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 9 filtered out\n')
+
+    def test_zero_matching_cases_are_refused(self):
+        with self.assertRaisesRegex(RuntimeError, 'selected'):
+            self.check('running 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored; 9 filtered out\n')
+
+    def test_successful_old_child_cannot_mask_zero_outer_cases(self):
+        with self.assertRaisesRegex(RuntimeError, 'selected'):
+            self.check('test current::selected ... \ntest result: ok. 1 passed; 0 failed; 0 ignored;\n'
+                       'test result: ok. 0 passed; 0 failed; 0 ignored;\n')
+
+    def test_wrong_name_is_refused_even_when_one_test_passed(self):
+        with self.assertRaisesRegex(RuntimeError, 'selected'):
+            self.check('test another::case ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored;\n')
+
+    def test_failed_or_multiple_outer_cases_are_refused(self):
+        for result in ('FAILED. 0 passed; 1 failed; 0 ignored;', 'ok. 2 passed; 0 failed; 0 ignored;'):
+            with self.subTest(result=result), self.assertRaisesRegex(RuntimeError, 'selected'):
+                self.check(f'test current::selected ... ok\ntest result: {result}\n')
+
+
 if __name__ == '__main__':
     unittest.main()
