@@ -1,0 +1,836 @@
+# Draft OpenAPI fragment, feature 029. Not canonical: T029-066 merges it into
+# specs/001-platform-foundation/contracts/openapi.yaml. `$ref`s to `#/components/...` name components that
+# already exist in the canonical document (Error responses, parameters) or are defined below.
+openapi: 3.1.0
+info:
+  title: Sagat access control (draft fragment, feature 029)
+  version: 0.0.0-draft
+paths:
+  /access/permissions:
+    get:
+      operationId: listPermissionCatalog
+      summary: The permission catalog with its classification
+      tags: [Access]
+      x-access: {class: authenticated}
+      responses:
+        '200': {description: The catalog, content: {application/json: {schema: {$ref: '#/components/schemas/PermissionCatalog'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /access/roles:
+    get:
+      operationId: listCustomRoles
+      summary: List custom roles (tenant roles, or the roles of one namespace)
+      tags: [Access]
+      description: Needs `access:read` tenant-wide for tenant roles, or in the namespace for its roles.
+      x-access: {class: tenant, permission: access:read}
+      parameters:
+        - {name: namespaceId, in: query, required: false, schema: {type: string, format: uuid}, description: 'Owner namespace; absent lists tenant roles.'}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200': {description: A page of roles, content: {application/json: {schema: {$ref: '#/components/schemas/CustomRolePage'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    post:
+      operationId: createCustomRole
+      summary: Define a custom role
+      tags: [Access]
+      description: |
+        Needs `role:manage` in the owner scope. Every listed permission must be assignable, meaningful in
+        the scope and held by the caller in that scope (`PRIVILEGE_ESCALATION` otherwise). The role,
+        its first revision and `role.created` commit together.
+      x-access: {class: tenant, permission: role:manage}
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/CustomRoleRequest'}}}
+      responses:
+        '201': {description: The role, content: {application/json: {schema: {$ref: '#/components/schemas/CustomRole'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /access/roles/{roleId}:
+    parameters:
+      - {name: roleId, in: path, required: true, schema: {type: string, format: uuid}}
+    get:
+      operationId: getCustomRole
+      tags: [Access]
+      x-access: {class: tenant, permission: access:read}
+      responses:
+        '200': {description: The role, content: {application/json: {schema: {$ref: '#/components/schemas/CustomRole'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/InternalError'}
+    put:
+      operationId: updateCustomRole
+      summary: Replace a role's description and permission set
+      tags: [Access]
+      description: Requires `expectedRevision`; a stale one is `REVISION_CONFLICT`. Takes effect for every assignee on their next admitted call. Decided in the role's stored scope.
+      x-access: {class: tenant, permission: role:manage}
+      parameters:
+        - {$ref: '#/components/parameters/OptionalIdempotencyKey'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/CustomRoleUpdate'}}}
+      responses:
+        '200': {description: The new revision, content: {application/json: {schema: {$ref: '#/components/schemas/CustomRole'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        default: {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: deleteCustomRole
+      tags: [Access]
+      description: Refused with `ROLE_IN_USE` while any assignment names the role. Decided in the role's stored scope.
+      x-access: {class: tenant, permission: role:manage}
+      parameters:
+        - {$ref: '#/components/parameters/OptionalIdempotencyKey'}
+      responses:
+        '204': {description: Deleted}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /access/roles/{roleId}/revisions:
+    get:
+      operationId: listCustomRoleRevisions
+      tags: [Access]
+      x-access: {class: tenant, permission: access:read}
+      parameters:
+        - {name: roleId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200': {description: Revisions, newest first, content: {application/json: {schema: {$ref: '#/components/schemas/CustomRoleRevisionPage'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /access/assignments:
+    get:
+      operationId: listRoleAssignments
+      tags: [Access]
+      x-access: {class: tenant, permission: access:read}
+      parameters:
+        - {name: namespaceId, in: query, schema: {type: string, format: uuid}}
+        - {name: roleId, in: query, schema: {type: string, format: uuid}}
+        - {name: subject, in: query, schema: {type: string, minLength: 1, maxLength: 255}}
+        - {name: groupId, in: query, schema: {type: string, format: uuid}}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200': {description: A page of assignments, content: {application/json: {schema: {$ref: '#/components/schemas/RoleAssignmentPage'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/InternalError'}
+    put:
+      operationId: assignCustomRole
+      summary: Assign a role to a subject or group (idempotent)
+      tags: [Access]
+      description: Needs `role:assign` in the scope and every permission of the role there. Same (role, principal, scope) returns the existing assignment. An ineligible principal is `UNKNOWN_SUBJECT`/`MACHINE_IDENTITY` for `access:read` holders and `PRINCIPAL_NOT_ELIGIBLE` otherwise.
+      x-access: {class: tenant, permission: role:assign}
+      parameters:
+        - {$ref: '#/components/parameters/OptionalIdempotencyKey'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/RoleAssignmentRequest'}}}
+      responses:
+        '200': {description: The assignment in force, content: {application/json: {schema: {$ref: '#/components/schemas/RoleAssignment'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /access/assignments/{assignmentId}:
+    delete:
+      operationId: unassignCustomRole
+      tags: [Access]
+      description: Decided in the assignment's stored scope.
+      x-access: {class: tenant, permission: role:assign}
+      parameters:
+        - {name: assignmentId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {$ref: '#/components/parameters/OptionalIdempotencyKey'}
+      responses:
+        '204': {description: Removed}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /access/groups:
+    get:
+      operationId: listAccessGroups
+      tags: [Access]
+      x-access: {class: tenant, permission: access:read}
+      parameters:
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200': {description: A page of groups, content: {application/json: {schema: {$ref: '#/components/schemas/AccessGroupPage'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        default: {$ref: '#/components/responses/InternalError'}
+    post:
+      operationId: createAccessGroup
+      tags: [Access]
+      x-access: {class: tenant, permission: group:manage}
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/AccessGroupRequest'}}}
+      responses:
+        '201': {description: The group, content: {application/json: {schema: {$ref: '#/components/schemas/AccessGroup'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /access/groups/{groupId}:
+    parameters:
+      - {name: groupId, in: path, required: true, schema: {type: string, format: uuid}}
+    get:
+      operationId: getAccessGroup
+      tags: [Access]
+      x-access: {class: tenant, permission: access:read}
+      responses:
+        '200': {description: The group, content: {application/json: {schema: {$ref: '#/components/schemas/AccessGroup'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/InternalError'}
+    patch:
+      operationId: updateAccessGroup
+      tags: [Access]
+      x-access: {class: tenant, permission: group:manage}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/AccessGroupPatch'}}}
+      responses:
+        '200': {description: The group, content: {application/json: {schema: {$ref: '#/components/schemas/AccessGroup'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        default: {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: deleteAccessGroup
+      tags: [Access]
+      description: Refused with `GROUP_IN_USE` while referenced.
+      x-access: {class: tenant, permission: group:manage}
+      responses:
+        '204': {description: Deleted}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /access/groups/{groupId}/members:
+    get:
+      operationId: listAccessGroupMembers
+      tags: [Access]
+      x-access: {class: tenant, permission: access:read}
+      parameters:
+        - {name: groupId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200': {description: Members, content: {application/json: {schema: {$ref: '#/components/schemas/AccessGroupMemberPage'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /access/groups/{groupId}/members/{subject}:
+    parameters:
+      - {name: groupId, in: path, required: true, schema: {type: string, format: uuid}}
+      - {$ref: '#/components/parameters/PayloadRevealSubject'}
+    put:
+      operationId: addAccessGroupMember
+      tags: [Access]
+      description: Idempotent. The subject must hold a human membership. Adding a member is a grant of everything naming the group (`canAddMember`); it is also audited as a widening of each operation list and restricted-folder entry that names the group.
+      x-access: {class: tenant, permission: group:manage}
+      responses:
+        '200': {description: Member in force, content: {application/json: {schema: {$ref: '#/components/schemas/AccessGroupMember'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: removeAccessGroupMember
+      tags: [Access]
+      x-access: {class: tenant, permission: group:manage}
+      responses:
+        '204': {description: Removed}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/folders:
+    parameters:
+      - {$ref: '#/components/parameters/NamespaceId'}
+    get:
+      operationId: listFolders
+      summary: Folders of a namespace the caller can see
+      tags: [Access]
+      x-access: {class: namespace, permission: namespace:read, discloses: [folder]}
+      parameters:
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200': {description: Folders, content: {application/json: {schema: {$ref: '#/components/schemas/FolderPage'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/InternalError'}
+    post:
+      operationId: createFolder
+      tags: [Access]
+      x-access: {class: namespace, permission: folder:manage}
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/FolderRequest'}}}
+      responses:
+        '201': {description: The folder, content: {application/json: {schema: {$ref: '#/components/schemas/Folder'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/folders/{folderName}:
+    parameters:
+      - {$ref: '#/components/parameters/NamespaceId'}
+      - {$ref: '#/components/parameters/FolderName'}
+    get:
+      operationId: getFolder
+      tags: [Access]
+      x-access: {class: folder, permission: namespace:read, target: folderName}
+      responses:
+        '200': {description: The folder, content: {application/json: {schema: {$ref: '#/components/schemas/Folder'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/InternalError'}
+    patch:
+      operationId: updateFolder
+      summary: Rename, describe or change the access mode
+      tags: [Access]
+      description: A mode change to `restricted` requires `expectedRevision` from a preview and the `restrictedFolders` capability for every item kind placed in the folder.
+      x-access: {class: folder, permission: folder:manage, target: folderName}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/FolderPatch'}}}
+      responses:
+        '200': {description: The folder, content: {application/json: {schema: {$ref: '#/components/schemas/Folder'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        default: {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: deleteFolder
+      tags: [Access]
+      description: Refused with `FOLDER_NOT_EMPTY` while a live item is placed in it.
+      x-access: {class: folder, permission: folder:manage, target: folderName}
+      responses:
+        '204': {description: Deleted with its entries}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/folders/{folderName}/entries:
+    get:
+      operationId: listFolderEntries
+      tags: [Access]
+      description: Visible to the folder's owners, `folder:manage` and `access:read` holders.
+      x-access: {class: folder, anyOf: [access:read, folder:manage, folder-owner], target: folderName}
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/FolderName'}
+      responses:
+        '200': {description: Entries, content: {application/json: {schema: {$ref: '#/components/schemas/FolderEntryPage'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/InternalError'}
+    put:
+      operationId: setFolderEntry
+      summary: Give a subject or group a level on the folder (replaces its level)
+      tags: [Access]
+      x-access: {class: folder, anyOf: [folder:manage, folder-owner], target: folderName}
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/FolderName'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/FolderEntryRequest'}}}
+      responses:
+        '200': {description: The entry in force, content: {application/json: {schema: {$ref: '#/components/schemas/FolderEntry'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/folders/{folderName}/entries/{principalKind}/{principalId}:
+    delete:
+      operationId: removeFolderEntry
+      tags: [Access]
+      description: Removing or lowering visibility in a restricted folder requires `expectedRevision` from a preview (`VALIDATION_FAILED` without it).
+      x-access: {class: folder, anyOf: [folder:manage, folder-owner], target: folderName}
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/FolderName'}
+        - {name: principalKind, in: path, required: true, schema: {type: string, enum: [subject, group]}}
+        - {name: principalId, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 255}}
+        - {name: expectedRevision, in: query, schema: {type: integer, minimum: 1}}
+      responses:
+        '204': {description: Removed}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/folders/{folderName}/impact:
+    post:
+      operationId: previewFolderChange
+      summary: Preview who and what loses visibility before a restricting change
+      tags: [Access]
+      description: A `restrict` or `move-in` preview needs `folder:manage`; an entry change preview also accepts the folder's owners.
+      x-access: {class: folder, anyOf: [folder:manage, folder-owner], target: folderName}
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/FolderName'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/FolderChangePreviewRequest'}}}
+      responses:
+        '200': {description: The preview, content: {application/json: {schema: {$ref: '#/components/schemas/FolderChangePreview'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /workflows/{workflowId}/folder:
+    put:
+      operationId: moveWorkflow
+      tags: [Access]
+      description: A move is a grant (`canPlace`, contracts/evaluation.md) - `definition:write` on the workflow, administration of source and destination (root = `folder:manage`), `folder:manage` when the source is restricted, and the destination entries' item permissions held on the workflow; otherwise `PRIVILEGE_ESCALATION`.
+      x-access: {class: item, kind: workflow, target: workflowId, permission: definition:write}
+      parameters:
+        - {$ref: '#/components/parameters/Namespace'}
+        - {$ref: '#/components/parameters/WorkflowId'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/ItemMoveRequest'}}}
+      responses:
+        '200': {description: New placement, content: {application/json: {schema: {$ref: '#/components/schemas/ItemPlacement'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/scripts/{scriptId}/folder:
+    put:
+      operationId: moveScript
+      tags: [Access]
+      x-access: {class: item, kind: script, target: scriptId, permission: script:write}
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScriptId'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/ItemMoveRequest'}}}
+      responses:
+        '200': {description: New placement, content: {application/json: {schema: {$ref: '#/components/schemas/ItemPlacement'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/connections/{connectionName}/folder:
+    put:
+      operationId: moveConnection
+      tags: [Access]
+      x-access: {class: item, kind: connection, target: connectionName, permission: database:manage}
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {name: connectionName, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/ItemMoveRequest'}}}
+      responses:
+        '200': {description: New placement, content: {application/json: {schema: {$ref: '#/components/schemas/ItemPlacement'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /workflows/{workflowId}/operation-lists:
+    get:
+      operationId: listOperationLists
+      tags: [Access]
+      x-access: {class: item, kind: workflow, target: workflowId, anyOf: [definition:write, access:read]}
+      parameters:
+        - {$ref: '#/components/parameters/Namespace'}
+        - {$ref: '#/components/parameters/WorkflowId'}
+      responses:
+        '200': {description: Lists of this workflow, content: {application/json: {schema: {$ref: '#/components/schemas/OperationListPage'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /workflows/{workflowId}/operation-lists/{kind}/{operationName}:
+    parameters:
+      - {$ref: '#/components/parameters/Namespace'}
+      - {$ref: '#/components/parameters/WorkflowId'}
+      - {name: kind, in: path, required: true, schema: {type: string, enum: [query, update]}}
+      - {name: operationName, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'}}
+    put:
+      operationId: setOperationList
+      summary: Replace the callers allowed to invoke one declared operation name
+      tags: [Access]
+      description: Needs the `operationLists` capability. Creating a list or removing principals needs `definition:write`; adding principals widens and also needs `role:assign` in the namespace and the right to call that operation the caller would have without the list (`PRIVILEGE_ESCALATION` otherwise). An empty `principals` list allows nobody.
+      x-access: {class: item, kind: workflow, target: workflowId, permission: definition:write, widenRequires: [role:assign]}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/OperationListRequest'}}}
+      responses:
+        '200': {description: The list in force, content: {application/json: {schema: {$ref: '#/components/schemas/OperationList'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: removeOperationList
+      summary: Remove the list; the name returns to ADR-0031 namespace-wide access
+      tags: [Access]
+      description: Widens access - needs `definition:write`, `role:assign` in the namespace and the right to call that operation the caller would have without the list.
+      x-access: {class: item, kind: workflow, target: workflowId, permission: [definition:write, role:assign]}
+      responses:
+        '204': {description: Removed}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/access/explain:
+    get:
+      operationId: explainAccess
+      summary: Explain one access decision
+      tags: [Access]
+      description: Own subject for any member; another subject needs `access:read` in the namespace. A target the caller cannot see is `404`.
+      x-access: {class: namespace, anyOf: [access:read, self]}
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {name: subject, in: query, required: true, schema: {type: string, minLength: 1, maxLength: 255}}
+        - {name: permission, in: query, required: true, schema: {type: string}}
+        - {name: targetKind, in: query, schema: {type: string, enum: [workflow, run, script, connection]}}
+        - {name: targetId, in: query, schema: {type: string, minLength: 1, maxLength: 255}}
+        - {name: operation, in: query, schema: {type: string, pattern: '^(query|update)/[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'}}
+      responses:
+        '200': {description: The decision and its sources, content: {application/json: {schema: {$ref: '#/components/schemas/AccessExplanation'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        default: {$ref: '#/components/responses/InternalError'}
+components:
+  parameters:
+    FolderName:
+      name: folderName
+      in: path
+      required: true
+      schema: {type: string, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}
+  schemas:
+    Principal:
+      type: object
+      additionalProperties: false
+      required: [kind]
+      properties:
+        kind: {type: string, enum: [subject, group]}
+        subject: {type: string, minLength: 1, maxLength: 255, description: 'Required when kind is subject.'}
+        groupId: {type: string, format: uuid, description: 'Required when kind is group.'}
+    AccessScope:
+      type: object
+      additionalProperties: false
+      required: [kind]
+      properties:
+        kind: {type: string, enum: [tenant, namespace]}
+        namespaceId: {type: string, format: uuid, description: 'Required when kind is namespace.'}
+    PermissionCatalog:
+      type: object
+      required: [version, permissions, folderLevels]
+      properties:
+        version: {type: integer}
+        permissions:
+          type: array
+          items:
+            type: object
+            required: [permission, assignability, scopes]
+            properties:
+              permission: {type: string}
+              assignability: {type: string, enum: [assignable, reserved]}
+              scopes: {type: array, items: {type: string, enum: [tenant, namespace]}}
+              item:
+                type: object
+                properties:
+                  class: {type: string, enum: [level, sensitive]}
+                  kinds: {type: array, items: {type: string, enum: [workflow, run, script, connection]}}
+        folderLevels:
+          type: object
+          additionalProperties: {type: array, items: {type: string}}
+    CustomRoleRequest:
+      type: object
+      additionalProperties: false
+      required: [name, scope, permissions]
+      properties:
+        name: {type: string, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}
+        description: {type: string, maxLength: 512}
+        scope: {$ref: '#/components/schemas/AccessScope'}
+        permissions: {type: array, minItems: 1, maxItems: 64, uniqueItems: true, items: {type: string}}
+    CustomRoleUpdate:
+      type: object
+      additionalProperties: false
+      required: [expectedRevision, permissions]
+      properties:
+        expectedRevision: {type: integer, minimum: 1}
+        confirmAdminEquivalent: {type: boolean, description: 'Must be true when the edit adds quota:manage, egress:manage or audit:read to a role that has assignments (CONFIRMATION_REQUIRED otherwise).'}
+        description: {type: string, maxLength: 512}
+        permissions: {type: array, minItems: 1, maxItems: 64, uniqueItems: true, items: {type: string}}
+    CustomRole:
+      type: object
+      required: [id, name, scope, revision, permissions, createdAt, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        description: {type: string}
+        scope: {$ref: '#/components/schemas/AccessScope'}
+        revision: {type: integer}
+        permissions: {type: array, items: {type: string}}
+        assignmentCount: {type: integer, minimum: 0}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    CustomRolePage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/CustomRole'}}
+        nextCursor: {type: string}
+    CustomRoleRevisionPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [revision, permissions, actor, createdAt]
+            properties:
+              revision: {type: integer}
+              permissions: {type: array, items: {type: string}}
+              actor: {type: string}
+              createdAt: {type: string, format: date-time}
+        nextCursor: {type: string}
+    RoleAssignmentRequest:
+      type: object
+      additionalProperties: false
+      required: [roleId, principal, scope]
+      properties:
+        roleId: {type: string, format: uuid}
+        principal: {$ref: '#/components/schemas/Principal'}
+        scope: {$ref: '#/components/schemas/AccessScope'}
+        confirmAdminEquivalent: {type: boolean, description: 'Must be true when the role contains quota:manage, egress:manage or audit:read (CONFIRMATION_REQUIRED otherwise).'}
+    RoleAssignment:
+      type: object
+      required: [id, roleId, principal, scope, grantedBy, grantedAt]
+      properties:
+        id: {type: string, format: uuid}
+        roleId: {type: string, format: uuid}
+        principal: {$ref: '#/components/schemas/Principal'}
+        scope: {$ref: '#/components/schemas/AccessScope'}
+        grantedBy: {type: string}
+        grantedAt: {type: string, format: date-time}
+    RoleAssignmentPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/RoleAssignment'}}
+        nextCursor: {type: string}
+    AccessGroupRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name: {type: string, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}
+        description: {type: string, maxLength: 512}
+    AccessGroupPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        name: {type: string, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}
+        description: {type: string, maxLength: 512}
+    AccessGroup:
+      type: object
+      required: [id, name, source, memberCount, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        description: {type: string}
+        source: {type: string, enum: [local], description: 'Only local groups exist in this feature; a future source feature may add values (O1440).'}
+        memberCount: {type: integer, minimum: 0}
+        createdAt: {type: string, format: date-time}
+    AccessGroupPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/AccessGroup'}}
+        nextCursor: {type: string}
+    AccessGroupMember:
+      type: object
+      required: [subject, addedAt]
+      properties:
+        subject: {type: string}
+        addedBy: {type: string}
+        addedAt: {type: string, format: date-time}
+    AccessGroupMemberPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/AccessGroupMember'}}
+        nextCursor: {type: string}
+    FolderRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name: {type: string, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}
+        displayName: {type: string, maxLength: 128}
+        description: {type: string, maxLength: 512}
+    FolderPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        name: {type: string, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}
+        displayName: {type: string, maxLength: 128}
+        description: {type: string, maxLength: 512}
+        mode: {type: string, enum: [open, restricted]}
+        expectedRevision: {type: integer, minimum: 1}
+    Folder:
+      type: object
+      required: [id, name, mode, revision, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        displayName: {type: string}
+        description: {type: string}
+        mode: {type: string, enum: [open, restricted]}
+        revision: {type: integer}
+        callerLevel: {type: string, enum: [none, viewer, runner, editor, owner]}
+        createdAt: {type: string, format: date-time}
+    FolderPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Folder'}}
+        nextCursor: {type: string}
+    FolderEntryRequest:
+      type: object
+      additionalProperties: false
+      required: [principal, level]
+      properties:
+        principal: {$ref: '#/components/schemas/Principal'}
+        level: {type: string, enum: [viewer, runner, editor, owner]}
+        expectedRevision: {type: integer, minimum: 1, description: 'Required when the change lowers a level in a restricted folder.'}
+    FolderEntry:
+      type: object
+      required: [principal, level, grantedBy, grantedAt]
+      properties:
+        principal: {$ref: '#/components/schemas/Principal'}
+        level: {type: string, enum: [viewer, runner, editor, owner]}
+        grantedBy: {type: string}
+        grantedAt: {type: string, format: date-time}
+    FolderEntryPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/FolderEntry'}}
+        nextCursor: {type: string}
+    FolderChangePreviewRequest:
+      type: object
+      additionalProperties: false
+      required: [change]
+      properties:
+        change: {type: string, enum: [restrict, remove-entry, lower-entry, move-in]}
+        principal: {$ref: '#/components/schemas/Principal'}
+        level: {type: string, enum: [viewer, runner, editor]}
+        items:
+          type: array
+          maxItems: 100
+          items:
+            type: object
+            required: [kind, id]
+            properties:
+              kind: {type: string, enum: [workflow, script, connection]}
+              id: {type: string, minLength: 1, maxLength: 255}
+    FolderChangePreview:
+      type: object
+      required: [folderRevision, subjectsLosingVisibility, groupsLosingVisibility, pendingApprovalsAffected, activeRunsAffected, dependentParents]
+      properties:
+        folderRevision: {type: integer, description: 'Pass as expectedRevision when applying.'}
+        subjectsLosingVisibility: {type: integer, minimum: 0}
+        groupsLosingVisibility: {type: integer, minimum: 0}
+        pendingApprovalsAffected: {type: integer, minimum: 0}
+        activeRunsAffected: {type: integer, minimum: 0}
+        dependentParents: {type: integer, minimum: 0, description: 'Published parent workflows that reference items of the folder.'}
+        otherAffected: {type: integer, minimum: 0, description: 'One opaque total of affected items the previewer cannot see; present only for folder:manage or access:read holders. All other counts include only items visible to the previewer.'}
+        sample:
+          type: array
+          maxItems: 100
+          description: 'Up to 50 by default; only for callers holding access:read.'
+          items: {$ref: '#/components/schemas/Principal'}
+    ItemMoveRequest:
+      type: object
+      additionalProperties: false
+      required: [folder]
+      properties:
+        folder: {type: [string, 'null'], pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$', description: 'Destination folder name; null moves to the root.'}
+        expectedRevision: {type: integer, minimum: 1, description: 'Destination folder revision from a preview when it is restricted.'}
+    ItemPlacement:
+      type: object
+      required: [kind, id]
+      properties:
+        kind: {type: string, enum: [workflow, script, connection]}
+        id: {type: string}
+        folder: {type: [string, 'null']}
+    OperationListRequest:
+      type: object
+      additionalProperties: false
+      required: [principals]
+      properties:
+        principals: {type: array, maxItems: 128, items: {$ref: '#/components/schemas/Principal'}}
+    OperationList:
+      type: object
+      required: [kind, operationName, principals, revision]
+      properties:
+        kind: {type: string, enum: [query, update]}
+        operationName: {type: string}
+        principals: {type: array, items: {$ref: '#/components/schemas/Principal'}}
+        revision: {type: integer}
+        declaredInActiveVersion: {type: boolean}
+    OperationListPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/OperationList'}}
+    AccessSource:
+      type: object
+      required: [kind]
+      properties:
+        kind: {type: string, enum: [builtin-role, custom-role, folder-level, operation-list]}
+        builtinRole: {type: string}
+        roleId: {type: string, format: uuid}
+        roleRevision: {type: integer}
+        assignmentId: {type: string, format: uuid}
+        groupId: {type: string, format: uuid}
+        folderId: {type: string, format: uuid}
+        level: {type: string, enum: [viewer, runner, editor, owner]}
+    AccessExplanation:
+      type: object
+      required: [decision, permission, sources]
+      properties:
+        decision: {type: string, enum: [allowed, denied, hidden]}
+        permission: {type: string}
+        narrowedBy: {type: string, enum: [none, restricted-folder, operation-list]}
+        sources: {type: array, items: {$ref: '#/components/schemas/AccessSource'}}
+    # Additive fields on existing canonical schemas (merged by T029-066):
+    #   AuthContext.namespacePermissions: array of string (present when ?namespaceId= is given)
+    #   AuthContext.folderLevels: array of {folder, level} for visible folders with an entry for the caller
+    #   Workflow, WorkflowSummary, Script, DatabaseConnection: folder: string (omitted when the item is at the root)
+    #   listWorkflows, listScripts, listConnections: query parameter `folder` (name or `root`)
+    #   promoteWorkflowVersion request: destinationFolder: string (required when the source folder is restricted)
+    #   Every existing operation: x-access (class, permission or anyOf, kind, target, discloses)
+    #   Version.capabilities.accessControl: see README.md "Capabilities"

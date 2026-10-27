@@ -1,0 +1,755 @@
+{
+  "$comment": "Draft, feature 029. Classification of every catalog permission (FR-029-002). The canonical table is a match in crates/domain/src/access.rs whose explicit arms classify each known permission and whose compile-time default arm yields reserved-unclassified, so a permission added by another feature compiles and is reserved until it is classified here; a contract test lists the unclassified ones. Counts are derived, never written by hand. adminEquivalent: granting it needs an explicit confirmation in the API and Studio. seesPastRestriction: its holder sees hidden items through that surface.",
+  "version": 1,
+  "derivedCounts": {
+    "permissions": 53,
+    "reserved": 10,
+    "assignable": 43,
+    "levelItem": 13,
+    "sensitiveItem": 11
+  },
+  "folderLevels": {
+    "viewer": [
+      {
+        "permission": "definition:read",
+        "kind": "workflow"
+      },
+      {
+        "permission": "script:read",
+        "kind": "script"
+      },
+      {
+        "permission": "run:read",
+        "kind": "run"
+      },
+      {
+        "permission": "approval:read",
+        "kind": "run"
+      },
+      {
+        "permission": "namespace:read",
+        "kind": "connection"
+      }
+    ],
+    "runner": [
+      {
+        "permission": "definition:read",
+        "kind": "workflow"
+      },
+      {
+        "permission": "script:read",
+        "kind": "script"
+      },
+      {
+        "permission": "run:read",
+        "kind": "run"
+      },
+      {
+        "permission": "approval:read",
+        "kind": "run"
+      },
+      {
+        "permission": "namespace:read",
+        "kind": "connection"
+      },
+      {
+        "permission": "run:start",
+        "kind": "workflow"
+      },
+      {
+        "permission": "run:query",
+        "kind": "run"
+      },
+      {
+        "permission": "run:update",
+        "kind": "run"
+      },
+      {
+        "permission": "database:use",
+        "kind": "connection"
+      }
+    ],
+    "editor": [
+      {
+        "permission": "definition:read",
+        "kind": "workflow"
+      },
+      {
+        "permission": "script:read",
+        "kind": "script"
+      },
+      {
+        "permission": "run:read",
+        "kind": "run"
+      },
+      {
+        "permission": "approval:read",
+        "kind": "run"
+      },
+      {
+        "permission": "namespace:read",
+        "kind": "connection"
+      },
+      {
+        "permission": "run:start",
+        "kind": "workflow"
+      },
+      {
+        "permission": "run:query",
+        "kind": "run"
+      },
+      {
+        "permission": "run:update",
+        "kind": "run"
+      },
+      {
+        "permission": "database:use",
+        "kind": "connection"
+      },
+      {
+        "permission": "definition:write",
+        "kind": "workflow"
+      },
+      {
+        "permission": "definition:publish",
+        "kind": "workflow"
+      },
+      {
+        "permission": "script:write",
+        "kind": "script"
+      },
+      {
+        "permission": "script:publish",
+        "kind": "script"
+      }
+    ],
+    "owner": [
+      {
+        "permission": "definition:read",
+        "kind": "workflow"
+      },
+      {
+        "permission": "script:read",
+        "kind": "script"
+      },
+      {
+        "permission": "run:read",
+        "kind": "run"
+      },
+      {
+        "permission": "approval:read",
+        "kind": "run"
+      },
+      {
+        "permission": "namespace:read",
+        "kind": "connection"
+      },
+      {
+        "permission": "run:start",
+        "kind": "workflow"
+      },
+      {
+        "permission": "run:query",
+        "kind": "run"
+      },
+      {
+        "permission": "run:update",
+        "kind": "run"
+      },
+      {
+        "permission": "database:use",
+        "kind": "connection"
+      },
+      {
+        "permission": "definition:write",
+        "kind": "workflow"
+      },
+      {
+        "permission": "definition:publish",
+        "kind": "workflow"
+      },
+      {
+        "permission": "script:write",
+        "kind": "script"
+      },
+      {
+        "permission": "script:publish",
+        "kind": "script"
+      }
+    ]
+  },
+  "folderLevelAdministration": {
+    "viewer": false,
+    "runner": false,
+    "editor": false,
+    "owner": true
+  },
+  "levelBound": "Every level permission is held by the built-in developer role.",
+  "unclassifiedDefault": "reserved",
+  "builtinRoleChanges": {
+    "admin": [
+      "access:read",
+      "folder:manage",
+      "group:manage",
+      "role:assign",
+      "role:manage"
+    ],
+    "developer": [],
+    "operator": [],
+    "viewer": [],
+    "worker": [],
+    "runner": [],
+    "database-runner": []
+  },
+  "builtinRoleRule": "Additive (coordinator decision C10, D1655): other drafts add machine roles (021 integration-runner, 025 agent-runner, possibly 020) and grants to existing roles; 029 removes or narrows none. Human roles are exactly admin, developer, operator, viewer; every other role is a machine role and never a principal. Tests assert set properties, not counts.",
+  "permissionsAddedByOtherDrafts": [
+    "018",
+    "019",
+    "020",
+    "021",
+    "022",
+    "024",
+    "025",
+    "026",
+    "027",
+    "028",
+    "030",
+    "031",
+    "032"
+  ],
+  "permissions": [
+    {
+      "permission": "workspace:read",
+      "assignability": "assignable",
+      "scopes": [
+        "tenant"
+      ]
+    },
+    {
+      "permission": "workspace:create",
+      "assignability": "assignable",
+      "scopes": [
+        "tenant"
+      ]
+    },
+    {
+      "permission": "namespace:read",
+      "assignability": "assignable",
+      "scopes": [
+        "tenant",
+        "namespace"
+      ],
+      "item": {
+        "class": "level",
+        "kinds": [
+          "connection"
+        ]
+      }
+    },
+    {
+      "permission": "namespace:create",
+      "assignability": "assignable",
+      "scopes": [
+        "tenant"
+      ]
+    },
+    {
+      "permission": "membership:manage",
+      "assignability": "reserved",
+      "scopes": [
+        "tenant"
+      ]
+    },
+    {
+      "permission": "definition:read",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ],
+      "item": {
+        "class": "level",
+        "kinds": [
+          "workflow"
+        ]
+      }
+    },
+    {
+      "permission": "definition:write",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ],
+      "item": {
+        "class": "level",
+        "kinds": [
+          "workflow"
+        ]
+      }
+    },
+    {
+      "permission": "definition:publish",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ],
+      "item": {
+        "class": "level",
+        "kinds": [
+          "workflow"
+        ]
+      }
+    },
+    {
+      "permission": "audit:read",
+      "assignability": "assignable",
+      "scopes": [
+        "tenant"
+      ],
+      "adminEquivalent": true,
+      "seesPastRestriction": true
+    },
+    {
+      "permission": "run:start",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ],
+      "item": {
+        "class": "level",
+        "kinds": [
+          "workflow"
+        ]
+      }
+    },
+    {
+      "permission": "run:read",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ],
+      "item": {
+        "class": "level",
+        "kinds": [
+          "run"
+        ]
+      }
+    },
+    {
+      "permission": "run:query",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ],
+      "item": {
+        "class": "level",
+        "kinds": [
+          "run"
+        ]
+      }
+    },
+    {
+      "permission": "run:update",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ],
+      "item": {
+        "class": "level",
+        "kinds": [
+          "run"
+        ]
+      }
+    },
+    {
+      "permission": "approval:read",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ],
+      "item": {
+        "class": "level",
+        "kinds": [
+          "run"
+        ]
+      }
+    },
+    {
+      "permission": "approval:decide",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ],
+      "item": {
+        "class": "sensitive",
+        "kinds": [
+          "run"
+        ]
+      }
+    },
+    {
+      "permission": "run:payload:inspect",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ],
+      "item": {
+        "class": "sensitive",
+        "kinds": [
+          "run"
+        ]
+      }
+    },
+    {
+      "permission": "payload:read-internal",
+      "assignability": "reserved",
+      "scopes": [
+        "namespace"
+      ],
+      "note": "Reserved so that ADR-0033's role-based audience for internal values is unchanged."
+    },
+    {
+      "permission": "payload:reveal-pii",
+      "assignability": "reserved",
+      "scopes": [
+        "namespace"
+      ]
+    },
+    {
+      "permission": "run:operate",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ],
+      "item": {
+        "class": "sensitive",
+        "kinds": [
+          "run"
+        ]
+      }
+    },
+    {
+      "permission": "run:signal",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ],
+      "item": {
+        "class": "sensitive",
+        "kinds": [
+          "run"
+        ]
+      }
+    },
+    {
+      "permission": "worker:execute",
+      "assignability": "reserved",
+      "scopes": [
+        "namespace"
+      ]
+    },
+    {
+      "permission": "quota:read",
+      "assignability": "assignable",
+      "scopes": [
+        "tenant",
+        "namespace"
+      ]
+    },
+    {
+      "permission": "quota:manage",
+      "assignability": "assignable",
+      "scopes": [
+        "tenant",
+        "namespace"
+      ],
+      "adminEquivalent": true
+    },
+    {
+      "permission": "secret:read",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ]
+    },
+    {
+      "permission": "secret:manage",
+      "assignability": "reserved",
+      "scopes": [
+        "namespace"
+      ],
+      "note": "Reserved in this increment: it rewrites any secret access list, defeating the rule that list bypass stays with built-in admin."
+    },
+    {
+      "permission": "secret:use",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ]
+    },
+    {
+      "permission": "egress:manage",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ],
+      "adminEquivalent": true
+    },
+    {
+      "permission": "worker:bind",
+      "assignability": "reserved",
+      "scopes": [
+        "namespace"
+      ],
+      "note": "Reserved in this increment: a binding routes secret pools and the inputs of hidden workflows to a worker the holder controls (G1460)."
+    },
+    {
+      "permission": "saga:override",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ],
+      "item": {
+        "class": "sensitive",
+        "kinds": [
+          "run"
+        ]
+      }
+    },
+    {
+      "permission": "event:publish",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ]
+    },
+    {
+      "permission": "event:read",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ]
+    },
+    {
+      "permission": "event:manage",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ]
+    },
+    {
+      "permission": "script:read",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ],
+      "item": {
+        "class": "level",
+        "kinds": [
+          "script"
+        ]
+      }
+    },
+    {
+      "permission": "script:write",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ],
+      "item": {
+        "class": "level",
+        "kinds": [
+          "script"
+        ]
+      }
+    },
+    {
+      "permission": "script:publish",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ],
+      "item": {
+        "class": "level",
+        "kinds": [
+          "script"
+        ]
+      }
+    },
+    {
+      "permission": "script:build",
+      "assignability": "reserved",
+      "scopes": [
+        "namespace"
+      ]
+    },
+    {
+      "permission": "script:execute",
+      "assignability": "reserved",
+      "scopes": [
+        "namespace"
+      ]
+    },
+    {
+      "permission": "ops:read",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ]
+    },
+    {
+      "permission": "worker:manage",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ]
+    },
+    {
+      "permission": "publication:approve",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ],
+      "item": {
+        "class": "sensitive",
+        "kinds": [
+          "workflow"
+        ]
+      }
+    },
+    {
+      "permission": "publication:manage",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ]
+    },
+    {
+      "permission": "version:activate",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ],
+      "item": {
+        "class": "sensitive",
+        "kinds": [
+          "workflow"
+        ]
+      }
+    },
+    {
+      "permission": "database:manage",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ],
+      "item": {
+        "class": "sensitive",
+        "kinds": [
+          "connection"
+        ]
+      }
+    },
+    {
+      "permission": "database:use",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ],
+      "item": {
+        "class": "level",
+        "kinds": [
+          "connection"
+        ]
+      }
+    },
+    {
+      "permission": "database:adhoc",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ],
+      "item": {
+        "class": "sensitive",
+        "kinds": [
+          "connection"
+        ]
+      }
+    },
+    {
+      "permission": "database:write",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ],
+      "item": {
+        "class": "sensitive",
+        "kinds": [
+          "connection"
+        ]
+      }
+    },
+    {
+      "permission": "database:result:read",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ],
+      "item": {
+        "class": "sensitive",
+        "kinds": [
+          "run"
+        ]
+      }
+    },
+    {
+      "permission": "database:execute",
+      "assignability": "reserved",
+      "scopes": [
+        "namespace"
+      ]
+    },
+    {
+      "permission": "access:read",
+      "assignability": "assignable",
+      "scopes": [
+        "tenant",
+        "namespace"
+      ],
+      "new": true
+    },
+    {
+      "permission": "role:manage",
+      "assignability": "assignable",
+      "scopes": [
+        "tenant",
+        "namespace"
+      ],
+      "new": true
+    },
+    {
+      "permission": "role:assign",
+      "assignability": "assignable",
+      "scopes": [
+        "tenant",
+        "namespace"
+      ],
+      "new": true
+    },
+    {
+      "permission": "group:manage",
+      "assignability": "reserved",
+      "scopes": [
+        "tenant"
+      ],
+      "new": true
+    },
+    {
+      "permission": "folder:manage",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ],
+      "new": true
+    }
+  ]
+}
