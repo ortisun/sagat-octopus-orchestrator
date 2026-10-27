@@ -7,8 +7,9 @@ are recorded in [implementation-0.3.md](./implementation-0.3.md).
 ## Scope and fixture provenance
 
 The first checkpoint persists Pending → Waiting and correlation-start failure of an existing
-exact event wait in both full and bounded transactions. Due timeout closure is the next checkpoint;
-its native event whitelist remains closed at the start checkpoint. Keep public parsing, root-only dispatcher discovery,
+exact event wait in both full and bounded transactions. The second checkpoint also persists due
+timeout closure through the explicit native transaction port. Neither adds a scheduler producer.
+Keep public parsing, root-only dispatcher discovery,
 legacy consumers and frozen OrdinaryLeafV1 unchanged. Reject native scoped WaitSatisfied until
 its own receipt/payload transaction is implemented. No schema, role, wire field or service is added.
 
@@ -72,10 +73,12 @@ Include refused/skipped own authority on the correlation-failure start shape, no
 Use held locks/barriers, not sleeps. Preserve root dispatch/control/timer regressions.
 Public entry/activity→wait parsing stays closed, and native WaitSatisfied remains rejected.
 
-The next timeout checkpoint additionally needs full/path due-time parity, recorded binding CAS,
+The timeout checkpoint additionally proves full/path due-time parity, recorded binding CAS,
 handled/unhandled/local-error outcomes, subscription/scan cleanup, paused deferred route and cold
 resume, current post-lock clock/authority and atomic rollback. A start pass does not close these
 proofs. External event/timeout/cancel races belong to the later receiver/drain checkpoints.
+Paused cold routing here uses an explicit native path command after the actual audited Resume;
+it does not establish automatic scheduler discovery of a scoped event wait.
 
 ## Separate required drain increment
 

@@ -80,7 +80,7 @@ async fn all_readers_refuse_a_same_tenant_wrong_namespace_or_invented_step_uuid(
     );
 }
 
-async fn snapshot(fixture: &Fixture) -> serde_json::Value {
+pub(super) async fn snapshot(fixture: &Fixture) -> serde_json::Value {
     sqlx::query_scalar(
         "SELECT jsonb_build_object( \
           'run',to_jsonb(r), \
@@ -103,7 +103,7 @@ async fn snapshot(fixture: &Fixture) -> serde_json::Value {
     .expect("independent native transaction snapshot")
 }
 
-async fn start(
+pub(super) async fn start(
     fixture: &Fixture,
     store: &PgRunStore,
     full: bool,
@@ -530,8 +530,6 @@ async fn prepared_starts_refuse_physical_changes_without_a_run_revision() {
                     )
                     .await
                     .expect("bounded source")
-                    .map(Some)
-                    .expect("path")
             };
             let mut full_tx = if full {
                 store

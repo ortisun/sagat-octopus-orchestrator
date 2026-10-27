@@ -18,6 +18,7 @@ use serde_json::json;
 use std::sync::Arc;
 
 mod guards;
+mod timeouts;
 
 fn wait(index: u32) -> ExecutionInstanceId {
     ExecutionInstanceId::in_path(
@@ -33,8 +34,21 @@ async fn pending_wait(name: &str) -> (Fixture, PgRunStore) {
 }
 
 async fn pending_wait_with_route(name: &str, timeout_route: bool) -> (Fixture, PgRunStore) {
+    pending_wait_with_timeout(name, timeout_route, 60000).await
+}
+
+async fn pending_wait_with_timeout(
+    name: &str,
+    timeout_route: bool,
+    timeout_ms: u64,
+) -> (Fixture, PgRunStore) {
+    pending_wait_document(name, wait_document(name, timeout_route, timeout_ms)).await
+}
+
+fn wait_document(name: &str, timeout_route: bool, timeout_ms: u64) -> serde_json::Value {
     let mut document = scoped_worker::structured_workflow(name);
     document["bodies"]["line"]["nodes"][1] = json!({"id":"b","type":"waitEvent","eventType":"payment.confirmed","correlationExpr":"item.sku","timeoutMs":60000,"lookbackMs":1000,"onTimeout":"returned","next":"returned"});
+    document["bodies"]["line"]["nodes"][1]["timeoutMs"] = json!(timeout_ms);
     if !timeout_route {
         document["bodies"]["line"]["nodes"][1]
             .as_object_mut()
@@ -42,6 +56,10 @@ async fn pending_wait_with_route(name: &str, timeout_route: bool) -> (Fixture, P
             .remove("onTimeout");
     }
     document["bodies"]["line"]["nodes"][2]["result"] = json!("item");
+    document
+}
+
+async fn pending_wait_document(name: &str, document: serde_json::Value) -> (Fixture, PgRunStore) {
     let fixture = scoped_worker::fixture_with_document(name, document).await;
     let work = scoped_worker::poll(&fixture, 2).await;
     assert_eq!(work.len(), 2);

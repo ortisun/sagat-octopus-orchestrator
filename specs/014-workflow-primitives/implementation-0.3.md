@@ -863,3 +863,42 @@ Formatting, diff checks, architecture24crates and agent configuration pass. This
 native start storage; no canonical task, public event body, native timeout/receiver/drain,
 mixed-version cutover or release is accepted. The original frozen timer and full64 SDK gates
 remain independently sourced earlier checkpoints.
+
+## Native scoped event-wait timeout storage
+
+Two real runtime-role positive cases failed at the existing unsupported native event boundary:
+full handled and bounded unhandled timeout,0passed/2failed,4.66s harness/57.65s command.
+Both sources had actual1ms starts and an observed PostgreSQL due-deadline predicate, without
+aging the projection away from its journal. Adding WaitTimedOut to the two native whitelists
+uses the already reviewed own-shard clock/read-set and binding cleanup. The complete start+
+timeout gate then passed13/0/0 in39.98s harness/99.29s command. No public body, scoped event
+receiver, scheduler producer/discovery or drain coordinator is enabled by this change.
+
+The expanded runtime-role invocation passed19/0/0 in65.94s harness/116.47s command:
+handled/unhandled in both writers, local onError, scan/subscription cleanup, sibling/worker
+absence, cold structured-codec replay, early/wrong-outcome refusal, pause outcomes, actual
+audited Resume followed by explicit cold path routing once, and late projection-trigger abort
+after journal insertion with complete transaction snapshot equality. Automatic scheduler
+resume/discovery and event/cancel races are not inferred. Bounded read-only mechanism review
+found no substantive issue; this is storage-only acceptance.
+
+The binding extension passed20/0/0 in72.95s harness/192.06s command, including three owner
+changes without a Run revision in each writer: correlation key, event type and a coherent
+deadline/since shift of1microsecond. All are refused without repairing the changed source;
+restoring the exact source replays. This invocation waited on the shared Cargo build lock.
+Strict infra-postgres+tests/all-target Clippy passed72.50s command. Domain583 and start/root/
+control/timer/fence regressions remain the separately recorded unchanged-logic checkpoint.
+
+Self-review of the negative matrix found a coverage overlap: the due/no-authority case also
+had the wrong handled flag. The test now uses the valid pinned handled outcome when own
+authority is absent, independently isolating that refusal. The corrected focused case passed
+1/0/0 in4.77s harness/56.62s command. No production defect/change was needed. The20-case
+binary was already executing before this test-only correction/rebuild; its unchanged production
+mechanism results and the corrected one-case result are separate invocations, not21distinct
+cases of a single final-source suite. Final test-target lint follows separately. All eight
+canonical runtime/release tasks remain open.
+
+The corrected final integration test target passes strict Clippy in43.13s command, including
+its shared build-lock wait. Formatting, diff, architecture24crates and agent configuration
+checks pass. This accepts only native timeout storage. Cancellation/drain is the next required
+bounded lifecycle increment; receiver, scheduler activation and release remain closed.

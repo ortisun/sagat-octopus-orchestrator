@@ -3992,3 +3992,16 @@ reviewed; exact commands, failures, counts, source limits and executable SHA are
 All-services sagat_app is explicit for final native/regression profiles. This uses the named
 internal structured codec, not public publication or released-profile proof. Native timeout,
 receiver/drain, nesting/capacity lifecycle and final release gates remain open; no task closes.
+
+### Native scoped event-wait timeout storage
+
+Actual due-deadline full/path storage failed2before the whitelist correction, then passed13,
+19 and20successive focused cases under sagat_app. The20-case gate passed72.95s harness/
+192.06s command; the corrected isolated authority case passed separately1/0/0 in4.77s/
+56.62s. The negative-test coverage correction and source provenance are explicit in the ledger.
+The tests cover handled/unhandled/local error routes, subscription+scan cleanup, actual pause/
+audited resume with explicit cold routing once, late projection abort with journal rollback,
+and key/type/coherent-window source CAS without Run revision. Strict adapter+tests lint passes;
+read-only mechanism review found no required issue. This is private structured-codec/native-port
+evidence. Scheduler production/discovery, external receipt/value handling, cancellation/drain,
+old-dispatcher cutover and final SDK/rollout/resource/release acceptance remain open.

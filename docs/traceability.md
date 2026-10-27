@@ -901,3 +901,14 @@ Clippy pass separately. Exact failures, commands, timings, review corrections an
 regressions are in `specs/014-workflow-primitives/implementation-0.3.md`. Public bodies and scoped
 delivery remain closed; native timeout, drain, receiver, SDK/rollout/resource acceptance remain
 pending. This checkpoint closes no canonical runtime or release task.
+
+### 2026-10-27 native scoped event-wait timeout preparation
+
+T014-014–017/040, FR-014-004/005/014/015/017: `scoped_event_storage::timeouts` proves actual
+PostgreSQL due-time closure in both native writers with the pinned handled/error route, own
+authority, exact old key/type/deadline/since CAS and complete subscription/scan cleanup. Pause
+stores the outcome while routing is deferred; an audited Resume followed by an explicit cold
+path command routes once. A projection-trigger failure rolls back preceding journal writes and
+all observed state. The20-case gate and corrected isolated one-case authority test are separate
+invocations; see the implementation ledger for timings and limits. This introduces no scheduler
+producer, external receipt, public body or canonical task closure.

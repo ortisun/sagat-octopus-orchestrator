@@ -5050,6 +5050,7 @@ impl PgRunTx {
                     | RunEvent::ConditionEvaluated { .. }
                     | RunEvent::SwitchEvaluated { .. }
                     | RunEvent::WaitStarted { .. }
+                    | RunEvent::WaitTimedOut { .. }
                     | RunEvent::TimerStarted { .. }
                     | RunEvent::TimerFired { .. }
                     | RunEvent::StepRouted { .. }
