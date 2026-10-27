@@ -29,6 +29,7 @@ tonic-prost = "=0.14.6"
 prost = "=0.14.4"
 bytes = "=1.12.1"
 sha2 = "=0.10.9"
+ryu-js = "=0.2.2"
 [build-dependencies]
 protox = "=0.10.0"
 tonic-prost-build = "=0.14.6"

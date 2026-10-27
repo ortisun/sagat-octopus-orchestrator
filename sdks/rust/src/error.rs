@@ -52,6 +52,10 @@ impl std::fmt::Display for SagatError {
 }
 impl std::error::Error for SagatError {}
 impl SagatError {
+    /// A local validation failure, for application adapters of the SDK's typed API.
+    pub fn validation(message: &str) -> Self {
+        Self::new("VALIDATION_FAILED", message)
+    }
     pub fn grpc_status(&self) -> Option<&str> {
         self.details.get("grpcStatus").and_then(Value::as_str)
     }

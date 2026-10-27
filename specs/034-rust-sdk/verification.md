@@ -160,3 +160,18 @@ before typed decoding; events now reflect the completed typed operation. Ambient
 explicit parent precedence, bounded labels and a panicking worker observer are tested.
 `rust-sdk-telemetry-clippy` exited 0 (3.30 s); `rust-sdk-telemetry-tests` exited 0
 (16.34 s). These are native REST/gRPC fixture results, not shared real-server conformance.
+
+Builder batch: `rust-sdk-builder-api-red` and shared/dedicated database API RED receipts
+failed on absent public constructors. Typed activity/timer/condition/switch, parallel/saga,
+named collections/loops, approvals, continuation/state, scripts/triggers and managed database
+nodes now use the common IR. The public adapter reads scenario programs, never expected outputs.
+`public_builders_match_existing_shared_programs_and_reviewed_goldens` compares all 60 existing
+shared authoring fixtures and their canonical texts/errors without blessing. This is authoring
+evidence only, not runtime conformance.
+One bounded read-only review found four parity/API issues; named RED cases reproduced early
+canonical number rejection, empty database error routes and silently dropped root options.
+The schema budget reproduction initially had incorrectly sized fixtures (kept as failed setup
+receipts); `rust-sdk-builder-schema-boundary-red` then failed on the intended byte-budget defect.
+Corrections passed `rust-sdk-builder-review-green`. No second broad review was requested.
+`rust-sdk-builder-final-clippy` exited 0 (4.37 s); `rust-sdk-builder-final-tests` exited 0
+(17.99 s, 102 total, including the shared 60-fixture authoring comparison).

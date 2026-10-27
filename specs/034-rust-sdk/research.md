@@ -18,3 +18,9 @@ D034-006: nonretryable receive failures stop discovery and are observable throug
 WorkerHost.wait_for_failure(); existing leased handlers keep their immutable session and continue.
 Shutdown uses the supplied grace without a hidden extra drain interval. Retained user handlers are
 cooperative; shared concurrency permits remain charged across restart until their lifecycle ends.
+
+D034-007: Rust Builder methods retain the first validation error, like the Go builder. Joined
+flows are shared handles read at build time; root-only setters reject nested flows instead of
+silently losing options. Build preserves exact JSON numbers; only canonical JSON applies the
+shared safe integer rule. Closed state-schema byte budgets use canonical UTF-8 text, matching
+the TypeScript/Python reference implementations. Database diagnostics remain opaque.

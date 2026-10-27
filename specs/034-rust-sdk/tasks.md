@@ -11,8 +11,11 @@
   registration, task context, heartbeat/report/fencing/cancellation and poll/stream negotiation.
 - [ ] T034-004 Implement secret/blob/scoped/compensation/reconciliation capability lifetimes and
   safe observability; prove failures against the real server and deterministic transport barriers.
-- [ ] T034-005 Implement typed declarative builders and canonical serialization through the
+- [x] T034-005 Implement typed declarative builders and canonical serialization through the
   existing shared authoring scenarios/goldens; reject the same invalid documents.
+  Evidence: `public_builders_match_existing_shared_programs_and_reviewed_goldens` → all 60
+  shared authoring fixtures, canonical texts and errors match; `rust-sdk-builder-final-tests`
+  → 102 passed; strict Clippy → exit 0. Runtime conformance remains T034-006.
 - [ ] T034-006 Add Rust conformance runner and execute the common runtime/fault/golden scenarios
   with real PostgreSQL, preserving existing five SDKs and server semantics.
 - [ ] T034-007 Add package/clean-consumer/CI/version/runtime-matrix/readme examples; run format,

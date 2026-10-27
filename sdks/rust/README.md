@@ -9,9 +9,8 @@ This is an implementation candidate tracked by feature 034. The current incremen
 start/get/list/cancel/operate/signal, journal pages and completion waits, verified TLS and mTLS,
 fresh credentials, declared Queries/Updates, event publication, approval pages/decisions, chain inspection/commands/waits, single-pass input uploads and an activity host,
 protocol negotiation, heartbeat, cooperative cancellation, attempt-scoped secrets/blobs and typed
-compensation/reconciliation handlers.
-Builders,
-the shared six-language conformance suite and packaged-consumer release acceptance are pending.
+compensation/reconciliation handlers and typed declarative builders.
+The shared six-language runtime/fault conformance suite and packaged-consumer release acceptance are pending.
 Do not infer complete SDK parity from the local client/worker tests.
 
 ```rust,no_run
@@ -63,3 +62,10 @@ repository files. The standalone consumer is a separate Cargo workspace under `c
 OpenTelemetry adapters. Explicit traceparent wins. Observer failures are isolated; events carry
 fixed operation/code labels and durations, without run IDs, URLs, tokens or payloads. The SDK does
 not install a global telemetry provider or replace the application's Rust panic hook.
+
+`workflow::Builder::new(name)` creates a workflow; `Builder::flow()` creates a joined flow.
+Methods retain the first local validation error; `build()` returns an owned document and
+`json()` returns canonical text with the shared safe integer policy. Joined flows are read at
+build time. Root-only options on nested flows fail locally. Typed options cover activities,
+collections/loops, approvals, continuation/state, scripts, triggers and managed database nodes.
+The SDK generates IR; the server resolves connection references and executes managed SQL.
