@@ -22,6 +22,13 @@ use std::{
 
 const RUN: &str = "019b5d6e-0000-7000-8000-000000000001";
 const WORKFLOW: &str = "019b5d6e-0000-7000-8000-000000000002";
+#[test]
+fn serialized_errors_have_an_empty_trace_when_no_trusted_trace_is_available() {
+    assert_eq!(
+        sagat_octopus_orchestrator_sdk::SagatError::validation("invalid field").as_json()["traceId"],
+        ""
+    );
+}
 type CapturedRequest = (HeaderMap, Vec<u8>, axum::http::Uri);
 
 #[derive(Clone, Default)]
@@ -41,6 +48,11 @@ async fn answer(
         calls.len()
     };
     match state.mode {
+        "workflow-hex" if uri.path().ends_with("/workflows") => (StatusCode::OK,axum::Json(json!({"items":[{"id":WORKFLOW,"name":"abcdefabcdefabcdefabcdefabcdefab"}],"nextCursor":null}))).into_response(),
+        "workflow-malformed" if uri.path().ends_with("/workflows") => (StatusCode::OK,[("x-trace-id","0123456789abcdef0123456789abcdef")],axum::Json(json!({"items":[{"id":"not-a-uuid","name":"order-flow"}],"nextCursor":null}))).into_response(),
+        "operation-short" => (StatusCode::UNPROCESSABLE_ENTITY,[("x-trace-id","0123456789abcdef0123456789abcdef")],axum::Json(json!({"code":"VALIDATION_FAILED","retryable":false}))).into_response(),
+        "workflow-name" if uri.path().ends_with("/workflows") => (StatusCode::OK,axum::Json(json!({"items":if count==1{json!([])}else{json!([{"id":WORKFLOW,"name":"order-flow"}])},"nextCursor":if count==1{Some("opaque +/?&é")}else{None}}))).into_response(),
+        "workflow-missing" if uri.path().ends_with("/workflows") => (StatusCode::OK,axum::Json(json!({"items":[],"nextCursor":null}))).into_response(),
         "upload" if uri.path().ends_with("/runs") => (StatusCode::ACCEPTED,axum::Json(basic_run("RUNNING"))).into_response(),
         "upload"|"upload-corrupt" => (StatusCode::CREATED,[("x-trace-id","0123456789abcdef0123456789abcdef")],axum::Json(json!({"id":RUN,"size":3,"sha256":if state.mode=="upload"{"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}else{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"contentType":"application/octet-stream"}))).into_response(),
 
@@ -79,6 +91,115 @@ async fn answer(
         "malformed" => (StatusCode::OK, [("x-trace-id", "0123456789abcdef0123456789abcdef")], "{broken").into_response(),
         _ => (StatusCode::ACCEPTED, axum::Json(json!({"runId":RUN,"workflowId":WORKFLOW,"versionId":WORKFLOW,"version":1,"createdAt":"2026-10-27T12:00:00Z", "status":if state.mode == "paused" {"PAUSED"} else {"RUNNING"}, "futureField":{"number":9007199254740993_u64}}))).into_response(),
     }
+}
+
+#[tokio::test]
+async fn workflow_names_resolve_all_pages_and_reuse_only_a_client_local_cache() {
+    let server = server("workflow-name").await;
+    let client =
+        Client::new(options(&server.base, TokenSource::bearer("fixture-token"))).expect("client");
+    for _ in 0..2 {
+        client
+            .start("order-flow", &json!({}), CallOptions::default())
+            .await
+            .expect("start by name");
+    }
+    let calls = server.state.calls.lock().expect("calls");
+    assert_eq!(calls.len(), 4);
+    assert!(
+        calls[1]
+            .2
+            .query()
+            .expect("cursor query")
+            .contains("cursor=opaque+%2B%2F%3F%26%C3%A9")
+    );
+    for call in &calls[2..] {
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&call.1).expect("start body")["workflowId"],
+            WORKFLOW
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_missing_workflow_name_is_a_typed_not_found_without_starting_a_run() {
+    let server = server("workflow-missing").await;
+    let client =
+        Client::new(options(&server.base, TokenSource::bearer("fixture-token"))).expect("client");
+    let error = client
+        .start("missing-flow", &json!({}), CallOptions::default())
+        .await
+        .expect_err("missing workflow");
+    assert_eq!(
+        (error.code, error.reason(), error.status),
+        ("NOT_FOUND", Some("WORKFLOW_NOT_FOUND"), Some(404))
+    );
+    assert_eq!(server.state.calls.lock().expect("calls").len(), 1);
+}
+
+#[tokio::test]
+async fn operation_reason_policy_is_validated_by_the_server_with_response_metadata() {
+    let server = server("operation-short").await;
+    let client =
+        Client::new(options(&server.base, TokenSource::bearer("fixture-token"))).expect("client");
+    let error = client
+        .cancel(RUN, "tiny", CallOptions::default())
+        .await
+        .expect_err("server reason policy");
+    assert_eq!(
+        (error.code, error.status, error.trace_id.as_deref()),
+        (
+            "VALIDATION_FAILED",
+            Some(422),
+            Some("0123456789abcdef0123456789abcdef")
+        )
+    );
+    assert_eq!(server.state.calls.lock().expect("calls").len(), 1);
+}
+
+#[tokio::test]
+async fn workflow_name_resolution_preserves_hex_names_and_rejects_malformed_wire_ids() {
+    let hex = server("workflow-hex").await;
+    let client =
+        Client::new(options(&hex.base, TokenSource::bearer("fixture-token"))).expect("client");
+    client
+        .start(
+            "abcdefabcdefabcdefabcdefabcdefab",
+            &json!({}),
+            CallOptions::default(),
+        )
+        .await
+        .expect("hex workflow name");
+    {
+        let calls = hex.state.calls.lock().expect("calls");
+        assert_eq!(
+            calls.len(),
+            2,
+            "a 32-character hex name is not a dashed workflow UUID"
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&calls[1].1).expect("body")["workflowId"],
+            WORKFLOW
+        );
+    }
+    let malformed = server("workflow-malformed").await;
+    let client = Client::new(options(
+        &malformed.base,
+        TokenSource::bearer("fixture-token"),
+    ))
+    .expect("client");
+    let error = client
+        .start("order-flow", &json!({}), CallOptions::default())
+        .await
+        .expect_err("malformed workflow id");
+    assert_eq!(
+        (error.code, error.status, error.trace_id.as_deref()),
+        (
+            "PROTOCOL",
+            Some(200),
+            Some("0123456789abcdef0123456789abcdef")
+        )
+    );
 }
 fn basic_run(status: &str) -> serde_json::Value {
     json!({"runId":RUN,"workflowId":WORKFLOW,"versionId":WORKFLOW,"version":1,"createdAt":"2026-10-27T12:00:00Z","status":status})
@@ -1256,7 +1377,7 @@ async fn failed_uploads_are_never_replayed_even_when_credentials_can_refresh() {
     assert_eq!(server.state.calls.lock().expect("calls").len(), 1);
 }
 #[tokio::test]
-async fn upload_descriptor_mismatch_is_a_protocol_failure_with_response_metadata() {
+async fn upload_descriptor_mismatch_is_a_local_protocol_failure() {
     use sagat_octopus_orchestrator_sdk::UploadRunInputOptions;
     let server = server("upload-corrupt").await;
     let client =
@@ -1266,11 +1387,8 @@ async fn upload_descriptor_mismatch_is_a_protocol_failure_with_response_metadata
         .await
         .expect_err("digest mismatch");
     assert_eq!(error.code, "PROTOCOL");
-    assert_eq!(error.status, Some(201));
-    assert_eq!(
-        error.trace_id.as_deref(),
-        Some("0123456789abcdef0123456789abcdef")
-    );
+    assert_eq!(error.status, None);
+    assert_eq!(error.trace_id, None);
 }
 
 #[tokio::test]

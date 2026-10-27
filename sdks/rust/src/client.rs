@@ -5,7 +5,11 @@ use reqwest::{
     header::{AUTHORIZATION, HeaderValue},
 };
 use serde_json::{Value, json};
-use std::time::Duration;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 use time::{OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
 use tokio_util::sync::CancellationToken;
 use url::Url;
@@ -273,6 +277,7 @@ pub struct Client {
     api: Url,
     options: ClientOptions,
     http: reqwest::Client,
+    names: Arc<Mutex<BTreeMap<String, (String, Instant)>>>,
 }
 impl std::fmt::Debug for Client {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -308,6 +313,7 @@ impl WireRequest {
         match path.as_slice() {
             ["runs"] if self.method == Method::POST => "start",
             ["runs"] => "list",
+            ["workflows"] => "resolve_workflow",
             ["runs", _] => "get",
             ["runs", _, "operations"] => "operate",
             ["runs", _, "signals", _] => "signal",
@@ -391,7 +397,77 @@ impl Client {
                 );
             }));
         }
-        Ok(Self { api, options, http })
+        Ok(Self {
+            api,
+            options,
+            http,
+            names: Arc::default(),
+        })
+    }
+    /// Resolve a workflow UUID or namespace-local name; successful names are cached for 60 seconds.
+    pub async fn resolve_workflow(
+        &self,
+        workflow: &str,
+        call: CallOptions,
+    ) -> Result<String, SagatError> {
+        path_name(workflow)?;
+        if workflow.len() == 36
+            && let Ok(id) = Uuid::parse_str(workflow)
+        {
+            return Ok(id.to_string());
+        }
+        if let Ok(names) = self.names.lock()
+            && let Some((id, at)) = names.get(workflow)
+            && at.elapsed() < Duration::from_secs(60)
+        {
+            return Ok(id.clone());
+        }
+        let mut cursor = None;
+        let mut seen = BTreeSet::new();
+        loop {
+            let reply = self
+                .execute(
+                    WireRequest::new(Method::GET, &["workflows"], 200)
+                        .query(page_query(Some(200), cursor.as_deref())?),
+                    call.clone(),
+                )
+                .await?;
+            let page = reply.parse(|raw| {
+                crate::types::parse_page(raw, |item| {
+                    let id = item
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .ok_or_else(protocol)?;
+                    Uuid::parse_str(id).map_err(|_| protocol())?;
+                    let name = item
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .ok_or_else(protocol)?;
+                    Ok((id.to_owned(), name.to_owned()))
+                })
+            })?;
+            if let Some((id, _)) = page.items.into_iter().find(|(_, name)| name == workflow) {
+                if let Ok(mut names) = self.names.lock() {
+                    names.retain(|_, (_, at)| at.elapsed() < Duration::from_secs(60));
+                    if names.len() >= 512 {
+                        names.clear();
+                    }
+                    names.insert(workflow.into(), (id.clone(), Instant::now()));
+                }
+                return Ok(id);
+            }
+            let Some(next) = page.next_cursor else {
+                break;
+            };
+            if !seen.insert(next.clone()) {
+                return Err(protocol());
+            }
+            cursor = Some(next);
+        }
+        let mut error = SagatError::new("NOT_FOUND", "no workflow has this name in the namespace");
+        error.status = Some(404);
+        error.details = Box::new(json!({"reason":"WORKFLOW_NOT_FOUND"}));
+        Err(error)
     }
     pub async fn start(
         &self,
@@ -404,10 +480,15 @@ impl Client {
         }
         let options = options.into();
         let mut body = start_body(workflow_id, &options)?;
+        let request_key = key(&options.call)?;
+        body["workflowId"] = self
+            .resolve_workflow(workflow_id, options.call.clone())
+            .await?
+            .into();
         body["input"] = input.clone();
         let request = WireRequest::new(Method::POST, &["runs"], 202)
             .json(&body)?
-            .keyed(key(&options.call)?);
+            .keyed(request_key);
         self.execute(request, options.call).await?.parse(Run::parse)
     }
     pub async fn get(&self, run_id: &str, options: CallOptions) -> Result<Run, SagatError> {
@@ -447,8 +528,7 @@ impl Client {
                 | "SKIP_COMPENSATION"
                 | "RESOLVE_STEP"
                 | "MARK_MANUAL_REVIEW"
-        ) || !(8..=2000).contains(&reason.trim().chars().count())
-        {
+        ) {
             return Err(validation());
         }
         let step = matches!(
@@ -1048,7 +1128,9 @@ mod chains;
 pub use chains::{ChainCommand, ChainQueryRequest, ChainUpdateRequest};
 
 fn start_body(workflow: &str, options: &StartOptions) -> Result<Value, SagatError> {
-    uuid(workflow)?;
+    if workflow.is_empty() {
+        return Err(validation());
+    }
     let mut body = json!({"workflowId":workflow});
     if let Some(version) = &options.version_id {
         uuid(version)?;

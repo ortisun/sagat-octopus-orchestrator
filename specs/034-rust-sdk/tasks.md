@@ -5,8 +5,11 @@
   → 24 crates/layers/no cycles; `python3 scripts/check-agent-config.py` → agent configuration ok
   (`rust-sdk-foundation-architecture` / `rust-sdk-foundation-agent-config` receipts).
   Constitutional amendment acceptance still requires its delivery PR; SDK completion is not claimed.
-- [ ] T034-002 Add failing standalone client/error/security cases and implement typed REST calls,
+- [x] T034-002 Add failing standalone client/error/security cases and implement typed REST calls,
   idempotency/safe retry, trace/cancellation/pagination, fresh token provider and exact JSON values.
+  Evidence: `rust-sdk-boundary-tests` → 107 passed, including 54 REST/catalog cases; strict
+  core Clippy exit 0. Shared real-PG run-lifecycle, state-operations, errors and lost-responses
+  passed with unchanged goldens. Full matrix acceptance remains T034-006.
 - [ ] T034-003 Generate/check canonical worker protocol and implement public Tokio host/activity
   registration, task context, heartbeat/report/fencing/cancellation and poll/stream negotiation.
 - [ ] T034-004 Implement secret/blob/scoped/compensation/reconciliation capability lifetimes and

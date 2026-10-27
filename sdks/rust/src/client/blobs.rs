@@ -35,11 +35,16 @@ impl Client {
         descriptor.check()?;
         let options = options.into();
         let mut body = start_body(workflow, &options)?;
+        let request_key = key(&options.call)?;
+        body["workflowId"] = self
+            .resolve_workflow(workflow, options.call.clone())
+            .await?
+            .into();
         body["inputBlobRef"] = json!(descriptor.id);
         self.execute(
             WireRequest::new(Method::POST, &["runs"], 202)
                 .json(&body)?
-                .keyed(key(&options.call)?),
+                .keyed(request_key),
             options.call,
         )
         .await?
@@ -187,24 +192,23 @@ impl Client {
             request = request.header("x-octopus-blob-sha256", digest);
         }
         let response = tokio::select! {biased;_=options.call.cancel.cancelled()=>return Err(cancelled()),result=tokio::time::timeout_at(deadline,request.send())=>result.map_err(|_|transport())?.map_err(|_|transport())?};
-        self.consume_response(response, 201, deadline, &options.call.cancel)
+        let descriptor = self
+            .consume_response(response, 201, deadline, &options.call.cancel)
             .await?
-            .parse(|raw| {
-                let descriptor = crate::BlobDescriptor::parse(raw)?;
-                let state = measured.lock().map_err(|_| protocol())?;
-                let digest = format!("{:x}", state.digest.clone().finalize());
-                if !state.eof
-                    || descriptor.size != state.size
-                    || descriptor.sha256 != digest
-                    || options.expected_size.is_some_and(|v| v != state.size)
-                    || options
-                        .expected_sha256
-                        .as_deref()
-                        .is_some_and(|v| v != digest)
-                {
-                    return Err(protocol());
-                }
-                Ok(descriptor)
-            })
+            .parse(crate::BlobDescriptor::parse)?;
+        let state = measured.lock().map_err(|_| protocol())?;
+        let digest = format!("{:x}", state.digest.clone().finalize());
+        if !state.eof
+            || descriptor.size != state.size
+            || descriptor.sha256 != digest
+            || options.expected_size.is_some_and(|v| v != state.size)
+            || options
+                .expected_sha256
+                .as_deref()
+                .is_some_and(|v| v != digest)
+        {
+            return Err(protocol());
+        }
+        Ok(descriptor)
     }
 }

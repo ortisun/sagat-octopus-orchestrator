@@ -403,14 +403,7 @@ impl WorkerHost {
             }
         }
         running.life.cancel();
-        if drained {
-            Ok(())
-        } else {
-            Err(SagatError::new(
-                "CANCELLED",
-                "the worker shutdown grace period ended",
-            ))
-        }
+        Ok(())
     }
 }
 impl Drop for WorkerHost {
@@ -745,10 +738,18 @@ fn dispatch(
         } else {
             None
         },
-        steps: doc
-            .get("steps")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!({})),
+        steps: Value::Object(
+            doc.get("steps")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flatten()
+                .filter_map(|(name, step)| {
+                    step.as_object()
+                        .and_then(|fields| fields.get("output"))
+                        .map(|output| (name.clone(), output.clone()))
+                })
+                .collect(),
+        ),
         item: doc.get("item").cloned(),
         index: doc.get("index").and_then(Value::as_u64),
     };

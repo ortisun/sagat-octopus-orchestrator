@@ -271,7 +271,7 @@ async fn a_native_worker_registers_runs_and_reports_the_exact_scoped_lease() {
         expires_at_epoch_ms: (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000)
             as i64
             + 30_000,
-        input_json: r#"{"node":"send","input":{"exact":9007199254740993},"steps":{}}"#.into(),
+        input_json: r#"{"node":"send","input":{"exact":9007199254740993},"steps":{"before":{"output":{"output":"business-field"}},"explicit-null":{"output":null},"no-output":{"status":"SUCCEEDED"},"malformed":false}}"#.into(),
         instance: Some(instance.clone()),
         traceparent: "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01".into(),
         ..Default::default()
@@ -306,7 +306,7 @@ async fn a_native_worker_registers_runs_and_reports_the_exact_scoped_lease() {
             ctx.task.instance.as_ref().expect("scope").instance_path[0].iteration_index,
             3
         );
-        Ok(input)
+        Ok(json!({"exact":input["exact"],"retained":ctx.task.steps}))
     })
     .expect("activity");
     host.start().await.expect("start");
@@ -325,6 +325,10 @@ async fn a_native_worker_registers_runs_and_reports_the_exact_scoped_lease() {
         Some(9007199254740993)
     );
     assert_eq!(host.protocol_version(), "1.5");
+    assert_eq!(
+        serde_json::from_str::<Value>(&result.output_json).expect("output")["retained"],
+        json!({"before":{"output":"business-field"},"explicit-null":null})
+    );
     host.stop(Duration::from_secs(1)).await.expect("stop");
     assert_eq!(
         registrations.lock().expect("registration")[0]
@@ -481,13 +485,9 @@ async fn shutdown_cancellation_is_not_reported_as_a_permanent_activity_failure()
         .await
         .expect("handler entered");
     let pending = host.running.as_ref().expect("running").tracker.clone();
-    assert_eq!(
-        host.stop(Duration::ZERO)
-            .await
-            .expect_err("shutdown grace")
-            .code,
-        "CANCELLED"
-    );
+    host.stop(Duration::ZERO)
+        .await
+        .expect("reaching shutdown grace is successful cooperative shutdown");
     pending.close();
     tokio::time::timeout(Duration::from_secs(1), pending.wait())
         .await

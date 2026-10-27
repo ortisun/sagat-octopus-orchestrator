@@ -33,3 +33,9 @@ has a separate 512-KiB decode budget. Ended contexts retain a tombstone, not the
 revocation cancels pending resolution and clears zeroizing values. Caller-owned secret copies and
 third-party encoded transport/TLS buffers have their own lifetime. Request construction follows
 fresh token authentication and a new active-capability check.
+
+Workflow identifiers accept UUIDs or namespace-local names, resolved through the public workflow
+pages; the name cache belongs to the configured client. ActivityContext.steps exposes retained
+business outputs rather than wire envelopes. stop(grace) returns normally after cancelling tokens
+when grace expires; an unfinished lease still lapses under server authority. Absent gRPC trace
+metadata serializes as an empty string, following the existing shared error contract.

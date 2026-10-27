@@ -175,3 +175,36 @@ receipts); `rust-sdk-builder-schema-boundary-red` then failed on the intended by
 Corrections passed `rust-sdk-builder-review-green`. No second broad review was requested.
 `rust-sdk-builder-final-clippy` exited 0 (4.37 s); `rust-sdk-builder-final-tests` exited 0
 (17.99 s, 102 total, including the shared 60-fixture authoring comparison).
+
+Shared runtime acceptance started with a real missing-registration RED, then caught missing
+workflow-name resolution and the retained-step wire envelope being exposed in ActivityContext.
+`rust-sdk-workflow-name-red` and `rust-sdk-worker-retained-output-red` reproduced the defects
+locally. Name resolution now follows pages and uses a client-local bounded 60-second cache;
+retained outputs unwrap exactly one transport envelope. `rust-sdk-shared-lifecycle-green`
+passed against real PostgreSQL (15.82 s), unchanged goldens.
+`rust-sdk-runtime-clippy` exited 0 (6.58 s); `rust-sdk-runtime-tests` exited 0 (23.92 s, 104 total).
+Subsequent real registration caught absent gRPC traceId being null rather than empty; the named
+empty-trace RED/GREEN test records that correction. Shutdown then exposed an incorrect local
+CANCELLED result at grace expiry: the existing native assertion mirrored that incorrect behavior.
+The assertion was corrected from the shared spec, seen failing (`rust-sdk-stop-grace-red`),
+then passed after stop returned normally while cancelling tokens. No failure assertion was removed.
+Shared real-server cases now passed: worker-registration, protocol-negotiation, cancellation,
+worker-shutdown, secrets, blobs, collection-runtime, loop-runtime, approval-decisions, and
+run-lifecycle. The control transport initially panicked on a missing default rustls provider;
+its fixture-only client now supplies Ring explicitly without installing a global provider.
+Fault acceptance remains open: `rust-sdk-shared-fault-support-red` failed on the explicit
+unimplemented fault-injection path before the transport proxy implementation was connected.
+
+The full standalone suite passed `rust-sdk-boundary-tests` (17.82 s, 107 total). Strict Clippy
+then identified a test guard's lexical lifetime; an explicit block now ends it before await.
+`rust-sdk-final-core-clippy` exited 0 (2.17 s) and runner/proxy Clippy exited 0 (2.52 s).
+Further named RED cases captured short-reason validation moving the server's 422/trace policy
+into a local error, empty serialized trace IDs, 32-character hex workflow names, malformed workflow
+UUID responses, and upload-integrity errors carrying an HTTP success status. Corrections preserve
+server policy, distinguish dashed UUID references from names, and classify local upload integrity
+failures outside the HTTP response parser. The existing integrity assertion was corrected from
+the common golden and seen failing before the fix; no golden was changed.
+The shared state-operations and lost-responses scenarios passed through actual HTTP/gRPC fault
+proxies. A single bounded read-only oracle review found no material issue; no external CLI review.
+`rust-sdk-shared-stream-faults-complete` passed (5.83 s), including a stream interrupted after
+the first delivered frame. Full 60-scenario runtime acceptance is running separately.

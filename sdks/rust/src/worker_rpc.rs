@@ -210,6 +210,10 @@ mod tests {
     use super::*;
     #[test]
     fn grpc_errors_preserve_closed_codes_and_bounded_metadata_without_raw_messages() {
+        assert_eq!(
+            error_of("RegisterWorker", Status::permission_denied("safe")).as_json()["traceId"],
+            ""
+        );
         for (status, reason, expected) in [
             (tonic::Code::Aborted, "STALE_ATTEMPT", "STALE_ATTEMPT"),
             (

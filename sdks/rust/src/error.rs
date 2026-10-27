@@ -202,7 +202,7 @@ impl SagatError {
         self.details.get("reason").and_then(Value::as_str)
     }
     pub fn as_json(&self) -> Value {
-        json!({"code":self.code,"message":self.message,"retryable":self.retryable,"traceId":self.trace_id,"reason":self.details.get("reason"),"status":self.grpc_status().map_or_else(||json!(self.status),|s|json!(s)),"retryAfterMs":self.retry_after.map(|d| d.as_millis().min(u128::from(u64::MAX)) as u64),"remediation":self.remediation})
+        json!({"code":self.code,"message":self.message,"retryable":self.retryable,"traceId":self.trace_id.as_deref().unwrap_or_default(),"reason":self.details.get("reason"),"status":self.grpc_status().map_or_else(||json!(self.status),|s|json!(s)),"retryAfterMs":self.retry_after.map(|d| d.as_millis().min(u128::from(u64::MAX)) as u64),"remediation":self.remediation})
     }
 }
 pub(crate) fn trace_id(value: &str) -> Option<String> {
