@@ -936,3 +936,15 @@ an internal invariant. Native window validation reuses the same checked domain h
 core1035, focused39, contracts49 and strict workspace lint pass separately; the implementation
 ledger records timings and the earlier native27window checkpoint. Current ingress/receipt,
 classified value/quota, native satisfaction writer and public activation remain pending.
+
+
+### 2026-10-27 native scoped receipt and retained value
+
+T014-014–017/040, FR-014-004/005/014/015/017: scoped_event_storage::receipts ties current inbox
+admission and exact instance receipt to one WaitSatisfied canonical payload, journal and output
+charge. Both writers refuse orphan/duplicate-operation/generic-completion/incorrect-value
+paths and preserve prior failed persistence through later retries. Runtime-role fixtures prove
+quota rollback, paused cold routing/duplicate and pinned public/PII/secret journal disclosure.
+The completed lifecycle gate passes43, root dispatch24, contracts49 and workspace lint; exact
+commands/timings/REDs and fixture limitations are in the0.3 implementation ledger. Production
+callers, native event races/cleanup, public activation and canonical release tasks remain open.

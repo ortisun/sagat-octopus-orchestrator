@@ -160,18 +160,27 @@ fn collection_transition(
 }
 
 async fn fixture_with_progress(name: &str, prepare_collection: bool) -> Fixture {
-    fixture_document_with_progress(name, prepare_collection, structured_workflow(name)).await
+    fixture_document_with_progress(name, prepare_collection, structured_workflow(name), 0).await
 }
 
 /// Internal structured-codec fixture only; this does not enable public publication.
 pub(super) async fn fixture_with_document(name: &str, document: serde_json::Value) -> Fixture {
-    fixture_document_with_progress(name, true, document).await
+    fixture_document_with_progress(name, true, document, 0).await
+}
+
+/// Immutable version with current classification rules; still an internal codec fixture.
+pub(super) async fn fixture_with_classified_document(
+    name: &str,
+    document: serde_json::Value,
+) -> Fixture {
+    fixture_document_with_progress(name, true, document, 1).await
 }
 
 async fn fixture_document_with_progress(
     name: &str,
     prepare_collection: bool,
     document: serde_json::Value,
+    classification_rules: i16,
 ) -> Fixture {
     let world = world().await;
     world.put_secret("root-key", "root-secret-value").await;
@@ -185,8 +194,8 @@ async fn fixture_document_with_progress(
     let version = WorkflowVersionId::new(Uuid::now_v7());
     sqlx::query(
         "INSERT INTO workflow_versions \
-         (id, tenant_id, workflow_id, version_number, digest, document, published_by, published_at) \
-         VALUES ($1, $2, $3, 2, $4, $5, $6, clock_timestamp())",
+         (id, tenant_id, workflow_id, version_number, digest, document, published_by, published_at, classification_rules) \
+         VALUES ($1, $2, $3, 2, $4, $5, $6, clock_timestamp(), $7)",
     )
     .bind(version.as_uuid())
     .bind(tenant)
@@ -194,6 +203,7 @@ async fn fixture_document_with_progress(
     .bind(digest(&document).to_hex())
     .bind(document)
     .bind(world.admin.subject().as_str())
+    .bind(classification_rules)
     .execute(&world.db.pool)
     .await
     .expect("trusted structured definition");

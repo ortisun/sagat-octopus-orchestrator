@@ -4048,3 +4048,24 @@ then pass. Full application+IR440/0/0 across38targets passes71.33s command, root
 passes57.61s harness/105.00s command under sagat_app, and strict workspace Clippy passes82.80s.
 Read-only compatibility review found no issue. This is representation reuse, not new receipt,
 payload authority, ingress validation or public scoped-event acceptance.
+
+
+### Native scoped receipt and canonical retained value
+
+The internal full/path transaction ports now pin the current own Run, subscription and inbox
+admission before staging an exact receipt and its canonical document. WaitSatisfied and its
+one output require the private same-transaction witness. Commit refuses orphan receipts,
+post-consumption ignored errors and prior failures hidden by successful pre-receipt retries.
+Real REDs, bounded-review corrections, fixture errors and the discarded zero-test invocation
+are retained in implementation-0.3.md; none is relabeled as passing acceptance. No grants,
+migration, public body or production dispatcher caller changes.
+
+Final native lifecycle43/0/0(186.67s harness/248.91s command), root dispatch24/0/0
+(65.38s/135.51s), contracts49/0/0(0.60s/2.81s), strict workspace Clippy132.03s pass. Native tests
+use actual admitted scoped activity → wait and EventService ingress/claim under sagat_app.
+They include full/path identity/value isolation, malformed conflict metadata/current claims,
+whole-transaction rollback on a current retained quota, paused cold explicit routing/duplicate
+with one logical charge and actual classified journal disclosure under pinned rules1 schemas
+(public/PII/secret). This is an internal structured-codec checkpoint, not public or released
+upgrade proof. Native event/outcome/cleanup races and producer/receiver activation, rollout,
+nested capacity, final SDK/resource/release gates and all eight canonical tasks remain open.

@@ -296,7 +296,54 @@ impl PathExecutionTx for PgPathExecutionTx {
         self.persist_path_addressed(events, outputs, effects).await
     }
 
+    async fn record_scoped_event_delivery(
+        &mut self,
+        step: &sagat_application::dispatch::WaitingStep,
+        event: &sagat_application::dispatch::ClaimedEvent,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        if std::mem::replace(&mut self.scoped_event_delivery_attempted, true) {
+            return Err(corrupt("one scoped event delivery per transaction"));
+        }
+        if self.scoped_event_persistence_failed {
+            return Err(corrupt(
+                "scoped event delivery cannot follow a failed persistence",
+            ));
+        }
+        if step.instance.path() != self.snapshot.state.path() {
+            return Ok(None);
+        }
+        let prepared = scoped_events::prepare_delivery(
+            &mut self.tx,
+            &self.snapshot.definition,
+            &self.snapshot.info,
+            &self.event_wait_read_states,
+            step,
+            event,
+            scoped_events::allows_outcome(&self.snapshot.state),
+        )
+        .await?;
+        let Some((witness, document)) = prepared else {
+            return Ok(None);
+        };
+        self.scoped_event_delivery = Some(witness);
+        Ok(Some(document))
+    }
+
     async fn commit(self) -> Result<(), StoreError> {
+        if self.scoped_event_delivery_attempted && self.scoped_event_persistence_failed {
+            return Err(corrupt(
+                "scoped event transaction contains a failed persistence",
+            ));
+        }
+        if self
+            .scoped_event_delivery
+            .as_ref()
+            .is_some_and(|receipt| !receipt.persisted)
+        {
+            return Err(corrupt(
+                "scoped event receipt was not persisted with its outcome",
+            ));
+        }
         if self.snapshot.state.global().version() != self.persisted {
             return Err(StoreError::Internal {
                 detail: "bounded state was not persisted before commit".into(),
@@ -317,6 +364,10 @@ impl PgPathExecutionTx {
         outputs: &[(ExecutionInstanceId, Vec<u8>)],
         effects: Effects,
     ) -> Result<(), StoreError> {
+        let prior_persist_failure = scoped_events::begin_persistence(
+            self.scoped_event_delivery_attempted,
+            &mut self.scoped_event_persistence_failed,
+        )?;
         let path = self.snapshot.state.path();
         if events.iter().any(|event| event.path() != path)
             || outputs.iter().any(|(instance, _)| instance.path() != path)
@@ -347,6 +398,13 @@ impl PgPathExecutionTx {
                 detail: "a bounded write contains root-only effects".into(),
             });
         }
+        let consumed_delivery = scoped_events::require_delivery(
+            &self.snapshot.definition,
+            events,
+            outputs,
+            &effects,
+            self.scoped_event_delivery.as_ref(),
+        )?;
         scoped_events::require_scoped_event_clock(
             &self.snapshot.definition,
             events,
@@ -364,6 +422,7 @@ impl PgPathExecutionTx {
                     | RunEvent::ConditionEvaluated { .. }
                     | RunEvent::SwitchEvaluated { .. }
                     | RunEvent::WaitStarted { .. }
+                    | RunEvent::WaitSatisfied { .. }
                     | RunEvent::WaitTimedOut { .. }
                     | RunEvent::TimerStarted { .. }
                     | RunEvent::TimerFired { .. }
@@ -398,7 +457,9 @@ impl PgPathExecutionTx {
             .filter_map(|event| {
                 matches!(
                     event.event(),
-                    RunEvent::StepCompleted { .. } | RunEvent::ReconciliationConcluded { .. }
+                    RunEvent::StepCompleted { .. }
+                        | RunEvent::ReconciliationConcluded { .. }
+                        | RunEvent::WaitSatisfied { .. }
                 )
                 .then(|| event.instance())
                 .flatten()
@@ -517,7 +578,9 @@ impl PgPathExecutionTx {
             .bind(
                 matches!(
                     event,
-                    RunEvent::StepCompleted { .. } | RunEvent::ReconciliationConcluded { .. }
+                    RunEvent::StepCompleted { .. }
+                        | RunEvent::ReconciliationConcluded { .. }
+                        | RunEvent::WaitSatisfied { .. }
                 )
                 .then(|| output_digest.get(&instance).map(Vec::as_slice))
                 .flatten(),
@@ -642,6 +705,13 @@ impl PgPathExecutionTx {
                 detail: "an idempotency record for this command appeared concurrently".into(),
             });
         }
+        if consumed_delivery {
+            self.scoped_event_delivery
+                .as_mut()
+                .ok_or_else(|| corrupt("scoped event delivery witness disappeared"))?
+                .persisted = true;
+        }
+        self.scoped_event_persistence_failed = prior_persist_failure;
         Ok(())
     }
 

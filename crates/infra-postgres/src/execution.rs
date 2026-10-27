@@ -58,17 +58,17 @@ macro_rules! scoped_timer_metadata_valid {
 }
 macro_rules! scoped_event_metadata_valid {
     () => { concat!($crate::execution::scoped_suspension_metadata_empty!(),
-        " AND s.output_digest IS NULL AND s.attempt=0 AND s.generation=0 AND NOT s.cancel_requested \
+        " AND s.attempt=0 AND s.generation=0 AND NOT s.cancel_requested \
           AND s.next_attempt_at IS NULL AND s.condition IS NULL AND s.switch_case_id IS NULL \
-          AND ((s.status='WAITING' AND NOT s.routed AND NOT s.timed_out AND s.failure_code IS NULL \
+          AND ((s.status='WAITING' AND s.output_digest IS NULL AND NOT s.routed AND NOT s.timed_out AND s.failure_code IS NULL \
                 AND s.waiting_kind IS NOT DISTINCT FROM 'EVENT' AND s.due_at IS NOT NULL \
                 AND s.event_type IS NOT NULL AND s.correlation_key IS NOT NULL AND s.event_since IS NOT NULL) \
             OR (s.waiting_kind IS NULL AND s.due_at IS NULL AND s.event_type IS NULL \
                 AND s.correlation_key IS NULL AND s.event_since IS NULL AND s.event_scanned_at IS NULL \
-                AND ((s.status='PENDING' AND NOT s.routed AND NOT s.timed_out AND s.failure_code IS NULL) \
-                  OR (s.status='SUCCEEDED' AND s.timed_out AND s.failure_code IS NULL) \
-                  OR (s.status='FAILED' AND NOT s.timed_out AND (s.failure_code IS NOT DISTINCT FROM 'EXPRESSION_ERROR' OR s.failure_code IS NOT DISTINCT FROM 'WAIT_TIMED_OUT')) \
-                  OR (s.status='CANCELLED' AND s.routed AND NOT s.timed_out AND s.failure_code IS NULL))))") };
+                AND ((s.status='PENDING' AND s.output_digest IS NULL AND NOT s.routed AND NOT s.timed_out AND s.failure_code IS NULL) \
+                  OR (s.status='SUCCEEDED' AND s.failure_code IS NULL AND ((s.timed_out AND s.output_digest IS NULL) OR (NOT s.timed_out AND s.output_digest IS NOT NULL))) \
+                  OR (s.status='FAILED' AND s.output_digest IS NULL AND NOT s.timed_out AND (s.failure_code IS NOT DISTINCT FROM 'EXPRESSION_ERROR' OR s.failure_code IS NOT DISTINCT FROM 'WAIT_TIMED_OUT')) \
+                  OR (s.status='CANCELLED' AND s.output_digest IS NULL AND s.routed AND NOT s.timed_out AND s.failure_code IS NULL))))") };
 }
 pub(crate) use scoped_control_metadata_empty;
 pub(crate) use scoped_event_metadata_valid;
@@ -357,6 +357,9 @@ impl PgRunStore {
             info: record.info,
             now,
             own_scheduler_time: None,
+            scoped_event_delivery: None,
+            scoped_event_delivery_attempted: false,
+            scoped_event_persistence_failed: false,
             def: definition,
             persisted: state.version(),
             state,
@@ -828,6 +831,9 @@ pub struct PgPathExecutionTx {
     snapshot: PathExecutionSnapshot,
     now: OffsetDateTime,
     own_scheduler_time: Option<OffsetDateTime>,
+    scoped_event_delivery: Option<scoped_events::ScopedEventDelivery>,
+    scoped_event_delivery_attempted: bool,
+    scoped_event_persistence_failed: bool,
     breaker: BreakerPolicy,
     persisted: u64,
     stored: BTreeSet<ExecutionInstanceId>,
@@ -889,6 +895,9 @@ impl PgPathExecutionTx {
             snapshot,
             now,
             own_scheduler_time: None,
+            scoped_event_delivery: None,
+            scoped_event_delivery_attempted: false,
+            scoped_event_persistence_failed: false,
             breaker,
             persisted,
             stored,
@@ -1232,6 +1241,9 @@ impl RunStore for PgRunStore {
                     info,
                     now,
                     own_scheduler_time: None,
+                    scoped_event_delivery: None,
+                    scoped_event_delivery_attempted: false,
+                    scoped_event_persistence_failed: false,
                     def: Arc::clone(&new.definition),
                     state: RunState::new(new.info.run_id),
                     persisted: 0,
@@ -3259,6 +3271,9 @@ pub struct PgRunTx {
     info: RunInfo,
     now: OffsetDateTime,
     own_scheduler_time: Option<OffsetDateTime>,
+    scoped_event_delivery: Option<scoped_events::ScopedEventDelivery>,
+    scoped_event_delivery_attempted: bool,
+    scoped_event_persistence_failed: bool,
     def: Arc<WorkflowDefinition>,
     state: RunState,
     /// Journal sequence already written; `persist` writes `persisted + 1 ..= state.version()`.
@@ -4303,6 +4318,10 @@ impl RunTx for PgRunTx {
     }
 
     async fn persist(&mut self, events: &[RunEvent], effects: Effects) -> Result<(), StoreError> {
+        let prior_persist_failure = scoped_events::begin_persistence(
+            self.scoped_event_delivery_attempted,
+            &mut self.scoped_event_persistence_failed,
+        )?;
         if !effects.rehint_instances.is_empty() {
             return Err(StoreError::Internal {
                 detail: "a scoped rehint used root persistence".into(),
@@ -4627,6 +4646,7 @@ impl RunTx for PgRunTx {
                 detail: "an idempotency record for this command appeared concurrently".into(),
             });
         }
+        self.scoped_event_persistence_failed = prior_persist_failure;
         Ok(())
     }
 
@@ -4671,6 +4691,49 @@ impl RunTx for PgRunTx {
             .await
     }
 
+    async fn record_scoped_event_delivery(
+        &mut self,
+        step: &sagat_application::dispatch::WaitingStep,
+        event: &sagat_application::dispatch::ClaimedEvent,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        if std::mem::replace(&mut self.scoped_event_delivery_attempted, true) {
+            return Err(corrupt("one scoped event delivery per transaction"));
+        }
+        if self.scoped_event_persistence_failed {
+            return Err(corrupt(
+                "scoped event delivery cannot follow a failed persistence",
+            ));
+        }
+        if step.instance.path().is_root()
+            || step.tenant_id != self.info.tenant_id
+            || step.namespace_id != self.info.namespace_id
+            || step.run_id != self.info.run_id
+            || self.state.instance(&step.instance).is_none()
+        {
+            return Ok(None);
+        }
+        let local = sagat_domain::execution::PathExecutionState::from_run(
+            &self.state,
+            step.instance.path().clone(),
+        )
+        .map_err(|_| corrupt("scoped event ancestry"))?;
+        let prepared = scoped_events::prepare_delivery(
+            &mut self.tx,
+            &self.def,
+            &self.info,
+            &self.event_wait_read_states,
+            step,
+            event,
+            scoped_events::allows_outcome(&local),
+        )
+        .await?;
+        let Some((witness, document)) = prepared else {
+            return Ok(None);
+        };
+        self.scoped_event_delivery = Some(witness);
+        Ok(Some(document))
+    }
+
     async fn record_delivery(
         &mut self,
         delivery: &sagat_application::dispatch::DeliveryRef,
@@ -4701,6 +4764,20 @@ impl RunTx for PgRunTx {
     }
 
     async fn commit(mut self) -> Result<(), StoreError> {
+        if self.scoped_event_delivery_attempted && self.scoped_event_persistence_failed {
+            return Err(corrupt(
+                "scoped event transaction contains a failed persistence",
+            ));
+        }
+        if self
+            .scoped_event_delivery
+            .as_ref()
+            .is_some_and(|receipt| !receipt.persisted)
+        {
+            return Err(corrupt(
+                "scoped event receipt was not persisted with its outcome",
+            ));
+        }
         if self.initialize_chain
             && let Some(policy) = self.def.continuation_policy()
         {
@@ -5001,6 +5078,10 @@ impl PgRunTx {
         outputs: &[(ExecutionInstanceId, Vec<u8>)],
         effects: Effects,
     ) -> Result<(), StoreError> {
+        let prior_persist_failure = scoped_events::begin_persistence(
+            self.scoped_event_delivery_attempted,
+            &mut self.scoped_event_persistence_failed,
+        )?;
         if events
             .iter()
             .any(|event| event.path().is_root() && !is_scope_saga_event(event.event()))
@@ -5038,6 +5119,13 @@ impl PgRunTx {
                 detail: "a root lease effect used addressed storage".into(),
             });
         }
+        let consumed_delivery = scoped_events::require_delivery(
+            &self.def,
+            events,
+            outputs,
+            &effects,
+            self.scoped_event_delivery.as_ref(),
+        )?;
         scoped_events::require_scoped_event_clock(
             &self.def,
             events,
@@ -5055,6 +5143,7 @@ impl PgRunTx {
                     | RunEvent::ConditionEvaluated { .. }
                     | RunEvent::SwitchEvaluated { .. }
                     | RunEvent::WaitStarted { .. }
+                    | RunEvent::WaitSatisfied { .. }
                     | RunEvent::WaitTimedOut { .. }
                     | RunEvent::TimerStarted { .. }
                     | RunEvent::TimerFired { .. }
@@ -5093,7 +5182,9 @@ impl PgRunTx {
             .filter_map(|addressed| {
                 matches!(
                     addressed.event(),
-                    RunEvent::StepCompleted { .. } | RunEvent::ReconciliationConcluded { .. }
+                    RunEvent::StepCompleted { .. }
+                        | RunEvent::ReconciliationConcluded { .. }
+                        | RunEvent::WaitSatisfied { .. }
                 )
                 .then(|| addressed.instance())
                 .flatten()
@@ -5149,7 +5240,9 @@ impl PgRunTx {
             let (path_nodes, path_indices) = stored_path_parts(instance.path());
             let payload = matches!(
                 event,
-                RunEvent::StepCompleted { .. } | RunEvent::ReconciliationConcluded { .. }
+                RunEvent::StepCompleted { .. }
+                    | RunEvent::ReconciliationConcluded { .. }
+                    | RunEvent::WaitSatisfied { .. }
             )
             .then(|| output_digest.get(&instance))
             .flatten();
@@ -5302,6 +5395,13 @@ impl PgRunTx {
                 detail: "an idempotency record for this command appeared concurrently".into(),
             });
         }
+        if consumed_delivery {
+            self.scoped_event_delivery
+                .as_mut()
+                .ok_or_else(|| corrupt("scoped event delivery witness disappeared"))?
+                .persisted = true;
+        }
+        self.scoped_event_persistence_failed = prior_persist_failure;
         Ok(())
     }
 

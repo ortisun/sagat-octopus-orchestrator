@@ -39,7 +39,7 @@ macro_rules! select_events {
     };
 }
 
-fn claimed_from_row(row: &PgRow) -> Result<ClaimedEvent, StoreError> {
+pub(crate) fn claimed_from_row(row: &PgRow) -> Result<ClaimedEvent, StoreError> {
     let source: String = col(row, "source")?;
     let id: String = col(row, "event_id")?;
     let kind: String = col(row, "event_type")?;

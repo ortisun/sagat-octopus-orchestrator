@@ -708,6 +708,16 @@ pub trait PathExecutionStore: Send + Sync {
 pub trait PathExecutionTx: Send {
     fn snapshot(&mut self) -> &mut PathExecutionSnapshot;
 
+    /// Stages one exact scoped event receipt and returns its authoritative canonical value.
+    /// No receipt may commit without the matching satisfaction and value in this transaction.
+    fn record_scoped_event_delivery(
+        &mut self,
+        _step: &crate::dispatch::WaitingStep,
+        _event: &crate::dispatch::ClaimedEvent,
+    ) -> impl Future<Output = Result<Option<Vec<u8>>, StoreError>> + Send {
+        async { Err(scoped_execution_adapter_required()) }
+    }
+
     /// Run-wide logical output charge under the run lock, without reading historical values.
     fn logical_output_bytes(&mut self) -> impl Future<Output = Result<u64, StoreError>> + Send;
 
@@ -951,6 +961,16 @@ pub enum PoolCheck {
 /// One locked run, mutated in memory and written back in a single transaction.
 pub trait RunTx: Send {
     fn info(&self) -> &RunInfo;
+
+    /// Full-model counterpart of [`PathExecutionTx::record_scoped_event_delivery`].
+    /// Legacy adapters explicitly refuse this operation; root delivery is unchanged.
+    fn record_scoped_event_delivery(
+        &mut self,
+        _step: &crate::dispatch::WaitingStep,
+        _event: &crate::dispatch::ClaimedEvent,
+    ) -> impl Future<Output = Result<Option<Vec<u8>>, StoreError>> + Send {
+        async { Err(scoped_execution_adapter_required()) }
+    }
 
     /// The database clock sampled after the required run lock is acquired: deadlines must not be
     /// backdated by time spent waiting for a writer. All instances use the database's clock.

@@ -1011,3 +1011,70 @@ summaries in71.33s command; current root dispatch passed24/0/0 in57.61s harness/
 under sagat_app. Strict workspace/all-target Clippy passed82.80s; formatting, architecture,
 agent configuration and diff checks pass. No new dependency, schema, receipt, current-ingress
 guarantee, scoped delivery/discovery or public body is introduced; canonical tasks stay open.
+
+
+## Native scoped event receipt and value checkpoint (2026-10-27)
+
+The internal full/exact-path ports stage one current inbox admission receipt, returning its
+canonical document. Inputs are expectations, not authority: current own Run entry and prepared
+revision, tenant/namespace, canonical UUID, pinned wait, complete captured/current subscription,
+all canonical admission fields (including occurred_at and received_at), stored admission
+fingerprint and JSON object shape are checked. Entity order is Run → inbox → step → output
+ledger. The receipt uses wait-instance:{run}/{stepUuid} and existing nullable identity columns.
+A conflict validates all exact metadata and returns no value; malformed metadata is corruption.
+The conflict SELECT is plain because sagat_app lacks receipt UPDATE permission. It authorizes
+no outcome; the parent inbox stays locked. No grants or migration changed.
+
+WaitSatisfied and its one exact canonical output require the private unconsumed witness.
+Native output quota charging, journal payload association and physical normal Succeeded shape
+are integrated; handled timeout stays output-free. Generic completions/resolutions cannot
+manufacture this value. Commit refuses orphan receipts and any ignored failed persistence,
+including failure after successful consumption and failure before staging hidden by a later
+successful legacy retry. Persistence arms before validation/await and complete success restores
+the previous failure bit, preserving prior failure history. Non-receipt legacy retry behavior
+is unchanged. The detailed protocol is scoped-event-receipt.md.
+
+Real behavioral REDs precede the fixes: the initial two native receiver cases failed at the
+unsupported port (4.65s harness/76.72s command); orphan receipt committed (0/1,2.40s/73.35s);
+a second operation after an unmatched first candidate was accepted (0/1,2.31s/61.20s). Bounded
+staging review corrected occurred_at coverage, repeated-operation tracking, conflict identity
+and inbox/step lock order. Its final read-only pass found no issue within that scope.
+
+Four native cases then passed13.64s/72.55s. Additional rejection coverage first passed8/failed1
+(33.86s/83.85s): the late-error fixture stored the wrong request fingerprint, so replay correctly
+refused IdempotencyKeyReused; this was a fixture error, not behavior proof. With that fixed,
+another gate passed9/failed2(41.71s/91.55s): a dotted test source violated Slug and the conflict
+FOR SHARE lacked runtime-role permission. The slug fixture and the unnecessary row lock were
+corrected without widening grants. The subsequent13cases passed61.80s/122.51s.
+
+Separate witness review found two ignored-error sequences. The post-consumption late conflict
+first failed0/1(2.36s/54.40s); the pre-staging failure → successful retry → receipt sequence
+first failed0/1(2.27s/54.78s). Both now retain failure history. The final bounded review found no
+remaining witness/ignored-error issue. An earlier invocation accidentally selected zero tests
+after a failed test-edit script (50.51s); it is invalid RED evidence and is not counted. The
+corrected14-case gate passed63.61s/122.15s. These are separate invocations of overlapping cases,
+not cumulative counts. All native gates use actual EventService admission/claim, real scoped
+activity completion and current sagat_app transactions in the immutable structured-codec fixture.
+
+The actual disclosure service reads the retained wait.satisfied sequence with immutable current
+classification rules1 and the exact body outputSchema. Both writers prove secret/PII withheld
+and public-container disclosure, with no event value in journal detail/audit reason/outbox.
+These remain internal fixtures, not public-body or released-profile activation evidence.
+
+Initial strict Clippy failed on two new expect calls(45.49s); typed corrupt errors replace them.
+Final workspace/all-target Clippy passes132.03s. Architecture and agent configuration pass.
+The broader lifecycle, pause/quota and root-dispatch gates are recorded below after completion.
+Held event/timeout/cancel and ingress-cleanup races, additional current-admission corruption,
+production receiver/discovery/start/timeout callers, public bodies, actual released-v0.2 rollout,
+nesting/capacity and final native/SDK/resource/release acceptance remain pending. None of the
+eight canonical tasks is closed by this checkpoint.
+
+Final checkpoint verification on the completed typed-error source passes native lifecycle43/0/0
+(186.67s harness/248.91s command), including the16receipt cases, current deferred retained-quota
+rollback in both writers, and paused delivery → explicit cold resume → duplicate with one
+receipt/value/outcome/route and exactly one logical byte charge. No injected lost network
+acknowledgement is claimed by that cold duplicate check. Root dispatch passes24/0/0
+(65.38s/135.51s), contracts49/0/0(0.60s/2.81s), and strict Clippy132.03s. Separate Cargo
+invocations retain fixed sources; tests added only after a prior single-target binary was
+already executing belong to their later invocations. Formatting/diff/architecture/agent checks
+pass. Native executable SHA256: a88a6c3432f45db3e5cf85910c56440057c983f9c364d6cec3f298c484cedbc3.

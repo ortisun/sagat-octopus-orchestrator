@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 mod cancellation;
 mod guards;
+mod receipts;
 mod timeouts;
 
 fn wait(index: u32) -> ExecutionInstanceId {
@@ -62,6 +63,10 @@ fn wait_document(name: &str, timeout_route: bool, timeout_ms: u64) -> serde_json
 
 async fn pending_wait_document(name: &str, document: serde_json::Value) -> (Fixture, PgRunStore) {
     let fixture = scoped_worker::fixture_with_document(name, document).await;
+    pending_wait_fixture(fixture).await
+}
+
+async fn pending_wait_fixture(fixture: Fixture) -> (Fixture, PgRunStore) {
     let work = scoped_worker::poll(&fixture, 2).await;
     assert_eq!(work.len(), 2);
     for task in work {
