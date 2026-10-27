@@ -4039,3 +4039,12 @@ corrections, native lifecycle27passes96.51s harness with the same canonical wind
 that is separate source evidence. The ledger retains every RED/compile/coverage correction.
 No native receipt/payload authority, WaitSatisfied persistence, discovery/producer/public body
 or canonical runtime/release task is enabled by this pure preparation.
+
+### Shared canonical event document preparation
+
+The shared application encoder preserves the old JsonEvaluator bytes and extension interface.
+New factory cases first failed2while the existing exact-byte evaluator baseline passed1; all3
+then pass. Full application+IR440/0/0 across38targets passes71.33s command, root dispatch24/0/0
+passes57.61s harness/105.00s command under sagat_app, and strict workspace Clippy passes82.80s.
+Read-only compatibility review found no issue. This is representation reuse, not new receipt,
+payload authority, ingress validation or public scoped-event acceptance.

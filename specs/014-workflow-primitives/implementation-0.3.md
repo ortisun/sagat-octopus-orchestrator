@@ -995,3 +995,19 @@ architecture24crates and agent configuration pass. No pending stub remains. This
 window preparation only: current ingress/own-Run receipt, retained classified payload/quota,
 scoped delivery/discovery, native WaitSatisfied persistence, scheduler producer, old-dispatcher
 cutover and final release gates remain open. No canonical task is checked by this increment.
+
+## Shared canonical event document
+
+Application dispatch now owns the production JSON event-document encoder; JsonEvaluator delegates
+without changing its extension interface. This prepares authoritative native value retention
+without an adapter-to-adapter dependency or a second envelope encoder. Exact bytes, nullable
+fields and the legacy invalid-JSON→null fallback remain unchanged; this factory is not ingress
+validation. The future scoped receiver must reject invalid current inbox data independently.
+
+The new factory stub first failed2cases while the existing evaluator's exact-byte baseline
+passed1 (5.96s command). Reusing the old encoder then passed all3cases in6.04s command. Read-only
+compatibility review found no concrete issue. Full application+IR passed440/0/0 across38target
+summaries in71.33s command; current root dispatch passed24/0/0 in57.61s harness/105.00s command
+under sagat_app. Strict workspace/all-target Clippy passed82.80s; formatting, architecture,
+agent configuration and diff checks pass. No new dependency, schema, receipt, current-ingress
+guarantee, scoped delivery/discovery or public body is introduced; canonical tasks stay open.

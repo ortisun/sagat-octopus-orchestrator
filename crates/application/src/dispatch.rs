@@ -148,6 +148,27 @@ impl ClaimedEvent {
     }
 }
 
+/// Canonical bytes retained by event consumers and used by the production evaluator. This
+/// preserves the legacy null fallback; ingress validation/authority is a separate boundary.
+#[must_use]
+pub fn event_document(event: &EventView<'_>) -> Vec<u8> {
+    let data =
+        serde_json::from_slice::<serde_json::Value>(event.data).unwrap_or(serde_json::Value::Null);
+    let document = serde_json::json!({
+        "event": {
+            "id": event.id,
+            "source": event.source,
+            "type": event.event_type,
+            "subject": event.subject,
+            "correlationKey": event.correlation_key,
+            "occurredAt": event.occurred_at,
+            "receivedAt": event.received_at,
+        },
+        "data": data,
+    });
+    serde_json::to_vec(&document).unwrap_or_default()
+}
+
 /// The idempotency key under which `trigger` starts the run for `event`, and the fingerprint that
 /// tells a repeat of the same start from a different request: starting twice for one admission of
 /// an event, from one trigger, is one run.

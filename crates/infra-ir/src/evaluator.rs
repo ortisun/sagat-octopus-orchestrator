@@ -443,20 +443,7 @@ impl ExpressionEvaluator for JsonEvaluator {
     }
 
     fn event_document(&self, event: &EventView<'_>) -> Vec<u8> {
-        let data = parse(event.data).unwrap_or(Value::Null);
-        let document = json!({
-            "event": {
-                "id": event.id,
-                "source": event.source,
-                "type": event.event_type,
-                "subject": event.subject,
-                "correlationKey": event.correlation_key,
-                "occurredAt": event.occurred_at,
-                "receivedAt": event.received_at,
-            },
-            "data": data,
-        });
-        serde_json::to_vec(&document).unwrap_or_default()
+        sagat_application::dispatch::event_document(event)
     }
 
     fn event_filter(

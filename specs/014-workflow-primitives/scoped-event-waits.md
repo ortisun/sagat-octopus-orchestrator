@@ -161,3 +161,10 @@ ancestor state, exact physical binding and snapshot, classified value retention/
 per-instance receipt and atomic journal/output/routing commit. The command's received_at is
 not a substitute for that ingress proof. Public bodies, discovery, receipt construction and
 scoped WaitSatisfied native persistence remain closed until that transaction is implemented.
+
+The canonical event-document encoder is shared by application dispatch and JsonEvaluator so the
+future native receiver can retain bytes generated from its current authoritative inbox row.
+It preserves the existing evaluator representation, including nullable fields and legacy null
+fallback for invalid stored JSON. It grants no ingress authority; scoped reception must strictly
+validate current payload/envelope before using it. Legacy root receiver/consumer behavior remains
+unchanged, with exact-byte and real root dispatch regression evidence in the ledger.
