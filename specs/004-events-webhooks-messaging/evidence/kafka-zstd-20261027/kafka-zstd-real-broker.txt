@@ -1,0 +1,657 @@
+ Downloading crates ...
+  Downloaded zstd v0.14.3
+  Downloaded zstd-safe v8.2.0
+  Downloaded zstd-sys v2.1.2+zstd.1.5.7
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.26
+   Compiling quote v1.0.47
+   Compiling syn v3.0.6
+   Compiling syn v2.0.119
+   Compiling serde v1.0.229
+   Compiling serde_derive v1.0.229
+   Compiling libc v0.2.190
+   Compiling cfg-if v1.0.5
+   Compiling serde_core v1.0.229
+   Compiling memchr v2.8.3
+   Compiling typenum v1.20.1
+   Compiling zeroize_derive v1.5.0
+   Compiling zeroize v1.9.1
+   Compiling once_cell v1.21.4
+   Compiling pin-project-lite v0.2.17
+   Compiling itoa v1.0.18
+   Compiling futures-core v0.3.34
+   Compiling bytes v1.12.1
+   Compiling version_check v0.9.5
+   Compiling jobserver v0.1.35
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.14
+   Compiling cc v1.6.0
+   Compiling subtle v2.6.1
+   Compiling getrandom v0.2.17
+   Compiling errno v0.3.14
+   Compiling equivalent v1.0.2
+   Compiling smallvec v1.16.2
+   Compiling log v0.4.34
+   Compiling signal-hook-registry v1.4.8
+   Compiling mio v1.2.4
+   Compiling socket2 v0.6.5
+   Compiling tracing-attributes v0.1.31
+   Compiling tokio-macros v2.7.2
+   Compiling futures-io v0.3.34
+   Compiling futures-task v0.3.34
+   Compiling slab v0.4.12
+   Compiling tokio v1.53.2
+   Compiling futures-sink v0.3.34
+   Compiling fnv v1.0.7
+   Compiling percent-encoding v2.3.2
+   Compiling synstructure v0.14.0
+   Compiling foldhash v0.2.0
+   Compiling autocfg v1.5.1
+   Compiling allocator-api2 v0.2.21
+   Compiling tracing-core v0.1.36
+   Compiling bitflags v2.13.2
+   Compiling zmij v1.0.23
+   Compiling zerofrom-derive v0.1.8
+   Compiling futures-channel v0.3.34
+   Compiling zerofrom v0.1.8
+   Compiling yoke-derive v0.8.4
+   Compiling futures-macro v0.3.34
+   Compiling stable_deref_trait v1.2.1
+   Compiling yoke v0.8.3
+   Compiling futures-util v0.3.34
+   Compiling tracing v0.1.44
+   Compiling http v1.5.0
+   Compiling zerovec-derive v0.11.6
+   Compiling untrusted v0.9.0
+   Compiling zerovec v0.11.8
+   Compiling displaydoc v0.2.7
+   Compiling hybrid-array v0.4.15
+   Compiling libm v0.2.16
+   Compiling regex-syntax v0.8.11
+   Compiling hashbrown v0.17.1
+   Compiling num-traits v0.2.19
+   Compiling generic-array v0.14.9
+   Compiling aho-corasick v1.1.5
+   Compiling serde_json v1.0.151
+   Compiling thiserror v2.0.21
+   Compiling tinystr v0.8.4
+   Compiling http-body v1.1.0
+   Compiling thiserror-impl v2.0.21
+   Compiling litemap v0.8.3
+   Compiling const-oid v0.9.6
+   Compiling writeable v0.6.4
+   Compiling icu_locale_core v2.3.0
+   Compiling crypto-common v0.2.2
+   Compiling zerotrie v0.2.5
+   Compiling potential_utf v0.1.6
+   Compiling ring v0.17.14
+   Compiling icu_normalizer_data v2.3.0
+   Compiling num-conv v0.2.2
+   Compiling time-core v0.1.9
+   Compiling utf8_iter v1.0.4
+   Compiling icu_collections v2.3.0
+   Compiling time-macros v0.2.32
+   Compiling icu_provider v2.3.1
+   Compiling indexmap v2.14.2
+   Compiling rustls-pki-types v1.15.1
+   Compiling icu_properties_data v2.3.0
+   Compiling powerfmt v0.2.1
+   Compiling zerocopy v0.8.61
+   Compiling cmov v0.5.4
+   Compiling ctutils v0.4.3
+   Compiling icu_properties v2.3.0
+   Compiling crypto-common v0.1.6
+   Compiling block-buffer v0.10.4
+   Compiling block-buffer v0.12.1
+   Compiling tokio-util v0.7.19
+   Compiling httparse v1.10.1
+   Compiling rustls v0.23.46
+   Compiling core-foundation-sys v0.8.7
+   Compiling digest v0.10.7
+   Compiling rustls-webpki v0.103.15
+   Compiling http-body-util v0.1.5
+   Compiling form_urlencoded v1.2.2
+   Compiling getrandom v0.4.3
+   Compiling tower-service v0.3.3
+   Compiling rand_core v0.10.1
+   Compiling deranged v0.5.8
+   Compiling base64 v0.22.1
+   Compiling base64 v0.23.1
+   Compiling time v0.3.55
+   Compiling atomic-waker v1.1.2
+   Compiling ryu v1.0.23
+   Compiling try-lock v0.2.5
+   Compiling want v0.3.2
+   Compiling h2 v0.4.20
+   Compiling ppv-lite86 v0.2.21
+   Compiling either v1.19.0
+   Compiling httpdate v1.0.3
+   Compiling getrandom v0.3.4
+   Compiling hyper v1.12.0
+   Compiling ipnet v2.12.2
+   Compiling tower-layer v0.3.3
+   Compiling hyper-util v0.1.21
+   Compiling sync_wrapper v1.0.2
+   Compiling security-framework-sys v2.17.0
+   Compiling core-foundation v0.10.1
+   Compiling icu_normalizer v2.3.0
+   Compiling idna_adapter v1.2.2
+   Compiling security-framework v3.7.0
+   Compiling tower v0.5.3
+   Compiling tokio-rustls v0.26.6
+   Compiling rand_core v0.6.4
+   Compiling idna v1.1.0
+   Compiling serde_urlencoded v0.7.1
+   Compiling num-integer v0.1.47
+   Compiling crossbeam-utils v0.8.23
+   Compiling scopeguard v1.2.0
+   Compiling url v2.5.8
+   Compiling parking_lot_core v0.9.12
+   Compiling anyhow v1.0.104
+   Compiling rustversion v1.0.23
+   Compiling regex-automata v0.4.18
+   Compiling hashbrown v0.16.1
+   Compiling base64ct v1.8.3
+   Compiling pem-rfc7468 v0.7.0
+   Compiling itertools v0.14.0
+   Compiling const-oid v0.10.2
+   Compiling digest v0.11.3
+   Compiling prost-derive v0.14.4
+   Compiling der v0.7.10
+   Compiling lock_api v0.4.14
+   Compiling rand_core v0.9.5
+   Compiling cpufeatures v0.3.1
+   Compiling spki v0.7.3
+   Compiling spin v0.9.9
+   Compiling lazy_static v1.5.1
+   Compiling pkcs8 v0.10.2
+   Compiling rand_chacha v0.9.0
+   Compiling uuid v1.27.0
+   Compiling hyper-rustls v0.27.10
+   Compiling rand v0.9.5
+   Compiling tokio-stream v0.1.19
+   Compiling cpufeatures v0.2.17
+   Compiling heck v0.5.0
+   Compiling sha2 v0.10.9
+   Compiling crossbeam-epoch v0.9.21
+   Compiling semver v1.0.28
+   Compiling rustc_version v0.4.1
+   Compiling sha2 v0.11.0
+   Compiling hmac v0.13.0
+   Compiling rapidhash v4.5.1
+   Compiling tower-http v0.6.11
+   Compiling num-iter v0.1.46
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling reqwest v0.13.5
+   Compiling metrics v0.24.6
+   Compiling sharded-slab v0.1.7
+   Compiling rand_xoshiro v0.7.0
+   Compiling matchers v0.2.0
+   Compiling left-right v0.11.8
+   Compiling quanta v0.12.6
+   Compiling signature v2.2.0
+   Compiling chacha20 v0.10.2
+   Compiling tracing-serde v0.2.0
+   Compiling thread_local v1.1.10
+   Compiling nu-ansi-term v0.50.3
+   Compiling strsim v0.11.1
+   Compiling metrics-exporter-prometheus v0.18.3
+   Compiling ident_case v1.0.1
+   Compiling sketches-ddsketch v0.3.1
+   Compiling hashbag v0.1.13
+   Compiling evmap v11.0.0
+   Compiling metrics-util v0.20.4
+   Compiling tracing-subscriber v0.3.23
+   Compiling parking_lot v0.12.5
+   Compiling sagat-domain v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-kafka-zstd/crates/domain)
+   Compiling hmac v0.12.1
+   Compiling rand_chacha v0.3.1
+   Compiling tracing-log v0.2.0
+   Compiling mime v0.3.17
+   Compiling rustix v1.1.5
+   Compiling axum-core v0.5.6
+   Compiling sagat-telemetry v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-kafka-zstd/crates/telemetry)
+   Compiling rand v0.8.8
+   Compiling serde_path_to_error v0.1.20
+   Compiling pin-project-internal v1.1.13
+   Compiling outref v0.5.2
+   Compiling matchit v0.8.4
+   Compiling vsimd v0.8.0
+   Compiling hex v0.4.3
+   Compiling axum v0.8.9
+   Compiling pin-project v1.1.13
+   Compiling sagat-application v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-kafka-zstd/crates/application)
+   Compiling curve25519-dalek v4.1.3
+   Compiling prost v0.14.4
+   Compiling num-bigint v0.4.8
+   Compiling rustls-native-certs v0.8.4
+   Compiling async-trait v0.1.92
+   Compiling num-rational v0.4.2
+   Compiling rand v0.10.3
+   Compiling logos-codegen v0.16.1
+   Compiling regex v1.13.1
+   Compiling ff v0.13.1
+   Compiling num-complex v0.4.6
+   Compiling tinyvec v1.13.3
+   Compiling base16ct v0.2.0
+   Compiling sec1 v0.7.3
+   Compiling unicode-normalization v0.1.25
+   Compiling num v0.4.3
+   Compiling group v0.13.0
+   Compiling logos-derive v0.16.1
+   Compiling hkdf v0.12.4
+   Compiling ed25519 v2.2.3
+   Compiling crypto-bigint v0.5.5
+   Compiling miette-derive v7.6.0
+   Compiling unicode-bidi v0.3.18
+   Compiling unicode-width v0.1.14
+   Compiling unicode-properties v0.1.4
+   Compiling stringprep v0.1.5
+   Compiling miette v7.6.0
+   Compiling elliptic-curve v0.13.8
+   Compiling ed25519-dalek v2.2.0
+   Compiling logos v0.16.1
+   Compiling hyper-timeout v0.5.2
+   Compiling iana-time-zone v0.1.65
+   Compiling ahash v0.8.12
+   Compiling ref-cast v1.0.27
+   Compiling crc-catalog v2.5.0
+   Compiling crc32fast v1.5.2
+   Compiling data-encoding v2.11.1
+   Compiling parking v2.2.1
+   Compiling event-listener v5.4.2
+   Compiling crc v3.4.0
+   Compiling chrono v0.4.45
+   Compiling tonic v0.14.6
+   Compiling prost-types v0.14.4
+   Compiling rfc6979 v0.4.0
+   Compiling darling_core v0.20.11
+   Compiling hashlink v0.11.1
+   Compiling ref-cast-impl v1.0.27
+   Compiling num-bigint-dig v0.8.6
+   Compiling prettyplease v0.2.37
+   Compiling simd-adler32 v0.3.10
+   Compiling pulldown-cmark v0.13.4
+   Compiling adler2 v2.0.1
+   Compiling miniz_oxide v0.9.1
+   Compiling darling_macro v0.20.11
+   Compiling ecdsa v0.16.9
+   Compiling tonic-prost v0.14.6
+   Compiling primeorder v0.13.6
+   Compiling serde_repr v0.1.21
+   Compiling fastrand v2.5.0
+   Compiling unicase v2.10.0
+   Compiling unicode-general-category v1.1.0
+   Compiling foldhash v0.1.5
+   Compiling bit-vec v0.8.0
+   Compiling borrow-or-share v0.2.4
+   Compiling portable-atomic v1.15.0
+   Compiling jsonschema-value v0.58.6
+   Compiling fluent-uri v0.4.1
+   Compiling bit-set v0.8.0
+   Compiling hashbrown v0.15.5
+   Compiling flate2 v1.1.10
+   Compiling crossbeam-queue v0.3.14
+   Compiling futures-intrusive v0.5.0
+   Compiling darling v0.20.11
+   Compiling webpki-roots v1.0.9
+   Compiling fraction v0.17.0
+   Compiling strum_macros v0.28.0
+   Compiling pkcs1 v0.7.5
+   Compiling inout v0.2.2
+   Compiling num-cmp v0.1.0
+   Compiling fixedbitset v0.5.7
+   Compiling dotenvy v0.15.7
+   Compiling micromap v0.3.0
+   Compiling pkg-config v0.3.34
+   Compiling whoami v2.1.3
+   Compiling bytecount v0.6.9
+   Compiling byteorder v1.5.0
+   Compiling sqlx-core v0.9.0
+   Compiling zstd-sys v2.1.2+zstd.1.5.7
+   Compiling referencing v0.58.6
+   Compiling petgraph v0.8.3
+   Compiling rsa v0.9.10
+   Compiling strum v0.28.0
+   Compiling hkdf v0.13.0
+   Compiling tempfile v3.27.0
+   Compiling atoi v2.0.0
+   Compiling derive_builder_core v0.20.2
+   Compiling pulldown-cmark-to-cmark v22.0.3
+   Compiling fancy-regex v0.19.2
+   Compiling p384 v0.13.1
+   Compiling p256 v0.13.2
+   Compiling md-5 v0.11.0
+   Compiling uuid-simd v0.8.0
+   Compiling ureq-proto v0.6.4
+   Compiling jsonschema-regex v0.58.6
+   Compiling email_address v0.2.9
+   Compiling bollard-buildkit-proto v0.7.0
+   Compiling siphasher v1.0.4
+   Compiling utf8-zero v0.8.1
+   Compiling cfg_aliases v0.2.2
+   Compiling multimap v0.10.1
+   Compiling cpubits v0.1.1
+   Compiling prost-build v0.14.4
+   Compiling nix v0.31.3
+   Compiling ureq v3.4.2
+   Compiling phf_shared v0.12.1
+   Compiling jsonschema v0.58.6
+   Compiling sqlx-postgres v0.9.0
+   Compiling jsonwebtoken v11.1.0
+   Compiling derive_builder_macro v0.20.2
+   Compiling cipher v0.5.2
+   Compiling tonic-build v0.14.6
+   Compiling protox-parse v0.10.0
+   Compiling prost-reflect v0.16.5
+   Compiling base64-simd v0.8.0
+   Compiling bytes-utils v0.1.4
+   Compiling strum_macros v0.27.2
+   Compiling universal-hash v0.6.1
+   Compiling chrono-tz v0.10.4
+   Compiling pin-utils v0.1.1
+   Compiling aws-smithy-types v1.8.1
+   Compiling polyval v0.7.3
+   Compiling strum v0.27.2
+   Compiling protox v0.10.0
+   Compiling tonic-prost-build v0.14.6
+   Compiling derive_builder v0.20.2
+   Compiling sqlx-macros-core v0.9.0
+   Compiling sagat-infra-schema v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-kafka-zstd/crates/infra-schema)
+   Compiling phf v0.12.1
+   Compiling darling_core v0.24.1
+   Compiling tower-http v0.7.1
+   Compiling aws-smithy-async v1.3.0
+   Compiling futures-executor v0.3.34
+   Compiling lz4-sys v1.11.1+lz4-1.10.0
+   Compiling async-stream-impl v0.3.6
+   Compiling aws-smithy-runtime-api-macros v1.1.0
+   Compiling zstd-safe v8.2.0
+   Compiling spin v0.10.1
+   Compiling same-file v1.0.6
+   Compiling walkdir v2.5.0
+   Compiling crc-fast v1.10.0
+   Compiling aws-smithy-runtime-api v1.19.0
+   Compiling async-stream v0.3.6
+   Compiling futures v0.3.34
+   Compiling sagat-api-http v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-kafka-zstd/crates/api-http)
+   Compiling darling_macro v0.24.1
+   Compiling bollard-stubs v1.52.1-rc.29.1.3
+   Compiling sqlx-macros v0.9.0
+   Compiling croner v4.0.1
+   Compiling sagat-api-grpc v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-kafka-zstd/crates/api-grpc)
+   Compiling ghash v0.6.0
+   Compiling aes v0.9.3
+   Compiling ctr v0.10.1
+   Compiling aead v0.6.1
+   Compiling hyperlocal v0.9.1
+   Compiling signatory v0.27.1
+   Compiling itertools v0.15.0
+   Compiling crc32c v0.6.8
+   Compiling encoding_rs v0.8.42
+   Compiling sagat-infra-expr v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-kafka-zstd/crates/infra-expr)
+   Compiling quick-xml v0.41.0
+   Compiling structmeta-derive v0.3.0
+   Compiling sagat-infra-postgres v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-kafka-zstd/crates/infra-postgres)
+   Compiling humantime v2.4.0
+   Compiling home v0.5.12
+   Compiling thiserror v1.0.69
+   Compiling snap v1.1.2
+   Compiling bollard v0.20.2
+   Compiling object_store v0.14.2
+   Compiling structmeta v0.3.0
+   Compiling sagat-infra-ir v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-kafka-zstd/crates/infra-ir)
+   Compiling nkeys v0.4.5
+   Compiling aes-gcm v0.11.1
+   Compiling sqlx v0.9.0
+   Compiling darling v0.24.1
+   Compiling pbkdf2 v0.12.2
+   Compiling tryhard v0.5.2
+   Compiling serde_nanos v0.1.4
+   Compiling thiserror-impl v1.0.69
+   Compiling simdutf8 v0.1.5
+   Compiling multiversion_no_op v1.0.0
+   Compiling signal-hook v0.4.5
+   Compiling async-nats v0.50.0
+   Compiling rsasl v2.3.1
+   Compiling lz4 v1.28.1
+   Compiling serde_with_macros v3.24.0
+   Compiling zstd v0.14.3
+   Compiling sagat-infra-secrets v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-kafka-zstd/crates/infra-secrets)
+   Compiling parse-display-derive v0.9.1
+   Compiling sagat-infra-blobstore v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-kafka-zstd/crates/infra-blobstore)
+   Compiling xattr v1.6.1
+   Compiling aws-smithy-http v0.64.1
+   Compiling aws-credential-types v1.3.0
+   Compiling sagat-infra-egress v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-kafka-zstd/crates/infra-egress)
+   Compiling conquer-util v0.3.0
+   Compiling anstyle v1.0.14
+   Compiling unicode-width v0.2.2
+   Compiling arraydeque v0.5.1
+   Compiling rustc-hash v2.1.3
+   Compiling integer-encoding v4.1.0
+   Compiling rskafka v0.6.0 (/Users/marcelo/Documents/Projects/sagat-octopus-kafka-zstd/vendor/rskafka)
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:291:9
+    |
+278 | pub struct CreateTopicsResponse {
+    |            -------------------- field in this struct
+...
+291 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `name`, `value`, `read_only`, `config_source`, `is_sensitive`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:321:9
+    |
+319 | pub struct CreateTopicResponseConfig {
+    |            ------------------------- fields in this struct
+320 |     /// The configuration name.
+321 |     pub name: CompactString,
+    |         ^^^^
+...
+324 |     pub value: CompactNullableString,
+    |         ^^^^^
+...
+327 |     pub read_only: Boolean,
+    |         ^^^^^^^^^
+...
+330 |     pub config_source: Int8,
+    |         ^^^^^^^^^^^^^
+...
+333 |     pub is_sensitive: Boolean,
+    |         ^^^^^^^^^^^^
+...
+336 |     pub tagged_fields: TaggedFields,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponseConfig` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `num_partitions`, `replication_factor`, `configs`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:374:9
+    |
+359 | pub struct CreateTopicResponse {
+    |            ------------------- fields in this struct
+...
+374 |     pub num_partitions: Option<Int32>,
+    |         ^^^^^^^^^^^^^^
+...
+379 |     pub replication_factor: Option<Int16>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+384 |     pub configs: Vec<CreateTopicResponseConfig>,
+    |         ^^^^^^^
+...
+389 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `low_watermark` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:182:9
+    |
+177 | pub struct DeleteResponsePartition {
+    |            ----------------------- fields in this struct
+...
+182 |     pub low_watermark: Int64,
+    |         ^^^^^^^^^^^^^
+...
+190 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:226:9
+    |
+216 | pub struct DeleteResponseTopic {
+    |            ------------------- field in this struct
+...
+226 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:269:9
+    |
+258 | pub struct DeleteRecordsResponse {
+    |            --------------------- field in this struct
+...
+269 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteRecordsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:101:9
+    |
+ 88 | pub struct DeleteTopicsResponse {
+    |            -------------------- field in this struct
+...
+101 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:144:9
+    |
+129 | pub struct DeleteTopicsResponseTopic {
+    |            ------------------------- field in this struct
+...
+144 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `producer_id` and `first_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:170:9
+    |
+168 | pub struct FetchResponseAbortedTransaction {
+    |            ------------------------------- fields in this struct
+169 |     /// The producer id associated with the aborted transaction.
+170 |     pub producer_id: Int64,
+    |         ^^^^^^^^^^^
+...
+173 |     pub first_offset: Int64,
+    |         ^^^^^^^^^^^^
+    |
+    = note: `FetchResponseAbortedTransaction` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `aborted_transactions` is never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:213:9
+    |
+192 | pub struct FetchResponsePartition {
+    |            ---------------------- field in this struct
+...
+213 |     pub aborted_transactions: Vec<FetchResponseAbortedTransaction>,
+    |         ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `FetchResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `timestamp` is never read
+   --> vendor/rskafka/src/protocol/messages/list_offsets.rs:184:9
+    |
+169 | pub struct ListOffsetsResponsePartition {
+    |            ---------------------------- field in this struct
+...
+184 |     pub timestamp: Option<Int64>,
+    |         ^^^^^^^^^
+    |
+    = note: `ListOffsetsResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `log_append_time_ms` and `log_start_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/produce.rs:148:9
+    |
+132 | pub struct ProduceResponsePartitionResponse {
+    |            -------------------------------- fields in this struct
+...
+148 |     pub log_append_time_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+153 |     pub log_start_offset: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^
+    |
+    = note: `ProduceResponsePartitionResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `session_lifetime_ms` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/sasl_msg.rs:198:9
+    |
+181 | pub struct SaslAuthenticateResponse {
+    |            ------------------------ fields in this struct
+...
+198 |     pub session_lifetime_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^^
+...
+203 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `SaslAuthenticateResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: struct `CompactArray` is never constructed
+   --> vendor/rskafka/src/protocol/primitives.rs:725:12
+    |
+725 | pub struct CompactArray<T>(pub Option<Vec<T>>);
+    |            ^^^^^^^^^^^^
+
+warning: `rskafka` (lib) generated 14 warnings
+   Compiling astral-tokio-tar v0.6.4
+   Compiling granit-parser v1.3.0
+   Compiling annotate-snippets v0.12.16
+   Compiling conquer-once v0.4.0
+   Compiling aws-sigv4 v1.6.0
+   Compiling sagat-control-plane v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-kafka-zstd/apps/control-plane)
+   Compiling parse-display v0.9.1
+   Compiling serde_with v3.24.0
+   Compiling encoding_rs_io v0.1.8
+   Compiling ferroid v2.0.0
+   Compiling docker_credential v1.4.0
+   Compiling quick-xml v0.42.0
+   Compiling etcetera v0.11.0
+   Compiling nohash-hasher v0.2.0
+   Compiling serde-saphyr v1.3.0
+   Compiling testcontainers v0.27.3
+   Compiling sagat-infra-connectors v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-kafka-zstd/crates/infra-connectors)
+   Compiling sagat-infra-nats v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-kafka-zstd/crates/infra-nats)
+   Compiling sagat-infra-sandbox v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-kafka-zstd/crates/infra-sandbox)
+   Compiling sagat-scheduler v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-kafka-zstd/crates/scheduler)
+   Compiling yasna v0.5.2
+   Compiling pem v3.0.6
+   Compiling rcgen v0.13.2
+   Compiling sagat-execution-engine v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-kafka-zstd/apps/execution-engine)
+   Compiling sagat-sandbox-runner v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-kafka-zstd/apps/sandbox-runner)
+   Compiling testcontainers-modules v0.15.0
+   Compiling sagat-cli v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-kafka-zstd/apps/cli)
+   Compiling sagat-dev-idp v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-kafka-zstd/apps/dev-idp)
+   Compiling sagat-tests v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-kafka-zstd/tests)
+    Finished `test` profile [unoptimized] target(s) in 4m 24s
+     Running e2e/events-webhooks-messaging/main.rs (/Users/marcelo/.cache/sagat-kafka-zstd-target-rupnkj2d/debug/deps/e2e_events_webhooks_messaging-fd0805f7ce1eee1a)
+
+running 1 test
+test us03::us03_kafka_redelivery_poison_messages_and_a_lost_offset_commit_leave_one_run_per_event ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 6.26s
+

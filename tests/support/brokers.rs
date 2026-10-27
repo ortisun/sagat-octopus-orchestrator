@@ -183,6 +183,18 @@ impl TestKafka {
 
     /// Produces `records` to one partition; returns the offsets they got.
     pub async fn produce(&self, topic: &str, partition: i32, records: Vec<Record>) -> Vec<i64> {
+        self.produce_compressed(topic, partition, records, Compression::NoCompression)
+            .await
+    }
+
+    /// Exercise the production consumer's negotiated compression support against a real broker.
+    pub async fn produce_compressed(
+        &self,
+        topic: &str,
+        partition: i32,
+        records: Vec<Record>,
+        compression: Compression,
+    ) -> Vec<i64> {
         let client = ClientBuilder::new(vec![self.bootstrap.clone()])
             .build()
             .await
@@ -192,7 +204,7 @@ impl TestKafka {
             .await
             .expect("partition client");
         partition
-            .produce(records, Compression::NoCompression)
+            .produce(records, compression)
             .await
             .expect("produce")
     }
