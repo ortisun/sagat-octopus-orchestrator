@@ -1011,3 +1011,14 @@ and released REST/native replay with unchanged original prefixes. Final coordina
 passes8.42s; eight source-boundary controls pass. Exact phase output, source/binary identities
 and timings are in specs/014-workflow-primitives/evidence/released-v02-20261027. Old in-flight
 reports, scoped-event cutover/public activation and all eight canonical tasks remain open.
+
+
+### 2026-10-27 genuine released-worker in-flight report
+
+T014-016/017/040/043, FR-014-014/015/017: released_v02_inflight proves the actual old generated
+client reports its original live scoped FORWARD capability across normal migration to current
+services, exact duplicate receipt, durable token/fence/output/fingerprint/logical-byte charge,
+old immutable/native replay and required current scheduler finalization. Coordinator1/0/0
+passes6.25s; separate active-data regression15.50s, strict lint18.62s and verifier8cases pass.
+Exact source/binary/coordinator hashes, failures and results are in released-v02-inflight-20261027.
+Applied/reconciliation frontier, dispatcher cutover/public activation and canonical tasks stay open.

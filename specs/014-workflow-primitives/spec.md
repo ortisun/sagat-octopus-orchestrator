@@ -665,3 +665,11 @@ schema upgrade, current completion and released-reader replay without changing t
 prefixes or physical identity. The bounded proof and exclusions are recorded in
 [released-v02-profile.md](./released-v02-profile.md). This checkpoint does not authorize new
 scoped-event bodies under old execution processes or substitute for their cutover barrier.
+
+
+A separate [released-worker in-flight checkpoint](./released-v02-inflight-profile.md) requires
+the genuine old client to retain and report its original still-live scoped FORWARD capability
+to current services after upgrade. Exact replay, original capability/fence, durable output/
+receipt/accounting and current scheduler finalization must survive. Refreshed subject
+authentication does not replace task authority. This does not cover Applied/reconciliation
+or permit mixed old event dispatchers against new scoped waits.

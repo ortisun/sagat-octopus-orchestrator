@@ -4,14 +4,14 @@ The public workflow document remains additive `sagat-octopus-orchestrator.io/v1`
 `switch`, run-addressed declared Query/Update and a bounded root human approval are available
 with the existing basic root nodes. A public collection workflow may start with ordinary source
 activities followed by a chain of `forEach` nodes ending at `end`; each referenced body contains a
-bounded acyclic graph with an activity/condition/switch entry, one to eight executable nodes (activities,
-conditions, switches) and one `return`. In the 0.3 increment, local `onError` routes and
+bounded acyclic graph with an activity/condition/switch/timer entry, one to eight executable nodes (activities,
+conditions, switches, timers) and one `return`. In the 0.3 increment, local `onError` routes and
 recorded decisions may select a branch; a recovery failure drains with its own
 code. Unselected branches retain their lifetime charge as retired reservations, while actual
 completed/unknown effects keep the compensation capacity they require.
 The restricted public loop shape uses an activity followed by a return in its body; a loop's
 `onError` edge may lead to an `end` or to recovery activities that end at an `end`. Nested
-collections, control-node entry, waits inside bodies, triggers and broader structured combinations remain closed.
+collections, event waits inside bodies, triggers and broader structured combinations remain closed.
 The public continuation subset accepts an activity followed by `continueAsNew`, including exact
 declared-state transfer, or an activity and condition that select the same continuation or `end`.
 An approval combines with declared state and with a continuation chain (an entry activity, then an
@@ -661,3 +661,18 @@ publication closed until the old-dispatcher stop/join/credential fence and publi
 are proven; a successful root-wait upgrade alone does not meet that cutover prerequisite.
 See the [bounded contract](../../specs/014-workflow-primitives/released-v02-profile.md) and
 [actual evidence](../../specs/014-workflow-primitives/evidence/released-v02-20261027/README.md).
+
+
+For a genuine old worker's already-leased scoped task, use the separate in-flight profile:
+
+```sh
+CARGO_TARGET_DIR=<owned-absolute-target-outside-repository> \
+  python3 scripts/test-released-v02-profile.py --scenario inflight-worker
+```
+
+It keeps the original task capability in the old process, refreshes subject authentication
+through an anonymous inherited channel and verifies first completion/exact duplicate against
+current services, one durable receipt/accounting charge and current scheduler finalization.
+The lease remains live with an explicit checked margin. This is released-source FORWARD
+compatibility, not an expired-task or Applied/reconciliation guarantee. It does not replace
+the old-dispatcher stop/join/credential barrier required before scoped-event publication.

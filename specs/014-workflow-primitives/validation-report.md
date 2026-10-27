@@ -4178,3 +4178,23 @@ This proves released-source runtime compatibility for old READY/unleased work an
 Old in-flight reports, scoped waits in old code, old-dispatcher credential fencing/cutover,
 public activation, nesting/capacity and final SDK/fault/resource/release acceptance remain open.
 All eight canonical tasks remain unchecked.
+
+
+### Genuine old in-flight worker report to current services
+
+The released-v02-inflight profile preserves the real old task capability/request only in the
+old process, across ordinary migrations, and uses its generated gRPC1.5 client against current
+runtime-role services. It proves live original token/fence/expiry, applied then exact receipt
+replay, old immutable-prefix/native replay, one durable completion/output/receipt/logical-byte
+charge and2actual current scheduler ticks to terminal replay. Anonymous inherited framed IPC
+refreshes only the same subject's identity-provider authentication. No external effect is
+claimed exactly once. Five exact overlay identities and the selected coordinator self-source
+hash bind the frozen executable to the intended proof.
+
+Final coordinator1/0/0 passes6.25s with nested old phase2.67s (10.47s runner/7.44s runtime command).
+Active-data regression separately passes1/0/0 in15.50s; strict lint18.62s, Python verifier8cases
+0.074s and static checks pass. The ledger and
+[evidence](./evidence/released-v02-inflight-20261027/README.md) retain the initial receipt
+assertion error, separate preflight and genuine wrong-coordinator provenance RED/correction.
+No production change or canonical task closure; Applied/reconciliation, dispatcher cutover,
+public/SDK/nested-capacity/resource/release acceptance remain open.

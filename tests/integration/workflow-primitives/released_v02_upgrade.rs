@@ -28,7 +28,7 @@ use uuid::Uuid;
 
 const RELEASE: &str = "bfda342073db71e84f30bdc79ccf3fbc97a7153c";
 
-fn file_sha(path: &Path) -> String {
+pub(super) fn file_sha(path: &Path) -> String {
     let mut input = std::fs::File::open(path).expect("open owned phase executable");
     let mut sha = Sha256::new();
     let mut buffer = [0_u8; 65536];

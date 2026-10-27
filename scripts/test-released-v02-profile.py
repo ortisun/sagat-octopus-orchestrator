@@ -17,11 +17,17 @@ import time
 from urllib.parse import unquote, urlparse
 
 RELEASE = 'bfda342073db71e84f30bdc79ccf3fbc97a7153c'
-OVERLAYS = ('tests/fixtures/released-v02/phase.rs', 'tests/fixtures/released-v02/wait-state.sql')
+OVERLAYS = ('tests/fixtures/released-v02/phase.rs', 'tests/fixtures/released-v02/wait-state.sql',
+            'tests/fixtures/released-v02/inflight.rs', 'tests/fixtures/released-v02/control.rs')
 MAIN = 'tests/integration/workflow-primitives/main.rs'
 SUFFIX = b'\n#[path = "../../fixtures/released-v02/phase.rs"]\nmod released_v02_phase;\n'
 TARGET = 'integration_workflow_primitives'
-CASE = 'released_v02_upgrade::released_v02_active_rows_upgrade_progress_and_remain_readable_by_the_release'
+SCENARIOS = {
+    'active-data': ('released_v02_upgrade::released_v02_active_rows_upgrade_progress_and_remain_readable_by_the_release',
+                    'tests/integration/workflow-primitives/released_v02_upgrade.rs', 'upgrade.txt'),
+    'inflight-worker': ('released_v02_inflight::a_released_worker_reports_and_replays_its_old_lease_after_server_upgrade',
+                        'tests/integration/workflow-primitives/released_v02_inflight.rs', 'inflight-worker.txt'),
+}
 
 
 def sha(path: Path) -> str:
@@ -129,7 +135,9 @@ def main() -> None:
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--prepared-run', type=Path, help='reuse this agent-owned verified archive/build cache')
+    parser.add_argument('--scenario', choices=tuple(SCENARIOS), default='active-data')
     args = parser.parse_args()
+    case, coordinator, transcript_name = SCENARIOS[args.scenario]
     repo = Path(subprocess.check_output(['git', 'rev-parse', '--show-toplevel'], text=True).strip()).resolve()
     if subprocess.check_output(['git', 'rev-parse', 'v0.2.0^{commit}'], cwd=repo, text=True).strip() != RELEASE:
         raise RuntimeError('v0.2.0 does not match the immutable reviewed release')
@@ -216,12 +224,15 @@ def main() -> None:
     shutil.copy2(current['executable'], current_binary)
     current_binary.chmod(0o700)
     build['currentBinarySha256'] = sha(current_binary)
-    build['coordinatorSha256'] = next(entry['sha256'] for entry in current_before if entry['path'] == 'tests/integration/workflow-primitives/released_v02_upgrade.rs')
+    build['scenario'] = args.scenario
+    build['coordinatorPath'] = coordinator
+    build['coordinatorSha256'] = next(entry['sha256'] for entry in current_before if entry['path'] == coordinator)
     build_path.write_text(json.dumps(build, indent=2) + '\n')
     gate_env = dict(env, SAGAT_V02_BUILD=str(build_path), SAGAT_TEST_AS_RUNTIME_ROLE='1', RUST_TEST_THREADS='1')
-    run([str(current_binary), CASE, '--ignored', '--exact', '--nocapture'], repo, gate_env, root / 'upgrade.txt', 360)
+    transcript = root / transcript_name
+    run([str(current_binary), case, '--ignored', '--exact', '--nocapture'], repo, gate_env, transcript, 360)
     print(f'Released-source compatibility evidence: {root}')
-    print('\n'.join((root / 'upgrade.txt').read_text().splitlines()[-12:]))
+    print('\n'.join(transcript.read_text().splitlines()[-12:]))
 
 
 if __name__ == '__main__':

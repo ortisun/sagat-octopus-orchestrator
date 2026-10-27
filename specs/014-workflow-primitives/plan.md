@@ -671,3 +671,15 @@ source/executable manifests prevent same-version old/current Cargo cache contami
 The0.3 ledger records real setup failures and separate preflight/final results. This accepts
 only old READY/unleased work/root waits; new scoped-body activation still needs the distinct
 old-dispatcher stop/join/credential barrier, public/SDK and remaining runtime/release gates.
+
+
+### Actual released in-flight worker profile — 2026-10-27
+
+[released-v02-inflight-profile.md](./released-v02-inflight-profile.md) separately proves the old
+generated worker client's original in-memory scoped lease/request survives schema upgrade
+and reports/replays against current runtime-role services. Anonymous framed IPC refreshes only
+subject authentication. Native evidence binds the live and reported original capability, exact
+receipt fingerprint/logical charge, immutable prefixes and required current scheduler work.
+The selected coordinator and exact test overlays are compiled-source verified. This is not an
+expired-task, Applied/reconciliation, old-dispatcher cutover, public activation or full release
+guarantee; those gates remain open in the0.3 ledger.

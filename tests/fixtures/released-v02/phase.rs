@@ -237,3 +237,7 @@ async fn read_upgraded_profile_with_released_v02_code() {
     let wait_step:Uuid=sqlx::query_scalar("SELECT step_id FROM steps WHERE tenant_id=$1 AND run_id=$2 AND node='payment' AND cardinality(instance_path_nodes)=0").bind(tenant.as_uuid()).bind(wait).fetch_one(&api.db.pool).await.expect("old reader retained exact physical wait identity");
     assert_eq!(wait_step.to_string(), witness["waitStepId"]);
 }
+
+#[cfg(unix)]
+#[path = "inflight.rs"]
+mod inflight;

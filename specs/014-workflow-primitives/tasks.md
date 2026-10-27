@@ -70,6 +70,8 @@ permanent failure; one ordered result per index, no fourth active iteration and 
   _Evidence: `fault/…/collections.rs` (crash, duplicate, stale fence, lost broker hints, cancellation), `fault/…/scope_compensation.rs` (unknown/failed compensation, reverse topological order inside an iteration, no order between iterations), `collection-compensation` and the WP-03/04 collection scenarios in all five SDKs. Replica takeover test made deterministic (G407)._
   _2026-10-27 compatibility increment: actual immutable released-v0.2 public producer → normal current migration/completion → released REST/native reader passes1 coordinator in8.42s; nested old phases and exact source/executable provenance are retained in [released-v02 evidence](./evidence/released-v02-20261027/README.md). This covers old READY/unleased activity and root wait only; old in-flight reports, scoped-dispatcher cutover and the remaining complete runtime/fault acceptance stay open._
 
+  _2026-10-27 in-flight increment: actual released worker retains its original live scoped FORWARD request/capability across normal upgrade, completes and replays against current services; coordinator1/0/0 in6.25s, old phase2.67s. Exact receipt/accounting/capability, immutable replay and2current scheduler ticks are retained in [in-flight evidence](./evidence/released-v02-inflight-20261027/README.md). Applied/reconciliation, old-dispatcher cutover, nesting/capacity and complete fault/release acceptance remain open._
+
 ## Phase 5 — US03: durable loops (P1, restricted public slice enabled)
 
 Entry, checkpoint, delay and terminal drain have PostgreSQL restart, timer-race, rollback and

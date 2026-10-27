@@ -1388,3 +1388,58 @@ the eight canonical tasks closes here.
 Strict integration-target Clippy passes108.51s after the complete profile. Format,
 architecture24-crate, agent configuration and whitespace checks pass. This test-only increment
 does not require rerunning the unchanged86-case production event gate as a new claim.
+
+
+## Actual released worker reports its old in-flight lease — 2026-10-27
+
+[The bounded in-flight contract](./released-v02-inflight-profile.md) now has a separate ignored
+coordinator and released-source phase. The exact old generated gRPC1.5 client holds the original
+scoped task capability/request in memory across normal schema upgrade and reports it twice to
+current runtime-role services. Safely inherited anonymous Unix sockets carry capped length-prefixed
+async frames, including a fresh current-provider JWT for the same existing subject/tenant. No
+authentication/task/session tokens or report payloads enter witness files or diagnostics.
+
+The old server explicitly grants a one-hour lease. Before migration and GO, the coordinator
+matches old physical identity/path/attempt/generation/token commitment/wire expiry and requires
+more than600s margin above the entire240s scenario. It asserts schema20→23, one native completed
+step with the original reported token hash/fence and cleared live lease fields, exact retained
+output, one canonical scoped/fingerprinted receipt and one logical-byte charge. First ACK has
+already_applied=false, replay true with equal command/status fields. Old replay and immutable
+completed/captured/journal prefixes survive the current write. The old worker exits before
+explicit stopped-owner expiry/current Keeper takeover; current scheduler must perform work
+and settle within32ticks before terminal native replay. The final run requires2working ticks.
+
+The first runtime invocation fails0pass/1fail in5.99s (121.27s runner; old/current builds51.48s/
+59.98s), while its nested actual old client passes2.41s. The fixture incorrectly compared
+command_dedupe.resource_id to ACK command_id: persisted STEP_STATUS|RUN_STATUS|VERSION differs
+from run:version. Correcting the exact scope/resource assertion needs no production change.
+The corrected preflight passes1/0/0 in5.12s (61.14s runner, old phase1.99s), but its isolated
+coordinatorSha256 field still names the active-data coordinator and is not final provenance
+acceptance. All source hashes were separately retained; results are not combined.
+
+Bounded design review requires explicit lease margin, framed async IPC/joins, replay flag
+distinction, durable-only external-effect wording and compiled exact-overlay identity. The
+implementation review additionally requires selected coordinator provenance, post-migration
+version, positive bounded scheduler progress and durable capability/fingerprint checks. After
+adding the self-source assertion, the still-unfixed runner genuinely fails wrong coordinator
+hash before PostgreSQL (0pass/1fail,0.00s;82.91s runner including76.98s current build). Selecting
+the scenario's case/coordinator/transcript together fixes this tooling provenance RED. The
+third review finds no additional concrete defect; reviewers run no tests.
+
+Final runner passes10.47s: cached old/current builds0.88s/0.49s, runtime command7.44s,
+coordinator1/0/0 in6.25s with nested actual released client1/0/0 in2.67s. Final active-data
+regression passes separately1/0/0 in15.50s (19.74s runner; nested old producer9.41s/reader0.26s).
+Strict integration-target Clippy passes18.62s; eight Python source-verifier cases pass0.074s;
+format/architecture24crates/agent checks pass. No workspace production code changed.
+
+Exact outputs, failed/corrected/final metadata and normalized-transcript raw checksums are in
+[evidence/released-v02-inflight-20261027](./evidence/released-v02-inflight-20261027/README.md).
+Compiled parentf251c04e plus source digestd10ba3d21bc2eb0c54f7bdd9011cc260b7d740f4529e50c0f92cfdcfe2f0bedd
+identifies the final dirty input; current executable7a1c2be022fe9e30d5f46e2ab7511ce00f7f786c76bcf4be444cdc35a78d2e44,
+released executable83ea2ae6b5054bc793211dcf0d76a946d23fcc2b71ae8547e288995cd7081641.
+
+This accepts only a genuine old scoped FORWARD report/replay to current services, with refreshed
+authentication and a still-live original lease. It does not accept expired-task behavior,
+Applied/reconciliation frontier, old-dispatcher stop/join/credential fencing, public scoped waits,
+five-language asset parity, general loops/nesting/capacity or final fault/resource/release gates.
+All eight canonical tasks stay open.
