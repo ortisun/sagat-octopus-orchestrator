@@ -3868,3 +3868,16 @@ interpolationvars; noinfrachange. Exactevidence/reproduction:
 OnlyB1closes; currentAppliedreport/refusal/drain/comp/replay, otherorders/bytes/
 fault/OS/COMMIT recovery/outputdependentcomp/quota/Q10c/rollout/nesting/canonical
 remainopen; productionactivation staysclosed/noexternalprovidereffectorundoguarantee.
+
+
+## Capacity eligibility after a policy reduction (B1c) — 2026-10-26
+
+Decision only; no production code. The owner answered O701: a reduction does not pause admitted work
+(`docs/owner-decisions.md`). A pause-based pure model built first (`d917a54f`) was therefore withdrawn
+and removed; it is history, not a delivered capability. Decision record and open obligations:
+[capacity-eligibility.md](./capacity-eligibility.md). Canonical tasks T014-014..017, 040, 042-044 stay
+unchecked. Evidence of the withdrawn model, for the record: red first (13 failed against a stub, then 3
+more after review), 17 green, eight named mutations killed, domain suite 561 passed; two read-only
+reviews found no code defect, and the architecture review exposed the conflict with the released
+reduction contract that led to O701. Gates re-run on the tree after removal are listed in the commit
+that removes it.

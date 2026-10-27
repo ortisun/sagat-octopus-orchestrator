@@ -18,6 +18,12 @@ means the decision is taken and the implementation is still to be done; it is no
 
 The implementation agent selected one coordinated **0.2.0** under the existing pre-1.0 breaking-minor policy and synchronized release tooling. The owner did not explicitly name this version. GitHub Releases remains the distribution channel; no environment deployment or registry publication is added.
 
+## 2026-10-26 — nested capacity (lane `feature/014-capacity-protocol`)
+
+| # | Item | Decision | Recorded in | Status |
+|---|---|---|---|---|
+| 1 | O701, reduction of `iteration_concurrency` | After a reduction (including to 0) already admitted work is **not paused**: it runs to completion and only new admissions are blocked, as the released contract and runbook say. A tenant may therefore exceed a reduced limit while its admitted work lasts. | [capacity-eligibility.md](../specs/014-workflow-primitives/capacity-eligibility.md), `research.md` D704/D705 | Decided; nothing built. O702–O704 are consequences, open to correction |
+
 ## 2026-10-16
 
 | # | Item | Decision | Recorded in | Status |
