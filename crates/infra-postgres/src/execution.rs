@@ -15,20 +15,40 @@ mod path_read;
 
 // A deterministic control owns no worker, timer, event, child, approval or output capability.
 // Reuse the same physical-row predicate in snapshot readers and guarded update writers.
-macro_rules! scoped_control_metadata_empty {
+macro_rules! scoped_scheduler_metadata_empty {
     () => {
         "s.activity IS NULL AND s.secrets IS NULL AND s.output_digest IS NULL \
          AND s.ready_at IS NULL AND s.last_hinted_at IS NULL AND s.hint_count=0 \
          AND s.lease_token_hash IS NULL AND s.lease_expires_at IS NULL \
          AND s.attempt_deadline_at IS NULL AND s.leased_by IS NULL \
-         AND s.reported_lease_token_hash IS NULL AND s.waiting_kind IS NULL \
-         AND s.due_at IS NULL AND s.event_type IS NULL AND s.correlation_key IS NULL \
+         AND s.reported_lease_token_hash IS NULL \
+         AND s.event_type IS NULL AND s.correlation_key IS NULL \
          AND s.event_since IS NULL AND s.event_scanned_at IS NULL \
          AND s.child_run_id IS NULL AND NOT s.child_started AND s.child_input IS NULL \
          AND s.approval_request_id IS NULL AND s.kind='FORWARD'"
     };
 }
+macro_rules! scoped_control_metadata_empty {
+    () => {
+        concat!(
+            $crate::execution::scoped_scheduler_metadata_empty!(),
+            " AND s.waiting_kind IS NULL AND s.due_at IS NULL"
+        )
+    };
+}
+macro_rules! scoped_timer_metadata_valid {
+    () => { concat!($crate::execution::scoped_scheduler_metadata_empty!(),
+        " AND s.attempt=0 AND s.generation=0 AND NOT s.cancel_requested AND NOT s.timed_out \
+          AND s.next_attempt_at IS NULL AND s.condition IS NULL AND s.switch_case_id IS NULL \
+          AND s.failure_code IS NULL \
+          AND ((s.status='WAITING' AND NOT s.routed AND s.waiting_kind IS NOT DISTINCT FROM 'TIMER' AND s.due_at IS NOT NULL) \
+            OR (s.status='PENDING' AND NOT s.routed AND s.waiting_kind IS NULL AND s.due_at IS NULL) \
+            OR (s.status='SUCCEEDED' AND s.waiting_kind IS NULL AND s.due_at IS NULL) \
+            OR (s.status='CANCELLED' AND s.routed AND s.waiting_kind IS NULL AND s.due_at IS NULL))") };
+}
 pub(crate) use scoped_control_metadata_empty;
+pub(crate) use scoped_scheduler_metadata_empty;
+pub(crate) use scoped_timer_metadata_valid;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -222,7 +242,8 @@ impl PgRunStore {
                     timed_out, failure_code, next_attempt_at, waiting_kind, due_at, correlation_key, \
                     child_run_id, approval_request_id, s.node_kind AS stored_node_kind, (",
             scoped_control_metadata_empty!(),
-            ") AS control_metadata_empty FROM steps s WHERE tenant_id = $1 AND run_id = $2",
+            ") AS control_metadata_empty, (",scoped_timer_metadata_valid!(),") AS timer_metadata_valid \
+             FROM steps s WHERE tenant_id = $1 AND run_id = $2",
         ))
         .bind(tenant.as_uuid())
         .bind(run.as_uuid())
@@ -277,6 +298,17 @@ impl PgRunStore {
                 validate_scoped_control_row(definition.node_for_instance(&instance), step, row)?;
             }
         }
+        let timer_read_states = state
+            .instances()
+            .filter(|(instance, _)| {
+                !instance.path().is_root()
+                    && matches!(
+                        definition.node_for_instance(instance).map(Node::kind),
+                        Some(NodeKind::Timer { .. })
+                    )
+            })
+            .map(|(instance, step)| (instance.clone(), TimerReadState::from_step(step)))
+            .collect();
         Ok(Some(PgRunTx {
             tx,
             info: record.info,
@@ -287,6 +319,7 @@ impl PgRunStore {
             data: None,
             input_digest,
             stored,
+            timer_read_states,
             breaker: self.breaker,
             script_retention: BTreeMap::new(),
             signals: Vec::new(),
@@ -752,6 +785,7 @@ pub struct PgPathExecutionTx {
     breaker: BreakerPolicy,
     persisted: u64,
     stored: BTreeSet<ExecutionInstanceId>,
+    timer_read_states: BTreeMap<ExecutionInstanceId, TimerReadState>,
     signals: Vec<Signal>,
     script_retention: BTreeMap<ExecutionInstanceId, ScriptRetentionPins>,
 }
@@ -771,6 +805,22 @@ impl PgPathExecutionTx {
                 ExecutionInstanceId::in_path(snapshot.state.path().clone(), node.clone())
             })
             .collect();
+        let timer_read_states = snapshot
+            .state
+            .local_instances()
+            .filter_map(|(node, step)| {
+                let instance =
+                    ExecutionInstanceId::in_path(snapshot.state.path().clone(), node.clone());
+                matches!(
+                    snapshot
+                        .definition
+                        .node_for_instance(&instance)
+                        .map(Node::kind),
+                    Some(NodeKind::Timer { .. })
+                )
+                .then(|| (instance, TimerReadState::from_step(step)))
+            })
+            .collect();
         Self {
             tx,
             snapshot,
@@ -778,6 +828,7 @@ impl PgPathExecutionTx {
             breaker,
             persisted,
             stored,
+            timer_read_states,
             signals: Vec::new(),
             script_retention: BTreeMap::new(),
         }
@@ -1111,6 +1162,7 @@ impl RunStore for PgRunStore {
                 info.created_at = now;
                 return Ok(Applied::Done(PgRunTx {
                     tx,
+                    timer_read_states: BTreeMap::new(),
                     info,
                     now,
                     def: Arc::clone(&new.definition),
@@ -1919,10 +1971,14 @@ pub(crate) fn validate_scoped_control_projection(
     node: Option<&Node>,
     step: &StepState,
 ) -> Result<(), StoreError> {
-    let valid = node.map_or_else(
-        || step.condition().is_none() && step.switch_selection().is_none(),
-        |node| step.is_valid_scoped_control(node),
-    );
+    let valid = match node.map(Node::kind) {
+        Some(NodeKind::Timer { .. }) => step.is_valid_scoped_timer(),
+        _ if matches!(step.waiting_on(), Some(WaitingOn::Timer { .. })) => false,
+        _ => node.map_or_else(
+            || step.condition().is_none() && step.switch_selection().is_none(),
+            |node| step.is_valid_scoped_control(node),
+        ),
+    };
     if !valid {
         return Err(corrupt("scoped control projection"));
     }
@@ -1936,6 +1992,13 @@ pub(crate) fn validate_scoped_control_row(
 ) -> Result<(), StoreError> {
     validate_scoped_control_projection(node, step)?;
     if let Some(node) = node
+        && matches!(node.kind(), NodeKind::Timer { .. })
+        && (!col::<bool>(row, "timer_metadata_valid")?
+            || col::<String>(row, "stored_node_kind")? != "timer")
+    {
+        return Err(corrupt("scoped timer physical metadata"));
+    }
+    if let Some(node) = node
         && matches!(
             node.kind(),
             NodeKind::Condition { .. } | NodeKind::Switch { .. }
@@ -1946,6 +2009,28 @@ pub(crate) fn validate_scoped_control_row(
         return Err(corrupt("scoped control physical metadata"));
     }
     Ok(())
+}
+
+/// The varying fields of a validated timer row, retained until its guarded write.
+/// All other timer lifecycle fields are fixed by `scoped_timer_metadata_valid!`.
+#[derive(Clone, Copy)]
+struct TimerReadState {
+    status: StepStatus,
+    routed: bool,
+    due_at: Option<OffsetDateTime>,
+}
+
+impl TimerReadState {
+    fn from_step(step: &StepState) -> Self {
+        Self {
+            status: step.status(),
+            routed: step.routed(),
+            due_at: match step.waiting_on() {
+                Some(WaitingOn::Timer { due_at }) => Some(*due_at),
+                _ => None,
+            },
+        }
+    }
 }
 
 struct RestoredCollectionRows {
@@ -1973,7 +2058,7 @@ pub(crate) fn validate_collection_entry_dispatch(
                 && outbox.is_some()
                 && journal.as_deref().is_none_or(|kind| kind == "ACTIVITY")
         }
-        Some(NodeKind::Condition { .. } | NodeKind::Switch { .. }) => {
+        Some(NodeKind::Condition { .. } | NodeKind::Switch { .. } | NodeKind::Timer { .. }) => {
             dispatch == "SCHEDULER"
                 && activity.is_none()
                 && outbox.is_none()
@@ -3102,6 +3187,7 @@ pub struct PgRunTx {
     /// "insert or update" is decided here, not by `ON CONFLICT` (which checks constraints on the
     /// proposed row before it takes the update path).
     stored: BTreeSet<ExecutionInstanceId>,
+    timer_read_states: BTreeMap<ExecutionInstanceId, TimerReadState>,
     breaker: BreakerPolicy,
     /// Pins selected under the retention-policy fence before a lease is granted. `persist` adds
     /// them to the matching immutable `step.leased` detail in this transaction.
@@ -4876,6 +4962,8 @@ impl PgRunTx {
                     | RunEvent::StepFailed { .. }
                     | RunEvent::ConditionEvaluated { .. }
                     | RunEvent::SwitchEvaluated { .. }
+                    | RunEvent::TimerStarted { .. }
+                    | RunEvent::TimerFired { .. }
                     | RunEvent::StepRouted { .. }
                     | RunEvent::StepRetryScheduled { .. }
                     | RunEvent::StepRetryDue { .. }
@@ -5755,10 +5843,11 @@ impl PgRunTx {
             .ok_or_else(|| corrupt("scoped step projection"))?;
         // A scoped step can wait for the answer of its lookup or for a person (D386, D387); the
         // other waits belong to the stores of their own primitive.
-        let waiting_kind = match step.waiting_on() {
-            None => None,
-            Some(WaitingOn::Reconciliation) => Some("RECONCILIATION"),
-            Some(WaitingOn::Operator { .. }) => Some("OPERATOR"),
+        let (waiting_kind, due_at) = match step.waiting_on() {
+            None => (None, None),
+            Some(WaitingOn::Reconciliation) => (Some("RECONCILIATION"), None),
+            Some(WaitingOn::Operator { .. }) => (Some("OPERATOR"), None),
+            Some(WaitingOn::Timer { due_at }) => (Some("TIMER"), Some(*due_at)),
             Some(_) => {
                 return Err(StoreError::Internal {
                     detail: "the scoped step projection is not supported by addressed storage"
@@ -5866,10 +5955,16 @@ impl PgRunTx {
             .await
             .map_err(store_error)?;
             self.stored.insert(instance.clone());
+            if node_kind == "timer" {
+                self.timer_read_states
+                    .insert(instance.clone(), TimerReadState::from_step(&step));
+            }
             return Ok(());
         }
 
-        self.ensure_node_kind(instance, node_kind).await?;
+        if node_kind != "timer" {
+            self.ensure_node_kind(instance, node_kind).await?;
+        }
 
         let updated = sqlx::query(concat!(
             "UPDATE steps AS s SET status = $6, attempt = $7, generation = $8, \
@@ -5900,12 +5995,15 @@ impl PgRunTx {
                                                      WHEN $25::bytea IS NOT NULL THEN $25 \
                                                      ELSE reported_lease_token_hash END, \
                     output_digest = COALESCE($16, output_digest), waiting_kind = $26, \
-                    updated_at = $14, condition = $27, switch_case_id = $28 \
+                    updated_at = $14, condition = $27, switch_case_id = $28,due_at=$31 \
              WHERE tenant_id = $1 AND run_id = $2 AND node = $3 AND step_id = $4 \
                AND namespace_id = $5 AND instance_path_nodes = $17 AND instance_path_indices = $18 \
-               AND (NOT $29 OR (",
+               AND (NOT $29 OR (s.node_kind=$30 AND (($30='timer' AND (",
+            scoped_timer_metadata_valid!(),
+            ")) OR ($30 IN ('condition','switch') AND (",
             scoped_control_metadata_empty!(),
-            " AND s.node_kind=$30))",
+            "))))) AND ($30<>'timer' OR (s.due_at IS NOT DISTINCT FROM $32 \
+              AND s.status=$33 AND s.routed=$34))",
         ))
         .bind(self.info.tenant_id.as_uuid())
         .bind(self.info.run_id.as_uuid())
@@ -5939,14 +6037,22 @@ impl PgRunTx {
         .bind(waiting_kind)
         .bind(step.condition())
         .bind(stored_switch_case_id(&step))
-        .bind(matches!(node_kind, "condition" | "switch"))
+        .bind(matches!(node_kind, "condition" | "switch" | "timer"))
         .bind(node_kind)
+        .bind(due_at)
+        .bind(self.timer_read_states.get(instance).and_then(|read| read.due_at))
+        .bind(self.timer_read_states.get(instance).map(|read| read.status.as_str()))
+        .bind(self.timer_read_states.get(instance).map(|read| read.routed))
         .execute(&mut *self.tx)
         .await
         .map_err(store_error)?
         .rows_affected();
         if updated != 1 {
             return Err(corrupt("scoped step identity"));
+        }
+        if node_kind == "timer" {
+            self.timer_read_states
+                .insert(instance.clone(), TimerReadState::from_step(&step));
         }
         Ok(())
     }

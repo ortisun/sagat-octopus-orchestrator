@@ -459,19 +459,21 @@ async fn activity_memberships_backfill_and_downgrade_but_dispatch_contradictions
 }
 
 #[tokio::test]
-async fn public_control_entries_remain_outside_the_frozen_ordinary_leaf_profile() {
+async fn public_scheduler_entries_remain_outside_the_frozen_ordinary_leaf_profile() {
     use sagat_application::leaf_certification::{
         CertifyLeafCollectionSuccess, LeafCollectionPathIdentity, LeafCollectionSuccessError,
         LeafCollectionSuccessStore,
     };
     use sagat_domain::workflow::{CollectionSuccessShapeError, LeafCollectionSuccessShape};
     let _server = crate::support::hold_server();
-    for kind in ["condition", "switch"] {
+    for kind in ["condition", "switch", "timer"] {
         let name = format!("control-entry-frozen-{kind}");
         let control = if kind == "condition" {
             json!({"id":"choose","type":"condition","expression":"item > 0","ifTrue":"returned","ifFalse":"returned"})
-        } else {
+        } else if kind == "switch" {
             json!({"id":"choose","type":"switch","cases":[{"id":"positive","when":"item > 0","target":"returned"}],"default":"returned"})
+        } else {
+            json!({"id":"choose","type":"timer","durationMs":1,"next":"returned"})
         };
         let document = collection_document(
             &name,
@@ -599,5 +601,31 @@ async fn scheduler_entry_rejects_wrong_dispatch_membership_tenant_and_shard_auth
             .applied
     );
     flow.drive().await;
+    flow.verify().await;
+}
+
+#[tokio::test]
+async fn a_current_revision_admission_cannot_release_new_work_while_the_run_is_paused() {
+    let flow = entered("control-entry-pause-admission").await;
+    let (status, _) = flow
+        .operate(json!({"action":"PAUSE","reason":"pause before new member admission"}))
+        .await;
+    assert_eq!(status, reqwest::StatusCode::ACCEPTED);
+    let command = admission(&flow, 0).await;
+    let before = snapshot(&flow.api.db.pool, flow.tenant.as_uuid(), flow.run).await;
+    assert_eq!(
+        flow.api.executions.admit_collection_member(&command).await,
+        Err(PrimitiveStoreError::InvalidTransition)
+    );
+    assert_eq!(
+        snapshot(&flow.api.db.pool, flow.tenant.as_uuid(), flow.run).await,
+        before
+    );
+    let (status, _) = flow
+        .operate(json!({"action":"RESUME","reason":"resume explicit admission"}))
+        .await;
+    assert_eq!(status, reqwest::StatusCode::ACCEPTED);
+    flow.drive().await;
+    assert_eq!(flow.run_status().await, "SUCCEEDED");
     flow.verify().await;
 }

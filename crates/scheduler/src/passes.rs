@@ -65,6 +65,7 @@ use tracing::Instrument;
 use crate::fairness::{self, Weights};
 
 mod collection_controls;
+mod collection_timers;
 use crate::shards::{Placement, Snapshot};
 
 /// Delivered outbox messages deleted per housekeeping round.
@@ -1431,6 +1432,19 @@ where
                 .collect::<std::collections::BTreeSet<_>>();
             if let Some((instance, _)) = state.instances().find(|(instance, step)| {
                 active_paths.contains(instance.path())
+                    && collection_timers::local_progress_candidate(&definition, instance, step)
+            }) {
+                return self
+                    .advance_collection_local_from_run(
+                        view,
+                        transition(state.version()),
+                        tx,
+                        instance,
+                    )
+                    .await;
+            }
+            if let Some((instance, _)) = state.instances().find(|(instance, step)| {
+                active_paths.contains(instance.path())
                     && step.status() == execution::StepStatus::Pending
                     && matches!(
                         definition
@@ -1770,7 +1784,15 @@ where
                         || matches!(
                             step.status(),
                             execution::StepStatus::Ready | execution::StepStatus::RetryWait
-                        );
+                        )
+                        || (matches!(step.waiting_on(), Some(execution::WaitingOn::Timer { .. }))
+                            && step.is_valid_scoped_timer()
+                            && matches!(
+                                definition
+                                    .node_for_instance(instance)
+                                    .map(sagat_domain::workflow::Node::kind),
+                                Some(NodeKind::Timer { .. })
+                            ));
                     step.status().is_terminal() && !instance.node().is_derived()
                         || settled_derived
                         || safe_unstarted
@@ -1982,7 +2004,7 @@ where
             }
             execution::CollectionPhase::Draining => {
                 if let Some(member) = frontier.active.first() {
-                    if !member_is_safe_to_drain(member, true) {
+                    if !member_is_safe_to_drain(member, true, definition) {
                         return Ok(Some(CollectionAdvance::Waiting));
                     }
                     self.store
@@ -2015,6 +2037,16 @@ where
             }
         }
 
+        for member in &frontier.active {
+            if let Some((instance, _)) = member.steps.iter().find(|(instance, step)| {
+                collection_timers::local_progress_candidate(definition, instance, step)
+            }) {
+                return self
+                    .advance_collection_local(view, transition(), scope_id, instance)
+                    .await
+                    .map(Some);
+            }
+        }
         for member in &frontier.active {
             if let Some((instance, _)) = member.steps.iter().find(|(instance, step)| {
                 step.status() == execution::StepStatus::Pending
@@ -2187,7 +2219,7 @@ where
                 reserved_instances,
                 uuid::Uuid::now_v7(),
             )?,
-            NodeKind::Condition { .. } | NodeKind::Switch { .. } => {
+            NodeKind::Condition { .. } | NodeKind::Switch { .. } | NodeKind::Timer { .. } => {
                 CollectionAdmission::scheduler_from_item(
                     transition.clone(),
                     scope_id,
@@ -2914,7 +2946,7 @@ where
             }
             LoopPhase::Draining => {
                 if let Some(member) = &frontier.member {
-                    if !member_is_safe_to_drain(member, false) {
+                    if !member_is_safe_to_drain(member, false, definition) {
                         return Ok(Some(LoopAdvance::Waiting));
                     }
                     self.store
@@ -3506,6 +3538,7 @@ where
                 kind,
                 run_id = %run_id,
                 tenant_id = %tenant,
+                instance = ?instance,
                 trace_id = trace.as_deref(),
                 parent_span_id = %sagat_telemetry::run_span_id(run_id.as_uuid()),
             );
@@ -4442,38 +4475,60 @@ where
         }
     }
 
-    async fn timers(&self, view: &View, report: &mut Report) {
+    async fn timers(&self, view: &View, report: &mut Report)
+    where
+        S: PathExecutionStore,
+    {
         let due = self
             .pick(
                 view,
                 "timers",
                 report,
-                |s: &StepRef| s.tenant_id,
-                |s| (s.run_id, s.node.clone()),
+                |step: &StepRef| step.tenant_id,
+                |step| (step.run_id, step.instance()),
                 |store, window| async move { store.due_timers(&window).await },
             )
             .await;
         let outcomes = self
-            .each(
-                due,
-                |StepRef {
-                     tenant_id,
-                     run_id,
-                     node,
-                     ..
-                 }| {
+            .each(due, |candidate| async move {
+                let instance = candidate.instance();
+                let tenant_id = candidate.tenant_id;
+                let run_id = candidate.run_id;
+                if instance.path().is_root() {
                     self.apply(
                         view,
                         tenant_id,
                         run_id,
                         "timer",
                         self.effects(),
-                        move |def, state, now| {
-                            Ok(((), execution::fire_timer(def, state, &node, now)?))
+                        move |definition, state, now| {
+                            Ok((
+                                (),
+                                execution::fire_timer(definition, state, instance.node(), now)?,
+                            ))
                         },
                     )
-                },
-            )
+                    .await
+                } else {
+                    let command_instance = instance.clone();
+                    self.apply_path_if(
+                        view,
+                        RunRef { tenant_id, run_id },
+                        &instance,
+                        "timer",
+                        None,
+                        move |definition, state, now| {
+                            execution::fire_timer_path_instance(
+                                definition,
+                                state,
+                                &command_instance,
+                                now,
+                            )
+                        },
+                    )
+                    .await
+                }
+            })
             .await;
         for outcome in outcomes {
             Self::tally(report, outcome, |r| r.timers_fired += 1);
@@ -5357,7 +5412,11 @@ mod tests {
 /// collection, waits to retry or is ready, in a run that is stopping and cannot lease it).
 ///
 /// `ready_is_safe` is the collection's wider reading (D380): a `Ready` step is safe at any attempt.
-fn member_is_safe_to_drain(member: &ScopeMember, ready_is_safe: bool) -> bool {
+fn member_is_safe_to_drain(
+    member: &ScopeMember,
+    ready_is_safe: bool,
+    definition: &WorkflowDefinition,
+) -> bool {
     member.steps.iter().all(|(instance, step)| {
         let settled_derived = instance.node().is_derived()
             && matches!(
@@ -5371,7 +5430,16 @@ fn member_is_safe_to_drain(member: &ScopeMember, ready_is_safe: bool) -> bool {
                 execution::StepStatus::Pending | execution::StepStatus::Ready
             ))
             || (ready_is_safe && step.status() == execution::StepStatus::Ready)
-            || step.status() == execution::StepStatus::RetryWait;
+            || step.status() == execution::StepStatus::RetryWait
+            || (ready_is_safe
+                && matches!(step.waiting_on(), Some(execution::WaitingOn::Timer { .. }))
+                && step.is_valid_scoped_timer()
+                && matches!(
+                    definition
+                        .node_for_instance(instance)
+                        .map(sagat_domain::workflow::Node::kind),
+                    Some(NodeKind::Timer { .. })
+                ));
         step.status().is_terminal() && !instance.node().is_derived()
             || settled_derived
             || safe_unstarted

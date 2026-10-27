@@ -712,3 +712,12 @@ IR v1 and worker 1.5 are unchanged; authored lifetime ceilings are 6/8 and depth
 admission tests own journal-fault rollback, replay/mismatch, current tenant/shard authority,
 quota reduction, cancellation, cold discovery, retained-evidence rollback refusal and
 frozen OrdinaryLeafV1 exclusion. A focused pass is not complete 63-scenario acceptance.
+
+
+`collection-timers.json` is registry scenario64. Three existing body-builder programs use
+sleep/durationMs: Timer entry and Condition→Timer both finish before worker startup;
+Activity→Timer runs only two real activities. Ordered results are[1,-1] in every Run, and
+qualified timer graph nodes have attempt0 and cleared waits. The authored instance ceilings
+6/8/8 and depth1 are preserved in both reviewed canonical and workflow documents. Native
+transaction tests separately cover pause/cold resume, cancellation races, malformed state,
+prepared-write guards and rollback. A focused case is not complete64-scenario acceptance.

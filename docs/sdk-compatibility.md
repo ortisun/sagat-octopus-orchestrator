@@ -547,3 +547,13 @@ This is not rolling execution compatibility with 0.2 schedulers. Fence/drain old
 authority before admitting 0.3-only definitions, and prove pinned 0.2 active runs on the
 released migration profile before advertising 0.3. Native OrdinaryLeafV1 source certification
 remains activity-only despite this broader public runtime shape.
+
+
+### 0.3 development scoped timers
+
+The 64th scenario, `collection-timers`, uses the existing sleep(id,durationMs) body builders
+and worker minor1.5 in all five SDKs. Timer-entry and Condition→Timer Runs complete before
+startWorker; Activity→Timer leases only two real activities. All three return ordered[1,-1].
+Qualified graphs retain timer path identity and no lease attempt for timer nodes. This is a
+focused increment, not complete64-scenario or released0.2 upgrade acceptance. Fence/drain old
+scheduler authority before new definitions; loop/event/child/nested capability is unchanged.

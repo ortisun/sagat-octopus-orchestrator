@@ -632,3 +632,15 @@ producer composition, native End/scheduler activation, full old-binary rollout, 
 nested capacity and final release gates remain open. No canonical runtime task is closed by Q5.
 Evidence: `tasks/project-completion/evidence/legacy-output-view-20261018/reproduce.md` and
 `scoped-output-refusal-red-20261018/reproduce.md`.
+
+
+### 0.3 development scoped timers
+
+The bounded collection body also accepts Timer entry or local activity/control→Timer routes.
+Each qualified Timer starts from explicit database time, waits durably without a worker, and
+fires once when due under current revision/shard and ancestor authority. Pause permits an
+already accepted timer to record completion but defers routing until resume. Cancellation
+drains an unresolved timer without an external effect. Root timer semantics stay unchanged.
+This does not broaden loop bodies, frozen OrdinaryLeafV1, event waits, child or nested scopes.
+See [scoped-timer-runtime.md](./scoped-timer-runtime.md) for the exact lifecycle, rejection and
+acceptance boundaries; canonical tasks and full release acceptance remain open.

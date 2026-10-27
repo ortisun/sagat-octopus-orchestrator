@@ -41,6 +41,8 @@ mod collection_pipeline;
 mod collection_recovery;
 mod collection_restore;
 mod collection_sources;
+mod collection_timer_transactions;
+mod collection_timers;
 mod collections_http;
 mod compatibility;
 mod hint_contract;

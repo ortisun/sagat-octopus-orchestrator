@@ -26,8 +26,8 @@ use uuid::Uuid;
 use crate::collection_outputs;
 use crate::execution::{
     PgRunStore, RUN_SNAPSHOT, instance_path, run_record, scoped_control_metadata_empty,
-    step_instance_path, step_state, validate_collection_entry_dispatch,
-    validate_scoped_control_row,
+    scoped_timer_metadata_valid, step_instance_path, step_state,
+    validate_collection_entry_dispatch, validate_scoped_control_row,
 };
 use crate::identity::{col, corrupt, store_error};
 use crate::pool::BeginSafely;
@@ -40,7 +40,9 @@ const MEMBER_STEPS: &str = concat!(
         s.due_at, s.correlation_key, s.child_run_id, s.approval_request_id, p.content AS output, \
         s.node_kind AS stored_node_kind, (",
     scoped_control_metadata_empty!(),
-    ") AS control_metadata_empty \
+    ") AS control_metadata_empty, (",
+    scoped_timer_metadata_valid!(),
+    ") AS timer_metadata_valid \
      FROM unnest($4::int[]) AS member(last_index) \
      JOIN steps s ON s.tenant_id = $1 AND s.run_id = $2 \
       AND s.instance_path_nodes = $3 \

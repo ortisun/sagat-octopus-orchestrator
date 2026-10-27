@@ -35,7 +35,8 @@ impl PgRunStore {
                     timed_out,failure_code,next_attempt_at,waiting_kind,due_at,correlation_key, \
                     child_run_id,approval_request_id,s.node_kind AS stored_node_kind, (",
             scoped_control_metadata_empty!(),
-            ") AS control_metadata_empty FROM steps s WHERE tenant_id=$1 AND run_id=$2 \
+            ") AS control_metadata_empty, (",scoped_timer_metadata_valid!(),") AS timer_metadata_valid \
+             FROM steps s WHERE tenant_id=$1 AND run_id=$2 \
                AND instance_path_nodes=$3 AND instance_path_indices=$4 ORDER BY node",
         ))
         .bind(tenant.as_uuid())

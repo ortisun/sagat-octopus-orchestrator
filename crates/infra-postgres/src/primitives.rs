@@ -1826,6 +1826,9 @@ impl CollectionStore for PgCollectionStore {
                 (CollectionEntryDispatch::Scheduler, NodeKind::Switch { .. }) => {
                     ("SCHEDULER", None, None, "switch")
                 }
+                (CollectionEntryDispatch::Scheduler, NodeKind::Timer { .. }) => {
+                    ("SCHEDULER", None, None, "timer")
+                }
                 _ => return Err(PrimitiveStoreError::InvalidTransition),
             };
         if admission.entry.node() != body.entrypoint()
@@ -3000,10 +3003,14 @@ impl CollectionStore for PgCollectionStore {
                 locked.run.version_id,
             )
             .await?;
-        let member_steps = sqlx::query(
-            "SELECT node,status,attempt FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+        let member_steps = sqlx::query(concat!(
+            "SELECT s.node,s.status,s.attempt,s.generation,s.cancel_requested,s.routed,s.condition,s.switch_case_id, \
+                s.timed_out,s.failure_code,s.next_attempt_at,s.waiting_kind,s.due_at,s.correlation_key, \
+                s.child_run_id,s.approval_request_id,s.node_kind AS stored_node_kind, (",
+            crate::execution::scoped_timer_metadata_valid!(),") AS timer_metadata_valid \
+             FROM steps s WHERE tenant_id=$1 AND run_id=$2 \
                AND instance_path_nodes=$3 AND instance_path_indices=$4 ORDER BY node FOR UPDATE",
-        )
+        ))
         .bind(drain.transition.tenant_id().as_uuid())
         .bind(drain.transition.run_id().as_uuid())
         .bind(&path_nodes)
@@ -3014,6 +3021,12 @@ impl CollectionStore for PgCollectionStore {
         if member_steps.is_empty() {
             return Err(PrimitiveStoreError::InvalidTransition);
         }
+        let member_path = crate::execution::instance_path(
+            path_nodes.clone(),
+            path_indices.clone(),
+            "collection drain path",
+        )
+        .map_err(PrimitiveStoreError::Storage)?;
         for step in &member_steps {
             let node = NodeId::parse_stored(&step.get::<String, _>("node"))
                 .map_err(|_| invalid_storage("collection member node"))?;
@@ -3028,8 +3041,25 @@ impl CollectionStore for PgCollectionStore {
             let safe_unstarted = (matches!(status.as_str(), "PENDING" | "READY")
                 && step.get::<i32, _>("attempt") == 0)
                 || matches!(status.as_str(), "READY" | "RETRY_WAIT");
+            let instance = ExecutionInstanceId::in_path(member_path.clone(), node.clone());
+            let timer_wait = if matches!(
+                definition.node_for_instance(&instance).map(Node::kind),
+                Some(NodeKind::Timer { .. })
+            ) {
+                let state =
+                    crate::execution::step_state(step).map_err(PrimitiveStoreError::Storage)?;
+                crate::execution::validate_scoped_control_row(
+                    definition.node_for_instance(&instance),
+                    &state,
+                    step,
+                )
+                .map_err(PrimitiveStoreError::Storage)?;
+                status == "WAITING"
+            } else {
+                false
+            };
             if (node.is_derived() && !matches!(status.as_str(), "SUCCEEDED" | "SKIPPED"))
-                || (!terminal && !safe_unstarted)
+                || (!terminal && !safe_unstarted && !timer_wait)
             {
                 return Err(PrimitiveStoreError::InvalidTransition);
             }
@@ -3046,7 +3076,8 @@ impl CollectionStore for PgCollectionStore {
                     next_attempt_at=NULL,cancel_requested=false,updated_at=$8 \
              WHERE tenant_id=$1 AND run_id=$2 AND instance_path_nodes=$3 \
                AND instance_path_indices=$4 \
-               AND ((status IN ('PENDING','READY') AND attempt=0) OR status IN ('READY','RETRY_WAIT'))",
+               AND ((status IN ('PENDING','READY') AND attempt=0) OR status IN ('READY','RETRY_WAIT') \
+                 OR (status='WAITING' AND node_kind='timer' AND waiting_kind='TIMER' AND attempt=0 AND generation=0))",
         )
         .bind(drain.transition.tenant_id().as_uuid())
         .bind(drain.transition.run_id().as_uuid())

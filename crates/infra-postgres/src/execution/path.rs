@@ -354,6 +354,8 @@ impl PgPathExecutionTx {
                     | RunEvent::StepFailed { .. }
                     | RunEvent::ConditionEvaluated { .. }
                     | RunEvent::SwitchEvaluated { .. }
+                    | RunEvent::TimerStarted { .. }
+                    | RunEvent::TimerFired { .. }
                     | RunEvent::StepRouted { .. }
                     | RunEvent::StepRetryScheduled { .. }
                     | RunEvent::StepRetryDue { .. }
@@ -1022,10 +1024,11 @@ impl PgPathExecutionTx {
             .local_instance(instance.node())
             .cloned()
             .ok_or_else(|| corrupt("bounded step projection"))?;
-        let waiting_kind = match step.waiting_on() {
-            None => None,
-            Some(WaitingOn::Reconciliation) => Some("RECONCILIATION"),
-            Some(WaitingOn::Operator { .. }) => Some("OPERATOR"),
+        let (waiting_kind, due_at) = match step.waiting_on() {
+            None => (None, None),
+            Some(WaitingOn::Reconciliation) => (Some("RECONCILIATION"), None),
+            Some(WaitingOn::Operator { .. }) => (Some("OPERATOR"), None),
+            Some(WaitingOn::Timer { due_at }) => (Some("TIMER"), Some(*due_at)),
             Some(_) => return Err(corrupt("bounded step waiting kind")),
         };
         let declared = self.snapshot.definition.node_for_instance(instance);
@@ -1114,10 +1117,16 @@ impl PgPathExecutionTx {
             .await
             .map_err(store_error)?;
             self.stored.insert(instance.clone());
+            if node_kind == "timer" {
+                self.timer_read_states
+                    .insert(instance.clone(), TimerReadState::from_step(&step));
+            }
             return Ok(());
         }
 
-        self.ensure_path_node_kind(instance, node_kind).await?;
+        if node_kind != "timer" {
+            self.ensure_path_node_kind(instance, node_kind).await?;
+        }
         let updated = sqlx::query(concat!(
             "UPDATE steps AS s SET status=$6,attempt=$7,generation=$8,cancel_requested=$9,routed=$10, \
                     timed_out=$11,failure_code=$12,next_attempt_at=$13, \
@@ -1139,12 +1148,15 @@ impl PgPathExecutionTx {
                     reported_lease_token_hash=CASE WHEN $6 IN ('LEASED','RUNNING') THEN NULL \
                       WHEN $25::bytea IS NOT NULL THEN $25 ELSE reported_lease_token_hash END, \
                     output_digest=COALESCE($16,output_digest),waiting_kind=$26,updated_at=$14, \
-                    condition=$27,switch_case_id=$28 \
+                    condition=$27,switch_case_id=$28,due_at=$31 \
              WHERE tenant_id=$1 AND run_id=$2 AND node=$3 AND step_id=$4 AND namespace_id=$5 \
                AND instance_path_nodes=$17 AND instance_path_indices=$18 \
-               AND (NOT $29 OR (",
+               AND (NOT $29 OR (s.node_kind=$30 AND (($30='timer' AND (",
+            scoped_timer_metadata_valid!(),
+            ")) OR ($30 IN ('condition','switch') AND (",
             scoped_control_metadata_empty!(),
-            " AND s.node_kind=$30))",
+            "))))) AND ($30<>'timer' OR (s.due_at IS NOT DISTINCT FROM $32 \
+              AND s.status=$33 AND s.routed=$34))",
         ))
         .bind(self.snapshot.info.tenant_id.as_uuid())
         .bind(self.snapshot.info.run_id.as_uuid())
@@ -1174,14 +1186,22 @@ impl PgPathExecutionTx {
         .bind(waiting_kind)
         .bind(step.condition())
         .bind(stored_switch_case_id(&step))
-        .bind(matches!(node_kind, "condition" | "switch"))
+        .bind(matches!(node_kind, "condition" | "switch" | "timer"))
         .bind(node_kind)
+        .bind(due_at)
+        .bind(self.timer_read_states.get(instance).and_then(|read| read.due_at))
+        .bind(self.timer_read_states.get(instance).map(|read| read.status.as_str()))
+        .bind(self.timer_read_states.get(instance).map(|read| read.routed))
         .execute(&mut *self.tx)
         .await
         .map_err(store_error)?
         .rows_affected();
         if updated != 1 {
             return Err(corrupt("bounded step identity"));
+        }
+        if node_kind == "timer" {
+            self.timer_read_states
+                .insert(instance.clone(), TimerReadState::from_step(&step));
         }
         Ok(())
     }

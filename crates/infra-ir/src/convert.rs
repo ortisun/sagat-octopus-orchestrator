@@ -681,7 +681,10 @@ fn is_collection_body(body: &sagat_domain::workflow::BodyDefinition) -> bool {
     if !body.node(body.entrypoint()).is_some_and(|node| {
         matches!(
             node.kind(),
-            NodeKind::Activity { .. } | NodeKind::Condition { .. } | NodeKind::Switch { .. }
+            NodeKind::Activity { .. }
+                | NodeKind::Condition { .. }
+                | NodeKind::Switch { .. }
+                | NodeKind::Timer { .. }
         )
     }) {
         return false;
@@ -694,6 +697,9 @@ fn is_collection_body(body: &sagat_domain::workflow::BodyDefinition) -> bool {
                 steps += 1
             }
             NodeKind::Switch { .. } => steps += 1,
+            NodeKind::Timer { .. } if node.next().is_some() && node.timeout().is_none() => {
+                steps += 1
+            }
             NodeKind::Return { .. } => {}
             _ => return false,
         }
@@ -813,7 +819,7 @@ pub(crate) fn published_collection_definition(
             return Err(IrError::Unsupported {
                 node: body.name().as_str().to_owned(),
                 kind: "body".to_owned(),
-                reason: "the runtime supports a collection body of one to eight activities/conditions/switches with local routes and one return",
+                reason: "the runtime supports a collection body of one to eight activities/conditions/switches/timers with local routes and one return",
             });
         }
     }

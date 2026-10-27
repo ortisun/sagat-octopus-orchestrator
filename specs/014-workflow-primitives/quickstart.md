@@ -603,8 +603,8 @@ RUST_TEST_THREADS=1 cargo test -p sagat-tests --test integration_workflow_primit
 SAGAT_SDK_SCENARIO=collection-control-routing cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 ```
 
-Bodies accept activity/condition/switch entry, at most eight executable declared nodes and one
-Return. Timers, children, scoped approval and nesting have separate pending admission/runtime
+Bodies accept activity/condition/switch/timer entry, at most eight executable declared nodes and one
+Return. Event waits, children, scoped approval and nesting have separate pending admission/runtime
 gates. A loop's body capability remains the existing linear activity/Return subset.
 
 
@@ -620,3 +620,20 @@ SAGAT_SDK_SCENARIO=collection-control-entry cargo test -p sagat-tests --test sdk
 
 This development capability requires 0.3 schedulers. Fence/drain older scheduler authority
 before admitting its definitions; release compatibility and rollout acceptance remain open.
+
+
+A collection body may start with a timer or reach it from a local activity/control:
+
+```json
+{"id":"delay","type":"timer","durationMs":1000,"next":"returned"}
+```
+
+This durable wait takes no worker. Existing SDK body.sleep("delay",1000) builders emit
+that timer in all five languages. `collection-timers` demonstrates pure Timer, Condition→Timer
+and Activity→Timer; only the last starts real activity tasks. Pause records an accepted due
+fire but holds its route until resume. Cancellation drains the wait without a timer effect.
+
+```sh
+RUST_TEST_THREADS=1 cargo test -p sagat-tests --test integration_workflow_primitives --locked -- collection_timers:: collection_timer_transactions::
+SAGAT_SDK_SCENARIO=collection-timers cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+```

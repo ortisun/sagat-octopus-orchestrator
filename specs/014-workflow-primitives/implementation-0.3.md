@@ -364,3 +364,119 @@ in2.83s build output.
 This is recorded lifecycle preparation only: clocked commands, native due-time persistence,
 qualified discovery, pause/resume/drain, public runtime and SDK evidence remain pending in
 [scoped-timer-runtime.md](./scoped-timer-runtime.md). Canonical tasks stay unchecked.
+
+## Broad control-entry regression: failures retained
+
+`control-entry-63e3f52e-broad` passed92 fault tests (340.91s), then the integration
+binary finished554passed/12failed/16ignored (2331.23s). This is a failed gate, not
+acceptance. Two failures were stale fixtures: the publication negative still expected
+Condition entry to fail, and an owner `jsonb_populate_record` fixture explicitly created
+NULL entry_dispatch instead of the legacy ACTIVITY value. Both fixtures were corrected.
+The other ten failures concerned scheduler discovery/authority in approval, byte ceilings,
+compensation and capacity recovery. Diagnostic assertions now capture only bounded status,
+revision, path and shard authority metadata, never inputs or credentials.
+
+`control-entry-failures-diagnosed` passed the exact12-test selection,0failed,86.17s
+harness/185.34s command. The ten failures did not reproduce; no production fix for them
+is claimed. The original gate's wall interval was46,599.58s versus2,704.86 monotonic
+seconds. Suspension/time discontinuity is an observation, not proof of every failure's
+cause. Subsequent native gates use child-scoped `caffeinate -i` and record wall and
+monotonic durations in stable_gate JSON. No lease TTL or authority rule was relaxed.
+A complete stable broad gate on the final tree remains mandatory.
+
+## Fourth increment: clocked scoped timers in progress
+
+Explicit-clock full/path start and fire commands now validate pinned Timer identity,
+pristine lifecycle and ancestor/global fences. Accepted due firing while paused records
+completion; bounded collection discovery finds succeeded/unrouted members after resume.
+Native full/path writers retain waiting_kind/due_at, and qualified due discovery uses
+the existing timer index. Scheduler Timer entry emits no task.ready or worker lease.
+Public activity→Timer and Timer-entry collection bodies are enabled in this working
+increment, pending complete acceptance; event/child/nested execution remains closed.
+
+Evidence retained under `/tmp/sagat-v03-20261026`:
+
+- `scoped-timer-clock-first`:7domain tests passed; deadline, pause/resume, overflow,
+  stopped ancestors, member isolation and full/path replay properties.
+- The first public test used the wrong duration field and is not a behavioral RED.
+  Corrected `scoped-timer-public-corrected-red` failed2tests on unsupported bodies;
+  `scoped-timer-public-first-runtime` then passed2tests,14.69s harness.
+- `scoped-timer-native-expanded`:5passed,20.22s; pause→cold resume→one route,
+  prepared deadline changes and orphan metadata readers included.
+- `scoped-timer-atomic`:6passed,56.94s harness/116.13s command, with start/fire
+  journal-fault rollback and retry in both full/path models.
+- `scoped-timer-races`:7passed/1failed,38.24s. Actual held-lock cancellation-first
+  left a WAITING timer and CANCELLING Run. The pure drain reproduction failed with
+  IllegalCollectionTransition; corrected pure drain gate passed8tests,0failed.
+  Native drain verification is still pending at this checkpoint.
+- Fresh bounded native-guard review found unsupported Failed timer acceptance and
+  prepared writes silently repairing altered logical fields. `scoped-timer-lifecycle-guards-red`
+  reproduced both Failed acceptance defects; its third test lost its database connection
+  during migration and is not a valid behavioral result. Docker remained healthy inside
+  Colima but its macOS socket forwarding was unavailable. A private SSH socket forwarding
+  to the same daemon restored access without restarting or changing the shared VM.
+- `scoped-timer-prepared-guards-red` then reproduced all10 prepared start/fire
+  cases across both writers: changed choice, routing, settled status or failure fields
+  were silently overwritten without a Run revision change (18.22s command).
+  Correction restricts the legal timer state matrix and compares original status,
+  routed and deadline as well as constant logical/physical invariants in UPDATE.
+  Corrected native gate/review and common five-SDK evidence are not yet claimed.
+
+All eight canonical tasks remain unchecked. This checkpoint does not authorize release.
+
+### Timer guard correction and five-SDK focused verification
+
+`scoped-timer-guards-and-drain-green` passed11native tests,0failed/ignored,
+81.56s harness/162.70s command, wall-minus-monotonic0. Both cancellation/fire
+commit orders now pass, as do all10 prepared-state cases and both unsupported-Failed
+read/write regressions. The fixture runs the service through sagat_app. Fresh bounded
+correction review found no required issues (static read-only review, no test claim).
+
+`collection-timers` is scenario64. Actual TypeScript/Go/Python/.NET/Java normalized
+observations matched SHA25673c3cba3365368fad858d5e0686b9f5d5c4d150f4d96edfe19f410adac30fbc2.
+All three Runs returned ordered[1,-1]; Timer/Condition Runs finished before worker startup;
+only Activity→Timer emitted two real worker calls. Complete normalized observations and
+canonical workflow documents were read before recording both new reference files. Initial
+observation failed only for missing references. `sdk-collection-timers-verified` then passed
+1aggregate,0failed,49.38s harness/90.82s command, without a bless switch. Local Node26/JDK23
+are different from pinned CI Node22/JDK21; no CI-toolchain or complete64-case claim follows.
+
+The final native selection also adds no-item trace canary and frozen OrdinaryLeafV1 refusal
+for Timer entry; core, contracts and lint acceptance are separate pending gates.
+
+### Timer core and regression gates
+
+- `scoped-timer-core`:1017passed/0failed/0ignored across78targets,90.55s command.
+- `scoped-timer-contracts`:18classification +48primitive +2ordinary SDK tests passed,
+ 0failed; the expensive aggregate is explicitly ignored here and independently executed
+ for the new scenario above.50.24s command. Registry phase evidence now covers64scenarios.
+- First strict workspace Clippy failed filter_map_bool_then in timer read-set capture.
+ The equivalent filter/map correction preserves the read-set. `scoped-timer-clippy-corrected`
+ passed workspace/all-targets/locked/-D warnings,194.87s including build-lock wait.
+ fmt, architecture(24crates) and agent configuration checks passed.
+- `scoped-timer-final-native` passed12/failed1: the new frozen-profile Timer fixture
+ incorrectly used duration0 (schema minimum1). Correction uses1ms; no schema relaxation.
+ `scoped-timer-control-regression` then passed35/0failed/0ignored,345.94s harness,
+ including all control-entry/decision regressions, timer transactions and no-item qualified
+ start/fire trace canary. The fixture always uses sagat_app; negative source certification
+ is separately checked under owner/runtime roles.
+- Additional full/frontier timer oracle preparation first failed test INT4/i64 decoding,
+ then found unnormalized numeric due_at_us (the event codec stores microseconds, not RFC3339).
+ These are test fixture errors, not runtime REDs. The corrected comparison validates the
+ closed deadline field and compares exact transitions and all remaining journal values,
+ normalizing only generated UUIDs and each execution's explicit database deadline. Its
+ final gate and the genuine existing activity certificate regression remain pending here.
+
+No SDK source or runner file differs from the released v0.2.0 tree (`git diff v0.2.0 -- sdks`
+empty; working SDK paths clean). This source identity observation is not an actual active-run
+upgrade/mixed-authority demonstration. Only additive migration20261221000000 differs from
+released0.2 so far; no old applied migration was rewritten. Final integrated/runtime/resource
+and release gates remain open; all eight canonical tasks remain unchecked.
+
+The final oracle/positive-source gate (`scoped-timer-native-oracle-final`) passed2tests,
+0failed/ignored,10.27s harness: exact full/frontier transitions and qualified journals match
+apart from validated database deadlines/generated UUIDs; the genuine activity source still
+certifies and replays after later failure. Final strict workspace/all-targets Clippy passed
+again after adding the oracle (52.50s including build-lock wait). No production code changed
+after the35-test native regression or after the focused five-SDK verification. Full stable
+native regression, complete64-scenario, released-profile rollout and workloads remain open.

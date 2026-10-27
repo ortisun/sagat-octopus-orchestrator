@@ -855,3 +855,15 @@ definition. Pure-domain and owner/runtime native tests keep both controls outsid
 OrdinaryLeafV1. Common SDK fixture `collection-control-entry` exercises existing builders and
 worker1.5. Exact invocation results/limits are in implementation-0.3.md; no canonical task or
 release closure is inferred from these focused fixtures.
+
+
+### 2026-10-27 scoped timer development increment
+
+T014-014–017/040, FR-014-004/005/014/015/016/017: scoped_timer_lifecycle proves
+explicit-clock/full-path semantics; collection_timers and collection_timer_transactions prove
+public Timer entry/activity progression, worker absence, exact accounting, pause/cold resume,
+prepared logical/deadline changes, malformed full/path/frontier reads, journal rollback and
+both actual cancellation/fire commit orders. public_scheduler_entries_remain_outside_the_frozen_ordinary_leaf_profile
+keeps the dormant source predicate closed. Common SDK collection-timers uses existing sleep
+builders in all five languages. Exact counts/limits remain in implementation-0.3.md; no
+canonical task or release closure follows these focused fixtures.

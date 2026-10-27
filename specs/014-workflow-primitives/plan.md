@@ -612,3 +612,15 @@ rollback, replay/mismatch, revision, capacity reduction, cold discovery, cancell
 CHECK-valid projection corruption and frozen OrdinaryLeafV1 exclusion. All general task and
 release gates remain open. Old scheduler authority must be fenced/drained before admitting
 new definitions; released-profile upgrade evidence is required before advertising 0.3.
+
+
+### 0.3 scoped timer runtime increment
+
+Use shared explicit-clock full/path commands, native waiting_kind/due_at projection and a
+retained timer read-set (status/routed/deadline). Reuse scheduler admission's SCHEDULER intent
+and qualified timer discovery, with no fake activity/task hint. Durable collection discovery
+resumes succeeded/unrouted members after pause; safe drain cancels validated waiting timers.
+Full/path/frontier readers and both writers enforce the same closed lifecycle and physical
+metadata. Test journal rollback, stale snapshots, real cancellation/fire lock order, cold resume,
+source-profile exclusion and five existing SDK sleep builders. See scoped-timer-runtime.md.
+No new migration, protocol minor or nested capacity activation is needed for this increment.

@@ -143,9 +143,9 @@ fails the run with `EXPRESSION_ERROR`.
 
 ### Bodies that compensate (T014-014..021, D380-D389)
 
-On the unreleased 0.3 branch a collection body starts with an activity, condition or switch,
+On the unreleased 0.3 branch a collection body starts with an activity, condition, switch or timer,
 contains one to eight executable nodes
-(activities, `condition`, `switch`) and one terminal `return`.
+(activities, `condition`, `switch`, `timer`) and one terminal `return`.
 The 0.3 increment permits local acyclic success/error routes; all paths stay inside
 that body. A committed handled error does not fail the collection. An unhandled recovery
 failure retains its own failure code and uses the normal drain/compensation path. Each
@@ -168,9 +168,9 @@ the subsequent control transaction. Stored dispatch is checked against the pinne
 immutable journal marker by full/path/frontier readers. Migration 20261221000000 backfills old
 activity members; downgrade refuses retained scheduler admissions in either membership or
 append-only journal, including completed runs. OrdinaryLeafV1 certification stays activity-only.
-`saga`, timers, child workflows and nested scopes remain closed. IR fields and worker minor1.5
+`saga`, event waits, child workflows and nested scopes remain closed. IR fields and worker minor1.5
 are unchanged. `collection-local-recovery`, `collection-control-routing` and
-`collection-control-entry` cover the focused common five-SDK contracts. This is not rolling
+`collection-control-entry` and `collection-timers` cover the focused common five-SDK contracts. This is not rolling
 execution compatibility with a 0.2 scheduler; release must fence/drain old scheduler authority
 before admitting new 0.3 definitions and prove continued execution of pinned 0.2 runs.
 

@@ -621,3 +621,19 @@ Released-profile upgrade/active-run evidence and the complete release gates rema
 Reproduce `collection_control_entry::`, `collection_control_admission::` and common SDK case
 `collection-control-entry`. Frozen OrdinaryLeafV1 certification still rejects both control
 entry kinds, separately from public runtime support.
+
+
+### 0.3 scoped timer diagnosis
+
+A collection Timer is PENDING until its clocked scheduler transaction records timer.started.
+WAITING owns waiting_kind=TIMER/due_at and no worker capability. A due timer may record firing
+while paused; SUCCEEDED/unrouted is durable deferred work discovered on resume. Cancellation
+clears a validated waiting timer in the member drain transaction, without compensation for
+the timer itself. scheduler.action spans correlate tenant/run/qualified instance without item
+data; existing finite timer action counters retain their labels. Do not repair malformed
+timer projections by bypassing validation: readers/writers refuse them.
+
+Reproduce collection_timers:: and collection_timer_transactions::, plus SDK collection-timers.
+The native tests age test deadlines explicitly and order cancellation/fire with held locks.
+This development capability requires compatible0.3 authority; released-profile and complete
+regression/resource gates remain open. Frozen OrdinaryLeafV1 remains activity-only.
