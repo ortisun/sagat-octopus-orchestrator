@@ -116,3 +116,11 @@ required nullable settlement fields, malformed response metadata and local inval
 (12.73 s, 68 total including 38 REST/catalog checks). Approval decisions retain their body key and
 reason across retries without an idempotency header. Returned scope dimensions accept additive
 fields while preserving the canonical typed pair; serialization still emits only that pair.
+
+Chain increment: `rust-sdk-chain-api-red` failed on missing APIs, then
+`rust-sdk-chain-first-green` passed 42 REST/catalog checks. Two added cases verify that a stale
+head is never silently retargeted and out-of-range segment indices fail with response metadata.
+`rust-sdk-chain-clippy` exited 0 (2.63 s); `rust-sdk-chain-tests` exited 0 (12.93 s,
+74 total including 44 REST/catalog checks). Commands freeze expectedRunId and idempotency keys;
+Queries/Updates keep optional head preconditions and body-key semantics. Inspection/completion
+waits use server finalOutcome, and paged segment lineage stays lazy and typed.

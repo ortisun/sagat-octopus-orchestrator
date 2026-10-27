@@ -535,3 +535,94 @@ impl ApprovalDecisionReceipt {
         Ok(value)
     }
 }
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChainLink {
+    pub index: u32,
+    pub run_id: Uuid,
+    #[serde(deserialize_with = "required_nullable")]
+    pub predecessor_run_id: Option<Uuid>,
+    #[serde(deserialize_with = "required_nullable")]
+    pub successor_run_id: Option<Uuid>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChainInspection {
+    pub chain_id: Uuid,
+    pub current_run_id: Uuid,
+    pub revision: u64,
+    pub cancel_requested: bool,
+    #[serde(deserialize_with = "required_nullable")]
+    pub final_outcome: Option<RunStatus>,
+    pub segments: Vec<ChainLink>,
+    #[serde(skip)]
+    pub raw: Value,
+}
+impl std::fmt::Debug for ChainInspection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChainInspection")
+            .field("revision", &self.revision)
+            .field("final_outcome", &self.final_outcome)
+            .finish_non_exhaustive()
+    }
+}
+impl ChainInspection {
+    pub(crate) fn parse(raw: Value) -> Result<Self, SagatError> {
+        let mut value: Self = serde_json::from_value(raw.clone()).map_err(|_| protocol())?;
+        if value.revision > i64::MAX as u64
+            || value.segments.is_empty()
+            || value.segments.len() > 10000
+            || value.segments.iter().any(|s| s.index > 9999)
+            || value
+                .final_outcome
+                .as_ref()
+                .is_some_and(|s| !s.is_terminal())
+        {
+            return Err(protocol());
+        }
+        value.raw = raw;
+        Ok(value)
+    }
+}
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChainRun {
+    pub index: u32,
+    pub run_id: Uuid,
+    pub status: RunStatus,
+    #[serde(deserialize_with = "required_nullable")]
+    pub completion_kind: Option<CompletionKind>,
+    #[serde(deserialize_with = "required_nullable")]
+    pub predecessor_run_id: Option<Uuid>,
+    #[serde(deserialize_with = "required_nullable")]
+    pub successor_run_id: Option<Uuid>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    #[serde(deserialize_with = "nullable_instant")]
+    pub finished_at: Option<OffsetDateTime>,
+    #[serde(skip)]
+    pub raw: Value,
+}
+impl std::fmt::Debug for ChainRun {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChainRun")
+            .field("index", &self.index)
+            .field("status", &self.status)
+            .field("completion_kind", &self.completion_kind)
+            .finish_non_exhaustive()
+    }
+}
+pub type ChainRunPage = Page<ChainRun>;
+impl ChainRun {
+    pub(crate) fn parse(raw: Value) -> Result<Self, SagatError> {
+        let mut value: Self = serde_json::from_value(raw.clone()).map_err(|_| protocol())?;
+        if value.index > 9999 {
+            return Err(protocol());
+        }
+        value.created_at = value.created_at.to_offset(UtcOffset::UTC);
+        value.finished_at = value.finished_at.map(|t| t.to_offset(UtcOffset::UTC));
+        value.raw = raw;
+        Ok(value)
+    }
+}

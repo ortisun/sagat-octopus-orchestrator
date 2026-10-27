@@ -37,7 +37,7 @@ async fn answer(
 ) -> Response {
     let count = {
         let mut calls = state.calls.lock().expect("capture");
-        calls.push((headers, body.to_vec(), uri));
+        calls.push((headers, body.to_vec(), uri.clone()));
         calls.len()
     };
     match state.mode {
@@ -48,9 +48,16 @@ async fn answer(
         "approvals"|"approval-pages" => (StatusCode::OK,axum::Json(json!({"items":[{"approvalId":RUN,"runId":RUN,"nodeId":"review","instancePath":[{"scopeNodeId":"lines","iterationIndex":3,"futureField":true}],"status":"PENDING","deadline":"2026-10-27T12:00:00Z","settledAt":null,"newField":true}],"nextCursor":if state.mode=="approval-pages" && count==1{Some("next approval")}else{None}}))).into_response(),
         "decision-retry" if count==1 => (StatusCode::SERVICE_UNAVAILABLE,axum::Json(json!({"code":"UNAVAILABLE","retryable":true}))).into_response(),
         "decision-retry" => (StatusCode::OK,axum::Json(json!({"receiptId":WORKFLOW,"approvalId":RUN,"decisionKey":"approve-1","decision":"APPROVE","reasonCode":"review:ok","actor":"user:reviewer","decidedAt":"2026-10-27T17:30:00+05:30","outcomeSequence":12,"replayed":true}))).into_response(),
-        "query" => (StatusCode::OK,axum::Json(json!({"runId":RUN,"runVersion":9007199254740993_u64,"stateRevision":42,"result":{"amount":"12.3400","at":"2026-10-27T12:00:00Z"}}))).into_response(),
+        "head-changed" => (StatusCode::CONFLICT,axum::Json(json!({"code":"CONFLICT","retryable":true,"details":{"reason":"CHAIN_HEAD_CHANGED"}}))).into_response(),
+        "bad-chain-page" => (StatusCode::OK,[("x-trace-id","0123456789abcdef0123456789abcdef")],axum::Json(json!({"items":[{"index":10000,"runId":RUN,"status":"SUCCEEDED","completionKind":"FINAL","predecessorRunId":null,"successorRunId":null,"createdAt":"2026-10-27T12:00:00Z","finishedAt":null}],"nextCursor":null}))).into_response(),
+        "chain-completion" => (StatusCode::OK,axum::Json(json!({"chainId":RUN,"currentRunId":RUN,"revision":count,"cancelRequested":false,"finalOutcome":if count==1 {None}else{Some("SUCCEEDED")},"segments":[{"index":0,"runId":RUN,"predecessorRunId":null,"successorRunId":null}]}))).into_response(),
+        "chain-command" if count==1 => (StatusCode::SERVICE_UNAVAILABLE,axum::Json(json!({"code":"UNAVAILABLE","retryable":true}))).into_response(),
+        "chain-command" if uri.path().ends_with("/cancel") => StatusCode::ACCEPTED.into_response(),
+        "chain-command" => (StatusCode::ACCEPTED,axum::Json(json!({"deliveredTo":["wait"]}))).into_response(),
+        "chain-pages" => (StatusCode::OK,axum::Json(json!({"items":[{"index":count-1,"runId":if count==1{RUN}else{WORKFLOW},"status":"SUCCEEDED","completionKind":if count==1{"CONTINUED"}else{"FINAL"},"predecessorRunId":if count==1{None}else{Some(RUN)},"successorRunId":if count==1{Some(WORKFLOW)}else{None},"createdAt":"2026-10-27T12:00:00Z","finishedAt":"2026-10-27T12:01:00Z"}],"nextCursor":if count==1{Some("next segment")}else{None}}))).into_response(),
+        "query"|"chain-query" => (StatusCode::OK,axum::Json(json!({"runId":RUN,"runVersion":9007199254740993_u64,"stateRevision":42,"result":{"amount":"12.3400","at":"2026-10-27T12:00:00Z"}}))).into_response(),
         "update-retry" if count==1 => (StatusCode::SERVICE_UNAVAILABLE,axum::Json(json!({"code":"UNAVAILABLE","retryable":true}))).into_response(),
-        "update-retry" => (StatusCode::OK,axum::Json(json!({"runId":RUN,"operation":"adjust","updateKey":"update-1","status":"APPLIED","result":null,"beforeStateRevision":42,"afterStateRevision":43,"runVersion":50,"replayed":true}))).into_response(),
+        "update-retry"|"chain-update" => (StatusCode::OK,axum::Json(json!({"runId":RUN,"operation":"adjust","updateKey":"update-1","status":"APPLIED","result":null,"beforeStateRevision":42,"afterStateRevision":43,"runVersion":50,"replayed":true}))).into_response(),
         "event-retry" if count==1 => (StatusCode::SERVICE_UNAVAILABLE,axum::Json(json!({"code":"UNAVAILABLE","retryable":true}))).into_response(),
         "event-retry" => {let request:serde_json::Value=serde_json::from_slice(&body).expect("event body");(StatusCode::ACCEPTED,axum::Json(json!({"eventId":request["eventId"],"source":"api","status":"DUPLICATE"}))).into_response()},
         "pages" => (StatusCode::OK,axum::Json(json!({"items":[basic_run("RUNNING")],"nextCursor":if count==1 {Some("opaque +/?&=é")}else{None}}))).into_response(),
@@ -1017,4 +1024,181 @@ async fn approval_nullability_is_required_and_invalid_decision_keys_stay_local()
         .expect_err("invalid key");
     assert_eq!(error.code, "VALIDATION_FAILED");
     assert_eq!(server.state.calls.lock().expect("calls").len(), 1);
+}
+
+#[tokio::test]
+async fn chain_inspection_and_completion_wait_use_the_authoritative_final_outcome() {
+    use sagat_octopus_orchestrator_sdk::{RunStatus, WaitOptions};
+    let server = server("chain-completion").await;
+    let client =
+        Client::new(options(&server.base, TokenSource::bearer("fixture-token"))).expect("client");
+    let chain = client
+        .wait_for_chain_completion(
+            WORKFLOW,
+            RUN,
+            WaitOptions {
+                poll_interval: Duration::from_millis(1),
+                timeout: Duration::from_secs(1),
+                ..WaitOptions::default()
+            },
+        )
+        .await
+        .expect("final chain");
+    assert_eq!(chain.final_outcome, Some(RunStatus::Succeeded));
+    assert_eq!(chain.segments[0].index, 0);
+    assert_eq!(server.state.calls.lock().expect("calls").len(), 2);
+}
+#[tokio::test]
+async fn chain_commands_freeze_the_expected_head_and_per_call_idempotency_key() {
+    use sagat_octopus_orchestrator_sdk::ChainCommand;
+    let server = server("chain-command").await;
+    let client =
+        Client::new(options(&server.base, TokenSource::bearer("fixture-token"))).expect("client");
+    client
+        .signal_chain(
+            WORKFLOW,
+            RUN,
+            "ready",
+            &json!({"approved":true}),
+            ChainCommand {
+                expected_run_id: RUN.into(),
+            },
+            CallOptions::default(),
+        )
+        .await
+        .expect("chain signal");
+    client
+        .cancel_chain(
+            WORKFLOW,
+            RUN,
+            "operator requested",
+            ChainCommand {
+                expected_run_id: RUN.into(),
+            },
+            CallOptions::default(),
+        )
+        .await
+        .expect("chain cancellation");
+    let calls = server.state.calls.lock().expect("calls");
+    assert_eq!(calls.len(), 3);
+    assert_eq!(calls[0].1, calls[1].1);
+    assert_eq!(calls[0].0["idempotency-key"], calls[1].0["idempotency-key"]);
+    for (_, bytes, _) in calls.iter() {
+        let body: serde_json::Value = serde_json::from_slice(bytes).expect("body");
+        assert_eq!(body["expectedRunId"], RUN);
+    }
+}
+#[tokio::test]
+async fn chain_state_calls_preserve_the_optional_head_and_the_durable_update_key() {
+    use sagat_octopus_orchestrator_sdk::{ChainQueryRequest, ChainUpdateRequest};
+    let query = server("chain-query").await;
+    let client =
+        Client::new(options(&query.base, TokenSource::bearer("fixture-token"))).expect("client");
+    client
+        .query_chain(
+            WORKFLOW,
+            RUN,
+            "summary",
+            ChainQueryRequest {
+                args: json!({}),
+                expected_run_id: Some(RUN.into()),
+            },
+            CallOptions::default(),
+        )
+        .await
+        .expect("query");
+    let update = server("chain-update").await;
+    let client =
+        Client::new(options(&update.base, TokenSource::bearer("fixture-token"))).expect("client");
+    client
+        .update_chain(
+            WORKFLOW,
+            RUN,
+            "adjust",
+            ChainUpdateRequest {
+                update_key: "update-1".into(),
+                args: json!({}),
+                expected_state_revision: Some(42),
+                expected_run_id: Some(RUN.into()),
+            },
+            CallOptions::default(),
+        )
+        .await
+        .expect("update");
+    for source in [&query, &update] {
+        let calls = source.state.calls.lock().expect("calls");
+        assert!(!calls[0].0.contains_key("idempotency-key"));
+        let body: serde_json::Value = serde_json::from_slice(&calls[0].1).expect("body");
+        assert_eq!(body["expectedRunId"], RUN);
+    }
+}
+#[tokio::test]
+async fn chain_run_pages_preserve_order_and_continuation_kind_without_payloads() {
+    use futures_util::StreamExt as _;
+    use sagat_octopus_orchestrator_sdk::{CompletionKind, PageOptions};
+    let server = server("chain-pages").await;
+    let client =
+        Client::new(options(&server.base, TokenSource::bearer("fixture-token"))).expect("client");
+    let stream = client.list_all_chain_runs(
+        WORKFLOW,
+        RUN,
+        PageOptions::default(),
+        CallOptions::default(),
+    );
+    futures_util::pin_mut!(stream);
+    let first = stream.next().await.expect("first").expect("segment");
+    assert_eq!(first.index, 0);
+    assert_eq!(first.completion_kind, Some(CompletionKind::Continued));
+    assert_eq!(server.state.calls.lock().expect("calls").len(), 1);
+    let second = stream.next().await.expect("second").expect("segment");
+    assert_eq!(second.index, 1);
+    assert_eq!(second.completion_kind, Some(CompletionKind::Final));
+    assert!(stream.next().await.is_none());
+}
+
+#[tokio::test]
+async fn a_stale_chain_head_is_never_retargeted_to_a_new_run() {
+    use sagat_octopus_orchestrator_sdk::ChainCommand;
+    let server = server("head-changed").await;
+    let client =
+        Client::new(options(&server.base, TokenSource::bearer("fixture-token"))).expect("client");
+    let error = client
+        .signal_chain(
+            WORKFLOW,
+            RUN,
+            "ready",
+            &json!({}),
+            ChainCommand {
+                expected_run_id: RUN.into(),
+            },
+            CallOptions::default(),
+        )
+        .await
+        .expect_err("head changed");
+    assert_eq!(error.code, "CONFLICT");
+    assert_eq!(error.reason(), Some("CHAIN_HEAD_CHANGED"));
+    assert!(!error.retryable);
+    assert_eq!(server.state.calls.lock().expect("calls").len(), 1);
+}
+#[tokio::test]
+async fn chain_page_indices_outside_the_canonical_bound_are_protocol_failures() {
+    use sagat_octopus_orchestrator_sdk::PageOptions;
+    let server = server("bad-chain-page").await;
+    let client =
+        Client::new(options(&server.base, TokenSource::bearer("fixture-token"))).expect("client");
+    let error = client
+        .list_chain_runs(
+            WORKFLOW,
+            RUN,
+            PageOptions::default(),
+            CallOptions::default(),
+        )
+        .await
+        .expect_err("index bound");
+    assert_eq!(error.code, "PROTOCOL");
+    assert_eq!(error.status, Some(200));
+    assert_eq!(
+        error.trace_id.as_deref(),
+        Some("0123456789abcdef0123456789abcdef")
+    );
 }
