@@ -1,6 +1,8 @@
 # Capacity eligibility after a policy reduction (B1c) — resolved by owner decision O701
 
-Status: **decided, no code.** The owner answered O701 on 2026-10-26: a reduction of
+Status: **group eligibility decided, no group runtime code.** The separate 0.3
+[explicit zero tenant policy](./zero-iteration-policy.md) implements flat admission configuration
+without enabling groups. The owner answered O701 on 2026-10-26: a reduction of
 `iteration_concurrency` (including to 0) does **not** pause admitted work. The pause-based model that
 was built first (commit `d917a54f`, withdrawn in the next commit) is therefore not needed and was
 removed; it is kept only in history. This file records the decision, what it makes unnecessary and

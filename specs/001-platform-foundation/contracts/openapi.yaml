@@ -5218,9 +5218,10 @@ components:
         api_requests_per_second and events_per_second are requests/second (maximum 1,000,000,
         fixed two-second burst); event_retention_seconds is 0 or 60..2,592,000 seconds;
         script_retention_days is 0..365 days. iteration_concurrency is tenant-wide; its explicit
-        value is 1..1,000,000,000, its default operator ceiling is 1,024 and, while absent or
-        cleared, structured iteration admission is disabled. Zero disables new admission for
-        resources that accept it.
+        value is 0..1,000,000,000, its default operator ceiling is 1,024 and, while absent or
+        cleared, structured iteration admission is disabled. An explicit zero policy blocks
+        new iteration admissions without pausing already admitted work; its source is tenant.
+        Zero disables new admission for other resources that accept it.
         Database operation ceilings are positive:
         database_statement_bytes <= 65536, database_parameters <= 256,
         database_parameter_bytes <= 262144, database_rows <= 10000,

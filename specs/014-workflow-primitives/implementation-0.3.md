@@ -480,3 +480,74 @@ certifies and replays after later failure. Final strict workspace/all-targets Cl
 again after adding the oracle (52.50s including build-lock wait). No production code changed
 after the35-test native regression or after the focused five-SDK verification. Full stable
 native regression, complete64-scenario, released-profile rollout and workloads remain open.
+
+## Timer broad-gate provenance correction
+
+`timer-19c60a86-broad` passed92fault tests,0failed/ignored,566.81s. Its subsequent
+integration binary was replaced by a concurrent build before Cargo launched it: that phase
+reported597tests instead of the frozen commit's596. It is not evidence for19c60a86.
+The owned mixed-source Cargo/integration processes were terminated (command exit-15,
+1023.32s), preserving the log; no completed integration acceptance is claimed. This was an
+execution mistake, not a test defect. The replacement gate runs from an owned detached
+worktree fixed at19c60a86 (`sagat-octopus-v03-timer-gate-19c60a86`), keeping runtime source
+and fixtures fixed. Cargo still uses the same executable filename in the shared private cache;
+this replacement launches a single integration target, already executing its frozen binary
+before further builds. Its actual header confirms596tests, and a private copy of the linked
+executable is retained before additional compilation. `timer-19c60a86-frozen-integration`
+is pending. Subsequent final release gates must likewise have fixed input provenance.
+
+## Fifth increment: explicit zero tenant iteration policy (O701)
+
+Integrated the existing capacity-protocol lane's owner decision records with --no-ff,
+commit0ff0678e. Its final net diff changes documentation only; no withdrawn pause-based
+model was activated. D704 keeps only fresh admission gated; D705 leaves descendant joins
+and current possession authority as separately unimplemented obligations.
+
+The bounded zero-policy contract is zero-iteration-policy.md. Real REDs:
+`iteration-policy-zero-domain-red` refused0 with OutsideRange (13.43s command);
+`iteration-policy-zero-http-red` returned422 instead of200 (5.00s harness/169.03s command).
+Validator now accepts tenant0; namespace/ceiling/hard maximum rules stay intact. Additive
+migration20261222000000 changes only the existing policy CHECK to0..1e9; down locks the
+policy table, refuses retained0 and restores the positive CHECK. Existing native admission
+comparison already handles0, so no new scheduler throttle/counter or permission is added.
+The id was absent from all local refs/migration paths before allocation; the old migration
+was not rewritten. New/old writer rollout order and the ACCESS EXCLUSIVE validation window
+are documented explicitly.
+
+`iteration-policy-zero-domain-green` passed12quota unit tests,0failed, plus filtered
+zero-test targets;176.54s command. First native attempt passed2/failed1 because the new
+fixture incorrectly expected RUNNING where the existing durable collection status is
+WAITING. This was corrected without changing runtime status semantics. A subsequent
+expanded test compile failed SQLx Acquire's Send lifetime bound inside tokio::spawn;
+joining the actual migrator and held-lock release futures avoids that test-only bound.
+`iteration-policy-zero-expanded-corrected` passed5native tests,0failed/ignored,44.89s
+harness/123.05s command. They include the existing positive/auth/namespace/hard-maximum/audit
+regression, admitted timer completion plus blocked next member at0 then resumption at1,
+actual absent-row INSERT/source/clear distinction and typed AtCapacity versus PolicyMissing,
+CHECK boundaries/down/up and both real writer/down relation-lock orders. The writer uses
+sagat_app. Schema-first and fenced-writer rollback requirements are not inferred as actual
+released-profile acceptance.
+
+Fresh bounded review requested current runbook consistency, absent-row INSERT/source proof,
+actual writer/down barriers and explicit rollback ordering. Those changes are implemented;
+correction review and final contracts/lint are pending. Studio API generation and independent
+check pass; the inspected generated diff changes only the public quota description. No SDK
+protocol/builders, UI layout, nested runtime, version or release changed. Canonical tasks
+remain unchecked.
+
+Correction review found the primary runbook quota paragraph still had the positive range,
+and correctly distinguished the new HTTP hard-maximum negative from a real operator-ceiling
+negative. That paragraph is updated, and the focused HTTP regression now also submits1025
+against the default1024 ceiling. Its updated invocation and final correction review remain
+pending; the earlier five-test pass does not claim this additional HTTP ceiling coverage.
+
+The updated HTTP ceiling gate passed1test/0failed (5.39s harness/75.79s command),
+including1025 versus1024 and the independent1e9+1 hard maximum. Strict workspace/all-targets
+Clippy passed138.25s, then41.48s after the added HTTP case. Contracts passed8developer
+experience +18classification +48primitives,0failed/ignored,65.46s command. fmt, architecture
+(24crates), agent configuration and Studio generation/check pass. Three bounded review cycles
+completed: the last found only wording that overstated all reductions as blocking and an
+awkward explicit-zero term; both are corrected to D704's exact retained<limit rule. No
+required storage/locking/range/permission defect remained in that final review. This closes
+only the explicit-zero increment; full fixed-source native/SDK/upgrade/resource and release
+gates remain open.

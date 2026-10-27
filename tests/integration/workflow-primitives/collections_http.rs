@@ -577,18 +577,24 @@ async fn iteration_capacity_is_tenant_scoped_authorized_audited_and_reducible() 
         .expect("reject namespace iteration capacity");
     assert_eq!(wrong_scope.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
-    let zero = api
-        .as_user(
-            Method::PUT,
-            "/quotas/iteration_concurrency",
-            "alice",
-            "acme",
-        )
-        .json(&json!({"limit": 0}))
-        .send()
-        .await
-        .expect("reject zero iteration capacity");
-    assert_eq!(zero.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    for value in [1_025_u64, 1_000_000_001] {
+        let rejected = api
+            .as_user(
+                Method::PUT,
+                "/quotas/iteration_concurrency",
+                "alice",
+                "acme",
+            )
+            .json(&json!({"limit": value}))
+            .send()
+            .await
+            .expect("reject capacity above the operator ceiling or the hard maximum");
+        assert_eq!(
+            rejected.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "value={value}"
+        );
+    }
 
     let initial = json_of(api.get_as("/quotas", "alice", "acme").await).await;
     let initial = initial["items"]

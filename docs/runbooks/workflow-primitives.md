@@ -28,11 +28,11 @@ curl -X PUT "$API/v1/quotas/iteration_concurrency" \
   -d '{"limit": 32}'
 ```
 
-The value is 1..1,000,000,000, is ceiling checked and audited, and applies to collection and loop
+The value is 0..1,000,000,000, is ceiling checked and audited, and applies to collection and loop
 iterations across all namespaces of the tenant. The default operator ceiling is 1,024; a higher
-setting requires an explicit operator grant. Clearing the tenant setting disables new structured
-iteration admission. Reducing it below current use preserves admitted work and blocks further
-admission until use falls below the new value.
+setting requires an explicit operator grant. An explicit tenant limit of `0` and clearing the setting both block
+new structured admission, with source=tenant and source=default respectively. Reducing it below
+current use preserves admitted work and blocks further admission until use falls below the new value.
 
 The scheduler discovers and advances published collections through the durable collection port.
 The worker protocol negotiates minor 1.5 for scoped work while workers requesting 1.4 retain their
@@ -608,8 +608,9 @@ A PENDING condition/switch entry is scheduler-owned: no activity, ready hint, wo
 or task.ready outbox belongs to its admission. Inspect the qualified admission journal,
 collection membership and scheduler.action spans; durable collection candidates provide
 recovery after a lost hint or cold cache. Existing collection admission/checkpoint counters
-remain applicable. The current iteration_concurrency policy stays positive; a reduction to
-its minimum 1 blocks new slots while accepted controls/checkpoints still progress.
+remain applicable. An explicit iteration_concurrency policy accepts zero. Reducing it to or
+below current use blocks new slots while accepted controls, timers, checkpoints and reserved
+drain still progress.
 
 Migration 20261221000000 distinguishes ACTIVITY/SCHEDULER membership. Downgrade refuses any
 retained SCHEDULER admission, including terminal history and an immutable journal marker

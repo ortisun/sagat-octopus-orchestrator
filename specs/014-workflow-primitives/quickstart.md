@@ -637,3 +637,15 @@ fire but holds its route until resume. Cancellation drains the wait without a ti
 RUST_TEST_THREADS=1 cargo test -p sagat-tests --test integration_workflow_primitives --locked -- collection_timers:: collection_timer_transactions::
 SAGAT_SDK_SCENARIO=collection-timers cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 ```
+
+On the 0.3 branch the tenant may explicitly stop new iteration admission:
+
+```sh
+curl -X PUT "$API/v1/quotas/iteration_concurrency" -H "authorization: Bearer $ADMIN" -H 'content-type: application/json' -d '{"limit":0}'
+```
+
+Accepted members and their timers/compensation continue; the quota reports limit0, its exact
+current use and source=tenant. Set a positive limit to admit remaining captured members. DELETE
+clears the stored policy and reports source=default, whose default0 also blocks new admission.
+Local body maxConcurrency remains1..256. Schema-first upgrade and compatible-writer rollback
+requirements are described in [zero-iteration-policy.md](./zero-iteration-policy.md).

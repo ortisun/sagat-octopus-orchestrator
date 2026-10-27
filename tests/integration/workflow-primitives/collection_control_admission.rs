@@ -40,7 +40,7 @@ async fn entered(name: &str) -> Flow {
     flow
 }
 
-async fn admission(flow: &Flow, index: u32) -> CollectionAdmission {
+pub(super) async fn admission(flow: &Flow, index: u32) -> CollectionAdmission {
     let row = sqlx::query(
         "SELECT r.namespace_id,r.trace_id,r.run_version,s.scope_id,sh.owner,sh.generation,clock_timestamp() AS now \
          FROM runs r JOIN iteration_scopes s ON s.tenant_id=r.tenant_id AND s.run_id=r.id \

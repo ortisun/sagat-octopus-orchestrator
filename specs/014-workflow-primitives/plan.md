@@ -624,3 +624,11 @@ Full/path/frontier readers and both writers enforce the same closed lifecycle an
 metadata. Test journal rollback, stale snapshots, real cancellation/fire lock order, cold resume,
 source-profile exclusion and five existing SDK sleep builders. See scoped-timer-runtime.md.
 No new migration, protocol minor or nested capacity activation is needed for this increment.
+
+### Explicit zero tenant iteration policy (O701)
+
+[zero-iteration-policy.md](./zero-iteration-policy.md) implements the decided admission-only
+meaning of zero. Keep default/absent versus explicit tenant policy distinct, reuse the current
+policy/run/usage locks and admission comparison, and preserve accepted progress and drain.
+An additive positive→nonnegative CHECK has a retained-zero downgrade guard; deploy schema
+first and fence zero-capable writers before rollback. This adds no group runtime or counter.

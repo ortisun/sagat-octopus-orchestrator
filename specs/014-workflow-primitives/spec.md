@@ -644,3 +644,11 @@ drains an unresolved timer without an external effect. Root timer semantics stay
 This does not broaden loop bodies, frozen OrdinaryLeafV1, event waits, child or nested scopes.
 See [scoped-timer-runtime.md](./scoped-timer-runtime.md) for the exact lifecycle, rejection and
 acceptance boundaries; canonical tasks and full release acceptance remain open.
+
+### Explicit zero iteration policy (O701)
+
+A tenant-wide iteration_concurrency policy may be explicitly0. It gates only fresh admission,
+retaining already accepted members and reserved drain; raising it permits remaining captured
+members. Absent/default0 and explicit tenant0 remain distinct governance sources. The public
+maxConcurrency definition bound is unchanged. See zero-iteration-policy.md for native CHECK,
+rollback, audit and bounded acceptance evidence; nested capacity remains separately gated.

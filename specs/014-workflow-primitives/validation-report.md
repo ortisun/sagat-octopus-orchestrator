@@ -3881,3 +3881,22 @@ more after review), 17 green, eight named mutations killed, domain suite 561 pas
 reviews found no code defect, and the architecture review exposed the conflict with the released
 reduction contract that led to O701. Gates re-run on the tree after removal are listed in the commit
 that removes it.
+
+## 0.3 scoped timers and explicit zero-policy progress — 2026-10-27
+
+The ongoing implementation ledger is [implementation-0.3.md](./implementation-0.3.md).
+Timers: core1017passed, focused native35passed plus separate2-test full/frontier journal/
+existing-source oracle; common five-SDK scenario64 verified without regeneration; strict
+workspace Clippy passed. These are separate invocations, not one combined count. Timer
+fault92passed; the following integration phase was deliberately stopped because a concurrent
+build replaced the executable before Cargo launched it. An immutable-checkout replacement
+is running; no full native pass is claimed for that mixed-source invocation.
+
+O701: domain and public API zero refusals reproduced before change. Additive migration
+20261222000000 widens the existing policy CHECK; retained zero blocks downgrade under the
+policy-table lock. Five focused native tests pass, including absent-row INSERT/source/clear,
+accepted timer progress at zero, fresh-admission refusal/resumption and both actual writer/
+downgrade lock orders. The table validation/rollback rollout windows are documented in
+[zero-iteration-policy.md](./zero-iteration-policy.md). Bounded correction review, complete
+contracts/lint, fixed-source full regression, released-profile rollout and resource workloads
+remain pending. All eight canonical tasks remain unchecked; no release is accepted.

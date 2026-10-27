@@ -867,3 +867,14 @@ both actual cancellation/fire commit orders. public_scheduler_entries_remain_out
 keeps the dormant source predicate closed. Common SDK collection-timers uses existing sleep
 builders in all five languages. Exact counts/limits remain in implementation-0.3.md; no
 canonical task or release closure follows these focused fixtures.
+
+### 2026-10-27 explicit zero iteration policy
+
+O701/D704, T014-014–017/040, FR-014-005/015: quota::tests::zero_iteration_capacity_is_a_valid_tenant_admission_stop
+and iteration_policy_zero prove tenant0, source/default distinction, accepted timer progress,
+fresh admission blocking and later resumption, native CHECK boundaries and real writer/down
+lock orders. The existing collections_http quota test retains role/namespace/ceiling/audit
+regressions (the new1025/default1024 HTTP ceiling check has a separately recorded final gate).
+The OpenAPI quota description and generated Studio API comment match; ordinary
+quota.changed audit and existing capacity refusal vocabulary remain in use. Exact failed and
+passed invocations are in implementation-0.3.md; nested/runtime/release tasks stay open.
