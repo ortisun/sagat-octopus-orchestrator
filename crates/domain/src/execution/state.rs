@@ -1341,6 +1341,34 @@ impl StepState {
         self.timed_out
     }
 
+    /// Complete lifecycle invariant for a scheduler-owned scoped timer.
+    #[must_use]
+    pub fn is_valid_scoped_timer(&self) -> bool {
+        if self.attempt != 0
+            || self.generation != 0
+            || self.cancel_requested
+            || self.timed_out
+            || self.next_attempt_at.is_some()
+            || self.condition.is_some()
+            || self.switch_selection.is_some()
+        {
+            return false;
+        }
+        match self.status {
+            StepStatus::Pending => !self.routed && self.waiting.is_none() && self.failure.is_none(),
+            StepStatus::Waiting => {
+                !self.routed
+                    && matches!(self.waiting, Some(WaitingOn::Timer { .. }))
+                    && self.failure.is_none()
+            }
+            StepStatus::Succeeded => self.waiting.is_none() && self.failure.is_none(),
+            StepStatus::Cancelled => {
+                self.routed && self.waiting.is_none() && self.failure.is_none()
+            }
+            _ => false,
+        }
+    }
+
     /// Rebuilds a step from trusted storage (a projection row). The reducer's checks do not run:
     /// the rows were written from states the reducer produced, and tests compare the result with a
     /// replay of the journal.
@@ -2932,7 +2960,9 @@ impl RunState {
                     // (or is ready to) in a run that is stopping and can no longer lease it.
                     let safe_to_stop = (step.attempt == 0
                         && matches!(step.status, StepStatus::Pending | StepStatus::Ready))
-                        || matches!(step.status, StepStatus::Ready | StepStatus::RetryWait);
+                        || matches!(step.status, StepStatus::Ready | StepStatus::RetryWait)
+                        || (matches!(step.waiting_on(), Some(WaitingOn::Timer { .. }))
+                            && step.is_valid_scoped_timer());
                     if unresolved_derived || (!step.status.is_terminal() && !safe_to_stop) {
                         return Err(ExecutionError::IllegalCollectionTransition {
                             collection: collection.clone(),
