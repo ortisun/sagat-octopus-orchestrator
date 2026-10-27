@@ -1,0 +1,588 @@
+openapi: 3.1.0
+info:
+  title: Feature 024 draft fragment — database engines and data assets
+  version: 0.0.0-draft
+  description: |
+    Draft fragment, not a standalone API. T024-008 merges it into
+    specs/001-platform-foundation/contracts/openapi.yaml (additive within /v1). Responses reuse the
+    canonical components Error, BadRequest, Unauthorized, Forbidden, NotFound, Conflict,
+    ValidationError, TooManyRequests, Unavailable, InternalError, NamespaceId, TraceId and
+    HttpRequestId, referenced here by the same names. Every route resolves tenant and namespace from
+    the authenticated context; a foreign resource is an opaque 404. No response carries snapshot
+    content, SQL text of transforms, credential values or provider routing.
+paths:
+  /namespaces/{namespaceId}/data-assets:
+    parameters:
+      - $ref: '#/components/parameters/NamespaceId'
+    get:
+      operationId: listDataAssets
+      tags: [Data]
+      x-implemented: 'pending 024'
+      summary: List data asset metadata in the namespace
+      description: Requires namespace:read. Deleted assets are omitted unless includeDeleted=true.
+      parameters:
+        - {name: kind, in: query, schema: {type: string, enum: [MANAGED, EXTERNAL]}}
+        - {name: includeDeleted, in: query, schema: {type: boolean, default: false}}
+        - {name: pageToken, in: query, schema: {type: string, maxLength: 256}}
+        - {name: pageSize, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 50}}
+      responses:
+        '200': {description: Asset metadata, content: {application/json: {schema: {$ref: '#/components/schemas/DataAssetList'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /namespaces/{namespaceId}/data-assets/{assetName}:
+    parameters:
+      - $ref: '#/components/parameters/NamespaceId'
+      - $ref: '#/components/parameters/AssetName'
+    get:
+      operationId: getDataAsset
+      tags: [Data]
+      x-implemented: 'pending 024'
+      summary: Read an asset with its declaration at a revision
+      description: Requires namespace:read. Status and pointer always reflect current authority.
+      parameters:
+        - {name: revision, in: query, schema: {type: integer, minimum: 1, maximum: 2147483646}}
+      responses:
+        '200': {description: Asset, content: {application/json: {schema: {$ref: '#/components/schemas/DataAsset'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    put:
+      operationId: putDataAsset
+      tags: [Data]
+      x-implemented: 'pending 024'
+      summary: Declare or revise an asset
+      description: |
+        Requires current data:asset:manage. expectedRevision 0 creates. Retries keep requestId;
+        changed content under the same requestId conflicts. A managed revision that breaks its
+        compatibility mode fails VALIDATION_FAILED reason ASSET_CONTRACT_INCOMPATIBLE. Kind is
+        immutable. Revision, head and audit commit together.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PutDataAssetRequest'}
+      responses:
+        '200': {description: Asset, content: {application/json: {schema: {$ref: '#/components/schemas/DataAsset'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    delete:
+      operationId: deleteDataAsset
+      tags: [Data]
+      x-implemented: 'pending 024'
+      summary: Tombstone an asset
+      description: Requires current data:asset:manage and the expected revision. Retained snapshots become eligible for retention except those pinned by live runs.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DeleteDataAssetRequest'}
+      responses:
+        '200': {description: Tombstoned asset, content: {application/json: {schema: {$ref: '#/components/schemas/DataAsset'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /namespaces/{namespaceId}/data-assets/{assetName}/snapshots:
+    parameters:
+      - $ref: '#/components/parameters/NamespaceId'
+      - $ref: '#/components/parameters/AssetName'
+    get:
+      operationId: listDataSnapshots
+      tags: [Data]
+      x-implemented: 'pending 024'
+      summary: List snapshot metadata, newest first
+      description: Requires namespace:read. Counts, sizes, states and audit outcomes only.
+      parameters:
+        - {name: state, in: query, schema: {$ref: '#/components/schemas/SnapshotState'}}
+        - {name: pageToken, in: query, schema: {type: string, maxLength: 256}}
+        - {name: pageSize, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 25}}
+      responses:
+        '200': {description: Snapshots, content: {application/json: {schema: {$ref: '#/components/schemas/DataSnapshotList'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /namespaces/{namespaceId}/data-assets/{assetName}/snapshots/{snapshotId}:
+    parameters:
+      - $ref: '#/components/parameters/NamespaceId'
+      - $ref: '#/components/parameters/AssetName'
+      - {name: snapshotId, in: path, required: true, schema: {type: string, format: uuid}}
+    get:
+      operationId: getDataSnapshot
+      tags: [Data]
+      x-implemented: 'pending 024'
+      summary: Read one snapshot with provenance and audit outcomes
+      description: Requires namespace:read. Producer run and node are shown only with run:read; otherwise opaque.
+      responses:
+        '200': {description: Snapshot, content: {application/json: {schema: {$ref: '#/components/schemas/DataSnapshot'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /namespaces/{namespaceId}/data-assets/{assetName}/publications:
+    parameters:
+      - $ref: '#/components/parameters/NamespaceId'
+      - $ref: '#/components/parameters/AssetName'
+    get:
+      operationId: listDataPublications
+      tags: [Data]
+      x-implemented: 'pending 024'
+      summary: Publication history, newest first
+      description: Requires namespace:read. Justifications are returned only to data:asset:publish holders.
+      parameters:
+        - {name: pageToken, in: query, schema: {type: string, maxLength: 256}}
+        - {name: pageSize, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 25}}
+      responses:
+        '200': {description: Publications, content: {application/json: {schema: {$ref: '#/components/schemas/DataPublicationList'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      operationId: publishDataSnapshot
+      tags: [Data]
+      x-implemented: 'pending 024'
+      summary: Publish an audited snapshot or roll back to a previously published one
+      description: |
+        Requires current data:asset:publish. Idempotency-Key is required; the same key and body
+        replay the stored publication after current authorization; changed content conflicts.
+        PUBLISH needs an AUDITED snapshot whose base pointer version equals the current one;
+        ROLLBACK needs a retained snapshot that was PUBLISHED. A QUARANTINED snapshot answers 409
+        reason SNAPSHOT_QUARANTINED; a changed pointer answers 409 reason ASSET_PUBLISH_STALE.
+        Pointer, publication record, inbox event, webhook deliveries and audit commit together.
+      parameters:
+        - {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 8, maxLength: 160, pattern: '^[\x21-\x7E]+$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PublishDataSnapshotRequest'}
+      responses:
+        '201': {description: Publication, content: {application/json: {schema: {$ref: '#/components/schemas/DataPublication'}}}}
+        '200': {description: Snapshot already current (alreadyPublished true), content: {application/json: {schema: {$ref: '#/components/schemas/DataPublication'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /namespaces/{namespaceId}/data-assets/{assetName}/freshness:
+    parameters:
+      - $ref: '#/components/parameters/NamespaceId'
+      - $ref: '#/components/parameters/AssetName'
+    get:
+      operationId: getDataAssetFreshness
+      tags: [Data]
+      x-implemented: 'pending 024'
+      summary: Freshness status computed on the database clock
+      description: Requires namespace:read.
+      responses:
+        '200': {description: Freshness, content: {application/json: {schema: {$ref: '#/components/schemas/DataFreshness'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /namespaces/{namespaceId}/data-lineage:
+    parameters:
+      - $ref: '#/components/parameters/NamespaceId'
+    get:
+      operationId: getDataLineage
+      tags: [Data]
+      x-implemented: 'pending 024'
+      summary: Bounded lineage graph around an asset
+      description: |
+        Requires namespace:read and definition:read. Combines declared edges of active workflow
+        versions and recorded snapshot provenance. Truncation is explicit.
+      parameters:
+        - {name: focus, in: query, required: true, schema: {$ref: '#/components/schemas/AssetNameValue'}}
+        - {name: depth, in: query, schema: {type: integer, minimum: 1, maximum: 8, default: 4}}
+        - {name: direction, in: query, schema: {type: string, enum: [upstream, downstream, both], default: both}}
+      responses:
+        '200': {description: Lineage, content: {application/json: {schema: {$ref: '#/components/schemas/DataLineage'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+components:
+  parameters:
+    NamespaceId:
+      description: Canonical parameter, unchanged.
+      name: namespaceId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    AssetName:
+      name: assetName
+      in: path
+      required: true
+      schema: {$ref: '#/components/schemas/AssetNameValue'}
+  schemas:
+    AssetNameValue:
+      type: string
+      minLength: 3
+      maxLength: 63
+      pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'
+    SnapshotState:
+      type: string
+      enum: [AUDITED, QUARANTINED, PUBLISHED, ABANDONED, RETIRED]
+    ColumnClassification:
+      type: string
+      enum: [public, internal, pii]
+      description: The 016 levels; secret is refused because assets never hold secrets. Absent means pii.
+    DataColumn:
+      type: object
+      additionalProperties: false
+      required: [name, type]
+      properties:
+        name: {type: string, pattern: '^[a-z_][a-z0-9_]{0,62}$'}
+        type: {type: string, enum: [boolean, int32, int64, decimal, float64, string, binary, date, timestamp, json]}
+        precision: {type: integer, minimum: 1, maximum: 38, description: decimal only}
+        scale: {type: integer, minimum: 0, maximum: 38, description: decimal only; at most precision}
+        nullable: {type: boolean, default: true}
+        classification: {$ref: '#/components/schemas/ColumnClassification'}
+    SchemaContract:
+      type: object
+      additionalProperties: false
+      required: [columns]
+      properties:
+        columns: {type: array, minItems: 1, maxItems: 256, items: {$ref: '#/components/schemas/DataColumn'}}
+        key: {type: array, maxItems: 16, uniqueItems: true, items: {type: string}}
+        compatibility: {type: string, enum: [additive, strict], default: additive}
+    AuditCheck:
+      type: object
+      additionalProperties: false
+      required: [name, kind]
+      properties:
+        name: {type: string, pattern: '^[a-z][a-z0-9_]{0,62}$'}
+        kind: {type: string, enum: [rowCount, unique, acceptedValues, custom]}
+        minRows: {type: string, pattern: '^(0|[1-9][0-9]{0,18})$'}
+        maxRows: {type: string, pattern: '^(0|[1-9][0-9]{0,18})$'}
+        columns: {type: array, maxItems: 16, items: {type: string}}
+        acceptedValues: {type: array, maxItems: 64, items: {type: string, maxLength: 256}}
+        statement: {type: string, minLength: 1, maxLength: 16384, description: 'custom only; one DuckDB SELECT returning one row with a BIGINT column named failures'}
+    FreshnessPolicy:
+      type: object
+      additionalProperties: false
+      required: [maxLagSeconds]
+      properties:
+        maxLagSeconds: {type: integer, minimum: 60, maximum: 31536000}
+        deadline:
+          type: object
+          additionalProperties: false
+          required: [cron, graceSeconds]
+          properties:
+            cron: {type: string, maxLength: 128, description: five fields, as feature 004}
+            timeZone: {type: string, maxLength: 64, default: UTC}
+            graceSeconds: {type: integer, minimum: 0, maximum: 86400}
+    RetentionPolicy:
+      type: object
+      additionalProperties: false
+      properties:
+        retainPublished: {type: integer, minimum: 1, maximum: 50, default: 5}
+        retainUnpublishedDays: {type: integer, minimum: 1, maximum: 30, default: 7}
+    ManagedDeclaration:
+      type: object
+      additionalProperties: false
+      required: [kind, contract, producer]
+      properties:
+        kind: {const: MANAGED}
+        description: {type: string, maxLength: 1024}
+        contract: {$ref: '#/components/schemas/SchemaContract'}
+        producer:
+          type: object
+          additionalProperties: false
+          required: [workflow, node]
+          properties:
+            workflow: {type: string, maxLength: 128}
+            node: {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$'}
+        audits: {type: array, maxItems: 32, items: {$ref: '#/components/schemas/AuditCheck'}}
+        freshness: {$ref: '#/components/schemas/FreshnessPolicy'}
+        retention: {$ref: '#/components/schemas/RetentionPolicy'}
+    ExternalDeclaration:
+      type: object
+      additionalProperties: false
+      required: [kind, connection, locator, producer]
+      properties:
+        kind: {const: EXTERNAL}
+        producer:
+          type: object
+          additionalProperties: false
+          required: [workflow, node]
+          description: The only database node whose declared writes record observations; it must use this connection.
+          properties:
+            workflow: {type: string, maxLength: 128}
+            node: {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$'}
+        description: {type: string, maxLength: 1024}
+        connection: {type: string, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}
+        locator: {type: string, minLength: 1, maxLength: 512, description: 'Opaque to the platform (for example PROJECT.DATASET.TABLE); never logged or used as a metric label'}
+        freshness: {$ref: '#/components/schemas/FreshnessPolicy'}
+    DataAssetDeclaration:
+      oneOf:
+        - $ref: '#/components/schemas/ManagedDeclaration'
+        - $ref: '#/components/schemas/ExternalDeclaration'
+      discriminator: {propertyName: kind}
+    PutDataAssetRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, expectedRevision, status, declaration]
+      properties:
+        requestId: {type: string, format: uuid}
+        expectedRevision: {type: integer, minimum: 0, maximum: 2147483646}
+        status: {type: string, enum: [ACTIVE, PAUSED]}
+        declaration: {$ref: '#/components/schemas/DataAssetDeclaration'}
+    DeleteDataAssetRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, expectedRevision]
+      properties:
+        requestId: {type: string, format: uuid}
+        expectedRevision: {type: integer, minimum: 1, maximum: 2147483646}
+    DataAsset:
+      type: object
+      additionalProperties: false
+      required: [id, namespaceId, name, kind, status, revision, pointerVersion, declaration, createdAt, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        namespaceId: {type: string, format: uuid}
+        name: {$ref: '#/components/schemas/AssetNameValue'}
+        kind: {type: string, enum: [MANAGED, EXTERNAL]}
+        status: {type: string, enum: [ACTIVE, PAUSED, DELETED]}
+        revision: {type: integer, minimum: 1}
+        pointerVersion: {type: integer, minimum: 0}
+        currentSnapshotId: {type: [string, 'null'], format: uuid}
+        lastPublishedAt: {type: [string, 'null'], format: date-time}
+        lastObservedAt: {type: [string, 'null'], format: date-time}
+        declaration: {$ref: '#/components/schemas/DataAssetDeclaration'}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    DataAssetList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: {type: array, maxItems: 200, items: {$ref: '#/components/schemas/DataAsset'}}
+        nextPageToken: {type: string, maxLength: 256}
+    AuditOutcome:
+      type: object
+      additionalProperties: false
+      required: [name, outcome]
+      properties:
+        name: {type: string}
+        outcome: {type: string, enum: [PASSED, FAILED, ERROR]}
+        failingCount: {type: string, pattern: '^(0|[1-9][0-9]{0,18})$'}
+    DataSnapshot:
+      type: object
+      additionalProperties: false
+      required: [id, assetName, state, declarationRevision, rowCount, byteCount, partCount, schemaFingerprint, createdAt, audits]
+      properties:
+        id: {type: string, format: uuid}
+        assetName: {$ref: '#/components/schemas/AssetNameValue'}
+        state: {$ref: '#/components/schemas/SnapshotState'}
+        current: {type: boolean}
+        declarationRevision: {type: integer, minimum: 1}
+        rowCount: {type: string, pattern: '^(0|[1-9][0-9]{0,18})$'}
+        byteCount: {type: string, pattern: '^(0|[1-9][0-9]{0,18})$'}
+        partCount: {type: integer, minimum: 1, maximum: 32}
+        schemaFingerprint: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        producer:
+          type: object
+          additionalProperties: false
+          properties:
+            runId: {type: string, format: uuid}
+            node: {type: string}
+            visible: {type: boolean}
+        inputs:
+          type: array
+          maxItems: 32
+          items:
+            type: object
+            additionalProperties: false
+            required: [alias]
+            description: Either assetName and snapshotId, or sourceStep for an ingestion input.
+            properties:
+              alias: {type: string}
+              assetName: {type: string}
+              snapshotId: {type: string, format: uuid}
+              sourceStep:
+                type: object
+                additionalProperties: false
+                required: [node]
+                properties:
+                  runId: {type: string, format: uuid, description: shown only with run:read}
+                  node: {type: string}
+        audits: {type: array, maxItems: 128, items: {$ref: '#/components/schemas/AuditOutcome'}}
+        createdAt: {type: string, format: date-time}
+        publishedAt: {type: [string, 'null'], format: date-time}
+        retiredAt: {type: [string, 'null'], format: date-time}
+    DataSnapshotList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: {type: array, maxItems: 100, items: {$ref: '#/components/schemas/DataSnapshot'}}
+        nextPageToken: {type: string, maxLength: 256}
+    PublishDataSnapshotRequest:
+      type: object
+      additionalProperties: false
+      required: [kind, snapshotId, expectedPointerVersion, justification]
+      properties:
+        kind: {type: string, enum: [PUBLISH, ROLLBACK]}
+        snapshotId: {type: string, format: uuid}
+        expectedPointerVersion: {type: integer, minimum: 0}
+        justification: {type: string, minLength: 1, maxLength: 1024}
+    DataPublication:
+      type: object
+      additionalProperties: false
+      required: [assetName, pointerVersion, snapshotId, origin, publishedAt, alreadyPublished]
+      properties:
+        assetName: {$ref: '#/components/schemas/AssetNameValue'}
+        pointerVersion: {type: integer, minimum: 1}
+        snapshotId: {type: string, format: uuid}
+        previousSnapshotId: {type: [string, 'null'], format: uuid}
+        origin: {type: string, enum: [RUN_AUTO, RUN_NODE, API_PUBLISH, API_ROLLBACK]}
+        runId: {type: [string, 'null'], format: uuid}
+        node: {type: [string, 'null']}
+        justification: {type: [string, 'null'], description: only for data:asset:publish holders}
+        publishedAt: {type: string, format: date-time}
+        alreadyPublished: {type: boolean}
+    DataPublicationList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: {type: array, maxItems: 100, items: {$ref: '#/components/schemas/DataPublication'}}
+        nextPageToken: {type: string, maxLength: 256}
+    DataFreshness:
+      type: object
+      additionalProperties: false
+      required: [assetName, status, evaluatedAt]
+      properties:
+        assetName: {$ref: '#/components/schemas/AssetNameValue'}
+        status: {type: string, enum: [FRESH, STALE, NEVER_PUBLISHED, NOT_TRACKED]}
+        reason: {type: string, enum: [MAX_LAG, DEADLINE]}
+        lastPublishedAt: {type: [string, 'null'], format: date-time}
+        staleSince: {type: [string, 'null'], format: date-time}
+        evaluatedAt: {type: string, format: date-time, description: database clock}
+    DataLineage:
+      type: object
+      additionalProperties: false
+      required: [nodes, edges, truncated]
+      properties:
+        nodes:
+          type: array
+          maxItems: 500
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, type]
+            properties:
+              id: {type: string, maxLength: 200}
+              type: {type: string, enum: [asset, producer, consumer, opaque]}
+              assetName: {type: string}
+              kind: {type: string, enum: [MANAGED, EXTERNAL]}
+              workflow: {type: string}
+              node: {type: string}
+              freshness: {type: string, enum: [FRESH, STALE, NEVER_PUBLISHED, NOT_TRACKED]}
+        edges:
+          type: array
+          maxItems: 2000
+          items:
+            type: object
+            additionalProperties: false
+            required: [from, to, source]
+            properties:
+              from: {type: string}
+              to: {type: string}
+              source: {type: string, enum: [declared, recorded]}
+        truncated: {type: boolean}
+    # Connection settings union (replaces the single PostgresConnectionConfig reference in
+    # DatabaseConnection.config and PutDatabaseConnectionRequest.config; PostgreSQL is unchanged).
+    DatabaseConnectionConfig:
+      oneOf:
+        - {$ref: '#/components/schemas/PostgresConnectionConfig'}
+        - {$ref: '#/components/schemas/MysqlConnectionConfig'}
+        - {$ref: '#/components/schemas/SqlServerConnectionConfig'}
+        - {$ref: '#/components/schemas/BigQueryConnectionConfig'}
+        - {$ref: '#/components/schemas/SnowflakeConnectionConfig'}
+      discriminator: {propertyName: driver}
+    PostgresConnectionConfig:
+      description: Canonical 017 schema, unchanged; referenced here for the union.
+      type: object
+    MysqlConnectionConfig:
+      type: object
+      additionalProperties: false
+      required: [driver, host, port, database, tls, secretName]
+      properties:
+        driver: {type: string, enum: [mysql, mariadb]}
+        host: {type: string, minLength: 1, maxLength: 253}
+        port: {type: integer, minimum: 1, maximum: 65535}
+        database: {type: string, minLength: 1, maxLength: 64}
+        tls: {$ref: '#/components/schemas/DatabaseTls'}
+        secretName: {type: string, pattern: '^[a-z][a-z0-9_.-]{0,63}$'}
+        limits: {$ref: '#/components/schemas/DatabaseLimits'}
+    SqlServerConnectionConfig:
+      type: object
+      additionalProperties: false
+      required: [driver, host, port, database, encryption, secretName]
+      properties:
+        driver: {const: sqlserver}
+        host: {type: string, minLength: 1, maxLength: 253}
+        port: {type: integer, minimum: 1, maximum: 65535}
+        database: {type: string, minLength: 1, maxLength: 128}
+        encryption: {type: string, enum: [strict, verify-full, development-plaintext]}
+        caPem: {type: string, maxLength: 65536}
+        hostNameInCertificate: {type: string, maxLength: 253}
+        secretName: {type: string, pattern: '^[a-z][a-z0-9_.-]{0,63}$'}
+        limits: {$ref: '#/components/schemas/DatabaseLimits'}
+    BigQueryConnectionConfig:
+      type: object
+      additionalProperties: false
+      required: [driver, projectId, location, maximumBytesBilled, secretName]
+      properties:
+        driver: {const: bigquery}
+        projectId: {type: string, pattern: '^[a-z][a-z0-9-]{4,28}[a-z0-9]$'}
+        location: {type: string, pattern: '^[A-Za-z0-9-]{1,64}$'}
+        maximumBytesBilled: {type: string, pattern: '^[1-9][0-9]{0,12}$', description: 'Bytes, 1..1 TiB, decimal string; also bounded by the database_bytes_billed quota'}
+        secretName: {type: string, pattern: '^[a-z][a-z0-9_.-]{0,63}$'}
+        limits: {$ref: '#/components/schemas/DatabaseLimits'}
+    SnowflakeConnectionConfig:
+      type: object
+      additionalProperties: false
+      required: [driver, account, endpoint, warehouse, role, database, schema, secretName]
+      properties:
+        driver: {const: snowflake}
+        account: {type: string, pattern: '^[A-Za-z0-9_.-]{1,255}$'}
+        endpoint: {type: string, enum: [public, privatelink]}
+        warehouse: {type: string, minLength: 1, maxLength: 255}
+        role: {type: string, minLength: 1, maxLength: 255}
+        database: {type: string, minLength: 1, maxLength: 255}
+        schema: {type: string, minLength: 1, maxLength: 255}
+        secretName: {type: string, pattern: '^[a-z][a-z0-9_.-]{0,63}$'}
+        limits: {$ref: '#/components/schemas/DatabaseLimits'}
+    DatabaseTls:
+      description: Canonical 017 schema, unchanged.
+      type: object
+    DatabaseLimits:
+      description: Canonical 017 schema; timeoutMs maximum becomes per driver (30000, or 600000 for bigquery and snowflake).
+      type: object
+    DatabaseDriverListItem:
+      description: Grows the canonical DatabaseDriverList item; maxItems grows from 1 to 6. DuckDB is not a driver (it is the dataQuery data node).
+      type: object
+      additionalProperties: false
+      required: [id, operations, parameterTypes, authModes, defaultLimits, maximumLimits]
+      properties:
+        id: {type: string, enum: [postgresql, mysql, mariadb, sqlserver, bigquery, snowflake]}
+        operations: {type: array, items: {type: string, enum: [query, execute]}}
+        parameterTypes: {type: array, items: {type: string, enum: ['null', boolean, integer, decimal, float, text, timestamp, date, binary, json]}}
+        authModes: {type: array, items: {type: string, enum: [password, sql-login, service-account-key, key-pair]}}
+        defaultLimits: {$ref: '#/components/schemas/DatabaseLimits'}
+        maximumLimits: {$ref: '#/components/schemas/DatabaseLimits'}
+    QuotaResourceAdditions:
+      description: Values appended to the canonical Quota.resource enum.
+      type: string
+      enum: [database_analytic_timeout_ms, database_bytes_billed, data_assets, data_snapshot_bytes, data_concurrency, tenant_data_concurrency, tenant_data_bytes]
+    AlertKindAdditions:
+      description: Values appended to the canonical alert kind enum.
+      type: string
+      enum: [DATA_ASSET_STALE, DATA_SNAPSHOT_QUARANTINED]
+    WebhookEventAdditions:
+      description: Value appended to the webhook subscription events enum.
+      type: string
+      enum: [data.asset.published]
+  responses:
+    Unauthorized: {description: See canonical}
+    Forbidden: {description: See canonical}
+    NotFound: {description: See canonical}
+    Conflict: {description: See canonical}
+    BadRequest: {description: See canonical}
+    ValidationError: {description: See canonical}
+    TooManyRequests: {description: See canonical}
+  securitySchemes: {}
