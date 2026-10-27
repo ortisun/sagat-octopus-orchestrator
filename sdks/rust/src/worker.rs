@@ -71,7 +71,33 @@ impl std::fmt::Debug for WorkerOptions {
             .finish_non_exhaustive()
     }
 }
-type Handler = dyn Fn(ActivityContext, Value) -> BoxFuture<'static, Result<Option<String>, ActivityFailure>>
+enum ActivityOutput {
+    None,
+    Json(String),
+    Blob(crate::BlobDescriptor),
+}
+impl std::fmt::Debug for ActivityOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::None => f.write_str("NoValue"),
+            Self::Json(value) => f
+                .debug_struct("JsonOutput")
+                .field("bytes", &value.len())
+                .finish(),
+            Self::Blob(value) => value.fmt(f),
+        }
+    }
+}
+impl ActivityOutput {
+    fn wire(self) -> (String, String, String) {
+        match self {
+            Self::None => (String::new(), String::new(), String::new()),
+            Self::Json(value) => (value, String::new(), String::new()),
+            Self::Blob(value) => (String::new(), value.id.to_string(), value.sha256),
+        }
+    }
+}
+type Handler = dyn Fn(ActivityContext, Value) -> BoxFuture<'static, Result<ActivityOutput, ActivityFailure>>
     + Send
     + Sync;
 struct Running {
@@ -201,14 +227,28 @@ impl WorkerHost {
                             "the activity input does not match its declared type",
                         )
                     })?;
+                    let kind = ctx.task.task_kind;
                     let capability = ctx.capabilities.clone();
                     let result = handler(ctx, input).await;
                     if let Some(capability) = capability {
                         capability.invalidate();
                     }
                     let output = result?;
+                    if kind == TaskKind::Reconciliation
+                        && std::any::TypeId::of::<O>() != std::any::TypeId::of::<crate::Verdict>()
+                    {
+                        return Err(ActivityFailure::permanent(
+                            "RECONCILIATION_ANSWER_INVALID",
+                            "a reconciler must return a typed verdict",
+                        ));
+                    }
                     if std::any::TypeId::of::<O>() == std::any::TypeId::of::<()>() {
-                        return Ok(None);
+                        return Ok(ActivityOutput::None);
+                    }
+                    if let Some(blob) =
+                        (&output as &dyn std::any::Any).downcast_ref::<crate::BlobOutput>()
+                    {
+                        return Ok(ActivityOutput::Blob(blob.descriptor().clone()));
                     }
                     let encoded =
                         crate::json::encode(&output, 256 * 1024).map_err(|error| match error {
@@ -221,12 +261,29 @@ impl WorkerHost {
                                 "the activity output is not JSON",
                             ),
                         })?;
-                    Ok(Some(encoded))
+                    Ok(ActivityOutput::Json(encoded))
                 }
                 .boxed()
             }),
         );
         Ok(())
+    }
+    pub fn compensation<I, O, F, Fut>(&mut self, name: &str, handler: F) -> Result<(), SagatError>
+    where
+        I: DeserializeOwned + Send + 'static,
+        O: Serialize + Send + 'static,
+        F: Fn(ActivityContext, I) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<O, ActivityFailure>> + Send + 'static,
+    {
+        self.activity(name, handler)
+    }
+    pub fn reconciler<I, F, Fut>(&mut self, name: &str, handler: F) -> Result<(), SagatError>
+    where
+        I: DeserializeOwned + Send + 'static,
+        F: Fn(ActivityContext, I) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<crate::Verdict, ActivityFailure>> + Send + 'static,
+    {
+        self.activity(name, handler)
     }
     /// Wait for a non-retryable discovery failure. Existing handlers keep their original leases.
     pub async fn wait_for_failure(&self) -> SagatError {
@@ -781,31 +838,41 @@ async fn report(
     session: &Session,
     lease: &pb::TaskLease,
     ctx: &ActivityContext,
-    result: Result<Option<String>, ActivityFailure>,
+    result: Result<ActivityOutput, ActivityFailure>,
 ) {
+    let result = match result {
+        Ok(ActivityOutput::Blob(_)) if session.minor < 3 => Err(ActivityFailure::permanent(
+            "UNSUPPORTED_PROTOCOL",
+            "blob outputs require worker protocol 1.3",
+        )),
+        result => result,
+    };
     let instance = if session.minor >= 5 {
         lease.instance.clone()
     } else {
         None
     };
     let (complete, fail) = match result {
-        Ok(output) => (
-            Some(pb::CompleteStepRequest {
-                task_id: lease.task_id.clone(),
-                run_id: lease.run_id.clone(),
-                step_id: lease.step_id.clone(),
-                attempt: lease.attempt,
-                generation: lease.generation,
-                lease_token: lease.lease_token.clone(),
-                idempotency_key: format!("done-{}", lease.task_id),
-                output_json: output.unwrap_or_default(),
-                output_blob_ref: String::new(),
-                output_sha256: String::new(),
-                traceparent: lease.traceparent.clone(),
-                instance,
-            }),
-            None,
-        ),
+        Ok(output) => {
+            let (output_json, output_blob_ref, output_sha256) = output.wire();
+            (
+                Some(pb::CompleteStepRequest {
+                    task_id: lease.task_id.clone(),
+                    run_id: lease.run_id.clone(),
+                    step_id: lease.step_id.clone(),
+                    attempt: lease.attempt,
+                    generation: lease.generation,
+                    lease_token: lease.lease_token.clone(),
+                    idempotency_key: format!("done-{}", lease.task_id),
+                    output_json,
+                    output_blob_ref,
+                    output_sha256,
+                    traceparent: lease.traceparent.clone(),
+                    instance,
+                }),
+                None,
+            )
+        }
         Err(error) => {
             let code = if !error.code.is_empty()
                 && error.code.len() <= 64

@@ -263,3 +263,7 @@ mod tests {
         );
     }
 }
+
+mod blobs;
+
+pub use blobs::BlobReader;

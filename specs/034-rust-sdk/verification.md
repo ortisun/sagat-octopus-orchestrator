@@ -137,3 +137,20 @@ and Tokio IO features (3.51 s). Source locks were updated through normal resolut
 Upload performs no automatic retries; startWithBlob sends inputBlobRef without inline input and
 shares start version/correlation/deadline/idempotency handling. Worker blob capabilities and shared
 real-server blob/fault conformance remain open.
+
+Worker capability batch: `rust-sdk-worker-blob-api-red` failed on the missing API.
+Several subsequent compile gates exposed Rust higher-ranked Send/lifetime failures in anonymous
+stream composition; preserved logs include first-green, boxed-stream, owned-envelope/source,
+send-boundary and separated-auth attempts. The named owned UploadStream resolved the failure;
+`rust-sdk-worker-blob-concrete-stream` passed without unsafe. Scoped output, inline lookalikes and
+revocation during token refresh passed in `rust-sdk-worker-blob-scope-tests` (26 unit/native).
+The bounded write review found one protocol-gating bug: a retained BlobOutput could escape through
+1.2 reporting. `rust-sdk-worker-blob-legacy-red` reproduced it; the report gate now fails locally
+as permanent UNSUPPORTED_PROTOCOL, and the same test passed in legacy-green.
+`rust-sdk-worker-read-blob-api-red` failed on the absent read API; first-green passed the actual
+gRPC roundtrip. Reader checks the first header, chunk/size bounds, complete SHA-256 and clean EOF;
+corruption and retained-reader revocation are native cases. Reconciliation exposes typed Verdict,
+rejects untyped lookalikes and preserves the original effect target; compensation uses the same
+lease lifecycle. `rust-sdk-worker-capability-clippy` exited 0 (3.04 s) and
+`rust-sdk-worker-capability-tests` exited 0 (15.99 s, 90 total). Shared real-server capability/fault
+conformance, observability hooks and full streaming acceptance remain open.

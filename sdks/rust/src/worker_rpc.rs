@@ -45,7 +45,10 @@ pub(crate) fn error_of(method: &str, status: Status) -> SagatError {
         Code::Unavailable | Code::DeadlineExceeded => "TRANSPORT",
         Code::Cancelled => "CANCELLED",
         Code::Unimplemented if method == "StreamTasks" => "UNSUPPORTED_PROTOCOL",
-        Code::OutOfRange if method == "ResolveSecrets" && is_secret_decode_overflow(&status) => {
+        Code::OutOfRange
+            if matches!(method, "ResolveSecrets" | "ReadBlob" | "WriteBlob")
+                && is_bounded_frame_overflow(&status) =>
+        {
             "PROTOCOL"
         }
         Code::DataLoss => "PROTOCOL",
@@ -76,9 +79,9 @@ pub(crate) fn error_of(method: &str, status: Status) -> SagatError {
     error
 }
 // Tonic 0.14.6 exposes its local frame-budget rejection only as this fixed diagnostic, with
-// no typed provenance. Match it narrowly for this RPC; other remote OUT_OF_RANGE statuses keep
+// no typed provenance. Match it narrowly for these RPCs; other remote OUT_OF_RANGE statuses keep
 // the canonical INTERNAL mapping. No authentication or retry authority is inferred from text.
-fn is_secret_decode_overflow(status: &Status) -> bool {
+fn is_bounded_frame_overflow(status: &Status) -> bool {
     if status.metadata().get("x-sagat-error").is_some() {
         return false;
     }
@@ -124,6 +127,9 @@ pub(crate) struct Rpc {
     timeout: Duration,
 }
 impl Rpc {
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+    }
     pub async fn connect(
         url: &str,
         token: TokenSource,

@@ -44,3 +44,10 @@ mod json;
 
 mod capabilities;
 pub use capabilities::{SecretSet, SecretValue};
+
+mod blob;
+pub use blob::{BlobOutput, WriteBlobOptions};
+
+pub use capabilities::BlobReader;
+
+pub use activity::Verdict;

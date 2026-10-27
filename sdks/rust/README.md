@@ -8,8 +8,9 @@ the package is MIT licensed.
 This is an implementation candidate tracked by feature 034. The current increment provides
 start/get/list/cancel/operate/signal, journal pages and completion waits, verified TLS and mTLS,
 fresh credentials, declared Queries/Updates, event publication, approval pages/decisions, chain inspection/commands/waits, single-pass input uploads and an activity host,
-protocol negotiation, heartbeat, cooperative cancellation and attempt-scoped secret access.
-Builders, worker blob capabilities, compensation/reconciliation APIs, safe observer hooks,
+protocol negotiation, heartbeat, cooperative cancellation, attempt-scoped secrets/blobs and typed
+compensation/reconciliation handlers.
+Builders, safe observer hooks,
 the shared six-language conformance suite and packaged-consumer release acceptance are pending.
 Do not infer complete SDK parity from the local client/worker tests.
 

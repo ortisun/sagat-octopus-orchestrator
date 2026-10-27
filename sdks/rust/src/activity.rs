@@ -69,6 +69,33 @@ impl std::fmt::Debug for ActivityContext {
     }
 }
 impl ActivityContext {
+    pub async fn read_blob(
+        &self,
+        descriptor: &crate::BlobDescriptor,
+    ) -> Result<crate::BlobReader, crate::SagatError> {
+        self.capabilities
+            .as_ref()
+            .ok_or_else(|| {
+                crate::SagatError::new("VALIDATION_FAILED", "no active attempt capability")
+            })?
+            .read_blob(descriptor)
+            .await
+    }
+
+    pub async fn write_blob<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
+        &self,
+        source: R,
+        options: crate::WriteBlobOptions,
+    ) -> Result<crate::BlobOutput, crate::SagatError> {
+        self.capabilities
+            .as_ref()
+            .ok_or_else(|| {
+                crate::SagatError::new("VALIDATION_FAILED", "no active attempt capability")
+            })?
+            .write_blob(source, options)
+            .await
+    }
+
     pub async fn secrets(&self) -> Result<crate::SecretSet, crate::SagatError> {
         self.capabilities
             .as_ref()
@@ -141,5 +168,43 @@ impl ActivityFailure {
             cancelled: true,
             ..Self::permanent("CANCELLED", "the activity was cancelled")
         }
+    }
+}
+
+impl From<crate::SagatError> for ActivityFailure {
+    fn from(_: crate::SagatError) -> Self {
+        Self::retryable("ACTIVITY_ERROR", "SagatError")
+    }
+}
+
+/// A typed reconciliation answer; only Applied can carry disclosed output.
+#[derive(Clone, serde::Serialize)]
+#[serde(tag = "effect", rename_all = "snake_case")]
+pub enum Verdict {
+    Applied {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        output: Option<Value>,
+    },
+    NotApplied,
+    Unknown,
+}
+impl Verdict {
+    pub fn applied(output: Option<Value>) -> Self {
+        Self::Applied { output }
+    }
+    pub fn not_applied() -> Self {
+        Self::NotApplied
+    }
+    pub fn unknown() -> Self {
+        Self::Unknown
+    }
+}
+impl std::fmt::Debug for Verdict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Applied { .. } => "Verdict::Applied",
+            Self::NotApplied => "Verdict::NotApplied",
+            Self::Unknown => "Verdict::Unknown",
+        })
     }
 }
