@@ -279,6 +279,7 @@ impl EventDispatchStore for PgRunStore {
              WHERE tenant_id = $1 AND namespace_id = $2 AND status = 'WAITING' \
                AND waiting_kind = 'EVENT' AND event_type = $3 AND correlation_key = $4 \
                AND event_since <= $5 \
+               AND cardinality(instance_path_nodes)=0 AND cardinality(instance_path_indices)=0 \
                AND ($7::uuid IS NULL OR (run_id, node) > ($7::uuid, $8::text)) \
              ORDER BY run_id, node LIMIT $6",
         )
@@ -304,6 +305,7 @@ impl EventDispatchStore for PgRunStore {
              FROM steps \
              WHERE status = 'WAITING' AND waiting_kind = 'EVENT' AND event_scanned_at IS NULL \
                AND event_since IS NOT NULL \
+               AND cardinality(instance_path_nodes)=0 AND cardinality(instance_path_indices)=0 \
              ORDER BY updated_at LIMIT $1",
         )
         .bind(i64::from(limit))
@@ -345,12 +347,18 @@ impl EventDispatchStore for PgRunStore {
     async fn mark_wait_scanned(&self, step: &WaitingStep) -> Result<(), StoreError> {
         sqlx::query(
             "UPDATE steps SET event_scanned_at = clock_timestamp() \
-             WHERE tenant_id = $1 AND run_id = $2 AND node = $3 AND status = 'WAITING' \
-               AND waiting_kind = 'EVENT' AND event_scanned_at IS NULL",
+             WHERE tenant_id = $1 AND run_id = $2 AND node = $3 AND namespace_id=$4 \
+               AND status = 'WAITING' AND waiting_kind = 'EVENT' AND event_scanned_at IS NULL \
+               AND cardinality(instance_path_nodes)=0 AND cardinality(instance_path_indices)=0 \
+               AND event_type=$5 AND correlation_key=$6 AND event_since=$7",
         )
         .bind(step.tenant_id.as_uuid())
         .bind(step.run_id.as_uuid())
         .bind(step.node.as_str())
+        .bind(step.namespace_id.as_uuid())
+        .bind(step.event_type.as_str())
+        .bind(step.correlation_key.as_str())
+        .bind(step.since)
         .execute(&self.pool)
         .await
         .map_err(store_error)?;

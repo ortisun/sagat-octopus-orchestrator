@@ -587,3 +587,84 @@ Strict contract-target Clippy also passed35.62s after the publication-gate addit
 The pure event increment introduces no native caller; recorded event replay cannot authorize
 an external delivery. The immutable timer integration run remains a separate older-profile
 invocation, not acceptance for this later pure event code or the new zero-policy migration.
+
+The next dispatch-identity proposal is recorded in scoped-event-waits.md. Discovery remains
+root-only until a qualified receiver exists, and rollout must fence old dispatchers as well as
+old schedulers before admitting the new shape. The older matcher has run+node identity, and
+external event receipt authority is distinct from scheduler clock authority. No native scoped
+publication or receiver is implemented by this proposal.
+
+Before changing dispatch types, event-wait-root-consumer-baseline passed2application tests
+that pin the exact persisted root wait and trigger consumer strings plus their metadata.
+These are compatibility regression controls for existing active-run receipts; no qualified
+consumer implementation is claimed. The subsequent root-only preparation guard below closes that query gap without enabling
+a scoped receiver.
+
+Dispatch identity design review requires explicit tenant in scan CAS, both root-only discovery
+queries plus marker guard, and a concrete old-dispatcher activation barrier. The first two
+are now named in the bounded proposal and require native regression tests. The last remains
+an explicit unimplemented SC-014-005 activation blocker: no dispatcher generation exists,
+and scheduler fencing/TTL alone cannot prove its termination. Native scoped row creation
+and publication stay closed; the identity preparation does not claim mixed-version safety.
+
+## Frozen timer integration completed
+
+`timer-19c60a86-frozen-integration` completed580passed/0failed/16ignored at the
+immutable19c60a86 source. Harness2584.38s; command2693.95s monotonic/2693.97s wall,
+recorded wall-minus-monotonic0.01s. Together with the separate92/0/0 fault invocation,
+this supplies broad timer-profile evidence. The16ignored historical/environment-bound
+tests remain explicitly ignored, not passed. This is migration profile through20261221,
+not the later zero-policy migration22 or the event replay preparation. The initial mixed-
+source integration interruption remains retained and is not reclassified as a pass.
+Private linked executable SHA256:
+cabdd9ff2acdc27c86b8500a5e938c52eb605136123b589e20f3a0851f76cc7d.
+
+The frontend pipeline on the current branch also exited0: npm ci, npm audit(moderate,
+0vulnerabilities), lint, Studio/e2e TypeScript checks, Studio unit tests, production build and
+check:api. Node26 reports expected experimental localStorage warnings; this is not a browser
+journey or pinned CI Node22 claim. No frontend source behavior changed beyond the generated
+quota documentation. Its dependency/build directories remain owned temporary cache until
+cleanup; package/lock versions were not changed.
+
+
+## Root event-dispatch preparation guard
+
+The real PostgreSQL app-role fixture first reproduced two defects: a scoped sentinel consumed
+one root page and a root scan marked two same-name scoped siblings (2 genuine REDs). The
+three native queries now restrict both path arrays to root, and marker CAS includes namespace
+and the exact selected event type/key/since. Root/trigger consumer keys remain unchanged.
+The first corrected run then failed only its attempt to DELETE append-only sentinels; tests
+now retain them until the owned database teardown. No production trigger/grant was weakened.
+
+The reviewed two-case gate passed2/0/0 in3.90s harness/75.81s command, with a positive root
+marker assertion and independent stale type/key/since cases, foreign tenant/namespace refusal,
+unchanged sibling/run/journal/receipt metadata, and the page-before-LIMIT control. A subsequent
+SQL wrapper annotation is verified by the final lint/focused gate. Existing event dispatch
+regressions passed24/0/0 in66.34s harness/148.35s command, including duplicate, fan-out,
+event/timeout, tenant isolation, crash retry and root lookback behavior. Application baseline
+pins2 existing consumer/metadata cases. Architecture24crates and agent configuration pass.
+No qualified dispatch type, receiver, clock producer or public scoped wait is enabled.
+
+## Full five-SDK gate prerequisite correction
+
+The immutable38d7b3f0 full64 invocation failed before the database scenario could execute:
+its required database-runner executable had not been built. The failed gate is retained
+(766.76s harness/820.09s command); it is not a64-scenario pass. The CI-declared prerequisite
+build now passes52.53s. A private fixed copy of that executable has SHA256
+6c32f3dc1d9150d1feaeccde3331bc7dd637a584b0041575f6d559bc274a7a07.
+The focused database-connections aggregate passed all five languages without blessing,
+1aggregate/0failed,28.67s harness/56.30s command, reusing the same already prepared SDKs.
+A complete64-scenario retry is in progress against the same immutable source, same prepared
+SDKs and fixed prerequisite. The test executable itself is copied before execution to prevent
+replacement by concurrent builds; SHA256
+a9f5df00128e7e9314679467e16188ece5b2cf4b27965737833ee8a960aa059f.
+No acceptance is inferred before that invocation completes. Later root guards remain outside
+this snapshot, so the result cannot replace final-tree release gates.
+
+
+Strict workspace/all-targets Clippy passed103.06s at the root-guard production diff. The
+SQL wrapper annotated fixture then passed2/0/0,4.25s harness/101.50s command. A second
+review found the lookback test did not independently prove filtering before LIMIT; scoped
+sentinels now sort earlier and lookback uses limit1 with an exact root-node assertion.
+This is a test-strengthening correction; no production query changed. Final lookback-strengthened focused gate passed2/0/0,4.27s harness/65.76s command. The separate broader qualified-interface design
+keeps scoped delivery construction closed until its native receiver exists.

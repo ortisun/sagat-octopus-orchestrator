@@ -71,3 +71,5 @@ mod scoped_blob_completion;
 mod scoped_worker;
 mod security;
 mod switch_storage;
+
+mod scoped_event_dispatch_identity;

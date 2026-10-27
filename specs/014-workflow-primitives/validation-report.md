@@ -3900,3 +3900,25 @@ downgrade lock orders. The table validation/rollback rollout windows are documen
 [zero-iteration-policy.md](./zero-iteration-policy.md). Bounded correction review, complete
 contracts/lint, fixed-source full regression, released-profile rollout and resource workloads
 remain pending. All eight canonical tasks remain unchecked; no release is accepted.
+
+### Frozen timer regression completed
+
+At19c60a86 the isolated integration target passed580/0failed/16ignored in2584.38s
+harness (2693.95s command, wall gap0.01s). The independent fault target passed92/0/0.
+The mixed-source interrupted attempt remains invalid for integration acceptance. Later
+migration22/zero policy and pure event replay are separately tested increments and are not
+covered by this frozen binary. The complete release gate still requires the final tree,
+64-scenario conformance, released-profile rollout and remaining resource/nested behavior.
+
+
+### Root event dispatch preparation
+
+The app-role page/scan regressions reproduced both existing scope-isolation defects before
+fixing the three queries. The reviewed tests pass2/0/0,3.90s harness; existing root dispatch
+regression passes24/0/0,66.34s harness. Sentinels are append-only storage fixtures retained
+until owned DB teardown, not a scoped runtime proof. Event type/key/since and namespace/tenant
+CAS controls preserve legitimate root marking. Qualified delivery/start/timeout, activation
+fencing and public scoped waits remain pending. Full64 on38d7b3f0 initially failed for a
+missing database-runner prerequisite; the prerequisite build and focused five-language database
+scenario now pass, with full64 retry still running. See the implementation ledger for exact
+source, executable hashes, command timings and retained failures. No canonical task closes.
