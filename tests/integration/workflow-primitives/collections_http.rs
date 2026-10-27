@@ -518,20 +518,8 @@ async fn publication_keeps_unproven_collection_bodies_closed() {
     let document = collection_document(
         &name,
         json!([
-            {
-                "id": "price",
-                "type": "condition",
-                "expression": "true",
-                "ifTrue": "fallback",
-                "ifFalse": "return-price"
-            },
-            {
-                "id": "fallback",
-                "type": "activity",
-                "activity": "line.fallback",
-                "next": "return-price"
-            },
-            {"id": "return-price", "type": "return", "result": "steps.price.output"}
+            // Return-only entry retains its separate admission/budget gate.
+            {"id":"price","type":"return","result":"item"}
         ]),
     );
     let workflow = create(&api, &name, document).await;
