@@ -232,3 +232,90 @@ impl SignalResult {
 fn protocol() -> SagatError {
     SagatError::new("PROTOCOL", "the response is missing a required typed field")
 }
+
+/// A single server page, including opaque continuation and additive raw response fields.
+#[derive(Clone)]
+pub struct Page<T> {
+    pub items: Vec<T>,
+    pub next_cursor: Option<String>,
+    pub raw: Value,
+}
+impl<T> std::fmt::Debug for Page<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Page")
+            .field("items", &self.items.len())
+            .field("has_next", &self.next_cursor.is_some())
+            .finish_non_exhaustive()
+    }
+}
+pub type RunPage = Page<Run>;
+pub type JournalPage = Page<JournalEvent>;
+pub(crate) fn parse_page<T>(
+    raw: Value,
+    parse: impl Fn(Value) -> Result<T, SagatError>,
+) -> Result<Page<T>, SagatError> {
+    let items = raw
+        .get("items")
+        .and_then(Value::as_array)
+        .filter(|items| items.len() <= 200)
+        .ok_or_else(protocol)?;
+    let next_cursor = match raw.get("nextCursor") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(cursor)) => Some(cursor.clone()),
+        _ => return Err(protocol()),
+    };
+    let items = items
+        .iter()
+        .cloned()
+        .map(parse)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Page {
+        items,
+        next_cursor,
+        raw,
+    })
+}
+#[derive(Clone, Debug, Deserialize)]
+pub struct Cause {
+    pub kind: String,
+    pub code: String,
+}
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JournalEvent {
+    pub seq: u64,
+    pub event_type: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub occurred_at: OffsetDateTime,
+    pub actor: String,
+    pub step_id: Option<String>,
+    pub attempt: Option<u32>,
+    pub trace_id: Option<String>,
+    pub payload_ref: Option<String>,
+    pub span_id: Option<String>,
+    pub cause: Option<Cause>,
+    #[serde(skip)]
+    pub raw: Value,
+}
+impl std::fmt::Debug for JournalEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JournalEvent")
+            .field("seq", &self.seq)
+            .field("event_type", &self.event_type)
+            .finish_non_exhaustive()
+    }
+}
+impl JournalEvent {
+    pub(crate) fn parse(raw: Value) -> Result<Self, SagatError> {
+        let mut event: Self = serde_json::from_value(raw.clone()).map_err(|_| protocol())?;
+        if event.seq == 0
+            || event.seq > i64::MAX as u64
+            || event.attempt.is_some_and(|v| v == 0 || v > i32::MAX as u32)
+        {
+            return Err(protocol());
+        }
+        event.occurred_at = event.occurred_at.to_offset(UtcOffset::UTC);
+        event.raw = raw;
+        Ok(event)
+    }
+}

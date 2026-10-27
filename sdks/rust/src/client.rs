@@ -86,6 +86,49 @@ impl From<CallOptions> for OperationOptions {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct PageOptions {
+    pub limit: Option<u16>,
+    pub cursor: Option<String>,
+}
+#[derive(Clone, Debug, Default)]
+pub struct ListOptions {
+    pub workflow_id: Option<String>,
+    pub status: Option<crate::RunStatus>,
+    pub limit: Option<u16>,
+    pub cursor: Option<String>,
+}
+#[derive(Clone, Debug)]
+pub struct WaitOptions {
+    pub call: CallOptions,
+    pub timeout: Duration,
+    pub poll_interval: Duration,
+}
+impl Default for WaitOptions {
+    fn default() -> Self {
+        Self {
+            call: CallOptions::default(),
+            timeout: Duration::from_secs(60),
+            poll_interval: Duration::from_millis(500),
+        }
+    }
+}
+fn page_query(
+    limit: Option<u16>,
+    cursor: Option<&str>,
+) -> Result<Vec<(String, String)>, SagatError> {
+    let mut query = Vec::new();
+    if let Some(limit) = limit {
+        if !(1..=200).contains(&limit) {
+            return Err(validation());
+        }
+        query.push(("limit".into(), limit.to_string()));
+    }
+    if let Some(cursor) = cursor {
+        query.push(("cursor".into(), cursor.into()));
+    }
+    Ok(query)
+}
 struct WireReply {
     value: Value,
     status: u16,
@@ -166,6 +209,7 @@ impl std::fmt::Debug for Client {
 struct WireRequest {
     method: Method,
     path: Vec<String>,
+    query: Vec<(String, String)>,
     body: Option<Vec<u8>>,
     key: Option<String>,
     repeatable: bool,
@@ -177,11 +221,16 @@ impl WireRequest {
         Self {
             method,
             path: path.iter().map(|s| (*s).to_owned()).collect(),
+            query: Vec::new(),
             body: None,
             key: None,
             repeatable,
             expected,
         }
+    }
+    fn query(mut self, pairs: Vec<(String, String)>) -> Self {
+        self.query = pairs;
+        self
     }
     fn json(mut self, value: &Value) -> Result<Self, SagatError> {
         self.body = Some(serde_json::to_vec(value).map_err(|_| validation())?);
@@ -407,6 +456,111 @@ impl Client {
             .await?
             .parse(SignalResult::parse)
     }
+    fn list_request(filter: &ListOptions) -> Result<WireRequest, SagatError> {
+        let mut query = page_query(filter.limit, filter.cursor.as_deref())?;
+        if let Some(workflow) = &filter.workflow_id {
+            uuid(workflow)?;
+            query.push(("workflowId".into(), workflow.clone()));
+        }
+        if let Some(status) = &filter.status {
+            query.push(("status".into(), status.as_str().to_owned()));
+        }
+        Ok(WireRequest::new(Method::GET, &["runs"], 200).query(query))
+    }
+    pub async fn list(
+        &self,
+        filter: ListOptions,
+        call: CallOptions,
+    ) -> Result<crate::RunPage, SagatError> {
+        self.execute(Self::list_request(&filter)?, call)
+            .await?
+            .parse(|raw| crate::types::parse_page(raw, Run::parse))
+    }
+    /// Fetches only the next page as the caller consumes the previous page's bounded items.
+    pub fn list_all(
+        &self,
+        filter: ListOptions,
+        call: CallOptions,
+    ) -> impl futures_util::Stream<Item = Result<Run, SagatError>> + Send + 'static {
+        futures_util::stream::try_unfold(
+            (
+                self.clone(),
+                filter,
+                call,
+                std::collections::VecDeque::<Run>::new(),
+                false,
+            ),
+            |(client, mut filter, call, mut buffer, mut finished)| async move {
+                loop {
+                    if call.cancel.is_cancelled() {
+                        return Err(cancelled());
+                    }
+                    if let Some(run) = buffer.pop_front() {
+                        return Ok(Some((run, (client, filter, call, buffer, finished))));
+                    }
+                    if finished {
+                        return Ok(None);
+                    }
+                    let page = client
+                        .execute(Self::list_request(&filter)?, call.clone())
+                        .await?
+                        .parse(|raw| {
+                            let page = crate::types::parse_page(raw, Run::parse)?;
+                            if page.next_cursor.is_some() && page.next_cursor == filter.cursor {
+                                return Err(protocol());
+                            }
+                            Ok(page)
+                        })?;
+                    finished = page.next_cursor.is_none();
+                    filter.cursor = page.next_cursor;
+                    buffer = page.items.into();
+                }
+            },
+        )
+    }
+    pub async fn events(
+        &self,
+        run_id: &str,
+        page: PageOptions,
+        call: CallOptions,
+    ) -> Result<crate::JournalPage, SagatError> {
+        uuid(run_id)?;
+        let query = page_query(page.limit, page.cursor.as_deref())?;
+        self.execute(
+            WireRequest::new(Method::GET, &["runs", run_id, "events"], 200).query(query),
+            call,
+        )
+        .await?
+        .parse(|raw| crate::types::parse_page(raw, crate::JournalEvent::parse))
+    }
+    pub async fn wait_for_completion(
+        &self,
+        run_id: &str,
+        options: WaitOptions,
+    ) -> Result<Run, SagatError> {
+        uuid(run_id)?;
+        if !valid_timeout(options.timeout) || !valid_timeout(options.poll_interval) {
+            return Err(validation());
+        }
+        let wait = async {
+            loop {
+                let run = self.get(run_id, options.call.clone()).await?;
+                if run.status.is_terminal() {
+                    return Ok(run);
+                }
+                let factor = 0.8 + f64::from(uuid::Uuid::new_v4().as_bytes()[0]) * 0.4 / 255.0;
+                tokio::select! {biased;_=options.call.cancel.cancelled()=>return Err(cancelled()),_=tokio::time::sleep(options.poll_interval.mul_f64(factor))=>{}}
+            }
+        };
+        tokio::time::timeout(options.timeout, wait)
+            .await
+            .map_err(|_| {
+                let mut error = transport();
+                error.message = "the run did not finish within the wait timeout".into();
+                error.details = Box::new(json!({"reason":"WAIT_TIMEOUT"}));
+                error
+            })?
+    }
     async fn execute(
         &self,
         request: WireRequest,
@@ -468,6 +622,11 @@ impl Client {
             for segment in &request.path {
                 segments.push(segment);
             }
+        }
+        if !request.query.is_empty() {
+            target
+                .query_pairs_mut()
+                .extend_pairs(request.query.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         }
         let mut builder = self
             .http

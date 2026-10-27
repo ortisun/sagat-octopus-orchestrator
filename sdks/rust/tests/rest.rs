@@ -41,6 +41,11 @@ async fn answer(
         calls.len()
     };
     match state.mode {
+        "bad-page" => (StatusCode::OK,[("x-trace-id","0123456789abcdef0123456789abcdef")],axum::Json(json!({"items":false}))).into_response(),
+        "repeat-page" => (StatusCode::OK,[("x-trace-id","0123456789abcdef0123456789abcdef")],axum::Json(json!({"items":[basic_run("RUNNING")],"nextCursor":"same"}))).into_response(),
+        "pages" => (StatusCode::OK,axum::Json(json!({"items":[basic_run("RUNNING")],"nextCursor":if count==1 {Some("opaque +/?&=é")}else{None}}))).into_response(),
+        "journal" => (StatusCode::OK,axum::Json(json!({"items":[{"seq":1,"eventType":"RunStarted","occurredAt":"2026-10-27T17:30:00+05:30","actor":"system:test","futureField":true}],"nextCursor":null,"newField":"retained"}))).into_response(),
+        "completion" => (StatusCode::OK,axum::Json(basic_run(if count==1 {"RUNNING"}else{"SUCCEEDED"}))).into_response(),
         "retry" if count == 1 => (StatusCode::SERVICE_UNAVAILABLE, axum::Json(json!({"code":"UNAVAILABLE", "retryable":true}))).into_response(),
         "child" => (StatusCode::OK,axum::Json(json!({"runId":RUN,"workflowId":WORKFLOW,"versionId":WORKFLOW,"version":1,"createdAt":"2026-10-27T12:00:00Z","status":"RUNNING","depth":1,"parent":{"runId":WORKFLOW,"node":"child","cancelPolicy":"DETACH"}}))).into_response(),
         "unsupported" => (StatusCode::NOT_IMPLEMENTED,axum::Json(json!({"code":"INTERNAL","retryable":true}))).into_response(),
@@ -54,6 +59,9 @@ async fn answer(
         "malformed" => (StatusCode::OK, [("x-trace-id", "0123456789abcdef0123456789abcdef")], "{broken").into_response(),
         _ => (StatusCode::ACCEPTED, axum::Json(json!({"runId":RUN,"workflowId":WORKFLOW,"versionId":WORKFLOW,"version":1,"createdAt":"2026-10-27T12:00:00Z", "status":if state.mode == "paused" {"PAUSED"} else {"RUNNING"}, "futureField":{"number":9007199254740993_u64}}))).into_response(),
     }
+}
+fn basic_run(status: &str) -> serde_json::Value {
+    json!({"runId":RUN,"workflowId":WORKFLOW,"versionId":WORKFLOW,"version":1,"createdAt":"2026-10-27T12:00:00Z","status":status})
 }
 struct Server {
     base: String,
@@ -567,4 +575,169 @@ async fn child_run_lineage_has_typed_fields_and_retains_raw_data() {
     assert_eq!(parent.node, "child");
     assert_eq!(parent.cancel_policy, "DETACH");
     assert_eq!(run.raw["depth"], 1);
+}
+
+#[tokio::test]
+async fn run_pagination_follows_opaque_cursors_without_growing_a_result_collection() {
+    use futures_util::StreamExt as _;
+    use sagat_octopus_orchestrator_sdk::{ListOptions, RunStatus};
+    let server = server("pages").await;
+    let client =
+        Client::new(options(&server.base, TokenSource::bearer("fixture-token"))).expect("client");
+    let stream = client.list_all(
+        ListOptions {
+            workflow_id: Some(WORKFLOW.into()),
+            status: Some(RunStatus::Running),
+            limit: Some(1),
+            ..ListOptions::default()
+        },
+        CallOptions::default(),
+    );
+    futures_util::pin_mut!(stream);
+    let first = stream.next().await.expect("item").expect("run");
+    assert_eq!(first.id.to_string(), RUN);
+    assert_eq!(
+        server.state.calls.lock().expect("calls").len(),
+        1,
+        "the second page is lazy"
+    );
+    stream.next().await.expect("second item").expect("run");
+    assert!(stream.next().await.is_none());
+    let requests = server.state.calls.lock().expect("calls");
+    let parsed = url::Url::parse(&format!("http://localhost{}", requests[1].2)).expect("url");
+    let query: std::collections::BTreeMap<_, _> = parsed.query_pairs().into_owned().collect();
+    assert_eq!(query["cursor"], "opaque +/?&=é");
+    assert_eq!(query["workflowId"], WORKFLOW);
+    assert_eq!(query["status"], "RUNNING");
+    assert_eq!(query["limit"], "1");
+}
+#[tokio::test]
+async fn journal_events_have_typed_fields_and_keep_additive_raw_json() {
+    use sagat_octopus_orchestrator_sdk::PageOptions;
+    let server = server("journal").await;
+    let client =
+        Client::new(options(&server.base, TokenSource::bearer("fixture-token"))).expect("client");
+    let page = client
+        .events(
+            RUN,
+            PageOptions {
+                limit: Some(1),
+                cursor: Some("next/+".into()),
+            },
+            CallOptions::default(),
+        )
+        .await
+        .expect("events");
+    assert_eq!(page.items[0].seq, 1);
+    assert_eq!(page.items[0].event_type, "RunStarted");
+    assert_eq!(page.items[0].occurred_at.offset(), time::UtcOffset::UTC);
+    assert_eq!(page.items[0].raw["futureField"], true);
+    assert_eq!(page.raw["newField"], "retained");
+}
+#[tokio::test]
+async fn waiting_uses_known_terminal_states_and_does_not_cancel_the_run_on_timeout() {
+    use sagat_octopus_orchestrator_sdk::{RunStatus, WaitOptions};
+    let server = server("completion").await;
+    let client =
+        Client::new(options(&server.base, TokenSource::bearer("fixture-token"))).expect("client");
+    let done = client
+        .wait_for_completion(
+            RUN,
+            WaitOptions {
+                poll_interval: Duration::from_millis(1),
+                timeout: Duration::from_secs(1),
+                ..WaitOptions::default()
+            },
+        )
+        .await
+        .expect("terminal");
+    assert_eq!(done.status, RunStatus::Succeeded);
+    let seen = server.state.calls.lock().expect("calls");
+    assert_eq!(seen.len(), 2);
+    assert!(seen.iter().all(|(_, body, _)| body.is_empty()));
+}
+
+#[tokio::test]
+async fn malformed_and_non_progressing_pages_keep_response_metadata() {
+    use futures_util::StreamExt as _;
+    use sagat_octopus_orchestrator_sdk::ListOptions;
+    let malformed = server("bad-page").await;
+    let client = Client::new(options(
+        &malformed.base,
+        TokenSource::bearer("fixture-token"),
+    ))
+    .expect("client");
+    let error = client
+        .list(ListOptions::default(), CallOptions::default())
+        .await
+        .expect_err("invalid items");
+    assert_eq!(error.code, "PROTOCOL");
+    assert_eq!(error.status, Some(200));
+    let repeated = server("repeat-page").await;
+    let client = Client::new(options(
+        &repeated.base,
+        TokenSource::bearer("fixture-token"),
+    ))
+    .expect("client");
+    let stream = client.list_all(
+        ListOptions {
+            cursor: Some("same".into()),
+            ..ListOptions::default()
+        },
+        CallOptions::default(),
+    );
+    futures_util::pin_mut!(stream);
+    let error = stream
+        .next()
+        .await
+        .expect("result")
+        .expect_err("same cursor cannot progress");
+    assert_eq!(error.code, "PROTOCOL");
+    assert_eq!(error.status, Some(200));
+    assert_eq!(
+        error.trace_id.as_deref(),
+        Some("0123456789abcdef0123456789abcdef")
+    );
+    assert!(stream.next().await.is_none());
+}
+#[tokio::test]
+async fn wait_timeout_and_cancellation_stop_polling_without_issuing_an_operation() {
+    use sagat_octopus_orchestrator_sdk::WaitOptions;
+    let server = server("child").await;
+    let client =
+        Client::new(options(&server.base, TokenSource::bearer("fixture-token"))).expect("client");
+    let error = client
+        .wait_for_completion(
+            RUN,
+            WaitOptions {
+                timeout: Duration::from_millis(20),
+                poll_interval: Duration::from_secs(30),
+                ..WaitOptions::default()
+            },
+        )
+        .await
+        .expect_err("timeout");
+    assert_eq!(error.code, "TRANSPORT");
+    assert_eq!(error.reason(), Some("WAIT_TIMEOUT"));
+    let before = server.state.calls.lock().expect("requests").len();
+    let call = CallOptions::default();
+    call.cancel.cancel();
+    let error = client
+        .wait_for_completion(
+            RUN,
+            WaitOptions {
+                call,
+                ..WaitOptions::default()
+            },
+        )
+        .await
+        .expect_err("cancelled");
+    assert_eq!(error.code, "CANCELLED");
+    let requests = server.state.calls.lock().expect("requests");
+    assert_eq!(requests.len(), before);
+    assert!(
+        requests
+            .iter()
+            .all(|(_, body, uri)| body.is_empty() && uri.path().ends_with(RUN))
+    );
 }

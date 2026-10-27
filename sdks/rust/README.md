@@ -6,7 +6,8 @@ workflow execution and scoped secret authorization. Rust 1.98 is the initially t
 the package is MIT licensed.
 
 This is an implementation candidate tracked by feature 034. The current increment provides
-start/get/cancel/operate/signal, explicit verified TLS and mTLS, fresh credentials, an activity host,
+start/get/list/cancel/operate/signal, journal pages and completion waits, verified TLS and mTLS,
+fresh credentials and an activity host,
 protocol negotiation, heartbeat, cooperative cancellation and attempt-scoped secret access.
 Builders, remaining REST operations, blobs, compensation/reconciliation APIs, safe observer hooks,
 the shared six-language conformance suite and packaged-consumer release acceptance are pending.

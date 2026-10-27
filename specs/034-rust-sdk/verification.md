@@ -88,3 +88,13 @@ Candidate checkpoint: `rust-sdk-candidate-clippy` exited 0 (2.13 s),
 four TLS, one configuration and one README doctest = 54 passed), the standalone consumer
 passed with --locked (0.75 s), and formatting passed (0.10 s). Shared real-server conformance,
 remaining SDK operations/builders/capabilities, CI and full release gates remain open.
+
+Pagination/journal/wait increment: `rust-sdk-pages-api-red` failed on the absent public API,
+then `rust-sdk-pages-first-green` passed 27 REST/catalog checks. `rust-sdk-page-metadata-red`
+reproduced loss of HTTP status on a repeated-cursor error (28 passed/one failed); cursor-progress
+validation now runs inside the response parser so it preserves status and trace.
+`rust-sdk-pages-clippy` exited 0 (2.06 s) and `rust-sdk-pages-tests` exited 0 (12.34 s):
+23 unit/native, 29 REST/catalog, one drift, four TLS, one worker configuration and one README
+example passed (59 total). Pagination stays lazy/bounded, encodes opaque cursors, preserves raw
+fields and stops on cancellation. Completion wait timeout returns TRANSPORT/WAIT_TIMEOUT and
+never cancels or changes the run. Remaining T034-002 operations and common conformance stay open.
