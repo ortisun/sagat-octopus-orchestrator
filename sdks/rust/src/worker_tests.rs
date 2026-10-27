@@ -480,6 +480,106 @@ async fn concurrent_scopes_with_the_same_legacy_task_id_are_distinct_but_duplica
         "the identical lease must not execute twice"
     );
 }
+
+#[tokio::test]
+async fn native_worker_tls_verifies_trust_name_and_mutual_client_identity() {
+    use rcgen::{
+        BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, KeyPair,
+        KeyUsagePurpose,
+    };
+    let authority_key = KeyPair::generate().expect("CA key");
+    let mut params = CertificateParams::new(Vec::new()).expect("CA params");
+    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+    let authority = params.self_signed(&authority_key).expect("CA");
+    let ca_pem = authority.pem();
+    let issue = |client: bool| {
+        let key = KeyPair::generate().expect("leaf key");
+        let mut params = CertificateParams::new(if client {
+            vec![]
+        } else {
+            vec!["localhost".to_owned()]
+        })
+        .expect("leaf params");
+        params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+        params.extended_key_usages = vec![if client {
+            ExtendedKeyUsagePurpose::ClientAuth
+        } else {
+            ExtendedKeyUsagePurpose::ServerAuth
+        }];
+        (
+            params
+                .signed_by(&key, &authority, &authority_key)
+                .expect("leaf")
+                .pem(),
+            key.serialize_pem(),
+        )
+    };
+    let (server_cert, server_key) = issue(false);
+    let (client_cert, client_key) = issue(true);
+    let control = Arc::new(Control::default());
+    let (reports, _) = tokio::sync::mpsc::unbounded_channel();
+    let service = Service {
+        control: control.clone(),
+        leases: Arc::default(),
+        reports,
+        registrations: Arc::default(),
+    };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("owned TLS listener");
+    let endpoint = format!("https://{}", listener.local_addr().expect("address"));
+    let server = tokio::spawn(
+        tonic::transport::Server::builder()
+            .tls_config(
+                tonic::transport::ServerTlsConfig::new()
+                    .identity(tonic::transport::Identity::from_pem(
+                        server_cert,
+                        server_key,
+                    ))
+                    .client_ca_root(tonic::transport::Certificate::from_pem(ca_pem.clone())),
+            )
+            .expect("server TLS")
+            .add_service(pb::worker_service_server::WorkerServiceServer::new(service))
+            .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener)),
+    );
+    for (trusted, name, identity, accepted) in [
+        (false, "localhost", true, false),
+        (true, "wrong.invalid", true, false),
+        (true, "localhost", false, false),
+        (true, "localhost", true, true),
+    ] {
+        let mut options = WorkerOptions::new(
+            endpoint.clone(),
+            "demo",
+            "tls-worker",
+            TokenSource::bearer("fixture-token"),
+        );
+        options.timeout = Duration::from_secs(1);
+        options.retry.max_attempts = 1;
+        if trusted {
+            options.tls.ca_certificates.push(ca_pem.as_bytes().to_vec());
+        }
+        options.tls.server_name = Some(name.into());
+        if identity {
+            options.tls.identity =
+                Some(TlsIdentity::from_pem(&client_cert, &client_key).expect("identity"));
+        }
+        let mut worker = WorkerHost::new(options).expect("worker");
+        worker
+            .activity("tls.probe", |_: ActivityContext, _: Value| async { Ok(()) })
+            .expect("activity");
+        let result = worker.start().await;
+        assert_eq!(
+            result.is_ok(),
+            accepted,
+            "trust={trusted}, name={name}, identity={identity}"
+        );
+        worker.stop(Duration::ZERO).await.expect("stop");
+    }
+    assert_eq!(control.registrations.load(Ordering::Acquire), 1);
+    server.abort();
+}
 #[tokio::test]
 async fn run_cancellation_is_cooperative_and_does_not_discard_a_returned_value() {
     let mut fixture = fixture(2).await;

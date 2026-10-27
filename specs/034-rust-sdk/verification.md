@@ -218,3 +218,16 @@ included the negotiated path. Identical duplicate leases are still suppressed.
 `rust-sdk-scoped-key-clippy` exited 0 (3.90 s), `rust-sdk-scoped-key-tests` exited 0
 (19.01 s, 108 total), and real-PG `rust-sdk-ordering-scope-green` passed (12.64 s).
 The full shared suite is rerunning with that artifact; previous 59/60 is not final acceptance.
+
+Final Rust common run: `rust-sdk-complete-shared-suite-final` exited 0 (213.49 s), all 60
+shared scenarios, real PostgreSQL using the runtime role, unchanged goldens, including managed
+PostgreSQL/OpenBao fixtures. `rust-sdk-user-stories-and-faults` exited 0 (126.11 s): six e2e
+user-story cases and nine independent fault assertions. These are Rust-only live receipts;
+new all-six live release acceptance is separate from historical five-language receipts.
+Current existing-SDK regressions passed: TypeScript 131 tests, Python 264 + mypy/ruff, Go race
+tests + vet/gofmt, .NET 450 tests + format, and Java Maven verify. Native worker gRPC TLS now
+proves extra CA trust, name validation and mutual client identity, including three refused cases
+(`rust-sdk-grpc-tls-native`, exit 0, 5.96 s). Existing consumer --locked initially rejected the
+missing new canonical-number dependency; normal resolution added only ryu-js, then --locked
+passed (0.11 s). No lockfile was regenerated. Architecture (24 crates), agent configuration,
+bash syntax and actionlint for the three changed workflows passed.

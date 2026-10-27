@@ -32,12 +32,13 @@ use crate::support::worker::{
 use normalize::{Normalizer, compared, first_difference};
 
 /// (name used in `SAGAT_SDK_LANGS`, directory under `sdks/`)
-const LANGUAGES: [(&str, &str); 5] = [
+const LANGUAGES: [(&str, &str); 6] = [
     ("typescript", "typescript"),
     ("go", "go"),
     ("python", "python"),
     ("dotnet", "dotnet"),
     ("java", "java"),
+    ("rust", "rust"),
 ];
 
 fn repo() -> PathBuf {
@@ -71,6 +72,18 @@ fn languages(only: Option<&[&str]>) -> Vec<(&'static str, PathBuf)> {
             .filter(|s| !s.is_empty())
             .collect()
     });
+    if let Some(chosen) = &chosen {
+        assert!(
+            !chosen.is_empty(),
+            "SAGAT_SDK_LANGS must name at least one official SDK"
+        );
+        for name in chosen {
+            assert!(
+                LANGUAGES.iter().any(|(known, _)| known == name),
+                "unknown SDK in SAGAT_SDK_LANGS: {name}"
+            );
+        }
+    }
     LANGUAGES
         .iter()
         .filter(|(name, _)| {
@@ -1587,9 +1600,9 @@ pub async fn conform(selection: &Selection) -> Suite {
         .as_ref()
         .map(|l| l.iter().map(String::as_str).collect());
     let langs = languages(only.as_deref());
-    let all_five = std::env::var("SAGAT_SDK_LANGS").is_err() && only.is_none();
+    let all_official = std::env::var("SAGAT_SDK_LANGS").is_err() && only.is_none();
     let mut failures = Vec::new();
-    if all_five {
+    if all_official {
         for (name, dir) in LANGUAGES {
             let run = sdk_source_root()
                 .join(dir)

@@ -10,7 +10,9 @@ start/get/list/cancel/operate/signal, journal pages and completion waits, verifi
 fresh credentials, declared Queries/Updates, event publication, approval pages/decisions, chain inspection/commands/waits, single-pass input uploads and an activity host,
 protocol negotiation, heartbeat, cooperative cancellation, attempt-scoped secrets/blobs and typed
 compensation/reconciliation handlers and typed declarative builders.
-The shared six-language runtime/fault conformance suite and packaged-consumer release acceptance are pending.
+All 60 shared scenarios passed for Rust against the real server/PostgreSQL, together with the
+SDK user-story and fault suites. The integrated six-language release run and packaged-consumer
+acceptance remain separate gates.
 Do not infer complete SDK parity from the local client/worker tests.
 
 ```rust,no_run
