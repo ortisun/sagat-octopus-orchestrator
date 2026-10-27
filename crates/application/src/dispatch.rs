@@ -213,6 +213,16 @@ pub struct WaitingStep {
 }
 
 impl WaitingStep {
+    /// Receipt identity only; current native admission still authorizes delivery.
+    #[must_use]
+    pub fn delivery_consumer(&self) -> String {
+        if self.instance.path().is_root() {
+            format!("wait:{}/{}", self.run_id, self.instance.node())
+        } else {
+            format!("wait-instance:{}/{}", self.run_id, self.step_id)
+        }
+    }
+
     /// A root-only receiver may use this candidate only with its pinned physical identity.
     /// This check grants no authority to deliver; the caller still owns the current run lock.
     #[must_use]
@@ -238,7 +248,7 @@ pub struct DeliveryRef {
 }
 
 impl DeliveryRef {
-    /// The legacy root delivery of `event` to `step`; scoped delivery has no native receiver yet.
+    /// The legacy root delivery; scoped receipts use the native transaction witness port.
     #[must_use]
     pub fn to_wait(event: &ClaimedEvent, step: &WaitingStep) -> Option<Self> {
         if !step.instance.path().is_root() {
@@ -248,7 +258,7 @@ impl DeliveryRef {
             namespace_id: event.namespace_id,
             source: event.envelope.key.source.to_string(),
             event_id: event.envelope.key.event_id.to_string(),
-            consumer: format!("wait:{}/{}", step.run_id, step.instance.node()),
+            consumer: step.delivery_consumer(),
             run_id: Some(step.run_id),
             node: Some(step.instance.node().as_str().to_owned()),
             trigger_id: None,
@@ -309,7 +319,7 @@ pub trait EventDispatchStore: Send + Sync {
     /// that began early enough to accept it. In SQL tuple order of (run, path nodes, path
     /// indices, node), after `after`, at most
     /// `limit`: a fan-out larger than a page is walked page by page. This is not the derived
-    /// Rust instance order. Discovery stays root-only until qualified delivery is implemented.
+    /// Rust instance order. Each candidate retains its complete root or scoped identity.
     fn waits_for_event(
         &self,
         event: &ClaimedEvent,
@@ -317,9 +327,11 @@ pub trait EventDispatchStore: Send + Sync {
         limit: u32,
     ) -> impl Future<Output = Result<Vec<WaitingStep>, StoreError>> + Send;
 
-    /// Event waits whose inbox has not been searched yet, oldest first.
+    /// Pending lookbacks in SQL tuple order (tenant, run, path nodes, path indices, node).
+    /// The cursor is discovery state only; failed rows remain pending for the next traversal.
     fn unscanned_waits(
         &self,
+        after: Option<&WaitingStep>,
         limit: u32,
     ) -> impl Future<Output = Result<Vec<WaitingStep>, StoreError>> + Send;
 

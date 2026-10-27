@@ -34,7 +34,11 @@ reservations without refunding lifetime instance budget. Local decisions read on
 iteration's item/index and outputs; the recorded answer and chosen route commit together under
 the Run revision and scheduler fence. A control entry is admitted PENDING without a worker task
 or notification identity; its durable journal and membership permit cold scheduler discovery.
-Waits, children and nested scopes remain separately gated. A body
+Waits, children and nested scopes remain separately gated. The v0.3 implementation checkpoint
+connects internal pinned scoped event subscriptions, automatic deadlines and the production
+dispatcher/lookback to exact-path receipt/value transactions; this does not activate public
+wait bodies or event entry admission. Its evidence and remaining rollout boundary are in
+[scoped-event-receiver.md](./scoped-event-receiver.md). A body
 activity may declare `compensateWith`, `reconcileWith`, `irreversible` and `highRisk`, and a failed or
 cancelled scope then compensates its completed iterations (FR-014-005, FR-014-006). A source prefix
 may supply an inline array or its own committed blob through `steps.fetch.output`; source-prefix

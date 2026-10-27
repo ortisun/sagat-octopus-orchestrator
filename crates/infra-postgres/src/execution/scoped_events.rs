@@ -197,7 +197,7 @@ pub(super) async fn prepare_delivery(
             what: "event document",
         });
     }
-    let consumer = format!("wait-instance:{}/{}", info.run_id, step.step_id);
+    let consumer = step.delivery_consumer();
     let inserted=sqlx::query("INSERT INTO event_deliveries (tenant_id,namespace_id,source,event_id,consumer,run_id,node,trigger_id,delivered_at,instance_id,instance_path_nodes,instance_path_indices) VALUES ($1,$2,$3,$4,$5,$6,$7,NULL,clock_timestamp(),$8,$9,$10) ON CONFLICT DO NOTHING")
         .bind(info.tenant_id.as_uuid()).bind(info.namespace_id.as_uuid()).bind(current.envelope.key.source.as_str()).bind(current.envelope.key.event_id.as_str()).bind(&consumer)
         .bind(info.run_id.as_uuid()).bind(step.instance.node().as_str()).bind(step.step_id).bind(&nodes).bind(&indices).execute(&mut **tx).await.map_err(store_error)?.rows_affected();

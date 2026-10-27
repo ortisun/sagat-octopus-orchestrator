@@ -978,3 +978,15 @@ paused handled/unhandled routing, cold duplicates and held-event versus queued b
 Native66, root dispatch24, contracts49 and workspace lint pass. The0.3 ledger records exact
 results, REDs, fixture corrections and boundaries. External receiver/public/released-reader
 activation and the eight canonical release tasks remain open.
+
+
+### 2026-10-27 scoped event dispatcher and bounded lookback recovery
+
+T014-014–017/040/043, FR-014-004/005/014/015/017: scoped_event_storage::receiver proves actual
+paged delivery, finished-inbox lookback, exact candidate CAS, quota rollback, pause/resume,
+failed-consumer fairness, selected-admission purge recovery and deterministic routing-error
+retry. A live-data index rollback/reapply preserves state and replay. Completed event gate79,
+legacy dispatch24, contracts49, migrations5 and strict lint pass. The repaired privilege fitness
+function separately passes42 and retains its RED/review trail in sql-privilege-audit.md. Exact
+commands/results and source identity are in the0.3 ledger; public/old-reader activation and
+canonical release tasks remain open.

@@ -1202,3 +1202,82 @@ SHA256: bc28712f1f47f94cea4591fa43314c5a199bdc674154549ff59bc757d3405ae8.
 Detailed contract: scoped-event-deadlines.md. No grants, migrations, public shape or SDK changed.
 External receiver, entry admission, public/released-reader activation, loops/nesting/capacity,
 full fault/SDK/resource/release acceptance and all eight canonical tasks remain open.
+
+
+## Production scoped event receiver and bounded lookback recovery (2026-10-27)
+
+The dispatcher now branches nonroot candidates to begin_current_path, reads no full Run history
+and retains only the canonical document returned by the accepted native receipt port. The exact
+satisfaction/output/audit/receipt and quota commit together; current logical_output_bytes enforces
+the existing Run output ceiling. No scheduler clock or lease is invented for external ingress.
+Root delivery retains its legacy transaction and receipt key. WaitingStep.delivery_consumer
+shares the legacy root/exact scoped key construction with native receipt and lookback selection.
+Direct matching pages retain the complete database tuple. Lookback selection and markers both
+require the captured current tenant/namespace/run/path/node/UUID/type/key/since binding.
+
+Two genuine initial REDs returned0 wakes instead of2 paged direct deliveries /1 first lookback
+(0pass/2fail,5.11s harness/59.93s command). The first caller correction passes2/0/0 in5.24s/80.65s.
+The expanded five-case gate passes4/fails1 (12.94s/67.53s): the quota test's exact snapshot
+incorrectly included the intentionally committed inbox retry log charge. Metadata diagnosis
+isolates log_bytes 0→58; the corrected assertion independently matches that delta to the exact
+inbox last_error byte length and still compares every other retained/execution field. This was
+a test expectation error, not an outcome rollback defect.
+
+Fresh adversarial review found three actionable recovery defects: Some(event)+No/Refused was
+marked scanned; a failing oldest scoped wait monopolized every bounded page; and non-invariant
+pure settlement errors after locked native admission were discarded as races. The seven-case
+gate has5pass/2fail (17.99s/73.31s): the fairness RED is genuine, while the first purge race failed
+fixture setup because purge correctly refuses PENDING inbox rows. Actual claim+finish before
+expiry corrects that fixture. The eight-case gate then has5pass/3 genuine failures
+(29.40s/84.45s), reproducing scan closure after observed queued-Run/purge ordering, sibling
+starvation and deterministic duplicate-successor route error incorrectly finishing the event.
+The corruption case explicitly inserts a premature, structurally valid successor and claims no
+normal transition or replay guarantee for that malformed source.
+
+The correction propagates pure errors after native admission, leaves selected-event No/Refused
+lookbacks pending, and traverses unscanned rows by a strict global SQL tuple with tenant identity.
+A short process-local cursor advances before consumer awaits and wraps once on an empty page;
+at most one scan_batch page is processed. Pending rows stay durable; restart resets only fairness
+position. This is not a new claim or outcome authority. The reviewer's proposed equal run UUID
+cross-tenant skip counterexample was withdrawn after checking the global runs.id primary key;
+explicit tenant ordering remains appropriate, but is not recorded as a current defect fix.
+Second bounded review finds no remaining issue. Existing user preference keeps external review
+skipped; no delegated tests are claimed.
+
+Index-only migration20261223000000 matches the new pending-wait tuple. Every committed branch's
+migration names were checked before selecting it. The legacy updated_at index remains; no
+column, function or runtime grant changes. A normal CREATE INDEX can block writes while it
+builds, documented in scoped-event-receiver.md. The focused real-data test undoes only this
+index, compares all retained/execution state and qualified candidates, reapplies it and verifies
+replay. It is not a released-v0.2 upgrade proof.
+
+The corrected nine receiver cases pass9/0/0 (21.35s harness/96.38s command), including native
+runtime-role direct paging, finished-inbox lookback, exact stale candidate matrix, current COMMIT
+quota rollback/retry, paused outcomes/cold routing, fair failed-consumer recovery, held-lock
+cleanup recovery, deterministic route-error retry and live-data index roundtrip. Final native,
+legacy dispatcher, contracts and migration/privilege gates follow below. Workspace/all-target
+Clippy passes99.60s; architecture/agent/format/diff checks pass. Sources remained fixed during
+each compilation; the eight-case RED executable was already running before later correction.
+No public body guard or worker protocol changed. Event entry admission, public/released-reader
+activation, loops/nesting/capacity and final fault/SDK/resource/release acceptance remain open;
+none of the eight canonical tasks closes here.
+
+
+Final receiver checkpoint: fixed executable scoped_event gate passes79/0/0 (346.74s harness/
+346.76s command), including the75native lifecycle cases and4qualified discovery/identity cases.
+This gate invokes the already-built immutable integration executable directly; its SHA256 is
+990a4e56671bcf694e26c2eb7e78b860ad413473192943152bda77e2100f3a26.
+Legacy dispatch passes24/0/0 (70.83s/211.27s including Cargo build-lock waiting); contracts49/0/0
+(0.63s/2.49s) retain scoped wait publication refusal. General migration checks pass5/0/0
+(9.37s/10.28s), separately from the receiver's admitted-wait index roundtrip.
+
+The runtime privilege gate initially passed32/fail1 because its lexical extractor could not
+resolve17sites from the earlier shared predicate macros. The separate519dfa82 correction and
+its complete RED/review trail are in docs/engineering/sql-privilege-audit.md. No grant/ALLOWED
+exception changed. The corrected gate passes42/0/0 (14.30s/43.50s), auditing1090statements in56
+files,675distinct needs and638native role probes. Final workspace lint passes29.82s after the
+extractor changes. Later changes are documentation only; receiver production sources stayed
+unchanged after the nine-case gate and during the complete79-case executable run. Architecture,
+agent configuration, formatting and diff checks pass. External delivery is now connected for
+these internal pinned fixtures; entry/public/old-reader activation and all canonical remainder
+boundaries above still apply.

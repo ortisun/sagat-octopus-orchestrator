@@ -4118,3 +4118,24 @@ dispatch24/0/0 (60.83s/109.78s), contracts49/0/0 (0.56s/2.57s), workspace lint72
 checks pass. REDs, the root-activity fixture correction, scoped review and source hash are in
 the implementation ledger. External delivery, public/old-reader rollout and canonical release
 acceptance remain pending; none of the eight open tasks closes here.
+
+
+### Scoped production event receiver and fair lookback recovery
+
+The dispatcher now consumes qualified candidates through current bounded path entry and the
+native canonical receipt/value witness. Root receipts keep their legacy identity. Current
+lookback/scan CAS, full tuple paging and a process-local bounded keyset cursor preserve pending
+failed work without monopolizing the head page. Selected-admission loss leaves a scan pending;
+post-admission settlement errors retry instead of finalizing the event. Nine focused tests
+pass21.35s/96.38s; the0.3 ledger retains genuine REDs, fixture corrections and scoped reviews.
+
+The completed executable passes79/0/0 (346.74s/346.76s), root dispatch24/0/0 (70.83s/211.27s),
+contracts49/0/0 (0.63s/2.49s), migration checks5/0/0 (9.37s/10.28s). Index-only migration
+20261223000000 keeps the old index and roundtrips admitted waits. The initial32pass/1fail
+privilege audit exposed unsupported shared SQL macros; separate519dfa82 fixes the fitness
+function without grants/exceptions, with42/0/0 (14.30s/43.50s) and final workspace lint29.82s.
+Exact provenance/source hash and static checks are in the implementation ledger.
+
+These remain immutable internal structured-codec fixtures, not public wait entry/body or
+released-v0.2 cutover evidence. General loops/nesting/capacity, SDK/fault/resource/release
+acceptance and all eight canonical tasks remain open.

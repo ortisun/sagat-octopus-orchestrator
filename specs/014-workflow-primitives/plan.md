@@ -640,3 +640,14 @@ selection from native correlation, clock and delivery authority. Root/full/path 
 recorded branch selection; Pending waits remain scheduler-owned. Public wait bodies stay closed
 under a contract fitness test until qualified dispatcher identity, persistence/receipt/value
 atomicity, races and all-five runtime evidence pass. Native/group activation is not inferred.
+
+
+### Qualified event receiver implementation checkpoint — 2026-10-27
+
+The bounded contracts in scoped-event-scheduling.md, scoped-event-deadlines.md and
+scoped-event-receiver.md now have current native caller evidence. External delivery uses
+current exact-path receipt/value transactions; lookback uses bounded tenant-qualified traversal.
+Index-only migration20261223000000 retains legacy lookup support and documents build locking.
+This does not activate public scoped event bodies or entry admission. Released-v0.2 cutover,
+remaining node kinds/nesting/capacity and canonical release acceptance remain pending in the
+implementation ledger and validation report.

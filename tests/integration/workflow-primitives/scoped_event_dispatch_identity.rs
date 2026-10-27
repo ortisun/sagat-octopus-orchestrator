@@ -90,7 +90,7 @@ async fn root_marked(w: &World, run: RunId) -> bool {
 }
 
 #[tokio::test]
-async fn root_event_discovery_excludes_scoped_rows_before_taking_a_cursor_page() {
+async fn event_discovery_pages_root_and_scoped_candidates_by_complete_identity() {
     let (w, matcher, run, event, before) = fixture("root-event-page-identity", "aaa").await;
     let first = matcher
         .waits_for_event(&event, None, 1)
@@ -106,17 +106,29 @@ async fn root_event_discovery_excludes_scoped_rows_before_taking_a_cursor_page()
         .waits_for_event(&event, Some((run, &first[0].instance)), 1)
         .await
         .expect("after root cursor");
-    assert!(next.is_empty());
-    let unscanned = matcher
-        .unscanned_waits(1)
+    assert_eq!(next.len(), 1);
+    assert_eq!(next[0].instance.node().as_str(), "aaa");
+    assert!(!next[0].instance.path().is_root());
+    let last = matcher
+        .waits_for_event(&event, Some((run, &next[0].instance)), 1)
         .await
-        .expect("root-only lookback discovery");
-    assert_eq!(
-        unscanned.len(),
-        1,
-        "earlier scoped rows must not consume the root lookback page"
+        .expect("second same-name scoped page");
+    assert_eq!(last.len(), 1);
+    assert_ne!(last[0].instance, next[0].instance);
+    assert!(
+        matcher
+            .waits_for_event(&event, Some((run, &last[0].instance)), 1)
+            .await
+            .expect("finished candidate pages")
+            .is_empty()
     );
+    let unscanned = matcher
+        .unscanned_waits(None, 1)
+        .await
+        .expect("qualified lookback discovery");
+    assert_eq!(unscanned.len(), 1, "lookback remains bounded");
     assert_eq!(unscanned[0].instance.node().as_str(), "pay");
+    assert!(unscanned[0].instance.path().is_root());
     assert_eq!(metadata_snapshot(&w, run).await, before);
 }
 
@@ -212,7 +224,7 @@ async fn scan_markers_refuse_changed_physical_or_logical_candidate_identity() {
         matcher
             .undelivered_event_for(&wrong_path)
             .await
-            .expect("closed scoped lookback")
+            .expect("nonexistent physical/logical scoped identity")
             .is_none()
     );
     let mut marked = Vec::new();
@@ -234,7 +246,7 @@ async fn scan_markers_refuse_changed_physical_or_logical_candidate_identity() {
 }
 
 #[tokio::test]
-async fn event_cursor_uses_complete_database_tuple_even_while_discovery_is_root_only() {
+async fn event_cursor_uses_complete_database_tuple_across_same_name_scoped_candidates() {
     let (w, matcher, run, event, before) = fixture("root-event-candidate-cursor", "aaa").await;
     let scoped = ExecutionInstanceId::in_path(
         InstancePath::root()
@@ -247,9 +259,16 @@ async fn event_cursor_uses_complete_database_tuple_even_while_discovery_is_root_
         .waits_for_event(&event, Some((run, &scoped)), 1)
         .await
         .expect("qualified cursor");
-    assert!(
-        after.is_empty(),
-        "the root is before the scoped cursor, not after local node aaa"
+    assert_eq!(after.len(), 1);
+    let next = ExecutionInstanceId::in_path(
+        InstancePath::root()
+            .child(NodeId::parse("lines").expect("scope"), 1)
+            .expect("path"),
+        NodeId::parse("aaa").expect("node"),
+    );
+    assert_eq!(
+        after[0].instance, next,
+        "the root is before the scoped cursor; only its next sibling follows"
     );
     assert_eq!(metadata_snapshot(&w, run).await, before);
 }
