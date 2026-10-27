@@ -991,3 +991,6 @@ mod response_cancellation_tests {
         );
     }
 }
+
+mod approvals;
+pub use approvals::ApprovalDecisionRequest;

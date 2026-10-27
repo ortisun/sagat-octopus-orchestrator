@@ -109,7 +109,7 @@ where
 }
 /// Scope dimensions are ordered; they are never flattened into a node identifier.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ScopeSegment {
     pub scope_node_id: String,
     pub iteration_index: u32,
@@ -423,6 +423,114 @@ impl EventReceipt {
         if value.event_id.is_empty() || value.source.is_empty() {
             return Err(protocol());
         }
+        value.raw = raw;
+        Ok(value)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ApprovalDecision {
+    Approve,
+    Reject,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ApprovalStatus {
+    Pending,
+    Approved,
+    Rejected,
+    Expired,
+    Cancelled,
+}
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalListItem {
+    pub approval_id: Uuid,
+    pub run_id: Uuid,
+    pub node_id: String,
+    pub instance_path: Vec<ScopeSegment>,
+    pub status: ApprovalStatus,
+    #[serde(with = "time::serde::rfc3339")]
+    pub deadline: OffsetDateTime,
+    #[serde(deserialize_with = "nullable_instant")]
+    pub settled_at: Option<OffsetDateTime>,
+    #[serde(skip)]
+    pub raw: Value,
+}
+fn nullable_instant<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<OffsetDateTime>, D::Error> {
+    Option::<String>::deserialize(deserializer)?
+        .map(|value| {
+            OffsetDateTime::parse(&value, &time::format_description::well_known::Rfc3339)
+                .map_err(serde::de::Error::custom)
+        })
+        .transpose()
+}
+impl std::fmt::Debug for ApprovalListItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApprovalListItem")
+            .field("status", &self.status)
+            .finish_non_exhaustive()
+    }
+}
+pub type ApprovalPage = Page<ApprovalListItem>;
+impl ApprovalListItem {
+    pub(crate) fn parse(raw: Value) -> Result<Self, SagatError> {
+        let mut value: Self = serde_json::from_value(raw.clone()).map_err(|_| protocol())?;
+        if value.node_id.is_empty()
+            || value.node_id.chars().count() > 64
+            || value.instance_path.len() > 8
+            || value.instance_path.iter().any(|p| {
+                p.scope_node_id.is_empty()
+                    || p.scope_node_id.chars().count() > 64
+                    || p.iteration_index > 9999
+            })
+        {
+            return Err(protocol());
+        }
+        value.deadline = value.deadline.to_offset(UtcOffset::UTC);
+        value.settled_at = value.settled_at.map(|time| time.to_offset(UtcOffset::UTC));
+        value.raw = raw;
+        Ok(value)
+    }
+}
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalDecisionReceipt {
+    pub receipt_id: Uuid,
+    pub approval_id: Uuid,
+    pub decision_key: String,
+    pub decision: ApprovalDecision,
+    pub reason_code: Option<String>,
+    pub actor: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub decided_at: OffsetDateTime,
+    pub outcome_sequence: u64,
+    pub replayed: bool,
+    #[serde(skip)]
+    pub raw: Value,
+}
+impl std::fmt::Debug for ApprovalDecisionReceipt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApprovalDecisionReceipt")
+            .field("decision", &self.decision)
+            .field("replayed", &self.replayed)
+            .finish_non_exhaustive()
+    }
+}
+impl ApprovalDecisionReceipt {
+    pub(crate) fn parse(raw: Value) -> Result<Self, SagatError> {
+        let mut value: Self = serde_json::from_value(raw.clone()).map_err(|_| protocol())?;
+        if value.decision_key.is_empty()
+            || value.decision_key.len() > 128
+            || value.actor.is_empty()
+            || !(1..=i64::MAX as u64).contains(&value.outcome_sequence)
+        {
+            return Err(protocol());
+        }
+        value.decided_at = value.decided_at.to_offset(UtcOffset::UTC);
         value.raw = raw;
         Ok(value)
     }

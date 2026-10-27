@@ -44,6 +44,10 @@ async fn answer(
         "bad-page" => (StatusCode::OK,[("x-trace-id","0123456789abcdef0123456789abcdef")],axum::Json(json!({"items":false}))).into_response(),
         "repeat-page" => (StatusCode::OK,[("x-trace-id","0123456789abcdef0123456789abcdef")],axum::Json(json!({"items":[basic_run("RUNNING")],"nextCursor":"same"}))).into_response(),
         "bad-query"|"bad-update" => (StatusCode::OK,[("x-trace-id","0123456789abcdef0123456789abcdef")],axum::Json(json!({"runId":RUN,"runVersion":1,"stateRevision":1}))).into_response(),
+        "bad-approvals" => (StatusCode::OK,[("x-trace-id","0123456789abcdef0123456789abcdef")],axum::Json(json!({"items":[{"approvalId":RUN,"runId":RUN,"nodeId":"review","instancePath":[],"status":"PENDING","deadline":"2026-10-27T12:00:00Z"}],"nextCursor":null}))).into_response(),
+        "approvals"|"approval-pages" => (StatusCode::OK,axum::Json(json!({"items":[{"approvalId":RUN,"runId":RUN,"nodeId":"review","instancePath":[{"scopeNodeId":"lines","iterationIndex":3,"futureField":true}],"status":"PENDING","deadline":"2026-10-27T12:00:00Z","settledAt":null,"newField":true}],"nextCursor":if state.mode=="approval-pages" && count==1{Some("next approval")}else{None}}))).into_response(),
+        "decision-retry" if count==1 => (StatusCode::SERVICE_UNAVAILABLE,axum::Json(json!({"code":"UNAVAILABLE","retryable":true}))).into_response(),
+        "decision-retry" => (StatusCode::OK,axum::Json(json!({"receiptId":WORKFLOW,"approvalId":RUN,"decisionKey":"approve-1","decision":"APPROVE","reasonCode":"review:ok","actor":"user:reviewer","decidedAt":"2026-10-27T17:30:00+05:30","outcomeSequence":12,"replayed":true}))).into_response(),
         "query" => (StatusCode::OK,axum::Json(json!({"runId":RUN,"runVersion":9007199254740993_u64,"stateRevision":42,"result":{"amount":"12.3400","at":"2026-10-27T12:00:00Z"}}))).into_response(),
         "update-retry" if count==1 => (StatusCode::SERVICE_UNAVAILABLE,axum::Json(json!({"code":"UNAVAILABLE","retryable":true}))).into_response(),
         "update-retry" => (StatusCode::OK,axum::Json(json!({"runId":RUN,"operation":"adjust","updateKey":"update-1","status":"APPLIED","result":null,"beforeStateRevision":42,"afterStateRevision":43,"runVersion":50,"replayed":true}))).into_response(),
@@ -915,4 +919,102 @@ async fn invalid_operation_keys_names_and_event_shapes_never_reach_the_server() 
         "VALIDATION_FAILED"
     );
     assert!(server.state.calls.lock().expect("requests").is_empty());
+}
+
+#[tokio::test]
+async fn approval_pages_keep_scoped_identity_and_ignore_additive_scope_fields() {
+    use sagat_octopus_orchestrator_sdk::{ApprovalStatus, PageOptions};
+    let server = server("approvals").await;
+    let client =
+        Client::new(options(&server.base, TokenSource::bearer("fixture-token"))).expect("client");
+    let page = client
+        .list_approvals(RUN, PageOptions::default(), CallOptions::default())
+        .await
+        .expect("approvals");
+    assert_eq!(page.items[0].status, ApprovalStatus::Pending);
+    assert_eq!(page.items[0].instance_path[0].scope_node_id, "lines");
+    assert_eq!(page.items[0].instance_path[0].iteration_index, 3);
+    assert_eq!(page.items[0].raw["newField"], true);
+}
+#[tokio::test]
+async fn approval_decisions_retry_the_unchanged_body_key_and_return_typed_receipts() {
+    use sagat_octopus_orchestrator_sdk::{ApprovalDecision, ApprovalDecisionRequest};
+    let server = server("decision-retry").await;
+    let client =
+        Client::new(options(&server.base, TokenSource::bearer("fixture-token"))).expect("client");
+    let receipt = client
+        .decide_approval(
+            RUN,
+            ApprovalDecisionRequest {
+                decision_key: "approve-1".into(),
+                decision: ApprovalDecision::Approve,
+                reason_code: Some("review:ok".into()),
+            },
+            CallOptions::default(),
+        )
+        .await
+        .expect("decision");
+    assert_eq!(receipt.approval_id.to_string(), RUN);
+    assert!(receipt.replayed);
+    assert_eq!(receipt.outcome_sequence, 12);
+    assert_eq!(receipt.decided_at.offset(), time::UtcOffset::UTC);
+    let calls = server.state.calls.lock().expect("calls");
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].1, calls[1].1);
+    assert!(
+        calls
+            .iter()
+            .all(|(headers, _, _)| !headers.contains_key("idempotency-key"))
+    );
+    let body: serde_json::Value = serde_json::from_slice(&calls[0].1).expect("body");
+    assert_eq!(body["decisionKey"], "approve-1");
+    assert_eq!(body["decision"], "APPROVE");
+    assert_eq!(body["reasonCode"], "review:ok");
+}
+
+#[tokio::test]
+async fn approval_iteration_fetches_its_second_page_lazily() {
+    use futures_util::StreamExt as _;
+    use sagat_octopus_orchestrator_sdk::PageOptions;
+    let server = server("approval-pages").await;
+    let client =
+        Client::new(options(&server.base, TokenSource::bearer("fixture-token"))).expect("client");
+    let stream = client.list_all_approvals(RUN, PageOptions::default(), CallOptions::default());
+    futures_util::pin_mut!(stream);
+    stream.next().await.expect("first").expect("approval");
+    assert_eq!(server.state.calls.lock().expect("calls").len(), 1);
+    stream.next().await.expect("second").expect("approval");
+    assert!(stream.next().await.is_none());
+    assert_eq!(server.state.calls.lock().expect("calls").len(), 2);
+}
+#[tokio::test]
+async fn approval_nullability_is_required_and_invalid_decision_keys_stay_local() {
+    use sagat_octopus_orchestrator_sdk::{ApprovalDecision, ApprovalDecisionRequest, PageOptions};
+    let server = server("bad-approvals").await;
+    let client =
+        Client::new(options(&server.base, TokenSource::bearer("fixture-token"))).expect("client");
+    let error = client
+        .list_approvals(RUN, PageOptions::default(), CallOptions::default())
+        .await
+        .expect_err("settledAt is required even while null");
+    assert_eq!(error.code, "PROTOCOL");
+    assert_eq!(error.status, Some(200));
+    assert_eq!(
+        error.trace_id.as_deref(),
+        Some("0123456789abcdef0123456789abcdef")
+    );
+    let error = client
+        .decide_approval(
+            RUN,
+            ApprovalDecisionRequest {
+                decision_key: "bad key".into(),
+                decision: ApprovalDecision::Reject,
+                reason_code: None,
+            },
+            CallOptions::default(),
+        )
+        .await
+        .expect_err("invalid key");
+    assert_eq!(error.code, "VALIDATION_FAILED");
+    assert_eq!(server.state.calls.lock().expect("calls").len(), 1);
 }

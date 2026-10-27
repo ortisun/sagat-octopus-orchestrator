@@ -108,3 +108,11 @@ updateKey with immutable arguments/revision and no idempotency header. Event pub
 the generated event ID and UTC instant across retries and accepts the canonical duplicate receipt.
 Missing result/receipt fields are PROTOCOL errors retaining HTTP status/trace. This increment does
 not close the remaining chain, approval, blob, authoring or shared-conformance work.
+
+Approval increment: `rust-sdk-approvals-api-red` failed on missing APIs, then
+`rust-sdk-approvals-first-green` passed 36 REST/catalog checks. Added lazy two-page iteration,
+required nullable settlement fields, malformed response metadata and local invalid-key checks.
+`rust-sdk-approvals-clippy` exited 0 (2.21 s); `rust-sdk-approvals-tests` exited 0
+(12.73 s, 68 total including 38 REST/catalog checks). Approval decisions retain their body key and
+reason across retries without an idempotency header. Returned scope dimensions accept additive
+fields while preserving the canonical typed pair; serialization still emits only that pair.
