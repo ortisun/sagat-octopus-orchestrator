@@ -18,9 +18,9 @@ pub(super) fn local_progress_candidate(
                 && !step.routed()))
 }
 
-/// The recorded failure has a declared local handler whose route is still deferred by pause.
-/// It is not a handled failure yet; normal failure classification resumes after routing.
-pub(super) fn deferred_error_route(
+/// A recorded failure still awaits its deferred local outcome route.
+/// Routing without onError leaves it unhandled; normal fail-fast then resumes.
+pub(super) fn deferred_failure(
     definition: &WorkflowDefinition,
     instance: &ExecutionInstanceId,
     step: &StepState,
@@ -28,9 +28,6 @@ pub(super) fn deferred_error_route(
     step.status() == StepStatus::Failed
         && !step.routed()
         && local_progress_candidate(definition, instance, step)
-        && definition
-            .node_for_instance(instance)
-            .is_some_and(|node| node.on_error().is_some())
 }
 
 impl<S, E, R> Scheduler<S, E, R>

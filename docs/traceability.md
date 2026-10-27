@@ -968,3 +968,13 @@ paused/deferred onError routing, stopped/no-placement refusal and quota rollback
 The new scheduler pass reuses exact pure/native commands and existing telemetry/actor/authority.
 Native59, controls23, contracts49 and workspace lint pass; detailed REDs, results and limitations
 are in the0.3 ledger. Deadline/receiver/public activation and canonical release tasks remain open.
+
+
+### 2026-10-27 qualified automatic event deadlines
+
+T014-014–017/040, FR-014-004/005/014/015/017: scoped_event_storage::deadline_processing proves
+qualified discovery and actual scheduler expiry, placement/revision fences, legacy root,
+paused handled/unhandled routing, cold duplicates and held-event versus queued bounded entry.
+Native66, root dispatch24, contracts49 and workspace lint pass. The0.3 ledger records exact
+results, REDs, fixture corrections and boundaries. External receiver/public/released-reader
+activation and the eight canonical release tasks remain open.

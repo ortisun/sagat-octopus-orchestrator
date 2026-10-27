@@ -1160,3 +1160,45 @@ public activation, actual released-v0.2 rollout, remaining nested/capacity/SDK/f
 and canonical release gates remain open; none of the eight canonical tasks closes here.
 
 Timer regression passes13/0/0 in49.53s harness/49.54s command. Native fixed executable SHA256: 8c9297513bede69ee66a2fc9854a1efe391ae8c4580e2a7f7e3d12f07ad85123. Formatting and diff checks pass.
+
+
+## Qualified automatic event deadlines (2026-10-27)
+
+Maintenance discovery now returns complete instance paths for due event waits; selection keys
+include that identity. Root processing retains its legacy command. Scoped processing requires
+an owned placement and uses bounded path entry, current revision, own Run/shard acknowledgement
+and post-lock database clock before the accepted native timeout. Discovery grants no authority.
+Both collection readers defer valid unrouted Failed waits while no Run stop is committed,
+including waits without onError. Pause holds routing; after resume, a route without onError
+still leaves the domain failure unhandled for the next normal fail-fast decision.
+
+Genuine REDs: qualified discovery returned0 instead of2 (0/1,2.40s harness/54.79s command);
+paused Failed without onError raised PrimitiveInvalidTransition (0/1,2.74s/62.13s); the combined
+three-case gate failed all3 (6.88s/57.60s), including the actual tick returning0 timeouts instead
+of2. Query, consumer and deferral correction pass3/0/0 (9.44s/68.06s). The expanded gate had
+5pass/1fail (19.20s/69.68s): its whole-run success assumption ignored the fixture's legitimate
+root activity a after the collection. A metadata-only diagnostic rerun failed1 (3.12s/54.19s)
+and identified that activity READY with the collection already finished. The policy fixture is
+now collection → end before immutable insertion; no production End change was needed. Its
+three-policy aggregate passes1/0/0 (8.84s/59.31s). This fixture error is not a behavioral RED.
+
+Seven deadline cases cover qualified pages/exclusion, same-name members, cold duplicate ticks,
+legacy singleton root compatibility, scoped no-placement/stale-generation refusal, paused
+handled/unhandled outcomes and cold resume to whole-run success/failure. The actual consumer
+race holds a native canonical event delivery while Scheduler.tick queues at bounded Run entry;
+exact backend PID/start and blocking edge release the holder, without sleeps. Event commit
+invalidates that captured revision; only the other due member times out. It passes1/0/0
+(2.50s/54.39s). Existing native port races alone are not presented as this consumer proof.
+
+A fresh-context bounded review found a draft overstatement about sibling failures; the contract
+now distinguishes an unlatched sibling failure from committed global/scope closure. The native
+command gains no sibling-read authority. The second review found no remaining issue in this
+checkpoint. No delegated test result substitutes for the root gates.
+
+Final fixed-source native lifecycle passes66/0/0 (259.49s harness/260.23s command); root dispatch
+24/0/0 (60.83s/109.78s), contracts49/0/0 (0.56s/2.57s), strict workspace/all-target Clippy72.31s,
+architecture and agent configuration pass. Formatting and diff checks pass. Native executable
+SHA256: bc28712f1f47f94cea4591fa43314c5a199bdc674154549ff59bc757d3405ae8.
+Detailed contract: scoped-event-deadlines.md. No grants, migrations, public shape or SDK changed.
+External receiver, entry admission, public/released-reader activation, loops/nesting/capacity,
+full fault/SDK/resource/release acceptance and all eight canonical tasks remain open.

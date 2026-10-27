@@ -2,7 +2,11 @@
 use super::*;
 use sagat_scheduler::CollectionAdvance;
 
-async fn advance(fixture: &Fixture, store: &PgRunStore, full: bool) -> CollectionAdvance {
+pub(super) async fn advance(
+    fixture: &Fixture,
+    store: &PgRunStore,
+    full: bool,
+) -> CollectionAdvance {
     let scheduler = cancellation::scheduler(fixture, store);
     let owner = ExecutionInstanceId::root(NodeId::parse("items").expect("owner"));
     if full {

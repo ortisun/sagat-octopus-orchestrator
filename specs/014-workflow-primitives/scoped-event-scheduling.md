@@ -9,8 +9,8 @@ are separate decisions. Existing public publication refusal stays enforced.
 
 Add a private collection event-wait scheduling module, separate from timer/control decisions.
 One eligible active member progresses per collection transition. A pinned WaitEvent in Pending
-can start; a valid Succeeded wait or Failed wait with a declared onError and an unrouted
-outcome can release its deferred local route after resume. Waiting, cancelled and already-routed members are not candidates.
+can start; a valid Succeeded/Failed wait with an unrouted outcome can release its deferred
+local route after resume. Waiting, cancelled and already-routed members are not candidates.
 Do not schedule a worker or grant event waiting any worker capability.
 
 Both collection entry methods already require Hold::Lease before these private helpers
@@ -19,10 +19,12 @@ acceptance of Hold::Nothing is unreachable here. A placement-free scheduler must
 existing typed FenceUnavailable result before mutation; it grants no singleton clock authority.
 
 Both full/frontier fail-fast classification must defer a valid unrouted Failed event wait
-with a declared onError until that local route is committed. This applies while paused too,
+until that local outcome route is committed. This applies while paused too,
 when scheduling must remain no work. Do not call it handled before routing: preserve the
 domain failure predicate, defer only this scheduler decision, retain other active failures,
-and never defer a committed Run stop/drain. A wait without onError follows normal fail-fast.
+and never defer a committed Run stop/drain. As extended by scoped-event-deadlines.md, a wait
+without onError remains unhandled after StepRouted and follows normal fail-fast on the next
+collection decision. A declared handler takes its local error route instead.
 
 The bounded path loads its exact snapshot, checks the transition revision and current
 forward-progress eligibility and evaluates correlation_key_instance from that captured data

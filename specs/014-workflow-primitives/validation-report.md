@@ -4104,3 +4104,17 @@ Final lifecycle59/0/0(229.10s/229.84s), controls23/0/0(86.53s/86.54s), contracts
 is retained in the ledger. These are immutable structured-codec runtime fixtures under sagat_app;
 production deadline/receiver activation, released-profile/public/SDK/nested-capacity/resource
 acceptance and all eight canonical tasks remain open.
+
+
+### Qualified automatic event deadlines
+
+Due discovery and fair selection preserve complete instance identity. Scoped consumers use
+bounded revision/current own-shard/database-clock authority; root singleton behavior remains
+covered. Both collection readers preserve paused unrouted failures until local routing,
+including the unhandled no-onError case. Seven native deadline cases include actual ticks,
+no-placement/stale-generation controls, three paused/resume policies, cold duplicates and an
+observed held-event/queued-deadline entry race. Native lifecycle66/0/0 (259.49s/260.23s), root
+dispatch24/0/0 (60.83s/109.78s), contracts49/0/0 (0.56s/2.57s), workspace lint72.31s and static
+checks pass. REDs, the root-activity fixture correction, scoped review and source hash are in
+the implementation ledger. External delivery, public/old-reader rollout and canonical release
+acceptance remain pending; none of the eight open tasks closes here.

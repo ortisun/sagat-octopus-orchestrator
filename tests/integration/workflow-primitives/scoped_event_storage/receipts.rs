@@ -66,7 +66,7 @@ async fn source_fixture(fixture: Fixture) -> (Fixture, PgRunStore, WaitingStep, 
     (fixture, store, candidate, event)
 }
 
-async fn persist_full_delivery(
+pub(super) async fn persist_full_delivery(
     tx: &mut impl RunTx,
     candidate: &WaitingStep,
     event: &ClaimedEvent,

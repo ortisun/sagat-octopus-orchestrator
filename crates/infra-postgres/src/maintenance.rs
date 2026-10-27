@@ -313,11 +313,10 @@ impl MaintenanceStore for PgRunStore {
     async fn due_wait_deadlines(&self, window: &Window) -> Result<Vec<StepRef>, StoreError> {
         let (limit, shards, exclude) = window_params(window);
         sqlx::query(
-            "SELECT t.tenant_id, t.run_id, t.node FROM unnest($2::smallint[]) AS sh(s) \
+            "SELECT t.tenant_id, t.run_id, t.node,t.instance_path_nodes,t.instance_path_indices FROM unnest($2::smallint[]) AS sh(s) \
              CROSS JOIN LATERAL ( \
-                 SELECT tenant_id, run_id, node, due_at FROM steps \
+                 SELECT tenant_id, run_id, node, due_at,instance_path_nodes,instance_path_indices FROM steps \
                  WHERE run_shard(run_id) = sh.s AND status = 'WAITING' AND waiting_kind = 'EVENT' \
-                   AND cardinality(instance_path_nodes) = 0 \
                    AND due_at <= now() AND tenant_id <> ALL($3::uuid[]) \
                  ORDER BY due_at LIMIT $1) t \
              ORDER BY t.due_at LIMIT $1",
@@ -329,7 +328,7 @@ impl MaintenanceStore for PgRunStore {
         .await
         .map_err(store_error)?
         .iter()
-        .map(step_ref)
+        .map(addressed_step_ref)
         .collect()
     }
 

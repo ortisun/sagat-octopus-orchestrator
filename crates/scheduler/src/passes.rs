@@ -1314,7 +1314,7 @@ where
         > = std::collections::HashMap::new();
         for (instance, step) in state.instances() {
             if state.stop_reason().is_none()
-                && collection_event_waits::deferred_error_route(&definition, instance, step)
+                && collection_event_waits::deferred_failure(&definition, instance, step)
             {
                 continue;
             }
@@ -1971,7 +1971,7 @@ where
                         .iter()
                         .find_map(|(instance, step)| {
                             if frontier.run.stop_reason.is_none()
-                                && collection_event_waits::deferred_error_route(
+                                && collection_event_waits::deferred_failure(
                                     definition, instance, step,
                                 )
                             {
@@ -4582,39 +4582,42 @@ where
         }
     }
 
-    async fn wait_deadlines(&self, view: &View, report: &mut Report) {
+    async fn wait_deadlines(&self, view: &View, report: &mut Report)
+    where
+        S: PathExecutionStore,
+    {
         let due = self
             .pick(
                 view,
                 "wait_deadlines",
                 report,
-                |s: &StepRef| s.tenant_id,
-                |s| (s.run_id, s.node.clone()),
+                |step: &StepRef| step.tenant_id,
+                |step| (step.run_id, step.instance()),
                 |store, window| async move { store.due_wait_deadlines(&window).await },
             )
             .await;
-        let outcomes = self
-            .each(
-                due,
-                |StepRef {
-                     tenant_id,
-                     run_id,
-                     node,
-                     ..
-                 }| {
-                    self.apply(
-                        view,
-                        tenant_id,
-                        run_id,
-                        "wait_timeout",
-                        self.effects(),
-                        move |def, state, now| {
-                            Ok(((), execution::time_out_wait(def, state, &node, now)?))
-                        },
-                    )
-                },
-            )
-            .await;
+        let outcomes = self.each(due, |candidate| async move {
+            let instance = candidate.instance();
+            let tenant_id = candidate.tenant_id;
+            let run_id = candidate.run_id;
+            if instance.path().is_root() {
+                self.apply(view, tenant_id, run_id, "wait_timeout", self.effects(), move |definition, state, now| {
+                    Ok(((), execution::time_out_wait(definition, state, instance.node(), now)?))
+                }).await
+            } else {
+                // Scoped event clocks require native own-shard acknowledgement; singleton mode
+                // grants no such authority. Preserve the existing root singleton behavior above.
+                if !matches!(view.hold_for(run_id), Hold::Lease(_)) {
+                    metrics::counter!("scheduler_actions_total", "kind" => "wait_timeout", "outcome" => Outcome::Fenced.label()).increment(1);
+                    metrics::counter!("scheduler_fenced_total", "kind" => "wait_timeout").increment(1);
+                    return Outcome::Fenced;
+                }
+                let command_instance = instance.clone();
+                self.apply_path_if(view, RunRef { tenant_id, run_id }, &instance, "wait_timeout", None, move |definition, state, now| {
+                    execution::time_out_event_wait_path_instance(definition, state, &command_instance, now)
+                }).await
+            }
+        }).await;
         for outcome in outcomes {
             Self::tally(report, outcome, |r| r.waits_timed_out += 1);
         }
