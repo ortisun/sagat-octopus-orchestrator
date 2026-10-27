@@ -32,3 +32,6 @@ old in-flight worker reports, new scoped waits in old readers, a mixed-dispatche
 public scoped waits, five-SDK parity, nesting/capacity or complete release readiness.
 The operator must retain compatible engines/readers and preserve required migration history.
 No tokens, credentials, task capabilities or payload bytes are stored in this evidence.
+
+Transcript files strip trailing line whitespace and final blank lines for Git hygiene;
+transcripts.json retains both original-byte and normalized checksums. Test content is unchanged.
