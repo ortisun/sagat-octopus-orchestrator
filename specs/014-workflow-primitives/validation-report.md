@@ -4085,3 +4085,22 @@ Current-row fingerprint/JSON-object corruption and existing PostgreSQL size-boun
 pass1/0/0 in2.40s/3.06s after a documented fixture-setup error. Test-target strict lint passes
 16.29s before the final assertion tightening. No production code, public activation or
 canonical release task changes; broader faults, production callers and rollout remain open.
+
+
+### Collection event subscription and deferred local routing
+
+Both scheduler read models now start exact scoped subscriptions with captured-instance key
+evaluation, current revision/own authority and acknowledged database clock, and release deferred
+valid local outcomes. Genuine start/deferred-failure REDs and bounded review corrections are
+recorded in the0.3 ledger. Unrouted Failed waits with onError defer collection failure while
+no Run stop is committed, stay waiting under pause and take the declared local route on resume.
+No domain failure predicate or public body guard is weakened. Existing collection entry lease
+fencing already refuses placement-free calls; its new baseline test required no production fix.
+
+Eight caller cases pass36.04s/89.58s, including actual COMMIT quota refusal and separately
+injected persistence-time typed quota, failed-transaction rollback and current scope drain.
+Final lifecycle59/0/0(229.10s/229.84s), controls23/0/0(86.53s/86.54s), contracts49/0/0
+(0.68s/5.27s), strict workspace lint63.81s and architecture/agent checks pass. Timer regression
+is retained in the ledger. These are immutable structured-codec runtime fixtures under sagat_app;
+production deadline/receiver activation, released-profile/public/SDK/nested-capacity/resource
+acceptance and all eight canonical tasks remain open.

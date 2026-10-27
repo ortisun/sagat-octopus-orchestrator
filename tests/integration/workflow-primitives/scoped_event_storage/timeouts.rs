@@ -13,7 +13,7 @@ pub(super) async fn waiting(name: &str, handled: bool) -> (Fixture, PgRunStore) 
     (fixture, store)
 }
 
-async fn expire(
+pub(super) async fn expire(
     fixture: &Fixture,
     store: &PgRunStore,
     full: bool,

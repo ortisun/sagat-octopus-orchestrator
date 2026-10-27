@@ -1111,3 +1111,52 @@ remaining canonical SDK/nesting/capacity/resource/fault/release gates remain ope
 The tightened prepared-path case passes1/0/0 in2.45s harness/52.89s command, requiring
 RevisionConflict exactly. It overlaps the seven-case gate and is not an eighth race. Only
 tests/helper visibility and evidence changed after80ae824a; production behavior is unchanged.
+
+
+## Collection scheduler event subscription and deferred local route (2026-10-27)
+
+A private collection_event_waits pass connects the full/frontier collection scheduler to
+accepted exact-instance start and deferred-route commands. The bounded caller evaluates the
+captured instance correlation before begin_path revision fencing and obtains current own
+scheduler authority/post-lock database time before writing. The full oracle uses its owned
+Run/data and the same evaluator/clock acknowledgements. One member decision commits per
+transition, with no worker capabilities/hints or output payload for a subscription. Existing
+journal/projection/telemetry/tenant quota behavior remains native; both persist and COMMIT
+quota refusal end the failed transaction before reopening the original scope/transition drain.
+
+The scheduler start case first failed Waiting versus BodyProgress (0/1,2.33s harness/52.67s
+command); the implementation then passed1/0/0 in4.73s/60.87s, covering both modes and two
+same-name member keys/windows with one start each. Review found deferred Failed/onError
+outcomes were preempted by fail-fast classification. The new paused-timeout case genuinely
+failed at the paused scheduler call with Primitive(InvalidTransition)(0/1,2.47s/53.31s); a
+same-binary diagnostic backtrace run(2.55s/2.56s) located scheduler.rs:50 after the actual
+paused timeout, not fixture setup. Both schedulers now defer only valid unrouted scoped wait
+failures with a declared onError while no Run stop is committed. Domain failure classification
+is unchanged; local routing must commit before the failure becomes handled. Other active
+failures and committed stop/drain retain precedence. Corrected2cases pass9.74s/64.10s.
+
+The second review raised singleton authority, but the enclosing collection entry methods
+already reject Hold::Nothing/Lost with FenceUnavailable before reaching this private pass
+(passes.rs advance_collection[_from_run]_in_view). The missing entry-contract context was
+corrected; no duplicate authority mechanism or production fix was added. The new both-mode
+no-placement control passes on the unchanged implementation(4.56s/56.21s); despite its
+historical log filename event-scheduler-singleton-red, this is NOT RED evidence.
+
+Expanded8caller cases pass36.04s harness/89.58s command under sagat_app. They cover exact
+single-start keys, paused Failed/onError routing, existing no-placement fencing, paused pending
+start/resume, committed cancellation before start, actual correlation-expression error/local
+recovery without value/worker capability, a real closed current content quota at COMMIT and
+an explicitly injected real-SQL typed persistence-time quota fault with ample actual quota.
+The two quota cases prove no rejected wait.started/binding and exactly one fresh quota drain
+using the original scope/revision; the injected case is not described as an actual policy
+refusal. Final bounded review found no remaining issue in start/deferred-onError scope.
+
+Strict workspace/all-target Clippy passes63.81s. Final native lifecycle59/0/0 passes229.10s
+harness/229.84s command; collection controls23/0/0 pass86.53s/86.54s; contracts49/0/0 pass
+0.68s/5.27s and retain public scoped-event-body refusal. Architecture and agent configuration
+pass. Timer regression and final source hash are recorded below on completion. The detailed
+bounded contract is scoped-event-scheduling.md. Timeout discovery/processing, external receiver,
+public activation, actual released-v0.2 rollout, remaining nested/capacity/SDK/fault/resource
+and canonical release gates remain open; none of the eight canonical tasks closes here.
+
+Timer regression passes13/0/0 in49.53s harness/49.54s command. Native fixed executable SHA256: 8c9297513bede69ee66a2fc9854a1efe391ae8c4580e2a7f7e3d12f07ad85123. Formatting and diff checks pass.

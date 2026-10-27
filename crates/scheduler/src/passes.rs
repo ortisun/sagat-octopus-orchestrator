@@ -65,6 +65,7 @@ use tracing::Instrument;
 use crate::fairness::{self, Weights};
 
 mod collection_controls;
+mod collection_event_waits;
 mod collection_timers;
 use crate::shards::{Placement, Snapshot};
 
@@ -1312,6 +1313,11 @@ where
             &FailureCode,
         > = std::collections::HashMap::new();
         for (instance, step) in state.instances() {
+            if state.stop_reason().is_none()
+                && collection_event_waits::deferred_error_route(&definition, instance, step)
+            {
+                continue;
+            }
             if let Some(code) = step.unhandled_instance_failure(&definition, instance) {
                 failed.entry(instance.path()).or_insert(code);
             }
@@ -1436,6 +1442,19 @@ where
             }) {
                 return self
                     .advance_collection_local_from_run(
+                        view,
+                        transition(state.version()),
+                        tx,
+                        instance,
+                    )
+                    .await;
+            }
+            if let Some((instance, _)) = state.instances().find(|(instance, step)| {
+                active_paths.contains(instance.path())
+                    && collection_event_waits::local_progress_candidate(&definition, instance, step)
+            }) {
+                return self
+                    .advance_collection_event_wait_from_run(
                         view,
                         transition(state.version()),
                         tx,
@@ -1948,7 +1967,18 @@ where
             execution::CollectionPhase::Open => {
                 let active_failure = frontier.active.iter().find_map(|member| {
                     member
-                        .first_unhandled_failure(definition)
+                        .steps
+                        .iter()
+                        .find_map(|(instance, step)| {
+                            if frontier.run.stop_reason.is_none()
+                                && collection_event_waits::deferred_error_route(
+                                    definition, instance, step,
+                                )
+                            {
+                                return None;
+                            }
+                            step.unhandled_instance_failure(definition, instance)
+                        })
                         .map(|code| (member.index, code))
                 });
                 if frontier.run.stop_reason == Some(StopReason::Cancelled) {
@@ -2050,6 +2080,16 @@ where
             }) {
                 return self
                     .advance_collection_local(view, transition(), scope_id, instance)
+                    .await
+                    .map(Some);
+            }
+        }
+        for member in &frontier.active {
+            if let Some((instance, _)) = member.steps.iter().find(|(instance, step)| {
+                collection_event_waits::local_progress_candidate(definition, instance, step)
+            }) {
+                return self
+                    .advance_collection_event_wait(view, transition(), scope_id, instance)
                     .await
                     .map(Some);
             }

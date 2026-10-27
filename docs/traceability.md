@@ -958,3 +958,13 @@ stale-claim refusal and queued bounded RevisionConflict. receipts::admission pro
 JSON/fingerprint refusal and the existing database body limit. Native tests pass7 plus1current
 row case (with one tightened overlapping race rerun); timings/fixture limits live in the0.3
 ledger. These tests extend80ae824a with no production change or public/release activation.
+
+
+### 2026-10-27 scoped event subscription scheduler caller
+
+T014-014–017/040, FR-014-004/005/014/015/017: scoped_event_storage::scheduler proves actual
+full/frontier start with captured local keys and pinned clocks/windows, one decision per member,
+paused/deferred onError routing, stopped/no-placement refusal and quota rollback/recovery drain.
+The new scheduler pass reuses exact pure/native commands and existing telemetry/actor/authority.
+Native59, controls23, contracts49 and workspace lint pass; detailed REDs, results and limitations
+are in the0.3 ledger. Deadline/receiver/public activation and canonical release tasks remain open.

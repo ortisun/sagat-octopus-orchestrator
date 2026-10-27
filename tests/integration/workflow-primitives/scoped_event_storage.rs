@@ -20,6 +20,7 @@ use std::sync::Arc;
 mod cancellation;
 mod guards;
 mod receipts;
+mod scheduler;
 mod timeouts;
 
 fn wait(index: u32) -> ExecutionInstanceId {
