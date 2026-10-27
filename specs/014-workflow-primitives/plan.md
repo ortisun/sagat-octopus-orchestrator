@@ -660,3 +660,14 @@ with unchanged Run/tenant reservations and authority. Pending admission owns no 
 clock; the accepted subscription pass starts it later. Full/path/frontier reads enforce the same
 exact dispatch/journal identity. Focused native and cold discovery evidence is in the0.3 ledger;
 public activation and released-profile/SDK/final acceptance remain separate.
+
+
+### Actual released-v0.2 compatibility profile — 2026-10-27
+
+[released-v02-profile.md](./released-v02-profile.md) and its verified runner prove old public
+activity/root-wait production, normal current migration and completion, and actual released
+REST/native reads of the retained terminal runs. Separate marked build targets and immutable
+source/executable manifests prevent same-version old/current Cargo cache contamination.
+The0.3 ledger records real setup failures and separate preflight/final results. This accepts
+only old READY/unleased work/root waits; new scoped-body activation still needs the distinct
+old-dispatcher stop/join/credential barrier, public/SDK and remaining runtime/release gates.

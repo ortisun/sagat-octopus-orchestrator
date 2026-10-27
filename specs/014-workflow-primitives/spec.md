@@ -657,3 +657,11 @@ retaining already accepted members and reserved drain; raising it permits remain
 members. Absent/default0 and explicit tenant0 remain distinct governance sources. The public
 maxConcurrency definition bound is unchanged. See zero-iteration-policy.md for native CHECK,
 rollback, audit and bounded acceptance evidence; nested capacity remains separately gated.
+
+### Released active-data compatibility checkpoint
+
+Old admitted READY/unleased activity bodies and legacy root event waits must survive normal
+schema upgrade, current completion and released-reader replay without changing their immutable
+prefixes or physical identity. The bounded proof and exclusions are recorded in
+[released-v02-profile.md](./released-v02-profile.md). This checkpoint does not authorize new
+scoped-event bodies under old execution processes or substitute for their cutover barrier.

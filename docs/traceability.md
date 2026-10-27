@@ -1000,3 +1000,14 @@ retirement, zero policy, admission fault rollback and dispatch-corruption refusa
 cold one-connection test proves discovery/ticks without hints. Event gate86, later cold case1,
 controls23, contracts49 and lint pass in distinct invocations; provenance and corrected test
 assumptions are in the0.3 ledger. Public/old-reader/final release acceptance remains open.
+
+
+### 2026-10-27 actual released-v0.2 active-data profile
+
+T014-016/017/040/043, FR-014-014/015/017: released_v02_upgrade plus
+scripts/test-released-v02-profile.py prove immutable released-source public production, normal
+migration20261220000000→20261223000000, current runtime-role completion, exact legacy receipt
+and released REST/native replay with unchanged original prefixes. Final coordinator1/0/0
+passes8.42s; eight source-boundary controls pass. Exact phase output, source/binary identities
+and timings are in specs/014-workflow-primitives/evidence/released-v02-20261027. Old in-flight
+reports, scoped-event cutover/public activation and all eight canonical tasks remain open.

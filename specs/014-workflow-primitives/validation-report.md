@@ -4156,3 +4156,25 @@ worker hints. These are separate invocations, not an87-case aggregate. Controls2
 (97.74s/97.75s), contracts49/0/0 (0.58s/67.26s), workspace lint76.45s and final targeted lint
 30.65s pass. The0.3 ledger retains exact executable identities and bounded-review evidence.
 No public wait body/entry activation, released-v0.2 cutover or canonical task closure is claimed.
+
+
+### Actual released-v0.2 active-data upgrade
+
+The verified immutable v0.2.0 source archive now produces a real public activity collection
+and root event wait. Normal current migrations preserve old data; current runtime-role worker/
+scheduler/event services finish both, and the exact released reader verifies REST and native
+replay afterwards. Initial subscription metadata, immutable prefixes and legacy consumer/UUID
+are checked. Explicit stopped-owner expiry proves actual current Keeper takeover, not a live
+old-owner race. No missing migration or checksum exception is used.
+
+The final runner passes325.75s; clean current build313.03s; runtime command9.66s. Coordinator
+1/0/0 passes8.42s, with nested old producer1/0/0 in3.86s and old reader1/0/0 in0.30s. Eight Python
+source-boundary tests pass0.082s. The0.3 ledger retains setup compile errors, the invalidated
+shared-target cache collision, isolated rebuild, separate functional preflight and three bounded
+reviews. Copied executable/source hashes and exact outputs are retained in
+[evidence/released-v02-20261027](./evidence/released-v02-20261027/README.md).
+
+This proves released-source runtime compatibility for old READY/unleased work and root waits.
+Old in-flight reports, scoped waits in old code, old-dispatcher credential fencing/cutover,
+public activation, nesting/capacity and final SDK/fault/resource/release acceptance remain open.
+All eight canonical tasks remain unchecked.

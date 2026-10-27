@@ -1322,7 +1322,6 @@ The complete bounded contract is scoped-event-entry.md. Public event bodies/entr
 released-v0.2 cutover, loops/nesting/capacity, final SDK/fault/resource/release gates and all
 eight canonical tasks remain open.
 
-
 The completed fixed event executable passes86/0/0 (338.78s harness/338.79s command), using
 SHA256 d1df40a9992d1c9bf3241c732caddafc518ee6aa3c29affed513b9eaba27ebab. Its source includes
 the seven entry cases. The later cold-only test passes separately and its rebuilt executable
@@ -1331,3 +1330,61 @@ was run or claimed. No production behavior changed between those invocations. Fi
 Clippy for the enlarged integration target passes30.65s after the cold test and doc comment;
 architecture/agent/format/diff checks pass. Public activation and the eight canonical tasks
 remain pending.
+
+## Actual released-v0.2 active-data profile — 2026-10-27
+
+The [released profile contract](./released-v02-profile.md) now has an executable coordinator
+and a reproducible source-verifying runner. It archives actual v0.2.0 commit
+bfda342073db71e84f30bdc79ccf3fbc97a7153c; 649 production/configuration files are checked against
+that immutable source, with exactly three declared test overlays. Old/current targets are
+distinct. Copied executable hashes, current tracked/untracked pre/post-build input manifest,
+schema boundary, real output and phase timings are retained in
+[released-v02-20261027](./evidence/released-v02-20261027/README.md).
+
+The released public producer completes reserve through worker1.5, leaves charge READY/unleased
+and starts a legacy root event wait. After old-process exit, the current coordinator attaches
+the exact owned database and applies normal migrations20261220000000→20261223000000 without
+checksum or missing-version exceptions. It checks unchanged subscription metadata and both
+old runs before progressing them. Explicit database-clock expiry of the stopped scheduler is
+followed by actual Keeper takeover: relevant shard ownership, live expiry and higher generation
+are asserted. Current runtime-role worker/scheduler/event services finish both runs. Another
+process of the exact released executable then verifies both through REST and native replay,
+including immutable definition/journal/captured/completed prefixes and the original wait UUID.
+Legacy receipt identity remains wait:{run}/payment. The fixture owns every required service.
+
+Observed setup failures are separate from behavior REDs: the initial test overlay had three
+UUID serialization errors (35.32s), corrected with to_string without changing release dependencies.
+An initially shared Cargo target then caused old/current same-version dependency collisions:
+the old build appeared successful (47.88s), but the current build failed with163 errors (16.44s).
+That old executable/manifest was invalidated, not accepted as released evidence. A fresh marked
+release-only target built successfully in309.17s; source mtimes, not contents, were refreshed
+before rebuilding the current tree. The earlier functional preflight passed separately
+(161.52s outer,137.56s current build,20.84s command/18.66s coordinator). It predates final input
+provenance hardening and is retained under its own filenames.
+
+Bounded review found missing immutable root-wait coverage, unasserted stopped-owner takeover,
+and incomplete overlay provenance; all were corrected. The next review found symlink-following
+and unbound current pre/post-build provenance; lstat-based regular-tree validation and a full
+tracked/untracked input snapshot plus HEAD comparison address these. The third review found
+no remaining actionable issue within this contract; it ran no tests. Eight Python verifier
+controls pass (0.082s), including changed production/registration, undeclared files, root/file/
+directory symlinks and changed untracked inputs. No production behavior was changed in this
+checkpoint, and setup/fixture failures are not reported as behavioral REDs.
+
+The final runner passes exit0 in325.75s: old isolated cached build0.59s; clean no-debug current
+build313.03s; upgrade command9.66s. The coordinator passes1/0/0 in8.42s, containing old producer
+1/0/0 in3.86s and old reader1/0/0 in0.30s. These nested phases are not added into an aggregate.
+Actual compiled parent33ab9da5 plus source digest
+f2d70eacd5e7d3d69284072429c6e84d7938c313f03069ced2f23f3fbc7aa216 identifies the dirty fixture
+input. Old executable SHA2568d88d23e68ba9a1dfd59cc88b8d54eb75c9a6ea1e9b3efaec5d0fe6af42da15f;
+current aec73604a56fe0e49166f0c9534a38c17357c901fd4a832ea19adacb8b318c37.
+
+This is actual released-source runtime compatibility, not a redistributed binary asset or
+a live old-owner race. Old in-flight lease reports, new scoped-event bodies in old readers,
+actual old-dispatcher stop/join/credential fencing, public activation, five-SDK parity,
+general loops/nesting/capacity and final fault/resource/release gates remain open. None of
+the eight canonical tasks closes here.
+
+Strict integration-target Clippy passes108.51s after the complete profile. Format,
+architecture24-crate, agent configuration and whitespace checks pass. This test-only increment
+does not require rerunning the unchanged86-case production event gate as a new claim.

@@ -638,3 +638,26 @@ Reproduce collection_timers:: and collection_timer_transactions::, plus SDK coll
 The native tests age test deadlines explicitly and order cancellation/fire with held locks.
 This development capability requires compatible0.3 authority; released-profile and complete
 regression/resource gates remain open. Frozen OrdinaryLeafV1 remains activity-only.
+
+
+## Verify the released-v0.2 active-data upgrade
+
+From the repository root, with Docker reachable and the pinned toolchain installed:
+
+```sh
+CARGO_TARGET_DIR=<owned-absolute-target-outside-repository> \
+  python3 scripts/test-released-v02-profile.py
+```
+
+The runner verifies an immutable released-source archive, uses separate build targets, owns
+a disposable PostgreSQL and checks old public production → current migration/completion →
+released REST/native reading. It refuses an externally supplied test database and records
+source/executable hashes and phase results in a private artifact directory. Allow at least
+8 GiB free before building. No production database or credentials are required.
+
+This profile covers old admitted READY/unleased activities and root event waits. It does not
+authorize old execution processes against newly enabled scoped waits. Keep scoped-event
+publication closed until the old-dispatcher stop/join/credential fence and public/SDK gates
+are proven; a successful root-wait upgrade alone does not meet that cutover prerequisite.
+See the [bounded contract](../../specs/014-workflow-primitives/released-v02-profile.md) and
+[actual evidence](../../specs/014-workflow-primitives/evidence/released-v02-20261027/README.md).

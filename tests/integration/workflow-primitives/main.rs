@@ -65,6 +65,7 @@ mod projection;
 mod public_refusal_commit_loss;
 mod publication_rejections;
 mod refusal_secret_versions;
+mod released_v02_upgrade;
 mod scope_compensation_http;
 mod scope_frontier;
 mod scoped_blob_completion;
