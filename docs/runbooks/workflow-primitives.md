@@ -676,3 +676,18 @@ current services, one durable receipt/accounting charge and current scheduler fi
 The lease remains live with an explicit checked margin. This is released-source FORWARD
 compatibility, not an expired-task or Applied/reconciliation guarantee. It does not replace
 the old-dispatcher stop/join/credential barrier required before scoped-event publication.
+
+
+For a genuine old uncertain forward followed by its Applied reconciliation lookup:
+
+```sh
+CARGO_TARGET_DIR=<owned-absolute-target-outside-repository> \
+  python3 scripts/test-released-v02-profile.py --scenario applied-lookup
+```
+
+The old worker produces the uncertainty/lookup, then reports and replays Applied to current
+services with the original live capability. After current finalization, the same old binary
+runs a second REST/native reader and rechecks the original prefix. The report retains only
+the nested forward result, with one fingerprinted receipt and logical-output charge before
+aggregation. This proves released-source compatibility for that shape; quota/drain/frontier
+compensation, dispatcher cutover, public scoped events and full release readiness remain open.

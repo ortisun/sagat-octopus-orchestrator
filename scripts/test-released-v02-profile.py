@@ -27,6 +27,8 @@ SCENARIOS = {
                     'tests/integration/workflow-primitives/released_v02_upgrade.rs', 'upgrade.txt'),
     'inflight-worker': ('released_v02_inflight::a_released_worker_reports_and_replays_its_old_lease_after_server_upgrade',
                         'tests/integration/workflow-primitives/released_v02_inflight.rs', 'inflight-worker.txt'),
+    'applied-lookup': ('released_v02_inflight::a_released_worker_reports_and_replays_its_old_applied_lookup_after_server_upgrade',
+                        'tests/integration/workflow-primitives/released_v02_inflight.rs', 'applied-lookup.txt'),
 }
 
 

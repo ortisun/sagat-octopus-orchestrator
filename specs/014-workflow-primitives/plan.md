@@ -683,3 +683,13 @@ receipt fingerprint/logical charge, immutable prefixes and required current sche
 The selected coordinator and exact test overlays are compiled-source verified. This is not an
 expired-task, Applied/reconciliation, old-dispatcher cutover, public activation or full release
 guarantee; those gates remain open in the0.3 ledger.
+
+
+### Genuine released Applied lookup — 2026-10-27
+
+[released-v02-applied-profile.md](./released-v02-applied-profile.md) proves the real old
+OUTCOME_UNKNOWN→lookup→Applied report/replay across normal upgrade, preserving both physical
+capabilities, exact event/output/receipt/accounting and current scheduler finality. A second
+old process verifies terminal REST/native history and the original prefix afterwards. Shared
+typed mode binds all phases. Quota/drain frontier, cold-dispatcher activation and the remaining
+complete runtime/resource/SDK/release guarantees stay open in the0.3 ledger.

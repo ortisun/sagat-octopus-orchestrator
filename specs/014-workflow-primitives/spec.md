@@ -673,3 +673,10 @@ to current services after upgrade. Exact replay, original capability/fence, dura
 receipt/accounting and current scheduler finalization must survive. Refreshed subject
 authentication does not replace task authority. This does not cover Applied/reconciliation
 or permit mixed old event dispatchers against new scoped waits.
+
+
+The separate [released Applied checkpoint](./released-v02-applied-profile.md) must bind the
+genuine old uncertain forward to its real reconciliation lookup, preserve the Applied
+substituted output and exact report receipt/accounting, and prove released terminal reading
+after current finalization. This compatibility proof does not accept quota-refusal/drain or
+original-forward compensation under a stop; those remain separately required.

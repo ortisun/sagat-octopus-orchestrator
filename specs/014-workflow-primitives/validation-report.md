@@ -4198,3 +4198,20 @@ Active-data regression separately passes1/0/0 in15.50s; strict lint18.62s, Pytho
 assertion error, separate preflight and genuine wrong-coordinator provenance RED/correction.
 No production change or canonical task closure; Applied/reconciliation, dispatcher cutover,
 public/SDK/nested-capacity/resource/release acceptance remain open.
+
+
+### Genuine released Applied lookup and post-final reader
+
+Actual old code reports OUTCOME_UNKNOWN, leases the qualified lookup and submits/replays
+Applied against current runtime-role services after ordinary migration. The proof binds both
+old capabilities/fences, uncertainty and exact event/receipt/payload/accounting semantics.
+Only the nested forward output is retained/charged by this report; later aggregation is
+separate. Two actual current ticks finalize, then another process of the same old binary
+verifies terminal REST/native replay and the original prefix after finalization.
+
+Final coordinator1/0/0 passes6.37s (119.27s runner/7.63s runtime); old reporter2.38s and post-final
+old reader0.21s are nested phases. Separate FORWARD6.55s and active-data6.75s regressions, strict
+lint19.57s, verifier8cases0.098s and static checks pass. The ledger and
+[evidence](./evidence/released-v02-applied-20261027/README.md) retain weaker preflights, an
+explicitly interrupted fixture compile and three scoped reviews. No production code changes,
+canonical closure, quota/drain frontier, mixed dispatcher/public activation or release acceptance.

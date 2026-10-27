@@ -72,6 +72,8 @@ permanent failure; one ordered result per index, no fourth active iteration and 
 
   _2026-10-27 in-flight increment: actual released worker retains its original live scoped FORWARD request/capability across normal upgrade, completes and replays against current services; coordinator1/0/0 in6.25s, old phase2.67s. Exact receipt/accounting/capability, immutable replay and2current scheduler ticks are retained in [in-flight evidence](./evidence/released-v02-inflight-20261027/README.md). Applied/reconciliation, old-dispatcher cutover, nesting/capacity and complete fault/release acceptance remain open._
 
+  _2026-10-27 Applied increment: actual released uncertain forward/lookup → current Applied/exact replay → actual released terminal REST/native/prefix reader passes1 coordinator in6.37s, with exact capabilities, events, payload, receipt and accounting checks. See [Applied evidence](./evidence/released-v02-applied-20261027/README.md). Quota/drain/original-forward compensation frontier, dispatcher activation and complete runtime/fault/release criteria remain open._
+
 ## Phase 5 — US03: durable loops (P1, restricted public slice enabled)
 
 Entry, checkpoint, delay and terminal drain have PostgreSQL restart, timer-race, rollback and

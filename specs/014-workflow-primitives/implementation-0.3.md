@@ -1443,3 +1443,56 @@ authentication and a still-live original lease. It does not accept expired-task 
 Applied/reconciliation frontier, old-dispatcher stop/join/credential fencing, public scoped waits,
 five-language asset parity, general loops/nesting/capacity or final fault/resource/release gates.
 All eight canonical tasks stay open.
+
+
+## Actual released Applied lookup and post-final reader — 2026-10-27
+
+[released-v02-applied-profile.md](./released-v02-applied-profile.md) extends the source-verified
+in-flight proof without changing production behavior. Actual old REST/gRPC/scheduler code
+reports OUTCOME_UNKNOWN for charge, then leases the real qualified charge~r reconciliation.
+Its original target instance/node/provider key are asserted; the lookup capability/request
+stay only in old memory. Current services accept/replay the Applied wrapper across normal
+schema20→23 migration with the original live lookup token/fence/expiry margin.
+
+Native checks bind the original forward WAITING/RECONCILIATION/OUTCOME_UNKNOWN, cleared lease,
+reported old token/fence/provider-key commitment and exactly one requested journal event.
+After reporting both physical rows are explicitly SUCCEEDED with correct original capabilities
+and cleared failure/wait/lease fields. Exactly one lookup StepCompleted has no payload; exactly
+one total forward ReconciliationConcluded is Applied/Succeeded and carries the nested forward
+output digest. There is no synthetic forward StepCompleted. The canonical lookup receipt binds
+the full length-prefixed completion fingerprint and ACK/head/status; one total dedupe key and
+the immediate pre-scheduler logical-byte delta prove one report transaction/forward-output charge.
+Final aggregation may legitimately retain additional bytes afterwards.
+
+Shared ProfileMode::{Forward,AppliedLookup} binds manifest, compiled coordinator, old child,
+transcript and result. The old wire ACK explicitly reports RUNNING. After old reporter exit,
+current Keeper takeover and2working scheduler ticks finish/replay. A second process of the
+same verified old executable reads terminal REST/native state and recomputes the original
+cutoff-bound immutable prefix after finalization. The old API is idle and its scheduler never
+ticks after the handoff barrier; no mixed-dispatcher activation is inferred.
+
+First weaker baseline passes1/0/0 in14.52s (126.52s runner, nested old reporter9.19s). A
+review-driven compile is intentionally interrupted(-2,29.36s) before runtime when root spots
+an accidentally contradictory fixture predicate; only the exact fixture condition is corrected.
+It is not a pass or behavior RED. The stronger preflight passes1/0/0 in6.19s (84.68s runner,
+old reporter2.57s). Three bounded reviews require explicit event/payload/fence/uncertainty/receipt/
+accounting assertions, then exact wire status, total conclusions, typed mode and post-final
+old-prefix timing. The final review finds no remaining substantive gap and runs no tests.
+
+Final runner passes119.27s: old/current builds53.90s/55.25s, runtime7.63s; coordinator1/0/0
+in6.37s contains old reporter1/0/0 in2.38s and terminal old reader1/0/0 in0.21s. Separate
+FORWARD regression passes1/0/0 in6.55s (15.77s runner, with new post-final old reader); active-data
+regression separately passes1/0/0 in6.75s (11.23s runner). Strict integration lint19.57s, final
+Python verifier8cases0.098s and format/architecture24crates/agent checks pass. Nested phases
+and separate invocations are not combined into one aggregate.
+
+Exact outputs/identities and the interrupted/preflight/final distinction are retained in
+[evidence/released-v02-applied-20261027](./evidence/released-v02-applied-20261027/README.md).
+Compiled parenta9e6ee37 plus source digestdf8cd4a1aae0ecb95023a3415307d08cd1bf6301a5d85c8e91e864adfb6716ea
+identifies the dirty input; current executable64281b36d2f764f23c256c53d6e268ef4cb17490489770068995b9d6bd27de30,
+released executable385eef58c9e19e2ee3e64ea4a49b470ef57e216c1e9a737a7881cb2e9b5e3bc1.
+
+This accepts a genuine released Applied report/replay and post-final old reading. Quota-refusal/
+drain/original-forward compensation frontier, expired/stale reports, old-dispatcher credential
+fencing/public activation, five SDKs, general loops/nesting/capacity and final resource/release
+gates remain open. No canonical task is ticked and no external effect is claimed exactly once.

@@ -1022,3 +1022,14 @@ old immutable/native replay and required current scheduler finalization. Coordin
 passes6.25s; separate active-data regression15.50s, strict lint18.62s and verifier8cases pass.
 Exact source/binary/coordinator hashes, failures and results are in released-v02-inflight-20261027.
 Applied/reconciliation frontier, dispatcher cutover/public activation and canonical tasks stay open.
+
+
+### 2026-10-27 genuine released Applied lookup and terminal reader
+
+T014-016/017/040/043, FR-014-005/014/015/017: actual released OUTCOME_UNKNOWN/lookup production,
+Applied report/exact replay to current services, native original/lookup capability and event/
+output/receipt/accounting checks, required current finalization and actual old terminal REST/
+native/prefix verification pass1 coordinator in6.37s. Separate FORWARD6.55s/active-data6.75s
+regressions and strict lint pass. Exact identities and all separate results are in
+released-v02-applied-20261027. Quota/drain frontier, mixed-dispatcher/public activation and
+canonical release tasks remain open.
