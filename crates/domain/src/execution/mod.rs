@@ -75,7 +75,10 @@ pub use path_state::{
 };
 pub use plan::{AddressedPlan, Evaluation, Plan, plan, plan_addressed, plan_path};
 pub use scoped_controls::{resolve_control_instance, resolve_control_path_instance};
-pub use scoped_event_waits::{start_event_wait_instance, start_event_wait_path_instance};
+pub use scoped_event_waits::{
+    start_event_wait_instance, start_event_wait_path_instance, time_out_event_wait_instance,
+    time_out_event_wait_path_instance,
+};
 pub use scoped_sagas::{plan_scope_compensation, scope_compensation_candidate};
 pub use scoped_timers::{
     fire_timer_instance, fire_timer_path_instance, release_pending_instance_path,

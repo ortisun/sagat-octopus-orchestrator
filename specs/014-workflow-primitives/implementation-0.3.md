@@ -752,3 +752,31 @@ f325991582864acea425e4f1ab4f7e571d2f011d84806acc17125673832b6bcd.
 The gate covers migration22 and recorded-event replay at38d7b3f0, not later root dispatch
 candidate changes or pure start/timeout commands. Final-tree/native receiver/upgrade/resource
 and release gates remain open. Its owned temporary checkout is retired after evidence capture.
+
+
+## Pure event-wait timeout command
+
+The exact full/path command compares explicit time with the recorded event deadline, derives
+handled from the pinned onTimeout and preserves typed WAIT_TIMED_OUT/local onError semantics.
+Pause permits an outcome but defers routing; stop/drain/cancel/stale outcome or malformed metadata
+refuses before mutation. Start and timeout share only their scheduler-owned metadata invariant.
+This is pure preparation, with no native producer/receiver or publication activation.
+
+The explicit pending-command TDD boundary failed1focused case before implementation. The first
+attempted edit did not apply because its replacement script missed a formatted block; a follow-up
+run on unchanged source still failed the same case (15passed/1failed). That attempt is retained,
+not described as an implemented failure. The actual edit then passed16/0/0. Route/pause extension
+passed18/0/0 in1.64s command; source/order/kind/binding extension passed21/0/0 in1.12s.
+Final focused23/0/0 passed1.20s command, including nine malformed Waiting fields, unchanged
+full/path refusals, both pure event/timeout orders, duplicate timeout, paused cold routing,
+handled/unhandled/onError and deadline +/-1microsecond properties. The new timeout tests use
+a child module; shared fixture restoration changes one row while retaining genuine membership.
+Fresh read-only review found no required issue. Full-domain and strict-domain Clippy results
+follow separately. These tests do not establish real event/timeout transaction races or native
+clock/subscription/receipt authority. All canonical runtime/release tasks stay open.
+
+
+Full domain passed582/0failed/0ignored across42target summaries,37.29s command.
+Strict domain/all-targets Clippy passed11.11s command. Architecture24crates, agent config
+and formatting pass. This closes the pure timeout command increment. The retained64-SDK
+checkpoint and earlier native root dispatcher gates remain separately sourced evidence.

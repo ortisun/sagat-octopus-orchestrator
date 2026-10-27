@@ -89,5 +89,23 @@ kind/path, malformed Pending metadata and clock overflow are refused before reco
 This is pure command preparation only: its caller must prove evaluation snapshot/CAS, native
 scheduler authority and the database clock before atomic journal/subscription persistence.
 It creates no subscription, event_since/scanned metadata, task, receipt or external authority.
-No native caller or public body capability is added. Timeout and external event acceptance,
+No native caller or public body capability is added. Native timeout and external event acceptance,
 lookback, payload/classification/quota, rollback and mixed-version activation remain pending.
+
+
+## Pure explicit-clock timeout command
+
+The full and exact-path timeout commands require an exact declared event wait with its
+recorded Event binding, a pristine Waiting state and active global/ancestor outcome eligibility.
+They compare explicit now with the recorded deadline and derive handled only from the pinned
+onTimeout declaration. An early timeout is inert. A handled timeout selects its local timeout
+route; an unhandled timeout records WAIT_TIMED_OUT and the normal local error route, if any.
+Paused runs may record the timeout outcome; routing remains deferred until explicit resume.
+Completed, cancelled, stopped/draining, malformed, wrong-kind or foreign-path sources are inert.
+
+This retains root first-commit semantics: an event may win after the deadline until timeout
+commits. The pure recorded-event/timeout ordering tests are not a PostgreSQL race proof or
+authority to retain an external event. Native timeout production still needs current own shard,
+post-wait database time, revision/physical binding CAS, subscription update and atomic routing;
+the future receiver needs its separate current ingress/own-run authority and payload receipt.
+No new native caller, public capability, scoped consumer or mixed-version activation is enabled.

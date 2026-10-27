@@ -3956,3 +3956,13 @@ identified. No bless or selection filter; prepared SDK reuse after the initial m
 failure is explicit. [Command, log, hashes and limitations](./evidence/sdk64-20261027/README.md)
 are retained. This strengthens timer/control/recovery and zero-policy snapshot evidence; it is
 not acceptance for later event preparations, native scoped events, nesting or release0.3.
+
+
+### Pure explicit-clock scoped event timeout
+
+Full domain passes582/0/0 across42targets in37.29s after23focused event-wait tests.
+Strict domain Clippy passes11.11s; read-only review found no required issue. The timeout
+uses the recorded deadline/pinned route, preserves paused deferred routing, and refuses
+stale/foreign/malformed/stopped sources. Pure ordering and boundary properties do not replace
+native PostgreSQL races or database-time/current-authority proofs. No native subscription,
+receiver, public shape or canonical task is enabled by this increment.

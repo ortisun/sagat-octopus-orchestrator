@@ -31,13 +31,17 @@ fn definition() -> WorkflowDefinition {
 }
 
 fn definition_with_error_route(local_error: bool) -> WorkflowDefinition {
+    definition_with_routes(local_error, true)
+}
+
+fn definition_with_routes(local_error: bool, timeout_route: bool) -> WorkflowDefinition {
     let waiting = Node::new(
         id("notified"),
         NodeKind::WaitEvent {
             event_type: EventType::parse("payment.notified").expect("event type"),
             correlation: Expression::parse("item.key").expect("correlation"),
             timeout: Duration::from_secs(60),
-            on_timeout: Some(id("fallback")),
+            on_timeout: timeout_route.then(|| id("fallback")),
             lookback: Duration::ZERO,
         },
     )
@@ -47,6 +51,24 @@ fn definition_with_error_route(local_error: bool) -> WorkflowDefinition {
     } else {
         waiting
     };
+    let mut body = vec![waiting];
+    if local_error || timeout_route {
+        body.push(
+            Node::new(
+                id("fallback"),
+                NodeKind::Timer {
+                    delay: Duration::from_secs(1),
+                },
+            )
+            .with_next(id("returned")),
+        );
+    }
+    body.push(Node::new(
+        id("returned"),
+        NodeKind::Return {
+            result: Expression::parse("item").expect("result"),
+        },
+    ));
     WorkflowDefinition::new_structured(
         Slug::parse("scoped-event").expect("name"),
         id("lines"),
@@ -64,29 +86,7 @@ fn definition_with_error_route(local_error: bool) -> WorkflowDefinition {
             .with_next(id("done")),
             Node::new(id("done"), NodeKind::End { output: None }),
         ],
-        vec![
-            BodyDefinition::new(
-                id("body"),
-                id("notified"),
-                vec![
-                    waiting,
-                    Node::new(
-                        id("fallback"),
-                        NodeKind::Timer {
-                            delay: Duration::from_secs(1),
-                        },
-                    )
-                    .with_next(id("returned")),
-                    Node::new(
-                        id("returned"),
-                        NodeKind::Return {
-                            result: Expression::parse("item").expect("result"),
-                        },
-                    ),
-                ],
-            )
-            .expect("closed body"),
-        ],
+        vec![BodyDefinition::new(id("body"), id("notified"), body).expect("closed body")],
         WorkflowLimits::default(),
     )
     .expect("definition")
@@ -609,11 +609,47 @@ fn overflowing_deadline_root_and_foreign_path_are_refused_before_recording() {
     assert_eq!(bounded, bounded_before);
 }
 
+// Restores this fixture's open two-member collection while changing exactly one local row.
+fn restored_member_projection(
+    source: &RunState,
+    damaged: sagat_domain::execution::StepState,
+) -> RunState {
+    use sagat_domain::execution::{CollectionIterationRestore, CollectionPhase};
+    let mut steps = source
+        .instances()
+        .map(|(id, step)| (id.clone(), step.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    steps.insert(wait(0), damaged);
+    let mut full = RunState::restore_instances(
+        source.run_id(),
+        source.status(),
+        None,
+        false,
+        steps,
+        std::collections::BTreeMap::new(),
+        source.version(),
+    );
+    full.restore_collection(
+        ExecutionInstanceId::root(id("lines")),
+        CollectionPhase::Open,
+        2,
+        2,
+        2,
+        Digest::new([1; 32]),
+        None,
+        (0..2)
+            .map(|index| {
+                CollectionIterationRestore::admitted(index, wait(index), Digest::new([2; 32]))
+            })
+            .collect(),
+    )
+    .expect("preserved genuine collection membership");
+    full
+}
+
 #[test]
 fn malformed_pending_event_projection_cannot_authorize_success_or_failure_start() {
-    use sagat_domain::execution::{
-        CollectionIterationRestore, CollectionPhase, ExecutionError, StepState, SwitchSelection,
-    };
+    use sagat_domain::execution::{ExecutionError, StepState, SwitchSelection};
     for field in 0..10 {
         let source = state();
         let now = OffsetDateTime::UNIX_EPOCH;
@@ -630,35 +666,7 @@ fn malformed_pending_event_projection_cannot_authorize_success_or_failure_start(
             field == 8,
         )
         .with_restored_switch_selection((field == 9).then_some(SwitchSelection::Default));
-        let mut steps = source
-            .instances()
-            .map(|(id, step)| (id.clone(), step.clone()))
-            .collect::<std::collections::BTreeMap<_, _>>();
-        steps.insert(wait(0), damaged);
-        let mut full = RunState::restore_instances(
-            source.run_id(),
-            source.status(),
-            None,
-            false,
-            steps,
-            std::collections::BTreeMap::new(),
-            source.version(),
-        );
-        full.restore_collection(
-            ExecutionInstanceId::root(id("lines")),
-            CollectionPhase::Open,
-            2,
-            2,
-            2,
-            Digest::new([1; 32]),
-            None,
-            (0..2)
-                .map(|index| {
-                    CollectionIterationRestore::admitted(index, wait(index), Digest::new([2; 32]))
-                })
-                .collect(),
-        )
-        .expect("preserved genuine collection membership");
+        let mut full = restored_member_projection(&source, damaged);
         let mut bounded =
             PathExecutionState::from_run(&full, path(0)).expect("malformed local projection");
         let before = full.clone();
@@ -770,3 +778,6 @@ proptest::proptest! {
         proptest::prop_assert_eq!(bounded,PathExecutionState::from_run(&full,path(index)).expect("oracle"));
     }
 }
+
+#[path = "scoped_event_wait_lifecycle/timeouts.rs"]
+mod timeouts;
