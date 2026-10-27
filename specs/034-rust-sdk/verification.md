@@ -208,3 +208,13 @@ The shared state-operations and lost-responses scenarios passed through actual H
 proxies. A single bounded read-only oracle review found no material issue; no external CLI review.
 `rust-sdk-shared-stream-faults-complete` passed (5.83 s), including a stream interrupted after
 the first delivered frame. Full 60-scenario runtime acceptance is running separately.
+
+The first full Rust shared run executed all 60 scenarios (347.25 s) and found exactly one
+failure: collection-ordering. The in-flight map omitted instance_path and treated distinct scoped
+iterations with the same legacy task ID/generation as duplicates. A barrier (not a sleep) in
+`concurrent_scopes_with_the_same_legacy_task_id_are_distinct_but_duplicates_are_dropped`
+reproduced it (`rust-sdk-scoped-flight-key-red`) and passed after a typed structural TaskKey
+included the negotiated path. Identical duplicate leases are still suppressed.
+`rust-sdk-scoped-key-clippy` exited 0 (3.90 s), `rust-sdk-scoped-key-tests` exited 0
+(19.01 s, 108 total), and real-PG `rust-sdk-ordering-scope-green` passed (12.64 s).
+The full shared suite is rerunning with that artifact; previous 59/60 is not final acceptance.

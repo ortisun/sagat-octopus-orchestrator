@@ -9,6 +9,7 @@ use std::{
 use tonic::{Request, Response, Status};
 #[derive(Default)]
 struct Control {
+    scoped_twins: AtomicBool,
     forged_register_once: AtomicBool,
     forged_poll_once: AtomicBool,
     oversized_secret: AtomicBool,
@@ -79,6 +80,14 @@ impl pb::worker_service_server::WorkerService for Service {
         }
         let credit = r.into_inner().max_tasks;
         let mut leases = self.leases.lock().expect("leases");
+        if self.control.scoped_twins.swap(false, Ordering::AcqRel)
+            && let Some(task) = leases.front().cloned()
+        {
+            leases.push_back(task.clone());
+            let mut other = task;
+            other.instance.as_mut().expect("scope").instance_path[0].iteration_index = 4;
+            leases.push_back(other);
+        }
         let tasks = (0..credit)
             .filter_map(|_| leases.pop_front())
             .map(|mut task| {
@@ -433,6 +442,43 @@ async fn server_staleness_cancels_the_handler_and_drops_its_eventual_result() {
     assert!(fixture.complete.try_recv().is_err());
     assert!(fixture.control.failed.lock().expect("failures").is_empty());
     assert!(!fixture.control.heartbeats.lock().expect("beats").is_empty());
+}
+
+#[tokio::test]
+async fn concurrent_scopes_with_the_same_legacy_task_id_are_distinct_but_duplicates_are_dropped() {
+    let mut fixture = fixture(0).await;
+    fixture.options.max_inflight = 3;
+    fixture.control.scoped_twins.store(true, Ordering::Release);
+    let mut host = WorkerHost::new(fixture.options.clone()).expect("host");
+    let barrier = Arc::new(tokio::sync::Barrier::new(3));
+    let entered = barrier.clone();
+    host.activity("held",move|ctx:ActivityContext,_:Value|{let entered=entered.clone();async move{
+        tokio::select!{_=entered.wait()=>Ok(json!({"index":ctx.task.instance.as_ref().expect("scope").instance_path[0].iteration_index})),_=ctx.cancellation.cancelled()=>Err(ActivityFailure::cancelled())}
+    }}).expect("handler");
+    host.start().await.expect("start");
+    let ready = tokio::time::timeout(Duration::from_secs(2), barrier.wait()).await;
+    if ready.is_err() {
+        host.stop(Duration::ZERO).await.expect("cleanup");
+    }
+    assert!(
+        ready.is_ok(),
+        "both scoped instances must enter before either is released"
+    );
+    let mut indices = Vec::new();
+    for _ in 0..2 {
+        let report = tokio::time::timeout(Duration::from_secs(2), fixture.complete.recv())
+            .await
+            .expect("report timeout")
+            .expect("report");
+        indices.push(report.instance.expect("scope").instance_path[0].iteration_index);
+    }
+    host.stop(Duration::from_secs(1)).await.expect("drain");
+    indices.sort();
+    assert_eq!(indices, [3, 4]);
+    assert!(
+        fixture.complete.try_recv().is_err(),
+        "the identical lease must not execute twice"
+    );
 }
 #[tokio::test]
 async fn run_cancellation_is_cooperative_and_does_not_discard_a_returned_value() {

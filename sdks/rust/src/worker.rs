@@ -110,12 +110,18 @@ struct Running {
     join: tokio::task::JoinHandle<()>,
     tracker: TaskTracker,
 }
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct TaskKey {
+    id: String,
+    generation: i64,
+    instance_path: Vec<(String, u32)>,
+}
 #[derive(Clone)]
 struct Core {
     options: WorkerOptions,
     handlers: Arc<BTreeMap<String, Arc<Handler>>>,
     permits: Arc<Semaphore>,
-    tasks: Arc<Mutex<BTreeMap<String, ActivityContext>>>,
+    tasks: Arc<Mutex<BTreeMap<TaskKey, ActivityContext>>>,
     wake: Arc<Notify>,
     protocol: Arc<Mutex<String>>,
     failure: tokio::sync::watch::Sender<Option<SagatError>>,
@@ -124,7 +130,7 @@ pub struct WorkerHost {
     options: WorkerOptions,
     handlers: BTreeMap<String, Arc<Handler>>,
     permits: Arc<Semaphore>,
-    tasks: Arc<Mutex<BTreeMap<String, ActivityContext>>>,
+    tasks: Arc<Mutex<BTreeMap<TaskKey, ActivityContext>>>,
     protocol: Arc<Mutex<String>>,
     failure: tokio::sync::watch::Sender<Option<SagatError>>,
     running: Option<Running>,
@@ -694,7 +700,22 @@ fn dispatch(
     let Ok(permit) = core.permits.clone().try_acquire_owned() else {
         return;
     };
-    let key = format!("{}:{}", lease.task_id, lease.generation);
+    let key = TaskKey {
+        id: lease.task_id.clone(),
+        generation: lease.generation,
+        instance_path: lease
+            .instance
+            .as_ref()
+            .filter(|_| session.minor >= 5)
+            .map(|identity| {
+                identity
+                    .instance_path
+                    .iter()
+                    .map(|part| (part.scope_node_id.clone(), part.iteration_index))
+                    .collect()
+            })
+            .unwrap_or_default(),
+    };
     let document = serde_json::from_str::<Value>(&lease.input_json)
         .ok()
         .filter(Value::is_object);
