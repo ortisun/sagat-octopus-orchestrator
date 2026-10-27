@@ -319,3 +319,111 @@ impl JournalEvent {
         Ok(event)
     }
 }
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryResult {
+    pub run_id: Uuid,
+    pub run_version: u64,
+    pub state_revision: u64,
+    pub result: Value,
+    #[serde(skip)]
+    pub raw: Value,
+}
+impl std::fmt::Debug for QueryResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QueryResult")
+            .field("run_version", &self.run_version)
+            .field("state_revision", &self.state_revision)
+            .finish_non_exhaustive()
+    }
+}
+impl QueryResult {
+    pub(crate) fn parse(raw: Value) -> Result<Self, SagatError> {
+        if raw.get("result").is_none() {
+            return Err(protocol());
+        }
+        let mut value: Self = serde_json::from_value(raw.clone()).map_err(|_| protocol())?;
+        if value.run_version > i64::MAX as u64 || value.state_revision > i64::MAX as u64 {
+            return Err(protocol());
+        }
+        value.raw = raw;
+        Ok(value)
+    }
+}
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateReceipt {
+    pub run_id: Uuid,
+    pub operation: String,
+    pub update_key: String,
+    pub status: String,
+    pub result: Value,
+    pub before_state_revision: u64,
+    pub after_state_revision: u64,
+    pub run_version: u64,
+    pub replayed: bool,
+    #[serde(skip)]
+    pub raw: Value,
+}
+impl std::fmt::Debug for UpdateReceipt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UpdateReceipt")
+            .field("status", &self.status)
+            .field("replayed", &self.replayed)
+            .finish_non_exhaustive()
+    }
+}
+impl UpdateReceipt {
+    pub(crate) fn parse(raw: Value) -> Result<Self, SagatError> {
+        if raw.get("result").is_none() {
+            return Err(protocol());
+        }
+        let mut value: Self = serde_json::from_value(raw.clone()).map_err(|_| protocol())?;
+        if value.status != "APPLIED"
+            || value.operation.is_empty()
+            || value.operation.len() > 128
+            || value.update_key.is_empty()
+            || value.update_key.len() > 128
+            || value.before_state_revision > i64::MAX as u64
+            || !(1..=i64::MAX as u64).contains(&value.after_state_revision)
+            || !(1..=i64::MAX as u64).contains(&value.run_version)
+        {
+            return Err(protocol());
+        }
+        value.raw = raw;
+        Ok(value)
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum EventStatus {
+    Accepted,
+    Duplicate,
+}
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventReceipt {
+    pub event_id: String,
+    pub source: String,
+    pub status: EventStatus,
+    #[serde(skip)]
+    pub raw: Value,
+}
+impl std::fmt::Debug for EventReceipt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EventReceipt")
+            .field("status", &self.status)
+            .finish_non_exhaustive()
+    }
+}
+impl EventReceipt {
+    pub(crate) fn parse(raw: Value) -> Result<Self, SagatError> {
+        let mut value: Self = serde_json::from_value(raw.clone()).map_err(|_| protocol())?;
+        if value.event_id.is_empty() || value.source.is_empty() {
+            return Err(protocol());
+        }
+        value.raw = raw;
+        Ok(value)
+    }
+}

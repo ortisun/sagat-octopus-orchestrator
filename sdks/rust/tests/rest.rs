@@ -43,6 +43,12 @@ async fn answer(
     match state.mode {
         "bad-page" => (StatusCode::OK,[("x-trace-id","0123456789abcdef0123456789abcdef")],axum::Json(json!({"items":false}))).into_response(),
         "repeat-page" => (StatusCode::OK,[("x-trace-id","0123456789abcdef0123456789abcdef")],axum::Json(json!({"items":[basic_run("RUNNING")],"nextCursor":"same"}))).into_response(),
+        "bad-query"|"bad-update" => (StatusCode::OK,[("x-trace-id","0123456789abcdef0123456789abcdef")],axum::Json(json!({"runId":RUN,"runVersion":1,"stateRevision":1}))).into_response(),
+        "query" => (StatusCode::OK,axum::Json(json!({"runId":RUN,"runVersion":9007199254740993_u64,"stateRevision":42,"result":{"amount":"12.3400","at":"2026-10-27T12:00:00Z"}}))).into_response(),
+        "update-retry" if count==1 => (StatusCode::SERVICE_UNAVAILABLE,axum::Json(json!({"code":"UNAVAILABLE","retryable":true}))).into_response(),
+        "update-retry" => (StatusCode::OK,axum::Json(json!({"runId":RUN,"operation":"adjust","updateKey":"update-1","status":"APPLIED","result":null,"beforeStateRevision":42,"afterStateRevision":43,"runVersion":50,"replayed":true}))).into_response(),
+        "event-retry" if count==1 => (StatusCode::SERVICE_UNAVAILABLE,axum::Json(json!({"code":"UNAVAILABLE","retryable":true}))).into_response(),
+        "event-retry" => {let request:serde_json::Value=serde_json::from_slice(&body).expect("event body");(StatusCode::ACCEPTED,axum::Json(json!({"eventId":request["eventId"],"source":"api","status":"DUPLICATE"}))).into_response()},
         "pages" => (StatusCode::OK,axum::Json(json!({"items":[basic_run("RUNNING")],"nextCursor":if count==1 {Some("opaque +/?&=é")}else{None}}))).into_response(),
         "journal" => (StatusCode::OK,axum::Json(json!({"items":[{"seq":1,"eventType":"RunStarted","occurredAt":"2026-10-27T17:30:00+05:30","actor":"system:test","futureField":true}],"nextCursor":null,"newField":"retained"}))).into_response(),
         "completion" => (StatusCode::OK,axum::Json(basic_run(if count==1 {"RUNNING"}else{"SUCCEEDED"}))).into_response(),
@@ -740,4 +746,173 @@ async fn wait_timeout_and_cancellation_stop_polling_without_issuing_an_operation
             .iter()
             .all(|(_, body, uri)| body.is_empty() && uri.path().ends_with(RUN))
     );
+}
+
+#[tokio::test]
+async fn declared_queries_keep_exact_revisions_and_disclosed_values() {
+    let server = server("query").await;
+    let client =
+        Client::new(options(&server.base, TokenSource::bearer("fixture-token"))).expect("client");
+    let result = client
+        .query(
+            RUN,
+            "summary.total",
+            &json!({"offset":9007199254740993_u64}),
+            CallOptions::default(),
+        )
+        .await
+        .expect("query");
+    assert_eq!(result.run_version, 9007199254740993);
+    assert_eq!(result.state_revision, 42);
+    assert_eq!(result.result["amount"], "12.3400");
+    assert_eq!(result.result["at"], "2026-10-27T12:00:00Z");
+    let requests = server.state.calls.lock().expect("requests");
+    assert!(!requests[0].0.contains_key("idempotency-key"));
+}
+#[tokio::test]
+async fn durable_updates_retry_the_body_key_and_exact_arguments_without_an_idempotency_header() {
+    use sagat_octopus_orchestrator_sdk::UpdateRequest;
+    let server = server("update-retry").await;
+    let client =
+        Client::new(options(&server.base, TokenSource::bearer("fixture-token"))).expect("client");
+    let receipt = client
+        .update(
+            RUN,
+            "adjust",
+            UpdateRequest {
+                update_key: "update-1".into(),
+                args: json!({"amount":"12.3400"}),
+                expected_state_revision: Some(42),
+            },
+            CallOptions {
+                idempotency_key: Some("unrelated-header-key".into()),
+                ..CallOptions::default()
+            },
+        )
+        .await
+        .expect("update replay");
+    assert_eq!(receipt.after_state_revision, 43);
+    assert!(receipt.replayed);
+    let requests = server.state.calls.lock().expect("requests");
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].1, requests[1].1);
+    assert!(
+        requests
+            .iter()
+            .all(|(headers, _, _)| !headers.contains_key("idempotency-key"))
+    );
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].1).expect("body");
+    assert_eq!(body["updateKey"], "update-1");
+    assert_eq!(body["expectedStateRevision"], 42);
+}
+#[tokio::test]
+async fn event_publication_freezes_its_generated_event_id_and_utc_instant_across_retries() {
+    use sagat_octopus_orchestrator_sdk::{EventStatus, PublishEvent};
+    let server = server("event-retry").await;
+    let client =
+        Client::new(options(&server.base, TokenSource::bearer("fixture-token"))).expect("client");
+    let mut event = PublishEvent::new("order.created", json!({"value":9007199254740993_u64}));
+    event.occurred_at = Some(
+        time::OffsetDateTime::parse(
+            "2026-10-27T17:30:00+05:30",
+            &time::format_description::well_known::Rfc3339,
+        )
+        .expect("instant"),
+    );
+    let receipt = client
+        .publish_event(event, CallOptions::default())
+        .await
+        .expect("deduplicated retry");
+    assert_eq!(receipt.status, EventStatus::Duplicate);
+    let requests = server.state.calls.lock().expect("requests");
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].1, requests[1].1);
+    assert!(
+        requests
+            .iter()
+            .all(|(headers, _, _)| !headers.contains_key("idempotency-key"))
+    );
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].1).expect("body");
+    assert_eq!(body["eventId"], receipt.event_id);
+    assert_eq!(body["occurredAt"], "2026-10-27T12:00:00Z");
+}
+
+#[tokio::test]
+async fn missing_declared_operation_fields_are_protocol_errors_with_response_metadata() {
+    use sagat_octopus_orchestrator_sdk::UpdateRequest;
+    for mode in ["bad-query", "bad-update"] {
+        let server = server(mode).await;
+        let client = Client::new(options(&server.base, TokenSource::bearer("fixture-token")))
+            .expect("client");
+        let error = if mode == "bad-query" {
+            client
+                .query(RUN, "summary", &json!({}), CallOptions::default())
+                .await
+                .expect_err("missing result")
+        } else {
+            client
+                .update(
+                    RUN,
+                    "adjust",
+                    UpdateRequest {
+                        update_key: "update-1".into(),
+                        args: json!({}),
+                        expected_state_revision: None,
+                    },
+                    CallOptions::default(),
+                )
+                .await
+                .expect_err("missing receipt fields")
+        };
+        assert_eq!(error.code, "PROTOCOL");
+        assert_eq!(error.status, Some(200));
+        assert_eq!(
+            error.trace_id.as_deref(),
+            Some("0123456789abcdef0123456789abcdef")
+        );
+    }
+}
+#[tokio::test]
+async fn invalid_operation_keys_names_and_event_shapes_never_reach_the_server() {
+    use sagat_octopus_orchestrator_sdk::{PublishEvent, UpdateRequest};
+    let server = server("query").await;
+    let client =
+        Client::new(options(&server.base, TokenSource::bearer("fixture-token"))).expect("client");
+    assert_eq!(
+        client
+            .query(RUN, "bad/name", &json!({}), CallOptions::default())
+            .await
+            .expect_err("name")
+            .code,
+        "VALIDATION_FAILED"
+    );
+    assert_eq!(
+        client
+            .update(
+                RUN,
+                "adjust",
+                UpdateRequest {
+                    update_key: "key with spaces".into(),
+                    args: json!({}),
+                    expected_state_revision: None
+                },
+                CallOptions::default()
+            )
+            .await
+            .expect_err("key")
+            .code,
+        "VALIDATION_FAILED"
+    );
+    assert_eq!(
+        client
+            .publish_event(
+                PublishEvent::new("created", json!([])),
+                CallOptions::default()
+            )
+            .await
+            .expect_err("object")
+            .code,
+        "VALIDATION_FAILED"
+    );
+    assert!(server.state.calls.lock().expect("requests").is_empty());
 }

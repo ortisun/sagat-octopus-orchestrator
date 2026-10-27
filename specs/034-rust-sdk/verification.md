@@ -98,3 +98,13 @@ validation now runs inside the response parser so it preserves status and trace.
 example passed (59 total). Pagination stays lazy/bounded, encodes opaque cursors, preserves raw
 fields and stops on cancellation. Completion wait timeout returns TRANSPORT/WAIT_TIMEOUT and
 never cancels or changes the run. Remaining T034-002 operations and common conformance stay open.
+
+Declared state operations/event publication increment: `rust-sdk-state-events-api-red` failed on
+missing public APIs; `rust-sdk-state-events-first-green` passed 32 REST/catalog checks. Additional
+response-shape and before-send validation cases bring the REST/catalog count to 34.
+`rust-sdk-state-events-clippy` exited 0 (2.34 s), and `rust-sdk-state-events-tests` exited 0
+(12.65 s; 64 total). Queries preserve exact disclosed values/revisions. Updates retry their body
+updateKey with immutable arguments/revision and no idempotency header. Event publication freezes
+the generated event ID and UTC instant across retries and accepts the canonical duplicate receipt.
+Missing result/receipt fields are PROTOCOL errors retaining HTTP status/trace. This increment does
+not close the remaining chain, approval, blob, authoring or shared-conformance work.

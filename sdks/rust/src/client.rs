@@ -129,6 +129,64 @@ fn page_query(
     }
     Ok(query)
 }
+#[derive(Clone)]
+pub struct UpdateRequest {
+    pub update_key: String,
+    pub args: Value,
+    pub expected_state_revision: Option<u64>,
+}
+impl std::fmt::Debug for UpdateRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UpdateRequest")
+            .field("expected_state_revision", &self.expected_state_revision)
+            .finish_non_exhaustive()
+    }
+}
+#[derive(Clone)]
+pub struct PublishEvent {
+    pub event_id: Option<String>,
+    pub event_type: String,
+    pub data: Value,
+    pub subject: Option<String>,
+    pub occurred_at: Option<OffsetDateTime>,
+    pub correlation_key: Option<String>,
+    pub dedupe_ttl_seconds: Option<u32>,
+}
+impl PublishEvent {
+    pub fn new(event_type: impl Into<String>, data: Value) -> Self {
+        Self {
+            event_id: None,
+            event_type: event_type.into(),
+            data,
+            subject: None,
+            occurred_at: None,
+            correlation_key: None,
+            dedupe_ttl_seconds: None,
+        }
+    }
+}
+impl std::fmt::Debug for PublishEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PublishEvent")
+            .field("has_event_id", &self.event_id.is_some())
+            .finish_non_exhaustive()
+    }
+}
+fn body_key(value: &str, max: usize) -> bool {
+    !value.is_empty() && value.len() <= max && value.bytes().all(|b| (0x21..=0x7e).contains(&b))
+}
+fn operation_name(name: &str) -> Result<(), SagatError> {
+    if name.is_empty()
+        || name.len() > 128
+        || !name.as_bytes()[0].is_ascii_alphanumeric()
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b':' | b'-'))
+    {
+        return Err(validation());
+    }
+    Ok(())
+}
 struct WireReply {
     value: Value,
     status: u16,
@@ -235,6 +293,10 @@ impl WireRequest {
     fn json(mut self, value: &Value) -> Result<Self, SagatError> {
         self.body = Some(serde_json::to_vec(value).map_err(|_| validation())?);
         Ok(self)
+    }
+    fn repeatable(mut self) -> Self {
+        self.repeatable = true;
+        self
     }
     fn keyed(mut self, key: String) -> Self {
         self.key = Some(key);
@@ -560,6 +622,97 @@ impl Client {
                 error.details = Box::new(json!({"reason":"WAIT_TIMEOUT"}));
                 error
             })?
+    }
+    pub async fn query(
+        &self,
+        run_id: &str,
+        name: &str,
+        args: &Value,
+        call: CallOptions,
+    ) -> Result<crate::QueryResult, SagatError> {
+        uuid(run_id)?;
+        operation_name(name)?;
+        let request = WireRequest::new(Method::POST, &["runs", run_id, "queries", name], 200)
+            .json(&json!({"args":args}))?
+            .repeatable();
+        self.execute(request, call)
+            .await?
+            .parse(crate::QueryResult::parse)
+    }
+    pub async fn update(
+        &self,
+        run_id: &str,
+        name: &str,
+        update: UpdateRequest,
+        call: CallOptions,
+    ) -> Result<crate::UpdateReceipt, SagatError> {
+        uuid(run_id)?;
+        operation_name(name)?;
+        if !body_key(&update.update_key, 128)
+            || update
+                .expected_state_revision
+                .is_some_and(|v| v > i64::MAX as u64)
+        {
+            return Err(validation());
+        }
+        let mut body = json!({"updateKey":update.update_key,"args":update.args});
+        if let Some(revision) = update.expected_state_revision {
+            body["expectedStateRevision"] = json!(revision);
+        }
+        let request = WireRequest::new(Method::POST, &["runs", run_id, "updates", name], 200)
+            .json(&body)?
+            .repeatable();
+        self.execute(request, call)
+            .await?
+            .parse(crate::UpdateReceipt::parse)
+    }
+    pub async fn publish_event(
+        &self,
+        event: PublishEvent,
+        call: CallOptions,
+    ) -> Result<crate::EventReceipt, SagatError> {
+        let event_id = event.event_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+        if !body_key(&event_id, 200)
+            || event.event_type.is_empty()
+            || !event.data.is_object()
+            || event
+                .subject
+                .as_ref()
+                .is_some_and(|v| v.chars().count() > 256)
+            || event
+                .correlation_key
+                .as_ref()
+                .is_some_and(|v| v.chars().count() > 256)
+            || event
+                .dedupe_ttl_seconds
+                .is_some_and(|v| !(60..=2592000).contains(&v))
+        {
+            return Err(validation());
+        }
+        let mut body = json!({"eventId":event_id,"type":event.event_type,"data":event.data});
+        if let Some(subject) = event.subject {
+            body["subject"] = json!(subject);
+        }
+        if let Some(key) = event.correlation_key {
+            body["correlationKey"] = json!(key);
+        }
+        if let Some(ttl) = event.dedupe_ttl_seconds {
+            body["dedupeTtlSeconds"] = json!(ttl);
+        }
+        if let Some(instant) = event.occurred_at {
+            body["occurredAt"] = json!(
+                instant
+                    .to_offset(UtcOffset::UTC)
+                    .format(&Rfc3339)
+                    .map_err(|_| validation())?
+            );
+        }
+        let request = WireRequest::new(Method::POST, &["events"], 202)
+            .json(&body)?
+            .repeatable();
+        self.execute(request, call)
+            .await?
+            .parse(crate::EventReceipt::parse)
     }
     async fn execute(
         &self,

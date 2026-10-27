@@ -7,8 +7,8 @@ mod tls;
 mod token;
 mod types;
 pub use client::{
-    CallOptions, Client, ClientOptions, ListOptions, OperationOptions, PageOptions, RetryPolicy,
-    RunDeadline, StartOptions, StepOutcome, WaitOptions,
+    CallOptions, Client, ClientOptions, ListOptions, OperationOptions, PageOptions, PublishEvent,
+    RetryPolicy, RunDeadline, StartOptions, StepOutcome, UpdateRequest, WaitOptions,
 };
 pub use error::SagatError;
 pub use serde_json::{Value, json};
@@ -16,8 +16,9 @@ pub use tls::{TlsIdentity, TlsOptions};
 pub use token::{TokenProviderError, TokenSource};
 pub use tokio_util::sync::CancellationToken;
 pub use types::{
-    Cause, ChainSegment, CompletionKind, JournalEvent, JournalPage, OperationResult, Page, Run,
-    RunPage, RunParent, RunStatus, ScopeSegment, SignalResult,
+    Cause, ChainSegment, CompletionKind, EventReceipt, EventStatus, JournalEvent, JournalPage,
+    OperationResult, Page, QueryResult, Run, RunPage, RunParent, RunStatus, ScopeSegment,
+    SignalResult, UpdateReceipt,
 };
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
