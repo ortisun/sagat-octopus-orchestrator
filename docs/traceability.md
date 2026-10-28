@@ -1051,3 +1051,14 @@ proofs live in `tests/integration/redis-streams/`; configuration tests live in b
 settings round-trip properties in `crates/domain/tests/outbound_redis_properties.rs`, and chart
 contracts in `tests/contract/scalability-ha/redis_chart.rs`. Acceptance remains tracked by
 [feature033 tasks](../specs/033-redis-streams/tasks.md); use named, completed gates before release.
+
+
+### Combined v0.3 Redis callback cutover and sixth SDK (2026-10-27)
+
+FR-033-004/005/009, SC-033-004, T033-007 → released_v02_callback_cutover and the verified immutable
+release runner → actual old HTTP publish/read, login/session revocation and process join before
+current Redis API activation → real XADD/DELIVERED identity and unchanged old metadata. The shared
+fixture now lives in tests/support/brokers.rs. Combined 139 messaging/Redis tests and 109 Rust SDK
+tests pass; all five new 014 scenarios match reviewed goldens in all six languages. Evidence:
+specs/033-redis-streams/released-callback-cutover.md. No full 65-scenario aggregate, general nested
+capacity or final release acceptance is inferred; canonical open tasks remain open.

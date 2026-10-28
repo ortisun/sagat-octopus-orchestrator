@@ -141,3 +141,9 @@ pub async fn quota_sources(pool: &sqlx::PgPool, tenant: uuid::Uuid, run: uuid::U
     }));
     rows
 }
+
+pub async fn callback_source(pool: &sqlx::PgPool, tenant: uuid::Uuid, id: uuid::Uuid) -> String {
+    let value:Value=sqlx::query_scalar("SELECT jsonb_build_object('subscription',to_jsonb(s),'deliveries',(SELECT jsonb_agg(to_jsonb(d) ORDER BY d.id) FROM webhook_deliveries d WHERE d.tenant_id=s.tenant_id AND d.subscription_id=s.id),'attempts',(SELECT jsonb_agg(to_jsonb(a) ORDER BY a.delivery_id,a.attempt) FROM webhook_attempts a JOIN webhook_deliveries d ON d.tenant_id=a.tenant_id AND d.id=a.delivery_id WHERE d.tenant_id=s.tenant_id AND d.subscription_id=s.id)) FROM webhook_subscriptions s WHERE s.tenant_id=$1 AND s.id=$2")
+        .bind(tenant).bind(id).fetch_one(pool).await.expect("old callback source metadata");
+    sha(&serde_json::to_vec(&value).expect("source JSON"))
+}

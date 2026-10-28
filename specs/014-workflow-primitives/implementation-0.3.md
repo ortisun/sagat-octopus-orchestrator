@@ -1587,3 +1587,16 @@ Next checks must execute the combined Redis/native/contract and six-language sce
 remaining Redis old-callback-writer cold-cutover proof reuses this branch's verified released
 source harness; its event-dispatcher cutover is not callback-publisher proof. Canonical feature
 014 and final release checkboxes stay open until their own acceptance passes.
+
+
+## Combined Redis/Rust SDK checkpoint — 2026-10-27
+
+The local 014/033/034 merge is verified with 139 real messaging/Redis tests, 109 native Rust SDK
+tests, all five new common scenarios in six languages (unchanged goldens), strict workspace/all-
+target Clippy, Studio API/type/lint and contract/static gates. Six actual released-source profiles
+pass on one frozen current source manifest, including new callback-publisher stop/join/credential
+fencing before explicit Redis activation. The active-data/report schema expectations now include
+the exact Redis migration; original integration failures remain preserved. Commands, timings,
+source identities and limitations are in ../033-redis-streams/released-callback-cutover.md.
+This adds release integration evidence without enabling general nesting, capacity groups or
+closing the eight canonical 014 tasks. Full 65-scenario/release-tree CI remains separate.

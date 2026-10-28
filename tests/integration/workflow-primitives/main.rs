@@ -67,6 +67,8 @@ mod public_refusal_commit_loss;
 mod publication_rejections;
 mod refusal_secret_versions;
 #[cfg(unix)]
+mod released_v02_callback_cutover;
+#[cfg(unix)]
 mod released_v02_cutover;
 #[cfg(unix)]
 mod released_v02_inflight;

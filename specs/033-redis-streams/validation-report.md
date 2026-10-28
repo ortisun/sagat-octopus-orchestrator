@@ -69,6 +69,9 @@ across two cycles); all were reconciled with code and RED/green controls. The ca
 read-only review found no new actionable production issue. Review claims were followed by the root's
 actual merged-working-tree gates above. The owner previously selected single-model review only.
 
-Pending: actual released-source old reader/writer stop/join → explicit activation → new Redis row
-staged proof, and all final release checks on the integrated0.3 tree (including remaining014 work and
-newly requested034 Rust SDK). This checkpoint does not close those independent release tasks.
+The actual released-source callback reader/writer stop/join → explicit activation → new Redis
+row proof now passes on the locally integrated 014/033/034 tree. Six released profiles, 139 real
+messaging/Redis regressions, 109 Rust SDK tests and five new common scenarios across all six SDKs
+pass; see [released-callback-cutover.md](released-callback-cutover.md) and its original evidence.
+Final release CI and remaining 014 nested-capacity/fault/resource acceptance remain open.
+T033-007 is not closed by these focused gates.

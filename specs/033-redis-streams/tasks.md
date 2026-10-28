@@ -22,5 +22,9 @@ T033-003: public API/schema/tenant/runtime-role lifecycle and guarded migration 
 T033-004: real TLS/ACL/rotation/DB/pinned-DNS/secret/boot cases in tls.rs/bootstrap.rs.
 T033-005: actual lost wire ACK, crash/stale publisher, outage/DEAD/redrive and111 legacy cases.
 T033-006: actual Compose Healthy/AOF/loopback proof and teardown;25 Helm contracts; Studio type drift,
-typecheck/lint and canonical REST/AsyncAPI contracts. T033-007 stays open for staged old-binary
-cutover and the final integrated release tree; no acceptance is inferred from its default-off flag.
+typecheck/lint and canonical REST/AsyncAPI contracts.
+T033-007: actual old callback writer/reader, login/session revocation, process join before Redis
+activation and preserved old rows now pass; six source-bound released profiles, 139 messaging/
+Redis regressions and five common scenarios in six SDKs pass on the combined tree. Evidence:
+[released-callback-cutover.md](released-callback-cutover.md). The final release-tree gates remain
+open; no acceptance is inferred from the default-off flag.

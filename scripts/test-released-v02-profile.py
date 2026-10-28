@@ -19,11 +19,13 @@ from urllib.parse import unquote, urlparse
 RELEASE = 'bfda342073db71e84f30bdc79ccf3fbc97a7153c'
 OVERLAYS = ('tests/fixtures/released-v02/phase.rs', 'tests/fixtures/released-v02/wait-state.sql',
             'tests/fixtures/released-v02/inflight.rs', 'tests/fixtures/released-v02/control.rs',
-            'tests/fixtures/released-v02/cutover.rs')
+            'tests/fixtures/released-v02/cutover.rs', 'tests/fixtures/released-v02/callback_cutover.rs')
 MAIN = 'tests/integration/workflow-primitives/main.rs'
 SUFFIX = b'\n#[path = "../../fixtures/released-v02/phase.rs"]\nmod released_v02_phase;\n'
 TARGET = 'integration_workflow_primitives'
 SCENARIOS = {
+    'redis-callback-cutover': ('released_v02_callback_cutover::released_callback_writer_is_fenced_before_redis_activation',
+                              'tests/integration/workflow-primitives/released_v02_callback_cutover.rs', 'redis-callback-cutover.txt'),
     'applied-output-quota': ('released_v02_inflight::a_released_applied_report_refuses_output_and_compensates_original_effects_over_quota',
                               'tests/integration/workflow-primitives/released_v02_inflight.rs', 'applied-output-quota.txt'),
     'scoped-event-cutover': ('released_v02_cutover::released_dispatcher_credentials_and_process_are_fenced_before_public_scoped_events',

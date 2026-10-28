@@ -1,0 +1,21 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "sdk_conformance",
+    "--locked",
+    "--",
+    "--ignored",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "seconds": 180.4,
+  "wall_seconds": 180.4,
+  "wall_minus_monotonic_seconds": 0.0,
+  "started_utc": "2026-10-28T00:48:54.884662+00:00",
+  "finished_utc": "2026-10-28T00:51:55.286940+00:00",
+  "log": "combined-six-sdk-collection-events.txt"
+}
