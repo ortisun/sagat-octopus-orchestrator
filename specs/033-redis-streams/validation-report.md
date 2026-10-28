@@ -75,3 +75,25 @@ messaging/Redis regressions, 109 Rust SDK tests and five new common scenarios ac
 pass; see [released-callback-cutover.md](released-callback-cutover.md) and its original evidence.
 Final release CI and remaining 014 nested-capacity/fault/resource acceptance remain open.
 T033-007 is not closed by these focused gates.
+
+
+## CI fixture correction — 2026-10-28
+
+The Rust jobs for PR56 (run40613078868/job122569067424) and PR58
+(run40620262270/job122592318750) failed in
+`tls::one_attempt_never_races_all_dns_candidates`: reserving `::1` on the Redis
+host port returned `AddrInUse`, before the connection assertion. The generic
+and TLS fixtures requested automatic exposure, whose initially empty port-binding
+map made the loopback modifier ineffective in pinned testcontainers0.27.3.
+
+A new real-Docker test, `fixtures_publish_redis_only_on_loopback`, was observed
+failing with actual HostIp `0.0.0.0`, expected `127.0.0.1`. Both fixtures now
+share an explicit Docker binding for container6379: IPv4 loopback, empty HostPort
+for dynamic allocation, publish-all disabled. Every fixture inspects actual Docker
+bindings through Testcontainers' configured client, with bounded waits, and rejects
+wildcard publication. The test starts two simultaneous fixtures and requires distinct
+actual ports. The original IPv6 reservation/no-fallback test is unchanged.
+This correction changes test infrastructure only, without changing production
+DNS selection, callback behavior or the six-SDK protocol. Final gates and their
+receipts are recorded in [fixture evidence](evidence/loopback-fixtures-20261028/README.md); full release
+acceptance remains open.

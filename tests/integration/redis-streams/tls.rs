@@ -82,17 +82,7 @@ async fn real_tls_authentication_checks_ca_hostname_acl_and_database_isolation()
             "--requirepass",
             "fixture-only-password",
         ])
-        .with_host_config_modifier(|config| {
-            config.memory = Some(128 * 1024 * 1024);
-            config.pids_limit = Some(128);
-            if let Some(bindings) = config.port_bindings.as_mut() {
-                for entries in bindings.values_mut().flatten() {
-                    for binding in entries {
-                        binding.host_ip = Some("127.0.0.1".to_owned());
-                    }
-                }
-            }
-        });
+        .with_host_config_modifier(support::brokers::redis_loopback_host_config);
     let container = support::bounded::within(
         "start own TLS Redis",
         Duration::from_secs(90),
@@ -100,6 +90,7 @@ async fn real_tls_authentication_checks_ca_hostname_acl_and_database_isolation()
     )
     .await
     .expect("TLS Redis");
+    support::brokers::assert_redis_loopback(&container).await;
     let port = container.get_host_port_ipv4(6379).await.expect("port");
     let endpoint = format!("rediss://localhost:{port}");
     let w = support::engine::world().await;

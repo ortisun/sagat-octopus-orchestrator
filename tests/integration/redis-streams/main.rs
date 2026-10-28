@@ -400,3 +400,14 @@ async fn review_internal_rejection_and_unavailability_keep_distinct_outbox_codes
         "BROKER_UNAVAILABLE"
     );
 }
+
+#[tokio::test]
+async fn fixtures_publish_redis_only_on_loopback() {
+    let ((first, _, _), (second, _, _)) = tokio::join!(redis(), redis());
+    let first_port = first.get_host_port_ipv4(6379).await.expect("first port");
+    let second_port = second.get_host_port_ipv4(6379).await.expect("second port");
+    assert_ne!(
+        first_port, second_port,
+        "fixtures allocate independent dynamic ports"
+    );
+}
