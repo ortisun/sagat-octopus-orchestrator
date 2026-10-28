@@ -1,0 +1,10 @@
+{
+  "run": 40591310405,
+  "job": 122495996462,
+  "head": "23a5f9d69a70503d2ff41795f4e46392aa250540",
+  "sourceLogSha256": "e6cd395f9468e06776e756ddc9eb84cffbddc2a791c45d6ef7c75613e2060ae4",
+  "selection": "test result summaries plus cache/cancellation markers only; not a complete log",
+  "jobConclusion": "cancelled",
+  "allTestStepsConclusion": "success",
+  "change": "SDK job timeout 60 to 90 minutes; preserve all commands and assertions"
+}

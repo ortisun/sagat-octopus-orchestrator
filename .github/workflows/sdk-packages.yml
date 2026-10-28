@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/workflows/sdk-packages.yml"
       - "scripts/package-sdks.sh"
+      - "scripts/package-rust-sdk.sh"
       - "sdks/**"
       - "LICENSE"
   push:
@@ -22,6 +23,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: rustup show active-toolchain
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
@@ -41,6 +43,8 @@ jobs:
           distribution: temurin
           java-version: "21"
       - name: Build packages and run clean consumers
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/sagat-rust-packages
         run: bash scripts/package-sdks.sh "${RUNNER_TEMP}/sdk-packages"
       - name: Upload packages and checksums
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

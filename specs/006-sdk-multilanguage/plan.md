@@ -112,3 +112,12 @@ supersedes the earlier separate-revision allocation. Worker minor 1.5 adds scope
 This approves the described dependency for implementation, not a runtime guarantee. Canonical
 contracts, migration/replay, tenant/fault tests and applicable five-SDK evidence remain the
 feature-014 release gates; existing feature behavior stays supported.
+
+
+## Approved dependent delivery: Rust SDK (2026-10-27)
+
+The owner requested an official Rust SDK during the active 0.3 delivery. Feature
+[034](../034-rust-sdk/spec.md) and [ADR-0070](../../docs/adr/ADR-0070-rust-sdk-shares-the-canonical-sdk-contract.md)
+extend the same SDK semantic contract, canonical protocol, errors, conformance and package gates to
+Rust. Existing five-language evidence stays intact. This authorizes the dependency; the new SDK's
+actual acceptance is tracked by T034 tasks and is not supplied by this note.

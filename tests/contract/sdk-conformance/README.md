@@ -1,9 +1,9 @@
 # SDK conformance suite
 
-One suite, five languages (`FR-006-006`, `SC-006-001`). The same scenarios are executed by the
-TypeScript, Go, Python, C# and Java SDKs against a real platform (REST API, worker service, scheduler,
+One suite, six languages (`FR-006-006`, `SC-006-001`). The same scenarios are executed by the
+TypeScript, Go, Python, C#, Java and Rust SDKs against a real platform (REST API, worker service, scheduler,
 PostgreSQL, identity provider — the stack of `tests/support`), and the **normalized** results must be
-identical across the five **and** equal to the golden files in `expected/`. A scenario therefore says what
+identical across the six **and** equal to the golden files in `expected/`. A scenario therefore says what
 an SDK does, not how it is written. `sdks/SPEC.md` is the behaviour; this file is the test contract.
 
 ```text
@@ -14,7 +14,7 @@ SAGAT_SDK_BLESS=1 …                                                           
 SAGAT_SDK_REUSE=1 …                                                              # do not rebuild the SDKs
 ```
 
-`--ignored` because the suite needs the five toolchains (Node, Python, Go, .NET and a JDK) and Docker, which `cargo test --workspace` cannot assume; the `sdks` job of CI sets them up and runs the suite with `--ignored`. `SAGAT_SDK_REUSE=1` also skips the build of the runners, so run once without it after changing an SDK or a runner.
+`--ignored` because the suite needs the six toolchains (Rust, Node, Python, Go, .NET and a JDK) and Docker, which `cargo test --workspace` cannot assume; the `sdks` job of CI sets them up and runs the suite with `--ignored`. `SAGAT_SDK_REUSE=1` also skips the build of the runners, so run once without it after changing an SDK or a runner.
 
 The `database-connections` scenario also requires a prebuilt isolated executor:
 `cargo build -p sagat-database-runner --bin database-runner --locked` (or set
@@ -686,3 +686,14 @@ coverage remains separately scoped, with other historical features/versions unte
 
 Evidence: [complete SDK60 aggregate](../../../tasks/project-completion/evidence/sdk60-current-20261018/reproduce.md).
 This evidence does not accept general nested runtime, C0, production ceilings or final release gates.
+
+## Rust runner
+
+Set `SAGAT_RUST_SDK_TARGET_DIR` to an owned absolute directory outside the repository and
+separate from the backend target. `prepare.sh` builds the independent locked Rust runner there;
+`run.sh` invokes its public SDK client, worker and typed builders. Test-only HTTP/gRPC loopback
+proxies inject the same shared fault plans; the SDK continues through its ordinary public paths.
+No expected documents are read by the runner. Its authoring adapter is also exercised by the
+standalone Rust unit suite against all 60 reviewed fixtures.
+Archived v0.1/v0.2 clients use their original five-language matrix explicitly; they do not have a
+Rust package. New six-language results do not rewrite historical evidence.
