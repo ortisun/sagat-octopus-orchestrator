@@ -17,6 +17,7 @@ unguarded-for-tests = []
 
 [dependencies]
 async-nats.workspace = true
+redis.workspace = true
 aws-credential-types = "1"
 aws-sigv4 = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
@@ -31,6 +32,7 @@ sagat-domain.workspace = true
 sagat-infra-egress.workspace = true
 serde_json.workspace = true
 time.workspace = true
+thiserror.workspace = true
 tokio = { workspace = true, features = ["time", "rt", "sync", "macros"] }
 tracing.workspace = true
 url = "2"

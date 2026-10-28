@@ -4090,7 +4090,7 @@ export interface components {
             namespaceId: string;
             name: string;
             /** @enum {string} */
-            kind: "NATS" | "KAFKA" | "SQS";
+            kind: "NATS" | "KAFKA" | "SQS" | "REDIS";
             settings: components["schemas"]["OutboundBrokerSettings"];
             /** @description Optional namespace secret containing the broker credentials JSON. */
             secretName?: string;
@@ -4112,7 +4112,7 @@ export interface components {
         CreateBrokerSubscriptionRequest: {
             name: string;
             /** @enum {string} */
-            kind: "NATS" | "KAFKA" | "SQS";
+            kind: "NATS" | "KAFKA" | "SQS" | "REDIS";
             settings: components["schemas"]["OutboundBrokerSettings"];
             secretName?: string;
             events: ("run.finished" | "ops.alert.fired" | "ops.alert.resolved")[];
@@ -4131,7 +4131,7 @@ export interface components {
              * @description Must remain the subscription kind set at creation.
              * @enum {string}
              */
-            kind: "NATS" | "KAFKA" | "SQS";
+            kind: "NATS" | "KAFKA" | "SQS" | "REDIS";
             settings: components["schemas"]["OutboundBrokerSettings"];
             secretName?: string;
             events: ("run.finished" | "ops.alert.fired" | "ops.alert.resolved")[];
@@ -4145,7 +4145,7 @@ export interface components {
              */
             status: "ACTIVE" | "PAUSED";
         };
-        OutboundBrokerSettings: components["schemas"]["OutboundNatsSettings"] | components["schemas"]["OutboundKafkaSettings"] | components["schemas"]["OutboundSqsSettings"];
+        OutboundBrokerSettings: components["schemas"]["OutboundNatsSettings"] | components["schemas"]["OutboundKafkaSettings"] | components["schemas"]["OutboundSqsSettings"] | components["schemas"]["OutboundRedisSettings"];
         OutboundNatsSettings: {
             servers: string[];
             subject: string;
@@ -4157,6 +4157,14 @@ export interface components {
         OutboundSqsSettings: {
             queueUrl: string;
             region: string;
+        };
+        /** @description Redis Streams outbound callback. Requires operator activation after a cold upgrade. Credentials belong in the namespace secret named by secretName; use TLS for authentication. No Cluster/Sentinel or automatic trimming. */
+        OutboundRedisSettings: {
+            /** @description Host and explicit port; no credentials or database path. rediss enables certificate and hostname verification. */
+            server: string;
+            stream: string;
+            /** @default 0 */
+            database: number;
         };
         OutboundSubscriptionHealth: {
             consecutiveDead: number;

@@ -294,3 +294,75 @@ that reference. Unused secrets are not automatically deleted. A saved/Active con
 mean that a live connection succeeded: inspect runtime health and message receipt. See feature 007's
 quickstart for the supported auth modes and the full UI procedure. Outbound subscriptions and the
 platform's internal broker retain their existing configuration paths.
+
+
+## Redis Streams (v0.3)
+
+Select internal notifications deployment-wide with `SAGAT_EVENT_TRANSPORT=redis`,
+`SAGAT_REDIS_URL=rediss://redis.example.net:6379/0`, `SAGAT_REDIS_STREAM=sagat:v1:events`,
+`SAGAT_REDIS_STREAM_MAXLEN=100000` and `SAGAT_REDIS_TIMEOUT_SECS=5`. Timeout is 1–30 seconds;
+exact MAXLEN is 1–10000000 entries. Absent selection preserves legacy optional NATS configuration;
+explicit `nats` requires its URL, `none` leaves notifications pending in PostgreSQL. Redis settings
+require an explicit selector. Inactive backend settings do not create a second publisher.
+
+Internal stream fields are `message-id` (stable PostgreSQL outbox id), `subject` (the existing
+`sagat.v1.*` routing subject) and `payload` (unchanged bytes). Redis-generated ids identify physical
+entries; use `message-id` to reconcile duplicates. The stream holds hints: SDK workers still claim
+and report tasks over gRPC, and PostgreSQL remains authoritative. Trimmed hints do not erase tasks.
+No platform worker consumes this stream directly.
+
+For a cold transport cutover, stop and join every old dispatcher, preserve the outbox and database,
+switch every engine and interested consumer, then resume. Mixed NATS/Redis dispatcher replicas are
+unsupported. Confirmed notifications stay confirmed on their old broker; pending rows use the newly
+selected broker. An earlier uncertain append can leave copies on both with the same application id.
+
+Redis callbacks use the existing broker-subscription API. Upgrade or stop all old control planes and
+engines before setting `SAGAT_REDIS_CALLBACKS_ENABLED=true` on the new control planes. The default is
+false. This explicit operator assertion does not fence an old binary or make old readers understand
+Redis records. After activation, retain compatible readers/schema while Redis records exist.
+
+Store a namespace secret with the existing secrets API (backed by OpenBao when configured); its JSON
+value is `{"password":"<password>"}` or `{"username":"<acl-user>","password":"<password>"}`.
+An optional `caCert` contains a PEM CA certificate; a caCert-only document supports anonymous TLS.
+Unknown keys, non-string or empty values are refused. Never put credentials in subscription settings.
+Then create a subscription with `POST /v1/namespaces/{namespaceId}/broker-subscriptions`:
+
+```json
+{
+  "name": "redis-results",
+  "kind": "REDIS",
+  "settings": {
+    "server": "rediss://redis.example.net:6379",
+    "stream": "orders:callbacks",
+    "database": 0
+  },
+  "secretName": "redis-access",
+  "events": ["run.finished"],
+  "timeoutMs": 10000
+}
+```
+
+The server includes an explicit port, without credentials, database path, query or fragment.
+Database is 0–15. Stream keys are 1–512 ASCII letters/digits or `:._-{}`. Namespace egress must
+allow the hostname, port and every resolved address. Each attempt resolves once and selects one checked address,
+retains the hostname for certificate verification, reads current namespace credentials and creates
+its own connection; it never shares SELECT/authentication state or races all DNS candidates. A resolver/store outage is NETWORK; a policy refusal is DENIED. Authentication requires TLS.
+Cluster, Sentinel, redirects and an insecure certificate-verification mode are unsupported.
+
+Callback fields are `event-id`, `event-type`, `delivery-id`, `attempt`, `schema-version`,
+`content-type`, optional `traceparent`, and `body` (the raw versioned JSON envelope). Use
+`delivery-id` as the receiver's idempotency key; retries and redrives retain it. A successful XADD
+acknowledges acceptance, not arbitrary disk/replica/failover durability. Callback publishing never
+trims customer streams: configure retention and consumers on your Redis infrastructure.
+
+Delivery retries, attempt leases/fences, DEAD status and redrive use the same PostgreSQL pipeline as
+HTTP/NATS/Kafka/SQS. Inspect existing delivery/attempt endpoints and metrics for timeout, denied,
+network, rejected or unavailable credentials. Correct policy, secret, ACL or stream type and redrive
+through the existing endpoint. Do not log or paste credentials or Redis error payloads.
+
+The development Compose service pins Redis with AOF and a loopback port. `appendfsync everysec`
+can lose accepted entries in a crash; use a durability configuration suited to your external effects
+and reconcile against PostgreSQL/application identity. The Helm chart references a Kubernetes Secret
+via `redis.urlSecret`/`urlKey` for the internal URL; configure explicit
+`networkPolicy.egress.redis` peers/port. Callback destinations additionally need explicit engine
+NetworkPolicy egress rules. NATS remains the development default.

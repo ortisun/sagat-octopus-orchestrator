@@ -21,7 +21,7 @@ DOMAIN_ALLOWED = {"thiserror", "time", "uuid", "zeroize"}
 DOMAIN_FORBIDDEN = {
     "axum", "hyper", "tower", "tower-http", "reqwest", "tonic", "prost",
     "sqlx", "tokio-postgres", "postgres", "diesel", "sea-orm",
-    "async-nats", "nats", "rdkafka", "aws-sdk-sqs", "kube", "k8s-openapi",
+    "async-nats", "nats", "redis", "rdkafka", "aws-sdk-sqs", "kube", "k8s-openapi",
     "serde_json", "tokio", "tracing-opentelemetry", "opentelemetry",
 }
 

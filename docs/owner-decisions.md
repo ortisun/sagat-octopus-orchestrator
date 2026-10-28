@@ -60,3 +60,13 @@ The owner reported the missing Rust SDK during the active0.3 implementation. Add
 SDK with the current SDK client/worker/builder semantics and shared conformance, tracked by
 [feature034](../specs/034-rust-sdk/spec.md) and [ADR-0070](adr/ADR-0070-rust-sdk-shares-the-canonical-sdk-contract.md).
 The active0.3 context is the release target; existing Redis033 and remaining014 work stays in scope.
+
+## 2026-10-27 — Redis Streams for release0.3
+
+The owner requested Redis Streams in communications/callbacks now in v0.3 and selected:
+“Alternativa ao NATS e transporte adicional para callbacks, selecionável por configuração”.
+Feature033 implements optional internal Redis outbox notifications and Redis callback destinations,
+retaining PostgreSQL authority, worker gRPC, NATS compatibility and existing HTTP callbacks.
+[Specification](../specs/033-redis-streams/spec.md); [ADR-0069](adr/ADR-0069-redis-streams-share-outbox-and-delivery-authority.md).
+Implementation/tests remain required; no production deployment, automatic release or inbound Redis
+connector is inferred. This explicitly approves dependencies on the existing004/009/017 services.

@@ -1045,3 +1045,9 @@ join precede current publication in released_v02_cutover; old/new replay passes.
 collection-events passes all existing five SDKs without blessing. This is partial T014-014–017/
 040/043/044 evidence; nesting/capacity, final resource/fault and integrated six-SDK release gates
 remain open. No mixed-version or automatic operator-fencing claim is added.
+Feature033 (`FR-033-001..009`, `SC-033-001..004`) targets release0.3. Internal transport, public
+callback management, real delivery, TLS/ACL/rotation/namespace checks, crash/fencing and migration
+proofs live in `tests/integration/redis-streams/`; configuration tests live in both process apps,
+settings round-trip properties in `crates/domain/tests/outbound_redis_properties.rs`, and chart
+contracts in `tests/contract/scalability-ha/redis_chart.rs`. Acceptance remains tracked by
+[feature033 tasks](../specs/033-redis-streams/tasks.md); use named, completed gates before release.

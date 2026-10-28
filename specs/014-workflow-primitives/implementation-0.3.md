@@ -1574,3 +1574,16 @@ A stale supplemental result-copy bug is corrected with provenance; new per-invoc
 and identity/hash checks prevent reuse. The Python verifier battery passes 16 tests. No production
 workflow semantics changed in this increment. Ledger item 1 remains open for the wider authority
 and uncertain-commit compositions; none of the eight canonical tasks is marked complete.
+
+
+## Consolidated release dependency tree — 2026-10-27
+
+The owner's v0.3 scope explicitly includes Redis Streams (033) and the official Rust SDK (034).
+Their implementation branches are merged locally into this completion branch for combined
+verification, preserving each source commit and historical evidence. The common SDK registry
+now includes Rust alongside the five existing languages and the new 014 scenarios. This is an
+approved release/test dependency, not a claim that prior isolated runs cover the combined tree.
+Next checks must execute the combined Redis/native/contract and six-language scenarios. The
+remaining Redis old-callback-writer cold-cutover proof reuses this branch's verified released
+source harness; its event-dispatcher cutover is not callback-publisher proof. Canonical feature
+014 and final release checkboxes stay open until their own acceptance passes.

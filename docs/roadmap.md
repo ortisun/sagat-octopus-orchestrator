@@ -22,4 +22,9 @@
 
 **Realistic milestones:** M0=contracts and journal spike; M1=durable vertical slice; M2=sagas/events; M3=scripts and first SDK; M4=Studio; M5=enterprise hardening; M6=multi-SDK/HA. Avoid estimates without team composition and benchmark.
 
+Feature033 adds Redis Streams to the0.3 release scope: selectable internal notification transport
+and an additional callback destination. PostgreSQL/gRPC semantics stay unchanged. Track its
+[acceptance tasks](../specs/033-redis-streams/tasks.md) and actual validation evidence alongside the
+remaining feature014 gates; its implementation does not waive those release requirements.
+
 **Dependencies:** `001 → 002 → {003,004,009} → {005,006,007} → {008,011,012} → 010`, with cross-cutting security from 001; later phases can advance in parallel once contracts stabilize.

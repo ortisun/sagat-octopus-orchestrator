@@ -938,3 +938,22 @@ fn openbao_alone_requires_secret_transport_protection() {
     assert!(config.openbao.is_some());
     assert!(config.secrets.is_none());
 }
+
+#[test]
+fn redis_callback_activation_is_an_explicit_strict_operator_switch() {
+    assert!(
+        !ServeConfig::from_lookup(&env(&OIDC))
+            .expect("defaults")
+            .redis_callbacks
+    );
+    let mut values = OIDC.to_vec();
+    values.push(("SAGAT_REDIS_CALLBACKS_ENABLED", "true"));
+    assert!(
+        ServeConfig::from_lookup(&env(&values))
+            .expect("activated")
+            .redis_callbacks
+    );
+    values.pop();
+    values.push(("SAGAT_REDIS_CALLBACKS_ENABLED", "maybe"));
+    assert!(ServeConfig::from_lookup(&env(&values)).is_err());
+}
