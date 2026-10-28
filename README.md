@@ -5,7 +5,7 @@
 # Sagat Octopus Orchestrator
 
 A self-hosted platform for durable workflows, sagas and event-driven automation. Build workflows in
-Studio or with TypeScript, Go, Python, C# and Java SDKs; run activities in your workers and inline
+Studio or with TypeScript, Go, Python, C#, Java and Rust SDKs; run activities in your workers and inline
 scripts in isolated containers. Inspect execution history, retries and compensations in the same UI.
 
 PostgreSQL is the source of truth. NATS JetStream transports notifications; Kafka, NATS and SQS
@@ -318,7 +318,7 @@ source filename. A published workflow version is immutable.
 See [script operations](docs/runbooks/scripts.md), [C# runner](runners/dotnet/README.md),
 [Go runner](runners/go/README.md) and [Java runner](runners/java/README.md) for exact interfaces and
 supported imports. CLI `script test/publish` accepts TypeScript and Python; use Studio/the script
-API for the other language workflows. Five SDK languages do not imply arbitrary inline dependencies.
+API for the other language workflows. SDK language support does not imply arbitrary inline dependencies.
 
 ### Start the sandbox runner
 
@@ -660,7 +660,7 @@ apps/                         Rust binaries: control-plane, execution-engine, sa
 crates/                       Domain, application services, adapters, scheduling and telemetry
 frontend/apps/studio/          React/TypeScript application
 frontend/e2e/                 Real-browser Playwright journeys
-sdks/                         TypeScript, Go, Python, C# and Java worker/client SDKs
+sdks/                         TypeScript, Go, Python, C#, Java and Rust worker/client SDKs
 runners/                      Trusted language shims, builders and sandbox runtime images
 templates/                    Starter workflows, script source and development mocks
 examples/                     SDK examples and workflow documents

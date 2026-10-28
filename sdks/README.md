@@ -1,6 +1,6 @@
 # SDKs of the Sagat Octopus Orchestrator
 
-Five SDKs — TypeScript, Python, Go, C# and Java — each with a **client** (start, get, list, cancel, signal, publish
+Six SDKs — TypeScript, Python, Go, C#, Java and Rust — each with a **client** (start, get, list, cancel, signal, publish
 an event, read the journal, wait for a run), a **worker host** (activities, compensations and reconcilers over the
 gRPC worker protocol) and **builders** of the workflow document. They behave the same because they are held to one
 specification and one conformance suite; none of them keeps a journal of its own — the platform owns every state,
@@ -13,11 +13,14 @@ every timer and every retry decision.
 | Go | `github.com/ortisun/sagat-octopus-orchestrator/sdks/go` | [`go/`](go/) | Go ≥ 1.25 (run: 1.25.14) | 165 | [README](go/README.md) |
 | C# | `SagatOctopusOrchestrator.Sdk` | [`dotnet/`](dotnet/) | .NET 8 or 10 (run: 10; net8.0 conformance once) | 410 | [README](dotnet/README.md) |
 | Java | `dev.sagatoctopusorchestrator:sagat-octopus-orchestrator-sdk` | [`java/`](java/) | Java ≥ 17 (run: 23; unit tests on 26) | 202 | [README](java/README.md) |
+| Rust | `sagat-octopus-orchestrator-sdk` | [`rust/`](rust/) | Rust 1.98 / Tokio | 109 native | [README](rust/README.md) |
 
 "Run" is what was actually executed, on macOS arm64; the other versions are declared, not tested, and each README
-says which. Every package is `0.2.0`: before `1.0` a minor version may change an API and says so; the wire contracts
+says which. The five released SDKs are `0.2.0`; the new Rust crate is a `0.3.0` candidate.
+The coordinated 0.3 release updates the existing package versions during release preparation.
+Before `1.0`, a minor version may change an API and says so; the wire contracts
 (REST under `/v1`, the worker protocol `1.x`) are additive and do not move with it. **Publishing to the registries is
-not automated**. All five packages use the MIT license: see `docs/runbooks/sdk-packaging.md` and
+not automated**. All six packages use the MIT license: see `docs/runbooks/sdk-packaging.md` and
 `specs/006-sdk-multilanguage/research.md` (G122, G123).
 
 ## What they have in common
@@ -29,19 +32,19 @@ not automated**. All five packages use the MIT license: see `docs/runbooks/sdk-p
   be repeated and what to do about each. Each SDK embeds a copy and a test fails when it is behind.
 - `specs/001-platform-foundation/contracts/worker.proto` — the worker protocol. Each SDK copies it with a script and a
   test fails when its copy is behind.
-- **The conformance suite**, [`tests/contract/sdk-conformance/`](../tests/contract/sdk-conformance/README.md): 15
+- **The conformance suite**, [`tests/contract/sdk-conformance/`](../tests/contract/sdk-conformance/README.md): 60
   scenarios that each SDK plays through a small runner against a real platform (PostgreSQL, the execution engine, the
-  REST API) of its own, with faults injected at the SDK's transport hooks. The five results — and the state the
+  REST API) of its own, with faults injected at the SDK's transport hooks. The six results — and the state the
   platform ends in, read without the SDK — must equal each other and the golden files. Decision:
   [ADR-0015](../docs/adr/ADR-0015-sdks-meet-the-server-by-minor-version-and-are-held-to-one-conformance-suite.md).
 
 ```text
-cargo test -p sagat-tests --test sdk_conformance -- --ignored --nocapture      # the five languages, every scenario (Docker)
+cargo test -p sagat-tests --test sdk_conformance -- --ignored --nocapture      # the six languages, every scenario (Docker)
 cargo test -p sagat-tests --test e2e_sdk_multilanguage --test fault_sdk_multilanguage -- --ignored            # the user stories and the faults
 cargo test -p sagat-tests --test perf_sdk_multilanguage --release -- --ignored    # the benchmark
 ```
 
-These three are `#[ignore]` in `cargo test --workspace` because they need the five toolchains (Node, Python, Go, .NET and a JDK) and Docker; the `sdks` job of CI runs them with `--ignored`. A scenario changes no golden by itself: `SAGAT_SDK_BLESS=1` rewrites them and the diff must be read.
+These three are `#[ignore]` in `cargo test --workspace` because they need the six toolchains (Rust, Node, Python, Go, .NET and a JDK) and Docker; the `sdks` job of CI runs them with `--ignored`. A scenario changes no golden by itself: `SAGAT_SDK_BLESS=1` rewrites them and the diff must be read.
 
 ## What an SDK promises, in one screen
 
@@ -57,3 +60,8 @@ These three are `#[ignore]` in `cargo test --workspace` because they need the fi
   reconciliation hook; it cannot make a provider exactly-once.
 - **A hostile or broken server is bounded**: bodies, waits, messages and polls have limits; TLS verification is never
   off; a redirect is never followed; a credential is in no log, error or printed form.
+
+Rust acceptance is tracked in [feature 034](../specs/034-rust-sdk/tasks.md). Historical five-language
+receipts remain historical; current six-language acceptance requires the common suite. For a Rust-only
+local run, set `SAGAT_SDK_LANGS=rust` and an owned external `SAGAT_RUST_SDK_TARGET_DIR`, separate
+from the backend `CARGO_TARGET_DIR`.
