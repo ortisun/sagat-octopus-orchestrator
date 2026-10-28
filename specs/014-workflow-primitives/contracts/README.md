@@ -724,3 +724,11 @@ login, joins the actual released dispatcher process, then publishes and finishes
 Operators must apply that cold-cutover sequence to all old control-plane/engine processes;
 this does not prove mixed-version operation. See scoped-event-publication.md for evidence and
 remaining release limits. No public wire field, migration, grant or worker minor is added.
+
+
+## Internal capacity discovery checkpoint
+
+[B1d.1](../capacity-discovery.md) defines the typed read-only application/storage interface and
+its native evidence. Observed ids/revisions are hints, never acquisition or execution permits.
+The common IR/worker wire contracts and public publication gates are unchanged. This internal
+port does not expose capacity-group management through REST or an SDK.

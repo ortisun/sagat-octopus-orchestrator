@@ -1062,3 +1062,13 @@ fixture now lives in tests/support/brokers.rs. Combined 139 messaging/Redis test
 tests pass; all five new 014 scenarios match reviewed goldens in all six languages. Evidence:
 specs/033-redis-streams/released-callback-cutover.md. No full 65-scenario aggregate, general nested
 capacity or final release acceptance is inferred; canonical open tasks remain open.
+
+
+### Bounded capacity metadata discovery (014, 2026-10-27)
+
+T014-014..017/040/042 → capacity_finish::discovery nine native cases → internal typed
+CapacityDiscoveryStore/CapacityDiscoveryPage → scheduler.action kind=capacity_discovery with
+bounded counts and no tenant/payload fields → specs/014-workflow-primitives/capacity-discovery.md.
+The wider43-case capacity gate,42 SQL privilege checks and six actual released-source upgrade
+profiles pass. There is no public group API, production discovery caller, acquisition, fresh
+admission or new nested publication capability; canonical runtime/resource/release gates stay open.

@@ -1,0 +1,26 @@
+{
+  "active-data": {
+    "sourceManifest": "current-source.json.gz",
+    "currentSourceSha256": "2839d05ec8694df3abf303ab3472d86921c0ae48e2acece656ca531be8db4a91"
+  },
+  "applied-lookup": {
+    "sourceManifest": "current-source.json.gz",
+    "currentSourceSha256": "2839d05ec8694df3abf303ab3472d86921c0ae48e2acece656ca531be8db4a91"
+  },
+  "applied-output-quota": {
+    "sourceManifest": "current-source.json.gz",
+    "currentSourceSha256": "2839d05ec8694df3abf303ab3472d86921c0ae48e2acece656ca531be8db4a91"
+  },
+  "inflight-worker": {
+    "sourceManifest": "current-source.json.gz",
+    "currentSourceSha256": "2839d05ec8694df3abf303ab3472d86921c0ae48e2acece656ca531be8db4a91"
+  },
+  "redis-callback-cutover": {
+    "sourceManifest": "current-source.json.gz",
+    "currentSourceSha256": "2839d05ec8694df3abf303ab3472d86921c0ae48e2acece656ca531be8db4a91"
+  },
+  "scoped-event-cutover": {
+    "sourceManifest": "current-source.json.gz",
+    "currentSourceSha256": "2839d05ec8694df3abf303ab3472d86921c0ae48e2acece656ca531be8db4a91"
+  }
+}

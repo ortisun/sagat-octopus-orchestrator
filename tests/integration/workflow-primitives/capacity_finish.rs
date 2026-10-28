@@ -1044,3 +1044,6 @@ mod observations;
 
 #[path = "capacity_scoped_binding.rs"]
 mod scoped_binding;
+
+#[path = "capacity_discovery.rs"]
+mod discovery;

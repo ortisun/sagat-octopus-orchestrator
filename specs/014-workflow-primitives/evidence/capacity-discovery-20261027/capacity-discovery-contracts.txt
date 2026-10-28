@@ -1,0 +1,269 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:291:9
+    |
+278 | pub struct CreateTopicsResponse {
+    |            -------------------- field in this struct
+...
+291 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `name`, `value`, `read_only`, `config_source`, `is_sensitive`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:321:9
+    |
+319 | pub struct CreateTopicResponseConfig {
+    |            ------------------------- fields in this struct
+320 |     /// The configuration name.
+321 |     pub name: CompactString,
+    |         ^^^^
+...
+324 |     pub value: CompactNullableString,
+    |         ^^^^^
+...
+327 |     pub read_only: Boolean,
+    |         ^^^^^^^^^
+...
+330 |     pub config_source: Int8,
+    |         ^^^^^^^^^^^^^
+...
+333 |     pub is_sensitive: Boolean,
+    |         ^^^^^^^^^^^^
+...
+336 |     pub tagged_fields: TaggedFields,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponseConfig` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `num_partitions`, `replication_factor`, `configs`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:374:9
+    |
+359 | pub struct CreateTopicResponse {
+    |            ------------------- fields in this struct
+...
+374 |     pub num_partitions: Option<Int32>,
+    |         ^^^^^^^^^^^^^^
+...
+379 |     pub replication_factor: Option<Int16>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+384 |     pub configs: Vec<CreateTopicResponseConfig>,
+    |         ^^^^^^^
+...
+389 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `low_watermark` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:182:9
+    |
+177 | pub struct DeleteResponsePartition {
+    |            ----------------------- fields in this struct
+...
+182 |     pub low_watermark: Int64,
+    |         ^^^^^^^^^^^^^
+...
+190 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:226:9
+    |
+216 | pub struct DeleteResponseTopic {
+    |            ------------------- field in this struct
+...
+226 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:269:9
+    |
+258 | pub struct DeleteRecordsResponse {
+    |            --------------------- field in this struct
+...
+269 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteRecordsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:101:9
+    |
+ 88 | pub struct DeleteTopicsResponse {
+    |            -------------------- field in this struct
+...
+101 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:144:9
+    |
+129 | pub struct DeleteTopicsResponseTopic {
+    |            ------------------------- field in this struct
+...
+144 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `producer_id` and `first_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:170:9
+    |
+168 | pub struct FetchResponseAbortedTransaction {
+    |            ------------------------------- fields in this struct
+169 |     /// The producer id associated with the aborted transaction.
+170 |     pub producer_id: Int64,
+    |         ^^^^^^^^^^^
+...
+173 |     pub first_offset: Int64,
+    |         ^^^^^^^^^^^^
+    |
+    = note: `FetchResponseAbortedTransaction` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `aborted_transactions` is never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:213:9
+    |
+192 | pub struct FetchResponsePartition {
+    |            ---------------------- field in this struct
+...
+213 |     pub aborted_transactions: Vec<FetchResponseAbortedTransaction>,
+    |         ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `FetchResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `timestamp` is never read
+   --> vendor/rskafka/src/protocol/messages/list_offsets.rs:184:9
+    |
+169 | pub struct ListOffsetsResponsePartition {
+    |            ---------------------------- field in this struct
+...
+184 |     pub timestamp: Option<Int64>,
+    |         ^^^^^^^^^
+    |
+    = note: `ListOffsetsResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `log_append_time_ms` and `log_start_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/produce.rs:148:9
+    |
+132 | pub struct ProduceResponsePartitionResponse {
+    |            -------------------------------- fields in this struct
+...
+148 |     pub log_append_time_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+153 |     pub log_start_offset: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^
+    |
+    = note: `ProduceResponsePartitionResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `session_lifetime_ms` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/sasl_msg.rs:198:9
+    |
+181 | pub struct SaslAuthenticateResponse {
+    |            ------------------------ fields in this struct
+...
+198 |     pub session_lifetime_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^^
+...
+203 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `SaslAuthenticateResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: struct `CompactArray` is never constructed
+   --> vendor/rskafka/src/protocol/primitives.rs:725:12
+    |
+725 | pub struct CompactArray<T>(pub Option<Vec<T>>);
+    |            ^^^^^^^^^^^^
+
+warning: `rskafka` (lib) generated 14 warnings
+   Compiling sagat-tests v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/tests)
+    Finished `test` profile [unoptimized] target(s) in 30.96s
+     Running contract/developer-experience/main.rs (/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs/debug/deps/contract_developer_experience-d82ebe0661109164)
+
+running 8 tests
+test docs::an_excerpt_is_in_the_file_it_names_just_as_shown ... ok
+test docs::no_example_template_or_page_carries_a_secret ... ok
+test docs::the_links_in_the_docs_lead_to_files_that_exist ... ok
+test docs::the_sagat_commands_in_the_docs_are_commands_the_tool_parses ... ok
+test docs::the_scripts_a_readme_runs_are_there_and_executable ... ok
+test reference::the_api_reference_is_what_the_openapi_document_gives ... ok
+test reference::the_command_reference_is_what_the_tool_prints ... ok
+test reference::the_workflow_reference_is_what_the_schema_gives ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+     Running contract/workflow-primitives/main.rs (/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs/debug/deps/contract_workflow_primitives-b3bc97f164ed41a2)
+
+running 49 tests
+test approval_ir::approval_golden_maps_to_the_public_structured_v1_definition ... ok
+test approval_ir::publication_counts_subjects_and_roles_together ... ok
+test ceilings::a_definition_has_at_most_ten_thousand_nodes ... ok
+test ceilings::an_items_expression_is_at_most_1024_bytes_and_cannot_build_objects ... ok
+test ceilings::item_and_iteration_limits_are_one_to_ten_thousand_and_concurrency_one_to_256 ... ok
+test ceilings::list_literals_have_at_most_64_elements_at_publication ... ok
+test ceilings::nesting_depth_is_one_to_eight ... ok
+test ceilings::node_ids_are_one_to_sixty_four_characters ... ok
+test chains::a_run_names_its_chain_segment_additively ... ok
+test chains::a_successor_receives_only_the_input_and_state_the_node_names ... ok
+test chains::chain_commands_use_the_shared_idempotency_key_bounds ... ok
+test chains::max_segments_is_one_to_ten_thousand_and_counts_the_initial_run ... ok
+test chains::the_original_timeout_is_required_positive_and_bounded ... ok
+test chains::the_runs_of_a_chain_are_a_bounded_cursor_page_without_payloads ... ok
+test errors::every_reason_the_table_introduces_has_a_remediation_and_is_in_the_openapi ... ok
+test identity_limits::domain_and_additive_v1_schema_publish_the_same_identity_limits ... ok
+test identity_limits::effective_expression_limits_remain_bounded_for_additive_v1 ... ok
+test identity_limits::old_root_identity_is_the_empty_path_and_scoped_members_are_distinct ... ok
+test identity_limits::publication_lets_an_author_lower_the_limits_and_never_raise_them ... ok
+test identity_limits::ten_thousand_items_are_read_by_reference_without_expanding_expression_limits ... ok
+test loops::a_loop_error_edge_may_recover_through_a_chain_of_activities_ending_at_end ... ok
+test loops::a_loop_recovery_activity_stays_as_plain_as_the_runtime_proves ... ok
+test loops::an_activity_is_enabled_only_as_a_loop_recovery ... ok
+test loops::five_sdk_loop_golden_is_a_valid_structured_v1_definition ... ok
+test loops::loop_bounds_are_refused_at_publication ... ok
+test loops::structured_codec_preserves_the_complete_sequential_loop_contract ... ok
+test operations::declared_state_schema_uses_the_same_closed_bounded_value_shapes ... ok
+test operations::disclosure_is_never_inferred_from_a_schema ... ok
+test operations::expected_state_revision_is_an_optional_nonnegative_integer ... ok
+test operations::explicit_disclosure_is_typed_and_the_bounded_runtime_slice_is_publishable ... ok
+test operations::operation_counts_names_expressions_and_unknown_handler_fields_are_bounded ... ok
+test operations::result_schema_requires_finite_shapes_and_matches_the_value_ceiling ... ok
+test revision::additive_capabilities_keep_the_existing_api_version ... ok
+test revision::collection_bodies_have_a_single_return_and_no_workflow_terminal ... ok
+test revision::continuation_requires_chain_budget_and_explicit_declared_state_transfer ... ok
+test revision::declared_operations_require_explicit_disclosure_and_closed_bounded_results ... ok
+test revision::existing_documents_and_schema_forms_remain_accepted ... ok
+test revision::loops_switches_and_approvals_require_their_bounded_configuration ... ok
+test revision::publication_shape_enforces_hard_limits_and_rejects_unknown_fields ... ok
+test sdk_collection_ir::bounded_collection_event_waits_publish_at_entry_and_after_an_activity ... ok
+test sdk_collection_ir::collection_publication_accepts_a_chain_of_compensable_activities_and_stops_at_eight ... ok
+test sdk_collection_ir::collection_publication_keeps_nested_bodies_closed ... ok
+test sdk_collection_ir::collection_publication_rejects_an_unproven_body_shape ... ok
+test sdk_collection_ir::five_sdk_collection_golden_is_a_public_structured_v1_definition ... ok
+test sdk_collection_ir::five_sdk_control_entry_documents_match_the_public_canonical_definition ... ok
+test sdk_collection_ir::loop_publication_accepts_a_chain_of_compensable_activities_and_stops_at_eight ... ok
+test worker_protocol::leases_reports_and_capabilities_carry_the_same_identity_message ... ok
+test worker_protocol::scoped_identity_is_typed_and_attempt_independent ... ok
+test workflow_primitives_keep_the_rest_error_code_set_closed ... ok
+
+test result: ok. 49 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.91s
+
+     Running contract/sdk-conformance/main.rs (/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs/debug/deps/sdk_conformance-3ba073d8cff4b046)
+
+running 3 tests
+test every_scenario_declares_phases_with_reviewed_expected_documents ... ok
+test every_sdk_conforms_to_every_scenario ... ignored, needs the six SDK toolchains and Docker: the sdks job of CI runs it with --ignored
+test harness::a_measurement_subtracts_process_global_stream_claim_history ... ok
+
+test result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.05s
