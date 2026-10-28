@@ -1619,3 +1619,34 @@ Clippy, contracts/static gates and all six source-bound actual-released profiles
 SDK aggregate in the contract-only gate is ignored explicitly. Original failures and all positive
 receipts are linked from capacity-discovery.md. Canonical tasks remain open; this closes only the
 bounded discovery component, not B1d, group quota/creation/transfer or nested execution.
+
+
+## Build-dependency security gate — 2026-10-28
+
+After the Redis fixture correction, CI for PR56 (run40686861523,
+job122811344560) refused `pulldown-cmark`0.13.4 with
+[RUSTSEC-2026-0414](https://github.com/RustSec/advisory-db/blob/main/crates/pulldown-cmark/RUSTSEC-2026-0414.md).
+The local `cargo audit --deny warnings` reproduced that exact refusal against
+advisory database commit40f5be6fb12ed93fc591bf4ab23b7d793b3f2239.
+
+`cargo update -p pulldown-cmark --precise 0.13.5` changes only that package's
+version and checksum in the workspace lockfile. This is the same version and
+checksum already present in the merged official Rust SDK lockfile; no package,
+feature, manifest pin or advisory ignore is added. It is a transitive build-only
+workspace dependency via `api-grpc` → `tonic-prost-build` → `prost-build`.
+Pinned `prost-build`0.14.4 parses repository-controlled proto comments with
+`Options::all() - Options::ENABLE_SMART_PUNCTUATION`. It is not a runtime Markdown
+endpoint.
+The [upstream release](https://github.com/pulldown-cmark/pulldown-cmark/releases/tag/v0.13.5)
+is the security patch for this existing dependency line.
+
+Both workspace and independent SDK `cargo audit --deny warnings` checks now pass
+under the existing audit policy. The gRPC crate tests pass26/26, including
+compatibility and scoped-wire checks. Generated worker Rust source before/after is
+byte-identical (SHA2563a0fb2b09b974b4c96117f05aa38f89b97fdb84b97d14998c70d7247b56f67ec);
+no protocol baseline was blessed or changed. Receipts are preserved in
+[evidence/pulldown-audit-20261028](evidence/pulldown-audit-20261028/README.md).
+Strict workspace/all-target Clippy also passes (169.35s); formatting, architecture
+and agent configuration pass. The new CI run must pass before merge. This build fix closes
+neither general nesting nor the remaining canonical release tasks.
+Refs: T014-043, T033-007.

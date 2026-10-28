@@ -1,0 +1,15 @@
+{
+  "command": [
+    "cargo",
+    "audit",
+    "--deny",
+    "warnings"
+  ],
+  "exit_code": 1,
+  "seconds": 2.64,
+  "wall_seconds": 2.64,
+  "wall_minus_monotonic_seconds": -0.0,
+  "started_utc": "2026-10-28T12:27:04.142166+00:00",
+  "finished_utc": "2026-10-28T12:27:06.782594+00:00",
+  "log": "pulldown-workspace-audit-red.txt"
+}
