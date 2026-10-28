@@ -106,7 +106,7 @@ and the shard fence last, held only from that statement to commit.
 | Read sinks, health, ledger (`analytics:sink:read`) | ✓ | ✓ | ✓ | — | — |
 | Manage sinks, bind exporters (`analytics:sink:manage`) | ✓ | — | — | — | — |
 | Sink `maxLevel: PII`, retention `UP_TO_PII` | admin with grant | — | — | — | — |
-| Lease/ack batches (`analytics:sink:export`) | — | — | — | — | `analytics-exporter` + binding (`PULL`); `database-runner` + binding (`POSTGRESQL`, `CLICKHOUSE`) |
+| Lease/ack batches (`analytics:sink:export`) | — | — | — | — | `analytics-exporter` + binding (`PULL`); `database-runner` + binding (`POSTGRESQL`, `CLICKHOUSE`, `ICEBERG`) |
 | Retention policy, erasure (`retention:manage`) | ✓ | — | — | — | — |
 
 Every check is against current membership on each request, cursor reuse, view open, batch plan and
@@ -181,7 +181,7 @@ or lowered by the benchmark (G1091), not capacity claims.
 | Paused sink and the 24 h note purge | note kept until applied or hold expiry; expiry counted as a retention gap | integration |
 | `DEAD` stream delivery | sink `AUTO_PAUSED`/`STREAM_DELIVERY_DEAD`; redrive then resume | integration |
 | Rerun requested during purge | serialized by run-row lock vs ADR-0039 guard; rerun first or `RUN_PURGED` | fault: race |
-| Database-runner dies holding a `POSTGRESQL` or `CLICKHOUSE` batch | lease expires, generation + 1, batch re-leased; key-idempotent inserts (PostgreSQL `ON CONFLICT`, ClickHouse token) absorb the repeat | fault |
+| Database-runner dies holding a `POSTGRESQL`, `CLICKHOUSE` or `ICEBERG` batch | lease expires, generation + 1, batch re-leased; key-idempotent inserts (PostgreSQL `ON CONFLICT`, ClickHouse token) absorb the repeat; an Iceberg commit that landed is found by its batch identity (FR-035-018), an inconclusive lookup appends again and readers deduplicate by key and version | fault |
 | Engine rolled back below 020 after a purge | stubs read as runs without history; nothing fails | compatibility test |
 
 ## Observability

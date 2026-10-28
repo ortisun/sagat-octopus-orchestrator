@@ -2,7 +2,8 @@
 
 **Input**: `spec.md`, `plan.md`, `research.md`, `data-model.md`, `contracts/`, `quickstart.md`.
 **Status**: Proposed — nothing implemented, nothing ticked. Revised 2026-10-27 after independent review;
-T020-061 was added then and sits in Phase 1 by dependency (IDs kept stable). A task is ticked only with the evidence that
+T020-061 was added then and sits in Phase 1 by dependency (IDs kept stable); T020-062 (Iceberg sink, owner
+decision of 2026-10-27) sits in Phase 7. A task is ticked only with the evidence that
 closes it (a named test that passed on a stated environment, a command and its result). Tests are written
 first and fail before the implementation in each phase. `[P]` marks tasks on disjoint files that can run
 in parallel; `[USnn]` ties a task to a user story. Test targets (T020-003):
@@ -69,6 +70,7 @@ in parallel; `[USnn]` ties a task to a user story. Test targets (T020-003):
 - [ ] T020-036 [US05] ClickHouse sink through the managed database executor (depends on T020-049): sink settings and destination validation against the managed executor's policy, fixed `INSERT … FORMAT JSONEachRow` with epoch-bearing dedup tokens and the `DESCRIBE TABLE` `PROBE` batch in `crates/infra-database` (HTTP), lease/`ResolveSinkConnection`/ack in `apps/database-runner`, outcome mapping; architecture check that `crates/infra-analytics` and the engine hold no database client; integration against real ClickHouse incl. schema mismatch, private-network destination and runner killed mid-batch. Refs: FR-020-021, FR-020-023.
 - [ ] T020-037 [US05] PostgreSQL sink through the managed database executor: `connectionRef` pinning and 017 ACL checks in the sink catalog, fixed insert templates in `crates/infra-database`, lease/`ResolveSinkConnection`/ack loop in `apps/database-runner` (depends on T020-049), private-network destination policy, platform-database refusal, `CONNECTION_UNUSABLE` auto-pause; integration against a second PostgreSQL incl. runner killed mid-batch and an ambiguous commit retried without duplicates. Refs: FR-020-021, FR-020-023.
 - [ ] T020-038 [US05] Stream sink through ADR-0025 on a dedicated subscription (`STREAM_SUBSCRIPTION_SHARED` refused; `DEAD` delivery auto-pauses `STREAM_DELIVERY_DEAD`) (delivery rows in T6, parts within 64 KiB), AsyncAPI merge and baseline, manifest measurement of `analytics.batch` payloads; tests with Kafka and NATS fixtures incl. lost acknowledgement and redrive. Refs: FR-020-022.
+- [ ] T020-062 [US05] Iceberg sink through the managed executor of feature 035 (depends on 035's Iceberg connection kind and lookup, and on T020-049): `connectionRef` pinning, `maxLevel` ≤ connection ceiling, one append commit per kind with the batch identity as effect key, lookup before commit, probe, outcome mapping, documented tables in `docs/runbooks/analytics.md`; fault tests killing the executor before and after each commit; independent-reader comparison with the object-storage sink. Added 2026-10-27 (D1670). Refs: FR-020-044, SC-020-016.
 - [ ] T020-039 [US05] Failure semantics and health: states and reasons, capped backoff, `FAILING`, `skip`/`rewind` actions with ledger entries, supersede on edit, lag computation, `ANALYTICS_SINK_STUCK` in `crates/domain/src/operations.rs` and the monitor; tests per failure class. Refs: FR-020-024, FR-020-025, SC-020-007.
 - [ ] T020-040 [US05] Export bytes quota (`THROTTLED`), export ledger retention and run-manifest query, tombstone records; quota exhaustion and next-day resumption tests. Refs: FR-020-026, FR-020-028.
 - [ ] T020-041 [US05] Studio `frontend/apps/studio/src/features/analytics/`: sinks list/detail, create/edit with secret selection, probe, actions with consequence text, health/lag/ledger tables. Refs: FR-020-029.
@@ -110,6 +112,6 @@ in parallel; `[USnn]` ties a task to a user story. Test targets (T020-003):
 ## Dependencies
 
 Phase 2 blocks all stories. US01 (T020-012..020) is independent of analytics. US03 needs T020-022 before
-T020-024. US02 needs US01. US04 and US05 need US03; T020-036 and T020-037 also need T020-049. US07 needs only Phase 2. US08 needs T020-061, T020-002, US07's
+T020-024. US02 needs US01. US04 and US05 need US03; T020-036 and T020-037 also need T020-049; T020-062 needs T020-049 and feature 035's Iceberg connection kind. US07 needs only Phase 2. US08 needs T020-061, T020-002, US07's
 document model (T020-042) and, for the sink hold, US03. US06 needs US03. US09 needs US08. 018 can consume
 `RunSelector` after T020-019; 028 can consume histories after T020-043.

@@ -302,6 +302,23 @@ upserts from deterministic workflow code) become declarative IR expressions here
   engine through the guarded egress client; no engine process opens a customer database socket, so the
   PostgreSQL sink runs in `apps/database-runner` (D1104).
 
+### Iceberg sink (owner decision, 2026-10-27)
+
+D1080–D1119 are all in use, so these take the next free numbers of the shared overflow range.
+
+- **D1670 — An `ICEBERG` sink kind.** The owner decided on 2026-10-27, while specifying feature 035 (Apache
+  Iceberg writes and step-output destinations), that step outputs reach their destinations in a mode
+  chosen per destination: synchronously inside the run (feature 035) or asynchronously through this
+  feature's declared-record export, which gains an Iceberg sink reusing 035's connection kind,
+  classification ceiling and effect-key lookup (035 D035-018..020, `docs/owner-decisions.md`). The
+  owner's example is this feature's US04: a finished payment flowing down to the lake. FR-020-044,
+  contracts/sinks.md, T020-062.
+- **D1671 — An inconclusive lookup appends again.** Unlike 035's step writes, which go to manual review
+  (FR-035-019), a sink batch may be appended twice when the table history no longer covers it, because
+  analytics records are grow-only with a key and version (D1096) and readers already deduplicate by them,
+  as documented for the object-storage sink. Duplicates are therefore a reader concern documented in the runbook, not a lost
+  guarantee.
+
 ## 4. Gaps
 
 - **G1080** — G69 (ADR-0023) and the payload half of G28 are *proposed* closed by ADR-0054; until the
@@ -360,6 +377,8 @@ upserts from deterministic workflow code) become declarative IR expressions here
 - **G1617** — ClickHouse is not an engine of the 017 connection catalog, so a ClickHouse sink carries its
   own destination settings and secret reference (validated against the managed executor's policy); if a
   later feature adds ClickHouse to the catalog, sinks should reference that connection instead.
+  *2026-10-27:* feature 035 proposes a `clickhouse` (and an `object_storage`) 017 connection kind; whether
+  the `CLICKHOUSE` and `OBJECT_STORAGE` sinks switch to them is owner question O035-005 of feature 035.
 
 ## 5. Owner questions (recommended defaults are what the plan assumes)
 

@@ -86,7 +86,7 @@ every journal-appending transaction moves the note (`assert_consistent`).
 | Table | Key | Content |
 |---|---|---|
 | `analytics_sinks` | `(tenant_id, namespace_id, id)` | `name` (unique per namespace), `current_revision`, `state` (`ACTIVE, PAUSED, AUTO_PAUSED, FAILING, THROTTLED, DELETED`), `state_reason` (closed), `disclosure_owner` (subject, for `PII`), `activation_xid xid8`, timestamps |
-| `analytics_sink_revisions` | `(tenant_id, sink_id, revision)` | `kind` (`OBJECT_STORAGE, CLICKHOUSE, POSTGRESQL, STREAM, PULL`), `settings jsonb` (closed per kind, no credential, ≤ 16 KiB), `credentials_secret` (secret name or null), `record_kinds text[]`, `workflows uuid[]` (≤ 64), `batch_policy jsonb`, `max_level` (`INTERNAL, PII`), `start_position`, `actor`, `request_id`, `created_at`; immutable (ALWAYS trigger) |
+| `analytics_sink_revisions` | `(tenant_id, sink_id, revision)` | `kind` (`OBJECT_STORAGE, CLICKHOUSE, POSTGRESQL, ICEBERG, STREAM, PULL`), `settings jsonb` (closed per kind, no credential, ≤ 16 KiB), `credentials_secret` (secret name or null), `record_kinds text[]`, `workflows uuid[]` (≤ 64), `batch_policy jsonb`, `max_level` (`INTERNAL, PII`), `start_position`, `actor`, `request_id`, `created_at`; immutable (ALWAYS trigger) |
 | `analytics_sink_cursors` | `(tenant_id, sink_id, shard)` | `after_xid xid8`, `after_tenant`, `after_run`, `next_batch_seq`, `oldest_pending_at`, backfill `after_run`/`upper_run`/`done`, `retention_gaps bigint` |
 | `analytics_envelope_cursors` | `(tenant_id, sink_id, kind)` | as above for `inbound_event`/`delivery` over `moved_xid` |
 | `analytics_sink_runs` | `(tenant_id, sink_id, run_id)` | `applied_seq`, `tombstoned`, `updated_at`; deleted for terminal, fully applied runs after the ledger window |
@@ -99,9 +99,10 @@ Kind-specific settings: `POSTGRESQL` holds `connectionRef {name, revision}` of a
 revision is pinned in the sink revision, like a run admission pin; no host or credential of its own);
 `CLICKHOUSE` holds `url`, `database`, `tablePrefix` and a credentials secret reference (ClickHouse is not a
 017 catalog engine, G1617), validated against the managed executor's destination policy; `STREAM` holds
-the id of a subscription dedicated to the sink (refused if it receives run events); `PULL` holds lease
+the id of a subscription dedicated to the sink (refused if it receives run events); `ICEBERG` holds
+`connectionRef {name, revision}` of a feature-035 Iceberg connection, `namespace` and `tablePrefix`; `PULL` holds lease
 settings. Exporter bindings name a subject whose role is `analytics-exporter` (for `PULL`) or
-`database-runner` (for `POSTGRESQL` and `CLICKHOUSE`). `analytics_batches.kind` is `RECORDS` or `PROBE`
+`database-runner` (for `POSTGRESQL`, `CLICKHOUSE` and `ICEBERG`). `analytics_batches.kind` is `RECORDS` or `PROBE`
 (a zero-record batch a database-runner leases to run the sink's fixed probe statement).
 
 Constraints: one open batch per `(tenant_id, sink_id, shard)` (partial unique index `WHERE state IN

@@ -92,6 +92,40 @@ No host, port or credential is stored on the sink, and no PostgreSQL client exis
 - SQL text, parameters and rows are never logged (017 log rules); runner diagnostics use the closed
   vocabulary.
 
+## ICEBERG (managed executor of feature 035, added 2026-10-27)
+
+Settings: `connectionRef {name, revision?}` of a feature-035 Iceberg connection in the sink's namespace,
+`namespace` (Iceberg namespace, one or more levels) and `tablePrefix`. The connection revision is pinned
+by the sink revision as for `POSTGRESQL`; the sink's `maxLevel` must not exceed the connection's
+classification ceiling (FR-035-005). No catalog address, storage location or credential is stored on
+the sink, and no Iceberg, catalog or object-storage client exists in the engine (ADR-0055 rule 11).
+
+- Delivery: a bound `database-runner` identity (or the executor 035's plan designates for Iceberg I/O)
+  leases the sink's frozen batches, calls `ResolveSinkConnection` under the batch lease (035's catalog
+  and storage credentials, through the 017 two-phase OpenBao resolution, fenced by the lease) and writes
+  one append commit per record kind to `<namespace>.<prefix><kind>` on `main`, with the effect key
+  `<sinkId>:<e>:<shard>:<batchSeq>:<kind>` (epoch included, D1615) in the snapshot summary; then
+  `AckBatch` once every kind of the batch committed.
+- Effect contract: before each commit the executor runs 035's lookup (FR-035-018) for that key and
+  skips a kind whose commit already landed; commits are conditional on the searched table state. When
+  the lookup is inconclusive (history expired) it appends again: records carry `key` and `version`, and
+  readers deduplicate with `QUALIFY row_number() OVER (PARTITION BY key ORDER BY version DESC) = 1` as
+  for object storage, so no manual review is needed (D1671).
+- Documented tables (shipped in `docs/runbooks/analytics.md`, never created by the platform): one table
+  per kind, columns matching `sagat.analytics.v1`, partitioned by day of the batch plan, Parquet files.
+  Iceberg favours few large commits: the runbook recommends a batch policy near the maximums and table
+  maintenance by the owner (snapshot expiry, compaction), and states that expiry shortens the lookup
+  window (G035-005).
+- Probe: a zero-record `PROBE` batch; the executor loads each enabled kind's table and compares its
+  current schema with the expected columns.
+- Outcomes: commit → ack; catalog or storage unavailable, commit conflict past 035's retry bound →
+  transient nack; schema mismatch or unsupported table (FR-035-011) → permanent nack `SCHEMA_MISMATCH`;
+  authentication → permanent nack `AUTH_FAILED`; a table location outside the connection's warehouse →
+  `AUTO_PAUSED`/`SINK_DESTINATION_DENIED`; a paused, deleted or denied connection →
+  `AUTO_PAUSED`/`CONNECTION_UNUSABLE`.
+- Record values, file locations (which can embed partition values) and provider responses are never
+  logged (FR-035-030).
+
 ## STREAM
 
 Settings: `subscriptionId` of a webhook or broker subscription of the namespace (ADR-0025) **dedicated to

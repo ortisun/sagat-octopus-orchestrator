@@ -25,7 +25,7 @@ service AnalyticsExportService {
   // A permanent refusal pauses the sink (AUTO_PAUSED SINK_REJECTED); a transient one releases the lease
   // for a later attempt with backoff. Neither skips the batch.
   rpc NackBatch(NackBatchRequest) returns (BatchLeaseResponse);
-  // POSTGRESQL and CLICKHOUSE sinks only, for a bound database-runner identity holding a current lease of
+  // POSTGRESQL, CLICKHOUSE and ICEBERG sinks only, for a bound database-runner identity holding a current lease of
   // one of the sink's batches: the destination settings pinned by the sink revision (the 017 connection
   // for POSTGRESQL; the sink's ClickHouse settings), the effective limits and the credential, through the
   // same two-phase OpenBao resolution as ResolveDatabase (current state and ACLs checked before and after
@@ -96,8 +96,8 @@ Rules:
   text from the exporter is never stored or logged.
 - Unbinding a subject or removing its role makes its next call `PERMISSION_DENIED NOT_BOUND`; a lease it
   holds simply expires.
-- Roles: `PULL` batches are leasable by `analytics-exporter` subjects; `POSTGRESQL` and `CLICKHOUSE`
-  batches only by `database-runner` subjects (which then call `ResolveSinkConnection`); each needs a
+- Roles: `PULL` batches are leasable by `analytics-exporter` subjects; `POSTGRESQL`, `CLICKHOUSE`
+  and `ICEBERG` batches only by `database-runner` subjects (which then call `ResolveSinkConnection`); each needs a
   binding to the sink. PostgreSQL reuses the existing 1.6 `ResolvedDatabase`; `ResolvedClickHouse` is the
   only new credential-bearing message (never logged, dropped when the batch ends).
 - Five SDK helpers (`AnalyticsExporter` in TypeScript, Go, Python, C#, Java) implement register, the

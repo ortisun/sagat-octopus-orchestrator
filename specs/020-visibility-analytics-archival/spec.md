@@ -46,6 +46,10 @@ questions O1080–O1082 are in [research.md](research.md).
   note and monitor (ADR-0017); 009 quotas, secrets, egress (ADR-0027); 010 shards (ADR-0020); 011
   immutable versions; 014 additive IR, chains, declared disclosure (ADR-0031, ADR-0032); 016 payload
   classification (ADR-0033, FR-016-001..029); 017 OpenBao-backed secret references (ADR-0035).
+- **Uses (035, owner decision 2026-10-27, D1670):** the `ICEBERG` sink reuses feature 035's Iceberg
+  connection kind of the 017 catalog, its classification ceiling and its effect-key lookup in the table
+  history (FR-035-005, FR-035-018, FR-035-044); this sink depends on 035, not the reverse. 035 also owns
+  synchronous step-output destinations; this feature is the asynchronous mode of the same choice.
 - **Consumed by:** 018 batch operations select runs through the 020 query (`RunSelector`); without
   020 they use today's `RunFilter`. 028 replay tests read `sagat-run-history-v1` documents. 019 may add
   system attributes (for example a deployment version) through the registry of FR-020-005.
@@ -172,6 +176,11 @@ revoke the disclosure owner's grant and observe the sink pause before the next b
 6. **Given** an `internal` search attribute declared without `export`, **When** a `run_snapshot` reaches
    an `internal` sink, **Then** the attribute appears by name with `withheld` reason `NOT_DECLARED` and no
    value; declared with `export: "declared-analytics-export-v1"`, its value is exported.
+7. **Given** an `ICEBERG` sink of level `internal` selecting the declared record `payment` on a 035
+   Iceberg connection, **When** batches are exported, **Then** each batch lands as one commit per
+   record kind carrying the batch identity in the snapshot summary, a re-leased batch whose commit
+   already landed is found by that identity and not written again, and the payment run never waits
+   for the lake.
 
 ---
 
@@ -428,7 +437,7 @@ whose input payload is shared with a retained run and check what survives.
   schema, scan for credential-shaped values, keep blobs as descriptors, and export a `withheld` marker
   instead of any value that fails.
 - **FR-020-020 — Sink resource.** Namespace-scoped sinks with typed destination (`OBJECT_STORAGE`,
-  `CLICKHOUSE`, `POSTGRESQL`, `STREAM`, `PULL`), credentials as a secret reference (never a value),
+  `CLICKHOUSE`, `POSTGRESQL`, `ICEBERG`, `STREAM`, `PULL`), credentials as a secret reference (never a value),
   filters (record kinds, workflows), batch policy, `maxLevel`, start position (`NOW`, `EARLIEST`, a
   time), immutable revisions with optimistic concurrency, and actions pause, resume, rewind, skip, probe
   and delete, each audited. Destinations pass the egress guard; platform state endpoints are refused.
@@ -450,7 +459,7 @@ whose input payload is shared with a retained run and check what survives.
   (`STREAM_DELIVERY_DEAD`).
 - **FR-020-023 — Pull exporter.** `AnalyticsExportService` (worker protocol, next additive minor) for a
   machine identity holding `analytics:sink:export` and a current per-sink binding — `analytics-exporter`
-  for `PULL` sinks, `database-runner` for `POSTGRESQL` and `CLICKHOUSE` sinks (which also resolves the
+  for `PULL` sinks, `database-runner` for `POSTGRESQL`, `CLICKHOUSE` and `ICEBERG` sinks (which also resolves the
   destination through the 017 two-phase path under the batch lease): lease with
   finite record/byte credit, renew, ack and nack, each fenced by token hash, generation and database-clock
   expiry. Five SDK helpers MUST pass shared conformance scenarios.
@@ -554,6 +563,21 @@ whose input payload is shared with a retained run and check what survives.
   `ENCODING_READ_BY_SEARCH_ATTRIBUTE` / `ENCODING_READ_BY_ANALYTICS`; without 031 there is no encoded
   location to detect); an encrypted envelope met at runtime is rejected for indexing (`ENCRYPTED`) and
   withheld from export; archives keep it as an opaque value only within `archiveValues`.
+- **FR-020-044 — Iceberg sink (D1670, D1671).** An `ICEBERG` sink MUST reference a feature-035 Iceberg
+  connection (`connectionRef {name, revision?}`, pinned by the sink revision like a 017 connection),
+  an Iceberg namespace and a table prefix, one existing table per record kind (documented schema; the
+  platform never creates or alters tables). Its `maxLevel` MUST NOT exceed the connection's
+  classification ceiling. Batches are leased and written by the managed executor that runs 035's
+  Iceberg writes (`database-runner` unless 035's plan separates it), never by the engine (ADR-0055
+  rule 11): one append commit per record kind, each carrying the identity
+  `<sinkId>:<e>:<shard>:<batchSeq>:<kind>` as its effect key, preceded by 035's lookup (FR-035-018) so
+  a re-leased batch whose commit landed is not written again. An inconclusive lookup appends again:
+  every record carries its key and version, and readers deduplicate as for object storage (documented),
+  so no manual review is needed. A fixed probe loads each enabled kind's table and compares its schema
+  with the expected columns. Outcomes: commit → ack; catalog or storage unavailable and commit
+  conflicts past 035's retry bound → transient; schema mismatch or unsupported table → permanent
+  `SCHEMA_MISMATCH`; authentication → `AUTH_FAILED`; a location outside the connection's warehouse →
+  `SINK_DESTINATION_DENIED`.
 
 ### Amendment to feature 016
 
@@ -640,6 +664,10 @@ All are future evidence, not completed tests.
   keyboard-only use and the table alternative (FR-020-011, FR-020-029, FR-020-038, NFR-020-A11Y).
 - **SC-020-014**: The benchmark report states environment, write overhead, search p50/p95/p99,
   projector records/s and lag, purge runs/s and failures (NFR-020-PERF).
+- **SC-020-016**: An `ICEBERG` sink fed 10,000 declared records, with the executor killed before and
+  after each commit, holds every record at least once and no batch commit twice when the lookup is
+  conclusive; an independent Iceberg reader's deduplicated view equals the object-storage sink's view
+  of the same records (FR-020-044).
 - **SC-020-015**: Every new operation emits its span and its audit record in the decision's transaction,
   metrics carry only closed labels, and the canary sweep finds no value, query literal, destination or
   credential in logs, spans, metrics, errors or audit (FR-020-040, FR-020-041, NFR-020-OBS).

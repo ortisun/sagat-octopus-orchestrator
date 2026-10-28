@@ -222,9 +222,9 @@ components:
       required: [name, kind, settings, maxLevel]
       properties:
         name: {type: string, pattern: '^[a-z][a-z0-9-]{1,62}$'}
-        kind: {type: string, enum: [OBJECT_STORAGE, CLICKHOUSE, POSTGRESQL, STREAM, PULL]}
-        settings: {type: object, description: 'Closed per kind (contracts/sinks.md); never a credential. POSTGRESQL: connectionRef {name, revision?} of a 017 connection; STREAM: subscriptionId of a subscription dedicated to the sink.'}
-        credentialsSecret: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$', description: 'OBJECT_STORAGE and CLICKHOUSE only; POSTGRESQL uses the connection credential, STREAM the subscription secret.'}
+        kind: {type: string, enum: [OBJECT_STORAGE, CLICKHOUSE, POSTGRESQL, ICEBERG, STREAM, PULL]}
+        settings: {type: object, description: 'Closed per kind (contracts/sinks.md); never a credential. POSTGRESQL: connectionRef {name, revision?} of a 017 connection; ICEBERG: connectionRef {name, revision?} of a 035 Iceberg connection, namespace, tablePrefix; STREAM: subscriptionId of a subscription dedicated to the sink.'}
+        credentialsSecret: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$', description: 'OBJECT_STORAGE and CLICKHOUSE only; POSTGRESQL and ICEBERG use the connection credentials, STREAM the subscription secret.'}
         recordKinds: {type: array, description: 'inbound_event and delivery need envelope capture enabled (ENVELOPES_NOT_ENABLED otherwise).', items: {type: string, enum: [run_snapshot, step_attempt, journal_event, inbound_event, delivery, declared_record, run_tombstone]}}
         workflows: {type: array, maxItems: 64, items: {type: string, format: uuid}}
         maxLevel: {type: string, enum: [INTERNAL, PII]}

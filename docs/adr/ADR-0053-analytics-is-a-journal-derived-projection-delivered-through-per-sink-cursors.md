@@ -148,8 +148,8 @@ process inside the customer network), and business values only where an author a
 - Per-sink derivation multiplies CPU by the number of sinks of a namespace (bounded by the sink ceiling).
 - Scheduler and analytics share a replica's shards; the renewal-skip gate decides before release
   whether a separate lease table is required (feature 020 G1100), additive either way.
-- The `database-runner` gains `analytics:sink:export` for the `POSTGRESQL` and `CLICKHOUSE` sinks it is
-  bound to and an HTTP client for ClickHouse; it still never receives the platform database credentials.
+- The `database-runner` gains `analytics:sink:export` for the `POSTGRESQL`, `CLICKHOUSE` and `ICEBERG`
+  sinks it is bound to (Iceberg through feature 035's connection and executor, added 2026-10-27) and an HTTP client for ClickHouse; it still never receives the platform database credentials.
 - Data that reached a sink is outside platform deletion; purge and erasure emit tombstones and the export
   ledger says which sinks received a run. This is a stated LGPD consequence, not a guarantee.
 - Rollback: disable sink creation and planning; cursors, batches and the note columns stay; the trigger is
