@@ -4,7 +4,7 @@
 
 **Created**: 2026-10-27
 
-**Status**: Draft — specification only; not planned, not implemented
+**Status**: Draft — specified, clarified and planned ([plan](plan.md)); not implemented
 
 **Input**: User description: "Quero especificar em speckit uma nova feature. Quero ter steps que permitam
 salvar os dados em apache iceberg." (Steps that let a workflow save its data into Apache Iceberg tables.)
@@ -109,8 +109,8 @@ leaves room for.
   `object_storage` semantics); 024 (published data snapshots become an additional record source only
   after 024 is accepted); 034 Rust SDK (joins the parity set if merged first).
 - **Decision record:** the plan proposes **ADR-0071** (next free number: ADR-0069 is taken by 033,
-  ADR-0070 by 034) for "Iceberg writes are effect steps reconciled by an effect key in the table's
-  snapshot history".
+  ADR-0070 by 034), "Lake writes and step-output destinations are managed effects recovered at the
+  destination" (Proposed).
 
 ## Domain vocabulary
 
@@ -314,8 +314,9 @@ unchanged.
    refused with a typed error.
 3. **Given** a batch with the same key twice, **When** the step runs, **Then** it fails with a typed
    duplicate-key error and commits nothing.
-4. **Given** a table whose format version does not support row-level deletes, **When** the step runs,
-   **Then** it fails with a typed unsupported-table error before writing any file.
+4. **Given** a table whose format version the platform does not write (v3 in this delivery,
+   D035-032), **When** the step runs, **Then** it fails with a typed unsupported-table error before
+   writing any file.
 5. **Given** two runs that upsert the same key concurrently, **When** both commit, **Then** the final
    table equals the result of applying the two commits in some serial order, and no key has two live
    rows.
@@ -603,8 +604,9 @@ and never claims exactly-once delivery.
   The step MAY declare a delete marker: a boolean record field that is not a table column; a record
   whose marker is true removes the live row with its key and inserts nothing, and only its key fields
   are validated and written. A batch with duplicate keys, counting marked and unmarked records
-  together, MUST be refused. The table's declared row-level write behaviour MUST be honoured where the
-  platform supports it, and refused otherwise.
+  together, MUST be refused. Row-level changes are written copy-on-write, which every
+  spec-conforming reader reads correctly; a table that prefers merge-on-read is written copy-on-write
+  too and the receipt says so (amended 2026-10-27, D035-032).
 - **FR-035-017 — Isolation against concurrent writers**: `overwrite` and `upsert` MUST validate at
   commit that no commit since the attempt's base snapshot added or deleted rows inside the overwritten
   scope or with the upserted keys; on such a conflict the attempt re-reads from the new state and
@@ -628,8 +630,10 @@ and never claims exactly-once delivery.
 - **FR-035-020 — Files of attempts that did not commit**: Data and delete files written by an attempt
   that did not commit MUST NOT become visible. The platform MUST delete them when it can prove that no
   snapshot of the table references them and that it wrote them, and otherwise record them in the
-  step's diagnostics (count and total size only) for the table owner's orphan-file maintenance. It
-  MUST never delete a file it did not write.
+  step's diagnostics (count and total size only) for the table owner's orphan-file maintenance. After
+  an executor crash the platform cannot know which files were written: they are left to that
+  maintenance and the next attempt's receipt says an earlier attempt may have left files (amended
+  2026-10-27, D035-031). It MUST never delete a file it did not write.
 - **FR-035-021 — Revert compensation**: A write step MAY declare `revert` as its compensation. A
   revert MUST be a new commit that removes the files the step's commit added and restores the files it
   removed, only if no later commit on the target ref rewrote or removed any of them and the restored
@@ -647,7 +651,11 @@ and never claims exactly-once delivery.
   only in the managed executor under the standard lease, fencing, heartbeat, cancellation and result
   protocol (FR-017-012). The API, scheduler and engine processes never contact a catalog or storage.
   The executor receives only the credentials of the pinned connection revision, holds no orchestration
-  database credentials, and runs under finite CPU, memory, disk, network and concurrency budgets.
+  database credentials, and runs under finite CPU, memory, disk, network and concurrency budgets. Code
+  that parses catalog metadata and data files from customer storage MUST run per attempt in an
+  isolated sandbox (namespaces, seccomp, cgroups, no network route but the executor's policy-enforcing
+  relay), never sharing a process, identity, network or files with the executor or another attempt
+  (amended 2026-10-27, D035-048).
   Arbitrary SDK workers cannot claim these tasks or resolve these credentials.
 - **FR-035-024 — Authorization**: Managing connections, using a connection in a published step,
   browsing a catalog, running ad hoc writes, and deciding unknown outcomes MUST be separate rights
@@ -655,8 +663,13 @@ and never claims exactly-once delivery.
   capability use. Foreign resources MUST be indistinguishable from missing ones, and denials audited.
 - **FR-035-025 — Classification at egress**: Before any byte leaves the platform, every written field
   MUST be checked against its 016 classification: `secret` is always refused; a field above the
-  connection's ceiling is refused; an undeclared field counts as `pii` (016 restrictive reading). The
-  refusal names the field path and class, never the value.
+  connection's ceiling is refused; an undeclared field counts as `pii` (016 restrictive reading). A
+  step or destination MAY declare a record schema with per-field levels; it annotates egress only and
+  is not a disclosure carrier. A written field's level is the stricter of the level inherited from its
+  source (the source step's output schema) and the declared one, so a declaration can never lower an
+  inherited level; values of a 017 database result count as `pii` (amended 2026-10-27, D035-039,
+  revised by D035-051). The refusal names
+  the field path and class, never the value.
 - **FR-035-026 — Secrets**: Catalog, metastore, catalog-database and storage credentials MUST be
   OpenBao-backed references resolved per attempt through the 017 secret facade; values never enter
   workflow definitions, settings, journal, logs, spans, audit, outputs or API responses.
@@ -707,8 +720,11 @@ and never claims exactly-once delivery.
 
 **Synchronous step-output destinations**
 
-- **FR-035-034 — Declaration**: Any step that produces an output MAY declare synchronous
-  destinations in the canonical contract (additive, FR-035-008 rules): a name unique in the step, the
+- **FR-035-034 — Declaration**: Any root-level step that produces an output MAY declare synchronous
+  destinations in the canonical contract (additive, FR-035-008 rules). Like 017's managed database
+  nodes (ADR-0036 decision 3), destinations and `icebergWrite` steps are refused inside structured
+  bodies and continuation combinations until per-instance credential pins are proven (amended
+  2026-10-27, D035-038). A declaration names: a name unique in the step, the
   destination kind, the connection or broker-destination reference, the target (table, object
   prefix or topic), the mode, the record set (the output itself as one record, an array path in the
   output, or the record blobs the output references), the field-to-column mapping, the failure policy
@@ -732,8 +748,10 @@ and never claims exactly-once delivery.
 - **FR-035-037 — Failure policy**: Each destination MUST declare, or default to, one policy for a
   write that failed for good: `hold` (default) — the run waits until an authorized person retries or
   skips the destination, audited; `fail` — the run treats the destination write as a failed step
-  (error routing and saga rules apply); `continue` — the dependents run, the failure stays visible on
-  the run and can be redriven. No policy re-executes the source step.
+  (error routing and saga rules apply); `continue` — the dependents run and the failure stays visible
+  on the run; the destination step stays terminal, and a later redrive is an ad hoc execution of the
+  same destination with the same effect key, so it cannot duplicate (amended 2026-10-27, D035-055).
+  No policy re-executes the source step.
 - **FR-035-038 — Iceberg destination**: FR-035-011..022 MUST apply with the selected record set as the
   record source and the modes the Iceberg connection allows.
 - **FR-035-039 — PostgreSQL destination**: Through a 017 PostgreSQL connection into an existing table,
@@ -759,10 +777,14 @@ and never claims exactly-once delivery.
   unknown and goes to review instead of inserting again. No upsert is offered (the documentation shows
   the replacing-table pattern).
 - **FR-035-042 — Broker stream destination**: A destination references an outbound broker destination
-  of ADR-0025 or 033 (Kafka, NATS, Redis Streams) dedicated to step outputs (it receives no run
-  events). The delivery rows for the selected records MUST commit in the transaction that accepts the
-  source step's completion: one message per record, within the delivery bound, with a stable message
-  id derived from the effect key and the record's position. The destination write succeeds when every
+  of ADR-0025 (NATS, Kafka, SQS; Redis Streams once feature 033 merges — amended 2026-10-27,
+  D035-037) dedicated to step outputs (it receives no run
+  events) and that carries its own egress ceiling. Its records MUST come from the step's output or an
+  inline expression, never from blobs, so no object storage is read inside a run transaction. The
+  record data (stored as run content) and the delivery rows MUST commit in the transaction that accepts
+  the source step's completion, which also re-checks the subscription: one message per record, within
+  the delivery bound and a per-completion byte cap, with a stable message id derived from the effect
+  key and the record's position (amended 2026-10-27, D035-052). The destination write succeeds when every
   delivery is acknowledged; a delivery that ends `DEAD` applies the failure policy; delivery, retry and
   redrive follow ADR-0025. Consumers may receive duplicates and the platform MUST NOT claim
   exactly-once delivery.
@@ -777,8 +799,11 @@ and never claims exactly-once delivery.
   destinations and the 020 sinks that select its declared record together, each labelled with its
   mode.
 - **FR-035-045 — Destination rights**: Declaring a destination requires use rights on its connection
-  or broker destination, revalidated at publication, admission and execution; retrying, skipping or
-  redriving a destination write requires the run-operation right; every such decision is audited.
+  (and write rights for a database-backed write) or, for a broker stream, the right to manage event
+  subscriptions, revalidated at publication, admission and execution. Retrying a failed destination
+  write requires the run-operation right; retrying or resolving one whose outcome is unknown, and
+  skipping one, require the saga-override right; redriving one requires the ad hoc and write rights;
+  every such decision is audited (amended 2026-10-27, D035-066, D035-069).
 
 ### Non-Functional Requirements
 

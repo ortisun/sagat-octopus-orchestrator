@@ -56,6 +56,10 @@ Validation run on 2026-10-27, two iterations.
   item still passes. Each destination kind's recovery rule is observable (FR-035-039..042); the
   asynchronous mode is referenced, not re-specified (020 FR-020-044 owns it); new owner questions
   O035-004..005 have recommended defaults written into the spec.
+- **Iteration 4 (`/speckit-plan`, 2026-10-27)**: planning and two independent reviews amended
+  FR-035-016, -020, -023, -025, -034, -037 and -042 and US05 scenario 4, each citing its decision
+  (D035-031, -032, -037, -038, -039, -048, -051, -052, -055). Every item still passes; the amendments
+  narrow or harden behaviour and add no unresolved marker.
 - **Measurable targets**: SC-035-001 (30 s probe) and SC-035-009 (1,000,000 rows in 2 min p95; lookup
   under 5 s at 10,000 snapshots) are benchmark criteria on a reference environment the plan declares
   (O035-003), not promises (constitution, Delivery Constraints).
