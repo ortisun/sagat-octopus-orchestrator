@@ -261,3 +261,12 @@ The CI55 SDK job separately exposed an existing C# credential-test callback-obse
 its fix is isolated under bugfix/dotnet-secret-wipe-test-barrier. It is not attributed to codec
 or Rust library behavior, and no failing assertion is removed. Final integrated release gates
 remain separate from these60-scenario receipts.
+
+
+CI run 40591310405 at head 23a5f9d6 executed every SDK native gate, the complete six-language
+conformance/e2e/fault step and developer examples successfully. The job consumed its 60-minute
+budget and was cancelled during the final Rust cache save, so its job conclusion is not a pass.
+The SDK job timeout is now 90 minutes, leaving cleanup margin above the observed 59m50s of
+successful validation; every test command and assertion remains enabled. Selected original
+outcomes and log provenance are in evidence/ci-six-language-timeout-20261027. The new workflow
+must complete in CI before the SDK PR merges; this is not a release-tree acceptance claim.

@@ -77,7 +77,8 @@ jobs:
   sdks:
     name: sdks (unit tests, conformance suite, user stories, faults)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Six-language validation reached 59m50s on a cold runner; leave cache-save margin.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup show active-toolchain
