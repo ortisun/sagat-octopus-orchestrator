@@ -185,3 +185,17 @@ block and an alphabetical list.
 - **O706 (owner) — What does possession gate?** Only worker leases, or also scheduler-owned transitions (timer fire,
   retry release, control nodes, child outcomes)? If only leases, a due-but-unfired wake is not Acquire work and the
   clock leaves the gate; if both, the scheduler's own transactions are gated, which is the larger change.
+
+## Progress (slice V)
+
+- **2026-10-27 — pure gates (evidence item 1).** `capacity_transfer.rs` in the domain with `vacate_gate`,
+  `acquire_gate` and `CapacityTransferRefusal`; exhaustive `match` over `RunStatus`, no wildcard. Seen failing
+  first against a stub that accepted everything (5 failed, 1 passed, the passing one being the list-coverage
+  check). After the implementation:
+  `cargo test -p sagat-domain --test capacity_transfer --locked` 6 passed, 0 failed;
+  `cargo test -p sagat-domain --locked` 40 targets, 550 passed, 0 failed, 0 ignored; strict `cargo clippy -p
+  sagat-domain --all-targets --locked -D warnings`, `cargo fmt --check`, `check-architecture.py` (24 crates, no
+  cycles) and `check-agent-config.py` pass. Private `CARGO_TARGET_DIR`, `CARGO_PROFILE_DEV_DEBUG=0`, 2 jobs. The
+  truth table in the test is hand-written and is the specification; no mutation run (paused by the owner).
+- Not started: application port and fingerprint, migration and receipt table, PostgreSQL adapter, native tests,
+  telemetry, audit, contracts. Nothing is ticked in `tasks.md`; the eight canonical tasks stay open.

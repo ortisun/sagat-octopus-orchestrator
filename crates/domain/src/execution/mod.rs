@@ -6,6 +6,7 @@
 
 mod approval;
 mod capacity;
+mod capacity_transfer;
 mod command;
 mod continuation;
 mod error;
@@ -28,6 +29,7 @@ pub use capacity::{
     CapacityGroup, CapacityGroupError, CapacityGroupId, CapacityMemberId, CapacityMemberSnapshot,
     CapacityMembership, CapacityPossession,
 };
+pub use capacity_transfer::{CapacityTransferRefusal, acquire_gate, vacate_gate};
 pub use command::{
     AddressedProgress, Expiry, Failure, Heartbeat, InstanceHeartbeat, Progress, Resolution,
     ScopedOutputRefusalSuccess, advance_scope_compensation, complete_instance,
