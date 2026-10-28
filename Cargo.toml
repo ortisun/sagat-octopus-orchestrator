@@ -1,5 +1,6 @@
 [workspace]
 resolver = "3"
+exclude = ["vendor/rskafka"]
 members = ["crates/domain", "crates/application", "crates/infra-postgres", "crates/infra-database", "crates/infra-blobstore", "crates/telemetry", "crates/api-http", "crates/api-grpc", "crates/infra-nats", "crates/infra-egress", "crates/infra-connectors", "crates/infra-secrets", "crates/infra-expr", "crates/infra-ir", "crates/infra-sandbox", "crates/infra-schema", "crates/scheduler", "apps/cli", "apps/control-plane", "apps/dev-idp", "apps/execution-engine", "apps/sandbox-runner", "apps/database-runner", "tests"]
 
 [workspace.package]
@@ -91,3 +92,7 @@ unimplemented = "warn"
 [profile.release]
 lto = "thin"
 strip = "symbols"
+
+# Temporary manifest-only override; see docs/engineering/dependency-overrides.md.
+[patch.crates-io]
+rskafka = { path = "vendor/rskafka" }
