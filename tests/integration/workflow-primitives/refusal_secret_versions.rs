@@ -1352,6 +1352,13 @@ async fn a_scanned_output_refusal_rechecks_the_original_lease_after_path_drop() 
             "the exact named runtime PID must remain blocked before binding replacement"
         );
 
+        // The binding's default timestamp uses PostgreSQL's clock; the audit uses the API's
+        // clock. Bound each against its own authority so host/VM skew cannot fail the witness.
+        let database_started_at: time::OffsetDateTime =
+            sqlx::query_scalar("SELECT clock_timestamp()")
+                .fetch_one(&platform.api.db.pool)
+                .await
+                .expect("database clock before binding replacement");
         let replacement_started_at = time::OffsetDateTime::now_utc();
         let (status, trace_id, body, replacement_finished_at) =
             tokio::time::timeout(Duration::from_secs(5), async {
@@ -1379,6 +1386,11 @@ async fn a_scanned_output_refusal_rechecks_the_original_lease_after_path_drop() 
             })
             .await
             .expect("binding replacement must complete while the report PID is blocked");
+        let database_finished_at: time::OffsetDateTime =
+            sqlx::query_scalar("SELECT clock_timestamp()")
+                .fetch_one(&platform.api.db.pool)
+                .await
+                .expect("database clock after binding replacement");
         assert!(
             status == reqwest::StatusCode::OK
                 && body["subject"] == "scope-worker"
@@ -1400,8 +1412,7 @@ async fn a_scanned_output_refusal_rechecks_the_original_lease_after_path_drop() 
         );
         let binding_updated_at = exact_binding_updated_at(&platform, namespace_id).await;
         assert!(
-            binding_updated_at >= replacement_started_at
-                && binding_updated_at <= replacement_finished_at,
+            binding_updated_at >= database_started_at && binding_updated_at <= database_finished_at,
             "the retained binding metadata timestamp must belong to the public replacement request"
         );
         let binding_bytes_after = binding_physical_bytes(&platform, namespace_id).await;

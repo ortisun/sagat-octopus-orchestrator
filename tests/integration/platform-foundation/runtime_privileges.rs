@@ -182,6 +182,11 @@ struct Extracted {
 
 fn extract_all() -> Extracted {
     let root = repository();
+    // Child modules and explicitly imported predicates share execution.rs's real fixed macros.
+    // This imports declarations only, not its statements, and never grants an unresolved need.
+    let parent = std::fs::read_to_string(root.join("crates/infra-postgres/src/execution.rs"))
+        .expect("read shared SQL predicate declarations");
+    let inherited = rust_source::macro_prelude(&parent);
     let mut all = Extracted::default();
     for path in source_files() {
         let source = std::fs::read_to_string(&path).expect("read source");
@@ -190,7 +195,26 @@ fn extract_all() -> Extracted {
             .expect("under the repository")
             .to_string_lossy()
             .into_owned();
-        let found = rust_source::extract(&source);
+        let found = if relative.starts_with("crates/infra-postgres/src/") {
+            rust_source::extract_with_macros(
+                &source,
+                &inherited,
+                relative == "crates/infra-postgres/src/execution.rs"
+                    || relative.starts_with("crates/infra-postgres/src/execution/"),
+            )
+        } else {
+            rust_source::extract(&source)
+        };
+        for unresolved in found.unresolved {
+            all.needs
+                .entry(Need::Unresolved(unresolved.text.clone()))
+                .or_default()
+                .push(Site {
+                    file: relative.clone(),
+                    line: unresolved.line,
+                    excerpt: excerpt(&unresolved.text),
+                });
+        }
         for other in found.unmodelled {
             let site = Site {
                 file: relative.clone(),

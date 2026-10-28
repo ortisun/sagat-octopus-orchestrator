@@ -40,6 +40,10 @@ pub enum ExecutionError {
     InvalidFailureCode(String),
     #[error("invalid correlation key")]
     InvalidCorrelationKey,
+    /// A valid external event does not match this exact wait's type/key/received-time window.
+    /// No event values are retained in the error.
+    #[error("event does not match execution instance '{instance:?}'")]
+    EventNotMatching { instance: ExecutionInstanceId },
     /// The run is paused, stopping or finished, so no new attempt may start.
     #[error("the run is {0} and does not accept new work")]
     RunNotRunnable(RunStatus),

@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::events::EventEnvelope;
-use sagat_domain::execution::{CorrelationKey, RunId};
+use sagat_domain::execution::{CorrelationKey, ExecutionInstanceId, RunId};
 use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_domain::triggers::{CronSpec, Trigger, TriggerKind};
 use sagat_domain::workflow::{EventType, Expression, NodeId, WorkflowDefinition};
@@ -148,6 +148,27 @@ impl ClaimedEvent {
     }
 }
 
+/// Canonical bytes retained by event consumers and used by the production evaluator. This
+/// preserves the legacy null fallback; ingress validation/authority is a separate boundary.
+#[must_use]
+pub fn event_document(event: &EventView<'_>) -> Vec<u8> {
+    let data =
+        serde_json::from_slice::<serde_json::Value>(event.data).unwrap_or(serde_json::Value::Null);
+    let document = serde_json::json!({
+        "event": {
+            "id": event.id,
+            "source": event.source,
+            "type": event.event_type,
+            "subject": event.subject,
+            "correlationKey": event.correlation_key,
+            "occurredAt": event.occurred_at,
+            "receivedAt": event.received_at,
+        },
+        "data": data,
+    });
+    serde_json::to_vec(&document).unwrap_or_default()
+}
+
 /// The idempotency key under which `trigger` starts the run for `event`, and the fingerprint that
 /// tells a repeat of the same start from a different request: starting twice for one admission of
 /// an event, from one trigger, is one run.
@@ -183,11 +204,34 @@ pub struct WaitingStep {
     pub tenant_id: TenantId,
     pub namespace_id: NamespaceId,
     pub run_id: RunId,
-    pub node: NodeId,
+    pub instance: ExecutionInstanceId,
+    pub step_id: Uuid,
     pub event_type: EventType,
     pub correlation_key: CorrelationKey,
     /// The wait accepts events received at or after this instant.
     pub since: OffsetDateTime,
+}
+
+impl WaitingStep {
+    /// Receipt identity only; current native admission still authorizes delivery.
+    #[must_use]
+    pub fn delivery_consumer(&self) -> String {
+        if self.instance.path().is_root() {
+            format!("wait:{}/{}", self.run_id, self.instance.node())
+        } else {
+            format!("wait-instance:{}/{}", self.run_id, self.step_id)
+        }
+    }
+
+    /// A root-only receiver may use this candidate only with its pinned physical identity.
+    /// This check grants no authority to deliver; the caller still owns the current run lock.
+    #[must_use]
+    pub fn root_node(&self, version: WorkflowVersionId) -> Option<&NodeId> {
+        (self.instance.path().is_root()
+            && self.step_id
+                == crate::execution::instance_step_id(version, self.run_id, &self.instance))
+        .then_some(self.instance.node())
+    }
 }
 
 /// What recording a delivery needs to know about its consumer.
@@ -204,18 +248,21 @@ pub struct DeliveryRef {
 }
 
 impl DeliveryRef {
-    /// The delivery of `event` to the wait `step`.
+    /// The legacy root delivery; scoped receipts use the native transaction witness port.
     #[must_use]
-    pub fn to_wait(event: &ClaimedEvent, step: &WaitingStep) -> Self {
-        Self {
+    pub fn to_wait(event: &ClaimedEvent, step: &WaitingStep) -> Option<Self> {
+        if !step.instance.path().is_root() {
+            return None;
+        }
+        Some(Self {
             namespace_id: event.namespace_id,
             source: event.envelope.key.source.to_string(),
             event_id: event.envelope.key.event_id.to_string(),
-            consumer: format!("wait:{}/{}", step.run_id, step.node),
+            consumer: step.delivery_consumer(),
             run_id: Some(step.run_id),
-            node: Some(step.node.as_str().to_owned()),
+            node: Some(step.instance.node().as_str().to_owned()),
             trigger_id: None,
-        }
+        })
     }
 
     /// The delivery of `event` to the trigger `id`, which starts `run`.
@@ -269,18 +316,22 @@ pub trait EventDispatchStore: Send + Sync {
     ) -> impl Future<Output = Result<Vec<StoredTrigger>, StoreError>> + Send;
 
     /// Steps waiting for exactly this event: same namespace, type and correlation key, and a wait
-    /// that began early enough to accept it. In order of (run, node), after `after`, at most
-    /// `limit`: a fan-out larger than a page is walked page by page.
+    /// that began early enough to accept it. In SQL tuple order of (run, path nodes, path
+    /// indices, node), after `after`, at most
+    /// `limit`: a fan-out larger than a page is walked page by page. This is not the derived
+    /// Rust instance order. Each candidate retains its complete root or scoped identity.
     fn waits_for_event(
         &self,
         event: &ClaimedEvent,
-        after: Option<(RunId, &NodeId)>,
+        after: Option<(RunId, &ExecutionInstanceId)>,
         limit: u32,
     ) -> impl Future<Output = Result<Vec<WaitingStep>, StoreError>> + Send;
 
-    /// Event waits whose inbox has not been searched yet, oldest first.
+    /// Pending lookbacks in SQL tuple order (tenant, run, path nodes, path indices, node).
+    /// The cursor is discovery state only; failed rows remain pending for the next traversal.
     fn unscanned_waits(
         &self,
+        after: Option<&WaitingStep>,
         limit: u32,
     ) -> impl Future<Output = Result<Vec<WaitingStep>, StoreError>> + Send;
 

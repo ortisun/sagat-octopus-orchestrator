@@ -1,0 +1,17 @@
+{
+  "command": [
+    "python3",
+    "scripts/test-released-v02-profile.py",
+    "--prepared-run",
+    "/tmp/sagat-v03-20261026/released-v02-al_pw2ho",
+    "--scenario",
+    "inflight-worker"
+  ],
+  "exit_code": 0,
+  "seconds": 15.77,
+  "wall_seconds": 15.77,
+  "wall_minus_monotonic_seconds": 0.0,
+  "started_utc": "2026-10-27T13:24:14.012837+00:00",
+  "finished_utc": "2026-10-27T13:24:29.777861+00:00",
+  "log": "released-v02-forward-after-applied.txt"
+}

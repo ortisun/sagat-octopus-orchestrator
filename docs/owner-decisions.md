@@ -4,6 +4,12 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-10-26
+
+| # | Item | Decision | Recorded in | Status |
+|---|---|---|---|---|
+| 1 | Remaining implementation and release target | “Continue com a implementacao do restante agora para a release v0.3”. Complete the eight remaining feature-014 tasks for release 0.3.0 with their original acceptance criteria and required gates. | [0.3.0 implementation ledger](../specs/014-workflow-primitives/implementation-0.3.md) | Implementation in progress; no capacity or release guarantee inferred |
+
 ## 2026-10-25
 
 | # | Item | Decision | Recorded in | Status |
@@ -11,6 +17,12 @@ means the decision is taken and the implementation is still to be done; it is no
 | 1 | Implemented-task integration and release | “Quero que mergeie todas as tasks já implementadas. Crie as versoes e releases necessárias”. Merge and release implemented work; no approval of pending feature-014 production ceilings, general nesting, unverified work or waived gates is inferred. | [ADR-0040](adr/ADR-0040-release-checkpoints-preserve-incomplete-feature-boundaries.md), [0.2.0 notes](releases/0.2.0.md) | Authorized; merge/publication require actual integrated-head gates |
 
 The implementation agent selected one coordinated **0.2.0** under the existing pre-1.0 breaking-minor policy and synchronized release tooling. The owner did not explicitly name this version. GitHub Releases remains the distribution channel; no environment deployment or registry publication is added.
+
+## 2026-10-26 — nested capacity (lane `feature/014-capacity-protocol`)
+
+| # | Item | Decision | Recorded in | Status |
+|---|---|---|---|---|
+| 1 | O701, reduction of `iteration_concurrency` | After a reduction (including to 0) already admitted work is **not paused**: it runs to completion and only new admissions are blocked, as the released contract and runbook say. A tenant may therefore exceed a reduced limit while its admitted work lasts. | [capacity-eligibility.md](../specs/014-workflow-primitives/capacity-eligibility.md), [zero policy](../specs/014-workflow-primitives/zero-iteration-policy.md), `research.md` D704/D705 | Explicit zero in the 0.3 working branch; nested group runtime remains pending. O702–O704 are consequences, open to correction |
 
 ## 2026-10-16
 
@@ -41,3 +53,20 @@ Answers to the four product questions of the feature 016 specification (per-fiel
 | 3 | 016 P3, readings of ADR-0033 | The **restrictive** reading: an undeclared field is at least `pii` even under a `public` parent; a schema with no annotation is `pii` throughout; a payload with no schema at all is structure only for everyone. | `specs/016-payload-classification/research.md` (D265, D269) | Decided; not built |
 | 4 | 016 P4, self-grant | An administrator **may grant reveal to themselves**, audited. | `specs/016-payload-classification/research.md` (D306) | Decided; not built |
 | 5 | Self-contained infrastructure | **Everything the platform needs to run or to be tested lives in this repository.** Local and CI infrastructure is declared in `infra/docker/compose.yaml` (and `compose.observability.yaml`), with pinned images, loopback-only ports and development credentials; nothing may depend on a container, volume or service that belongs to another project or has to be started by hand. When feature 015 adopts OpenBao it is added as a service of that compose file (dev mode, pinned image, healthcheck, initialised by a one-shot job), not borrowed from another stack. Integration tests start their own disposable containers. | `AGENTS.md` (infrastructure), 015 draft | Decided; the stack today needs no OpenBao (secrets use the sealed application vault in PostgreSQL) |
+
+## 2026-10-27 — Official Rust SDK
+
+The owner reported the missing Rust SDK during the active0.3 implementation. Add an official Rust
+SDK with the current SDK client/worker/builder semantics and shared conformance, tracked by
+[feature034](../specs/034-rust-sdk/spec.md) and [ADR-0070](adr/ADR-0070-rust-sdk-shares-the-canonical-sdk-contract.md).
+The active0.3 context is the release target; existing Redis033 and remaining014 work stays in scope.
+
+## 2026-10-27 — Redis Streams for release0.3
+
+The owner requested Redis Streams in communications/callbacks now in v0.3 and selected:
+“Alternativa ao NATS e transporte adicional para callbacks, selecionável por configuração”.
+Feature033 implements optional internal Redis outbox notifications and Redis callback destinations,
+retaining PostgreSQL authority, worker gRPC, NATS compatibility and existing HTTP callbacks.
+[Specification](../specs/033-redis-streams/spec.md); [ADR-0069](adr/ADR-0069-redis-streams-share-outbox-and-delivery-authority.md).
+Implementation/tests remain required; no production deployment, automatic release or inbound Redis
+connector is inferred. This explicitly approves dependencies on the existing004/009/017 services.

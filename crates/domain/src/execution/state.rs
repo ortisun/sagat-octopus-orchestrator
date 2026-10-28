@@ -1252,6 +1252,77 @@ impl StepState {
         self.failure.as_ref()
     }
 
+    /// Checks deterministic scoped control state. Controls never own an attempt, wait or retry;
+    /// non-control steps must not retain condition/switch choices.
+    #[must_use]
+    pub fn is_valid_scoped_control(&self, node: &crate::workflow::Node) -> bool {
+        use crate::workflow::NodeKind;
+        if !matches!(
+            node.kind(),
+            NodeKind::Condition { .. } | NodeKind::Switch { .. }
+        ) {
+            return self.condition.is_none() && self.switch_selection.is_none();
+        }
+        if self.attempt != 0
+            || self.generation != 0
+            || self.cancel_requested
+            || self.timed_out
+            || self.waiting.is_some()
+            || self.next_attempt_at.is_some()
+        {
+            return false;
+        }
+        let no_choice = self.condition.is_none() && self.switch_selection.is_none();
+        match self.status {
+            StepStatus::Pending => !self.routed && self.failure.is_none() && no_choice,
+            StepStatus::Succeeded => {
+                self.failure.is_none()
+                    && match node.kind() {
+                        NodeKind::Condition { .. } => {
+                            self.condition.is_some() && self.switch_selection.is_none()
+                        }
+                        NodeKind::Switch { cases, .. } => {
+                            self.condition.is_none()
+                                && match &self.switch_selection {
+                                    Some(super::SwitchSelection::Default) => true,
+                                    Some(super::SwitchSelection::Case(id)) => {
+                                        cases.iter().any(|case| case.id() == id)
+                                    }
+                                    None => false,
+                                }
+                        }
+                        _ => false,
+                    }
+            }
+            StepStatus::Failed => {
+                self.failure.as_ref() == Some(&FailureCode::expression_error()) && no_choice
+            }
+            StepStatus::Cancelled => self.routed && self.failure.is_none() && no_choice,
+            _ => false,
+        }
+    }
+
+    /// A terminal failure that has not taken its own declared error route. The complete
+    /// instance identity resolves equal local node names in different bodies independently.
+    /// A missing declaration or an unrouted failure remains unhandled.
+    #[must_use]
+    pub fn unhandled_instance_failure(
+        &self,
+        definition: &crate::workflow::WorkflowDefinition,
+        instance: &ExecutionInstanceId,
+    ) -> Option<&FailureCode> {
+        if self.status != StepStatus::Failed
+            || (self.routed
+                && definition
+                    .node_for_instance(instance)
+                    .is_some_and(|node| node.on_error().is_some()))
+        {
+            None
+        } else {
+            self.failure.as_ref()
+        }
+    }
+
     /// The branch a condition chose, once evaluated.
     #[must_use]
     pub const fn condition(&self) -> Option<bool> {
@@ -1268,6 +1339,89 @@ impl StepState {
     #[must_use]
     pub const fn timed_out(&self) -> bool {
         self.timed_out
+    }
+
+    /// Complete lifecycle invariant for a scheduler-owned scoped timer.
+    #[must_use]
+    pub fn is_valid_scoped_timer(&self) -> bool {
+        if self.attempt != 0
+            || self.generation != 0
+            || self.cancel_requested
+            || self.timed_out
+            || self.next_attempt_at.is_some()
+            || self.condition.is_some()
+            || self.switch_selection.is_some()
+        {
+            return false;
+        }
+        match self.status {
+            StepStatus::Pending => !self.routed && self.waiting.is_none() && self.failure.is_none(),
+            StepStatus::Waiting => {
+                !self.routed
+                    && matches!(self.waiting, Some(WaitingOn::Timer { .. }))
+                    && self.failure.is_none()
+            }
+            StepStatus::Succeeded => self.waiting.is_none() && self.failure.is_none(),
+            StepStatus::Cancelled => {
+                self.routed && self.waiting.is_none() && self.failure.is_none()
+            }
+            _ => false,
+        }
+    }
+
+    /// An open event suspension owns no worker/retry/control capability. Declaration and
+    /// current collection/Run authority must still be checked by the drain coordinator.
+    #[must_use]
+    pub fn is_valid_scoped_event_suspension(&self) -> bool {
+        self.valid_scoped_event_fields()
+            && self.status == StepStatus::Waiting
+            && !self.routed
+            && !self.timed_out
+            && self.failure.is_none()
+            && matches!(self.waiting, Some(WaitingOn::Event { .. }))
+    }
+
+    fn valid_scoped_event_fields(&self) -> bool {
+        self.attempt == 0
+            && self.generation == 0
+            && !self.cancel_requested
+            && self.next_attempt_at.is_none()
+            && self.condition.is_none()
+            && self.switch_selection.is_none()
+    }
+
+    /// Complete logical lifecycle of a scoped event wait. Delivery/clock authority belongs to
+    /// its caller; this validates projection shape, not permission or journal provenance.
+    #[must_use]
+    pub fn is_valid_scoped_event_wait(&self, node: &crate::workflow::Node) -> bool {
+        let crate::workflow::NodeKind::WaitEvent { on_timeout, .. } = node.kind() else {
+            return false;
+        };
+        if !self.valid_scoped_event_fields() {
+            return false;
+        }
+        match self.status {
+            StepStatus::Pending => {
+                !self.routed && !self.timed_out && self.waiting.is_none() && self.failure.is_none()
+            }
+            StepStatus::Waiting => self.is_valid_scoped_event_suspension(),
+            StepStatus::Succeeded => {
+                self.waiting.is_none()
+                    && self.failure.is_none()
+                    && (!self.timed_out || on_timeout.is_some())
+            }
+            StepStatus::Failed => {
+                self.waiting.is_none()
+                    && !self.timed_out
+                    && (self.failure.as_ref() == Some(&FailureCode::expression_error())
+                        || (on_timeout.is_none()
+                            && self.failure.as_ref() == Some(&FailureCode::wait_timed_out())))
+            }
+            StepStatus::Cancelled => {
+                self.routed && !self.timed_out && self.waiting.is_none() && self.failure.is_none()
+            }
+            _ => false,
+        }
     }
 
     /// Rebuilds a step from trusted storage (a projection row). The reducer's checks do not run:
@@ -1406,6 +1560,63 @@ impl StepState {
                 self.failure = Some(code.clone());
                 self.waiting = None;
                 self.cancel_requested = false;
+            }
+            RunEvent::ConditionEvaluated { outcome, .. } => {
+                require(self, &[Pending])?;
+                self.status = Succeeded;
+                self.condition = Some(*outcome);
+            }
+            RunEvent::SwitchEvaluated { selection, .. } => {
+                require(self, &[Pending])?;
+                self.status = Succeeded;
+                self.switch_selection = Some(selection.clone());
+            }
+            RunEvent::WaitStarted {
+                correlation_key,
+                deadline,
+                ..
+            } => {
+                require(self, &[Pending])?;
+                self.status = Waiting;
+                self.waiting = Some(WaitingOn::Event {
+                    correlation_key: correlation_key.clone(),
+                    deadline: *deadline,
+                });
+            }
+            RunEvent::WaitSatisfied { .. } => {
+                require(self, &[Waiting])?;
+                if !matches!(self.waiting, Some(WaitingOn::Event { .. })) {
+                    return Err(illegal_transition(instance, self.status, name));
+                }
+                self.status = Succeeded;
+                self.waiting = None;
+            }
+            RunEvent::WaitTimedOut { handled, .. } => {
+                require(self, &[Waiting])?;
+                if !matches!(self.waiting, Some(WaitingOn::Event { .. })) {
+                    return Err(illegal_transition(instance, self.status, name));
+                }
+                self.waiting = None;
+                if *handled {
+                    self.status = Succeeded;
+                    self.timed_out = true;
+                } else {
+                    self.status = Failed;
+                    self.failure = Some(FailureCode::wait_timed_out());
+                }
+            }
+            RunEvent::TimerStarted { due_at, .. } => {
+                require(self, &[Pending])?;
+                self.status = Waiting;
+                self.waiting = Some(WaitingOn::Timer { due_at: *due_at });
+            }
+            RunEvent::TimerFired { .. } => {
+                require(self, &[Waiting])?;
+                if !matches!(self.waiting, Some(WaitingOn::Timer { .. })) {
+                    return Err(illegal_transition(instance, self.status, name));
+                }
+                self.status = Succeeded;
+                self.waiting = None;
             }
             RunEvent::StepCancelRequested { .. } => {
                 require(self, &[Leased, Running, Waiting])?;
@@ -2829,6 +3040,17 @@ impl RunState {
                         index: *index,
                     },
                 )?;
+                if matches!(&reason, CollectionDrainReason::Failed { iteration, .. } if iteration == index)
+                    && self
+                        .steps
+                        .get(&entry)
+                        .is_some_and(StepState::is_valid_scoped_event_suspension)
+                {
+                    return Err(ExecutionError::IllegalCollectionTransition {
+                        collection: collection.clone(),
+                        event: name,
+                    });
+                }
                 let mut found = false;
                 for (instance, step) in self.steps.iter().filter(|(id, _)| id.path() == &path) {
                     found = true;
@@ -2838,7 +3060,10 @@ impl RunState {
                     // (or is ready to) in a run that is stopping and can no longer lease it.
                     let safe_to_stop = (step.attempt == 0
                         && matches!(step.status, StepStatus::Pending | StepStatus::Ready))
-                        || matches!(step.status, StepStatus::Ready | StepStatus::RetryWait);
+                        || matches!(step.status, StepStatus::Ready | StepStatus::RetryWait)
+                        || (matches!(step.waiting_on(), Some(WaitingOn::Timer { .. }))
+                            && step.is_valid_scoped_timer())
+                        || step.is_valid_scoped_event_suspension();
                     if unresolved_derived || (!step.status.is_terminal() && !safe_to_stop) {
                         return Err(ExecutionError::IllegalCollectionTransition {
                             collection: collection.clone(),
@@ -4111,6 +4336,13 @@ impl RunState {
             | RunEvent::StepRetryScheduled { .. }
             | RunEvent::StepRetryDue { .. }
             | RunEvent::StepFailed { .. }
+            | RunEvent::ConditionEvaluated { .. }
+            | RunEvent::SwitchEvaluated { .. }
+            | RunEvent::TimerStarted { .. }
+            | RunEvent::TimerFired { .. }
+            | RunEvent::WaitStarted { .. }
+            | RunEvent::WaitSatisfied { .. }
+            | RunEvent::WaitTimedOut { .. }
             | RunEvent::StepCancelRequested { .. }
             | RunEvent::StepCancelled { .. }) => {
                 self.steps

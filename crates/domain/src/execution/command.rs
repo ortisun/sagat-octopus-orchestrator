@@ -149,7 +149,7 @@ fn apply_then_settle(
     settle(def, state, now, vec![primary])
 }
 
-fn settle_addressed(
+pub(super) fn settle_addressed(
     def: &WorkflowDefinition,
     state: &mut RunState,
     path: &super::instance::InstancePath,
@@ -170,7 +170,7 @@ fn settle_addressed(
     ))
 }
 
-fn settle_path(
+pub(super) fn settle_path(
     def: &WorkflowDefinition,
     state: &mut PathExecutionState,
     mut events: Vec<AddressedRunEvent>,

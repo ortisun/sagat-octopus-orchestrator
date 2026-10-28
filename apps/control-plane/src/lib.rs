@@ -574,12 +574,6 @@ pub async fn serve_with_admin(
                     })?,
                 )),
             )
-            // Deliveries are signed with a secret of the namespace, so they need the key ring too.
-            .with_outbound(OutboundService::new(
-                executions.clone(),
-                SystemClock,
-                EgressService::new(executions.clone(), SystemClock),
-            ))
             .with_connectors(ConnectorService::new(
                 executions.clone(),
                 SystemClock,
@@ -587,6 +581,15 @@ pub async fn serve_with_admin(
                 Arc::new(JsonEvaluator),
             ));
     }
+    // Broker credentials are optional. Anonymous callbacks do not need a secret backend.
+    governance = governance.with_outbound(
+        OutboundService::new(
+            executions.clone(),
+            SystemClock,
+            EgressService::new(executions.clone(), SystemClock),
+        )
+        .with_redis_callbacks(serve.redis_callbacks),
+    );
     governance = governance.with_connections(sagat_application::database::ConnectionService::new(
         executions.clone(),
         SystemClock,

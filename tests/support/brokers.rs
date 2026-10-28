@@ -22,8 +22,11 @@ use sagat_infra_ir::JsonEvaluator;
 use sagat_infra_postgres::PgRunStore;
 use testcontainers_modules::elasticmq::ElasticMq;
 use testcontainers_modules::kafka::apache::{KAFKA_PORT, Kafka};
-use testcontainers_modules::testcontainers::ContainerAsync;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
+use testcontainers_modules::testcontainers::{
+    ContainerAsync, GenericImage, ImageExt,
+    core::{IntoContainerPort, WaitFor},
+};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
@@ -351,4 +354,55 @@ impl TestSqs {
 /// `&'static str` for a parameter name built at run time: a test, a handful of them.
 fn leak(text: String) -> &'static str {
     Box::leak(text.into_boxed_str())
+}
+
+pub async fn redis_stream() -> (ContainerAsync<GenericImage>, String, redis::Client) {
+    let image = GenericImage::new("redis", "8.6.8-alpine")
+        .with_exposed_port(6379.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("Ready to accept connections"))
+        .with_cmd([
+            "redis-server",
+            "--appendonly",
+            "yes",
+            "--appendfsync",
+            "always",
+        ])
+        .with_host_config_modifier(|config| {
+            config.memory = Some(128 * 1024 * 1024);
+            config.pids_limit = Some(128);
+            if let Some(bindings) = config.port_bindings.as_mut() {
+                for entries in bindings.values_mut().flatten() {
+                    for binding in entries {
+                        binding.host_ip = Some("127.0.0.1".to_owned());
+                    }
+                }
+            }
+        });
+    let container =
+        super::bounded::within("start owned Redis", Duration::from_secs(90), image.start())
+            .await
+            .expect("Redis fixture");
+    let port = container
+        .get_host_port_ipv4(6379)
+        .await
+        .expect("mapped Redis");
+    let url = format!("redis://127.0.0.1:{port}/0");
+    let client = redis::Client::open(url.as_str()).expect("fixture client");
+    (container, url, client)
+}
+pub async fn read_redis_stream(
+    client: &redis::Client,
+    stream: &str,
+) -> redis::streams::StreamRangeReply {
+    let mut connection = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("fixture read");
+    redis::cmd("XRANGE")
+        .arg(stream)
+        .arg("-")
+        .arg("+")
+        .query_async(&mut connection)
+        .await
+        .expect("stream entries")
 }

@@ -1,0 +1,14 @@
+{
+  "command": [
+    "/tmp/sagat-v03-20261026/sdk-conformance-38d7b3f0.bin",
+    "--ignored",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "seconds": 1399.68,
+  "wall_seconds": 1399.69,
+  "wall_minus_monotonic_seconds": 0.01,
+  "started_utc": "2026-10-27T04:44:38.796729+00:00",
+  "finished_utc": "2026-10-27T05:07:58.484487+00:00",
+  "log": "sdk-38d7b3f0-full64-prerequisite-fixed.txt"
+}
