@@ -5667,6 +5667,24 @@
     },
     {
       "table": "collection_iterations",
+      "column": "entry_dispatch",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed engine dispatch intent: ACTIVITY or SCHEDULER; at most nine bytes. Writer/source: `primitives.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/primitives.rs"
+      ]
+    },
+    {
+      "table": "collection_iterations",
       "column": "activity",
       "sql_type": "text",
       "class": "protected_system",

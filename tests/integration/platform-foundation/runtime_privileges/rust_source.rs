@@ -1,6 +1,7 @@
 //! Just enough of a Rust lexer to find the SQL a store can issue: string literals (with `\`
 //! continuations and raw strings), `concat!`, `macro_rules!` templates that wrap a `concat!`, and
-//! `const` fragments that a `format!` template names. It never executes or expands anything else,
+//! `const` fragments that a `format!` template names, plus explicitly scoped parent predicates.
+//! Unresolved SQL calls retain structured provenance. It never executes Rust source,
 //! which is the limit of the audit: SQL assembled at run time from values it cannot see is reported
 //! as unresolved, not guessed.
 
@@ -9,8 +10,30 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tok {
     Str(String, usize),
-    Ident(String),
+    Expanded(Expansion, usize, bool),
+    Ident(String, usize),
     Punct(char),
+}
+
+/// SQL text and unresolved calls travel together: const substitution cannot erase a call.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Expansion {
+    text: String,
+    unresolved: Vec<String>,
+}
+
+impl Expansion {
+    fn append(&mut self, other: &Self) {
+        self.text.push_str(&other.text);
+        self.unresolved.extend(other.unresolved.iter().cloned());
+    }
+
+    fn unknown(name: &str) -> Self {
+        Self {
+            text: format!("{{macro {name}!()}}"),
+            unresolved: vec![name.to_owned()],
+        }
+    }
 }
 
 /// One string literal that begins a SQL statement, after macro, `concat!` and `const` resolution.
@@ -29,6 +52,7 @@ pub struct Extraction {
     /// Statements of a kind the audit does not model (`LOCK TABLE`, `COPY`, DDL, ...). Written in
     /// capitals, as SQL is in this code base, so prose that starts with "Create" is not caught.
     pub unmodelled: Vec<Literal>,
+    pub unresolved: Vec<Literal>,
 }
 
 pub fn lex(source: &str) -> Vec<Tok> {
@@ -122,7 +146,7 @@ pub fn lex(source: &str) -> Vec<Tok> {
             while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
                 i += 1;
             }
-            out.push(Tok::Ident(chars[start..i].iter().collect()));
+            out.push(Tok::Ident(chars[start..i].iter().collect(), line));
         } else {
             out.push(Tok::Punct(c));
             i += 1;
@@ -184,12 +208,20 @@ fn matching(tokens: &[Tok], open_at: usize, open: char, close: char) -> usize {
 
 /// `macro_rules! name { ($tail:literal) => { concat!("prefix", ..., $tail) }; }` -> name => prefix.
 /// The definitions are removed from the stream: their text is expanded where they are invoked.
-fn take_macros(tokens: Vec<Tok>) -> (BTreeMap<String, String>, Vec<Tok>) {
-    let mut macros: BTreeMap<String, String> = BTreeMap::new();
+fn take_macros(
+    tokens: Vec<Tok>,
+    mut macros: BTreeMap<String, Expansion>,
+    execution_module: bool,
+) -> (BTreeMap<String, Expansion>, Vec<Tok>) {
     let mut kept = Vec::new();
     let mut i = 0;
     while i < tokens.len() {
-        if let (Tok::Ident(a), Some(Tok::Punct('!')), Some(Tok::Ident(name)), Some(Tok::Punct('{'))) = (
+        if let (
+            Tok::Ident(a, _),
+            Some(Tok::Punct('!')),
+            Some(Tok::Ident(name, _)),
+            Some(Tok::Punct('{')),
+        ) = (
             &tokens[i],
             tokens.get(i + 1),
             tokens.get(i + 2),
@@ -197,31 +229,34 @@ fn take_macros(tokens: Vec<Tok>) -> (BTreeMap<String, String>, Vec<Tok>) {
         ) && a == "macro_rules"
         {
             let end = matching(&tokens, i + 3, '{', '}');
-            let mut prefix = String::new();
+            let mut prefix = Expansion::default();
             let body = &tokens[i + 3..end];
             let from = body
                 .iter()
-                .position(|t| matches!(t, Tok::Ident(word) if word == "concat"))
+                .position(|t| matches!(t, Tok::Ident(word, _) if word == "concat"))
                 // A macro without `concat!` is a fixed fragment: `() => { "text" }`.
                 .unwrap_or(0);
             let mut at = from;
             while at < body.len() {
+                if let Some((name, next, _)) = fixed_call(body, at) {
+                    prefix.append(
+                        &fixed_text(&macros, &name)
+                            .cloned()
+                            .unwrap_or_else(|| Expansion::unknown(&name)),
+                    );
+                    at = next;
+                    continue;
+                }
                 match &body[at] {
-                    Tok::Str(text, _) => prefix.push_str(text),
+                    Tok::Str(text, _) => prefix.text.push_str(text),
                     Tok::Punct('$') => break,
-                    Tok::Ident(fixed)
-                        if macros.contains_key(fixed)
-                            && matches!(
-                                body.get(at + 1..at + 4),
-                                Some([Tok::Punct('!'), Tok::Punct('('), Tok::Punct(')')])
-                            ) =>
-                    {
-                        prefix.push_str(&macros[fixed]);
-                        at += 3;
-                    }
                     _ => {}
                 }
                 at += 1;
+            }
+            if execution_module {
+                macros.insert(format!("crate::execution::{name}"), prefix.clone());
+                macros.insert(format!("$crate::execution::{name}"), prefix.clone());
             }
             macros.insert(name.clone(), prefix);
             i = end + 1;
@@ -233,11 +268,44 @@ fn take_macros(tokens: Vec<Tok>) -> (BTreeMap<String, String>, Vec<Tok>) {
     (macros, kept)
 }
 
+/// Only the fixed no-argument calls this repository uses, preserving any unknown path in full.
+fn fixed_call(tokens: &[Tok], at: usize) -> Option<(String, usize, usize)> {
+    let mut next = at;
+    let mut name = String::new();
+    if tokens.get(next) == Some(&Tok::Punct('$')) {
+        name.push('$');
+        next += 1;
+    }
+    let line = match tokens.get(next)? {
+        Tok::Ident(_, line) => *line,
+        _ => return None,
+    };
+    loop {
+        let Tok::Ident(part, _) = tokens.get(next)? else {
+            return None;
+        };
+        name.push_str(part);
+        next += 1;
+        if tokens.get(next..next + 2) == Some(&[Tok::Punct(':'), Tok::Punct(':')]) {
+            name.push_str("::");
+            next += 2;
+        } else {
+            break;
+        }
+    }
+    (tokens.get(next..next + 3) == Some(&[Tok::Punct('!'), Tok::Punct('('), Tok::Punct(')')]))
+        .then_some((name, next + 3, line))
+}
+
+fn fixed_text<'a>(macros: &'a BTreeMap<String, Expansion>, name: &str) -> Option<&'a Expansion> {
+    macros.get(name)
+}
+
 /// `const NAME: &str = "..." ;` (also `concat!` and adjacent literals) -> NAME => text.
 fn take_consts(tokens: &[Tok]) -> BTreeMap<String, String> {
     let mut consts = BTreeMap::new();
     for (i, token) in tokens.iter().enumerate() {
-        let (Tok::Ident(keyword), Some(Tok::Ident(name))) = (token, tokens.get(i + 1)) else {
+        let (Tok::Ident(keyword, _), Some(Tok::Ident(name, _))) = (token, tokens.get(i + 1)) else {
             continue;
         };
         if keyword != "const" && keyword != "static" {
@@ -268,60 +336,102 @@ fn take_consts(tokens: &[Tok]) -> BTreeMap<String, String> {
 }
 
 /// Replaces macro invocations carrying a literal and `concat!` lists of literals with one literal.
+/// SQLx query argument boundaries, including the generic variants used by these stores.
+fn sql_arguments(tokens: &[Tok], at: usize) -> Option<(usize, usize)> {
+    let [
+        Tok::Ident(module, _),
+        Tok::Punct(':'),
+        Tok::Punct(':'),
+        Tok::Ident(function, _),
+    ] = tokens.get(at..at + 4)?
+    else {
+        return None;
+    };
+    if module != "sqlx"
+        || !matches!(
+            function.as_str(),
+            "query" | "query_as" | "query_scalar" | "raw_sql"
+        )
+    {
+        return None;
+    }
+    let mut open = at + 4;
+    if tokens.get(open..open + 3) == Some(&[Tok::Punct(':'), Tok::Punct(':'), Tok::Punct('<')]) {
+        open = matching(tokens, open + 2, '<', '>') + 1;
+    }
+    (tokens.get(open) == Some(&Tok::Punct('('))).then(|| (open, matching(tokens, open, '(', ')')))
+}
+
 fn expand(
     tokens: &[Tok],
-    macros: &BTreeMap<String, String>,
+    macros: &BTreeMap<String, Expansion>,
     consts: &BTreeMap<String, String>,
+    sql_context: bool,
 ) -> Vec<Tok> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < tokens.len() {
-        if let (Tok::Ident(name), Some(Tok::Punct('!')), Some(Tok::Punct('('))) =
+        if let Some((open, close)) = sql_arguments(tokens, i) {
+            out.extend_from_slice(&tokens[i..=open]);
+            out.extend(expand(&tokens[open + 1..close], macros, consts, true));
+            out.push(tokens[close].clone());
+            i = close + 1;
+            continue;
+        }
+        if let Some((name, next, line)) = fixed_call(tokens, i) {
+            if let Some(text) = fixed_text(macros, &name) {
+                out.push(Tok::Expanded(text.clone(), line, sql_context));
+            } else if sql_context {
+                out.push(Tok::Expanded(Expansion::unknown(&name), line, true));
+            } else {
+                // Keep an unrelated Rust macro opaque; never retry its qualified basename.
+                out.extend_from_slice(&tokens[i..next]);
+            }
+            i = next;
+            continue;
+        }
+        if let (Tok::Ident(name, _), Some(Tok::Punct('!')), Some(Tok::Punct('('))) =
             (&tokens[i], tokens.get(i + 1), tokens.get(i + 2))
         {
             let close = matching(tokens, i + 2, '(', ')');
             let inner = &tokens[i + 3..close];
             if let (Some(prefix), [Tok::Str(tail, line)]) = (macros.get(name), inner) {
-                out.push(Tok::Str(format!("{prefix}{tail}"), *line));
-                i = close + 1;
-                continue;
-            }
-            if let (Some(text), true) = (macros.get(name), inner.is_empty()) {
-                // A macro taking no argument expands to its fixed text.
-                out.push(Tok::Str(text.clone(), 0));
+                let mut text = prefix.clone();
+                text.text.push_str(tail);
+                out.push(Tok::Expanded(text, *line, sql_context));
                 i = close + 1;
                 continue;
             }
             if name == "concat" {
-                let mut text = String::new();
+                let mut text = Expansion::default();
                 let mut line = 0;
-                let mut at_token = 0;
-                while at_token < inner.len() {
-                    match &inner[at_token] {
-                        Tok::Str(part, at) => {
-                            line = *at;
-                            text.push_str(part);
+                let mut at = 0;
+                while at < inner.len() {
+                    if let Some((name, next, _)) = fixed_call(inner, at) {
+                        text.append(
+                            &fixed_text(macros, &name)
+                                .cloned()
+                                .unwrap_or_else(|| Expansion::unknown(&name)),
+                        );
+                        at = next;
+                        continue;
+                    }
+                    match &inner[at] {
+                        Tok::Str(part, source_line) => {
+                            line = *source_line;
+                            text.text.push_str(part);
                         }
-                        // `name!()` of a macro that takes no argument: its fixed text.
-                        Tok::Ident(fixed)
-                            if macros.contains_key(fixed)
-                                && matches!(
-                                    inner.get(at_token + 1..at_token + 4),
-                                    Some([Tok::Punct('!'), Tok::Punct('('), Tok::Punct(')')])
-                                ) =>
-                        {
-                            text.push_str(&macros[fixed]);
-                            at_token += 3;
-                        }
-                        Tok::Ident(constant) => match consts.get(constant) {
-                            Some(value) => text.push_str(value),
-                            None => text.push_str(&format!("{{{constant}}}")),
-                        },
+                        Tok::Ident(constant, _) => text.text.push_str(
+                            &consts
+                                .get(constant)
+                                .cloned()
+                                .unwrap_or_else(|| format!("{{{constant}}}")),
+                        ),
                         _ => {}
                     }
-                    at_token += 1;
+                    at += 1;
                 }
-                out.push(Tok::Str(text, line));
+                out.push(Tok::Expanded(text, line, sql_context));
                 i = close + 1;
                 continue;
             }
@@ -440,13 +550,110 @@ fn is_fragment(text: &str) -> bool {
 }
 
 pub fn extract(source: &str) -> Extraction {
-    let (macros, tokens) = take_macros(lex(source));
+    extract_with_macros(source, &BTreeMap::new(), false)
+}
+
+/// Only qualified declarations escape the parent module; its SQL statements never do.
+pub fn macro_prelude(source: &str) -> BTreeMap<String, Expansion> {
+    take_macros(lex(source), BTreeMap::new(), true)
+        .0
+        .into_iter()
+        .filter(|(name, _)| name.contains("::"))
+        .collect()
+}
+
+fn macro_scope(
+    tokens: &[Tok],
+    parent: &BTreeMap<String, Expansion>,
+    lexical: bool,
+) -> BTreeMap<String, Expansion> {
+    let mut scope = parent.clone();
+    if lexical {
+        for (name, value) in parent {
+            if let Some(name) = name.strip_prefix("crate::execution::") {
+                scope.insert(name.into(), value.clone());
+            }
+        }
+        return scope;
+    }
+    let prefix = lex("use crate::execution::");
+    let mut depth = 0_i32;
+    for at in 0..tokens.len() {
+        match tokens[at] {
+            Tok::Punct('{') => depth += 1,
+            Tok::Punct('}') => depth -= 1,
+            _ => {}
+        }
+        if depth != 0
+            || !tokens.get(at..at + prefix.len()).is_some_and(|actual| {
+                actual.iter().zip(&prefix).all(|(a, b)| match (a, b) {
+                    (Tok::Ident(a, _), Tok::Ident(b, _)) => a == b,
+                    _ => a == b,
+                })
+            })
+        {
+            continue;
+        }
+        let start = at + prefix.len();
+        let imported = if tokens.get(start) == Some(&Tok::Punct('{')) {
+            &tokens[start + 1..matching(tokens, start, '{', '}')]
+        } else {
+            let end = tokens[start..]
+                .iter()
+                .position(|t| *t == Tok::Punct(';'))
+                .map_or(tokens.len(), |n| start + n);
+            &tokens[start..end]
+        };
+        for item in imported.split(|t| *t == Tok::Punct(',')) {
+            let (name, alias) = match item {
+                [Tok::Ident(name, _)] => (name, name),
+                [
+                    Tok::Ident(name, _),
+                    Tok::Ident(keyword, _),
+                    Tok::Ident(alias, _),
+                ] if keyword == "as" => (name, alias),
+                _ => continue,
+            };
+            if let Some(value) = parent.get(&format!("crate::execution::{name}")) {
+                scope.insert(alias.clone(), value.clone());
+            }
+        }
+    }
+    scope
+}
+
+pub fn extract_with_macros(
+    source: &str,
+    inherited: &BTreeMap<String, Expansion>,
+    lexical: bool,
+) -> Extraction {
+    let tokens = lex(source);
+    let scope = macro_scope(&tokens, inherited, lexical);
+    let (macros, tokens) = take_macros(tokens, scope, false);
     let consts = take_consts(&tokens);
-    let tokens = expand(&tokens, &macros, &consts);
+    let tokens = expand(&tokens, &macros, &consts, false);
     let mut extraction = Extraction::default();
     for token in tokens {
-        let Tok::Str(text, line) = token else {
-            continue;
+        let (text, line) = match token {
+            Tok::Str(text, line) => (text, line),
+            Tok::Expanded(expansion, line, sql_context) => {
+                let mut shape = expansion.text.clone();
+                for name in &expansion.unresolved {
+                    shape = shape.replace(&format!("{{macro {name}!()}}"), "");
+                }
+                let report = sql_context
+                    || is_statement(&shape)
+                    || is_unmodelled(&shape)
+                    || is_fragment(&shape);
+                for name in expansion.unresolved.into_iter().filter(|_| report) {
+                    extraction.unresolved.push(Literal {
+                        line,
+                        text: format!("unresolved SQL macro {name}!()"),
+                    });
+                }
+                (expansion.text, line)
+            }
+            _ => continue,
         };
         let text = resolve(&text, &consts);
         if is_statement(&text) {
@@ -540,6 +747,178 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["SELECT id FROM steps WHERE AND NOT archived ORDER BY id"]
         );
+    }
+
+    #[test]
+    fn qualified_fixed_predicates_preserve_nested_privilege_requirements() {
+        let parent = macro_prelude(
+            r#"
+            macro_rules! policy { () => { "AND EXISTS (SELECT 1 FROM secret_pools FOR SHARE) " }; }
+            macro_rules! complete { () => { concat!($crate::execution::policy!(), "AND true ") }; }
+        "#,
+        );
+        let found = extract_with_macros(
+            r#"fn f() { q(concat!("SELECT id FROM steps WHERE true ", crate::execution::complete!(), "ORDER BY id")); }"#,
+            &parent,
+            false,
+        );
+        assert_eq!(found.statements.len(), 1);
+        assert_eq!(
+            found.statements[0].text,
+            "SELECT id FROM steps WHERE true AND EXISTS (SELECT 1 FROM secret_pools FOR SHARE) AND true ORDER BY id"
+        );
+        assert!(found.fragments.is_empty() && found.unresolved.is_empty());
+    }
+
+    #[test]
+    fn an_unknown_nested_fixed_macro_is_unresolved_instead_of_omitted() {
+        let found = extract(
+            r#"
+            macro_rules! complete { () => { concat!(missing_policy!(), "AND true ") }; }
+            fn f() { q(concat!("SELECT id FROM steps WHERE true ", complete!(), "ORDER BY id")); }
+        "#,
+        );
+        assert_eq!(found.statements.len(), 1);
+        assert!(
+            found.statements[0]
+                .text
+                .contains("{macro missing_policy!()}"),
+            "an unknown predicate cannot silently disappear: {:?}",
+            found.statements
+        );
+    }
+
+    #[test]
+    fn inherited_predicates_keep_caller_lines_and_exclude_parent_statements() {
+        let inherited = macro_prelude(
+            r#"
+            macro_rules! policy { () => { "AND EXISTS (SELECT 1 FROM secret_pools FOR SHARE) " }; }
+            fn parent() { q("DELETE FROM parent_only"); }
+        "#,
+        );
+        let found = extract_with_macros(
+            r#"
+
+fn child() { q(concat!("SELECT id FROM steps WHERE true ", policy!(), "ORDER BY id")); }"#,
+            &inherited,
+            true,
+        );
+        assert_eq!(found.statements.len(), 1);
+        assert_eq!(found.statements[0].line, 3);
+        assert_eq!(
+            found.statements[0].text,
+            "SELECT id FROM steps WHERE true AND EXISTS (SELECT 1 FROM secret_pools FOR SHARE) ORDER BY id"
+        );
+        let shadow = extract_with_macros(
+            r#"
+            macro_rules! policy { () => { "AND EXISTS (SELECT 1 FROM local_policy FOR UPDATE) " }; }
+            fn child() { q(concat!("SELECT id FROM steps WHERE true ", policy!())); }
+        "#,
+            &inherited,
+            true,
+        );
+        assert!(
+            shadow.statements[0]
+                .text
+                .contains("local_policy FOR UPDATE")
+        );
+        assert!(!shadow.statements[0].text.contains("secret_pools"));
+    }
+
+    #[test]
+    fn an_unknown_module_cannot_borrow_an_inherited_predicate_basename() {
+        let inherited = macro_prelude(r#"macro_rules! policy { () => { "AND harmless" }; }"#);
+        let found = extract_with_macros(
+            r#"fn child() { q(concat!("SELECT id FROM steps WHERE true ", other_module::policy!())); }"#,
+            &inherited,
+            true,
+        );
+        assert_eq!(
+            found.statements[0].text,
+            "SELECT id FROM steps WHERE true {macro other_module::policy!()}"
+        );
+    }
+
+    #[test]
+    fn unresolved_macros_cannot_be_erased_by_consts_or_hidden_before_a_sql_verb() {
+        for body in [
+            r#"const POLICY: &str = ""; macro_rules! query { () => { concat!("SELECT id FROM steps ", POLICY!()) }; } fn f() { sqlx::query(query!()); }"#,
+            r#"macro_rules! query { () => { concat!(POLICY!(), "SELECT id FROM steps") }; } fn f() { sqlx::query(query!()); }"#,
+            r#"macro_rules! query { () => { concat!(POLICY!()) }; } fn f() { sqlx::query(query!()); }"#,
+            r#"fn f() { sqlx::query(POLICY!()); }"#,
+            r#"fn f() { sqlx::query_as::<_, (String, i32)>(POLICY!()); }"#,
+        ] {
+            let found = extract(body);
+            assert!(
+                !found.unresolved.is_empty(),
+                "an unknown macro must remain an explicit audit failure: {found:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn local_shadowing_does_not_replace_a_qualified_execution_predicate() {
+        let parent = macro_prelude(
+            r#"macro_rules! policy { () => { "AND EXISTS (SELECT 1 FROM parent_policy FOR SHARE) " }; }"#,
+        );
+        let found = extract_with_macros(
+            r#"
+            macro_rules! policy { () => { "AND EXISTS (SELECT 1 FROM local_policy FOR UPDATE) " }; }
+            fn f() { sqlx::query(concat!("SELECT id FROM steps WHERE true ", crate::execution::policy!())); }
+        "#,
+            &parent,
+            false,
+        );
+        assert!(found.statements[0].text.contains("parent_policy FOR SHARE"));
+        assert!(!found.statements[0].text.contains("local_policy"));
+    }
+
+    #[test]
+    fn unqualified_parent_predicates_require_lexical_scope_or_an_explicit_import() {
+        let parent = macro_prelude(r#"macro_rules! policy { () => { "AND true " }; }"#);
+        let missing = extract_with_macros(
+            r#"fn f() { sqlx::query(concat!("SELECT id FROM steps WHERE true ", policy!())); }"#,
+            &parent,
+            false,
+        );
+        assert_eq!(missing.unresolved.len(), 1);
+        for source in [
+            r#"use crate::execution::{policy as imported}; fn f() { sqlx::query(concat!("SELECT id FROM steps WHERE true ", imported!())); }"#,
+            r#"use crate::execution::policy as imported; fn f() { sqlx::query(concat!("SELECT id FROM steps WHERE true ", imported!())); }"#,
+        ] {
+            let found = extract_with_macros(source, &parent, false);
+            assert!(found.unresolved.is_empty());
+            assert_eq!(
+                found.statements[0].text,
+                "SELECT id FROM steps WHERE true AND true "
+            );
+        }
+        let ordinary = extract(r#"fn f() { unreachable!(); }"#);
+        assert!(
+            ordinary.unresolved.is_empty(),
+            "an unrelated Rust macro is not SQL"
+        );
+    }
+
+    #[test]
+    fn ordinary_non_sql_wrappers_and_concat_are_not_sql_failures() {
+        for source in [
+            r#"macro_rules! ordinary { () => { unreachable!() }; } fn f() { ordinary!(); }"#,
+            r#"fn f() { concat!(module_path!(), "label"); }"#,
+        ] {
+            let found = extract(source);
+            assert!(
+                found.unresolved.is_empty(),
+                "ordinary Rust expression is not SQL: {found:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_direct_unknown_sql_macro_retains_its_actual_caller_line() {
+        let found = extract("\n\nfn f() {\n    sqlx::query(POLICY!());\n}");
+        assert_eq!(found.unresolved.len(), 1);
+        assert_eq!(found.unresolved[0].line, 4);
     }
 
     #[test]

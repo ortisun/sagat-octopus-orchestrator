@@ -1,6 +1,6 @@
 # Instructions for implementation agents — Sagat Octopus Orchestrator
 
-A durable workflow platform built **from specifications** (Spec Kit): a Rust modular monolith with PostgreSQL as the authority, NATS as a hint, five SDKs and a React Studio. The constitution (`.specify/memory/constitution.md`) outranks this file; this file is the single source of runtime guidance for every agent (Claude Code, Codex, Copilot, Cursor). It holds what an agent cannot infer from the code. Details live in `docs/engineering/`, in the nested `AGENTS.md` of the directory you work in, and in `.claude/skills/`.
+A durable workflow platform built **from specifications** (Spec Kit): a Rust modular monolith with PostgreSQL as the authority, NATS as a hint, six SDKs and a React Studio. The constitution (`.specify/memory/constitution.md`) outranks this file; this file is the single source of runtime guidance for every agent (Claude Code, Codex, Copilot, Cursor). It holds what an agent cannot infer from the code. Details live in `docs/engineering/`, in the nested `AGENTS.md` of the directory you work in, and in `.claude/skills/`.
 
 ## Start here
 
@@ -20,7 +20,7 @@ A durable workflow platform built **from specifications** (Spec Kit): a Rust mod
 5. The Rust domain must not import Axum, SQLx, NATS, Kubernetes, serde_json as a representation of business rules. Serde on wire/adapter types is allowed.
 6. Do not create empty VO/DTO/model mappers. Use shared types at module boundaries when there is no independent semantics; map only at necessary boundaries.
 7. Never run code inline in the control plane / scheduler process. Isolate, enforce quotas and block access to secrets beyond their capabilities.
-8. The SDK protocol must have conformance tests common to TypeScript, Go, Python, C# and Java, without forking the server semantics.
+8. The SDK protocol must have conformance tests common to TypeScript, Go, Python, C#, Java and Rust, without forking the server semantics.
 9. Test crashes at critical points, duplicates, the race between timeout and signal, lost broker delivery, failed compensation and restart.
 10. Update spec, contracts, tests and documentation in the same delivery. Always include OTel, tenant boundary, typed errors and auditing.
 11. **Do not** create a fake implementation of unproven guarantees. Where there is a placeholder, mark it explicitly as a pending decision/test.

@@ -508,9 +508,7 @@ pub fn validate(
     if value == 0 && resource.kind() == QuotaKind::Policy {
         return Err(QuotaError::OutsideRange);
     }
-    if (resource == QuotaResource::EventRetentionSeconds && (1..60).contains(&value))
-        || (resource == QuotaResource::IterationConcurrency && value == 0)
-    {
+    if resource == QuotaResource::EventRetentionSeconds && (1..60).contains(&value) {
         return Err(QuotaError::OutsideRange);
     }
     if namespace_level && resource.scope() == QuotaScope::Tenant {
@@ -572,6 +570,24 @@ mod tests {
     use super::*;
 
     const CEILING: u64 = 1_000;
+
+    #[test]
+    fn zero_iteration_capacity_is_a_valid_tenant_admission_stop() {
+        let resource = QuotaResource::IterationConcurrency;
+        assert_eq!(validate(resource, false, 0, 0), Ok(0));
+        assert_eq!(
+            validate(resource, true, 0, CEILING),
+            Err(QuotaError::NotPerNamespace)
+        );
+        assert_eq!(
+            resolve(resource, None, Some(0), CEILING),
+            (0, QuotaSource::Tenant)
+        );
+        assert_eq!(
+            resolve(resource, None, None, CEILING),
+            (0, QuotaSource::Default)
+        );
+    }
 
     #[test]
     fn the_namespace_wins_over_the_tenant_which_wins_over_the_ceiling() {
@@ -685,7 +701,7 @@ mod tests {
         );
         assert_eq!(
             validate(QuotaResource::IterationConcurrency, false, 0, CEILING),
-            Err(QuotaError::OutsideRange)
+            Ok(0)
         );
         assert_eq!(
             validate(QuotaResource::IterationConcurrency, false, 1, CEILING),

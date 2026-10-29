@@ -350,6 +350,23 @@ pub trait ExpressionEvaluator: Send + Sync {
     fn condition(&self, expression: &Expression, data: &RunData)
     -> Result<bool, ExpressionFailure>;
 
+    /// Evaluates a boolean in one exact execution context. An adapter must explicitly support
+    /// scoped evaluation; the compatibility default delegates roots and refuses scoped data.
+    fn condition_instance(
+        &self,
+        expression: &Expression,
+        data: &RunData,
+        instance: &ExecutionInstanceId,
+    ) -> Result<bool, ExpressionFailure> {
+        if instance.path().is_root() {
+            self.condition(expression, data)
+        } else {
+            Err(ExpressionFailure(
+                "scoped condition evaluation is unsupported".into(),
+            ))
+        }
+    }
+
     /// # Errors
     /// [`ExpressionFailure`] when the result is not a usable correlation key.
     fn correlation_key(
@@ -357,6 +374,23 @@ pub trait ExpressionEvaluator: Send + Sync {
         expression: &Expression,
         data: &RunData,
     ) -> Result<CorrelationKey, ExpressionFailure>;
+
+    /// Evaluates a correlation key in the exact instance context. Legacy adapters preserve
+    /// root behavior and refuse scoped evaluation until they explicitly support it.
+    fn correlation_key_instance(
+        &self,
+        expression: &Expression,
+        data: &RunData,
+        instance: &ExecutionInstanceId,
+    ) -> Result<CorrelationKey, ExpressionFailure> {
+        if instance.path().is_root() {
+            self.correlation_key(expression, data)
+        } else {
+            Err(ExpressionFailure(
+                "scoped correlation evaluation is unsupported".into(),
+            ))
+        }
+    }
 
     /// Renders an idempotency-key template for `node`.
     ///
@@ -674,6 +708,16 @@ pub trait PathExecutionStore: Send + Sync {
 pub trait PathExecutionTx: Send {
     fn snapshot(&mut self) -> &mut PathExecutionSnapshot;
 
+    /// Stages one exact scoped event receipt and returns its authoritative canonical value.
+    /// No receipt may commit without the matching satisfaction and value in this transaction.
+    fn record_scoped_event_delivery(
+        &mut self,
+        _step: &crate::dispatch::WaitingStep,
+        _event: &crate::dispatch::ClaimedEvent,
+    ) -> impl Future<Output = Result<Option<Vec<u8>>, StoreError>> + Send {
+        async { Err(scoped_execution_adapter_required()) }
+    }
+
     /// Run-wide logical output charge under the run lock, without reading historical values.
     fn logical_output_bytes(&mut self) -> impl Future<Output = Result<u64, StoreError>> + Send;
 
@@ -917,6 +961,16 @@ pub enum PoolCheck {
 /// One locked run, mutated in memory and written back in a single transaction.
 pub trait RunTx: Send {
     fn info(&self) -> &RunInfo;
+
+    /// Full-model counterpart of [`PathExecutionTx::record_scoped_event_delivery`].
+    /// Legacy adapters explicitly refuse this operation; root delivery is unchanged.
+    fn record_scoped_event_delivery(
+        &mut self,
+        _step: &crate::dispatch::WaitingStep,
+        _event: &crate::dispatch::ClaimedEvent,
+    ) -> impl Future<Output = Result<Option<Vec<u8>>, StoreError>> + Send {
+        async { Err(scoped_execution_adapter_required()) }
+    }
 
     /// The database clock sampled after the required run lock is acquired: deadlines must not be
     /// backdated by time spent waiting for a writer. All instances use the database's clock.

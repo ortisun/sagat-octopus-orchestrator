@@ -62,10 +62,15 @@ spec:
     - ports: [{port: {{ $oidc.port }}, protocol: TCP}]
       to:
         {{- toYaml $oidc.to | nindent 8 }}
-    {{- if .Values.nats.url }}
+    {{- if and .Values.nats.url (or (eq .Values.eventTransport "") (eq .Values.eventTransport "nats")) }}
     - ports: [{port: {{ $egress.nats.port }}, protocol: TCP}]
       to:
         {{- toYaml $egress.nats.to | nindent 8 }}
+    {{- end }}
+    {{- if eq .Values.eventTransport "redis" }}
+    - ports: [{port: {{ $egress.redis.port }}, protocol: TCP}]
+      to:
+        {{- toYaml $egress.redis.to | nindent 8 }}
     {{- end }}
     {{- if .Values.openbao.enabled }}
     - ports: [{port: {{ .Values.openbao.network.port }}, protocol: TCP}]

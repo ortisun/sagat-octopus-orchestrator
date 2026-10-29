@@ -285,7 +285,12 @@ impl Flow {
         let mut ticks = 0;
         for _ in 0..80 {
             let report = self.scheduler.tick().await;
-            assert_eq!(report.failed, 0, "a scheduler action failed: {report:?}");
+            assert_eq!(
+                report.failed,
+                0,
+                "a scheduler action failed: {report:?}\n{}",
+                self.logs.1.text()
+            );
             if !report.did_work() {
                 break;
             }

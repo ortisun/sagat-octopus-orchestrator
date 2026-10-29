@@ -1,0 +1,22 @@
+
+running 1 test
+test released_v02_upgrade::released_v02_active_rows_upgrade_progress_and_remain_readable_by_the_release ...
+running 1 test
+test released_v02_phase::write_released_v02_profile ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 561 filtered out; finished in 1.94s
+
+
+thread 'released_v02_upgrade::released_v02_active_rows_upgrade_progress_and_remain_readable_by_the_release' (484180386) panicked at tests/integration/workflow-primitives/released_v02_upgrade.rs:205:9:
+assertion `left == right` failed
+  left: 20261224000000
+ right: 20261223000000
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    released_v02_upgrade::released_v02_active_rows_upgrade_progress_and_remain_readable_by_the_release
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 698 filtered out; finished in 5.24s

@@ -1,0 +1,15 @@
+   Compiling sagat-infra-ir v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/crates/infra-ir)
+   Compiling sagat-control-plane v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/apps/control-plane)
+   Compiling sagat-execution-engine v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/apps/execution-engine)
+   Compiling sagat-sandbox-runner v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/apps/sandbox-runner)
+   Compiling sagat-cli v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/apps/cli)
+   Compiling sagat-tests v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/tests)
+    Finished `test` profile [unoptimized] target(s) in 53.92s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs/debug/deps/integration_workflow_primitives-7df55b39987620ef)
+
+running 3 tests
+test collection_events::public_activity_event_bodies_recover_already_dispatched_events_with_a_cold_receiver ... ok
+test collection_events::public_event_deadlines_route_without_worker_tasks ... ok
+test collection_events::public_event_entries_finish_in_input_order_with_scoped_receipts ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 691 filtered out; finished in 7.81s

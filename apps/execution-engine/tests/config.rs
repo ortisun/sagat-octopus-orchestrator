@@ -684,3 +684,74 @@ fn openbao_workers_require_secret_transport_without_a_local_keyring() {
     assert!(configured.openbao.is_some());
     assert!(configured.secrets.is_none());
 }
+
+#[test]
+fn redis_selection_does_not_publish_to_the_legacy_nats_destination() {
+    let config = parse(&[
+        ("SAGAT_EVENT_TRANSPORT", "redis"),
+        ("SAGAT_REDIS_URL", "rediss://redis.example:6379/0"),
+        ("SAGAT_NATS_URL", "nats://legacy.example:4222"),
+    ])
+    .expect("explicit Redis selection");
+    assert!(
+        config.nats.is_none(),
+        "Redis selection must not start a NATS publisher"
+    );
+    let redis = config
+        .redis
+        .expect("selected Redis publisher configuration");
+    assert_eq!(redis.stream, "sagat:v1:events");
+    assert_eq!(redis.max_len, 100_000);
+}
+
+#[test]
+fn redis_selection_requires_its_endpoint() {
+    assert!(
+        parse(&[("SAGAT_EVENT_TRANSPORT", "redis")]).is_err(),
+        "a selected transport without an endpoint is a configuration error"
+    );
+}
+
+#[test]
+fn redis_unknown_transport_selection_is_refused() {
+    assert!(
+        parse(&[("SAGAT_EVENT_TRANSPORT", "redsi")]).is_err(),
+        "a misspelled selector must not silently disable publishing"
+    );
+}
+
+#[test]
+fn redis_selection_is_explicit_and_disabled_transport_keeps_both_publishers_off() {
+    assert!(parse(&[("SAGAT_REDIS_URL", "rediss://redis.example:6379/0")]).is_err());
+    let disabled = parse(&[
+        ("SAGAT_EVENT_TRANSPORT", "none"),
+        ("SAGAT_NATS_URL", "nats://legacy:4222"),
+        ("SAGAT_REDIS_URL", "redis://inactive:6379/0"),
+    ])
+    .expect("disabled");
+    assert!(disabled.nats.is_none() && disabled.redis.is_none());
+    assert!(parse(&[("SAGAT_EVENT_TRANSPORT", "nats")]).is_err());
+}
+
+#[test]
+fn redis_settings_refuse_plaintext_production_and_invalid_bounds() {
+    for extra in [
+        vec![("SAGAT_REDIS_URL", "redis://redis.example:6379/0")],
+        vec![
+            ("SAGAT_REDIS_URL", "rediss://redis.example:6379/0"),
+            ("SAGAT_REDIS_STREAM_MAXLEN", "0"),
+        ],
+        vec![
+            ("SAGAT_REDIS_URL", "rediss://redis.example:6379/0"),
+            ("SAGAT_REDIS_STREAM", "bad key"),
+        ],
+        vec![
+            ("SAGAT_REDIS_URL", "rediss://redis.example:6379/0"),
+            ("SAGAT_REDIS_TIMEOUT_SECS", "31"),
+        ],
+    ] {
+        let mut config = vec![("SAGAT_EVENT_TRANSPORT", "redis")];
+        config.extend(extra);
+        assert!(parse(&config).is_err());
+    }
+}

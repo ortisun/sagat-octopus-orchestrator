@@ -308,7 +308,12 @@ impl ApprovalFlow {
     pub async fn the_approval(&self, run: RunId) -> String {
         self.drive().await;
         let items = self.approvals(run).await;
-        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!(
+            items.len(),
+            1,
+            "{items:?}\n{}",
+            super::scheduler_evidence(&self.api.db.pool, self.tenant, run).await
+        );
         items[0]["approvalId"]
             .as_str()
             .expect("approval id")

@@ -1,0 +1,7 @@
+{
+  "scenario": "applied-lookup",
+  "resultPath": "outcome-dawtayqp/result.json",
+  "resultSha256": "41f33d0cd0af720a57abca5c663c442c3a184d13df5eb46a9151bb9c948d491d",
+  "buildSha256": "c9351affa56a6677ffb5cad39f3822a35340e28117589af280efc4fc959668bf",
+  "transcriptSha256": "2a9ba6f6fa948156b60574fcc73e2cbf9bba4b949ed189357aae7a729e9ca191"
+}

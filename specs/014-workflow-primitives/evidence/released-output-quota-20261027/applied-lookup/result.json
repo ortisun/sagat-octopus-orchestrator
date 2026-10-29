@@ -1,0 +1,20 @@
+{
+  "appliedLookup": true,
+  "currentSchedulerWorkingTicks": 2,
+  "exactReceiptReplay": true,
+  "logicalBytesChargedOnce": true,
+  "noRefusedOutputCharge": false,
+  "oldImmutablePrefix": true,
+  "oldTerminalReader": true,
+  "oldWorkerReport": true,
+  "outputRefused": false,
+  "prefixVerifiedAfterFinalization": true,
+  "releaseCommit": "bfda342073db71e84f30bdc79ccf3fbc97a7153c",
+  "run": "SUCCEEDED",
+  "scenario": "applied-lookup",
+  "schemaAfter": 20261223000000,
+  "schemaBefore": 20261220000000,
+  "singleAppliedVerdict": true,
+  "singleLookupCompletion": true,
+  "singleReportTransaction": true
+}

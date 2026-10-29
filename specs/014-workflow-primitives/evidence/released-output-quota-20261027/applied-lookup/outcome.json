@@ -1,0 +1,7 @@
+{
+  "scenario": "applied-lookup",
+  "resultPath": "outcome-1ncwjp5q/result.json",
+  "resultSha256": "800a5aeccbd56d81dfce9e56f1d72c9460cac83cd0312245e6ce2858277eced4",
+  "buildSha256": "a22d67adf335f4f0f0f77852eafd18f53bd20000cb76f73ba345bc1d3e177ca5",
+  "transcriptSha256": "4bf3b59ee39638a90437889bb10647e7248ee8846d1b8ec455afb61d24a2708f"
+}

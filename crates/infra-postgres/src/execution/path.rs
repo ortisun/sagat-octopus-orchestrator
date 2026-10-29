@@ -57,12 +57,14 @@ impl PathExecutionTx for PgPathExecutionTx {
         owner: &str,
         lease: sagat_application::shards::Lease,
     ) -> Result<bool, StoreError> {
+        self.own_scheduler_time = None;
         let Some(now) =
             locked_scheduler_time(&mut self.tx, self.snapshot.info.run_id, owner, lease).await?
         else {
             return Ok(false);
         };
         self.now = now;
+        self.own_scheduler_time = Some(now);
         Ok(true)
     }
 
@@ -294,7 +296,54 @@ impl PathExecutionTx for PgPathExecutionTx {
         self.persist_path_addressed(events, outputs, effects).await
     }
 
+    async fn record_scoped_event_delivery(
+        &mut self,
+        step: &sagat_application::dispatch::WaitingStep,
+        event: &sagat_application::dispatch::ClaimedEvent,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        if std::mem::replace(&mut self.scoped_event_delivery_attempted, true) {
+            return Err(corrupt("one scoped event delivery per transaction"));
+        }
+        if self.scoped_event_persistence_failed {
+            return Err(corrupt(
+                "scoped event delivery cannot follow a failed persistence",
+            ));
+        }
+        if step.instance.path() != self.snapshot.state.path() {
+            return Ok(None);
+        }
+        let prepared = scoped_events::prepare_delivery(
+            &mut self.tx,
+            &self.snapshot.definition,
+            &self.snapshot.info,
+            &self.event_wait_read_states,
+            step,
+            event,
+            scoped_events::allows_outcome(&self.snapshot.state),
+        )
+        .await?;
+        let Some((witness, document)) = prepared else {
+            return Ok(None);
+        };
+        self.scoped_event_delivery = Some(witness);
+        Ok(Some(document))
+    }
+
     async fn commit(self) -> Result<(), StoreError> {
+        if self.scoped_event_delivery_attempted && self.scoped_event_persistence_failed {
+            return Err(corrupt(
+                "scoped event transaction contains a failed persistence",
+            ));
+        }
+        if self
+            .scoped_event_delivery
+            .as_ref()
+            .is_some_and(|receipt| !receipt.persisted)
+        {
+            return Err(corrupt(
+                "scoped event receipt was not persisted with its outcome",
+            ));
+        }
         if self.snapshot.state.global().version() != self.persisted {
             return Err(StoreError::Internal {
                 detail: "bounded state was not persisted before commit".into(),
@@ -315,6 +364,10 @@ impl PgPathExecutionTx {
         outputs: &[(ExecutionInstanceId, Vec<u8>)],
         effects: Effects,
     ) -> Result<(), StoreError> {
+        let prior_persist_failure = scoped_events::begin_persistence(
+            self.scoped_event_delivery_attempted,
+            &mut self.scoped_event_persistence_failed,
+        )?;
         let path = self.snapshot.state.path();
         if events.iter().any(|event| event.path() != path)
             || outputs.iter().any(|(instance, _)| instance.path() != path)
@@ -345,6 +398,20 @@ impl PgPathExecutionTx {
                 detail: "a bounded write contains root-only effects".into(),
             });
         }
+        let consumed_delivery = scoped_events::require_delivery(
+            &self.snapshot.definition,
+            events,
+            outputs,
+            &effects,
+            self.scoped_event_delivery.as_ref(),
+        )?;
+        scoped_events::require_scoped_event_clock(
+            &self.snapshot.definition,
+            events,
+            &self.event_wait_read_states,
+            self.own_scheduler_time,
+            self.now,
+        )?;
         if events.iter().any(|event| {
             !matches!(
                 event.event(),
@@ -352,6 +419,13 @@ impl PgPathExecutionTx {
                     | RunEvent::StepStarted { .. }
                     | RunEvent::StepCompleted { .. }
                     | RunEvent::StepFailed { .. }
+                    | RunEvent::ConditionEvaluated { .. }
+                    | RunEvent::SwitchEvaluated { .. }
+                    | RunEvent::WaitStarted { .. }
+                    | RunEvent::WaitSatisfied { .. }
+                    | RunEvent::WaitTimedOut { .. }
+                    | RunEvent::TimerStarted { .. }
+                    | RunEvent::TimerFired { .. }
                     | RunEvent::StepRouted { .. }
                     | RunEvent::StepRetryScheduled { .. }
                     | RunEvent::StepRetryDue { .. }
@@ -383,7 +457,9 @@ impl PgPathExecutionTx {
             .filter_map(|event| {
                 matches!(
                     event.event(),
-                    RunEvent::StepCompleted { .. } | RunEvent::ReconciliationConcluded { .. }
+                    RunEvent::StepCompleted { .. }
+                        | RunEvent::ReconciliationConcluded { .. }
+                        | RunEvent::WaitSatisfied { .. }
                 )
                 .then(|| event.instance())
                 .flatten()
@@ -502,7 +578,9 @@ impl PgPathExecutionTx {
             .bind(
                 matches!(
                     event,
-                    RunEvent::StepCompleted { .. } | RunEvent::ReconciliationConcluded { .. }
+                    RunEvent::StepCompleted { .. }
+                        | RunEvent::ReconciliationConcluded { .. }
+                        | RunEvent::WaitSatisfied { .. }
                 )
                 .then(|| output_digest.get(&instance).map(Vec::as_slice))
                 .flatten(),
@@ -627,6 +705,13 @@ impl PgPathExecutionTx {
                 detail: "an idempotency record for this command appeared concurrently".into(),
             });
         }
+        if consumed_delivery {
+            self.scoped_event_delivery
+                .as_mut()
+                .ok_or_else(|| corrupt("scoped event delivery witness disappeared"))?
+                .persisted = true;
+        }
+        self.scoped_event_persistence_failed = prior_persist_failure;
         Ok(())
     }
 
@@ -1020,18 +1105,40 @@ impl PgPathExecutionTx {
             .local_instance(instance.node())
             .cloned()
             .ok_or_else(|| corrupt("bounded step projection"))?;
-        let waiting_kind = match step.waiting_on() {
-            None => None,
-            Some(WaitingOn::Reconciliation) => Some("RECONCILIATION"),
-            Some(WaitingOn::Operator { .. }) => Some("OPERATOR"),
+        let (waiting_kind, due_at) = match step.waiting_on() {
+            None => (None, None),
+            Some(WaitingOn::Reconciliation) => (Some("RECONCILIATION"), None),
+            Some(WaitingOn::Operator { .. }) => (Some("OPERATOR"), None),
+            Some(WaitingOn::Timer { due_at }) => (Some("TIMER"), Some(*due_at)),
+            Some(WaitingOn::Event { deadline, .. }) => (Some("EVENT"), Some(*deadline)),
             Some(_) => return Err(corrupt("bounded step waiting kind")),
         };
-        if step.condition().is_some() || step.switch_selection().is_some() {
-            return Err(corrupt("bounded control projection"));
-        }
         let declared = self.snapshot.definition.node_for_instance(instance);
+        validate_scoped_control_projection(declared, &step)?;
         let kind = declared.map_or("FORWARD", |node| node.origin().label());
         let node_kind = declared.map_or("activity", |node| node.kind().label());
+        let pinned = self.snapshot.definition.node_for_instance(instance);
+        let next_event = EventWaitReadState::from_step(&step);
+        let old_event = self.event_wait_read_states.get(instance).cloned();
+        let event_type = next_event.event_type(pinned).map(str::to_owned);
+        let event_since = if node_kind == "waitEvent" {
+            next_event.since(pinned)?
+        } else {
+            None
+        };
+        let old_event_type = old_event
+            .as_ref()
+            .and_then(|read| read.event_type(pinned))
+            .map(str::to_owned);
+        let old_event_since = if node_kind == "waitEvent" {
+            old_event
+                .as_ref()
+                .map(|read| read.since(pinned))
+                .transpose()?
+                .flatten()
+        } else {
+            None
+        };
         let status = step.status().as_str();
         let attempt = i32::try_from(step.attempt()).map_err(|_| corrupt("attempt"))?;
         let generation = i64::try_from(step.generation()).map_err(|_| corrupt("generation"))?;
@@ -1114,12 +1221,22 @@ impl PgPathExecutionTx {
             .await
             .map_err(store_error)?;
             self.stored.insert(instance.clone());
+            if node_kind == "timer" {
+                self.timer_read_states
+                    .insert(instance.clone(), TimerReadState::from_step(&step));
+            }
+            if node_kind == "waitEvent" {
+                self.event_wait_read_states
+                    .insert(instance.clone(), next_event);
+            }
             return Ok(());
         }
 
-        self.ensure_path_node_kind(instance, node_kind).await?;
-        let updated = sqlx::query(
-            "UPDATE steps SET status=$6,attempt=$7,generation=$8,cancel_requested=$9,routed=$10, \
+        if !matches!(node_kind, "timer" | "waitEvent") {
+            self.ensure_path_node_kind(instance, node_kind).await?;
+        }
+        let updated = sqlx::query(concat!(
+            "UPDATE steps AS s SET status=$6,attempt=$7,generation=$8,cancel_requested=$9,routed=$10, \
                     timed_out=$11,failure_code=$12,next_attempt_at=$13, \
                     ready_at=CASE WHEN $6='READY' \
                       THEN COALESCE(CASE WHEN status='READY' THEN ready_at END,$14) ELSE ready_at END, \
@@ -1138,10 +1255,26 @@ impl PgPathExecutionTx {
                       WHEN $19::bytea IS NOT NULL THEN $22 ELSE leased_by END, \
                     reported_lease_token_hash=CASE WHEN $6 IN ('LEASED','RUNNING') THEN NULL \
                       WHEN $25::bytea IS NOT NULL THEN $25 ELSE reported_lease_token_hash END, \
-                    output_digest=COALESCE($16,output_digest),waiting_kind=$26,updated_at=$14 \
+                    output_digest=COALESCE($16,output_digest),waiting_kind=$26,updated_at=$14, \
+                    condition=$27,switch_case_id=$28,due_at=$31, \
+                    event_type=CASE WHEN $30='waitEvent' THEN $35 ELSE s.event_type END, \
+                    correlation_key=CASE WHEN $30='waitEvent' THEN $36 ELSE s.correlation_key END, \
+                    event_since=CASE WHEN $30='waitEvent' THEN $37 ELSE s.event_since END, \
+                    event_scanned_at=CASE WHEN $30='waitEvent' THEN NULL ELSE s.event_scanned_at END \
              WHERE tenant_id=$1 AND run_id=$2 AND node=$3 AND step_id=$4 AND namespace_id=$5 \
-               AND instance_path_nodes=$17 AND instance_path_indices=$18",
-        )
+               AND instance_path_nodes=$17 AND instance_path_indices=$18 \
+               AND (NOT $29 OR (s.node_kind=$30 AND (($30='timer' AND (",
+            scoped_timer_metadata_valid!(),
+            ")) OR ($30 IN ('condition','switch') AND (",
+            scoped_control_metadata_empty!(),
+            ")) OR ($30='waitEvent' AND (",
+            scoped_event_metadata_valid!(),
+            "))))) AND ($30<>'timer' OR (s.due_at IS NOT DISTINCT FROM $32 \
+              AND s.status=$33 AND s.routed=$34)) \
+               AND ($30<>'waitEvent' OR (s.due_at IS NOT DISTINCT FROM $38 AND s.status=$39 AND s.routed=$40 \
+                 AND s.event_type IS NOT DISTINCT FROM $41 AND s.correlation_key IS NOT DISTINCT FROM $42 \
+                 AND s.event_since IS NOT DISTINCT FROM $43))",
+        ))
         .bind(self.snapshot.info.tenant_id.as_uuid())
         .bind(self.snapshot.info.run_id.as_uuid())
         .bind(instance.node().as_str())
@@ -1168,12 +1301,37 @@ impl PgPathExecutionTx {
         .bind(rehinted)
         .bind(reported.map(|reported| reported.token_hash.clone()))
         .bind(waiting_kind)
+        .bind(step.condition())
+        .bind(stored_switch_case_id(&step))
+        .bind(matches!(node_kind, "condition" | "switch" | "timer" | "waitEvent"))
+        .bind(node_kind)
+        .bind(due_at)
+        .bind(self.timer_read_states.get(instance).and_then(|read| read.due_at))
+        .bind(self.timer_read_states.get(instance).map(|read| read.status.as_str()))
+        .bind(self.timer_read_states.get(instance).map(|read| read.routed))
+        .bind(event_type.as_deref())
+        .bind(next_event.key.as_ref().map(CorrelationKey::as_str))
+        .bind(event_since)
+        .bind(old_event.as_ref().and_then(|read|read.deadline))
+        .bind(old_event.as_ref().map(|read|read.status.as_str()))
+        .bind(old_event.as_ref().map(|read|read.routed))
+        .bind(old_event_type.as_deref())
+        .bind(old_event.as_ref().and_then(|read|read.key.as_ref()).map(CorrelationKey::as_str))
+        .bind(old_event_since)
         .execute(&mut *self.tx)
         .await
         .map_err(store_error)?
         .rows_affected();
         if updated != 1 {
             return Err(corrupt("bounded step identity"));
+        }
+        if node_kind == "timer" {
+            self.timer_read_states
+                .insert(instance.clone(), TimerReadState::from_step(&step));
+        }
+        if node_kind == "waitEvent" {
+            self.event_wait_read_states
+                .insert(instance.clone(), next_event);
         }
         Ok(())
     }

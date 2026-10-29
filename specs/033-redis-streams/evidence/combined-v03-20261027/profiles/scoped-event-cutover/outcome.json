@@ -1,0 +1,7 @@
+{
+  "scenario": "scoped-event-cutover",
+  "resultPath": "outcome-r_xbvmrm/result.json",
+  "resultSha256": "b17d544708322c6d061e9674597fb3fa25be6d50c168763412d656fad0728bee",
+  "buildSha256": "de9befc421facabb42e384700b331a13c0a3b70fab0ab540551ef78763f233b6",
+  "transcriptSha256": "56a9b8dd6968dc1b57d086017e81c327334dfbf269c459e720ec974063bffea3"
+}
