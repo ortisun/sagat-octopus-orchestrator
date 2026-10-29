@@ -2267,10 +2267,24 @@ async fn expression_failure_drains_once_restarts_and_finishes_from_the_journal()
         )
         .await
         .expect("terminal drain projection matches journal");
-    let error = MIGRATOR
-        .undo(&fixture.db.pool, BEFORE_LOOP_DRAIN)
-        .await
-        .expect_err("retained loop drain must block downgrade");
+    let error = crate::support::bounded::within(
+        "first loop-drain downgrade probe",
+        crate::support::bounded::LIFECYCLE_LIMIT,
+        MIGRATOR.undo(&fixture.db.pool, BEFORE_LOOP_DRAIN),
+    )
+    .await
+    .expect_err("retained loop drain must block downgrade");
+    let retained_migration_locks: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pg_locks WHERE locktype='advisory' \
+         AND database=(SELECT oid FROM pg_database WHERE datname=current_database())",
+    )
+    .fetch_one(&fixture.db.pool)
+    .await
+    .expect("migration advisory locks after the expected guard error");
+    assert_eq!(
+        retained_migration_locks, 0,
+        "a failed downgrade must not leave a session migration lock in the fixture pool"
+    );
     let error = if error
         .to_string()
         .contains("retired instance reservations cannot be refunded safely")
@@ -2281,10 +2295,13 @@ async fn expression_failure_drains_once_restarts_and_finishes_from_the_journal()
             .execute(&fixture.db.pool)
             .await
             .expect("clear the isolated downgrade probe's retired charge");
-        MIGRATOR
-            .undo(&fixture.db.pool, BEFORE_LOOP_DRAIN)
-            .await
-            .expect_err("retained loop drain must independently block downgrade")
+        crate::support::bounded::within(
+            "second loop-drain downgrade probe",
+            crate::support::bounded::LIFECYCLE_LIMIT,
+            MIGRATOR.undo(&fixture.db.pool, BEFORE_LOOP_DRAIN),
+        )
+        .await
+        .expect_err("retained loop drain must independently block downgrade")
     } else {
         error
     };

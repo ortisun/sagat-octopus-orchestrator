@@ -1650,3 +1650,22 @@ Strict workspace/all-target Clippy also passes (169.35s); formatting, architectu
 and agent configuration pass. The new CI run must pass before merge. This build fix closes
 neither general nesting nor the remaining canonical release tasks.
 Refs: T014-043, T033-007.
+
+## Repeated downgrade probe diagnosis — 2026-10-29
+
+CI run40814452229 passed all other11 jobs and the capacity/migration preflight,
+but `loop_progress::expression_failure_drains_once_restarts_and_finishes_from_the_journal`
+had no terminal result after every other test in its target completed. The run was
+cancelled for diagnosis; it is not workspace acceptance. The unchanged test passed
+cache-only run40815946785, which completed all11 jobs.
+
+Pinned SQLx0.9.0 `Migrator::undo` returns from a failed `revert` before its session-level
+advisory unlock. Two expected-error probes through `&PgPool` can reuse that locked
+session or block on it from another connection. This is a source-supported mechanism;
+the cancelled runner did not expose a PostgreSQL lock snapshot proving its exact wait.
+The new RED assertion requires no advisory lock in the isolated fixture database after
+the first expected error, before retrying. Both migration stages are bounded and the
+scenario runs first in CI preflight. Its failure and subsequent correction remain pending
+until the named CI result is recorded. No release or primitive task is closed here.
+
+Refs: T014-043.
