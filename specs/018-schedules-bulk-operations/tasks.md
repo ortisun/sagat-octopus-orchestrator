@@ -59,6 +59,10 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
 - [ ] T018-006 [P] Domain reset and events `run.start_delayed`, `run.start_released`, `run.reset`,
   `wait.satisfied.via`; eligibility over `RunState::replay` + suffix facts; `ResetPlan` —
   `crates/domain/src/execution/{reset.rs,event.rs,mod.rs}` — per-cause tests — FR-018-023, FR-018-035..039.
+  *Deferred 2026-10-29 (reordered, not dropped).* It is not on the US01 path (it serves US03 start delay, US04 `via`
+  and US06 reset) and it adds variants to `RunEvent`, which is matched exhaustively in about nine crates (event codec,
+  projection, DTOs, telemetry) and in `execution/{mod,state}.rs`, files another session was changing for 014 (PR #59 has
+  since merged). It follows US01 and US02, after a fresh merge of `develop`.
 - [ ] T018-007 Permissions, audit actions and quota resources of the plan —
   `crates/domain/src/{identity.rs,audit.rs,quota.rs}` — role-grant and range tests — FR-018-041, FR-018-045.
   *Part done 2026-10-29 (task stays open).* Done: the four permissions (`schedule:read|write|operate`,
