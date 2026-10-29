@@ -34,6 +34,8 @@ jobs:
           # A failed test must not discard the dependencies already compiled.
           cache-on-failure: true
       - run: cargo fmt --all -- --check
+      - name: capacity Acquire command regression
+        run: cargo test -p sagat-application --lib --locked capacity_acquire::tests
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: isolated C# compiler and runtime images
         run: |
