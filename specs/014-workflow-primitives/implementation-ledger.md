@@ -1663,9 +1663,16 @@ Pinned SQLx0.9.0 `Migrator::undo` returns from a failed `revert` before its sess
 advisory unlock. Two expected-error probes through `&PgPool` can reuse that locked
 session or block on it from another connection. This is a source-supported mechanism;
 the cancelled runner did not expose a PostgreSQL lock snapshot proving its exact wait.
-The new RED assertion requires no advisory lock in the isolated fixture database after
-the first expected error, before retrying. Both migration stages are bounded and the
-scenario runs first in CI preflight. Its failure and subsequent correction remain pending
-until the named CI result is recorded. No release or primitive task is closed here.
+The RED assertion requires no advisory lock in the isolated fixture database after
+the first expected error, before retrying. CI40824487650/job123284265848 reproduced
+that precise defect: one lock remained instead of zero; the named test failed in7.81s.
+The other jobs were cancelled after preserving this failure.
+
+Both probes now use a dedicated raw PostgreSQL connection. A completed refusal explicitly
+acknowledges the SQLx advisory unlock before closing the session; close is attempted before
+asserting either the bounded probe or cleanup outcome. Database-scoped assertions require zero
+advisory locks after the first refusal and after the final guard check. Existing lifetime-ledger
+and retained-loop rollback refusal assertions remain. The scenario runs first in CI preflight.
+Full corrected CI is pending. No release or primitive task is closed here.
 
 Refs: T014-043.

@@ -33,7 +33,7 @@ use sagat_infra_postgres::{MIGRATOR, PgLoopProgressStore, PgRunStore, migrate};
 use sagat_scheduler::{Keeper, KeeperSettings, Placement, Scheduler, SchedulerSettings};
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
-use sqlx::Row;
+use sqlx::{Connection, Row};
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
@@ -2119,6 +2119,46 @@ async fn a_loop_that_hit_its_iteration_limit_ends_the_run_failed_through_the_sch
     assert_eq!(finished, 1, "the run finishes once");
 }
 
+// SQLx 0.9 exits a refused migration before releasing its session advisory lock.
+// Keep this probe off the pool, acknowledge unlock, then close before reporting any error.
+async fn probe_loop_drain_downgrade(
+    fixture: &LoopFixture,
+    stage: &str,
+) -> Result<(), sqlx::migrate::MigrateError> {
+    let mut connection = crate::support::bounded::within(
+        "connect isolated loop-drain migrator",
+        crate::support::bounded::START_LIMIT,
+        sqlx::PgConnection::connect(&fixture.db.url),
+    )
+    .await
+    .expect("dedicated migration session");
+    let outcome = tokio::time::timeout(crate::support::bounded::LIFECYCLE_LIMIT, async {
+        let result = MIGRATOR.undo(&mut connection, BEFORE_LOOP_DRAIN).await;
+        let unlocked = if result.is_err() {
+            Some(sqlx::migrate::Migrate::unlock(&mut connection).await)
+        } else {
+            None
+        };
+        (result, unlocked)
+    })
+    .await;
+    // Attempt cleanup even if the probe timed out; never return its physical session to PgPool.
+    tokio::time::timeout(std::time::Duration::from_secs(15), connection.close())
+        .await
+        .expect("bounded close of the dedicated migration session")
+        .expect("close the dedicated migration session");
+    let (result, unlocked) = outcome.unwrap_or_else(|_| {
+        panic!(
+            "stage `{stage}` did not finish within {:?}",
+            crate::support::bounded::LIFECYCLE_LIMIT
+        )
+    });
+    if let Some(unlocked) = unlocked {
+        unlocked.expect("acknowledge migration advisory unlock after the expected refusal");
+    }
+    result
+}
+
 #[tokio::test]
 async fn expression_failure_drains_once_restarts_and_finishes_from_the_journal() {
     let fixture = seed_running_loop("loop-expression-drain").await;
@@ -2267,13 +2307,9 @@ async fn expression_failure_drains_once_restarts_and_finishes_from_the_journal()
         )
         .await
         .expect("terminal drain projection matches journal");
-    let error = crate::support::bounded::within(
-        "first loop-drain downgrade probe",
-        crate::support::bounded::LIFECYCLE_LIMIT,
-        MIGRATOR.undo(&fixture.db.pool, BEFORE_LOOP_DRAIN),
-    )
-    .await
-    .expect_err("retained loop drain must block downgrade");
+    let error = probe_loop_drain_downgrade(&fixture, "first loop-drain downgrade probe")
+        .await
+        .expect_err("retained loop drain must block downgrade");
     let retained_migration_locks: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM pg_locks WHERE locktype='advisory' \
          AND database=(SELECT oid FROM pg_database WHERE datname=current_database())",
@@ -2295,13 +2331,9 @@ async fn expression_failure_drains_once_restarts_and_finishes_from_the_journal()
             .execute(&fixture.db.pool)
             .await
             .expect("clear the isolated downgrade probe's retired charge");
-        crate::support::bounded::within(
-            "second loop-drain downgrade probe",
-            crate::support::bounded::LIFECYCLE_LIMIT,
-            MIGRATOR.undo(&fixture.db.pool, BEFORE_LOOP_DRAIN),
-        )
-        .await
-        .expect_err("retained loop drain must independently block downgrade")
+        probe_loop_drain_downgrade(&fixture, "second loop-drain downgrade probe")
+            .await
+            .expect_err("retained loop drain must independently block downgrade")
     } else {
         error
     };
@@ -2310,6 +2342,14 @@ async fn expression_failure_drains_once_restarts_and_finishes_from_the_journal()
             .to_string()
             .contains("loop drain progress is retained")
     );
+    let remaining_migration_locks: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pg_locks WHERE locktype='advisory' \
+         AND database=(SELECT oid FROM pg_database WHERE datname=current_database())",
+    )
+    .fetch_one(&fixture.db.pool)
+    .await
+    .expect("migration advisory locks after both downgrade refusals");
+    assert_eq!(remaining_migration_locks, 0);
 }
 
 #[tokio::test]
