@@ -1,0 +1,17 @@
+{
+  "command": [
+    "python3",
+    "scripts/test-released-v02-profile.py",
+    "--prepared-run",
+    "/tmp/sagat-v03-20261026/released-v02-al_pw2ho",
+    "--scenario",
+    "redis-callback-cutover"
+  ],
+  "exit_code": 0,
+  "seconds": 165.24,
+  "wall_seconds": 165.24,
+  "wall_minus_monotonic_seconds": 0.0,
+  "started_utc": "2026-10-28T00:47:03.584569+00:00",
+  "finished_utc": "2026-10-28T00:49:48.826942+00:00",
+  "log": "redis-released-callback-cutover-first.txt"
+}

@@ -13,7 +13,7 @@ An architectural rule that nothing checks is a wish. Each row is a rule and what
 | Rule | Check that fails |
 |---|---|
 | Domain has no framework, SQL driver or broker dependency; layers point inwards; no cycles | `scripts/check-architecture.py` (CI `architecture`), tests in `scripts/tests/` |
-| Every store statement is within the runtime role's privileges | `tests/integration/platform-foundation/runtime_privileges` |
+| Every store statement is within the runtime role's privileges | `tests/integration/platform-foundation/runtime_privileges`; [supported static SQL forms](sql-privilege-audit.md) |
 | Every service works as the least-privilege role | `SAGAT_TEST_AS_RUNTIME_ROLE=1` over the suites |
 | Every variable-size column is classified | `storage-classification.json` + `integration_security_multitenancy` |
 | Journal is the authority; projections equal a replay | `verify_run` / `assert_consistent` at the end of the fault tests |

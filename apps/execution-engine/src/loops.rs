@@ -19,7 +19,24 @@ use sagat_scheduler::{
 use tokio::sync::watch;
 
 pub type EngineScheduler = Scheduler<PgRunStore, JsonEvaluator, SystemEntropy>;
-pub type EngineDispatcher = OutboxDispatcher<PgRunStore, NatsPublisher, SystemEntropy>;
+pub enum HintPublisher {
+    Nats(Box<NatsPublisher>),
+    Redis(sagat_infra_connectors::redis::RedisPublisher),
+}
+impl sagat_application::maintenance::EventPublisher for HintPublisher {
+    async fn publish(
+        &self,
+        subject: &str,
+        id: &str,
+        payload: &[u8],
+    ) -> Result<(), sagat_application::maintenance::PublishError> {
+        match self {
+            Self::Nats(p) => p.publish(subject, id, payload).await,
+            Self::Redis(p) => p.publish(subject, id, payload).await,
+        }
+    }
+}
+pub type EngineDispatcher = OutboxDispatcher<PgRunStore, HintPublisher, SystemEntropy>;
 pub type EngineEvents = EventDispatcher<PgRunStore, JsonEvaluator, SystemEntropy>;
 pub type EngineProjector = TelemetryProjector<PgRunStore>;
 pub type EngineMonitor = Monitor<PgRunStore>;

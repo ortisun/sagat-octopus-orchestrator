@@ -1,5 +1,13 @@
 # SDK release notes
 
+## 0.3.0 — in development
+
+Adds the native Tokio Rust SDK under `sdks/rust`: typed REST client, worker host, scoped
+secrets/blobs, compensation/reconciliation, trace/metric hooks and declarative builders using
+the canonical IR. Rust joins the common conformance matrix and local `.crate`/consumer checks.
+The coordinated release and its final gates remain tracked by features 014, 033 and 034.
+Registry publication remains disabled.
+
 ## 0.2.0
 
 All five SDK packages use 0.2.0 and remain distributed through GitHub Release assets. Go uses

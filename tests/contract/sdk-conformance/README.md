@@ -1,9 +1,9 @@
 # SDK conformance suite
 
-One suite, five languages (`FR-006-006`, `SC-006-001`). The same scenarios are executed by the
-TypeScript, Go, Python, C# and Java SDKs against a real platform (REST API, worker service, scheduler,
+One suite, six languages (`FR-006-006`, `SC-006-001`). The same scenarios are executed by the
+TypeScript, Go, Python, C#, Java and Rust SDKs against a real platform (REST API, worker service, scheduler,
 PostgreSQL, identity provider — the stack of `tests/support`), and the **normalized** results must be
-identical across the five **and** equal to the golden files in `expected/`. A scenario therefore says what
+identical across the six **and** equal to the golden files in `expected/`. A scenario therefore says what
 an SDK does, not how it is written. `sdks/SPEC.md` is the behaviour; this file is the test contract.
 
 ```text
@@ -14,7 +14,7 @@ SAGAT_SDK_BLESS=1 …                                                           
 SAGAT_SDK_REUSE=1 …                                                              # do not rebuild the SDKs
 ```
 
-`--ignored` because the suite needs the five toolchains (Node, Python, Go, .NET and a JDK) and Docker, which `cargo test --workspace` cannot assume; the `sdks` job of CI sets them up and runs the suite with `--ignored`. `SAGAT_SDK_REUSE=1` also skips the build of the runners, so run once without it after changing an SDK or a runner.
+`--ignored` because the suite needs the six toolchains (Rust, Node, Python, Go, .NET and a JDK) and Docker, which `cargo test --workspace` cannot assume; the `sdks` job of CI sets them up and runs the suite with `--ignored`. `SAGAT_SDK_REUSE=1` also skips the build of the runners, so run once without it after changing an SDK or a runner.
 
 The `database-connections` scenario also requires a prebuilt isolated executor:
 `cargo build -p sagat-database-runner --bin database-runner --locked` (or set
@@ -686,3 +686,59 @@ coverage remains separately scoped, with other historical features/versions unte
 
 Evidence: [complete SDK60 aggregate](../../../tasks/project-completion/evidence/sdk60-current-20261018/reproduce.md).
 This evidence does not accept general nested runtime, C0, production ceilings or final release gates.
+
+
+`collection-control-routing.json` adds the 0.3 WP-03 local condition/switch case. Both bodies
+start with a compensable reservation; positive items notify, negative items go directly to
+Return. Every SDK must produce `[1,-1]`, the same six qualified worker calls, two recorded
+choices per Run and no `selected` instance for index1. Authored lifetime12/depth 1 and worker
+minor1.5 stay in the reviewed workflow/runtime references. This is a focused scenario;
+native tests own rollback, malformed physical metadata, stale snapshot and failure proofs.
+
+`collection-local-recovery.json` is the 0.3 WP-03/04 local activity-error-route case.
+All five existing builders preserve `onError`, instance/depth limits and worker minor1.5.
+A known failure followed by successful recovery returns ordered `[1,2]`; a failed recovery
+stops admission and compensates its actual reservation with `RECOVERY_FAILED`. The native
+collection_recovery suite separately checks skipped recovery branches, sibling isolation,
+retired lifetime reservations, native false-drain refusal and full/frontier parity. New
+workflow and runtime goldens were recorded after reading the complete matching observed
+outputs, then verified in all five languages without a bless switch.
+
+
+`collection-control-entry.json` is the 63rd registry scenario. The condition-only collection
+finishes before startWorker and produces no worker calls. A switch-entry collection returns
+ordered [1,-1] and leases one actual control.notify activity for index 0. Existing builders,
+IR v1 and worker 1.5 are unchanged; authored lifetime ceilings are 6/8 and depth 1. Native
+admission tests own journal-fault rollback, replay/mismatch, current tenant/shard authority,
+quota reduction, cancellation, cold discovery, retained-evidence rollback refusal and
+frozen OrdinaryLeafV1 exclusion. A focused pass is not complete 63-scenario acceptance.
+
+
+`collection-timers.json` is registry scenario64. Three existing body-builder programs use
+sleep/durationMs: Timer entry and Condition→Timer both finish before worker startup;
+Activity→Timer runs only two real activities. Ordered results are[1,-1] in every Run, and
+qualified timer graph nodes have attempt0 and cleared waits. The authored instance ceilings
+6/8/8 and depth1 are preserved in both reviewed canonical and workflow documents. Native
+transaction tests separately cover pause/cold resume, cancellation races, malformed state,
+prepared-write guards and rollback. A focused case is not complete64-scenario acceptance.
+
+
+`collection-events.json` exercises public `waitForEvent` inside collection bodies, directly at
+entry and after a real activity, plus handled deadlines. Namespace events precede execution and
+use distinct keys; lookback can satisfy each instance with its own durable receipt. A repeated
+event ID is DUPLICATE. The shared journal uses maxConcurrency 1 to avoid imposing an order on
+independent iterations; native public tests separately use concurrency 2. Timeout keys cannot
+match those previously published. Reviewed outputs retain journals, instance-aware worker calls,
+ordered scope results, peak active count and independent persisted server state. Rust joins this
+case through the release integration with feature034; existing five-language results are not a
+new all-six acceptance claim.
+## Rust runner
+
+Set `SAGAT_RUST_SDK_TARGET_DIR` to an owned absolute directory outside the repository and
+separate from the backend target. `prepare.sh` builds the independent locked Rust runner there;
+`run.sh` invokes its public SDK client, worker and typed builders. Test-only HTTP/gRPC loopback
+proxies inject the same shared fault plans; the SDK continues through its ordinary public paths.
+No expected documents are read by the runner. Its authoring adapter is also exercised by the
+standalone Rust unit suite against all 60 reviewed fixtures.
+Archived v0.1/v0.2 clients use their original five-language matrix explicitly; they do not have a
+Rust package. New six-language results do not rewrite historical evidence.

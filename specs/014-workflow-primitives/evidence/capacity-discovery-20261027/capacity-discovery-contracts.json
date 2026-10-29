@@ -1,0 +1,23 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "contract_workflow_primitives",
+    "--test",
+    "sdk_conformance",
+    "--test",
+    "contract_developer_experience",
+    "--locked",
+    "--no-fail-fast"
+  ],
+  "exit_code": 0,
+  "seconds": 34.62,
+  "wall_seconds": 34.62,
+  "wall_minus_monotonic_seconds": 0.0,
+  "started_utc": "2026-10-28T02:06:44.985848+00:00",
+  "finished_utc": "2026-10-28T02:07:19.606572+00:00",
+  "log": "capacity-discovery-contracts.txt"
+}

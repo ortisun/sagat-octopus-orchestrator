@@ -10,6 +10,16 @@ pending; publication capabilities, authority checks and required technical gates
 
 ## Summary
 
+The owner requested completion of the remaining implementation for release 0.3 on
+2026-10-26. [The 0.3.0 implementation ledger](./implementation-0.3.md) records the
+ordered remaining increments and actual verification. Existing unchecked tasks and
+publication gates remain authoritative until their acceptance evidence is obtained.
+
+The capacity work is decomposed into bounded transaction families. The implemented read-only
+[B1d.1 discovery component](./capacity-discovery.md) is metadata-only; it enables no group mutation
+or nested body. Later own-member authority, acquisition/transfer, creation and quota/backfill
+gates remain prerequisites to production activation.
+
 Deliver current-API order examples for all five SDKs (US01), then implement bounded dynamic
 collections, sequential loops, native approval, switch, declarative Query/Update and run-chain
 continuation (US02–US07) through accepted dependency-ordered slices. US01, bounded switch,
@@ -593,3 +603,109 @@ producer composition, native End/scheduler activation, full old-binary rollout, 
 nested capacity and final release gates remain open. No canonical runtime task is closed by Q5.
 Evidence: `tasks/project-completion/evidence/legacy-output-view-20261018/reproduce.md` and
 `scoped-output-refusal-red-20261018/reproduce.md`.
+
+
+### 0.3 control entry admission increment
+
+[The bounded admission contract](./control-entry-admission.md) extends collection entry to
+Condition/Switch through an explicit Activity/Scheduler dispatch intent. It reuses native
+chain/run→shard→policy/usage→scope admission, charges the entry and reservations exactly once,
+and discovers PENDING control work from durable state without a task hint. The additive
+20261221000000 migration preserves old activity writers by default and retains immutable
+scheduler admission evidence for rollback refusal. Named native tests cover transaction
+rollback, replay/mismatch, revision, capacity reduction, cold discovery, cancellation,
+CHECK-valid projection corruption and frozen OrdinaryLeafV1 exclusion. All general task and
+release gates remain open. Old scheduler authority must be fenced/drained before admitting
+new definitions; released-profile upgrade evidence is required before advertising 0.3.
+
+
+### 0.3 scoped timer runtime increment
+
+Use shared explicit-clock full/path commands, native waiting_kind/due_at projection and a
+retained timer read-set (status/routed/deadline). Reuse scheduler admission's SCHEDULER intent
+and qualified timer discovery, with no fake activity/task hint. Durable collection discovery
+resumes succeeded/unrouted members after pause; safe drain cancels validated waiting timers.
+Full/path/frontier readers and both writers enforce the same closed lifecycle and physical
+metadata. Test journal rollback, stale snapshots, real cancellation/fire lock order, cold resume,
+source-profile exclusion and five existing SDK sleep builders. See scoped-timer-runtime.md.
+No new migration, protocol minor or nested capacity activation is needed for this increment.
+
+### Explicit zero tenant iteration policy (O701)
+
+[zero-iteration-policy.md](./zero-iteration-policy.md) implements the decided admission-only
+meaning of zero. Keep default/absent versus explicit tenant policy distinct, reuse the current
+policy/run/usage locks and admission comparison, and preserve accepted progress and drain.
+An additive positive→nonnegative CHECK has a retained-zero downgrade guard; deploy schema
+first and fence zero-capable writers before rollback. This adds no group runtime or counter.
+
+### Scoped event-wait recorded preparation
+
+[scoped-event-waits.md](./scoped-event-waits.md) separates pure recorded lifecycle/branch
+selection from native correlation, clock and delivery authority. Root/full/path planners share
+recorded branch selection; Pending waits remain scheduler-owned. Public wait bodies stay closed
+under a contract fitness test until qualified dispatcher identity, persistence/receipt/value
+atomicity, races and all-five runtime evidence pass. Native/group activation is not inferred.
+
+
+### Qualified event receiver implementation checkpoint — 2026-10-27
+
+The bounded contracts in scoped-event-scheduling.md, scoped-event-deadlines.md and
+scoped-event-receiver.md now have current native caller evidence. External delivery uses
+current exact-path receipt/value transactions; lookback uses bounded tenant-qualified traversal.
+Index-only migration20261223000000 retains legacy lookup support and documents build locking.
+This does not activate public scoped event bodies or their entry shapes. Released-v0.2 cutover,
+remaining node kinds/nesting/capacity and canonical release acceptance remain pending in the
+implementation ledger and validation report.
+
+
+### Scheduler-owned scoped event entry — 2026-10-27
+
+scoped-event-entry.md extends the existing Scheduler admission kind to pinned WaitEvent entries,
+with unchanged Run/tenant reservations and authority. Pending admission owns no worker or event
+clock; the accepted subscription pass starts it later. Full/path/frontier reads enforce the same
+exact dispatch/journal identity. Focused native and cold discovery evidence is in the0.3 ledger;
+public activation and released-profile/SDK/final acceptance remain separate.
+
+
+### Actual released-v0.2 compatibility profile — 2026-10-27
+
+[released-v02-profile.md](./released-v02-profile.md) and its verified runner prove old public
+activity/root-wait production, normal current migration and completion, and actual released
+REST/native reads of the retained terminal runs. Separate marked build targets and immutable
+source/executable manifests prevent same-version old/current Cargo cache contamination.
+The0.3 ledger records real setup failures and separate preflight/final results. This accepts
+only old READY/unleased work/root waits; new scoped-body activation still needs the distinct
+old-dispatcher stop/join/credential barrier, public/SDK and remaining runtime/release gates.
+
+
+### Actual released in-flight worker profile — 2026-10-27
+
+[released-v02-inflight-profile.md](./released-v02-inflight-profile.md) separately proves the old
+generated worker client's original in-memory scoped lease/request survives schema upgrade
+and reports/replays against current runtime-role services. Anonymous framed IPC refreshes only
+subject authentication. Native evidence binds the live and reported original capability, exact
+receipt fingerprint/logical charge, immutable prefixes and required current scheduler work.
+The selected coordinator and exact test overlays are compiled-source verified. This is not an
+expired-task, Applied/reconciliation, old-dispatcher cutover, public activation or full release
+guarantee; those gates remain open in the0.3 ledger.
+
+
+### Genuine released Applied lookup — 2026-10-27
+
+[released-v02-applied-profile.md](./released-v02-applied-profile.md) proves the real old
+OUTCOME_UNKNOWN→lookup→Applied report/replay across normal upgrade, preserving both physical
+capabilities, exact event/output/receipt/accounting and current scheduler finality. A second
+old process verifies terminal REST/native history and the original prefix afterwards. Shared
+typed mode binds all phases. Quota/drain frontier, cold-dispatcher activation and the remaining
+complete runtime/resource/SDK/release guarantees stay open in the0.3 ledger.
+
+
+### Public scoped event acceptance — 2026-10-27
+
+The next bounded increment opens collection `waitEvent` entry/local routes after actual released
+old-dispatcher credential revocation, established-session termination and process join. Reuse the
+native exact-path receiver/deadline/scheduler implementations; change only the public body-kind
+guard. Keep the eight-node bound and existing graph/schema/tenant rules. Root signals, loops,
+approvals/children/nesting/capacity remain separately gated. Public and common-SDK evidence and
+observed failures are in scoped-event-publication.md and implementation-0.3.md. No canonical task
+closes through this partial increment; final integrated six-language and release gates remain.

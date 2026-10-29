@@ -77,7 +77,8 @@ jobs:
   sdks:
     name: sdks (unit tests, conformance suite, user stories, faults)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Six-language validation reached 59m50s on a cold runner; leave cache-save margin.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup show active-toolchain
@@ -129,12 +130,22 @@ jobs:
       - name: Java SDK
         working-directory: sdks/java
         run: ./mvnw -q verify
+      - name: Rust SDK
+        working-directory: sdks/rust
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/sagat-rust-sdk
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo test --locked
       # These three targets play every SDK against a real platform (PostgreSQL through Testcontainers, the
       # engine and the API in the test process). They are #[ignore] in the workspace run above because they
-      # need the five toolchains.
+      # need the six toolchains.
       - name: build isolated database executor for SDK conformance
         run: cargo build -p sagat-database-runner --bin database-runner --locked
-      - name: conformance suite, user stories and faults, five languages
+      - name: conformance suite, user stories and faults, six languages
+        env:
+          SAGAT_RUST_SDK_TARGET_DIR: ${{ runner.temp }}/sagat-rust-sdk
         run: cargo test -p sagat-tests --test sdk_conformance --test e2e_sdk_multilanguage --test fault_sdk_multilanguage --locked -- --ignored
       # The hello-world and order-processing examples of each SDK run against a real platform: all five
       # produce the same persisted semantics; and the payment saga runs on a good day, a declined card
@@ -332,3 +343,4 @@ jobs:
       - run: cargo install cargo-audit --locked --version 0.22.2
       # Every ignored advisory, why, and when it expires are in .cargo/audit.toml and research.md (G16, G271, G700 to G703).
       - run: cargo audit --deny warnings
+      - run: cargo audit --file sdks/rust/Cargo.lock --deny warnings

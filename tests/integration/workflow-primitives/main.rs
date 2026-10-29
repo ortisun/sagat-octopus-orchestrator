@@ -27,19 +27,28 @@ mod chains;
 mod chains_http;
 mod collection_10k;
 mod collection_budgets;
+mod collection_control_admission;
+mod collection_control_entry;
+mod collection_control_transactions;
+mod collection_controls;
 mod collection_data_limit_native;
 mod collection_data_limit_readers;
 mod collection_data_limit_schema;
 mod collection_empty_quota;
 mod collection_end_result;
+mod collection_events;
 mod collection_finish_atomic;
 mod collection_pipeline;
+mod collection_recovery;
 mod collection_restore;
 mod collection_sources;
+mod collection_timer_transactions;
+mod collection_timers;
 mod collections_http;
 mod compatibility;
 mod hint_contract;
 mod identity_storage;
+mod iteration_policy_zero;
 mod journal_identity;
 mod leaf_certification;
 mod leaf_certification_native;
@@ -57,9 +66,20 @@ mod projection;
 mod public_refusal_commit_loss;
 mod publication_rejections;
 mod refusal_secret_versions;
+#[cfg(unix)]
+mod released_v02_callback_cutover;
+#[cfg(unix)]
+mod released_v02_cutover;
+#[cfg(unix)]
+mod released_v02_inflight;
+mod released_v02_upgrade;
 mod scope_compensation_http;
 mod scope_frontier;
 mod scoped_blob_completion;
 mod scoped_worker;
 mod security;
 mod switch_storage;
+
+mod scoped_event_dispatch_identity;
+
+mod scoped_event_storage;

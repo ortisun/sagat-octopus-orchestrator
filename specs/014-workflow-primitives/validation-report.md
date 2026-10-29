@@ -3881,3 +3881,369 @@ more after review), 17 green, eight named mutations killed, domain suite 561 pas
 reviews found no code defect, and the architecture review exposed the conflict with the released
 reduction contract that led to O701. Gates re-run on the tree after removal are listed in the commit
 that removes it.
+
+## 0.3 scoped timers and explicit zero-policy progress — 2026-10-27
+
+The ongoing implementation ledger is [implementation-0.3.md](./implementation-0.3.md).
+Timers: core1017passed, focused native35passed plus separate2-test full/frontier journal/
+existing-source oracle; common five-SDK scenario64 verified without regeneration; strict
+workspace Clippy passed. These are separate invocations, not one combined count. Timer
+fault92passed; the following integration phase was deliberately stopped because a concurrent
+build replaced the executable before Cargo launched it. An immutable-checkout replacement
+is running; no full native pass is claimed for that mixed-source invocation.
+
+O701: domain and public API zero refusals reproduced before change. Additive migration
+20261222000000 widens the existing policy CHECK; retained zero blocks downgrade under the
+policy-table lock. Five focused native tests pass, including absent-row INSERT/source/clear,
+accepted timer progress at zero, fresh-admission refusal/resumption and both actual writer/
+downgrade lock orders. The table validation/rollback rollout windows are documented in
+[zero-iteration-policy.md](./zero-iteration-policy.md). Bounded correction review, complete
+contracts/lint, fixed-source full regression, released-profile rollout and resource workloads
+remain pending. All eight canonical tasks remain unchecked; no release is accepted.
+
+### Frozen timer regression completed
+
+At19c60a86 the isolated integration target passed580/0failed/16ignored in2584.38s
+harness (2693.95s command, wall gap0.01s). The independent fault target passed92/0/0.
+The mixed-source interrupted attempt remains invalid for integration acceptance. Later
+migration22/zero policy and pure event replay are separately tested increments and are not
+covered by this frozen binary. The complete release gate still requires the final tree,
+64-scenario conformance, released-profile rollout and remaining resource/nested behavior.
+
+
+### Root event dispatch preparation
+
+The app-role page/scan regressions reproduced both existing scope-isolation defects before
+fixing the three queries. The reviewed tests pass2/0/0,3.90s harness; existing root dispatch
+regression passes24/0/0,66.34s harness. Sentinels are append-only storage fixtures retained
+until owned DB teardown, not a scoped runtime proof. Event type/key/since and namespace/tenant
+CAS controls preserve legitimate root marking. Qualified delivery/start/timeout, activation
+fencing and public scoped waits remain pending. Full64 on38d7b3f0 initially failed for a
+missing database-runner prerequisite; the prerequisite build and focused five-language database
+scenario now pass, with full64 retry still running. See the implementation ledger for exact
+source, executable hashes, command timings and retained failures. No canonical task closes.
+
+
+### Qualified event candidates, receiver still closed
+
+The candidate port now carries canonical path/node plus stored UUID, and its explicit SQL
+cursor tuple is preserved by scheduler pagination. Root receipt construction, wake and lookback
+refuse nonroot candidates. A current root wake checks UUID against its pinned version/run;
+scan CAS also pins physical/logical identity. Four application and four app-role native tests
+pass after three genuine RED assertions (legacy receipt construction, cursor and UUID/path CAS).
+Existing root consumer/trigger metadata is unchanged. No scoped consumer or receipt is built,
+and no native start/timeout/receiver or public capability is enabled. Exact source gate results
+and limitations are in the implementation ledger; final integrated release gates remain open.
+
+
+### Pure explicit-clock scoped event start
+
+The start-only command passes15 focused tests, including varied keys/clocks and ten malformed
+Pending projection fields in both models. Full domain passes574/0/0 across42targets in38.79s;
+strict domain Clippy passes12.08s. The initial pending-command RED and one journal-expectation
+failure are retained in the implementation ledger. Read-only review found no required issue.
+This is not native subscription, timeout, event receipt or public capability evidence; callers
+still need database time, current scheduling authority and evaluation-snapshot CAS. No canonical
+task is closed by this preparation increment.
+
+
+### Complete64-scenario SDK checkpoint
+
+Immutable38d7b3f0 passed64scenarios across all five SDKs,1aggregate/0failed/0ignored,
+1396.68s harness/1399.68s command. Root independently confirmed290complete normalized outputs
+from58scenarios equal their exact goldens; six authoring-only scenarios remain separately
+identified. No bless or selection filter; prepared SDK reuse after the initial missing-runner
+failure is explicit. [Command, log, hashes and limitations](./evidence/sdk64-20261027/README.md)
+are retained. This strengthens timer/control/recovery and zero-policy snapshot evidence; it is
+not acceptance for later event preparations, native scoped events, nesting or release0.3.
+
+
+### Pure explicit-clock scoped event timeout
+
+Full domain passes582/0/0 across42targets in37.29s after23focused event-wait tests.
+Strict domain Clippy passes11.11s; read-only review found no required issue. The timeout
+uses the recorded deadline/pinned route, preserves paused deferred routing, and refuses
+stale/foreign/malformed/stopped sources. Pure ordering and boundary properties do not replace
+native PostgreSQL races or database-time/current-authority proofs. No native subscription,
+receiver, public shape or canonical task is enabled by this increment.
+
+
+### Exact-context correlation evaluator
+
+The additive internal port preserves root delegation and defaults legacy adapters to scoped
+refusal. The real interpreter uses its existing exact-path/lazy context and key conversion.
+Corrected full application+IR passes437/0/0 across36targets in5.13s, including19evaluator tests;
+strict all-target lint for those crates passes2.09s. The unsupported-scoped RED, two required
+test corrections, and already-green computed-key masking diagnostic are recorded separately
+in the implementation ledger. Final review found no required issue. No native start caller,
+public body or admission/receipt authority is enabled by this evaluator preparation.
+
+### Native scoped event-wait start storage
+
+The real admitted-activity → Pending-wait structured-codec fixture now proves full/path start
+storage and correlation failure with exact binding/lookback and own-shard database time.
+The corrected focused runtime-role gate passes11/0/0 in40.06s harness/97.72s command; full
+domain583, contracts49, timer13, control23, common fences10 and root dispatch24 pass in separate
+invocations. Strict workspace/all-target Clippy passes130.39s. Two real review/TDD defects were
+fixed: generic timeout-code failure bypassed clock authority, and all three readers accepted
+wrong namespace/UUID. Physical source changes without a Run revision and journal-trigger
+failure are refused/rolled back without repairing their source. Read-only corrections are
+reviewed; exact commands, failures, counts, source limits and executable SHA are in the ledger.
+All-services sagat_app is explicit for final native/regression profiles. This uses the named
+internal structured codec, not public publication or released-profile proof. Native timeout,
+receiver/drain, nesting/capacity lifecycle and final release gates remain open; no task closes.
+
+### Native scoped event-wait timeout storage
+
+Actual due-deadline full/path storage failed2before the whitelist correction, then passed13,
+19 and20successive focused cases under sagat_app. The20-case gate passed72.95s harness/
+192.06s command; the corrected isolated authority case passed separately1/0/0 in4.77s/
+56.62s. The negative-test coverage correction and source provenance are explicit in the ledger.
+The tests cover handled/unhandled/local error routes, subscription+scan cleanup, actual pause/
+audited resume with explicit cold routing once, late projection abort with journal rollback,
+and key/type/coherent-window source CAS without Run revision. Strict adapter+tests lint passes;
+read-only mechanism review found no required issue. This is private structured-codec/native-port
+evidence. Scheduler production/discovery, external receipt/value handling, cancellation/drain,
+old-dispatcher cutover and final SDK/rollout/resource/release acceptance remain open.
+
+### Scoped event-wait collection drain
+
+The new native cancellation case first failed with a run stuck CANCELLING. The reducer, both
+scheduler eligibility paths and independent PgCollectionStore writer now agree on a workerless
+event suspension, validate its current complete locked binding and canonical identity, clear the
+subscription/scan fields and retire reservations/slots atomically. A reviewed failure-entry
+replay mismatch was reproduced and fixed before acceptance; Pending-entry behavior is retained.
+
+Full domain587/0/0 across42target summaries passes36.59s command. The combined native lifecycle
+filter passes26/0/0 in97.65s harness/97.66s command. Native drain6 then final7cases additionally
+cover full/frontier journal parity, actual sibling-expression failure, both held-Run timeout/
+cancel orders, source corruption, current authority/revision, duplicate receipt and late
+post-cleanup journal failure with rollback of tenant capacity as well as all previous observations.
+The final7pass21.89s harness/97.83s command; this is separate from26, not33distinct cases.
+Strict workspace Clippy90.15s and final test-target lint26.93s pass. Runtime-role regressions
+pass timers13, controls23 and native transactions15 on the same executable; exact timings,
+hashes, fixture/compile failures and review correction are in implementation-0.3.md.
+Formatting, architecture and agent checks pass. No canonical task, loop event drain, external
+event receiver/producer/public body, nested-capacity or release acceptance is closed.
+
+### Pure scoped event satisfaction and canonical lower bound
+
+Typed full/path commands now match the exact current instance/type/key and inclusive received
+window, preserve paused deferred routing and first-commit semantics, and leave both models
+unchanged on failure. The checked lower-bound calculation is shared with native metadata
+validation; root legacy behavior remains separate. The focused gate passes39/0/0 after two
+review findings were reproduced and corrected (partial mutation on route failure; wrong typed
+root/unadmitted error). Final core domain+application+IR passes1035/0/0 across78targets in65.44s
+command, strict workspace Clippy106.70s and contracts49/0/0 pass. Before the final pure-only
+corrections, native lifecycle27passes96.51s harness with the same canonical window helper;
+that is separate source evidence. The ledger retains every RED/compile/coverage correction.
+No native receipt/payload authority, WaitSatisfied persistence, discovery/producer/public body
+or canonical runtime/release task is enabled by this pure preparation.
+
+### Shared canonical event document preparation
+
+The shared application encoder preserves the old JsonEvaluator bytes and extension interface.
+New factory cases first failed2while the existing exact-byte evaluator baseline passed1; all3
+then pass. Full application+IR440/0/0 across38targets passes71.33s command, root dispatch24/0/0
+passes57.61s harness/105.00s command under sagat_app, and strict workspace Clippy passes82.80s.
+Read-only compatibility review found no issue. This is representation reuse, not new receipt,
+payload authority, ingress validation or public scoped-event acceptance.
+
+
+### Native scoped receipt and canonical retained value
+
+The internal full/path transaction ports now pin the current own Run, subscription and inbox
+admission before staging an exact receipt and its canonical document. WaitSatisfied and its
+one output require the private same-transaction witness. Commit refuses orphan receipts,
+post-consumption ignored errors and prior failures hidden by successful pre-receipt retries.
+Real REDs, bounded-review corrections, fixture errors and the discarded zero-test invocation
+are retained in implementation-0.3.md; none is relabeled as passing acceptance. No grants,
+migration, public body or production dispatcher caller changes.
+
+Final native lifecycle43/0/0(186.67s harness/248.91s command), root dispatch24/0/0
+(65.38s/135.51s), contracts49/0/0(0.60s/2.81s), strict workspace Clippy132.03s pass. Native tests
+use actual admitted scoped activity → wait and EventService ingress/claim under sagat_app.
+They include full/path identity/value isolation, malformed conflict metadata/current claims,
+whole-transaction rollback on a current retained quota, paused cold explicit routing/duplicate
+with one logical charge and actual classified journal disclosure under pinned rules1 schemas
+(public/PII/secret). This is an internal structured-codec checkpoint, not public or released
+upgrade proof. Native event/outcome/cleanup races and producer/receiver activation, rollout,
+nested capacity, final SDK/resource/release gates and all eight canonical tasks remain open.
+
+
+### Native scoped event outcome and cleanup ordering
+
+On production80ae824a, held Run locks prove both event/timeout and event/cancellation orders;
+actual public cancellation queues behind the event-first commit, and native cancellation-first
+refuses the queued event before its receipt. Real scheduler drain/replay verifies finality.
+Actual purge_events waits for the receiver's inbox lock, then removes inbox/receipt while the
+retained run value and replay survive. Cleanup-first refuses stale claims in both writers.
+A prepared bounded entry queued behind timeout must return typed RevisionConflict. Exact
+backend identity/blocking edges and bounded joins replace timing sleeps. Seven cases pass
+16.58s/66.49s; the tightened typed-error assertion passes1/0/0 in2.45s/52.89s separately.
+Current-row fingerprint/JSON-object corruption and existing PostgreSQL size-bound coverage
+pass1/0/0 in2.40s/3.06s after a documented fixture-setup error. Test-target strict lint passes
+16.29s before the final assertion tightening. No production code, public activation or
+canonical release task changes; broader faults, production callers and rollout remain open.
+
+
+### Collection event subscription and deferred local routing
+
+Both scheduler read models now start exact scoped subscriptions with captured-instance key
+evaluation, current revision/own authority and acknowledged database clock, and release deferred
+valid local outcomes. Genuine start/deferred-failure REDs and bounded review corrections are
+recorded in the0.3 ledger. Unrouted Failed waits with onError defer collection failure while
+no Run stop is committed, stay waiting under pause and take the declared local route on resume.
+No domain failure predicate or public body guard is weakened. Existing collection entry lease
+fencing already refuses placement-free calls; its new baseline test required no production fix.
+
+Eight caller cases pass36.04s/89.58s, including actual COMMIT quota refusal and separately
+injected persistence-time typed quota, failed-transaction rollback and current scope drain.
+Final lifecycle59/0/0(229.10s/229.84s), controls23/0/0(86.53s/86.54s), contracts49/0/0
+(0.68s/5.27s), strict workspace lint63.81s and architecture/agent checks pass. Timer regression
+is retained in the ledger. These are immutable structured-codec runtime fixtures under sagat_app;
+production deadline/receiver activation, released-profile/public/SDK/nested-capacity/resource
+acceptance and all eight canonical tasks remain open.
+
+
+### Qualified automatic event deadlines
+
+Due discovery and fair selection preserve complete instance identity. Scoped consumers use
+bounded revision/current own-shard/database-clock authority; root singleton behavior remains
+covered. Both collection readers preserve paused unrouted failures until local routing,
+including the unhandled no-onError case. Seven native deadline cases include actual ticks,
+no-placement/stale-generation controls, three paused/resume policies, cold duplicates and an
+observed held-event/queued-deadline entry race. Native lifecycle66/0/0 (259.49s/260.23s), root
+dispatch24/0/0 (60.83s/109.78s), contracts49/0/0 (0.56s/2.57s), workspace lint72.31s and static
+checks pass. REDs, the root-activity fixture correction, scoped review and source hash are in
+the implementation ledger. External delivery, public/old-reader rollout and canonical release
+acceptance remain pending; none of the eight open tasks closes here.
+
+
+### Scoped production event receiver and fair lookback recovery
+
+The dispatcher now consumes qualified candidates through current bounded path entry and the
+native canonical receipt/value witness. Root receipts keep their legacy identity. Current
+lookback/scan CAS, full tuple paging and a process-local bounded keyset cursor preserve pending
+failed work without monopolizing the head page. Selected-admission loss leaves a scan pending;
+post-admission settlement errors retry instead of finalizing the event. Nine focused tests
+pass21.35s/96.38s; the0.3 ledger retains genuine REDs, fixture corrections and scoped reviews.
+
+The completed executable passes79/0/0 (346.74s/346.76s), root dispatch24/0/0 (70.83s/211.27s),
+contracts49/0/0 (0.63s/2.49s), migration checks5/0/0 (9.37s/10.28s). Index-only migration
+20261223000000 keeps the old index and roundtrips admitted waits. The initial32pass/1fail
+privilege audit exposed unsupported shared SQL macros; separate519dfa82 fixes the fitness
+function without grants/exceptions, with42/0/0 (14.30s/43.50s) and final workspace lint29.82s.
+Exact provenance/source hash and static checks are in the implementation ledger.
+
+These remain immutable internal structured-codec fixtures, not public wait entry/body or
+released-v0.2 cutover evidence. General loops/nesting/capacity, SDK/fault/resource/release
+acceptance and all eight canonical tasks remain open.
+
+
+### Scheduler-owned event entry admission
+
+Pinned WaitEvent entries now use the existing Scheduler admission, PENDING without worker or
+subscription authority, and the same exact dispatch/journal validation in full/path/frontier
+reads. Two genuine native admission REDs become full/frontier worker-free end-to-end success.
+Seven focused cases pass26.64s/81.05s; expanded pause/zero assertions were corrected to existing
+typed refusals, preserving actual tick failed=0. Cancellation retires the unstarted return,
+admission journal faults roll back all state and current wrong dispatch metadata fails closed.
+
+The fixed event gate passes86/0/0 (338.78s/338.79s). A later, separate cold single-connection
+case passes1/0/0 (2.46s/60.18s), proving durable discovery and actual subscription ticks without
+worker hints. These are separate invocations, not an87-case aggregate. Controls23/0/0
+(97.74s/97.75s), contracts49/0/0 (0.58s/67.26s), workspace lint76.45s and final targeted lint
+30.65s pass. The0.3 ledger retains exact executable identities and bounded-review evidence.
+No public wait body/entry activation, released-v0.2 cutover or canonical task closure is claimed.
+
+
+### Actual released-v0.2 active-data upgrade
+
+The verified immutable v0.2.0 source archive now produces a real public activity collection
+and root event wait. Normal current migrations preserve old data; current runtime-role worker/
+scheduler/event services finish both, and the exact released reader verifies REST and native
+replay afterwards. Initial subscription metadata, immutable prefixes and legacy consumer/UUID
+are checked. Explicit stopped-owner expiry proves actual current Keeper takeover, not a live
+old-owner race. No missing migration or checksum exception is used.
+
+The final runner passes325.75s; clean current build313.03s; runtime command9.66s. Coordinator
+1/0/0 passes8.42s, with nested old producer1/0/0 in3.86s and old reader1/0/0 in0.30s. Eight Python
+source-boundary tests pass0.082s. The0.3 ledger retains setup compile errors, the invalidated
+shared-target cache collision, isolated rebuild, separate functional preflight and three bounded
+reviews. Copied executable/source hashes and exact outputs are retained in
+[evidence/released-v02-20261027](./evidence/released-v02-20261027/README.md).
+
+This proves released-source runtime compatibility for old READY/unleased work and root waits.
+Old in-flight reports, scoped waits in old code, old-dispatcher credential fencing/cutover,
+public activation, nesting/capacity and final SDK/fault/resource/release acceptance remain open.
+All eight canonical tasks remain unchecked.
+
+
+### Genuine old in-flight worker report to current services
+
+The released-v02-inflight profile preserves the real old task capability/request only in the
+old process, across ordinary migrations, and uses its generated gRPC1.5 client against current
+runtime-role services. It proves live original token/fence/expiry, applied then exact receipt
+replay, old immutable-prefix/native replay, one durable completion/output/receipt/logical-byte
+charge and2actual current scheduler ticks to terminal replay. Anonymous inherited framed IPC
+refreshes only the same subject's identity-provider authentication. No external effect is
+claimed exactly once. Five exact overlay identities and the selected coordinator self-source
+hash bind the frozen executable to the intended proof.
+
+Final coordinator1/0/0 passes6.25s with nested old phase2.67s (10.47s runner/7.44s runtime command).
+Active-data regression separately passes1/0/0 in15.50s; strict lint18.62s, Python verifier8cases
+0.074s and static checks pass. The ledger and
+[evidence](./evidence/released-v02-inflight-20261027/README.md) retain the initial receipt
+assertion error, separate preflight and genuine wrong-coordinator provenance RED/correction.
+No production change or canonical task closure; Applied/reconciliation, dispatcher cutover,
+public/SDK/nested-capacity/resource/release acceptance remain open.
+
+
+### Genuine released Applied lookup and post-final reader
+
+Actual old code reports OUTCOME_UNKNOWN, leases the qualified lookup and submits/replays
+Applied against current runtime-role services after ordinary migration. The proof binds both
+old capabilities/fences, uncertainty and exact event/receipt/payload/accounting semantics.
+Only the nested forward output is retained/charged by this report; later aggregation is
+separate. Two actual current ticks finalize, then another process of the same old binary
+verifies terminal REST/native replay and the original prefix after finalization.
+
+Final coordinator1/0/0 passes6.37s (119.27s runner/7.63s runtime); old reporter2.38s and post-final
+old reader0.21s are nested phases. Separate FORWARD6.55s and active-data6.75s regressions, strict
+lint19.57s, verifier8cases0.098s and static checks pass. The ledger and
+[evidence](./evidence/released-v02-applied-20261027/README.md) retain weaker preflights, an
+explicitly interrupted fixture compile and three scoped reviews. No production code changes,
+canonical closure, quota/drain frontier, mixed dispatcher/public activation or release acceptance.
+
+
+### Selected-test false-success refusal
+
+A real zero-match selector reproduces the runner's former false success (required-rejection
+RED4.43s); the exact-case/final-outer-summary guard rejects it (green2.82s). Verifier tests13/0
+pass0.081s. Actual active-data, FORWARD and Applied profiles separately pass1/0/0 in6.47s,5.53s
+and5.35s under the fixed guard. Rust fixtures are unchanged from bd4f611d. The ledger and
+released-v02-selector-20261027 retain exact outputs and the genuine negative control.
+
+
+### Public collection event waits and released-process cutover — 2026-10-27
+
+Six public runtime-role native cases pass6/0/0 in16.20s. The actual released dispatcher cold-cutover
+profile passes1/0/0 in5.36s after real credential revocation/session termination/process join;
+its old nested phase is a separate1/0/0, not an aggregate. The focused common five-SDK scenario
+passes1aggregate/0failed without blessing in28.12s after inspecting identical outputs. Initial
+publication and fixture failures, review, exact source/phase identity and limitations are in
+scoped-event-publication.md and evidence/public-scoped-events-20261027. Root/chain signals retain
+root addressing. General nesting/capacity and final all-six release gates remain open; no canonical
+task closes through this bounded increment.
+
+
+Final public-event regression: native scoped_event_storage83/0/0 in296.59s, IR188/0/0,
+contracts49/0/0 plus SDK registry2/0/1ignored, strict workspace/all-target Clippy exit0 in73.87s,
+format/architecture24/agent checks and13Python profile verifiers pass. Initial Clippy rejected
+duplicate phase-module loading and err().expect(); one shared module and let-else correct
+those test-only issues without changing production behavior. All four actual released profiles
+pass again separately on the lint-corrected source: cutover60.90s runner, active-data9.66s,
+FORWARD8.43s, Applied8.41s. A missing CARGO_TARGET_DIR in one wrapper was refused before
+build/runtime; its0.09s setup failure is not a runtime RED. Exact receipts and source bindings
+are in evidence/public-scoped-events-20261027. No canonical or integrated release gate closes.

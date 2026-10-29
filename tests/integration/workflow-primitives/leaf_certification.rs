@@ -317,7 +317,7 @@ async fn seed_retained_sources(w: &World, fact: &Value) {
         ),
         (
             "collection_iterations",
-            json!({"iteration_index":0,"entry_path_nodes":["items"],"entry_path_indices":[0],"entry_node":"work","entry_instance_id":Uuid::new_v4().to_string(),"activity":"act.work","item_digest":hex,"lifecycle":"ADMITTED","slot_held":true,"reserved_instances":2,"remaining_reservations":1,"admitted_sequence":2,"outbox_id":Uuid::new_v4().to_string()}),
+            json!({"iteration_index":0,"entry_path_nodes":["items"],"entry_path_indices":[0],"entry_node":"work","entry_instance_id":Uuid::new_v4().to_string(),"entry_dispatch":"ACTIVITY","activity":"act.work","item_digest":hex,"lifecycle":"ADMITTED","slot_held":true,"reserved_instances":2,"remaining_reservations":1,"admitted_sequence":2,"outbox_id":Uuid::new_v4().to_string()}),
         ),
         (
             "iteration_checkpoints",

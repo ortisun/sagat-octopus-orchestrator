@@ -25,7 +25,24 @@ continuation may transfer the exact declared state snapshot. A continuation may 
 `waitEvent` (followed by an input-only continuation, or one condition choosing it or an `end`): the successor
 is created already waiting, in the hand-off transaction.
 Collections have a restricted public path: an optional prefix of ordinary root source activities,
-then one or more root `forEach` nodes ending at `end`, with each referenced body containing a chain of one to eight activities followed by one `return`; a body
+then one or more root `forEach` nodes ending at `end`, with each referenced body containing
+an activity, `condition` or `switch` entry, one to eight executable nodes (activities, local `condition`/`switch`)
+and one terminal `return`. The 0.3 development increment also permits
+acyclic local `onError` routes: a handled failure continues its own iteration; an
+unhandled recovery failure drains with its own code. Unselected branches retire their unused
+reservations without refunding lifetime instance budget. Local decisions read only their exact
+iteration's item/index and outputs; the recorded answer and chosen route commit together under
+the Run revision and scheduler fence. A control entry is admitted PENDING without a worker task
+or notification identity; its durable journal and membership permit cold scheduler discovery.
+Children, approvals and nested scopes remain separately gated. The v0.3 public collection subset also permits `waitEvent` at entry or on a local route,
+using captured item/index correlation, durable lookback, qualified automatic deadlines and
+exact-instance receipts. Public HTTP/runtime-role tests prove delivery, timeout, cancellation
+and compensation; the `collection-events` common scenario proves the existing five SDKs.
+The actual released-source cold-cutover profile revokes the old dispatcher's distinct database
+login, terminates its existing sessions and joins its process before current publication.
+Operators must perform that sequence for every old service; this is no mixed-version safety
+claim. Root-addressed signals do not gain scoped-instance addressing. See
+[scoped-event-publication.md](./scoped-event-publication.md). A body
 activity may declare `compensateWith`, `reconcileWith`, `irreversible` and `highRisk`, and a failed or
 cancelled scope then compensates its completed iterations (FR-014-005, FR-014-006). A source prefix
 may supply an inline array or its own committed blob through `steps.fetch.output`; source-prefix
@@ -623,3 +640,46 @@ producer composition, native End/scheduler activation, full old-binary rollout, 
 nested capacity and final release gates remain open. No canonical runtime task is closed by Q5.
 Evidence: `tasks/project-completion/evidence/legacy-output-view-20261018/reproduce.md` and
 `scoped-output-refusal-red-20261018/reproduce.md`.
+
+
+### 0.3 development scoped timers
+
+The bounded collection body also accepts Timer entry or local activity/control→Timer routes.
+Each qualified Timer starts from explicit database time, waits durably without a worker, and
+fires once when due under current revision/shard and ancestor authority. Pause permits an
+already accepted timer to record completion but defers routing until resume. Cancellation
+drains an unresolved timer without an external effect. Root timer semantics stay unchanged.
+This does not broaden loop bodies, frozen OrdinaryLeafV1, event waits, child or nested scopes.
+See [scoped-timer-runtime.md](./scoped-timer-runtime.md) for the exact lifecycle, rejection and
+acceptance boundaries; canonical tasks and full release acceptance remain open.
+
+### Explicit zero iteration policy (O701)
+
+A tenant-wide iteration_concurrency policy may be explicitly0. It gates only fresh admission,
+retaining already accepted members and reserved drain; raising it permits remaining captured
+members. Absent/default0 and explicit tenant0 remain distinct governance sources. The public
+maxConcurrency definition bound is unchanged. See zero-iteration-policy.md for native CHECK,
+rollback, audit and bounded acceptance evidence; nested capacity remains separately gated.
+
+### Released active-data compatibility checkpoint
+
+Old admitted READY/unleased activity bodies and legacy root event waits must survive normal
+schema upgrade, current completion and released-reader replay without changing their immutable
+prefixes or physical identity. The bounded proof and exclusions are recorded in
+[released-v02-profile.md](./released-v02-profile.md). This checkpoint does not authorize new
+scoped-event bodies under old execution processes or substitute for their cutover barrier.
+
+
+A separate [released-worker in-flight checkpoint](./released-v02-inflight-profile.md) requires
+the genuine old client to retain and report its original still-live scoped FORWARD capability
+to current services after upgrade. Exact replay, original capability/fence, durable output/
+receipt/accounting and current scheduler finalization must survive. Refreshed subject
+authentication does not replace task authority. This does not cover Applied/reconciliation
+or permit mixed old event dispatchers against new scoped waits.
+
+
+The separate [released Applied checkpoint](./released-v02-applied-profile.md) must bind the
+genuine old uncertain forward to its real reconciliation lookup, preserve the Applied
+substituted output and exact report receipt/accounting, and prove released terminal reading
+after current finalization. This compatibility proof does not accept quota-refusal/drain or
+original-forward compensation under a stop; those remain separately required.

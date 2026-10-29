@@ -1,0 +1,11 @@
+{
+  "command": [
+    "/private/tmp/sagat-v03-20261026/released-v02-al_pw2ho/current-phase",
+    "released_v02_cutover::released_dispatcher_credentials_and_process_are_fenced_before_public_scoped_events",
+    "--ignored",
+    "--exact",
+    "--nocapture"
+  ],
+  "exitCode": 0,
+  "seconds": 7.05
+}

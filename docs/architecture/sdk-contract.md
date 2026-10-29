@@ -23,7 +23,7 @@ REST for clients and dashboard, gRPC for low-latency worker↔server communicati
 ## Compatibility
 
 - Protocol version negotiated at handshake: incompatible major → explicit error; backward-compatible minor.
-- Common SDK conformance tests run with golden fixtures; run the same scenarios in the five SDKs.
+- Common SDK conformance tests run with golden fixtures; run the same scenarios in the six SDKs.
 - W3C trace context and OpenTelemetry; typed errors with code, retryable and causes.
 - `Activity` integrates existing code (BYO worker); `Script` uses the artifact registry and platform runners; both have the same step outcome.
 

@@ -39,13 +39,9 @@ fn collection_publication_rejects_an_unproven_body_shape() {
     let source = std::fs::read(path).expect("reviewed SDK golden");
     let golden: Value = serde_json::from_slice(&source).expect("golden JSON");
     let mut document = golden["workflows"]["map"].clone();
-    // A body that routes on an error is not a chain of activities: the scoped planner routes the
-    // success path of activities only.
+    // Return-only entry has a separate admission/budget gate; control entry is now proven.
     document["bodies"]["line"]["nodes"] = serde_json::json!([
-        {"id": "price", "type": "activity", "activity": "line.price", "next": "return-price",
-         "onError": "fallback"},
-        {"id": "fallback", "type": "activity", "activity": "line.fallback", "next": "return-price"},
-        {"id": "return-price", "type": "return", "result": "steps.price.output"}
+        {"id": "price", "type": "return", "result": "item"}
     ]);
     let bytes = serde_json::to_vec(&document).expect("workflow JSON");
 
@@ -56,6 +52,27 @@ fn collection_publication_rejects_an_unproven_body_shape() {
         JsonIrCodec.parse(&bytes).is_err(),
         "publication must stay closed for body shapes without end-to-end evidence"
     );
+}
+
+#[test]
+fn five_sdk_control_entry_documents_match_the_public_canonical_definition() {
+    let path = super::repository_root()
+        .join("tests/contract/sdk-conformance/expected/collection-control-entry.workflows.json");
+    let source = std::fs::read(path).expect("reviewed all-five control entry reference");
+    let golden: Value = serde_json::from_slice(&source).expect("golden JSON");
+    let workflows = golden["workflows"].as_object().expect("workflows");
+    assert_eq!(workflows.len(), 2);
+    for (name, document) in workflows {
+        let parsed = JsonIrCodec
+            .parse(&serde_json::to_vec(document).expect("workflow JSON"))
+            .expect("the runtime-proven control entry is publishable");
+        assert_eq!(
+            String::from_utf8(parsed.canonical).expect("canonical UTF-8"),
+            golden["canonical"][name]
+                .as_str()
+                .expect("reviewed canonical text")
+        );
+    }
 }
 
 fn chain_of(activities: usize, extra: &serde_json::Value) -> serde_json::Value {
@@ -190,4 +207,30 @@ fn collection_publication_keeps_nested_bodies_closed() {
         JsonIrCodec.parse(&bytes).is_err(),
         "publication must stay closed for nested collections"
     );
+}
+
+#[test]
+fn bounded_collection_event_waits_publish_at_entry_and_after_an_activity() {
+    for at_entry in [true, false] {
+        let mut document = chain_of(1, &serde_json::json!({}));
+        let wait = serde_json::json!({"id":"notified","type":"waitEvent","eventType":"payment.notified","correlationExpr":"item.key","timeoutMs":60000,"lookbackMs":0,"next":"return-line"});
+        if at_entry {
+            document["bodies"]["line"]["entrypoint"] = serde_json::json!("notified");
+            document["bodies"]["line"]["nodes"] =
+                serde_json::json!([wait,{"id":"return-line","type":"return","result":"item"}]);
+        } else {
+            document["bodies"]["line"]["nodes"][0]["next"] = serde_json::json!("notified");
+            document["bodies"]["line"]["nodes"]
+                .as_array_mut()
+                .expect("body nodes")
+                .insert(1, wait);
+        }
+        let bytes = serde_json::to_vec(&document).expect("definition");
+        JsonIrCodec
+            .parse_structured(&bytes)
+            .expect("the internal model retains the event shape");
+        JsonIrCodec
+            .parse(&bytes)
+            .expect("bounded public scoped event wait");
+    }
 }

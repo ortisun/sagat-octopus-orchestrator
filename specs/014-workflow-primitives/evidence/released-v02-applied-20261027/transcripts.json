@@ -1,0 +1,32 @@
+[
+  {
+    "path": "applied-lookup.txt",
+    "rawSha256": "90042e309cfa173fe26add9cec650553a647db50a92a2915ebdbe9841351495a",
+    "normalizedSha256": "b29c01e46963bc17eba380f5058f6871a4c3950e03c345ce1859041126eb1d05",
+    "normalization": "strip trailing line whitespace and final empty lines only"
+  },
+  {
+    "path": "applied-reviewed-applied-lookup.txt",
+    "rawSha256": "453157e60bad8d3dbad64f8dc58c775b2b123916c2b53e6462bc2dbabe2500af",
+    "normalizedSha256": "5f397ae0c9dde2fa34f94b5ead0dee14ac9d99c7d1c9a11384dbcbc924c330ab",
+    "normalization": "strip trailing line whitespace and final empty lines only"
+  },
+  {
+    "path": "forward-regression-inflight-worker.txt",
+    "rawSha256": "066059bf2a0979e334a518d702aaa7760195b495ef68b9f0505de471be22352e",
+    "normalizedSha256": "a6ea326511d0bf02871c62547fb7da6c4d78331e31b65439d152b661e03927b2",
+    "normalization": "strip trailing line whitespace and final empty lines only"
+  },
+  {
+    "path": "active-regression-upgrade.txt",
+    "rawSha256": "efb73c3aae7cd35de384b597b021f24cd185c9fac030be65ff1379502cae18d5",
+    "normalizedSha256": "a0885f9fb1c9a3c399cb531b6cf8ea8b3927df7a30208971e896a801d4c94d5b",
+    "normalization": "strip trailing line whitespace and final empty lines only"
+  },
+  {
+    "path": "applied-first-applied-lookup.txt",
+    "rawSha256": "daaf6a1bea4ecd23dcb9daba5ff5ab3c6c73438f764cf601312f5a19fa92733f",
+    "normalizedSha256": "196c419b5103d42b1a14a980f0ece25b70299192a868baa8a1474dd74321be31",
+    "normalization": "strip trailing line whitespace and final empty lines only"
+  }
+]

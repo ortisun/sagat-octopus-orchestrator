@@ -1,0 +1,17 @@
+{
+  "command": [
+    "python3",
+    "scripts/test-released-v02-profile.py",
+    "--prepared-run",
+    "/tmp/sagat-v03-20261026/released-v02-al_pw2ho",
+    "--scenario",
+    "inflight-worker"
+  ],
+  "exit_code": 0,
+  "seconds": 8.67,
+  "wall_seconds": 8.67,
+  "wall_minus_monotonic_seconds": -0.0,
+  "started_utc": "2026-10-27T22:33:54.606080+00:00",
+  "finished_utc": "2026-10-27T22:34:03.273672+00:00",
+  "log": "quota-final-inflight-worker.txt"
+}

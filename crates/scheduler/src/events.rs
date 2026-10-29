@@ -8,7 +8,7 @@
 //! one finishes the job without doing anything twice. A failure that is not a crash is retried with
 //! backoff until the event is set aside as dead, where an operator can see it and why.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use sagat_application::clock::{Clock, SystemClock};
 use sagat_application::definitions::{Applied, DefinitionStore, Idempotency};
@@ -20,7 +20,7 @@ use sagat_application::entropy::Entropy;
 use sagat_application::error::StoreError;
 use sagat_application::execution::{
     Actor, DefinitionCache, Effects, Engine, EngineError, ExpressionEvaluator,
-    MAX_RUN_OUTPUT_BYTES, RunInfo, RunTx,
+    MAX_RUN_OUTPUT_BYTES, PathExecutionStore, PathExecutionTx, RunInfo, RunTx,
 };
 use sagat_application::quotas::RunLimits;
 use sagat_application::runs::{Lock, NewRun, RunStore};
@@ -120,6 +120,8 @@ pub struct EventDispatcher<S, E, R> {
     /// The process's clock, for what is measured against it (how late an event is). What is due is
     /// decided by the database's clock.
     clock: Arc<dyn Clock>,
+    /// Only fairness position. Every pending scan remains durable in PostgreSQL after restart.
+    scan_cursor: Mutex<Option<WaitingStep>>,
 }
 
 impl<S, E, R> std::fmt::Debug for EventDispatcher<S, E, R> {
@@ -130,7 +132,7 @@ impl<S, E, R> std::fmt::Debug for EventDispatcher<S, E, R> {
 
 impl<S, E, R> EventDispatcher<S, E, R>
 where
-    S: RunStore + DefinitionStore + EventDispatchStore,
+    S: RunStore + DefinitionStore + EventDispatchStore + PathExecutionStore,
     E: ExpressionEvaluator,
     R: Entropy,
 {
@@ -149,6 +151,7 @@ where
             settings,
             cron: None,
             clock: Arc::new(SystemClock),
+            scan_cursor: Mutex::new(None),
         }
     }
 
@@ -315,7 +318,7 @@ where
         // The waits that want this event, a page at a time. A wait that is woken is no longer a
         // wait, but one that is not (it lost a race, or already had the event) stays, so the walk
         // goes on from where the last page ended and not from the start.
-        let mut after: Option<(RunId, sagat_domain::workflow::NodeId)> = None;
+        let mut after: Option<(RunId, sagat_domain::execution::ExecutionInstanceId)> = None;
         loop {
             let waits = self
                 .store
@@ -325,14 +328,14 @@ where
                     self.settings.fan_out,
                 )
                 .await?;
-            let last = waits.last().map(|w| (w.run_id, w.node.clone()));
+            let last = waits.last().map(|w| (w.run_id, w.instance.clone()));
             let page = waits.len();
             for step in waits {
                 match self.wake(&step, event, &document, "event").await {
                     Ok(Woken::Yes) => round.steps_woken += 1,
                     Ok(Woken::No | Woken::Refused) => {}
                     Err(error) => {
-                        tracing::warn!(%error, run = %step.run_id, node = %step.node, "waking a step failed");
+                        tracing::warn!(%error, run = %step.run_id, node = %step.instance.node(), "waking a step failed");
                         failure.get_or_insert(error);
                     }
                 }
@@ -511,6 +514,9 @@ where
         document: &[u8],
         via: &'static str,
     ) -> Result<Woken, EngineError> {
+        if !step.instance.path().is_root() {
+            return self.wake_scoped(step, event, via).await;
+        }
         let Some(mut tx) = self
             .store
             .begin(step.tenant_id, step.run_id, Lock::Wait)
@@ -518,10 +524,13 @@ where
         else {
             return Ok(Woken::No);
         };
+        if step.root_node(tx.info().version_id).is_none() {
+            return Ok(Woken::No);
+        }
         // Under the run's lock, is the step still waiting for exactly this?
         let still_waiting = {
             let (def, state) = tx.parts();
-            let waiting = state.step(&step.node).is_some_and(|s| {
+            let waiting = state.step(step.instance.node()).is_some_and(|s| {
                 s.status() == StepStatus::Waiting
                     && matches!(
                         s.waiting_on(),
@@ -531,23 +540,23 @@ where
             });
             waiting
                 && matches!(
-                    def.node(&step.node).map(Node::kind),
+                    def.node(step.instance.node()).map(Node::kind),
                     Some(NodeKind::WaitEvent { event_type, .. }) if *event_type == step.event_type
                 )
         };
         if !still_waiting {
             return Ok(Woken::No);
         }
-        if !tx
-            .record_delivery(&DeliveryRef::to_wait(event, step))
-            .await?
-        {
+        let Some(delivery) = DeliveryRef::to_wait(event, step) else {
+            return Ok(Woken::No);
+        };
+        if !tx.record_delivery(&delivery).await? {
             return Ok(Woken::No);
         }
         // What a run retains is bounded (every lease carries it).
         let retained: usize = tx.data().await?.outputs.values().map(Vec::len).sum();
         if retained.saturating_add(document.len()) > MAX_RUN_OUTPUT_BYTES {
-            tracing::warn!(run = %step.run_id, node = %step.node, "an event was not delivered: the run keeps too much output");
+            tracing::warn!(run = %step.run_id, node = %step.instance.node(), "an event was not delivered: the run keeps too much output");
             metrics::counter!("event_wakeups_total", "outcome" => "refused").increment(1);
             return Ok(Woken::Refused);
         }
@@ -559,13 +568,15 @@ where
             step.run_id.to_string(),
             format!(
                 "event '{}/{}' woke '{}'",
-                event.envelope.key.source, event.envelope.key.event_id, step.node
+                event.envelope.key.source,
+                event.envelope.key.event_id,
+                step.instance.node()
             ),
             None,
             OffsetDateTime::now_utc(),
         ));
-        effects.outputs = vec![(step.node.clone(), document.to_vec())];
-        let node = step.node.clone();
+        effects.outputs = vec![(step.instance.node().clone(), document.to_vec())];
+        let node = step.instance.node().clone();
         match self
             .engine
             .run(&mut tx, effects, move |def, state, now| {
@@ -590,6 +601,78 @@ where
             }
             Err(other) => Err(other),
         }
+    }
+
+    /// External ingress needs no scheduler clock or external evaluation under the Run lock.
+    /// The native receipt port supplies the only admissible canonical retained document.
+    #[tracing::instrument(name="event.wake_scoped", skip_all,
+        fields(tenant_id=%step.tenant_id, run_id=%step.run_id, instance=?step.instance, via))]
+    async fn wake_scoped(
+        &self,
+        step: &WaitingStep,
+        event: &ClaimedEvent,
+        via: &'static str,
+    ) -> Result<Woken, EngineError> {
+        let Some(mut tx) = self
+            .store
+            .begin_current_path(
+                step.tenant_id,
+                step.run_id,
+                step.instance.path().clone(),
+                Lock::Wait,
+            )
+            .await?
+        else {
+            return Ok(Woken::No);
+        };
+        let Some(document) = tx.record_scoped_event_delivery(step, event).await? else {
+            return Ok(Woken::No);
+        };
+        let retained = tx.logical_output_bytes().await?;
+        if retained
+            .checked_add(document.len() as u64)
+            .is_none_or(|total| total > MAX_RUN_OUTPUT_BYTES as u64)
+        {
+            metrics::counter!("event_wakeups_total", "outcome" => "refused").increment(1);
+            return Ok(Woken::Refused);
+        }
+        let Some(key) = event.envelope.correlation_key.as_ref() else {
+            return Ok(Woken::No);
+        };
+        let now = tx.now();
+        let progress = {
+            let snapshot = tx.snapshot();
+            execution::satisfy_event_wait_path_instance(
+                &snapshot.definition,
+                &mut snapshot.state,
+                &step.instance,
+                &event.envelope.event_type,
+                key,
+                event.received_at,
+            )
+        };
+        // Admission has rechecked the exact source under its Run lock. Any remaining domain
+        // failure is a deterministic progress error, not a timeout/cancel race to discard.
+        let progress = progress?;
+        let mut effects = Effects::by(Actor::System("event-dispatcher"), None);
+        effects.audit = Some(AuditRecord::engine(
+            step.tenant_id,
+            AuditAction::RunSignalled,
+            ResourceType::Run,
+            step.run_id.to_string(),
+            "event woke scoped execution",
+            None,
+            now,
+        ));
+        tx.persist_addressed(
+            &progress.events,
+            &[(step.instance.clone(), document)],
+            effects,
+        )
+        .await?;
+        tx.commit().await?;
+        metrics::counter!("event_wakeups_total", "outcome" => "woken", "via" => via).increment(1);
+        Ok(Woken::Yes)
     }
 
     /// Fires the cron triggers whose time has come.
@@ -694,33 +777,67 @@ where
     /// that arrived before the wait began (within its look-back) or while the matcher was between
     /// finding waits and finishing the event.
     async fn late_waits(&self, round: &mut EventRound) {
-        let waits = match self.store.unscanned_waits(self.settings.scan_batch).await {
+        if self.settings.scan_batch == 0 {
+            return;
+        }
+        let after = self
+            .scan_cursor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let waits = async {
+            let mut waits = self
+                .store
+                .unscanned_waits(after.as_ref(), self.settings.scan_batch)
+                .await?;
+            if waits.is_empty() && after.is_some() {
+                waits = self
+                    .store
+                    .unscanned_waits(None, self.settings.scan_batch)
+                    .await?;
+            }
+            Ok::<_, StoreError>(waits)
+        }
+        .await;
+        let waits = match waits {
             Ok(waits) => waits,
             Err(error) => {
                 tracing::warn!(%error, "searching for event waits failed");
                 return;
             }
         };
+        // Advance even if a consumer fails, before any await. At most one page is processed;
+        // wrapping retries failed pending scans without letting them occupy every head page.
+        *self
+            .scan_cursor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = waits.last().cloned();
         for step in waits {
             let outcome = async {
                 match self.store.undelivered_event_for(&step).await? {
                     Some(event) => {
                         let document = self.document(&event);
                         let woken = self.wake(&step, &event, &document, "lookback").await?;
-                        Ok::<_, EngineError>(woken)
+                        Ok::<_, EngineError>((woken, matches!(woken, Woken::Yes)))
                     }
-                    None => Ok(Woken::No),
+                    None => Ok((Woken::No, true)),
                 }
             }
             .await;
-            match outcome {
-                Ok(Woken::Yes) => round.steps_woken += 1,
-                Ok(Woken::No | Woken::Refused) => {}
+            let scanned = match outcome {
+                Ok((Woken::Yes, scanned)) => {
+                    round.steps_woken += 1;
+                    scanned
+                }
+                Ok((Woken::No | Woken::Refused, scanned)) => scanned,
                 Err(error) => {
                     // Leave it unscanned: the next round looks again.
-                    tracing::warn!(%error, run = %step.run_id, node = %step.node, "delivering a past event failed");
+                    tracing::warn!(%error, run = %step.run_id, node = %step.instance.node(), "delivering a past event failed");
                     continue;
                 }
+            };
+            if !scanned {
+                continue;
             }
             if let Err(error) = self.store.mark_wait_scanned(&step).await {
                 tracing::warn!(%error, "could not mark an event wait scanned");

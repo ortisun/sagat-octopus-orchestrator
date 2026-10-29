@@ -1,0 +1,13 @@
+{
+  "command": [
+    "python3",
+    "scripts/check-architecture.py"
+  ],
+  "exit_code": 0,
+  "seconds": 0.39,
+  "wall_seconds": 0.39,
+  "wall_minus_monotonic_seconds": -0.0,
+  "started_utc": "2026-10-28T01:05:03.402969+00:00",
+  "finished_utc": "2026-10-28T01:05:03.797267+00:00",
+  "log": "combined-architecture.txt"
+}

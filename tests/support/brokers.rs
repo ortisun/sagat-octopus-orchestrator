@@ -22,8 +22,11 @@ use sagat_infra_ir::JsonEvaluator;
 use sagat_infra_postgres::PgRunStore;
 use testcontainers_modules::elasticmq::ElasticMq;
 use testcontainers_modules::kafka::apache::{KAFKA_PORT, Kafka};
-use testcontainers_modules::testcontainers::ContainerAsync;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
+use testcontainers_modules::testcontainers::{
+    ContainerAsync, GenericImage, ImageExt,
+    core::{IntoContainerPort, WaitFor},
+};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
@@ -351,4 +354,106 @@ impl TestSqs {
 /// `&'static str` for a parameter name built at run time: a test, a handful of them.
 fn leak(text: String) -> &'static str {
     Box::leak(text.into_boxed_str())
+}
+
+/// Explicit Docker bindings avoid publish-all and request a dynamic port on IPv4 loopback.
+pub fn redis_loopback_host_config(
+    config: &mut testcontainers_modules::testcontainers::bollard::models::HostConfig,
+) {
+    use testcontainers_modules::testcontainers::bollard::models::PortBinding;
+    config.memory = Some(128 * 1024 * 1024);
+    config.pids_limit = Some(128);
+    config.publish_all_ports = Some(false);
+    config.port_bindings = Some(std::collections::HashMap::from([(
+        "6379/tcp".to_owned(),
+        Some(vec![PortBinding {
+            host_ip: Some("127.0.0.1".to_owned()),
+            host_port: Some(String::new()),
+        }]),
+    )]));
+}
+
+pub async fn redis_stream() -> (ContainerAsync<GenericImage>, String, redis::Client) {
+    let image = GenericImage::new("redis", "8.6.8-alpine")
+        .with_exposed_port(6379.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("Ready to accept connections"))
+        .with_cmd([
+            "redis-server",
+            "--appendonly",
+            "yes",
+            "--appendfsync",
+            "always",
+        ])
+        .with_host_config_modifier(redis_loopback_host_config);
+    let container =
+        super::bounded::within("start owned Redis", Duration::from_secs(90), image.start())
+            .await
+            .expect("Redis fixture");
+    assert_redis_loopback(&container).await;
+    let port = container
+        .get_host_port_ipv4(6379)
+        .await
+        .expect("mapped Redis");
+    let url = format!("redis://127.0.0.1:{port}/0");
+    let client = redis::Client::open(url.as_str()).expect("fixture client");
+    (container, url, client)
+}
+pub async fn read_redis_stream(
+    client: &redis::Client,
+    stream: &str,
+) -> redis::streams::StreamRangeReply {
+    let mut connection = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("fixture read");
+    redis::cmd("XRANGE")
+        .arg(stream)
+        .arg("-")
+        .arg("+")
+        .query_async(&mut connection)
+        .await
+        .expect("stream entries")
+}
+
+/// Inspect actual published bindings rather than assuming the requested host configuration ran.
+pub async fn assert_redis_loopback(container: &ContainerAsync<GenericImage>) {
+    let docker = super::bounded::within(
+        "get fixture Docker client",
+        Duration::from_secs(10),
+        testcontainers_modules::testcontainers::core::client::docker_client_instance(),
+    )
+    .await
+    .expect("owned Docker daemon");
+    let inspected = super::bounded::within(
+        "inspect owned Redis bindings",
+        Duration::from_secs(10),
+        docker.inspect_container(container.id(), None),
+    )
+    .await
+    .expect("inspect owned Redis fixture");
+    let ports = inspected
+        .network_settings
+        .expect("network settings")
+        .ports
+        .expect("published ports");
+    assert_eq!(ports.len(), 1, "only the fixture Redis port is published");
+    let bindings = ports
+        .get("6379/tcp")
+        .and_then(Option::as_ref)
+        .expect("Redis port bindings");
+    assert!(!bindings.is_empty());
+    for binding in bindings {
+        assert_eq!(
+            binding.host_ip.as_deref(),
+            Some("127.0.0.1"),
+            "Redis fixtures must publish only on loopback"
+        );
+        assert!(
+            binding
+                .host_port
+                .as_ref()
+                .and_then(|p| p.parse::<u16>().ok())
+                .is_some_and(|p| p > 0)
+        );
+    }
 }

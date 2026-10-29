@@ -10,8 +10,8 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use sagat_application::api_admission::{ApiOperation, ApiTarget};
 use sagat_application::outbound::{BrokerSubscriptionSettings, SubscriptionSettings};
-use sagat_domain::connectors::ConnectorKind;
 use sagat_domain::identity::{NamespaceId, Slug};
+use sagat_domain::outbound::BrokerKind;
 use sagat_domain::outbound::{
     BrokerDestination, DeliveryId, DeliveryLimits, DeliveryStatus, OutboundKind, SubscriptionId,
     SubscriptionStatus, TargetUrl,
@@ -23,8 +23,9 @@ use crate::admission::admit;
 use crate::dto_events::{
     BrokerSubscriptionBody, BrokerSubscriptionListBody, CreateBrokerSubscriptionBody,
     CreateSubscriptionBody, DeliveryBody, DeliveryPageBody, OutboundKafkaSettingsBody,
-    OutboundNatsSettingsBody, OutboundSqsSettingsBody, RedriveBody, RedrivenBody, SubscriptionBody,
-    SubscriptionListBody, UpdateBrokerSubscriptionBody, UpdateSubscriptionBody,
+    OutboundNatsSettingsBody, OutboundRedisSettingsBody, OutboundSqsSettingsBody, RedriveBody,
+    RedrivenBody, SubscriptionBody, SubscriptionListBody, UpdateBrokerSubscriptionBody,
+    UpdateSubscriptionBody,
 };
 use crate::error::ApiError;
 use crate::extract::{ApiJson, Caller};
@@ -413,22 +414,27 @@ fn broker_settings(
     status: Option<&str>,
 ) -> Result<BrokerSubscriptionSettings, ApiError> {
     let kind = kind
-        .parse::<ConnectorKind>()
-        .map_err(|()| ApiError::validation("the kind is NATS, KAFKA or SQS"))?;
+        .parse::<BrokerKind>()
+        .map_err(|()| ApiError::validation("the kind is NATS, KAFKA, SQS or REDIS"))?;
     let invalid = |_| ApiError::validation("the settings do not fit the broker kind");
     let refused = |e: sagat_domain::connectors::ConnectorError| ApiError::validation(e.to_string());
     let destination = match kind {
-        ConnectorKind::Nats => {
+        BrokerKind::Redis => {
+            let s: OutboundRedisSettingsBody =
+                serde_json::from_value(value.clone()).map_err(invalid)?;
+            BrokerDestination::redis(&s.server, &s.stream, s.database).map_err(refused)?
+        }
+        BrokerKind::Nats => {
             let s: OutboundNatsSettingsBody =
                 serde_json::from_value(value.clone()).map_err(invalid)?;
             BrokerDestination::nats(&s.servers, &s.subject).map_err(refused)?
         }
-        ConnectorKind::Kafka => {
+        BrokerKind::Kafka => {
             let s: OutboundKafkaSettingsBody =
                 serde_json::from_value(value.clone()).map_err(invalid)?;
             BrokerDestination::kafka(&s.servers, &s.topic).map_err(refused)?
         }
-        ConnectorKind::Sqs => {
+        BrokerKind::Sqs => {
             let s: OutboundSqsSettingsBody =
                 serde_json::from_value(value.clone()).map_err(invalid)?;
             BrokerDestination::sqs(&s.queue_url, &s.region).map_err(refused)?
@@ -721,4 +727,30 @@ pub async fn redrive_broker_dead<B: Governance>(
         )
         .await?;
     Ok(Json(RedrivenBody { redriven }))
+}
+
+#[cfg(test)]
+mod redis_settings_tests {
+    #[test]
+    fn redis_callback_settings_accept_a_credential_reference_and_default_database() {
+        let result = super::broker_settings(
+            "REDIS",
+            &serde_json::json!({"server":"rediss://redis.example.test:6379", "stream":"orders:{callbacks}"}),
+            Some("redis-access"),
+            &["run.finished".to_owned()],
+            None,
+            None,
+            None,
+        );
+        assert!(
+            result.is_ok(),
+            "Redis must be an outbound broker destination"
+        );
+        let settings = result.expect("settings");
+        assert_eq!(settings.destination.kind().as_str(), "REDIS");
+        assert_eq!(
+            settings.credentials_secret.expect("reference").as_str(),
+            "redis-access"
+        );
+    }
 }

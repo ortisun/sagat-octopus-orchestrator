@@ -1,0 +1,22 @@
+
+running 1 test
+test released_v02_inflight::a_released_worker_reports_and_replays_its_old_lease_after_server_upgrade ...
+running 1 test
+test released_v02_phase::inflight::report_old_lease_to_current_server ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 556 filtered out; finished in 2.41s
+
+
+thread 'released_v02_inflight::a_released_worker_reports_and_replays_its_old_lease_after_server_upgrade' (449997429) panicked at tests/integration/workflow-primitives/released_v02_inflight.rs:148:9:
+assertion `left == right` failed
+  left: (1, 0)
+ right: (1, 1)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    released_v02_inflight::a_released_worker_reports_and_replays_its_old_lease_after_server_upgrade
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 688 filtered out; finished in 5.99s

@@ -1,0 +1,1 @@
+architecture check passed (24 workspace crates, layers respected, no cycles)

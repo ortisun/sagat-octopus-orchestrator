@@ -11,6 +11,7 @@ mod approval_progress;
 mod approval_scheduler;
 mod bindings;
 mod breaker;
+mod capacity_discovery;
 mod capacity_finish;
 mod chain_progress;
 mod collection_outputs;

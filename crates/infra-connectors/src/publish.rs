@@ -1,7 +1,7 @@
 //! Guarded outbound broker publishers (`FR-004-005`).
 //!
 //! A successful call means the destination acknowledged the message: a JetStream PubAck, a Kafka
-//! produce response, or a successful SQS `SendMessage` response. The caller keeps the durable
+//! produce response, a successful SQS `SendMessage` response, or a Redis XADD stream id. The caller keeps the durable
 //! delivery id stable across retries; each protocol carries it as its deduplication metadata.
 
 use std::collections::BTreeMap;
@@ -80,18 +80,27 @@ where
                 }
                 None => Credentials::none(),
             };
-            if !self
-                .guard
-                .permits(
-                    request.tenant_id,
-                    request.namespace_id,
-                    &request.destination.servers(),
-                )
-                .await
+            if !matches!(&request.destination, BrokerDestination::Redis { .. })
+                && !self
+                    .guard
+                    .permits(
+                        request.tenant_id,
+                        request.namespace_id,
+                        &request.destination.servers(),
+                    )
+                    .await
             {
                 return Err(BrokerFailure::Denied);
             }
             match &request.destination {
+                BrokerDestination::Redis {
+                    server,
+                    stream,
+                    database,
+                } => {
+                    self.redis(request, server, stream, *database, &credentials)
+                        .await
+                }
                 BrokerDestination::Nats { servers, subject } => {
                     self.nats(request, servers, subject, &credentials).await
                 }
@@ -115,6 +124,100 @@ where
     S: EgressStore + Send + Sync,
     F: ClientFactory,
 {
+    async fn redis(
+        &self,
+        request: &BrokerRequest,
+        server: &Server,
+        stream: &str,
+        database: u8,
+        credentials: &Credentials,
+    ) -> Result<(), BrokerFailure> {
+        use redis::IntoConnectionInfo as _;
+        let credentials = credentials
+            .redis(request.credentials.is_some())
+            .map_err(|()| BrokerFailure::Rejected)?;
+        if (credentials.password.is_some() || credentials.ca_cert.is_some()) && !server.tls() {
+            return Err(BrokerFailure::Rejected);
+        }
+        // The worker's metadata is a closed wire contract. Never permit duplicate fields or a
+        // header named body to shadow the event envelope in a Redis map.
+        let mut names = std::collections::BTreeSet::new();
+        for (name, value) in &request.headers {
+            if !matches!(
+                name.as_str(),
+                "content-type"
+                    | "event-id"
+                    | "event-type"
+                    | "delivery-id"
+                    | "attempt"
+                    | "schema-version"
+                    | "traceparent"
+            ) || value.is_empty()
+                || !names.insert(name.as_str())
+            {
+                return Err(BrokerFailure::Rejected);
+            }
+        }
+        if header(request, "content-type") != Some("application/json") {
+            return Err(BrokerFailure::Rejected);
+        }
+        if [
+            "content-type",
+            "event-id",
+            "event-type",
+            "delivery-id",
+            "attempt",
+            "schema-version",
+        ]
+        .iter()
+        .any(|name| !names.contains(name))
+        {
+            return Err(BrokerFailure::Rejected);
+        }
+        let addresses = self
+            .guard
+            .resolve(request.tenant_id, request.namespace_id, server)
+            .await
+            .map_err(|error| match error {
+                crate::guard::ResolveFailure::Denied => BrokerFailure::Denied,
+                crate::guard::ResolveFailure::Network => BrokerFailure::Network,
+            })?;
+        let info = sagat_domain::outbound::redis_endpoint(server)
+            .into_connection_info()
+            .map_err(|_| BrokerFailure::Rejected)?;
+        let mut settings = info.redis_settings().clone().set_db(i64::from(database));
+        if let Some(username) = credentials.username {
+            settings = settings.set_username(username);
+        }
+        if let Some(password) = credentials.password {
+            settings = settings.set_password(password);
+        }
+        let mut fields: Vec<_> = request
+            .headers
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_bytes()))
+            .collect();
+        fields.push(("body", &request.body));
+        crate::redis::append(
+            info.set_redis_settings(settings),
+            stream,
+            None,
+            &fields,
+            request.timeout,
+            credentials.ca_cert.map(|s| s.as_bytes().to_vec()),
+            Some(addresses),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| match error {
+            crate::redis::RedisError::Timeout => BrokerFailure::Timeout,
+            crate::redis::RedisError::Unavailable => BrokerFailure::Network,
+            crate::redis::RedisError::Invalid | crate::redis::RedisError::Rejected => {
+                BrokerFailure::Rejected
+            }
+        })
+    }
+
     async fn nats(
         &self,
         request: &BrokerRequest,

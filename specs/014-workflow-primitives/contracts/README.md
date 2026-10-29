@@ -143,12 +143,36 @@ fails the run with `EXPRESSION_ERROR`.
 
 ### Bodies that compensate (T014-014..021, D380-D389)
 
-A published collection or loop body is a chain of one to eight activities followed by its `return`
-(`MAX_BODY_CHAIN`, an `onError` on a body activity stays refused). Each activity may declare
+On the unreleased 0.3 branch a collection body starts with an activity, condition, switch, timer or event wait,
+contains one to eight executable nodes
+(activities, `condition`, `switch`, `timer`, `waitEvent`) and one terminal `return`.
+The 0.3 increment permits local acyclic success/error routes; all paths stay inside
+that body. A committed handled error does not fail the collection. An unhandled recovery
+failure retains its own failure code and uses the normal drain/compensation path. Each
+unselected branch's unused forward and derived reservations are retired, preserving the
+lifetime instance charge; selected completed/unknown effects retain their required drain
+reservations. A loop body retains the linear activity-chain subset with no body `onError`.
+Each activity may declare
 `compensateWith`, `reconcileWith`, `compensationRetry`, `compensationTimeoutMs`, `irreversible`
 and `highRisk` with the meaning they have at the root; `irreversible` and `compensateWith` on one
-step are refused as at the root. Branching, `saga`, timers, child workflows and nested scopes inside a
-body remain closed.
+step are refused as at the root. A local condition reads its own admitted item/index and local
+outputs; a switch selects the first true case or its default. An expression failure records
+`EXPRESSION_ERROR`. Preparing a decision uses one exact snapshot, and its write compares the
+Run revision, checks current shard authority and global/ancestor forward fences, then commits
+the choice, routing and selected task/outbox together. Malformed control state and orphan
+worker/wait metadata are rejected by full/path/frontier readers and both native writers.
+A control entry is admitted as a pristine PENDING instance. Its slot, captured item, complete
+reservation, single admission journal event, head and telemetry commit together. No activity,
+lease, step.released or task.ready identity is fabricated. Durable candidate discovery drives
+the subsequent control transaction. Stored dispatch is checked against the pinned kind and
+immutable journal marker by full/path/frontier readers. Migration 20261221000000 backfills old
+activity members; downgrade refuses retained scheduler admissions in either membership or
+append-only journal, including completed runs. OrdinaryLeafV1 certification stays activity-only.
+`saga`, approvals, child workflows and nested scopes remain closed. IR fields and worker minor1.5
+are unchanged. `collection-local-recovery`, `collection-control-routing` and
+`collection-control-entry`, `collection-timers` and `collection-events` cover the focused common five-SDK contracts. This is not rolling
+execution compatibility with a 0.2 scheduler; release must fence/drain old scheduler authority
+before admitting new 0.3 definitions and prove continued execution of pinned 0.2 runs.
 
 A scope whose body declares any of `compensateWith`, `irreversible` or `highRisk` is its own saga.
 When it stops for a failed iteration, the storage quota, an outer cancellation or a loop timeout, the
@@ -680,3 +704,31 @@ producer composition, native End/scheduler activation, full old-binary rollout, 
 nested capacity and final release gates remain open. No canonical runtime task is closed by Q5.
 Evidence: `tasks/project-completion/evidence/legacy-output-view-20261018/reproduce.md` and
 `scoped-output-refusal-red-20261018/reproduce.md`.
+
+### Scoped event-wait preparation stays internal
+
+The0.3 pure model records addressed wait.started/wait.satisfied/wait.timed_out and routes a
+handled timeout to its local onTimeout edge. This is trusted recorded replay only. A contract
+fitness test retains public refusal for both WaitEvent entry and activity→WaitEvent bodies;
+qualified native dispatch/receipt/value authority and all-five runtime evidence remain required.
+See scoped-event-waits.md and implementation-0.3.md for exact pending boundaries and results.
+
+
+### Public collection event waits — 2026-10-27
+
+The public bounded collection body now accepts event waits at entry or on local routes. Exact
+instance receipts, lookback, automatic deadlines and canonical output use the existing native
+transactions; namespace event publishing is unchanged. Run/chain signals retain root addressing.
+The source-verified `scoped-event-cutover` profile revokes and terminates a distinct old database
+login, joins the actual released dispatcher process, then publishes and finishes new scoped waits.
+Operators must apply that cold-cutover sequence to all old control-plane/engine processes;
+this does not prove mixed-version operation. See scoped-event-publication.md for evidence and
+remaining release limits. No public wire field, migration, grant or worker minor is added.
+
+
+## Internal capacity discovery checkpoint
+
+[B1d.1](../capacity-discovery.md) defines the typed read-only application/storage interface and
+its native evidence. Observed ids/revisions are hints, never acquisition or execution permits.
+The common IR/worker wire contracts and public publication gates are unchanged. This internal
+port does not expose capacity-group management through REST or an SDK.
