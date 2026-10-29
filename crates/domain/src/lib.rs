@@ -9,6 +9,7 @@ mod macros;
 
 pub mod audit;
 pub mod binding;
+pub mod business_ids;
 pub mod classification;
 pub mod connectors;
 pub mod database;
