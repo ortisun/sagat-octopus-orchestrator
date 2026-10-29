@@ -1,0 +1,108 @@
+# Fragment for specs/001-platform-foundation/contracts/openapi.yaml (feature 036).
+# Merge the two paths under `paths:` and the schemas under `components.schemas:`, mark both operations
+# `x-implemented: '036'`, then regenerate docs/reference/api.md (SAGAT_DOCS_BLESS=1 after reading the diff)
+# and frontend/apps/studio/src/api/schema.d.ts. Every reference below is to a component that exists.
+# Also add `connector_parallelism` to the `QuotaResourceName` enum of openapi.yaml (and to the enum repeated at
+# the quota-usage schema), with the new quota migration; the REST conformance suite then needs a scenario for it.
+paths:
+  /namespaces/{namespaceId}/connectors/{connectorId}/lag:
+    get:
+      operationId: getConnectorLag
+      summary: How far behind a connector is, and why
+      tags: [Events]
+      x-implemented: '036'
+      description: |
+        Needs `event:read`. Gives the backlog (messages on the broker not yet taken into the inbox), the age of the
+        oldest one where the broker can state it, the time of the measurement, and the reason the connector is or is
+        not draining. A figure the broker cannot give is `null`, never 0. `scaling` says whether the platform's
+        scaling counts the connector in the signals that raise capacity and why not. A connector of another
+        namespace is indistinguishable from one that does not exist.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ConnectorId'}
+      responses:
+        '200': {description: 'The lag', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ConnectorLag'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/connectors/{connectorId}/consumption:
+    patch:
+      operationId: updateConnectorConsumption
+      summary: Change how fast a connector reads, without recreating it
+      tags: [Events]
+      x-implemented: '036'
+      description: |
+        Needs `event:manage`. Changes the in-flight parallelism per replica and the rate limit. The rate limit holds for
+        all replicas together and is bounded by the namespace's `events_per_second` quota; the parallelism is bounded
+        by the namespace's `connector_parallelism` quota (default: the platform's cap). A value above its bound is
+        refused with `QUOTA_EXCEEDED` and the error names the class of limit, not the operator's values. The change reaches running
+        readers without restarting them and is audited.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ConnectorId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ConnectorConsumptionUpdate'}
+      responses:
+        '200': {description: 'The consumption now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ConnectorConsumption'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+components:
+  schemas:
+    DrainState:
+      type: string
+      enum: [CAUGHT_UP, BEHIND, BLOCKED, RATE_LIMITED, PAUSED, FAILING]
+      description: |
+        CAUGHT_UP: nothing waits. BEHIND: reading, slower than the arrival. BLOCKED: held back by the tenant's limit of
+        undispatched events. RATE_LIMITED: held back by the connector's or the namespace's rate limit. PAUSED: the
+        connector is paused. FAILING: the broker cannot be read; see `health.lastError`.
+    ConnectorLagLimit:
+      type: string
+      enum: [PARTITION_BOUND, RATE_LIMITED, BLOCKED]
+      description: What bounds how fast more readers could drain the connector.
+    ConnectorLag:
+      type: object
+      required: [connectorId, state, sampledAt, coverage]
+      properties:
+        connectorId: {type: string, format: uuid}
+        state: {$ref: '#/components/schemas/DrainState'}
+        backlog: {type: integer, format: int64, minimum: 0, nullable: true, description: 'Messages not yet taken into the inbox; null when it cannot be measured.'}
+        oldestAgeSeconds: {type: number, minimum: 0, nullable: true, description: 'Null when the broker cannot state it (SQS) or nothing waits.'}
+        sampledAt: {type: string, format: date-time}
+        coverage: {type: number, minimum: 0, maximum: 1, description: 'Share of the connector (its partitions) the figures cover. Below 1 the backlog is a lower bound.'}
+        retryAfterSeconds: {type: integer, minimum: 0, nullable: true, description: 'When RATE_LIMITED: the time after which reading is tried again.'}
+        partitions: {type: object, required: [total], properties: {total: {type: integer, minimum: 0}, assigned: {type: integer, minimum: 0, description: 'Held by readers now.'}}}
+        limits: {type: array, items: {$ref: '#/components/schemas/ConnectorLagLimit'}}
+        scaling:
+          type: object
+          required: [counted]
+          description: How the platform's scaling treats this connector (what its decisions mean for it). It names no platform value, no decision and no other tenant.
+          properties:
+            counted: {type: boolean, description: 'True when the connector is counted in the signals that raise capacity. False while it is blocked, rate-limited, paused or failing, or while its figures cover only part of its partitions.'}
+            reason: {type: string, nullable: true, enum: [BLOCKED, RATE_LIMITED, PAUSED, FAILING, PARTIAL_COVERAGE, null], description: 'Why it is not counted; null when it is.'}
+            usefulReaders: {type: integer, minimum: 0, nullable: true, description: 'Kafka: the partitions of the topic, the most readers that can read it at once. Null for NATS and SQS.'}
+    ConnectorConsumptionUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        parallelism: {type: integer, minimum: 1, maximum: 256, description: 'In-flight messages per replica (per partition for Kafka). Default 1.'}
+        ratePerSecond: {type: integer, minimum: 1, maximum: 10000}
+    ConnectorConsumption:
+      type: object
+      required: [parallelism, ratePerSecond, updatedAt]
+      properties:
+        parallelism: {type: integer, minimum: 1}
+        ratePerSecond: {type: integer, minimum: 1}
+        updatedAt: {type: string, format: date-time}

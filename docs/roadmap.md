@@ -27,4 +27,13 @@ and an additional callback destination. PostgreSQL/gRPC semantics stay unchanged
 [acceptance tasks](../specs/033-redis-streams/tasks.md) and actual validation evidence alongside the
 remaining feature014 gates; its implementation does not waive those release requirements.
 
+Feature036 (Elastic scaling driven by telemetry) is a draft, proposed 2026-10-28 as the follow-up of
+feature010: lag for Kafka, NATS and SQS consumers, balanced Kafka partition assignment, scaling signals and
+policies declared by configuration and through the management interface, pulled sources, and horizontal and
+vertical decisions with an explanation. It has a [spec](../specs/036-elastic-scaling/spec.md) with five
+clarifications, a [plan](../specs/036-elastic-scaling/plan.md), ADR-0072 to ADR-0074 (proposed) and
+[94 tasks](../specs/036-elastic-scaling/tasks.md) for the first delivery; nothing implemented. The owner decided O1703 and O1706–O1709 (first delivery: consumer lag, balanced
+partitions, policies by configuration and API, pulled sources, export to the autoscaling provider). Still
+open: O1700–O1702 and O1704 (recommended defaults) and O1710 (how an operator acts through the API).
+
 **Dependencies:** `001 → 002 → {003,004,009} → {005,006,007} → {008,011,012} → 010`, with cross-cutting security from 001; later phases can advance in parallel once contracts stabilize.
