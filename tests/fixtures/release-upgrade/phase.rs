@@ -50,15 +50,15 @@ async fn immutable_wait_prefix(
 }
 
 #[tokio::test]
-async fn write_released_v02_profile() {
+async fn write_release_upgrade_profile() {
     let path = profile_path();
     assert!(
         !path.exists(),
         "a phase must not overwrite an earlier witness"
     );
     let flow = Flow::start(
-        "released-v02-profile",
-        reserve_and_charge("released-v02-profile", 1),
+        "release-upgrade-profile",
+        reserve_and_charge("release-upgrade-profile", 1),
         json!([{"sku":"item-1"}]),
     )
     .await;
@@ -72,8 +72,8 @@ async fn write_released_v02_profile() {
         .bind(flow.tenant.as_uuid()).bind(flow.run.as_uuid()).fetch_one(&flow.api.db.pool).await.expect("unleased next activity survives process exit");
     assert_eq!(next, ("READY".into(), 0));
     flow.verify().await;
-    let wait_ir = json!({"apiVersion":"sagat-octopus-orchestrator.io/v1","kind":"Workflow","metadata":{"name":"released-v02-root-wait"},"entrypoint":"payment","nodes":[{"id":"payment","type":"waitEvent","eventType":"payment.confirmed","correlationExpr":"input.orderId","timeoutMs":3600000,"lookbackMs":5000,"next":"done"},{"id":"done","type":"end"}]});
-    let workflow = publish(&flow.api, "released-v02-root-wait", wait_ir)
+    let wait_ir = json!({"apiVersion":"sagat-octopus-orchestrator.io/v1","kind":"Workflow","metadata":{"name":"release-upgrade-root-wait"},"entrypoint":"payment","nodes":[{"id":"payment","type":"waitEvent","eventType":"payment.confirmed","correlationExpr":"input.orderId","timeoutMs":3600000,"lookbackMs":5000,"next":"done"},{"id":"done","type":"end"}]});
+    let workflow = publish(&flow.api, "release-upgrade-root-wait", wait_ir)
         .await
         .expect("old public root wait publication");
     let response = flow
@@ -81,7 +81,7 @@ async fn write_released_v02_profile() {
         .as_user(Method::POST, "/runs", "alice", "acme")
         .header("x-octopus-namespace", "payments")
         .header("idempotency-key", Uuid::now_v7().to_string())
-        .json(&json!({"workflowId":workflow,"input":{"orderId":"released-v02-order"}}))
+        .json(&json!({"workflowId":workflow,"input":{"orderId":"release-upgrade-order"}}))
         .send()
         .await
         .expect("old public wait start");
@@ -164,7 +164,7 @@ async fn write_released_v02_profile() {
 }
 
 #[tokio::test]
-async fn read_upgraded_profile_with_released_v02_code() {
+async fn read_upgraded_profile_with_release_upgrade_code() {
     let witness: Value =
         serde_json::from_slice(&std::fs::read(profile_path()).expect("private metadata witness"))
             .expect("witness");

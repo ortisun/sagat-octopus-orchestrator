@@ -1333,7 +1333,7 @@ remain pending.
 
 ## Actual released-v0.2 active-data profile — 2026-10-27
 
-The [released profile contract](./released-v02-profile.md) now has an executable coordinator
+The [released profile contract](./release-upgrade-profile.md) now has an executable coordinator
 and a reproducible source-verifying runner. It archives actual v0.2.0 commit
 bfda342073db71e84f30bdc79ccf3fbc97a7153c; 649 production/configuration files are checked against
 that immutable source, with exactly three declared test overlays. Old/current targets are
@@ -1392,7 +1392,7 @@ does not require rerunning the unchanged86-case production event gate as a new c
 
 ## Actual released worker reports its old in-flight lease — 2026-10-27
 
-[The bounded in-flight contract](./released-v02-inflight-profile.md) now has a separate ignored
+[The bounded in-flight contract](./release-upgrade-inflight-profile.md) now has a separate ignored
 coordinator and released-source phase. The exact old generated gRPC1.5 client holds the original
 scoped task capability/request in memory across normal schema upgrade and reports it twice to
 current runtime-role services. Safely inherited anonymous Unix sockets carry capped length-prefixed
@@ -1447,7 +1447,7 @@ All eight canonical tasks stay open.
 
 ## Actual released Applied lookup and post-final reader — 2026-10-27
 
-[released-v02-applied-profile.md](./released-v02-applied-profile.md) extends the source-verified
+[release-upgrade-applied-profile.md](./release-upgrade-applied-profile.md) extends the source-verified
 in-flight proof without changing production behavior. Actual old REST/gRPC/scheduler code
 reports OUTCOME_UNKNOWN for charge, then leases the real qualified charge~r reconciliation.
 Its original target instance/node/provider key are asserted; the lookup capability/request
@@ -1569,7 +1569,7 @@ verifier and actual old terminal reader both accept COMPENSATED.
 
 The final five actual-released profiles pass independently, including ordinary FORWARD/Applied,
 active data and dispatcher cutover. Details, reproducible commands, timings, source hashes, review
-corrections and original receipts are in [released-v02-output-quota.md](released-v02-output-quota.md).
+corrections and original receipts are in [release-upgrade-output-quota.md](release-upgrade-output-quota.md).
 A stale supplemental result-copy bug is corrected with provenance; new per-invocation result paths
 and identity/hash checks prevent reuse. The Python verifier battery passes 16 tests. No production
 workflow semantics changed in this increment. Ledger item 1 remains open for the wider authority

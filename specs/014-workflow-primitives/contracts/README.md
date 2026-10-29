@@ -711,7 +711,7 @@ The0.3 pure model records addressed wait.started/wait.satisfied/wait.timed_out a
 handled timeout to its local onTimeout edge. This is trusted recorded replay only. A contract
 fitness test retains public refusal for both WaitEvent entry and activity→WaitEvent bodies;
 qualified native dispatch/receipt/value authority and all-five runtime evidence remain required.
-See scoped-event-waits.md and implementation-0.3.md for exact pending boundaries and results.
+See scoped-event-waits.md and implementation-ledger.md for exact pending boundaries and results.
 
 
 ### Public collection event waits — 2026-10-27

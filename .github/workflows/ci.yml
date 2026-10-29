@@ -72,8 +72,8 @@ jobs:
           for scenario in active-data inflight-worker applied-lookup applied-output-quota scoped-event-cutover redis-callback-cutover; do
             args=(--scenario "$scenario")
             if [[ -n "$prepared" ]]; then args+=(--prepared-run "$prepared"); fi
-            python3 scripts/test-released-v02-profile.py "${args[@]}"
-            roots=("$RUNNER_TEMP"/sagat-released-v02-*)
+            python3 scripts/test-release-upgrade-profile.py "${args[@]}"
+            roots=("$RUNNER_TEMP"/sagat-release-upgrade-*)
             [[ ${#roots[@]} -eq 1 ]]
             prepared="${roots[0]}"
             mkdir "$evidence/$scenario"
@@ -87,9 +87,9 @@ jobs:
           name: released-upgrade-${{ github.sha }}
           path: |
             ${{ runner.temp }}/sagat-upgrade-evidence/
-            ${{ runner.temp }}/sagat-released-v02-*/*.json
-            ${{ runner.temp }}/sagat-released-v02-*/*.txt
-            ${{ runner.temp }}/sagat-released-v02-*/outcome-*/*.json
+            ${{ runner.temp }}/sagat-release-upgrade-*/*.json
+            ${{ runner.temp }}/sagat-release-upgrade-*/*.txt
+            ${{ runner.temp }}/sagat-release-upgrade-*/outcome-*/*.json
           if-no-files-found: error
 
   native-runners:

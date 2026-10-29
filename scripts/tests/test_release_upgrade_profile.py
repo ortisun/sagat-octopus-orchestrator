@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import unittest
 
-SPEC = importlib.util.spec_from_file_location('released_v02_profile', Path(__file__).parents[1] / 'test-released-v02-profile.py')
+SPEC = importlib.util.spec_from_file_location('release_upgrade_profile', Path(__file__).parents[1] / 'test-release-upgrade-profile.py')
 RUNNER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(RUNNER)
 

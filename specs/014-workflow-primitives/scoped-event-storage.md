@@ -2,7 +2,7 @@
 
 Refs: T014-014–017/040, FR-014-004/005/014/015/017. This is a sequence of bounded native
 increments, not public activation or a complete event receiver. Actual commands and results
-are recorded in [implementation-0.3.md](./implementation-0.3.md).
+are recorded in [implementation-ledger.md](./implementation-ledger.md).
 
 ## Scope and fixture provenance
 

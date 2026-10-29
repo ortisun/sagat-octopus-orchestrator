@@ -3884,7 +3884,7 @@ that removes it.
 
 ## 0.3 scoped timers and explicit zero-policy progress — 2026-10-27
 
-The ongoing implementation ledger is [implementation-0.3.md](./implementation-0.3.md).
+The ongoing implementation ledger is [implementation-ledger.md](./implementation-ledger.md).
 Timers: core1017passed, focused native35passed plus separate2-test full/frontier journal/
 existing-source oracle; common five-SDK scenario64 verified without regeneration; strict
 workspace Clippy passed. These are separate invocations, not one combined count. Timer
@@ -4022,7 +4022,7 @@ post-cleanup journal failure with rollback of tenant capacity as well as all pre
 The final7pass21.89s harness/97.83s command; this is separate from26, not33distinct cases.
 Strict workspace Clippy90.15s and final test-target lint26.93s pass. Runtime-role regressions
 pass timers13, controls23 and native transactions15 on the same executable; exact timings,
-hashes, fixture/compile failures and review correction are in implementation-0.3.md.
+hashes, fixture/compile failures and review correction are in implementation-ledger.md.
 Formatting, architecture and agent checks pass. No canonical task, loop event drain, external
 event receiver/producer/public body, nested-capacity or release acceptance is closed.
 
@@ -4057,7 +4057,7 @@ admission before staging an exact receipt and its canonical document. WaitSatisf
 one output require the private same-transaction witness. Commit refuses orphan receipts,
 post-consumption ignored errors and prior failures hidden by successful pre-receipt retries.
 Real REDs, bounded-review corrections, fixture errors and the discarded zero-test invocation
-are retained in implementation-0.3.md; none is relabeled as passing acceptance. No grants,
+are retained in implementation-ledger.md; none is relabeled as passing acceptance. No grants,
 migration, public body or production dispatcher caller changes.
 
 Final native lifecycle43/0/0(186.67s harness/248.91s command), root dispatch24/0/0

@@ -137,7 +137,7 @@ These use the named immutable structured-codec fixture and real admission/activi
 The lifecycle gate covers start, timeout, pause/cold explicit routing, malformed source, rollback,
 user cancellation, fail-fast sibling drain, both timeout/cancel Run-lock orders and full/frontier
 journal parity. See [storage](./scoped-event-storage.md), [drain](./scoped-event-drain.md) and the
-[command/results ledger](./implementation-0.3.md) for exact evidence and limitations.
+[command/results ledger](./implementation-ledger.md) for exact evidence and limitations.
 
 No dispatcher candidate discovery, scoped receipt/payload receiver, public body, SDK capability
 or automatic event-wait scheduler producer is enabled by these checkpoints. The enforceable
