@@ -4256,3 +4256,15 @@ stubs were observed failing. The first implemented native run was 8 passed/1 fix
 corrected. A later disk-interrupted run is not a complete validation result. All corrected native
 tests, fingerprint/error/audit tests, the non-blessed contract baseline, writer inventory, privilege
 audit and actual released-v0.2 upgrade profiles remain CI gates. No canonical checkbox is closed.
+
+### CI checkpoint after version-neutral naming
+
+Run [40804888276](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/40804888276)
+passed the actual released-source active-data coordinator (1 passed, 16.10s), then refused the
+in-flight profile before database setup because the phase-registration checksum still referred
+to the old fixture path/module. This is a failed gate. The neutral registration was inspected
+and hashed independently against immutable release `bfda342073db71e84f30bdc79ccf3fbc97a7153c`:
+old entrypoint plus registration `6188765ccfa57f3ae61f0cf9b94a95f362e2acb3439eb191282ad9e4f587eafd`;
+new entrypoint plus registration `447a9e560754da23f9c65a64250096c5a17af6ae8a62657d4674ec195ce4d19b`.
+Only the expected overlay checksum changes; production archive verification remains strict.
+The corrected profile requires a new CI execution without any update/bless switch.

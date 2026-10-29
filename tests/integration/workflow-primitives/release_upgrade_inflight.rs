@@ -58,7 +58,7 @@ pub(super) fn verify_overlays(build: &Value) {
     // Actual immutable v0.2.0 main.rs plus the sole declared phase registration.
     assert_eq!(
         main[0]["sha256"],
-        "6188765ccfa57f3ae61f0cf9b94a95f362e2acb3439eb191282ad9e4f587eafd"
+        "447a9e560754da23f9c65a64250096c5a17af6ae8a62657d4674ec195ce4d19b"
     );
 }
 
