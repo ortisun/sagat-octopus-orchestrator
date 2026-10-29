@@ -214,6 +214,78 @@
       "required": []
     }
   },
+  "CapacityMemberAcquired": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "chainId": {
+          "type": [
+            "string"
+          ]
+        },
+        "epoch": {
+          "type": [
+            "integer"
+          ]
+        },
+        "groupId": {
+          "type": [
+            "string"
+          ]
+        },
+        "headRunId": {
+          "type": [
+            "string"
+          ]
+        },
+        "memberId": {
+          "type": [
+            "string"
+          ]
+        },
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "resultingRevision": {
+          "type": [
+            "integer"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "chainId",
+        "epoch",
+        "groupId",
+        "headRunId",
+        "memberId",
+        "namespaceId",
+        "resultingRevision",
+        "tenantId"
+      ]
+    }
+  },
   "CapacityMemberFinished": {
     "headers": {
       "properties": {

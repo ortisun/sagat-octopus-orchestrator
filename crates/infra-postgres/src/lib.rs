@@ -14,6 +14,7 @@ mod breaker;
 mod capacity_acquire;
 mod capacity_discovery;
 mod capacity_finish;
+mod capacity_transfer;
 mod capacity_vacate;
 mod chain_progress;
 mod collection_outputs;
