@@ -34,6 +34,12 @@ jobs:
           # A failed test must not discard the dependencies already compiled.
           cache-on-failure: true
       - run: cargo fmt --all -- --check
+      - name: capacity transfer command regression
+        run: cargo test -p sagat-application --lib --locked capacity_
+      - name: capacity transfer adapter and audit regression
+        run: |
+          cargo test -p sagat-infra-postgres --lib --locked capacity_transfer::tests
+          cargo test -p sagat-domain --test capacity_acquire_audit --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: isolated C# compiler and runtime images
         run: |
@@ -52,6 +58,9 @@ jobs:
           SAGAT_TEST_AS_RUNTIME_ROLE: "1"
           RUST_TEST_THREADS: "2"
         run: |
+          cargo test -p sagat-tests --test contract_asyncapi_events_webhooks_messaging --locked
+          cargo test -p sagat-tests --test integration_workflow_primitives --locked -- hint_contract::capacity_acquire_hint_is_closed_control_metadata_without_execution_authority --exact --nocapture
+          cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::acquire:: --nocapture
           cargo test -p sagat-tests --test integration_workflow_primitives --locked -- loop_progress::expression_failure_drains_once_restarts_and_finishes_from_the_journal --exact --nocapture
           cargo test -p sagat-tests --test integration_security_multitenancy --locked -- bindings::releasing_the_leases_of_closed_sessions_is_an_index_lookup_and_not_a_scan_of_every_lease --exact --nocapture
           cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::downgrade_waits_for_writer_before_deciding_whether_storage_is_empty --exact --nocapture

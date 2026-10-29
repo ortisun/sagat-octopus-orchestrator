@@ -28,3 +28,10 @@ and an additional callback destination. PostgreSQL/gRPC semantics stay unchanged
 remaining feature014 gates; its implementation does not waive those release requirements.
 
 **Dependencies:** `001 → 002 → {003,004,009} → {005,006,007} → {008,011,012} → 010`, with cross-cutting security from 001; later phases can advance in parallel once contracts stabilize.
+
+### Capacity increment in progress — 2026-10-29
+
+Feature014's [dormant ChildRoot Acquire](../specs/014-workflow-primitives/capacity-acquire.md)
+adds fenced possession transfer and original-key reconciliation beside Vacate/Finish. Native and
+integrated acceptance is in progress; canonical tasks and the release remain open. Runnable work,
+sweeper/callers, claim guards, nested admission and quota/backfill remain required before activation.

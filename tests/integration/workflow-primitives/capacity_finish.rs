@@ -1060,3 +1060,6 @@ mod discovery;
 
 #[path = "capacity_vacate.rs"]
 mod vacate;
+
+#[path = "capacity_acquire.rs"]
+mod acquire;

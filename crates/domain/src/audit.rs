@@ -35,6 +35,8 @@ pub enum AuditAction {
     CapacityMemberFinished,
     /// A quiescent ChildRoot retained membership but vacated possession.
     CapacityMemberVacated,
+    /// An active ChildRoot acquired vacant group possession, without leasing work.
+    CapacityMemberAcquired,
     /// An immutable ordinary leaf-path success fact was certified from committed source evidence.
     LeafCollectionSuccessCertified,
     /// Retained workflow content exceeded the tenant storage ceiling and forced the run to stop.
@@ -277,6 +279,7 @@ impl AuditAction {
             Self::RunFinished => "run.finished",
             Self::CapacityMemberFinished => "capacity.member.finished",
             Self::CapacityMemberVacated => "capacity.member.vacated",
+            Self::CapacityMemberAcquired => "capacity.member.acquired",
             Self::LeafCollectionSuccessCertified => "collection.leaf_success_certified",
             Self::RunStorageQuotaExceeded => "run.storage_quota_exceeded",
             Self::RunDataLimitExceeded => "run.data_limit_exceeded",
