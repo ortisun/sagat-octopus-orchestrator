@@ -21,6 +21,7 @@ pub mod operations;
 pub mod outbound;
 pub mod quota;
 pub mod saga;
+pub mod schedules;
 pub mod scripts;
 pub mod secrets;
 pub mod sharding;

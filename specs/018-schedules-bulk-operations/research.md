@@ -240,6 +240,24 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
   `contracts/sdk-conformance.md` therefore cover **six** SDKs: task T018-081 adds the Rust client in
   `sdks/rust/` and T018-068 runs all six. The published task ids are not renumbered; the text of
   FR-018-048 and SC-018-013 says "five" and is read as six.
+- **D1041** (2026-10-29, T018-003) `CANCEL_OTHER` keeps **one** action waiting, whatever the buffer limit:
+  the open runs are being cancelled, so a second waiting action would only queue behind the first; a
+  further due time while one waits is `DROPPED_BUFFER_FULL`. FR-018-006 does not say; one is the smallest
+  reading that keeps the "buffered until they are terminal" promise.
+- **D1042** (2026-10-29, T018-003) With `remainingActions`, every waiting action **holds one remaining
+  action** from the moment it is buffered. A due time with no unreserved remaining action is `Exhausted`
+  (no row, no next action, the schedule acts as paused), so a buffered action can always start later.
+  FR-018-012 says the count is decremented by `SCHEDULED` actions that start a run; the decrement still
+  happens at the start, the reservation only stops over-buffering.
+- **D1043** (2026-10-29, T018-003, found by a property test) An action that is waiting goes before any new
+  time under every policy but `ALLOW_ALL`. `SKIP` never buffers, but an update can change a schedule from
+  `BUFFER_ALL` to `SKIP` with actions still waiting; a new time is then `SKIPPED_OVERLAP`, not a start
+  ahead of them. The pass releases waiting actions (`release`) before it decides a new time.
+- **D1044** (2026-10-29, T018-003) The domain has no hash. `jitter_seed(schedule_id, nominal)` returns the
+  24 bytes to hash (id, then the nominal time in whole milliseconds, big-endian) and
+  `jitter_offset_ms(digest, jitter, gap)` reads the first eight bytes of the SHA-256 digest modulo the
+  bound; the layer that owns `sha2` (application) hashes. This keeps D1003 (SHA-256, no random source)
+  without a new domain dependency (`crates/domain/AGENTS.md`).
 - **D1605** Reset-rule registry (coordinator C1): every journal event type has one rule (`COPY`,
   `REMATERIALIZE`, `EXCLUDE`, `REFUSE` — a window until a named closing event) in
   `contracts/journal-and-events.md`; existing types are owned by 018 for this purpose; drafts 019, 020,

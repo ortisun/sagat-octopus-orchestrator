@@ -28,9 +28,16 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
 
 ## Phase 2: Foundational (blocks every story)
 
-- [ ] T018-003 Domain schedules: bounded spec/policy types, outcomes, pure `decide` (overlap, catch-up,
+- [x] T018-003 Domain schedules: bounded spec/policy types, outcomes, pure `decide` (overlap, catch-up,
   remaining actions, tracking limit), deterministic jitter — `crates/domain/src/schedules.rs` — unit and
   property tests — FR-018-002..008, FR-018-012.
+  *Done 2026-10-29.* Evidence: `cargo test -p sagat-domain --test schedules --test schedules_properties --locked`
+  — 39 + 8 passed (the properties also at `PROPTEST_CASES=2000`, three runs); whole domain suite 647 passed,
+  0 failed; `cargo fmt --check`, `cargo clippy -p sagat-domain --all-targets -- -D warnings` and
+  `scripts/check-architecture.py` clean. The tests were seen failing first (unresolved module), a mutation of
+  the catch-up window edge was caught, and a property found a real gap (D1043). Decisions D1041–D1044.
+  Not in this task and still open: the calendar arithmetic and the spacing/never-fires checks
+  (T018-013), and the pass that bounds the due slice of a long outage (T018-017).
 - [ ] T018-004 [P] Domain business ids: `BusinessId` (1–200 visible ASCII), policies, pure `admit`
   — `crates/domain/src/business_ids.rs` — policy × holder × window table — FR-018-018..020.
 - [ ] T018-005 [P] Domain batch: selector, action set, item/job states, milli-item rate slot —
