@@ -1768,3 +1768,18 @@ expression case adds distinct query result-schema failure, raw canary redaction 
 Run/state versions, plus actual publication of32queries/32updates. Approval authoring accepts32
 principals and retains33 refusal. Focused all-five results and exact commands are retained in
 `tasks/project-completion/evidence/sdk-public-gaps-20261018`; full60 integration remains separate.
+
+
+## Nested capacity after a policy reduction (B1c) — D701–D705, G706–G713, O701–O704
+
+Range D701–D799 / G701–G799 / O701–O799 is reserved for the nested-capacity lane (branch
+`feature/014-capacity-protocol`) so it cannot clash with `feature/014-v0.3-completion`. Text, rationale and
+what remains: [capacity-eligibility.md](./capacity-eligibility.md). Owner answer to O701 recorded in
+`docs/owner-decisions.md` (2026-10-26).
+
+- **D701, D702 (withdrawn)** — drain lane and pausing admitted work; rejected by the owner through O701 (answer: do not pause).
+- **D703 (confirmed)** — a retained group counts against fresh admission until it settles, as a flat iteration counts in `active_iterations`.
+- **D704** — The only tenant-level capacity gate is fresh admission, `retained < limit`; no new tenant counter, enabled/parked state, drain lane or enable queue. A reduction never touches admitted work.
+- **D705** — A nested descendant joins an existing group and never allocates one; joining charges no tenant unit.
+- **G706** (open) descendants must join, with a nested limit-1 test at wiring; **G708** (open) a retained group blocks fresh admission, as in flat; **G711** (open) telemetry/audit vocabulary for join/vacate/acquire; **G713** (open) fairness among members of one group may be unnecessary. G701–G705, G707, G709, G710, G712 were obligations of the withdrawn model and are void.
+- **O701 (answered 2026-10-26: do not pause admitted work)**, **O702–O704 (derived from it, open to correction)**: a tenant may run above a reduced limit while its admitted work lasts; accepted compensation continues at limit 0; a retained idle group's unit counts against the quota and there is no serial drain lane.

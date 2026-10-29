@@ -687,6 +687,51 @@ coverage remains separately scoped, with other historical features/versions unte
 Evidence: [complete SDK60 aggregate](../../../tasks/project-completion/evidence/sdk60-current-20261018/reproduce.md).
 This evidence does not accept general nested runtime, C0, production ceilings or final release gates.
 
+
+`collection-control-routing.json` adds the 0.3 WP-03 local condition/switch case. Both bodies
+start with a compensable reservation; positive items notify, negative items go directly to
+Return. Every SDK must produce `[1,-1]`, the same six qualified worker calls, two recorded
+choices per Run and no `selected` instance for index1. Authored lifetime12/depth 1 and worker
+minor1.5 stay in the reviewed workflow/runtime references. This is a focused scenario;
+native tests own rollback, malformed physical metadata, stale snapshot and failure proofs.
+
+`collection-local-recovery.json` is the 0.3 WP-03/04 local activity-error-route case.
+All five existing builders preserve `onError`, instance/depth limits and worker minor1.5.
+A known failure followed by successful recovery returns ordered `[1,2]`; a failed recovery
+stops admission and compensates its actual reservation with `RECOVERY_FAILED`. The native
+collection_recovery suite separately checks skipped recovery branches, sibling isolation,
+retired lifetime reservations, native false-drain refusal and full/frontier parity. New
+workflow and runtime goldens were recorded after reading the complete matching observed
+outputs, then verified in all five languages without a bless switch.
+
+
+`collection-control-entry.json` is the 63rd registry scenario. The condition-only collection
+finishes before startWorker and produces no worker calls. A switch-entry collection returns
+ordered [1,-1] and leases one actual control.notify activity for index 0. Existing builders,
+IR v1 and worker 1.5 are unchanged; authored lifetime ceilings are 6/8 and depth 1. Native
+admission tests own journal-fault rollback, replay/mismatch, current tenant/shard authority,
+quota reduction, cancellation, cold discovery, retained-evidence rollback refusal and
+frozen OrdinaryLeafV1 exclusion. A focused pass is not complete 63-scenario acceptance.
+
+
+`collection-timers.json` is registry scenario64. Three existing body-builder programs use
+sleep/durationMs: Timer entry and Condition→Timer both finish before worker startup;
+Activity→Timer runs only two real activities. Ordered results are[1,-1] in every Run, and
+qualified timer graph nodes have attempt0 and cleared waits. The authored instance ceilings
+6/8/8 and depth1 are preserved in both reviewed canonical and workflow documents. Native
+transaction tests separately cover pause/cold resume, cancellation races, malformed state,
+prepared-write guards and rollback. A focused case is not complete64-scenario acceptance.
+
+
+`collection-events.json` exercises public `waitForEvent` inside collection bodies, directly at
+entry and after a real activity, plus handled deadlines. Namespace events precede execution and
+use distinct keys; lookback can satisfy each instance with its own durable receipt. A repeated
+event ID is DUPLICATE. The shared journal uses maxConcurrency 1 to avoid imposing an order on
+independent iterations; native public tests separately use concurrency 2. Timeout keys cannot
+match those previously published. Reviewed outputs retain journals, instance-aware worker calls,
+ordered scope results, peak active count and independent persisted server state. Rust joins this
+case through the release integration with feature034; existing five-language results are not a
+new all-six acceptance claim.
 ## Rust runner
 
 Set `SAGAT_RUST_SDK_TARGET_DIR` to an owned absolute directory outside the repository and

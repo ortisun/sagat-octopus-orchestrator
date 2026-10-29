@@ -1,0 +1,182 @@
+{
+  "name": "collection-control-entry",
+  "description": "WP-03 Condition and Switch entry use all five existing body builders. The condition-only collection completes before any worker starts; the switch entry leases only its selected real activity. Native tests cover admission rollback, replay, capacity, cancellation and downgrade retention.",
+  "server": {
+    "iterationConcurrency": 4
+  },
+  "scopeEvidence": "ordered",
+  "workflows": {
+    "condition": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "collection-control-entry-only",
+      "limits": {
+        "maxInstances": 6,
+        "maxDepth": 1
+      },
+      "bodies": {
+        "line": {
+          "program": [
+            {
+              "op": "condition",
+              "id": "choose",
+              "expression": "item > 0",
+              "ifTrue": "returned",
+              "ifFalse": "returned"
+            },
+            {
+              "op": "return",
+              "id": "returned",
+              "result": "item"
+            }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "map",
+          "id": "lines",
+          "items": "input.items",
+          "body": "line",
+          "result": "bodyResult",
+          "maxItems": 2,
+          "maxConcurrency": 1
+        },
+        {
+          "op": "end",
+          "id": "done",
+          "options": {
+            "outputExpr": "steps.lines.output"
+          }
+        }
+      ]
+    },
+    "switch": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "collection-control-entry-work",
+      "limits": {
+        "maxInstances": 8,
+        "maxDepth": 1
+      },
+      "bodies": {
+        "line": {
+          "program": [
+            {
+              "op": "switch",
+              "id": "choose",
+              "cases": [
+                {
+                  "id": "positive",
+                  "when": "item > 0",
+                  "target": "selected"
+                }
+              ],
+              "default": "returned"
+            },
+            {
+              "op": "step",
+              "id": "selected",
+              "activity": "control.notify"
+            },
+            {
+              "op": "return",
+              "id": "returned",
+              "result": "item"
+            }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "map",
+          "id": "lines",
+          "items": "input.items",
+          "body": "line",
+          "result": "bodyResult",
+          "maxItems": 2,
+          "maxConcurrency": 1
+        },
+        {
+          "op": "end",
+          "id": "done",
+          "options": {
+            "outputExpr": "steps.lines.output"
+          }
+        }
+      ]
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "collection-control-entry",
+      "protocolVersion": "1.5",
+      "transport": "poll",
+      "maxInflight": 1,
+      "autostart": false,
+      "activities": {
+        "control.notify": {
+          "behavior": {
+            "returns": {
+              "selected": true
+            }
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "condition",
+      "op": "start",
+      "workflow": "condition",
+      "input": {
+        "items": [
+          1,
+          -1
+        ]
+      }
+    },
+    {
+      "id": "condition-done",
+      "op": "waitForCompletion",
+      "run": "condition",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "condition-journal",
+      "op": "events",
+      "run": "condition"
+    },
+    {
+      "id": "start-worker",
+      "op": "startWorker",
+      "worker": "w1"
+    },
+    {
+      "id": "switch",
+      "op": "start",
+      "workflow": "switch",
+      "input": {
+        "items": [
+          1,
+          -1
+        ]
+      }
+    },
+    {
+      "id": "switch-done",
+      "op": "waitForCompletion",
+      "run": "switch",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "switch-journal",
+      "op": "events",
+      "run": "switch"
+    },
+    {
+      "id": "stop-worker",
+      "op": "stopWorker",
+      "worker": "w1"
+    }
+  ]
+}

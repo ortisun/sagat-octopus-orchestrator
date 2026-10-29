@@ -1,5 +1,13 @@
 # SDK and protocol compatibility
 
+The 0.3 development snapshot `38d7b3f0` passes all 64 registered scenarios in all five SDKs,
+without blessing or selection filters. Root independently compared 290 complete normalized
+outputs from 58 scenarios to their goldens; six scenarios are authoring-only. The retry reused
+unchanged SDK builds after correcting the missing database-runner prerequisite. Exact source,
+commands and limits are in [the 64-scenario evidence](../specs/014-workflow-primitives/evidence/sdk64-20261027/README.md).
+Later event-candidate and pure-command work, native scoped event delivery and released-profile
+rollout retain separate gates; this checkpoint does not authorize release 0.3.
+
 Chain clients, including the Python blocking facade, have current all-five evidence for
 continuation authoring and seven chain runtime scenarios (T014-038). The exact scenario list,
 reviewed-golden hashes and35 independently compared runtime artifacts are recorded in
@@ -42,7 +50,7 @@ yet be created publicly is called out separately.
 | Approval decision | Public; the route a decision or expiry chooses is released by the scheduler | Typed listing and decision clients in all five SDKs | No protocol dependency | No protocol dependency | `approval-decisions`, `approval-settlement` and `approval-security` passed the shared API/scheduler/PostgreSQL scenarios in all five SDKs |
 | Chain inspect, declared Query/Update, root signal and cancel | Public routes for restricted chains; direct or conditional continuation can transfer exact declared state, and an activity may lead to a signal-controlled wait before input-only continuation | Typed chain Query/Update and `waitForChainCompletion` clients exist in all five SDKs; `chain-query-handoff` covers successor Query/Update, replay, stale-head fences and segment-versus-chain waits | No protocol dependency for the HTTP command | No protocol dependency for the HTTP command | Public chain creation, stateful handoff, shared `chain-inspect-cancel`, `chain-query`, `chain-query-handoff`, `chain-final-success`, `chain-state-final-success` and `chain-commands` passed; focused HTTP/PostgreSQL tests cover Query and Update head fencing, rollover replay, RBAC, tenant opacity and audit. Wait-entry and parent propagate/detach cases also have current all-five evidence; the broader shared release gates remain open |
 | Collection, loop, approval-node and continuation authoring | Restricted runtime subsets for collection, loop, root approval and continuation | All five builders emit the same reviewed additive-v1 documents | Must never receive scoped work | May execute the restricted collection and loop bodies | `loop-runtime` and `loop-semantics` passed all five SDKs for pre-test, post-test, carry checkpoints, the iteration limit and a durable delay; `loop-error-activity` also covers failed scoped work draining into a successful root recovery activity; broader body graphs and primitive combinations remain open |
-| Scoped collection activity execution | Public for a restricted root `forEach`/`map` body of one to eight activities followed by `return` | Worker hosts expose typed identity and captured item/index, and echo the immutable lease identity on all lease-bound calls | Scoped tasks are withheld; identity and item/index are absent | Claims and reports scoped tasks with tenant and lease fencing; handler identity and item/index are present | PostgreSQL and fault tests cover the bounded activity slice; `scoped-identity` and mapped-result `collection-runtime` passed all five SDKs against reviewed common goldens |
+| Scoped collection activity execution | Public for a restricted root `forEach`/`map` body with activity/condition/switch entry, up to eight activity/condition/switch nodes and one `return` | Worker hosts expose typed identity and captured item/index, and echo the immutable lease identity on all lease-bound calls | Scoped tasks are withheld; identity and item/index are absent | Claims and reports scoped tasks with tenant and lease fencing; handler identity and item/index are present | PostgreSQL and fault tests cover the bounded activity slice; `scoped-identity` and mapped-result `collection-runtime` passed all five SDKs against reviewed common goldens |
 
 The shared build-only scenarios compare canonical v1 documents from all five SDKs with reviewed
 goldens. They prove authoring parity only. They do not prove that a document can be published or
@@ -504,3 +512,57 @@ This evidence does not accept general nested runtime, C0, production ceilings or
 | `worker-stream-faults` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
 | `worker-transport-faults` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
 | `workflow-instance-limits` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+
+
+## 0.3 focused collection-recovery checkpoint
+
+`collection-local-recovery` uses the existing activity `onError` option, additive IR v1
+and worker minor 1.5 in all five SDKs. Initial observation produced five identical complete
+normalized outputs; the aggregate correctly failed because the two new reference files
+were absent. The workflow documents, ten worker calls, original compensation target,
+ordered `[1, 2]` result, `RECOVERY_FAILED` drain and concurrency bound were inspected before
+recording those files. The subsequent all-five run without a bless switch passed in
+36.39 s. Native tests separately exercise selective recovery, sibling isolation, exact
+lifetime retirement, rejected handled-error drains and full/frontier journal equivalence.
+This focused scenario adds to the historical 60-scenario evidence; it is not a new complete
+61-scenario release run. The final recovery rerun after the native drain/saga corrections
+also passed all five in41.59s. Nested capacity and production ceilings remain pending.
+
+## 0.3 focused local-control checkpoint
+
+`collection-control-routing` uses the existing condition/switch body builders and worker
+minor1.5 in all five SDKs. An activity entry is followed by a local decision: positive items
+notify, negative items return directly. The two Runs both yield `[1,-1]`; six actual worker
+calls, two recorded choices per Run, qualified graphs and skipped index1 notifications are
+identical across languages. The authored12-instance/depth1 ceiling remains in both reviewed
+documents and their canonical forms.
+
+The initial all-five observation failed only because its two new reference files did not
+exist. After reading the complete business observations and matching normalized outputs,
+the references were recorded and the all-five no-bless verification passed1 aggregate,
+0 failures,43.02s test execution. This raises the scenario registry to62; it is not a new
+complete62-scenario acceptance run. Native tests separately prove failures, local recovery,
+rollback, malformed state and prepared-decision CAS. That increment used an activity entry;
+the following increment extends entry. Waits, children and nested scopes remain gated.
+
+
+### 0.3 development control entry
+
+`collection-control-entry` uses existing condition/switch body builders in all five SDKs.
+The pure condition/Return Run finishes before any worker starts. The switch Run leases only
+index 0's selected activity; both return ordered [1,-1]. Worker minor1.5 and IR v1 stay unchanged.
+The registry now contains 63 scenarios; complete 63-case acceptance remains a release gate.
+This is not rolling execution compatibility with 0.2 schedulers. Fence/drain old scheduler
+authority before admitting 0.3-only definitions, and prove pinned 0.2 active runs on the
+released migration profile before advertising 0.3. Native OrdinaryLeafV1 source certification
+remains activity-only despite this broader public runtime shape.
+
+
+### 0.3 development scoped timers
+
+The 64th scenario, `collection-timers`, uses the existing sleep(id,durationMs) body builders
+and worker minor1.5 in all five SDKs. Timer-entry and Condition→Timer Runs complete before
+startWorker; Activity→Timer leases only two real activities. All three return ordered[1,-1].
+Qualified graphs retain timer path identity and no lease attempt for timer nodes. This is a
+focused increment, not complete64-scenario or released0.2 upgrade acceptance. Fence/drain old
+scheduler authority before new definitions; loop/event/child/nested capability is unchanged.

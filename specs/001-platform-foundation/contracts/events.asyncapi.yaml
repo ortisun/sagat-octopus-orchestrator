@@ -3,7 +3,7 @@ info:
   title: Sagat Octopus Orchestrator Integration Events
   version: 0.3.0
   description: |
-    Event contract; at-least-once everywhere. Hints on NATS are deduplicated by the Nats-Msg-Id header (the outbox row id); events that come in (webhook, API, broker) are deduplicated by (tenant, namespace, source, eventId) for the endpoint's window; events that go out (webhooks and broker subscriptions) carry a stable delivery id.
+    Event contract; at-least-once everywhere. Internal hints use the selected NATS or Redis transport. NATS deduplicates within its configured window using Nats-Msg-Id (the outbox row id); Redis carries the same stable id in message-id and may contain duplicate physical entries; events that come in (webhook, API, broker) are deduplicated by (tenant, namespace, source, eventId) for the endpoint's window; events that go out (webhooks and broker subscriptions) carry a stable delivery id.
 
     Evolution (FR-004-007): within a version of this document a message only grows. A property is never removed, renamed or given another type; a new property is optional; an enumeration gains values and never loses them; `required` never gains a member. A change that cannot be made that way is a new message with a new name next to the old one, and the old one is kept for the period the deprecation notice in `docs/event-schema-evolution.md` states. `tests/contract/events-webhooks-messaging/asyncapi` holds the previous shape of every message (`events.baseline.json`) and fails a change that breaks it.
 defaultContentType: application/json
@@ -11,6 +11,10 @@ servers:
   internal:
     host: nats:4222
     protocol: nats
+  internalRedis:
+    host: redis:6379
+    protocol: redis
+    description: 'Optional internal transport. XADD into SAGAT_REDIS_STREAM carries binary fields message-id, subject and payload. The subject retains the logical channel address. Exact MAXLEN retention applies only to hints; PostgreSQL remains authoritative. Selection requires a deployment-wide cold cutover.'
   public:
     host: platform.example.com
     protocol: https
@@ -233,10 +237,10 @@ channels:
         $ref: '#/components/messages/OperationalAlertWebhook'
   outboundBroker:
     address: '{subjectTopicOrQueue}'
-    description: The platform publishes an event to a managed NATS JetStream subject, Kafka topic or SQS queue after the namespace egress policy permits the destination. The delivery id stays stable across retries. JetStream receives it as Nats-Msg-Id, Kafka as the record key, and an SQS FIFO queue as MessageDeduplicationId. A lost acknowledgement may produce a repeat.
+    description: The platform publishes an event to a managed NATS JetStream subject, Kafka topic, SQS queue or Redis Stream after the namespace egress policy permits the destination. The delivery id stays stable across retries. JetStream receives it as Nats-Msg-Id, Kafka as the record key, and an SQS FIFO queue as MessageDeduplicationId. Redis receives XADD fields event-id, event-type, delivery-id, attempt, schema-version, optional traceparent, content-type and body (raw JSON bytes), without MAXLEN trimming. XADD acknowledgement confirms acceptance, not arbitrary fsync or failover durability. A lost acknowledgement may produce a repeat.
     parameters:
       subjectTopicOrQueue:
-        description: The NATS subject, Kafka topic or SQS queue URL of a broker subscription.
+        description: The NATS subject, Kafka topic, SQS queue URL or Redis stream key of a broker subscription.
     messages:
       runFinishedBroker:
         $ref: '#/components/messages/RunFinishedBroker'

@@ -1,0 +1,20 @@
+{
+  "appliedLookup": true,
+  "currentSchedulerWorkingTicks": 6,
+  "exactReceiptReplay": true,
+  "logicalBytesChargedOnce": false,
+  "noRefusedOutputCharge": true,
+  "oldImmutablePrefix": true,
+  "oldTerminalReader": true,
+  "oldWorkerReport": true,
+  "outputRefused": true,
+  "prefixVerifiedAfterFinalization": true,
+  "releaseCommit": "bfda342073db71e84f30bdc79ccf3fbc97a7153c",
+  "run": "COMPENSATED",
+  "scenario": "applied-output-quota",
+  "schemaAfter": 20261224000000,
+  "schemaBefore": 20261220000000,
+  "singleAppliedVerdict": true,
+  "singleLookupCompletion": true,
+  "singleReportTransaction": true
+}

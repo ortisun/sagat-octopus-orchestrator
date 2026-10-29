@@ -1,0 +1,10 @@
+Released-source compatibility evidence: /private/tmp/sagat-v03-20261026/released-v02-al_pw2ho
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 690 filtered out; finished in 0.00s
+
+Traceback (most recent call last):
+  File "/tmp/sagat-v03-20261026/zero-selector-control.py", line 13, in <module>
+    raise AssertionError('zero matching tests were falsely accepted as a successful profile')
+AssertionError: zero matching tests were falsely accepted as a successful profile

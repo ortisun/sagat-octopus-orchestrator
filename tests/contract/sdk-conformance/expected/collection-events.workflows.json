@@ -1,0 +1,168 @@
+{
+  "canonical": {
+    "activity": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"line\":{\"entrypoint\":\"selected\",\"nodes\":[{\"activity\":\"event.notify\",\"id\":\"selected\",\"next\":\"confirmed\",\"type\":\"activity\"},{\"correlationExpr\":\"item.sku\",\"eventType\":\"payment.confirmed\",\"id\":\"confirmed\",\"lookbackMs\":60000,\"next\":\"returned\",\"onTimeout\":\"returned\",\"timeoutMs\":60000,\"type\":\"waitEvent\"},{\"id\":\"returned\",\"result\":\"item.sku\",\"type\":\"return\"}]}},\"entrypoint\":\"lines\",\"kind\":\"Workflow\",\"limits\":{\"maxDepth\":1,\"maxInstances\":8},\"metadata\":{\"name\":\"collection-events-activity\"},\"nodes\":[{\"body\":\"line\",\"id\":\"lines\",\"items\":\"input.items\",\"maxConcurrency\":1,\"maxItems\":2,\"next\":\"done\",\"result\":\"bodyResult\",\"type\":\"forEach\"},{\"id\":\"done\",\"outputExpr\":\"steps.lines.output\",\"type\":\"end\"}]}",
+    "entry": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"line\":{\"entrypoint\":\"confirmed\",\"nodes\":[{\"correlationExpr\":\"item.sku\",\"eventType\":\"payment.confirmed\",\"id\":\"confirmed\",\"lookbackMs\":60000,\"next\":\"returned\",\"onTimeout\":\"returned\",\"timeoutMs\":60000,\"type\":\"waitEvent\"},{\"id\":\"returned\",\"result\":\"item.sku\",\"type\":\"return\"}]}},\"entrypoint\":\"lines\",\"kind\":\"Workflow\",\"limits\":{\"maxDepth\":1,\"maxInstances\":6},\"metadata\":{\"name\":\"collection-events-entry\"},\"nodes\":[{\"body\":\"line\",\"id\":\"lines\",\"items\":\"input.items\",\"maxConcurrency\":1,\"maxItems\":2,\"next\":\"done\",\"result\":\"bodyResult\",\"type\":\"forEach\"},{\"id\":\"done\",\"outputExpr\":\"steps.lines.output\",\"type\":\"end\"}]}",
+    "timeout": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"line\":{\"entrypoint\":\"confirmed\",\"nodes\":[{\"correlationExpr\":\"item.sku\",\"eventType\":\"payment.confirmed\",\"id\":\"confirmed\",\"lookbackMs\":60000,\"next\":\"returned\",\"onTimeout\":\"returned\",\"timeoutMs\":1,\"type\":\"waitEvent\"},{\"id\":\"returned\",\"result\":\"item.sku\",\"type\":\"return\"}]}},\"entrypoint\":\"lines\",\"kind\":\"Workflow\",\"limits\":{\"maxDepth\":1,\"maxInstances\":6},\"metadata\":{\"name\":\"collection-events-timeout\"},\"nodes\":[{\"body\":\"line\",\"id\":\"lines\",\"items\":\"input.items\",\"maxConcurrency\":1,\"maxItems\":2,\"next\":\"done\",\"result\":\"bodyResult\",\"type\":\"forEach\"},{\"id\":\"done\",\"outputExpr\":\"steps.lines.output\",\"type\":\"end\"}]}"
+  },
+  "workflows": {
+    "activity": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "line": {
+          "entrypoint": "selected",
+          "nodes": [
+            {
+              "activity": "event.notify",
+              "id": "selected",
+              "next": "confirmed",
+              "type": "activity"
+            },
+            {
+              "correlationExpr": "item.sku",
+              "eventType": "payment.confirmed",
+              "id": "confirmed",
+              "lookbackMs": 60000,
+              "next": "returned",
+              "onTimeout": "returned",
+              "timeoutMs": 60000,
+              "type": "waitEvent"
+            },
+            {
+              "id": "returned",
+              "result": "item.sku",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "lines",
+      "kind": "Workflow",
+      "limits": {
+        "maxDepth": 1,
+        "maxInstances": 8
+      },
+      "metadata": {
+        "name": "collection-events-activity"
+      },
+      "nodes": [
+        {
+          "body": "line",
+          "id": "lines",
+          "items": "input.items",
+          "maxConcurrency": 1,
+          "maxItems": 2,
+          "next": "done",
+          "result": "bodyResult",
+          "type": "forEach"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.lines.output",
+          "type": "end"
+        }
+      ]
+    },
+    "entry": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "line": {
+          "entrypoint": "confirmed",
+          "nodes": [
+            {
+              "correlationExpr": "item.sku",
+              "eventType": "payment.confirmed",
+              "id": "confirmed",
+              "lookbackMs": 60000,
+              "next": "returned",
+              "onTimeout": "returned",
+              "timeoutMs": 60000,
+              "type": "waitEvent"
+            },
+            {
+              "id": "returned",
+              "result": "item.sku",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "lines",
+      "kind": "Workflow",
+      "limits": {
+        "maxDepth": 1,
+        "maxInstances": 6
+      },
+      "metadata": {
+        "name": "collection-events-entry"
+      },
+      "nodes": [
+        {
+          "body": "line",
+          "id": "lines",
+          "items": "input.items",
+          "maxConcurrency": 1,
+          "maxItems": 2,
+          "next": "done",
+          "result": "bodyResult",
+          "type": "forEach"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.lines.output",
+          "type": "end"
+        }
+      ]
+    },
+    "timeout": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "line": {
+          "entrypoint": "confirmed",
+          "nodes": [
+            {
+              "correlationExpr": "item.sku",
+              "eventType": "payment.confirmed",
+              "id": "confirmed",
+              "lookbackMs": 60000,
+              "next": "returned",
+              "onTimeout": "returned",
+              "timeoutMs": 1,
+              "type": "waitEvent"
+            },
+            {
+              "id": "returned",
+              "result": "item.sku",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "lines",
+      "kind": "Workflow",
+      "limits": {
+        "maxDepth": 1,
+        "maxInstances": 6
+      },
+      "metadata": {
+        "name": "collection-events-timeout"
+      },
+      "nodes": [
+        {
+          "body": "line",
+          "id": "lines",
+          "items": "input.items",
+          "maxConcurrency": 1,
+          "maxItems": 2,
+          "next": "done",
+          "result": "bodyResult",
+          "type": "forEach"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.lines.output",
+          "type": "end"
+        }
+      ]
+    }
+  }
+}

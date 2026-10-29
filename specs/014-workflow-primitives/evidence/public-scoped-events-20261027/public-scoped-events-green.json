@@ -1,0 +1,20 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "--locked",
+    "--",
+    "collection_events::"
+  ],
+  "exit_code": 101,
+  "seconds": 62.5,
+  "wall_seconds": 62.5,
+  "wall_minus_monotonic_seconds": 0.0,
+  "started_utc": "2026-10-27T21:10:18.782754+00:00",
+  "finished_utc": "2026-10-27T21:11:21.286846+00:00",
+  "log": "public-scoped-events-green.txt"
+}

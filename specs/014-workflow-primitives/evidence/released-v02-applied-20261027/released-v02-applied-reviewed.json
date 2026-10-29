@@ -1,0 +1,17 @@
+{
+  "command": [
+    "python3",
+    "scripts/test-released-v02-profile.py",
+    "--prepared-run",
+    "/tmp/sagat-v03-20261026/released-v02-al_pw2ho",
+    "--scenario",
+    "applied-lookup"
+  ],
+  "exit_code": -2,
+  "seconds": 29.36,
+  "wall_seconds": 29.36,
+  "wall_minus_monotonic_seconds": 0.0,
+  "started_utc": "2026-10-27T13:16:36.412208+00:00",
+  "finished_utc": "2026-10-27T13:17:05.768219+00:00",
+  "log": "released-v02-applied-reviewed.txt"
+}

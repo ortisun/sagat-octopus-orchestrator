@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "clippy",
+    "--workspace",
+    "--all-targets",
+    "--locked",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "exit_code": 0,
+  "seconds": 169.35,
+  "wall_seconds": 169.35,
+  "wall_minus_monotonic_seconds": 0.0,
+  "started_utc": "2026-10-28T12:30:18.070460+00:00",
+  "finished_utc": "2026-10-28T12:33:07.424219+00:00",
+  "log": "pulldown-workspace-clippy.txt"
+}
