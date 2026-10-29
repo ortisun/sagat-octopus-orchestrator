@@ -10,7 +10,7 @@ info:
     allowlist and the database budget are configuration only: nothing here can change them.
     Every write is audited in the platform audit trail with the actor and a reason. A token must have the operator
     audience and a lifetime of at most one hour; it is limited to 20 requests per second (configurable) and a
-    refusal is typed (`RATE_LIMITED`). The listener is reachable only from peers named in the deployment.
+    refusal is typed (code `RATE_LIMITED`). The listener is reachable only from peers named in the deployment.
 servers:
   - url: https://operator.sagat.internal/v1
 security:
@@ -46,7 +46,7 @@ paths:
       operationId: defineScalingSignal
       tags: [Signals]
       summary: Define a custom signal
-      description: Needs `scaling:manage`. A signal owned by configuration is refused (`OWNED_BY_CONFIG`).
+      description: Needs `scaling:manage`. A signal owned by configuration is refused with code `CONFLICT` and reason `OWNED_BY_CONFIG`.
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/CustomSignalInput'}}}}
       responses:
         '201': {description: 'Defined', content: {application/json: {schema: {$ref: '#/components/schemas/Signal'}}}}
@@ -86,7 +86,7 @@ paths:
       summary: Publish a sample of a custom signal
       description: |
         Needs `scaling:publish`. Authenticated, rate limited and size bounded. A value outside the signal's declared range is refused with
-        `SAMPLE_OUT_OF_RANGE`. The sample is stale once its time to live passes.
+        code `VALIDATION_FAILED` and reason `SAMPLE_OUT_OF_RANGE`. The sample is stale once its time to live passes.
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/SampleInput'}}}}
       responses:
         '202': {description: 'Accepted'}
@@ -105,9 +105,9 @@ paths:
       tags: [Sources]
       summary: Declare an external source
       description: |
-        Needs `scaling:manage`. Refused with `DESTINATION_NOT_ALLOWED` when the destination is not on the configuration
-        allowlist, `CREDENTIAL_NOT_MOUNTED` when the named file does not exist, `CREDENTIAL_NEEDS_TLS` when a credential would
-        travel unencrypted.
+        Needs `scaling:manage`. Refused with code `VALIDATION_FAILED` and reason `DESTINATION_NOT_ALLOWED` when the destination is
+        not on the configuration allowlist, `CREDENTIAL_NOT_MOUNTED` when the named file does not exist, `CREDENTIAL_NEEDS_TLS` when
+        a credential would travel unencrypted.
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/SourceInput'}}}}
       responses:
         '201': {description: 'Declared', content: {application/json: {schema: {$ref: '#/components/schemas/Source'}}}}
@@ -185,7 +185,7 @@ paths:
       operationId: replaceScalingPolicy
       tags: [Policies]
       summary: Replace a policy (a new version)
-      description: Needs `scaling:manage`. A policy owned by configuration is refused with `OWNED_BY_CONFIG`; use an override.
+      description: Needs `scaling:manage`. A policy owned by configuration is refused with code `CONFLICT` and reason `OWNED_BY_CONFIG`; use an override.
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/PolicyInput'}}}}
       responses:
         '200': {description: 'Replaced', content: {application/json: {schema: {$ref: '#/components/schemas/Policy'}}}}
@@ -327,7 +327,16 @@ components:
       type: object
       required: [code, message, retryable, traceId]
       properties:
-        code: {type: string, description: 'A stable code, for example VALIDATION_FAILED, OWNED_BY_CONFIG, DESTINATION_NOT_ALLOWED, CREDENTIAL_NOT_MOUNTED, CREDENTIAL_NEEDS_TLS, SAMPLE_OUT_OF_RANGE, TOKEN_AUDIENCE_REFUSED, TOKEN_LIFETIME_EXCEEDED, RATE_LIMITED, NOT_FOUND, FORBIDDEN.'}
+        code:
+          type: string
+          description: The platform's closed set of codes (the same as the tenant API); what is specific to scaling is in `reason`.
+          enum: [BAD_REQUEST, UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, CONFLICT, VALIDATION_FAILED, RATE_LIMITED, QUOTA_EXCEEDED, UNAVAILABLE, INTERNAL]
+        reason:
+          type: string
+          description: |
+            Refines the code, as in the tenant API. CONFLICT: OWNED_BY_CONFIG. VALIDATION_FAILED: SAMPLE_OUT_OF_RANGE,
+            DESTINATION_NOT_ALLOWED, CREDENTIAL_NOT_MOUNTED, CREDENTIAL_NEEDS_TLS, and the name of the rule a policy broke.
+            UNAUTHENTICATED: TOKEN_AUDIENCE_REFUSED, TOKEN_LIFETIME_EXCEEDED. Each reason has an entry in the remediation table.
         message: {type: string}
         retryable: {type: boolean}
         traceId: {type: string}

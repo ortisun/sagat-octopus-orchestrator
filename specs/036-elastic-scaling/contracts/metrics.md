@@ -28,6 +28,7 @@ Every replica sets the same values from the same rows, so the provider's query t
 | `scaling_freeze` | gauge | `scope` (`global`, `policy`) | 1 while a freeze is in force |
 | `scaling_refused_total` | counter | `interface` (`operator`, `tenant`, `source`), `reason` (`audience`, `lifetime`, `permission`, `rate`, `not_found`, `destination`, `credential`, `limits`) | refused attempts, counted without tenant identity (FR-036-065); emitted by the control plane and the evaluator |
 | `scaling_definition_refused_total` | counter | `kind` (`policy`, `source`, `signal`) | a stored version that the evaluator refused to use because it violates a configuration-only limit (`D1732`) |
+| `scaling_credential_uses_total` | counter | `outcome` (`ok`, `failed`) | every use of a source credential; carries neither the source nor the credential name. The first use after a start or a rotation, and every failure, are also audited in the platform trail (FR-036-067, D1736) |
 
 ## Connector lag, aggregated by kind only
 

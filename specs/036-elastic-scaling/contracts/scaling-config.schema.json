@@ -24,7 +24,8 @@
           "maxReplicas": { "type": "integer", "minimum": 1, "maximum": 64, "description": "Hard ceiling. The engine can never exceed 64 (one replica per scheduler shard)." },
           "costCeiling": { "type": "integer", "minimum": 1, "maximum": 64 },
           "perReplicaConnections": { "type": "integer", "minimum": 1, "maximum": 500 },
-          "connectionWeight": { "type": "integer", "minimum": 1, "maximum": 16, "default": 1 }
+          "connectionWeight": { "type": "integer", "minimum": 1, "maximum": 16, "default": 1 },
+          "changeWindowSeconds": { "type": "integer", "minimum": 5, "maximum": 3600, "default": 60, "description": "The published desired capacity of the unit changes at most once per window, however many policies target it. Never below the evaluation interval." }
         }
       }
     },

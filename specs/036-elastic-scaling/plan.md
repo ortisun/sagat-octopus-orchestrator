@@ -98,7 +98,7 @@ flowchart LR
 specs/036-elastic-scaling/
 ├── spec.md              # with the five clarifications and the planning correction
 ├── plan.md              # this file
-├── research.md          # D1700–D1734, G1700–G1718, O1710
+├── research.md          # D1700–D1739, G1700–G1718, O1710
 ├── data-model.md        # entities, tables, state transitions
 ├── quickstart.md        # runnable validation scenarios
 ├── contracts/
@@ -118,7 +118,8 @@ specs/036-elastic-scaling/
 ```text
 crates/domain/src/scaling/                    signal, policy, decision, evaluate, assignment, role, lag
 crates/application/src/scaling.rs             ports, ScalingService, ConnectorLagService
-crates/scheduler/src/scaling.rs               evaluator tick, exporter, config sync
+crates/scheduler/src/scaling.rs               evaluator tick
+crates/scheduler/src/scaling/                 signals, context, export, config (sync), retention
 crates/infra-postgres/src/scaling.rs          stores (policies, signals, decisions, desired, overrides, audit)
 crates/infra-postgres/src/connectors.rs       members, release, lag rows, drain state, tuning
 crates/infra-postgres/migrations/20261226000000_scaling_core.{up,down}.sql
@@ -127,9 +128,11 @@ crates/infra-postgres/migrations/20261226000200_connector_parallelism_quota.{up,
 crates/domain/src/quota.rs, crates/application/src/quotas.rs, crates/infra-postgres/src/quotas.rs   the quota connector_parallelism (D1712)
 crates/infra-postgres/storage-classification.json
 crates/infra-connectors/src/lag.rs            LagProbe and the three kinds
-crates/infra-connectors/src/{kafka,nats,sqs,supervisor,ingest}.rs   changed
-crates/infra-signals/                         MetricsQuerySource, BrokerQueueSource, OperatorGuard
-crates/api-http/src/routes/{connectors_lag,operator_scaling}.rs
+crates/infra-connectors/src/{kafka,nats,sqs,supervisor,ingest}.rs   changed; new assignment.rs (the keeper)
+crates/infra-signals/src/                     config, guard, metrics_query, broker_queue, credentials
+crates/api-http/src/routes/connectors.rs      lag and consumption (tenant)
+crates/api-http/src/routes/operator_scaling.rs, dto_scaling.rs, operator/   the operator listener, its principal and routes
+crates/api-http/src/error.rs                  remediation entries for the scaling reasons (D1738)
 apps/control-plane/src/{config,lib}.rs        operator listener, config
 apps/execution-engine/src/{lib,settings}.rs   evaluator, exporter, keeper wiring
 apps/cli/src/scaling.rs                       sagat scaling …
@@ -175,6 +178,8 @@ Order follows dependency; each milestone ends with the evidence that closes its 
 | Source: SSRF, redirect, oversize, slow, NaN, plain-text credentials | refused at declaration or first query | security |
 | Cross-tenant read of lag or write of consumption | indistinguishable from missing, audited | security |
 | Rate-limited and blocked connectors | no scale-out decided | integration |
+| A credential is used, rotated or fails | first use and failures audited, the rest counted (FR-036-067, D1736) | integration, security |
+| Timeout and signal race; failed compensation | not applicable: this feature changes no transition, timer, signal or compensation semantics (Constitution VIII) | none |
 
 Races use held locks and barriers, never sleeps (AGENTS rule 18). A golden or generated file changes only after reading the diff.
 
@@ -200,6 +205,7 @@ Races use held locks and barriers, never sleeps (AGENTS rule 18). A golden or ge
 |---|---|---|
 | New adapter crate `infra-signals` | one more crate in the workspace | the operator's outbound policy is a different trust boundary from the tenant's; putting it in `infra-egress` or `infra-connectors` would blur a security line |
 | A second listener and principal for operators | new authority, new attack surface, a second OpenAPI document | there is no platform-operator principal on the REST API today and operator actions run as owner-role commands; a tenant listener must never accept an operator (`O1710` records the alternatives) |
+| Credential use audited at first use and on failure, not at every read | a counter instead of a row per query | Constitution VI lists secret access among the audited actions; a row per query is one every 5 to 15 seconds per source. The stricter reading costs one platform-audit row per query and is a retention choice, not a redesign (D1736); the owner decides |
 | A platform audit trail apart from the tenant audit | one more append-only table | the tenant audit requires a tenant and a pseudo-tenant would receive quotas and appear in listings |
 
 ## Pending decisions (marked as such)

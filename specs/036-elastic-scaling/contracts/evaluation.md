@@ -28,7 +28,7 @@ Each step may change the value `v`. A step that changes it appends a `Limit {nam
 10. **Safety ceilings, last.** `v = min(v, role_ceiling)` (`PARTITION_BOUND` when the ceiling is the partition count, else `ROLE_CEILING`); `v = min(v, budget_replicas)` (`DB_BUDGET`); `v = min(v, cost_ceiling)` (`COST_CEILING`). No override passes them.
 11. **Outcome.** If `v = c` the outcome is `HELD`. Otherwise `OBSERVED` (mode observe), `RECOMMENDED` (recommend, advisory) or `APPLIED` (enforce, authoritative). The desired value of the policy's target is written whenever the mode is recommend or enforce, even when `v = c`, so that the provider always has a value.
 
-**Unit desired capacity.** For each `(unit, kind, parameter, authority)` the desired value is the largest final value of the policies of that unit in the matching mode. A policy in observe contributes nothing.
+**Unit desired capacity.** For each `(unit, kind, parameter, authority)` the desired value is the largest final value of the policies of that unit in the matching mode. A policy in observe contributes nothing. **Unit change window:** the published desired value of a unit changes at most once per `units.<unit>.changeWindowSeconds` (60 s initially, never below the evaluation interval); a new value that would arrive inside the window is held at the published one and recorded with the limit `COOLDOWN` at unit scope (FR-036-045, vector V13). The window applies to a change of the published value, not to each policy's own cooldown.
 
 **Database budget.** `share(unit) = ⌊(server_max − reserve) × weight(unit) ÷ Σ weight⌋`; `budget_replicas = ⌊share ÷ per_replica_budget⌋`. Validation refuses a policy whose `min` exceeds `budget_replicas`, and a `min` below the unit's availability floor (2 for `engine` and `control-plane` unless the configuration says otherwise). If configuration later makes the ceilings lower than the floor, the ceilings win and the condition `FLOOR_UNREACHABLE` is raised.
 
@@ -51,6 +51,7 @@ The same vectors are the property tests' fixed cases and the dry evaluation's co
 | V10 | override MAX | `c = 2`; backlog 7,000; override `MAX 3` | `STEP_UP 7→6`; `OVERRIDE_MAX 6→3`; **final 3**, `APPLIED` |
 | V11 | cooldown | `cooldown 60 s`; last change 30 s ago; `c = 2`; backlog 6,000 | `COOLDOWN 6→2`; **final 2**, `HELD`, reason `COOLDOWN` |
 | V12 | frozen above a lowered ceiling | `c = 8`; backlog 8,000 (raw 8); `frozen`; `role_ceiling = 6` (configuration lowered after the policy was set) | the freeze keeps `v = c = 8` (no limit recorded, it changed nothing); `ROLE_CEILING 8→6`; **final 6**, `APPLIED`, reason `AT_CEILING` |
+| V13 | unit change window | two policies target the `engine` unit; the published authoritative desired value is 4 and changed 30 s ago; `changeWindowSeconds = 60`; the largest final value of the policies is now 6 | the unit holds at 4 with `COOLDOWN` at unit scope; **published 4**; the next evaluation after 60 s publishes 6 |
 
 Worked check of V2: `⌈12,000 ÷ 1,000⌉ = 12`; the scale-out window is 0 and `recent` is empty, so `v = 12`; the step allows `c + 4 = 6`; the bounds `[2, 8]` leave 6; the partition ceiling 4 gives 4. Of V6: `⌊(200 − 20) × 2 ÷ 3⌋ = 120`, `⌊120 ÷ 20⌋ = 6`.
 

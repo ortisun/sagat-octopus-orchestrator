@@ -14,8 +14,9 @@ paths:
       description: |
         Needs `event:read`. Gives the backlog (messages on the broker not yet taken into the inbox), the age of the
         oldest one where the broker can state it, the time of the measurement, and the reason the connector is or is
-        not draining. A figure the broker cannot give is `null`, never 0. A connector of another namespace is
-        indistinguishable from one that does not exist.
+        not draining. A figure the broker cannot give is `null`, never 0. `scaling` says whether the platform's
+        scaling counts the connector in the signals that raise capacity and why not. A connector of another
+        namespace is indistinguishable from one that does not exist.
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/ConnectorId'}
@@ -83,6 +84,14 @@ components:
         retryAfterSeconds: {type: integer, minimum: 0, nullable: true, description: 'When RATE_LIMITED: the time after which reading is tried again.'}
         partitions: {type: object, required: [total], properties: {total: {type: integer, minimum: 0}, assigned: {type: integer, minimum: 0, description: 'Held by readers now.'}}}
         limits: {type: array, items: {$ref: '#/components/schemas/ConnectorLagLimit'}}
+        scaling:
+          type: object
+          required: [counted]
+          description: How the platform's scaling treats this connector (what its decisions mean for it). It names no platform value, no decision and no other tenant.
+          properties:
+            counted: {type: boolean, description: 'True when the connector is counted in the signals that raise capacity. False while it is blocked, rate-limited, paused or failing, or while its figures cover only part of its partitions.'}
+            reason: {type: string, nullable: true, enum: [BLOCKED, RATE_LIMITED, PAUSED, FAILING, PARTIAL_COVERAGE, null], description: 'Why it is not counted; null when it is.'}
+            usefulReaders: {type: integer, minimum: 0, nullable: true, description: 'Kafka: the partitions of the topic, the most readers that can read it at once. Null for NATS and SQS.'}
     ConnectorConsumptionUpdate:
       type: object
       additionalProperties: false

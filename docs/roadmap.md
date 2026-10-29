@@ -32,7 +32,7 @@ feature010: lag for Kafka, NATS and SQS consumers, balanced Kafka partition assi
 policies declared by configuration and through the management interface, pulled sources, and horizontal and
 vertical decisions with an explanation. It has a [spec](../specs/036-elastic-scaling/spec.md) with five
 clarifications, a [plan](../specs/036-elastic-scaling/plan.md), ADR-0072 to ADR-0074 (proposed) and
-[91 tasks](../specs/036-elastic-scaling/tasks.md) for the first delivery; nothing implemented. The owner decided O1703 and O1706–O1709 (first delivery: consumer lag, balanced
+[94 tasks](../specs/036-elastic-scaling/tasks.md) for the first delivery; nothing implemented. The owner decided O1703 and O1706–O1709 (first delivery: consumer lag, balanced
 partitions, policies by configuration and API, pulled sources, export to the autoscaling provider). Still
 open: O1700–O1702 and O1704 (recommended defaults) and O1710 (how an operator acts through the API).
 

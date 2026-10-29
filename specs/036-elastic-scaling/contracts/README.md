@@ -2,7 +2,7 @@
 
 | File | What it fixes | Where it lands |
 |---|---|---|
-| [`evaluation.md`](./evaluation.md) | the formulas, the order of limits, twelve golden vectors, the properties, the partition targets | `crates/domain/src/scaling/` tests; the dry evaluation's contract tests |
+| [`evaluation.md`](./evaluation.md) | the formulas, the order of limits, thirteen golden vectors, the properties, the partition targets | `crates/domain/src/scaling/` tests; the dry evaluation's contract tests |
 | [`signals-catalogue.md`](./signals-catalogue.md) | the built-in signals of slice 1: name, unit, scope, freshness, meaning | the catalogue listed by `GET /scaling/catalogue`; a test refuses a signal missing any of the four |
 | [`metrics.md`](./metrics.md) | the new series, their labels, the rule they obey | the metrics code; `tests/contract/observability-operations` label rule; the chart's autoscaler queries |
 | [`scaling-config.schema.json`](./scaling-config.schema.json) | the configuration document named by `SAGAT_SCALING_CONFIG_FILE` | the evaluator's validation; the chart's `values.schema.json` for the `scaling` block |

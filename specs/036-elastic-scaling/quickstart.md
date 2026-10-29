@@ -67,7 +67,7 @@ cargo test -p sagat-tests --test integration_elastic_scaling --locked -- config:
 cargo test -p sagat-tests --test contract_elastic_scaling --locked -- config_schema --nocapture
 ```
 
-Start with no policy: nothing changes. Apply the sample (observe): decisions are recorded, nothing is published as authoritative. Switch to `ENFORCE`, publish lag above target: the desired capacity rises in steps within bounds and `scaling_desired_replicas{authority="authoritative"}` follows; after the scale-in window it falls by the step. Apply an invalid file (a minimum above a maximum, an unknown signal): refused with a typed error, the last valid version stays. **Expected:** the golden vectors V1–V12 of [`contracts/evaluation.md`](./contracts/evaluation.md) hold through the loop.
+Start with no policy: nothing changes. Apply the sample (observe): decisions are recorded, nothing is published as authoritative. Switch to `ENFORCE`, publish lag above target: the desired capacity rises in steps within bounds and `scaling_desired_replicas{authority="authoritative"}` follows; after the scale-in window it falls by the step. Apply an invalid file (a minimum above a maximum, an unknown signal): refused with a typed error, the last valid version stays. **Expected:** the golden vectors V1–V13 of [`contracts/evaluation.md`](./contracts/evaluation.md) hold through the loop.
 
 ### S4 — The same policy through the management interface (US05; FR-036-019–025; SC-036-005, SC-036-013)
 

@@ -67,6 +67,14 @@ of SC-036-004 is measured in the first delivery on the environment available and
 requirement that serves several stories is delivered with the first of them; the mapping is made at planning,
 and the first delivery must be shippable on its own.
 
+**Delivery map.** *First delivery:* FR-036-001 to FR-036-003, 005 to 031, 043 to 048, 056 to 068, and FR-036-004
+and FR-036-032 in part (the signals and roles named in FR-036-004; the roles in use). *Later deliveries:*
+FR-036-033 to FR-036-037 (US07 and US09), FR-036-038 and FR-036-040 to FR-036-042 (US08), FR-036-051 to
+FR-036-055 (US12), and the separate-machine part of FR-036-049 (US11). FR-036-049 in the first delivery is the
+lag control loop on the environment available, and FR-036-050 is carried by the failure tests of the stories.
+*Success criteria:* first delivery SC-036-001 to 009, 013, 017 to 021 (SC-036-004 on the environment available);
+later SC-036-010 to 012, 014 to 016.
+
 **Dependencies.** 001 (foundation), 002 (execution, claim path), 004 (events, inbox and connectors),
 008 (observability), 009 (tenancy, quotas, audit), 010 (shards, pools, packaging and the benchmark harness).
 Feature 019 (proposed, not approved) routes work to worker deployments and excludes autoscaling of its push functions and warm pools;
@@ -123,6 +131,15 @@ registers are opened in `research.md` at planning.
   credential rotation, and rate limits. Conflicts settled: the specification followed the owner's "within
   quota" and now has a parallelism quota (the plan had a cap only; the plan follows), and tenant-published
   custom signals are stated as a later addition. Nothing in the checklist was ticked by this change.
+- Correction (analysis, 2026-10-28): `/speckit-analyze` found one critical finding, one high and several medium
+  ones, and this version closes them: the audit of credential use (FR-036-067, Constitution VI, secret access);
+  what a tenant reads about how scaling treats its connectors (FR-036-002, FR-036-023, FR-036-028, US01
+  scenario 6); the *deployment unit* in the specification's own vocabulary (Key Entities, FR-036-015,
+  FR-036-032); a per-unit change window (FR-036-045); a dominance record that names no tenant (FR-036-046); a
+  delivery map; the US01 scenarios renumbered. One reading is an interpretation: the owner's answer to O1703
+  says tenants read "decisions about their own connectors", and this version gives them what those decisions
+  mean for the connector (counted or not in the signals that raise capacity, and why; the readers a topic can
+  use), not the decision records. That narrows the literal wording and the owner may widen it.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -148,13 +165,16 @@ Make the broker unreachable and observe "unknown", never zero.
 2. **Given** a connector whose tenant has reached its limit of undispatched events and therefore stops
    taking messages, **When** its lag is read, **Then** the lag grows and the connector is reported as
    **blocked by backpressure**, not as slow.
-2a. **Given** a connector that is held back by its own rate limit or by the namespace's events-per-second
+3. **Given** a connector that is held back by its own rate limit or by the namespace's events-per-second
    limit, **When** its lag is read, **Then** the lag grows and the connector is reported as **rate-limited**,
    with the time after which the platform will try again, not as slow and not as blocked by backpressure.
-3. **Given** the broker is unreachable or refuses the credentials, **When** the lag is read, **Then** it is
+4. **Given** the broker is unreachable or refuses the credentials, **When** the lag is read, **Then** it is
    **unavailable** with the reason class, and is never reported as zero.
-4. **Given** a connector of a namespace the caller does not belong to, **When** its lag is read, **Then** the
+5. **Given** a connector of a namespace the caller does not belong to, **When** its lag is read, **Then** the
    answer is indistinguishable from a connector that does not exist, and the attempt is audited.
+6. **Given** a connector that is blocked, rate-limited, paused or failing, **When** its lag is read, **Then** the
+   answer says that the platform's scaling does not count it in the signals that raise capacity and why, and,
+   for a Kafka connector, how many readers its topic can use.
 
 ---
 
@@ -548,7 +568,9 @@ make each source fail in turn and verify that the signal becomes unavailable and
   oldest; outbound deliveries pending and the age of the oldest; outbox hints and their age; the scheduler's
   lateness per pass (existing); the queue of each worker pool (existing); the saturation (in flight against
   limit, and calls shed) of the worker-facing interface and of the REST ingress; the database connections in
-  use against the budget; and CPU and memory per role.
+  use against the budget; and CPU and memory per role. The first delivery provides the signals that already
+  exist plus ingestion, events, outbox, deliveries, the scheduler and the pools; the saturation signals, CPU
+  and memory per role and the database connections follow in a later delivery (see the delivery map).
 - **FR-036-005**: Every signal MUST have a stable name, a unit, a scope (operator-only or namespace-visible),
   the freshness after which a sample is stale, and a documented meaning, in a catalogue that can be listed. A new
   inbound connector kind or transport MUST NOT ship without its lag signals; a conformance check enforces it.
@@ -589,8 +611,8 @@ make each source fail in turn and verify that the signal becomes unavailable and
   tenant or other high-cardinality identity), a custom signal published through the management interface,
   the resource usage of a role, and an **external source** declared by an operator and queried by the platform
   (FR-036-056 to FR-036-061).
-- **FR-036-015**: A *scaling policy* binds one or more signals to a **target** (the replicas of a role, a tunable
-  parameter, or a resource of a role) and declares, for each signal, a target value; the minimum and maximum
+- **FR-036-015**: A *scaling policy* binds one or more signals to a **target** (the replicas of a deployment
+  unit for a role, a tunable parameter of a role, or a resource of a role) and declares, for each signal, a target value; the minimum and maximum
   of the target; the largest step per interval in each direction; separate stabilization windows for scale-out
   and scale-in; a cooldown; the rule that combines several signals (the largest demand wins by default); a
   cost ceiling; and a mode.
@@ -628,8 +650,9 @@ make each source fail in turn and verify that the signal becomes unavailable and
   a custom signal); every operation of the operator interface requires exactly one of them. A principal never
   sees or affects another tenant's signals, policies or connectors; operator-only signals are invisible to
   tenants. Shared roles and every scaling policy are managed by operators only. A tenant administrator MAY read
-  the lag, the state and the limits that bound the tenant's own connectors (every principal that already holds
-  `event:read` for the connector may), and MAY adjust their in-flight parallelism and rate limit by hand within
+  the lag, the state, the limits that bound the tenant's own connectors and how the platform's scaling treats
+  each of them (whether it is counted in the signals that raise capacity and, if not, why; how many readers its
+  topic can use) (every principal that already holds `event:read` for the connector may), and MAY adjust their in-flight parallelism and rate limit by hand within
   the namespace's quotas: the rate by the existing `events_per_second` quota, the parallelism by a
   `connector_parallelism` quota whose default is the platform's cap (a change above a quota is refused with a
   typed error; every change is audited in the tenant's trail). An error returned to a tenant MUST reveal nothing
@@ -659,7 +682,9 @@ make each source fail in turn and verify that the signal becomes unavailable and
   evaluation of the same policy version yields the same decision.
 - **FR-036-028**: Decision records MUST be retained for a configurable period (14 days initially) and
   be readable through the management interface and the operator command line. A decision record is operator-only
-  data; the part about a tenant's own connector is readable by that tenant. Decision records and the platform
+  data. What the decisions mean for a tenant's own connector (whether it is counted in the signals that raise
+  capacity and why not, and the readers its topic can use) is readable by that tenant in the lag view of
+  FR-036-002; the decision records themselves are not. Decision records and the platform
   audit trail MUST contain no payload, secret or credential and no tenant or connector identity (signal values
   are aggregates; a tenant's own view carries only its connector's facts). The platform audit trail is
   append-only for the runtime role and is retained at least as long as the tenant audit trail.
@@ -677,7 +702,8 @@ make each source fail in turn and verify that the signal becomes unavailable and
 - **FR-036-032**: Each role (ingestion, event dispatch, outbound delivery, scheduler, worker pools, worker-facing
   interface, REST ingress) MUST have a documented **unit of division** (what is shared among replicas), a hard
   ceiling (64 for the scheduler; the partitions of a topic for a Kafka connector; the shards or owners of
-  any other role), its signals and its handover cost. The decision clamps to the ceiling.
+  any other role), the deployment unit it runs in (the engine, the control plane, a worker pool, and the
+  ingestion unit of a later delivery), its signals and its handover cost. The decision clamps to the ceiling.
 - **FR-036-033**: Event dispatch and outbound delivery work MUST be divisible among replicas so that adding a
   replica adds capacity until another resource limits it, without an effect happening twice beyond the
   at-least-once guarantee and without starving a tenant (the fairness of feature 010 is kept). The benchmark
@@ -718,15 +744,20 @@ make each source fail in turn and verify that the signal becomes unavailable and
 
 **Safety**
 
-- **FR-036-043**: A stale or unavailable signal MUST NOT be used. When all signals of a policy are stale or
+- **FR-036-043**: A stale or unavailable signal (the states of FR-036-006) MUST NOT be used. When all signals of a policy are stale or
   unavailable the role MUST hold its current capacity, decide no scale-in, and raise a condition.
-- **FR-036-044**: Scale-in MUST be slower than scale-out by default (stabilization and step limits), and the
+- **FR-036-044**: Scale-in MUST be slower than scale-out by default (stabilization and step limits: initially
+  a 5-minute stabilization and one replica per 2 minutes against no window for scale-out, see the initial values
+  in Assumptions), and the
   floor of a role MUST protect availability (at least two replicas for the control plane and the engine unless
   the operator declares otherwise).
-- **FR-036-045**: The platform MUST limit the number of capacity changes per role per window, with hysteresis
-  around the target.
+- **FR-036-045**: The platform MUST limit the number of capacity changes, with hysteresis around the target:
+  per policy (cooldown and step) and per deployment unit, whose published desired capacity changes at most
+  once per its change window (60 s initially, configurable, never below the evaluation interval) however many
+  policies target it.
 - **FR-036-046**: A signal that a tenant can raise MUST be capped in its effect by the cost ceiling and the step
-  limit, and the operator-only decision record MUST indicate when one scope dominated the signal. The same
+  limit, and the operator-only decision record MUST indicate when one scope dominated the signal and by what share,
+  never which tenant (FR-036-028). The same
   holds for values pulled from external sources, which are untrusted input: they are bounded by the declared
   range, the step limit and the cost ceiling like any signal.
 - **FR-036-047**: Automatic scaling MUST be disableable at once by a global switch and per policy by a freeze,
@@ -839,7 +870,11 @@ make each source fail in turn and verify that the signal becomes unavailable and
 - **FR-036-067**: A credential is rotated by replacing its file; the new value is used from the next query, with
   no restart. A source whose credential file is missing or unreadable becomes *unavailable* with the reason
   `credential_unavailable`, is reported in its health and raises a condition, and never falls back to an
-  unauthenticated query. Adding or removing a credential on a source is a new version of the source.
+  unauthenticated query. Adding or removing a credential on a source is a new version of the source. The use of
+  a credential is audited, without its content: the first use after the platform starts or after a rotation,
+  and every failure to use it, are recorded in the platform audit trail with the source name and the name of the
+  credential file; every other use is counted by a metric that carries neither (Constitution VI, secret
+  access).
 - **FR-036-068**: The operator interface MUST be rate limited per token (20 requests per second initially,
   configurable) with a typed refusal. The tenant endpoints for lag and consumption fall under the namespace's
   existing request-rate quota.
@@ -856,7 +891,9 @@ make each source fail in turn and verify that the signal becomes unavailable and
   metrics, alerts and settings keep their meaning; versions mixed during a rolling upgrade are safe; wire
   contracts are versioned and compatible.
 - **NFR-036-PERF**: The cost of measuring and evaluating (database reads, samples, decision records) is
-  bounded and reported; targets are benchmark criteria on a stated environment, not promises.
+  bounded and reported: the reads and writes that the machinery adds per interval (the evaluator, the lag rows,
+  the exporter) are counted for 1, 2, 4 and 8 replicas and reported with the environment, with no promise of a
+  figure; targets are benchmark criteria on a stated environment, not promises.
 - **NFR-036-OPS**: Runbooks and alerts exist for: signals stale, policy held at its ceiling, partition-bound,
   database-budget-bound, evaluator failing, and a scaling freeze left on.
 
@@ -867,8 +904,13 @@ make each source fail in turn and verify that the signal becomes unavailable and
 - **Signal sample**: one value of a signal at a time, with its state.
 - **Scaling policy** and **policy version**: signals bound to a target with targets, bounds, steps,
   windows, cooldown, combination rule, cost ceiling and mode; owned by configuration or the interface.
-- **Scaling target**: the replicas of a role, a tunable parameter of a role, or a resource of a role.
-- **Role**: a unit of deployment with a unit of division, a ceiling, signals and a handover cost.
+- **Scaling target**: the replicas of a deployment unit (for a role), a tunable parameter of a role, or a
+  resource of a role.
+- **Deployment unit**: what runs replicas and is scaled as one: the engine, the control plane, a worker pool,
+  and the ingestion unit of a later delivery. Several roles can share a unit; its desired capacity is the
+  largest that the policies of its roles ask for.
+- **Role**: a kind of work (ingestion, event dispatch, outbound delivery, scheduler, worker pool, worker-facing
+  interface, REST ingress) with a unit of division, a ceiling, signals and a handover cost.
 - **Connector lag**: backlog, oldest age, sample time, state of draining (behind, blocked, paused, failing).
 - **Partition assignment**: which replica reads which partition of which connector, with the lease and the
   position; and the partition-bound ceiling.
@@ -968,7 +1010,8 @@ make each source fail in turn and verify that the signal becomes unavailable and
   - retention of decision records 14 days;
   - scale-in stabilization 5 minutes and at most one replica per 2 minutes, as the packaged engine
     autoscaling does today; scale-out has no window by default and is limited by its step.
-- Operators own every scaling policy. Tenants see the lag and the decisions about their own connectors and
+- Operators own every scaling policy. Tenants see the lag and how the platform's scaling treats their own
+  connectors (the owner's "decisions about their own connectors", read as what the decisions mean for the connector) and
   can tune their own connectors' consumption parameters by hand within quota (O1703, answered). Lag is
   readable by every principal that already holds `event:read` for the connector (the roles that can already
   read its health); it shows counts and ages, never a payload.
@@ -1009,7 +1052,7 @@ below is what the specification assumes.
 - **O1702 — Default way to apply a resource change.** Recommended: rolling replacement by default; in place
   only when the operator enables it for the role and the environment confirms support.
 - **O1703 — Who may define what.** *Answered by the owner on 2026-10-28 (option B):* operators define every
-  policy; tenants read the lag and decisions of their own connectors and adjust their in-flight parallelism and
+  policy; tenants read the lag and how scaling treats their own connectors (what the decisions mean for the connector, not the decision records) and adjust their in-flight parallelism and
   rate limit by hand within quota; no tenant controls replicas or resources. Recorded in
   `docs/owner-decisions.md`; specified by FR-036-023.
 - **O1704 — Custom signals.** Recommended, and following from O1703: a custom signal published by a tenant has
