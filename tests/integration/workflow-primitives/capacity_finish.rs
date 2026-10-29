@@ -523,8 +523,10 @@ async fn downgrade_waits_for_writer_before_deciding_whether_storage_is_empty() {
         .bind(w.admin.tenant_id().as_uuid()).bind(Uuid::new_v4()).execute(&mut *writer).await.expect("uncommitted tombstone fixture");
     let pool = w.db.pool.clone();
     let downgrade = tokio::spawn(async move { MIGRATOR.undo(&pool, BEFORE_CAPACITY).await });
+    // A later migration may first wait here while removing a referencing table's FK.
+    // Observe the exact relation/mode/blocker, not the spelling of the current DDL.
     crate::support::eventually("downgrade actually waits on writer before emptiness check",|| async {
-        sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE '%LOCK TABLE capacity_groups%')")
+        sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE database=(SELECT oid FROM pg_database WHERE datname=current_database()) AND relation='capacity_groups'::regclass AND mode='AccessExclusiveLock' AND NOT granted AND $1=ANY(pg_blocking_pids(pid)))")
             .bind(pid).fetch_one(&w.db.pool).await.expect("actual migration lock wait").then_some(())
     }).await;
     writer.commit().await.expect("writer commits first");

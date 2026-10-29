@@ -4268,3 +4268,25 @@ old entrypoint plus registration `6188765ccfa57f3ae61f0cf9b94a95f362e2acb3439eb1
 new entrypoint plus registration `447a9e560754da23f9c65a64250096c5a17af6ae8a62657d4674ec195ce4d19b`.
 Only the expected overlay checksum changes; production archive verification remains strict.
 The corrected profile requires a new CI execution without any update/bless switch.
+
+### Migration/index interaction regressions exposed by CI
+
+The superseded run [40804888276](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/40804888276)
+printed failures for `bindings::releasing_the_leases_of_closed_sessions_is_an_index_lookup_and_not_a_scan_of_every_lease`
+and `capacity_finish::downgrade_waits_for_writer_before_deciding_whether_storage_is_empty`.
+The first includes the actual plan: `Index Scan using steps_run_capacity_lease_idx`, not the
+`steps_leased_by_idx` isolated by the original tiny-table test. The fixture now also withholds
+the newly added competing index inside its existing rollback transaction; the original required
+lease-index assertion remains. This is an availability check, not a production planner benchmark.
+
+The downgrade observer was tied to the SQL text `LOCK TABLE capacity_groups`. Migration 26
+removes a referencing receipt table first, so FK-removal DDL can wait on the held group writer
+before reaching that statement. The observer now inspects the exact database/relation, pending
+AccessExclusive lock and actual writer blocker. The writer still commits first and the migration
+must still refuse retained storage with SQLSTATE 55000. Focused CI will verify this diagnosis.
+
+All 18 new Vacate cases printed `ok` in that superseded run, but the run was cancelled and is
+not full-suite acceptance. A new CI preflight executes both named regressions and all 18 Vacate
+cases before the full workspace gate, without skipping any required suite. The integration branch
+also acquired the independent Dependabot target-branch fix; it is merged into this feature before
+new validation. All corrected gates remain pending the new integrated-head CI run.
