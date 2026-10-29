@@ -41,6 +41,14 @@ CI sets the Cargo dev and test profiles to `debug = "line-tables-only"`. This re
 backtraces while omitting type and variable debugging metadata; test commands are unchanged, and
 `debug_assertions` and the build-script `DEBUG=true` value remain enabled for these profiles.
 
+The Rust workspace job shares the SDK job's existing dependency-cache key (`sdks`) and enables
+`cache-on-failure`. Both jobs use the same root workspace/profile; the action retains its compiler,
+environment, platform and manifest hashes, and Cargo checks artifact freshness. Saving compiled
+dependencies after a test failure lets later attempts reuse them. Every test gate still executes.
+Workspace crates retain the action's default exclusion, so compiling/linking this repository's
+test executables can still be substantial. Cache restoration alone does not establish a timing
+improvement; inspect the cache-hit log and measured build stages before claiming one.
+
 ## Critical matrix
 
 | Scenario | Expected invariant |
