@@ -2611,6 +2611,330 @@
       ]
     },
     {
+      "table": "schedule_actions",
+      "column": "origin",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only SPEC or MANUAL."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/schedules.rs"
+      ]
+    },
+    {
+      "table": "schedule_actions",
+      "column": "kind",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only SCHEDULED, TRIGGERED or BACKFILL."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/schedules.rs"
+      ]
+    },
+    {
+      "table": "schedule_actions",
+      "column": "outcome",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only the ten outcome names of the contract."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/schedules.rs"
+      ]
+    },
+    {
+      "table": "schedule_actions",
+      "column": "reason",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK schedule_actions_reason_bounded permits only an upper-case code of at most 64 characters."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/schedules.rs"
+      ]
+    },
+    {
+      "table": "schedule_backfills",
+      "column": "overlap",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only the five overlap policies."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/schedules.rs"
+      ]
+    },
+    {
+      "table": "schedule_backfills",
+      "column": "state",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only PENDING, RUNNING, COMPLETED or CANCELLED."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/schedules.rs"
+      ]
+    },
+    {
+      "table": "schedule_backfills",
+      "column": "requested_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Identity subject, CHECK limits it to 1 to 255 characters."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/schedules.rs"
+      ]
+    },
+    {
+      "table": "schedule_backfills",
+      "column": "request_id",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Request identifier, CHECK limits it to 255 characters."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/schedules.rs"
+      ]
+    },
+    {
+      "table": "schedule_backfills",
+      "column": "counters",
+      "sql_type": "jsonb",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Counters of a backfill; CHECK requires an object of at most 1,024 bytes."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/schedules.rs"
+      ]
+    },
+    {
+      "table": "schedule_obligations",
+      "column": "kind",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only CANCEL_RUN."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/schedules.rs"
+      ]
+    },
+    {
+      "table": "schedule_obligations",
+      "column": "state",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only PENDING or DONE."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/schedules.rs"
+      ]
+    },
+    {
+      "table": "schedule_obligations",
+      "column": "idempotency_key",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Derived key of the cancellation, CHECK limits it to 1 to 255 characters."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/schedules.rs"
+      ]
+    },
+    {
+      "table": "schedule_revisions",
+      "column": "spec",
+      "sql_type": "jsonb",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "canonical_json_utf8",
+        "expression": null,
+        "evidence": "Calendars, cron strings, intervals and exclusions, bounded to 128 KiB by CHECK; charged by the ALWAYS quota triggers."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/schedules.rs"
+      ]
+    },
+    {
+      "table": "schedule_revisions",
+      "column": "policies",
+      "sql_type": "jsonb",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Overlap, catch-up and buffer settings; CHECK limits it to an object of at most 1,024 bytes."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/schedules.rs"
+      ]
+    },
+    {
+      "table": "schedule_revisions",
+      "column": "action",
+      "sql_type": "jsonb",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "canonical_json_utf8",
+        "expression": null,
+        "evidence": "Workflow, version policy, business-id prefix and run options, bounded to 8 KiB by CHECK; charged by the ALWAYS quota triggers."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/schedules.rs"
+      ]
+    },
+    {
+      "table": "schedule_revisions",
+      "column": "input_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Foreign key to payloads(tenant_id, digest), whose CHECK payloads_digest_length requires 32 bytes; the input itself is charged on the payload row."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/schedules.rs"
+      ]
+    },
+    {
+      "table": "schedule_revisions",
+      "column": "actor",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Identity subject, CHECK limits it to 1 to 255 characters."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/schedules.rs"
+      ]
+    },
+    {
+      "table": "schedule_revisions",
+      "column": "request_id",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Request identifier, CHECK limits it to 255 characters."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/schedules.rs"
+      ]
+    },
+    {
       "table": "scheduler_members",
       "column": "owner",
       "sql_type": "text",
@@ -2642,6 +2966,186 @@
       },
       "owner_paths": [
         "crates/infra-postgres/src/partitioning.rs"
+      ]
+    },
+    {
+      "table": "schedules",
+      "column": "name",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": null,
+        "evidence": "The schedule's logical name is retained namespace content, at most 128 characters by CHECK; charged by the ALWAYS quota triggers."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/schedules.rs"
+      ]
+    },
+    {
+      "table": "schedules",
+      "column": "origin",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only API or TRIGGER."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/schedules.rs"
+      ]
+    },
+    {
+      "table": "schedules",
+      "column": "state",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only ACTIVE, PAUSED or DELETED."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/schedules.rs"
+      ]
+    },
+    {
+      "table": "schedules",
+      "column": "note",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": null,
+        "evidence": "The plain-text note of a pause or resume is retained namespace content, at most 512 characters by CHECK; charged by the ALWAYS quota triggers."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/schedules.rs"
+      ]
+    },
+    {
+      "table": "schedules",
+      "column": "note_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Identity subject, CHECK schedules_note_by_bounded limits it to 1 to 255 characters."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/schedules.rs"
+      ]
+    },
+    {
+      "table": "schedules",
+      "column": "authorized_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Identity subject, CHECK schedules_authorized_by_bounded limits it to 1 to 255 characters."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/schedules.rs"
+      ]
+    },
+    {
+      "table": "schedules",
+      "column": "tracked_runs",
+      "sql_type": "_uuid",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "UUID array; CHECK schedules_tracked_bounded limits it to 1,000 entries of 16 bytes."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/schedules.rs"
+      ]
+    },
+    {
+      "table": "schedules",
+      "column": "counters",
+      "sql_type": "jsonb",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Per-outcome non-negative integers keyed by the ten outcome names; CHECK requires an object of at most 1,024 bytes."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/schedules.rs"
+      ]
+    },
+    {
+      "table": "schedule_trigger_handover",
+      "column": "state",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only LEGACY or HANDED_OVER; the table holds one row."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/schedules.rs"
+      ]
+    },
+    {
+      "table": "schedule_trigger_handover",
+      "column": "changed_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Identity subject of the operator, CHECK limits it to 255 characters."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/schedules.rs"
       ]
     },
     {

@@ -43,6 +43,7 @@ mod primitives;
 mod privilege;
 mod quotas;
 mod reveal_grants;
+mod schedules;
 mod scope_compensation;
 mod scope_frontier;
 mod scoped_leaf_finish;

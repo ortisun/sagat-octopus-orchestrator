@@ -74,10 +74,29 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   immutability trigger; `run_shard` partial indexes; ALWAYS triggers; grants; trigger-owned backfill;
   data-loss-refusing down) — `crates/infra-postgres/migrations/<timestamp>_schedules_bulk_operations.{up,down}.sql`
   — forward/rollback, backfill and erasure-trigger tests — FR-018-001, FR-018-017, FR-018-021, FR-018-046.
+  *Part done 2026-10-29 (task stays open).* Migration 1 of the feature, `20261230000000_schedules` (a free range
+  after a grep of every branch: 014 has `…226000000`, 036 reserves `…226000000/100/200`, 035 `20270115000000`): `schedules`,
+  `schedule_revisions`, `schedule_actions`, `schedule_backfills`, `schedule_obligations`, `schedule_trigger_handover`, with
+  the deferred head-revision key, the ALWAYS guards (identity, append-only revisions, BUFFERED → final actions, a waiting
+  action never purged), content accounting on the name, note, spec and action, grants to `sagat_app` (`UPDATE` so it can lock
+  rows, no `DELETE`) and a `down` that refuses to drop schedules or a recorded handover. No key points at `workflow_triggers`
+  so an older control plane that republishes keeps working. Evidence: `cargo test -p sagat-tests --test
+  integration_schedules_bulk_operations --locked` — 12 passed (constraints, immutability, runtime privileges and a row lock
+  as `sagat_app`, rollback refused with data and after the handover, drain, re-apply), also with
+  `SAGAT_TEST_AS_RUNTIME_ROLE=1`; `integration_platform_foundation` 101 passed (migrations, runtime privileges), both
+  ways; a mutation of the action guard was caught. Not done: business ids and the `runs` columns with their erasure-aware
+  trigger, batch jobs and items, resets, the five quota resources with the `quota_ceilings_resource_valid` CHECK, the
+  instance-capability registry, the trigger-owned backfill and the purge functions.
 - [ ] T018-009 Classify new variable-size columns; register payload-referencing columns for 020's
   reference check; extend the runtime-privilege test — `crates/infra-postgres/storage-classification.json`,
   `tests/integration/platform-foundation/runtime_privileges.rs` — manifest test, `SAGAT_TEST_AS_RUNTIME_ROLE=1`
   — FR-018-042, FR-018-045.
+  *Part done 2026-10-29 (task stays open).* The 28 variable-size columns of migration 1 are classified in
+  `storage-classification.json` (6 tables; `name`, `note`, `spec`, `action` are content, charged by ALWAYS triggers; the rest
+  protected, each with the CHECK that bounds it) and `crates/infra-postgres/src/schedules.rs` exists as their owner, marked
+  PENDING until T018-014. Evidence: `manifest_covers_every_variable_size_column_and_every_accounted_table_has_always_triggers`
+  and the 8 `durable_quotas` tests pass. Not done: the runtime-privilege audit of the stores' statements (no statement exists
+  yet) and the columns of the later migrations.
 - [ ] T018-010 Merge the REST fragment, AsyncAPI additions (intentional baseline regeneration) and
   reasons; assert `workflow.schema.json` and `worker.baseline.json` unchanged —
   `specs/001-platform-foundation/contracts/{openapi.yaml,events.asyncapi.yaml,events.baseline.json}` —
