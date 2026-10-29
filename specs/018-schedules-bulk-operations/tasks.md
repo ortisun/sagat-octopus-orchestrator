@@ -22,9 +22,13 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   dependencies: only the existing 004/009/017 services and the six SDKs; 019, 020 and 022 are NOT approved
   and every task that needs them (T018-037's permit, T018-051, T018-053's permit, T018-055, T018-077,
   T018-079) stays blocked, not passed, until they are accepted and merged.
-- [ ] T018-002 [P] Register targets `integration_`, `fault_`, `contract_`, `e2e_schedules_bulk_operations`
+- [x] T018-002 [P] Register targets `integration_`, `fault_`, `contract_`, `e2e_schedules_bulk_operations`
   — `tests/Cargo.toml`, `tests/{integration,fault,contract,e2e}/schedules-bulk-operations/main.rs` —
   targets compile — NFR-018-001.
+  *Done 2026-10-29.* Evidence: `cargo test -p sagat-tests --locked --test integration_schedules_bulk_operations
+  --test fault_schedules_bulk_operations --test contract_schedules_bulk_operations --test
+  e2e_schedules_bulk_operations` — all four compile and run, 0 tests each (the modules land with their tasks);
+  `check-agent-config.py`, `check-architecture.py` and `cargo fmt --check` clean.
 
 ## Phase 2: Foundational (blocks every story)
 
