@@ -94,9 +94,17 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
 
 ## Phase 3: US01 — Run a workflow on a schedule (P1, MVP)
 
-- [ ] T018-013 [P] [US1] `ScheduleCalendar` adapter (calendars, 004 cron grammar shared with `cron.rs`,
+- [x] T018-013 [P] [US1] `ScheduleCalendar` adapter (calendars, 004 cron grammar shared with `cron.rs`,
   intervals, exclusions, bounds, DST, next-N, spacing over 1,000) — `crates/infra-ir/src/schedule_calendar.rs`
   — ≥ 200-case table incl. `America/New_York`, `Europe/Lisbon` (SC-018-001) — FR-018-002, FR-018-003.
+  *Done 2026-10-29.* Evidence: `cargo test -p sagat-infra-ir --test schedule_calendar --locked` — 27 passed, among
+  them 730 daily occurrences for each of `Europe/Lisbon` and `America/New_York` (1,460 cases, SC-018-001) checked against
+  an oracle written from the zones' daylight-saving rules and civil-calendar arithmetic, not from `chrono-tz`; gaps and
+  repeated times for both policies; exclusions judged in the zone; start inclusive, end exclusive; the spacing, never-fires
+  and unknown-zone refusals; a property that occurrences are ordered, bounded and resumable. Three mutations (start
+  exclusive, exclusions in UTC, the later of an ambiguous time) were each caught. `infra-ir` + `application` suites 470
+  passed, clippy `-D warnings`, fmt and `check-architecture.py` clean. The port is `sagat_application::schedules::
+  ScheduleCalendar` (also part of T018-011). G1013: the `dst` policy does not reach cron strings.
 - [ ] T018-014 [US1] PostgreSQL `ScheduleStore` (revisions, head CAS, due scan by `(shard, next_wake_at)`
   bounded by `now()`, actions, purge) — `crates/infra-postgres/src/schedules.rs` —
   `tests/integration/schedules-bulk-operations/store.rs` — FR-018-001, FR-018-013, FR-018-014.
