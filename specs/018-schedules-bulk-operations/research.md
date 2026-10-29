@@ -258,6 +258,11 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
   `jitter_offset_ms(digest, jitter, gap)` reads the first eight bytes of the SHA-256 digest modulo the
   bound; the layer that owns `sha2` (application) hashes. This keeps D1003 (SHA-256, no random source)
   without a new domain dependency (`crates/domain/AGENTS.md`).
+- **D1045** (2026-10-29, T018-005) A refused batch item (quota, rate, lock wait, full 022 queue) waits 5 s,
+  doubling to 5 min, and fails after 10 refusals or 1 hour since its first (hard 50 within 24 hours), the same
+  bounded backoff as a refused schedule action (plan, transaction 4). FR-018-031 says "bounded backoff" and
+  the plan gives the ceilings but not the curve. The next rate slot is `max(slot, now) + interval`, so a late
+  job never catches up in a burst.
 - **D1605** Reset-rule registry (coordinator C1): every journal event type has one rule (`COPY`,
   `REMATERIALIZE`, `EXCLUDE`, `REFUSE` — a window until a named closing event) in
   `contracts/journal-and-events.md`; existing types are owned by 018 for this purpose; drafts 019, 020,

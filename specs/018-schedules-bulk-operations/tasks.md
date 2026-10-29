@@ -44,8 +44,14 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   properties also at `PROPTEST_CASES=2000`, three runs); clippy `-D warnings`, `cargo fmt --check` clean. A
   mutation of the window edge (`>=` to `>`) was caught by `the_id_is_free_from_the_instant_the_window_ends`.
   A terminal holder with no finish time stays held (fails closed); `Debug` of a `BusinessId` prints no text.
-- [ ] T018-005 [P] Domain batch: selector, action set, item/job states, milli-item rate slot —
+- [x] T018-005 [P] Domain batch: selector, action set, item/job states, milli-item rate slot —
   `crates/domain/src/batch.rs` — state-machine tests — FR-018-027..034.
+  *Done 2026-10-29.* Evidence: `cargo test -p sagat-domain --test batch --locked` — 18 passed (properties also
+  at `PROPTEST_CASES=2000`, three runs); fmt, clippy `-D warnings` and `check-architecture.py` clean. Mutating
+  `next_slot` was caught by the example and, after widening its generator, by the property too. The job
+  machine is the diagram of `data-model.md`; a cancelling job does not fail (the cancel wins). The retry
+  backoff (5 s doubling to 5 min, 10 attempts within 1 h) is D1045. Not here: selection, the horizon wait and
+  the item adapters (T018-045..047).
 - [ ] T018-006 [P] Domain reset and events `run.start_delayed`, `run.start_released`, `run.reset`,
   `wait.satisfied.via`; eligibility over `RunState::replay` + suffix facts; `ResetPlan` —
   `crates/domain/src/execution/{reset.rs,event.rs,mod.rs}` — per-cause tests — FR-018-023, FR-018-035..039.

@@ -8,6 +8,7 @@
 mod macros;
 
 pub mod audit;
+pub mod batch;
 pub mod binding;
 pub mod business_ids;
 pub mod classification;
