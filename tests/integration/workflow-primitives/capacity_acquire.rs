@@ -38,6 +38,12 @@ async fn counts(f: &Fixture) -> (i64, i64, i64) {
         .fetch_one(&f.w.db.pool).await.expect("Acquire side effects")
 }
 
+async fn header(f: &Fixture) -> (i64, i64, i64, String, Option<Uuid>) {
+    sqlx::query_as("SELECT revision,epoch,active_members,possession,holder_member_id FROM capacity_groups WHERE tenant_id=$1 AND group_id=$2")
+        .bind(f.w.admin.tenant_id().as_uuid()).bind(f.group)
+        .fetch_one(&f.w.db.pool).await.expect("authoritative capacity header")
+}
+
 #[tokio::test]
 async fn vacant_child_acquires_atomically_without_rewriting_execution_or_membership() {
     crate::support::bounded::within(
@@ -202,160 +208,6 @@ async fn mismatched_binding_stale_counters_and_lost_scheduler_are_inert() {
 }
 
 #[tokio::test]
-async fn busy_group_rolls_back_and_releases_own_chain_and_run_guards() {
-    crate::support::bounded::within("busy_group_rolls_back_and_releases_own_chain_and_run_guards", crate::support::bounded::LIFECYCLE_LIMIT, async {
-
-    use tokio::time::{Duration, timeout};
-    let n = vacant_fixture().await;
-    let c = command(&n).await;
-    let mut gate = n.f.w.db.pool.begin().await.expect("group barrier");
-    sqlx::query(
-        "SELECT group_id FROM capacity_groups WHERE tenant_id=$1 AND group_id=$2 FOR UPDATE",
-    )
-    .bind(n.f.w.admin.tenant_id().as_uuid())
-    .bind(n.f.group)
-    .execute(&mut *gate)
-    .await
-    .expect("hold group");
-    let store = PgCapacityAcquireStore::new(n.f.w.execution_pool.clone());
-    assert_eq!(
-        timeout(Duration::from_secs(2), store.acquire_current_child_root(&c))
-            .await
-            .expect("NOWAIT"),
-        Err(Error::Busy)
-    );
-    let mut probe = n.f.w.db.pool.begin().await.expect("lock release probe");
-    sqlx::query("SELECT chain_id FROM execution_chains WHERE tenant_id=$1 AND chain_id=$2 FOR UPDATE NOWAIT")
-        .bind(n.f.w.admin.tenant_id().as_uuid()).bind(n.f.chain).execute(&mut *probe).await.expect("chain released");
-    sqlx::query("SELECT id FROM runs WHERE tenant_id=$1 AND id=$2 FOR UPDATE NOWAIT")
-        .bind(n.f.w.admin.tenant_id().as_uuid())
-        .bind(n.f.chain)
-        .execute(&mut *probe)
-        .await
-        .expect("run released");
-    probe.rollback().await.expect("probe ends");
-    gate.rollback().await.expect("release group");
-    assert_eq!(counts(&n.f).await, (0, 0, 0));
-    store
-        .acquire_current_child_root(&c)
-        .await
-        .expect("same command retries from fresh transaction");
-
-    }).await;
-}
-
-#[tokio::test]
-async fn outbox_refusal_rolls_back_header_audit_and_receipt_before_same_key_retry() {
-    crate::support::bounded::within("outbox_refusal_rolls_back_header_audit_and_receipt_before_same_key_retry", crate::support::bounded::LIFECYCLE_LIMIT, async {
-
-    let n = vacant_fixture().await;
-    let c = command(&n).await;
-    let store = PgCapacityAcquireStore::new(n.f.w.execution_pool.clone());
-    let before = execution_snapshot(&n.f).await;
-    sqlx::raw_sql("CREATE FUNCTION refuse_acquire_hint() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.event_type='capacity.member.acquired' THEN RAISE EXCEPTION 'controlled outbox refusal' USING ERRCODE='23514'; END IF; RETURN NEW; END $$; CREATE TRIGGER refuse_acquire_hint BEFORE INSERT ON event_outbox FOR EACH ROW EXECUTE FUNCTION refuse_acquire_hint();")
-        .execute(&n.f.w.db.pool).await.expect("controlled outbox fault");
-    assert!(matches!(
-        store.acquire_current_child_root(&c).await,
-        Err(Error::Storage(_))
-    ));
-    assert_eq!(
-        state(&n.f.w.db.pool, &n.f).await,
-        (2, 2, 1, "VACANT".into(), "ACTIVE".into())
-    );
-    assert_eq!(counts(&n.f).await, (0, 0, 0));
-    assert_eq!(execution_snapshot(&n.f).await, before);
-    sqlx::query("DROP TRIGGER refuse_acquire_hint ON event_outbox")
-        .execute(&n.f.w.db.pool)
-        .await
-        .expect("remove owned test fault");
-    store
-        .acquire_current_child_root(&c)
-        .await
-        .expect("original command retries atomically");
-    assert_eq!(counts(&n.f).await, (1, 1, 1));
-
-    }).await;
-}
-
-#[tokio::test]
-async fn lost_commit_ack_reconciles_actual_commit_or_abort_with_the_original_key() {
-    crate::support::bounded::within("lost_commit_ack_reconciles_actual_commit_or_abort_with_the_original_key", crate::support::bounded::LIFECYCLE_LIMIT, async {
-
-    use super::commit_proxy::{CommitAckLossProxy, CommitResolution};
-    use crate::support::eventually;
-    use tokio::time::{Duration, timeout};
-    for resolution in [CommitResolution::Committed, CommitResolution::Aborted23514] {
-        let n = vacant_fixture().await;
-        let c = command(&n).await;
-        let before = execution_snapshot(&n.f).await;
-        sqlx::raw_sql("CREATE TABLE acquire_commit_outcome(abort boolean NOT NULL); GRANT SELECT ON acquire_commit_outcome TO sagat_app; CREATE FUNCTION acquire_commit_probe() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(9407001); IF (SELECT abort FROM acquire_commit_outcome) THEN RAISE EXCEPTION 'controlled Acquire commit abort' USING ERRCODE='23514',CONSTRAINT='capacity_finish_proxy_forced_abort'; END IF; RETURN NEW; END $$; CREATE CONSTRAINT TRIGGER acquire_commit_probe AFTER INSERT ON capacity_group_transfer_receipts DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION acquire_commit_probe();")
-            .execute(&n.f.w.db.pool).await.expect("controlled deferred native commit probe");
-        sqlx::query("INSERT INTO acquire_commit_outcome VALUES($1)")
-            .bind(resolution == CommitResolution::Aborted23514)
-            .execute(&n.f.w.db.pool)
-            .await
-            .expect("selected real server outcome");
-        let mut gate = n.f.w.db.pool.begin().await.expect("commit barrier");
-        sqlx::query("SELECT pg_advisory_xact_lock(9407001)")
-            .execute(&mut *gate)
-            .await
-            .expect("hold commit gate");
-        let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
-            .fetch_one(&mut *gate)
-            .await
-            .expect("gate pid");
-        let mut proxy = CommitAckLossProxy::start(&n.f.w.db, resolution).await;
-        proxy.arm();
-        let pool = proxy.pool.clone();
-        let original = c.clone();
-        let pending = tokio::spawn(async move {
-            PgCapacityAcquireStore::new(pool)
-                .acquire_current_child_root(&original)
-                .await
-        });
-        proxy.wait_sent().await;
-        eventually("actual COMMIT is still executing behind the owned gate",||async {
-            let seen:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND application_name='sagat-test-capacity-commit-loss' AND query='COMMIT' AND $1=ANY(pg_blocking_pids(pid)))")
-                .bind(pid).fetch_one(&n.f.w.db.pool).await.expect("actual commit wait");seen.then_some(())
-        }).await;
-        assert_eq!(counts(&n.f).await, (0, 0, 0));
-        proxy.lose_reply().await;
-        assert_eq!(
-            timeout(Duration::from_secs(5), pending)
-                .await
-                .expect("unknown outcome deadline")
-                .expect("native task"),
-            Err(Error::CommitOutcomeUnknown {
-                operation_key: c.operation_key
-            })
-        );
-        gate.rollback()
-            .await
-            .expect("release unresolved server COMMIT");
-        assert_eq!(proxy.resolution().await, resolution);
-        proxy.close().await;
-        let expected = i64::from(resolution == CommitResolution::Committed);
-        assert_eq!(counts(&n.f).await, (expected, expected, expected));
-        assert_eq!(execution_snapshot(&n.f).await, before);
-        sqlx::query("UPDATE acquire_commit_outcome SET abort=false")
-            .execute(&n.f.w.db.pool)
-            .await
-            .expect("clear controlled abort for original-key retry");
-        let reconciled = PgCapacityAcquireStore::new(n.f.w.execution_pool.clone())
-            .acquire_current_child_root(&c)
-            .await
-            .expect("same key reconciles server outcome");
-        assert_eq!(
-            reconciled.replayed,
-            resolution == CommitResolution::Committed
-        );
-        assert_eq!(counts(&n.f).await, (1, 1, 1));
-    }
-
-    }).await;
-}
-
-#[tokio::test]
 async fn paused_and_manual_review_are_not_movable_but_running_is() {
     crate::support::bounded::within(
         "Acquire movable status",
@@ -399,20 +251,26 @@ async fn paused_and_manual_review_are_not_movable_but_running_is() {
 #[tokio::test]
 async fn final_child_cannot_acquire_and_cross_operation_keys_conflict_before_cas() {
     crate::support::bounded::within("Acquire finality and receipt domain", crate::support::bounded::LIFECYCLE_LIMIT, async {
-        let n = vacant_fixture().await;
-        let store = PgCapacityAcquireStore::new(n.f.w.execution_pool.clone());
-        let mut c = command(&n).await;
-        let vacate_key: Uuid = sqlx::query_scalar("SELECT operation_key FROM capacity_group_transfer_receipts WHERE tenant_id=$1 AND group_id=$2 AND kind='VACATE'")
-            .bind(n.f.w.admin.tenant_id().as_uuid()).bind(n.f.group).fetch_one(&n.f.w.db.pool).await.expect("original Vacate receipt");
-        c.operation_key=vacate_key;
-        assert_eq!(store.acquire_current_child_root(&c).await, Err(Error::FingerprintConflict));
-        complete_native_activity(&n).await;
-        let c=command(&n).await;
-        let before=execution_snapshot(&n.f).await;
-        assert_eq!(store.acquire_current_child_root(&c).await, Err(Error::ChainFinal));
-        assert_eq!(execution_snapshot(&n.f).await,before);
-        assert_eq!(counts(&n.f).await,(0,0,0));
-    }).await;
+            let n = vacant_fixture().await;
+            let store = PgCapacityAcquireStore::new(n.f.w.execution_pool.clone());
+            let mut c = command(&n).await;
+            let vacate_key: Uuid = sqlx::query_scalar("SELECT operation_key FROM capacity_group_transfer_receipts WHERE tenant_id=$1 AND group_id=$2 AND kind='VACATE'")
+                    .bind(n.f.w.admin.tenant_id().as_uuid()).bind(n.f.group).fetch_one(&n.f.w.db.pool).await.expect("original Vacate receipt");
+            c.operation_key = vacate_key;
+            assert_eq!(
+                store.acquire_current_child_root(&c).await,
+                Err(Error::FingerprintConflict)
+            );
+            complete_native_activity(&n).await;
+            let c = command(&n).await;
+            let before = execution_snapshot(&n.f).await;
+            assert_eq!(
+                store.acquire_current_child_root(&c).await,
+                Err(Error::ChainFinal)
+            );
+            assert_eq!(execution_snapshot(&n.f).await, before);
+            assert_eq!(counts(&n.f).await, (0, 0, 0));
+        }).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -509,3 +367,201 @@ async fn acquire_exports_closed_outcomes_and_counts_only_acknowledged_first_tran
         assert!(!line.contains(&n.f.w.admin.tenant_id().to_string()));
     }
 }
+
+#[tokio::test]
+async fn original_acquisition_replays_after_later_vacate_continuation_and_successor_lease() {
+    crate::support::bounded::within(
+        "Acquire historical reconciliation",
+        crate::support::bounded::LIFECYCLE_LIMIT,
+        async {
+            let mut n = native_fixture(true).await;
+            n.f.w.execution_pool = n.f.w.db.runtime_pool_with(16).await;
+            let initial = command(&n).await;
+            let vacate = PgCapacityVacateStore::new(n.f.w.execution_pool.clone());
+            vacate
+                .vacate_current_child_root(&CapacityVacateCommand {
+                    operation_key: initial.operation_key,
+                    identity: initial.identity,
+                    expected: initial.expected,
+                    scheduler: initial.scheduler,
+                })
+                .await
+                .expect("initial vacancy");
+            let c = command(&n).await;
+            let acquire = PgCapacityAcquireStore::new(n.f.w.execution_pool.clone());
+            let first = acquire
+                .acquire_current_child_root(&c)
+                .await
+                .expect("first acquisition");
+            let later = command(&n).await;
+            vacate
+                .vacate_current_child_root(&CapacityVacateCommand {
+                    operation_key: later.operation_key,
+                    identity: later.identity,
+                    expected: later.expected,
+                    scheduler: later.scheduler,
+                })
+                .await
+                .expect("later real Vacate");
+            let mut replay = acquire
+                .acquire_current_child_root(&c)
+                .await
+                .expect("original Held receipt after later vacancy");
+            assert!(replay.replayed);
+            replay.replayed = false;
+            assert_eq!(replay, first);
+            assert_eq!(
+                state(&n.f.w.db.pool, &n.f).await,
+                (4, 4, 1, "VACANT".into(), "ACTIVE".into())
+            );
+            complete_native_activity(&n).await;
+            for _ in 0..8 {
+                let round = n.scheduler.tick().await;
+                assert_eq!(round.failed, 0);
+                if !round.did_work() {
+                    break;
+                }
+            }
+            let head: Uuid = sqlx::query_scalar(
+                "SELECT current_run_id FROM execution_chains WHERE tenant_id=$1 AND chain_id=$2",
+            )
+            .bind(n.f.w.admin.tenant_id().as_uuid())
+            .bind(n.f.chain)
+            .fetch_one(&n.f.w.db.pool)
+            .await
+            .expect("continued head");
+            assert_ne!(head, n.f.chain);
+            let session = n.f.w.session(&["capacity.work"]).await;
+            let tasks = n.f.w.poll(&session, 1).await;
+            assert_eq!(tasks.len(), 1);
+            assert_eq!(tasks[0].run_id.as_uuid(), head);
+            let before = execution_snapshot(&n.f).await;
+            let mut replay = acquire
+                .acquire_current_child_root(&c)
+                .await
+                .expect("historical receipt before current-head and lease gates");
+            assert!(replay.replayed);
+            replay.replayed = false;
+            assert_eq!(replay, first);
+            let mut stale = c.clone();
+            stale.operation_key = Uuid::new_v4();
+            assert_eq!(
+                acquire.acquire_current_child_root(&stale).await,
+                Err(Error::StaleHead {
+                    current: RunId::new(head)
+                })
+            );
+            let mut conflict = c.clone();
+            conflict.expected.run_revision += 1;
+            assert_eq!(
+                acquire.acquire_current_child_root(&conflict).await,
+                Err(Error::FingerprintConflict)
+            );
+            assert_eq!(counts(&n.f).await, (1, 1, 1));
+            assert_eq!(execution_snapshot(&n.f).await, before);
+            assert_eq!(header(&n.f).await, (4, 4, 1, "VACANT".into(), None));
+            assert_eq!(state(&n.f.w.db.pool, &n.f).await.4, "ACTIVE");
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn original_receipt_survives_actual_finish_but_fresh_acquire_refuses_inactive_member() {
+    crate::support::bounded::within(
+        "Acquire receipt after Finish",
+        crate::support::bounded::LIFECYCLE_LIMIT,
+        async {
+            let n = vacant_fixture().await;
+            let c = command(&n).await;
+            let acquire = PgCapacityAcquireStore::new(n.f.w.execution_pool.clone());
+            let original = acquire
+                .acquire_current_child_root(&c)
+                .await
+                .expect("acquisition");
+            let head = complete_native_activity(&n).await;
+            PgCapacityFinishStore::new(n.f.w.execution_pool.clone())
+                .finish_current_child_root(&native_command(&n, head).await)
+                .await
+                .expect("actual Finish retires last active member");
+            let before = state(&n.f.w.db.pool, &n.f).await;
+            assert_eq!(
+                (before.2, before.3.as_str(), before.4.as_str()),
+                (0, "RETIRED", "FINISHED")
+            );
+            let snapshot = execution_snapshot(&n.f).await;
+            let mut replay = acquire
+                .acquire_current_child_root(&c)
+                .await
+                .expect("original receipt before inactive and final gates");
+            assert!(replay.replayed);
+            replay.replayed = false;
+            assert_eq!(replay, original);
+            assert_eq!(
+                acquire.acquire_current_child_root(&command(&n).await).await,
+                Err(Error::InactiveMember)
+            );
+            assert_eq!(state(&n.f.w.db.pool, &n.f).await, before);
+            assert_eq!(execution_snapshot(&n.f).await, snapshot);
+            assert_eq!(counts(&n.f).await, (1, 1, 1));
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn exact_binding_and_persistence_counter_ceiling_refuse_without_mutation() {
+    crate::support::bounded::within(
+        "Acquire binding and counter ceiling",
+        crate::support::bounded::LIFECYCLE_LIMIT,
+        async {
+            let n = vacant_fixture().await;
+            let original = command(&n).await;
+            let store = PgCapacityAcquireStore::new(n.f.w.execution_pool.clone());
+            let before = execution_snapshot(&n.f).await;
+            for field in 0..4 {
+                let mut c = original.clone();
+                let expected = match field {
+                    0 => {
+                        c.identity.scope =
+                            ChainScope::new(n.f.w.admin.tenant_id(), n.f.w.other_namespace.id());
+                        Error::BindingMismatch
+                    }
+                    1 => {
+                        c.identity.member_id = CapacityMemberId::new(Uuid::new_v4());
+                        Error::Missing
+                    }
+                    2 => {
+                        c.identity.chain_id = n.parent;
+                        Error::BindingMismatch
+                    }
+                    3 => {
+                        c.identity.head_run_id = n.parent;
+                        Error::BindingMismatch
+                    }
+                    _ => unreachable!(),
+                };
+                assert_eq!(
+                    store.acquire_current_child_root(&c).await,
+                    Err(expected),
+                    "binding {field}"
+                );
+            }
+            assert_eq!(execution_snapshot(&n.f).await, before);
+            // A legal stored header at PostgreSQL's upper counter bound cannot advance.
+            sqlx::query("UPDATE capacity_groups SET revision=9223372036854775807,epoch=9223372036854775807 WHERE tenant_id=$1 AND group_id=$2")
+                        .bind(n.f.w.admin.tenant_id().as_uuid()).bind(n.f.group).execute(&n.f.w.db.pool).await.expect("legal counter ceiling fixture");
+            let ceiling = state(&n.f.w.db.pool, &n.f).await;
+            assert_eq!(
+                store.acquire_current_child_root(&command(&n).await).await,
+                Err(Error::CounterExhausted)
+            );
+            assert_eq!(state(&n.f.w.db.pool, &n.f).await, ceiling);
+            assert_eq!(execution_snapshot(&n.f).await, before);
+            assert_eq!(counts(&n.f).await, (0, 0, 0));
+        },
+    ).await;
+}
+
+#[path = "capacity_acquire_recovery.rs"]
+mod recovery;

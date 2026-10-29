@@ -107,3 +107,13 @@ Lightweight validation: `cargo fmt --all -- --check`, `python3 scripts/check-arc
 (24 crates, no cycles), `python3 scripts/check-agent-config.py` (`agent configuration ok`),
 `actionlint` and `git diff --check` passed. Heavy tests remain in CI: the shared disk had only
 8.5 GiB free when checked, and other sessions were actively building.
+
+The next proof increment has 15 native cases, including real two-member contention in both
+orders and historical replay after both continuation and actual Finish. The contention barrier
+is a held advisory lock inside the receipt insert, observed through PostgreSQL waiters. A loser
+returns Busy, then stale revision after the winner commits, then Occupied with refreshed CAS.
+A focused proof review found two missing assertions of the authoritative capacity header. Both
+were added, including the actual winning holder and both ACTIVE memberships; review cycle2
+found no further substantive issue. Cases also check audit, outbox and receipt refusals separately.
+These are added tests, not yet claimed passing. The current CI40866588862 passed the command,
+adapter/error mapping and audit unit steps; its native preflight is still pending.

@@ -299,3 +299,41 @@ fn capacity_scoped_finish_hint_rejects_each_invalid_shape_independently() {
         assert!(!hint.validator.is_valid(&invalid), "extra {key}");
     }
 }
+
+#[test]
+fn capacity_acquire_hint_is_closed_control_metadata_without_execution_authority() {
+    let hint = hints()
+        .get("capacity.member.acquired")
+        .expect("Acquire canonical hint");
+    let payload = serde_json::json!({
+        "tenantId":uuid::Uuid::from_u128(1).to_string(),
+        "namespaceId":uuid::Uuid::from_u128(2).to_string(),
+        "groupId":uuid::Uuid::from_u128(3).to_string(),
+        "memberId":uuid::Uuid::from_u128(4).to_string(),
+        "chainId":uuid::Uuid::from_u128(5).to_string(),
+        "headRunId":uuid::Uuid::from_u128(6).to_string(),
+        "resultingRevision":3,"epoch":3,
+    });
+    assert!(hint.validator.is_valid(&payload));
+    for key in payload.as_object().expect("control references").keys() {
+        let mut missing = payload.clone();
+        missing.as_object_mut().expect("object").remove(key);
+        assert!(!hint.validator.is_valid(&missing), "required {key}");
+    }
+    for (key, value) in [
+        ("workerLease", serde_json::json!("not-authority")),
+        ("runnable", serde_json::json!(true)),
+        ("credentials", serde_json::json!({"password":"test-only"})),
+        ("payload", serde_json::json!({})),
+        ("resultingRevision", serde_json::json!(1)),
+        ("epoch", serde_json::json!(1)),
+        ("groupId", serde_json::json!("not-a-uuid")),
+    ] {
+        let mut invalid = payload.clone();
+        invalid[key] = value;
+        assert!(!hint.validator.is_valid(&invalid), "invalid {key}");
+    }
+    let mut traced = payload;
+    traced["traceId"] = Value::Null;
+    assert!(hint.validator.is_valid(&traced));
+}
