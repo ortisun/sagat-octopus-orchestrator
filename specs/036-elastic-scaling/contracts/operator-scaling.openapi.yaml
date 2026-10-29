@@ -1,0 +1,576 @@
+openapi: 3.0.3
+info:
+  title: Sagat operator scaling interface
+  version: 0.1.0
+  description: |
+    The management interface for scaling signals, sources, policies, overrides and decisions (feature 036,
+    FR-036-019 to FR-036-025). It is served by a **separate listener** that is off by default
+    (`SAGAT_OPERATOR_ADDR`), authenticated with bearer tokens of a separate audience, and it produces a platform
+    operator principal that the tenant listener never creates (ADR-0074, O1710). The hard ceilings, the destination
+    allowlist and the database budget are configuration only: nothing here can change them.
+    Every write is audited in the platform audit trail with the actor and a reason. A token must have the operator
+    audience and a lifetime of at most one hour; it is limited to 20 requests per second (configurable) and a
+    refusal is typed (`RATE_LIMITED`). The listener is reachable only from peers named in the deployment.
+servers:
+  - url: https://operator.sagat.internal/v1
+security:
+  - operatorBearer: []
+tags:
+  - {name: Catalogue}
+  - {name: Signals}
+  - {name: Sources}
+  - {name: Policies}
+  - {name: Overrides}
+  - {name: Decisions}
+paths:
+  /scaling/catalogue:
+    get:
+      operationId: getScalingCatalogue
+      tags: [Catalogue]
+      summary: The signals, units, roles, limits and source kinds the platform knows
+      description: Needs `scaling:read`. Built-in signals carry name, unit, scope and freshness.
+      responses:
+        '200': {description: 'The catalogue', content: {application/json: {schema: {$ref: '#/components/schemas/Catalogue'}}}}
+        default: {$ref: '#/components/responses/Error'}
+  /scaling/signals:
+    get:
+      operationId: listScalingSignals
+      tags: [Signals]
+      summary: Signals with their latest state
+      description: Needs `scaling:read`.
+      parameters: [{$ref: '#/components/parameters/Limit'}, {$ref: '#/components/parameters/Cursor'}]
+      responses:
+        '200': {description: 'A page', content: {application/json: {schema: {$ref: '#/components/schemas/SignalPage'}}}}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      operationId: defineScalingSignal
+      tags: [Signals]
+      summary: Define a custom signal
+      description: Needs `scaling:manage`. A signal owned by configuration is refused (`OWNED_BY_CONFIG`).
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/CustomSignalInput'}}}}
+      responses:
+        '201': {description: 'Defined', content: {application/json: {schema: {$ref: '#/components/schemas/Signal'}}}}
+        default: {$ref: '#/components/responses/Error'}
+  /scaling/signals/{name}:
+    parameters: [{$ref: '#/components/parameters/Name'}]
+    get:
+      operationId: getScalingSignal
+      tags: [Signals]
+      summary: One signal and its latest sample
+      description: Needs `scaling:read`.
+      responses:
+        '200': {description: 'The signal', content: {application/json: {schema: {$ref: '#/components/schemas/Signal'}}}}
+        default: {$ref: '#/components/responses/Error'}
+    put:
+      operationId: replaceScalingSignal
+      tags: [Signals]
+      summary: Replace a custom signal's definition (a new version)
+      description: Needs `scaling:manage`.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/CustomSignalInput'}}}}
+      responses:
+        '200': {description: 'Replaced', content: {application/json: {schema: {$ref: '#/components/schemas/Signal'}}}}
+        default: {$ref: '#/components/responses/Error'}
+    delete:
+      operationId: deleteScalingSignal
+      tags: [Signals]
+      summary: Remove a custom signal
+      description: Needs `scaling:manage`. Refused while a policy binds it.
+      responses:
+        '204': {description: 'Removed'}
+        default: {$ref: '#/components/responses/Error'}
+  /scaling/signals/{name}/samples:
+    parameters: [{$ref: '#/components/parameters/Name'}]
+    post:
+      operationId: publishScalingSample
+      tags: [Signals]
+      summary: Publish a sample of a custom signal
+      description: |
+        Needs `scaling:publish`. Authenticated, rate limited and size bounded. A value outside the signal's declared range is refused with
+        `SAMPLE_OUT_OF_RANGE`. The sample is stale once its time to live passes.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/SampleInput'}}}}
+      responses:
+        '202': {description: 'Accepted'}
+        default: {$ref: '#/components/responses/Error'}
+  /scaling/sources:
+    get:
+      operationId: listScalingSources
+      tags: [Sources]
+      summary: Declared external sources with their health
+      description: Needs `scaling:read`. The health of each source is its last success, its last failure class and its state. No credential and no response body.
+      responses:
+        '200': {description: 'The sources', content: {application/json: {schema: {$ref: '#/components/schemas/SourceList'}}}}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      operationId: declareScalingSource
+      tags: [Sources]
+      summary: Declare an external source
+      description: |
+        Needs `scaling:manage`. Refused with `DESTINATION_NOT_ALLOWED` when the destination is not on the configuration
+        allowlist, `CREDENTIAL_NOT_MOUNTED` when the named file does not exist, `CREDENTIAL_NEEDS_TLS` when a credential would
+        travel unencrypted.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/SourceInput'}}}}
+      responses:
+        '201': {description: 'Declared', content: {application/json: {schema: {$ref: '#/components/schemas/Source'}}}}
+        default: {$ref: '#/components/responses/Error'}
+  /scaling/sources/{name}:
+    parameters: [{$ref: '#/components/parameters/Name'}]
+    get:
+      operationId: getScalingSource
+      tags: [Sources]
+      summary: One source
+      description: Needs `scaling:read`.
+      responses:
+        '200': {description: 'The source', content: {application/json: {schema: {$ref: '#/components/schemas/Source'}}}}
+        default: {$ref: '#/components/responses/Error'}
+    put:
+      operationId: replaceScalingSource
+      tags: [Sources]
+      summary: Replace a source (a new version)
+      description: Needs `scaling:manage`.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/SourceInput'}}}}
+      responses:
+        '200': {description: 'Replaced', content: {application/json: {schema: {$ref: '#/components/schemas/Source'}}}}
+        default: {$ref: '#/components/responses/Error'}
+    delete:
+      operationId: deleteScalingSource
+      tags: [Sources]
+      summary: Remove a source
+      description: Needs `scaling:manage`. Refused while a policy binds its signal.
+      responses:
+        '204': {description: 'Removed'}
+        default: {$ref: '#/components/responses/Error'}
+  /scaling/sources/{name}/test:
+    parameters: [{$ref: '#/components/parameters/Name'}]
+    post:
+      operationId: testScalingSource
+      tags: [Sources]
+      summary: Query a source once without affecting any policy
+      description: Needs `scaling:manage`. Gives the value, the unit, the latency and the failure class. It records no sample and no decision.
+      responses:
+        '200': {description: 'The result', content: {application/json: {schema: {$ref: '#/components/schemas/SourceTestResult'}}}}
+        default: {$ref: '#/components/responses/Error'}
+  /scaling/policies:
+    get:
+      operationId: listScalingPolicies
+      tags: [Policies]
+      summary: Policies with their current version, owner and mode
+      description: Needs `scaling:read`.
+      parameters: [{$ref: '#/components/parameters/Limit'}, {$ref: '#/components/parameters/Cursor'}]
+      responses:
+        '200': {description: 'A page', content: {application/json: {schema: {$ref: '#/components/schemas/PolicyPage'}}}}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      operationId: createScalingPolicy
+      tags: [Policies]
+      summary: Create a policy
+      description: |
+        Needs `scaling:manage`. Starts in `OBSERVE`. Validated before it takes effect: an unknown signal, `min` above `max`,
+        a `min` below the unit's floor or above its budget, two policies for one target, or a threshold in the wrong unit is
+        refused with a typed error that names the cause.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/PolicyInput'}}}}
+      responses:
+        '201': {description: 'Created', content: {application/json: {schema: {$ref: '#/components/schemas/Policy'}}}}
+        default: {$ref: '#/components/responses/Error'}
+  /scaling/policies/{name}:
+    parameters: [{$ref: '#/components/parameters/Name'}]
+    get:
+      operationId: getScalingPolicy
+      tags: [Policies]
+      summary: One policy
+      description: Needs `scaling:read`.
+      responses:
+        '200': {description: 'The policy', content: {application/json: {schema: {$ref: '#/components/schemas/Policy'}}}}
+        default: {$ref: '#/components/responses/Error'}
+    put:
+      operationId: replaceScalingPolicy
+      tags: [Policies]
+      summary: Replace a policy (a new version)
+      description: Needs `scaling:manage`. A policy owned by configuration is refused with `OWNED_BY_CONFIG`; use an override.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/PolicyInput'}}}}
+      responses:
+        '200': {description: 'Replaced', content: {application/json: {schema: {$ref: '#/components/schemas/Policy'}}}}
+        default: {$ref: '#/components/responses/Error'}
+    delete:
+      operationId: deleteScalingPolicy
+      tags: [Policies]
+      summary: Remove a policy
+      description: Needs `scaling:manage`. The target keeps its last desired value until another policy or the floor applies.
+      responses:
+        '204': {description: 'Removed'}
+        default: {$ref: '#/components/responses/Error'}
+  /scaling/policies/{name}/versions:
+    parameters: [{$ref: '#/components/parameters/Name'}]
+    get:
+      operationId: listScalingPolicyVersions
+      tags: [Policies]
+      summary: Versions with author, time and reason
+      description: Needs `scaling:read`.
+      responses:
+        '200': {description: 'The versions', content: {application/json: {schema: {$ref: '#/components/schemas/PolicyVersionList'}}}}
+        default: {$ref: '#/components/responses/Error'}
+  /scaling/policies/{name}/versions/{version}/restore:
+    parameters: [{$ref: '#/components/parameters/Name'}, {name: version, in: path, required: true, schema: {type: integer, minimum: 1}}]
+    post:
+      operationId: restoreScalingPolicyVersion
+      tags: [Policies]
+      summary: Restore a previous version as a new one
+      description: Needs `scaling:manage`.
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [reason], properties: {reason: {type: string, minLength: 1, maxLength: 500}}}}}}
+      responses:
+        '200': {description: 'Restored', content: {application/json: {schema: {$ref: '#/components/schemas/Policy'}}}}
+        default: {$ref: '#/components/responses/Error'}
+  /scaling/policies/{name}/evaluate:
+    parameters: [{$ref: '#/components/parameters/Name'}]
+    post:
+      operationId: evaluateScalingPolicy
+      tags: [Policies]
+      summary: What would this policy decide? (dry evaluation)
+      description: |
+        Needs `scaling:read`. Evaluates the current version with the current samples, or with the samples and state supplied in the
+        body (a recorded decision's `inputs` reproduce that decision). Nothing is applied, recorded or audited as a change.
+      requestBody: {required: false, content: {application/json: {schema: {$ref: '#/components/schemas/EvaluateInput'}}}}
+      responses:
+        '200': {description: 'The decision it would take', content: {application/json: {schema: {$ref: '#/components/schemas/Decision'}}}}
+        default: {$ref: '#/components/responses/Error'}
+  /scaling/overrides:
+    get:
+      operationId: listScalingOverrides
+      tags: [Overrides]
+      summary: Active overrides
+      description: Needs `scaling:read`.
+      responses:
+        '200': {description: 'The overrides', content: {application/json: {schema: {$ref: '#/components/schemas/OverrideList'}}}}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      operationId: createScalingOverride
+      tags: [Overrides]
+      summary: Hold, bound or freeze a policy for a limited time
+      description: Needs `scaling:override`. Expires by itself within 24 hours. Ceilings still apply.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/OverrideInput'}}}}
+      responses:
+        '201': {description: 'Created', content: {application/json: {schema: {$ref: '#/components/schemas/Override'}}}}
+        default: {$ref: '#/components/responses/Error'}
+  /scaling/overrides/{id}:
+    parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+    delete:
+      operationId: revokeScalingOverride
+      tags: [Overrides]
+      summary: Revoke an override
+      description: Needs `scaling:override`.
+      responses:
+        '204': {description: 'Revoked'}
+        default: {$ref: '#/components/responses/Error'}
+  /scaling/controls/global:
+    get:
+      operationId: getScalingGlobalControl
+      tags: [Overrides]
+      summary: The global switch
+      description: Needs `scaling:read`.
+      responses:
+        '200': {description: 'The switch', content: {application/json: {schema: {$ref: '#/components/schemas/GlobalControl'}}}}
+        default: {$ref: '#/components/responses/Error'}
+    put:
+      operationId: setScalingGlobalControl
+      tags: [Overrides]
+      summary: Freeze or release all automatic scaling
+      description: Needs `scaling:override`. Effective by the next evaluation; audited with the actor and the reason.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/GlobalControlInput'}}}}
+      responses:
+        '200': {description: 'Set', content: {application/json: {schema: {$ref: '#/components/schemas/GlobalControl'}}}}
+        default: {$ref: '#/components/responses/Error'}
+  /scaling/decisions:
+    get:
+      operationId: listScalingDecisions
+      tags: [Decisions]
+      summary: Decision records, newest first
+      description: Needs `scaling:read`. Filters by policy, unit, outcome and time. Retained 14 days by default.
+      parameters:
+        - {$ref: '#/components/parameters/Limit'}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {name: policy, in: query, schema: {type: string}}
+        - {name: unit, in: query, schema: {type: string}}
+        - {name: outcome, in: query, schema: {type: string, enum: [OBSERVED, RECOMMENDED, APPLIED, HELD]}}
+        - {name: since, in: query, schema: {type: string, format: date-time}}
+      responses:
+        '200': {description: 'A page', content: {application/json: {schema: {$ref: '#/components/schemas/DecisionPage'}}}}
+        default: {$ref: '#/components/responses/Error'}
+  /scaling/decisions/{id}:
+    parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+    get:
+      operationId: getScalingDecision
+      tags: [Decisions]
+      summary: One decision with its inputs and the limits it met
+      description: Needs `scaling:read`.
+      responses:
+        '200': {description: 'The decision', content: {application/json: {schema: {$ref: '#/components/schemas/Decision'}}}}
+        default: {$ref: '#/components/responses/Error'}
+  /scaling/desired:
+    get:
+      operationId: getScalingDesired
+      tags: [Decisions]
+      summary: The desired capacity of every unit, advisory and authoritative
+      description: Needs `scaling:read`. The same values the replicas export as `scaling_desired_replicas`.
+      responses:
+        '200': {description: 'The desired capacity', content: {application/json: {schema: {$ref: '#/components/schemas/DesiredList'}}}}
+        default: {$ref: '#/components/responses/Error'}
+components:
+  securitySchemes:
+    operatorBearer: {type: http, scheme: bearer, bearerFormat: JWT, description: 'A token whose audience is `sagat-operator`. Tenant tokens are refused.'}
+  parameters:
+    Name: {name: name, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9_.-]{0,62}$'}}
+    Limit: {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 50}}
+    Cursor: {name: cursor, in: query, schema: {type: string}}
+  responses:
+    Error: {description: 'A typed error', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  schemas:
+    Error:
+      type: object
+      required: [code, message, retryable, traceId]
+      properties:
+        code: {type: string, description: 'A stable code, for example VALIDATION_FAILED, OWNED_BY_CONFIG, DESTINATION_NOT_ALLOWED, CREDENTIAL_NOT_MOUNTED, CREDENTIAL_NEEDS_TLS, SAMPLE_OUT_OF_RANGE, TOKEN_AUDIENCE_REFUSED, TOKEN_LIFETIME_EXCEEDED, RATE_LIMITED, NOT_FOUND, FORBIDDEN.'}
+        message: {type: string}
+        retryable: {type: boolean}
+        traceId: {type: string}
+        details: {type: object, additionalProperties: true}
+    Unit: {type: string, enum: [messages, seconds, count, ratio, percent, cores, bytes, replicas]}
+    SampleState: {type: string, enum: [AVAILABLE, STALE, UNAVAILABLE]}
+    Mode: {type: string, enum: [OBSERVE, RECOMMEND, ENFORCE]}
+    Authority: {type: string, enum: [ADVISORY, AUTHORITATIVE]}
+    Owner: {type: string, enum: [CONFIG, API]}
+    Range:
+      type: object
+      required: [min, max]
+      properties: {min: {type: number}, max: {type: number}}
+    Catalogue:
+      type: object
+      required: [signals, units, roles, limits, sourceKinds]
+      properties:
+        signals: {type: array, items: {$ref: '#/components/schemas/SignalDef'}}
+        units: {type: array, items: {type: string}}
+        roles: {type: array, items: {type: object, required: [name, unitOfDivision, ceiling], properties: {name: {type: string}, unitOfDivision: {type: string}, ceiling: {type: string}, handoverSeconds: {type: integer}}}}
+        limits: {type: array, items: {type: string}}
+        sourceKinds: {type: array, items: {type: string, enum: [METRICS_QUERY, BROKER_QUEUE]}}
+    SignalDef:
+      type: object
+      required: [name, unit, scope, origin, freshnessSeconds]
+      properties:
+        name: {type: string}
+        unit: {$ref: '#/components/schemas/Unit'}
+        scope: {type: string, enum: [OPERATOR, NAMESPACE]}
+        origin: {type: string, enum: [BUILTIN, METRIC, RESOURCE, SOURCE, CUSTOM]}
+        freshnessSeconds: {type: integer, minimum: 5}
+        range: {$ref: '#/components/schemas/Range'}
+        exported: {type: boolean}
+        owner: {$ref: '#/components/schemas/Owner'}
+        description: {type: string}
+    Signal:
+      allOf:
+        - {$ref: '#/components/schemas/SignalDef'}
+        - type: object
+          properties:
+            latest: {$ref: '#/components/schemas/Sample'}
+    Sample:
+      type: object
+      required: [state, sampledAt]
+      properties:
+        value: {type: number, nullable: true, description: 'Null unless the state carries a value; never 0 for a failed measurement.'}
+        state: {$ref: '#/components/schemas/SampleState'}
+        reason: {type: string, nullable: true}
+        coverage: {type: number, minimum: 0, maximum: 1, nullable: true}
+        sampledAt: {type: string, format: date-time}
+        ageSeconds: {type: number, minimum: 0}
+    SampleInput:
+      type: object
+      required: [value]
+      properties:
+        value: {type: number}
+        timeToLiveSeconds: {type: integer, minimum: 5, maximum: 3600, default: 60}
+    CustomSignalInput:
+      type: object
+      required: [name, unit, range, freshnessSeconds, reason]
+      properties:
+        name: {type: string, pattern: '^[a-z][a-z0-9_.]{0,62}$'}
+        unit: {$ref: '#/components/schemas/Unit'}
+        range: {$ref: '#/components/schemas/Range'}
+        freshnessSeconds: {type: integer, minimum: 5, maximum: 3600}
+        exported: {type: boolean, default: false}
+        reason: {type: string, minLength: 1, maxLength: 500}
+    SignalPage:
+      type: object
+      required: [items]
+      properties: {items: {type: array, items: {$ref: '#/components/schemas/Signal'}}, nextCursor: {type: string, nullable: true}}
+    SourceInput:
+      type: object
+      required: [name, kind, unit, range, intervalSeconds, freshnessSeconds, reason]
+      properties:
+        name: {type: string, pattern: '^[a-z][a-z0-9_.-]{0,62}$'}
+        kind: {type: string, enum: [METRICS_QUERY, BROKER_QUEUE]}
+        unit: {$ref: '#/components/schemas/Unit'}
+        range: {$ref: '#/components/schemas/Range'}
+        intervalSeconds: {type: integer, minimum: 5, maximum: 3600}
+        freshnessSeconds: {type: integer, minimum: 5, maximum: 3600}
+        exported: {type: boolean, default: false}
+        credentialFile: {type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,62}$', description: 'The name of a file mounted from a Secret. Never the secret.'}
+        destination: {type: string, format: uri, description: 'METRICS_QUERY: must be on the configuration allowlist.'}
+        query: {type: string, maxLength: 2048, description: 'METRICS_QUERY: an instant query that reduces to one finite number.'}
+        broker: {type: object, additionalProperties: true, description: 'BROKER_QUEUE: kind and the queue, topic or stream; servers must be on the allowlist.'}
+        reason: {type: string, minLength: 1, maxLength: 500}
+    Source:
+      type: object
+      required: [name, kind, version, owner, health]
+      properties:
+        name: {type: string}
+        kind: {type: string}
+        version: {type: integer}
+        owner: {$ref: '#/components/schemas/Owner'}
+        unit: {$ref: '#/components/schemas/Unit'}
+        intervalSeconds: {type: integer}
+        health: {type: object, required: [state], properties: {state: {type: string, enum: [OK, FAILING, NEVER_QUERIED]}, lastSuccessAt: {type: string, format: date-time, nullable: true}, lastFailureClass: {type: string, nullable: true, enum: [timeout, refused, invalid, unavailable, null]}}}
+    SourceList:
+      type: object
+      required: [items]
+      properties: {items: {type: array, items: {$ref: '#/components/schemas/Source'}}}
+    SourceTestResult:
+      type: object
+      required: [ok, latencyMs]
+      properties:
+        ok: {type: boolean}
+        value: {type: number, nullable: true}
+        unit: {$ref: '#/components/schemas/Unit'}
+        latencyMs: {type: integer, minimum: 0}
+        failureClass: {type: string, nullable: true}
+    Binding:
+      type: object
+      required: [signal, interpretation, target]
+      properties:
+        signal: {type: string}
+        interpretation: {type: string, enum: [DEMAND, UTILISATION]}
+        target: {type: number, exclusiveMinimum: true, minimum: 0}
+        tolerance: {type: number, minimum: 0, maximum: 0.5, default: 0.1}
+    Step:
+      type: object
+      required: [maxChange]
+      properties: {maxChange: {type: integer, minimum: 1, maximum: 64}, everySeconds: {type: integer, minimum: 0, maximum: 3600, default: 0}}
+    Direction:
+      type: object
+      required: [step]
+      properties: {step: {$ref: '#/components/schemas/Step'}, stabilizationSeconds: {type: integer, minimum: 0, maximum: 3600, default: 0}}
+    PolicyInput:
+      type: object
+      required: [name, target, bindings, min, max, reason]
+      properties:
+        name: {type: string, pattern: '^[a-z][a-z0-9_.-]{0,62}$'}
+        target: {type: object, required: [unit, role], properties: {unit: {type: string}, role: {type: string, enum: [INGEST, SCHEDULER, EVENT_DISPATCH, DELIVERY, WORKER_POOL, WORKER_API, INGRESS]}, kind: {type: string, enum: [REPLICAS], default: REPLICAS}}}
+        bindings: {type: array, minItems: 1, maxItems: 8, items: {$ref: '#/components/schemas/Binding'}}
+        min: {type: integer, minimum: 1, maximum: 64}
+        max: {type: integer, minimum: 1, maximum: 64}
+        costCeiling: {type: integer, minimum: 1, maximum: 64}
+        scaleOut: {$ref: '#/components/schemas/Direction'}
+        scaleIn: {$ref: '#/components/schemas/Direction'}
+        cooldownSeconds: {type: integer, minimum: 0, maximum: 3600, default: 0}
+        mode: {$ref: '#/components/schemas/Mode'}
+        reason: {type: string, minLength: 1, maxLength: 500}
+    Policy:
+      allOf:
+        - {$ref: '#/components/schemas/PolicyInput'}
+        - type: object
+          required: [version, owner, createdAt]
+          properties: {version: {type: integer}, owner: {$ref: '#/components/schemas/Owner'}, createdAt: {type: string, format: date-time}, latestDecisionId: {type: string, format: uuid, nullable: true}}
+    PolicyPage:
+      type: object
+      required: [items]
+      properties: {items: {type: array, items: {$ref: '#/components/schemas/Policy'}}, nextCursor: {type: string, nullable: true}}
+    PolicyVersionList:
+      type: object
+      required: [items]
+      properties: {items: {type: array, items: {type: object, required: [version, author, reason, createdAt], properties: {version: {type: integer}, owner: {$ref: '#/components/schemas/Owner'}, author: {type: string}, reason: {type: string}, createdAt: {type: string, format: date-time}}}}}
+    EvaluateInput:
+      type: object
+      description: 'Omit to use the current samples and state. Supply the `inputs` of a recorded decision to reproduce it.'
+      properties:
+        inputs: {$ref: '#/components/schemas/DecisionInputs'}
+        version: {type: integer, description: 'Evaluate this version instead of the current one.'}
+    Limit:
+      type: object
+      required: [name, before, after]
+      properties:
+        name: {type: string, enum: [STABILIZATION_OUT, STABILIZATION_IN, STEP_UP, STEP_DOWN, COOLDOWN, BOUNDS, OVERRIDE_MIN, OVERRIDE_MAX, OVERRIDE_HOLD, FROZEN, COVERAGE, ROLE_CEILING, PARTITION_BOUND, DB_BUDGET, COST_CEILING]}
+        before: {type: integer}
+        after: {type: integer}
+    DecisionInputs:
+      type: object
+      required: [current, signals, now]
+      properties:
+        current: {type: object, required: [replicas, source], properties: {replicas: {type: integer}, source: {type: string, enum: [OBSERVED, LAST_DESIRED, POLICY_MIN]}}}
+        signals: {type: array, items: {type: object, required: [signal, state, used], properties: {signal: {type: string}, value: {type: number, nullable: true}, ageSeconds: {type: number}, state: {$ref: '#/components/schemas/SampleState'}, coverage: {type: number, nullable: true}, used: {type: boolean}}}}
+        recent: {type: array, items: {type: object, properties: {at: {type: string, format: date-time}, raw: {type: integer}}}}
+        lastUpAt: {type: string, format: date-time, nullable: true}
+        lastDownAt: {type: string, format: date-time, nullable: true}
+        ceilings: {type: object, properties: {role: {type: integer, nullable: true}, partitionBound: {type: boolean}, budget: {type: integer, nullable: true}, cost: {type: integer, nullable: true}}}
+        overrides: {type: array, items: {$ref: '#/components/schemas/Override'}}
+        frozen: {type: boolean}
+        mode: {$ref: '#/components/schemas/Mode'}
+        now: {type: string, format: date-time}
+    Decision:
+      type: object
+      required: [id, policy, policyVersion, evaluatedAt, inputs, raw, limits, final, outcome, reason]
+      properties:
+        id: {type: string, format: uuid}
+        policy: {type: string}
+        policyVersion: {type: integer}
+        evaluatedAt: {type: string, format: date-time}
+        lastSeenAt: {type: string, format: date-time}
+        repeatCount: {type: integer, minimum: 1}
+        inputs: {$ref: '#/components/schemas/DecisionInputs'}
+        raw: {type: integer}
+        limits: {type: array, items: {$ref: '#/components/schemas/Limit'}}
+        final: {type: integer}
+        outcome: {type: string, enum: [OBSERVED, RECOMMENDED, APPLIED, HELD]}
+        authority: {allOf: [{$ref: '#/components/schemas/Authority'}], nullable: true}
+        reason: {type: string, enum: [OK, NO_SIGNAL, STABILIZING, COOLDOWN, FROZEN, OVERRIDDEN, AT_CEILING, DRAIN_EXCLUDED, PARTIAL_COVERAGE]}
+    DecisionPage:
+      type: object
+      required: [items]
+      properties: {items: {type: array, items: {$ref: '#/components/schemas/Decision'}}, nextCursor: {type: string, nullable: true}}
+    OverrideInput:
+      type: object
+      required: [policy, kind, expiresInSeconds, reason]
+      properties:
+        policy: {type: string}
+        kind: {type: string, enum: [HOLD, MIN, MAX, FREEZE]}
+        value: {type: integer, minimum: 1, maximum: 64, description: 'Required for HOLD, MIN and MAX.'}
+        expiresInSeconds: {type: integer, minimum: 60, maximum: 86400}
+        reason: {type: string, minLength: 1, maxLength: 500}
+    Override:
+      type: object
+      required: [id, policy, kind, expiresAt, author, reason]
+      properties:
+        id: {type: string, format: uuid}
+        policy: {type: string}
+        kind: {type: string, enum: [HOLD, MIN, MAX, FREEZE]}
+        value: {type: integer, nullable: true}
+        expiresAt: {type: string, format: date-time}
+        author: {type: string}
+        reason: {type: string}
+    OverrideList:
+      type: object
+      required: [items]
+      properties: {items: {type: array, items: {$ref: '#/components/schemas/Override'}}}
+    GlobalControlInput:
+      type: object
+      required: [frozen, reason]
+      properties: {frozen: {type: boolean}, reason: {type: string, minLength: 1, maxLength: 500}}
+    GlobalControl:
+      type: object
+      required: [frozen, updatedAt]
+      properties: {frozen: {type: boolean}, reason: {type: string, nullable: true}, author: {type: string, nullable: true}, updatedAt: {type: string, format: date-time}}
+    DesiredList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [unit, kind, value, authority, updatedAt]
+            properties: {unit: {type: string}, kind: {type: string}, parameter: {type: string}, value: {type: integer}, authority: {$ref: '#/components/schemas/Authority'}, decisionId: {type: string, format: uuid}, updatedAt: {type: string, format: date-time}, ageSeconds: {type: number}}
