@@ -48,7 +48,7 @@ After fixing result archival, the final real runtime-role profiles all pass inde
 | scoped-event-cutover | 8.84 s | 1 passed, 0 failed, 5.90 s |
 
 Reproduce each with a private CARGO_TARGET_DIR, the repository-owned Docker daemon and
-`SAGAT_TEST_AS_RUNTIME_ROLE=1 python3 scripts/test-released-v02-profile.py --scenario <scenario>`.
+`SAGAT_TEST_AS_RUNTIME_ROLE=1 python3 scripts/test-release-upgrade-profile.py --scenario <scenario>`.
 The optional `--prepared-run` reuses only this agent's verified old-source/build cache.
 The runner verifies 649 original released production files plus the declared fixture overlays;
 current source and both executables are independently hashed. All five final profiles bind the

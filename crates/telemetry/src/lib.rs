@@ -18,7 +18,9 @@ mod redact;
 mod span;
 mod trace;
 
-pub use capacity::{CAPACITY_FINISH_SPAN, CapacityFinishOutcome};
+pub use capacity::{
+    CAPACITY_FINISH_SPAN, CAPACITY_VACATE_SPAN, CapacityFinishOutcome, CapacityVacateOutcome,
+};
 pub use json_log::{LogLayer, Style};
 pub use leaf_certification::{LEAF_CERTIFICATION_SPAN, LeafCertificationOutcome};
 pub use logging::{LogFormat, Telemetry, TelemetryConfig, init, init_logging};

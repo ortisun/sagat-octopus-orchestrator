@@ -1,5 +1,5 @@
 //! Explicit cold callback cutover; no mixed-generation or automatic deployment fence claim.
-use super::released_v02_inflight::control;
+use super::release_upgrade_inflight::control;
 use crate::support::{
     self,
     api::Options,
@@ -53,7 +53,7 @@ impl BrokerPublisher for OwnedRedis {
 }
 
 #[tokio::test]
-#[ignore = "requires verified actual released source; use the released-v02 profile runner"]
+#[ignore = "requires verified actual released source; use the release-upgrade profile runner"]
 async fn released_callback_writer_is_fenced_before_redis_activation() {
     assert!(
         std::env::var_os("SAGAT_TEST_DATABASE_URL").is_none(),
@@ -67,20 +67,20 @@ async fn released_callback_writer_is_fenced_before_redis_activation() {
     assert_eq!(build["scenario"], "redis-callback-cutover");
     assert_eq!(
         build["coordinatorPath"],
-        "tests/integration/workflow-primitives/released_v02_callback_cutover.rs"
+        "tests/integration/workflow-primitives/release_upgrade_callback_cutover.rs"
     );
     assert_eq!(
         build["coordinatorSha256"],
-        control::sha(include_bytes!("released_v02_callback_cutover.rs"))
+        control::sha(include_bytes!("release_upgrade_callback_cutover.rs"))
     );
-    super::released_v02_inflight::verify_overlays(&build);
+    super::release_upgrade_inflight::verify_overlays(&build);
     let binary = PathBuf::from(build["binary"].as_str().expect("old executable"));
     assert_eq!(
         binary.canonicalize().expect("binary").parent(),
         manifest.canonicalize().expect("manifest").parent()
     );
     assert_eq!(
-        super::released_v02_upgrade::file_sha(&binary),
+        super::release_upgrade::file_sha(&binary),
         build["binarySha256"]
     );
     assert_eq!(build["productionFilesVerified"], 649);
@@ -90,7 +90,7 @@ async fn released_callback_writer_is_fenced_before_redis_activation() {
         parent.set_nonblocking(true).expect("nonblocking parent");
         let mut stream=UnixStream::from_std(parent).expect("async parent");
         let mut command=tokio::process::Command::new(binary);
-        command.arg("released_v02_phase::callback_cutover::deliver_http_callback_then_wait_for_cold_cutover")
+        command.arg("release_upgrade_phase::callback_cutover::deliver_http_callback_then_wait_for_cold_cutover")
             .args(["--exact","--nocapture"]).env("SAGAT_TEST_DATABASE_URL",&owner.admin_url)
             .env("RUST_TEST_THREADS","1").stdin(Stdio::from(OwnedFd::from(old))).kill_on_drop(true);
         let mut old_process=command.spawn().expect("actual released callback publisher");
@@ -120,7 +120,7 @@ async fn released_callback_writer_is_fenced_before_redis_activation() {
         let sessions:i64=sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE usename='released_callback_writer'").fetch_one(&db.pool).await.expect("old sessions");assert_eq!(sessions,0);
         progress.enter("normal migration and explicit Redis activation after old process join");
         sagat_infra_postgres::migrate(&db.pool).await.expect("current normal migration");
-        let after:i64=sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations WHERE success").fetch_one(&db.pool).await.expect("current schema boundary");assert_eq!(after,20261225000000);
+        let after:i64=sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations WHERE success").fetch_one(&db.pool).await.expect("current schema boundary");assert_eq!(after,20261226000000);
         let api=support::api::start_on_db(db,Options {runtime_role:true,redis_callbacks:true,..Options::default()}).await;
         let old_run:RunId=witness["run"].as_str().expect("old run").parse().expect("UUID");
         api.executions.verify_run(tenant,old_run).await.expect("old run replay after migration");

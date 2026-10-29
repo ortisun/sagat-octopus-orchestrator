@@ -11,7 +11,7 @@ pending; publication capabilities, authority checks and required technical gates
 ## Summary
 
 The owner requested completion of the remaining implementation for release 0.3 on
-2026-10-26. [The 0.3.0 implementation ledger](./implementation-0.3.md) records the
+2026-10-26. [The 0.3.0 implementation ledger](./implementation-ledger.md) records the
 ordered remaining increments and actual verification. Existing unchecked tasks and
 publication gates remain authoritative until their acceptance evidence is obtained.
 
@@ -669,7 +669,7 @@ public activation and released-profile/SDK/final acceptance remain separate.
 
 ### Actual released-v0.2 compatibility profile — 2026-10-27
 
-[released-v02-profile.md](./released-v02-profile.md) and its verified runner prove old public
+[release-upgrade-profile.md](./release-upgrade-profile.md) and its verified runner prove old public
 activity/root-wait production, normal current migration and completion, and actual released
 REST/native reads of the retained terminal runs. Separate marked build targets and immutable
 source/executable manifests prevent same-version old/current Cargo cache contamination.
@@ -680,7 +680,7 @@ old-dispatcher stop/join/credential barrier, public/SDK and remaining runtime/re
 
 ### Actual released in-flight worker profile — 2026-10-27
 
-[released-v02-inflight-profile.md](./released-v02-inflight-profile.md) separately proves the old
+[release-upgrade-inflight-profile.md](./release-upgrade-inflight-profile.md) separately proves the old
 generated worker client's original in-memory scoped lease/request survives schema upgrade
 and reports/replays against current runtime-role services. Anonymous framed IPC refreshes only
 subject authentication. Native evidence binds the live and reported original capability, exact
@@ -692,7 +692,7 @@ guarantee; those gates remain open in the0.3 ledger.
 
 ### Genuine released Applied lookup — 2026-10-27
 
-[released-v02-applied-profile.md](./released-v02-applied-profile.md) proves the real old
+[release-upgrade-applied-profile.md](./release-upgrade-applied-profile.md) proves the real old
 OUTCOME_UNKNOWN→lookup→Applied report/replay across normal upgrade, preserving both physical
 capabilities, exact event/output/receipt/accounting and current scheduler finality. A second
 old process verifies terminal REST/native history and the original prefix afterwards. Shared
@@ -707,5 +707,14 @@ old-dispatcher credential revocation, established-session termination and proces
 native exact-path receiver/deadline/scheduler implementations; change only the public body-kind
 guard. Keep the eight-node bound and existing graph/schema/tenant rules. Root signals, loops,
 approvals/children/nesting/capacity remain separately gated. Public and common-SDK evidence and
-observed failures are in scoped-event-publication.md and implementation-0.3.md. No canonical task
+observed failures are in scoped-event-publication.md and implementation-ledger.md. No canonical task
 closes through this partial increment; final integrated six-language and release gates remain.
+
+## Dormant native ChildRoot Vacate — 2026-10-28
+
+[Slice V](./capacity-vacate-acquire.md) implements exact non-final ChildRoot Vacate and immutable
+receipt replay, including after continuation. Chain/run/group guards, current scheduler fencing,
+CAS and the lease probe precede the atomic header/audit/outbox/receipt write. The 18 native cases
+and released-source compatibility profiles are pending CI validation; the interrupted local run
+is not a passing gate. Acquire, the caller, claim guards, creation and quota/backfill remain
+prerequisites to activation. No canonical task closes in this increment.

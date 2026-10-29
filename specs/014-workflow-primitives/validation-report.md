@@ -3884,7 +3884,7 @@ that removes it.
 
 ## 0.3 scoped timers and explicit zero-policy progress — 2026-10-27
 
-The ongoing implementation ledger is [implementation-0.3.md](./implementation-0.3.md).
+The ongoing implementation ledger is [implementation-ledger.md](./implementation-ledger.md).
 Timers: core1017passed, focused native35passed plus separate2-test full/frontier journal/
 existing-source oracle; common five-SDK scenario64 verified without regeneration; strict
 workspace Clippy passed. These are separate invocations, not one combined count. Timer
@@ -4022,7 +4022,7 @@ post-cleanup journal failure with rollback of tenant capacity as well as all pre
 The final7pass21.89s harness/97.83s command; this is separate from26, not33distinct cases.
 Strict workspace Clippy90.15s and final test-target lint26.93s pass. Runtime-role regressions
 pass timers13, controls23 and native transactions15 on the same executable; exact timings,
-hashes, fixture/compile failures and review correction are in implementation-0.3.md.
+hashes, fixture/compile failures and review correction are in implementation-ledger.md.
 Formatting, architecture and agent checks pass. No canonical task, loop event drain, external
 event receiver/producer/public body, nested-capacity or release acceptance is closed.
 
@@ -4057,7 +4057,7 @@ admission before staging an exact receipt and its canonical document. WaitSatisf
 one output require the private same-transaction witness. Commit refuses orphan receipts,
 post-consumption ignored errors and prior failures hidden by successful pre-receipt retries.
 Real REDs, bounded-review corrections, fixture errors and the discarded zero-test invocation
-are retained in implementation-0.3.md; none is relabeled as passing acceptance. No grants,
+are retained in implementation-ledger.md; none is relabeled as passing acceptance. No grants,
 migration, public body or production dispatcher caller changes.
 
 Final native lifecycle43/0/0(186.67s harness/248.91s command), root dispatch24/0/0
@@ -4247,3 +4247,63 @@ pass again separately on the lint-corrected source: cutover60.90s runner, active
 FORWARD8.43s, Applied8.41s. A missing CARGO_TARGET_DIR in one wrapper was refused before
 build/runtime; its0.09s setup failure is not a runtime RED. Exact receipts and source bindings
 are in evidence/public-scoped-events-20261027. No canonical or integrated release gate closes.
+
+## Native ChildRoot Vacate increment — 2026-10-28, CI pending
+
+The implementation and named test matrix are recorded in
+[capacity-vacate-acquire.md](./capacity-vacate-acquire.md#progress-slice-v). Fingerprint and native
+stubs were observed failing. The first implemented native run was 8 passed/1 fixture error, now
+corrected. A later disk-interrupted run is not a complete validation result. All corrected native
+tests, fingerprint/error/audit tests, the non-blessed contract baseline, writer inventory, privilege
+audit and actual released-v0.2 upgrade profiles remain CI gates. No canonical checkbox is closed.
+
+### CI checkpoint after version-neutral naming
+
+Run [40804888276](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/40804888276)
+passed the actual released-source active-data coordinator (1 passed, 16.10s), then refused the
+in-flight profile before database setup because the phase-registration checksum still referred
+to the old fixture path/module. This is a failed gate. The neutral registration was inspected
+and hashed independently against immutable release `bfda342073db71e84f30bdc79ccf3fbc97a7153c`:
+old entrypoint plus registration `6188765ccfa57f3ae61f0cf9b94a95f362e2acb3439eb191282ad9e4f587eafd`;
+new entrypoint plus registration `447a9e560754da23f9c65a64250096c5a17af6ae8a62657d4674ec195ce4d19b`.
+Only the expected overlay checksum changes; production archive verification remains strict.
+The corrected profile requires a new CI execution without any update/bless switch.
+
+### Migration/index interaction regressions exposed by CI
+
+The superseded run [40804888276](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/40804888276)
+printed failures for `bindings::releasing_the_leases_of_closed_sessions_is_an_index_lookup_and_not_a_scan_of_every_lease`
+and `capacity_finish::downgrade_waits_for_writer_before_deciding_whether_storage_is_empty`.
+The first includes the actual plan: `Index Scan using steps_run_capacity_lease_idx`, not the
+`steps_leased_by_idx` isolated by the original tiny-table test. The fixture now also withholds
+the newly added competing index inside its existing rollback transaction; the original required
+lease-index assertion remains. This is an availability check, not a production planner benchmark.
+
+The downgrade observer was tied to the SQL text `LOCK TABLE capacity_groups`. Migration 26
+removes a referencing receipt table first, so FK-removal DDL can wait on the held group writer
+before reaching that statement. The observer now inspects the exact database/relation, pending
+AccessExclusive lock and actual writer blocker. The writer still commits first and the migration
+must still refuse retained storage with SQLSTATE 55000. Focused CI will verify this diagnosis.
+
+All 18 new Vacate cases printed `ok` in that superseded run, but the run was cancelled and is
+not full-suite acceptance. A new CI preflight executes both named regressions and all 18 Vacate
+cases before the full workspace gate, without skipping any required suite. The integration branch
+also acquired the independent Dependabot target-branch fix; it is merged into this feature before
+new validation. All corrected gates remain pending the new integrated-head CI run.
+
+### Focused CI correction: respect the transfer rollback boundary
+
+Run [40811743421](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/40811743421)
+passed the isolated lease-index test (1/0/0, 13.55s) and then failed Finish's rollback race
+(0/1/0, 5.79s): it received an error at migration 26 instead of the expected retained-storage
+refusal at migration 10. The fixture was still running the full rollback with an active group
+writer, although migration 26 explicitly requires quiesced services. Observing its first
+conflicting relation lock did not establish that unsupported concurrent rollback contract.
+
+The Finish fixture now rolls back the empty transfer schema to migration 25 while quiesced,
+then starts its writer and runs the original Finish rollback race. Its causal lock observation,
+required migration-10/SQLSTATE-55000 refusal and retained-tombstone check remain. Transfer
+rollback still has its own empty/retained native coverage and makes no online guarantee.
+Migration error assertions now include the original database error if the version differs,
+so a later regression will not hide its cause behind only two migration numbers. New CI
+verification is required; no canonical task closes.
