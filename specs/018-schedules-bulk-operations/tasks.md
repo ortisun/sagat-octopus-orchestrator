@@ -57,6 +57,14 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `crates/domain/src/execution/{reset.rs,event.rs,mod.rs}` — per-cause tests — FR-018-023, FR-018-035..039.
 - [ ] T018-007 Permissions, audit actions and quota resources of the plan —
   `crates/domain/src/{identity.rs,audit.rs,quota.rs}` — role-grant and range tests — FR-018-041, FR-018-045.
+  *Part done 2026-10-29 (task stays open).* Done: the four permissions (`schedule:read|write|operate`,
+  `run:batch`) with the role matrix of the plan, and the 16 audit actions. Evidence: `cargo test -p sagat-domain
+  --test schedule_permissions --locked` — 6 passed; the whole domain suite 684 passed, 0 failed (the hand-written
+  matrix of `crates/domain/tests/identity.rs` was updated on purpose: 48 → 52 permissions); `cargo check
+  --workspace --all-targets` compiles. Not done: the five quota resources (`schedules`, `schedule_backfills`,
+  `batch_jobs`, `tenant_batch_jobs`, `pending_resets`). They are persisted behind the `quota_ceilings_resource_valid`
+  CHECK and `QuotaResource::ALL` is iterated by code that talks to PostgreSQL, so they land with the migration of
+  T018-008, in the same commit, to keep every commit consistent.
 - [ ] T018-008 Additive migrations (tables incl. `schedule_actions` PK with `origin`, `batch_jobs.selection_horizon xid8`,
   `schedule_trigger_handover`, and the instance-capability registry tables unless 029 or 031 shipped them; `runs` columns with the erasure-aware
   immutability trigger; `run_shard` partial indexes; ALWAYS triggers; grants; trigger-owned backfill;

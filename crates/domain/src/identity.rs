@@ -358,11 +358,22 @@ pub enum Permission {
     DatabaseResultRead,
     /// Resolve only a leased managed database capability; additionally requires the machine role.
     DatabaseExecute,
+    /// See the schedules of a namespace, their next times and their actions (`FR-018-013`).
+    ScheduleRead,
+    /// Create, change and delete a schedule. Needs `run:start` as well: a schedule starts runs
+    /// as its author would (`FR-018-015`).
+    ScheduleWrite,
+    /// Pause, resume, trigger and backfill a schedule. Resuming and triggering need `run:start`
+    /// too.
+    ScheduleOperate,
+    /// Apply one action to many runs. Needs the permissions of the single action as well; a batch
+    /// multiplies the blast radius of an action by up to 100,000 (`O1002`).
+    RunBatch,
 }
 
 impl Permission {
     /// Every permission, used to grant the admin role and to test the full matrix.
-    pub const ALL: [Self; 48] = [
+    pub const ALL: [Self; 52] = [
         Self::WorkspaceRead,
         Self::WorkspaceCreate,
         Self::NamespaceRead,
@@ -411,6 +422,10 @@ impl Permission {
         Self::DatabaseWrite,
         Self::DatabaseResultRead,
         Self::DatabaseExecute,
+        Self::ScheduleRead,
+        Self::ScheduleWrite,
+        Self::ScheduleOperate,
+        Self::RunBatch,
     ];
 
     #[must_use]
@@ -464,6 +479,10 @@ impl Permission {
             Self::DatabaseWrite => "database:write",
             Self::DatabaseResultRead => "database:result:read",
             Self::DatabaseExecute => "database:execute",
+            Self::ScheduleRead => "schedule:read",
+            Self::ScheduleWrite => "schedule:write",
+            Self::ScheduleOperate => "schedule:operate",
+            Self::RunBatch => "run:batch",
         }
     }
 }
@@ -541,6 +560,10 @@ impl Role {
         Permission::DatabaseWrite,
         Permission::DatabaseResultRead,
         Permission::DatabaseExecute,
+        Permission::ScheduleRead,
+        Permission::ScheduleWrite,
+        Permission::ScheduleOperate,
+        Permission::RunBatch,
     ];
 
     #[must_use]
@@ -562,10 +585,11 @@ impl Role {
         use Permission::{
             ApprovalDecide, ApprovalRead, DatabaseAdHoc, DatabaseUse, DefinitionPublish,
             DefinitionRead, DefinitionWrite, EventManage, EventPublish, EventRead, NamespaceRead,
-            OpsRead, PayloadReadInternal, PublicationApprove, QuotaRead, RunOperate,
-            RunPayloadInspect, RunQuery, RunRead, RunSignal, RunStart, RunUpdate, ScriptBuild,
-            ScriptExecute, ScriptPublish, ScriptRead, ScriptWrite, SecretRead, SecretUse,
-            VersionActivate, WorkerExecute, WorkerManage, WorkspaceRead,
+            OpsRead, PayloadReadInternal, PublicationApprove, QuotaRead, RunBatch, RunOperate,
+            RunPayloadInspect, RunQuery, RunRead, RunSignal, RunStart, RunUpdate, ScheduleOperate,
+            ScheduleRead, ScheduleWrite, ScriptBuild, ScriptExecute, ScriptPublish, ScriptRead,
+            ScriptWrite, SecretRead, SecretUse, VersionActivate, WorkerExecute, WorkerManage,
+            WorkspaceRead,
         };
         match self {
             Self::Admin => Self::ADMIN_PERMISSIONS,
@@ -595,6 +619,9 @@ impl Role {
                 ScriptPublish,
                 OpsRead,
                 PublicationApprove,
+                ScheduleRead,
+                ScheduleWrite,
+                ScheduleOperate,
             ],
             Self::Operator => &[
                 WorkspaceRead,
@@ -618,6 +645,9 @@ impl Role {
                 WorkerManage,
                 PublicationApprove,
                 VersionActivate,
+                ScheduleRead,
+                ScheduleOperate,
+                RunBatch,
             ],
             Self::Viewer => &[
                 WorkspaceRead,
@@ -629,6 +659,7 @@ impl Role {
                 EventRead,
                 ScriptRead,
                 OpsRead,
+                ScheduleRead,
             ],
             Self::Worker => &[WorkerExecute],
             Self::Runner => &[WorkerExecute, ScriptBuild, ScriptExecute],
