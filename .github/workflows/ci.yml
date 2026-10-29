@@ -27,6 +27,12 @@ jobs:
       # rust-toolchain.toml pins the exact compiler; rustup installs it on first use.
       - run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          # Match the existing SDK job cache for this workspace/profile. Compiler,
+          # environment and manifest hashes remain part of the action's key.
+          shared-key: sdks
+          # A failed test must not discard the dependencies already compiled.
+          cache-on-failure: true
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: isolated C# compiler and runtime images
