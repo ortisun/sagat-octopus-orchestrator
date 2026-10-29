@@ -11,6 +11,7 @@ mod approval_progress;
 mod approval_scheduler;
 mod bindings;
 mod breaker;
+mod capacity_acquire;
 mod capacity_discovery;
 mod capacity_finish;
 mod capacity_vacate;
@@ -54,6 +55,7 @@ mod versioning;
 mod workers;
 
 pub use approval_progress::PgApprovalProgressStore;
+pub use capacity_acquire::PgCapacityAcquireStore;
 pub use capacity_finish::PgCapacityFinishStore;
 pub use capacity_vacate::PgCapacityVacateStore;
 pub use chain_progress::{PgChainProgressStore, initialize_chain_in_transaction};

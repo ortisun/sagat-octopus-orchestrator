@@ -11,6 +11,7 @@ pub mod bindings;
 pub mod capacity_acquire;
 pub mod capacity_discovery;
 pub mod capacity_finish;
+mod capacity_transfer;
 pub mod capacity_vacate;
 pub mod chain_progress;
 pub mod classification;

@@ -46,3 +46,16 @@ at most two heavy builds across the shared machine. Stop local builds below 12 G
 Heavy workspace/release validation stays in CI. Never clean or delete another session's
 target, container, volume, branch or worktree. Recheck live worktree status before shared
 registration edits and before integration.
+
+## Evidence
+
+The focused command RED ran in CI40862510897/job123409010726: one passed, three failed,
+zero ignored. The canonical independent vector, binding/counter changes and changed run revision
+all rejected the zero-fingerprint scaffold. The remaining jobs were cancelled after retaining
+this failure. Local formatting, actionlint and diff checks passed. The local focused build was
+interrupted before executing tests when two other builds were detected; it is not test evidence.
+
+The encoder is now shared with Vacate without changing its prefix, byte0, field order or
+big-endian counter representation; Acquire uses byte1. The next CI first executes both command
+families, then the three native Acquire tests against an explicit missing-operation scaffold.
+No native implementation or complete component acceptance is claimed by this checkpoint.

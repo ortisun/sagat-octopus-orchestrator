@@ -24,8 +24,11 @@ impl CapacityAcquireCommand {
     /// Domain-separated identity; excludes renewable authority and the receipt lookup key.
     #[must_use]
     pub fn fingerprint(&self) -> [u8; 32] {
-        // RED scaffold: the fixed-width encoder is implemented after the tests reject this.
-        [0; 32]
+        crate::capacity_transfer::fingerprint(
+            crate::capacity_transfer::TransferKind::Acquire,
+            self.identity,
+            self.expected,
+        )
     }
 }
 
