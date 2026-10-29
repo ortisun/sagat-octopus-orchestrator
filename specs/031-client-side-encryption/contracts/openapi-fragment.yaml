@@ -1,0 +1,294 @@
+# Draft OpenAPI fragment of feature 031 (client-side payload encryption). NOT the canonical contract.
+# T031-008 merges it into specs/001-platform-foundation/contracts/openapi.yaml (additive within /v1) and
+# regenerates frontend/apps/studio/src/api/schema.d.ts. Component references (#/components/...) name the
+# existing canonical components; new components are defined below.
+openapi: 3.1.0
+info:
+  title: Sagat Octopus Orchestrator — feature 031 fragment
+  version: 0.0.0-draft
+paths:
+  /workflows/{workflowId}/versions/{versionNumber}/payload-plan:
+    get:
+      operationId: getPayloadPlan
+      summary: The encoded locations of a published version, with encoding and effective level
+      description: Needs `definition:read` or `run:start`. Contains pointers, encodings and levels only, never schema text. Versions with `encodingRules` 0 return an empty plan.
+      tags: [Workflows]
+      x-implemented: '031'
+      parameters:
+        - {$ref: '#/components/parameters/Namespace'}
+        - {$ref: '#/components/parameters/WorkflowId'}
+        - {$ref: '#/components/parameters/VersionNumber'}
+      responses:
+        '200': {description: Plan, content: {application/json: {schema: {$ref: '#/components/schemas/PayloadPlan'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /namespaces/{namespaceId}/codec-endpoint:
+    get:
+      operationId: getCodecEndpoint
+      summary: The customer codec server the Studio and the CLI use in this namespace
+      description: Needs `run:read`. `404` when none is configured. `originAllowed` is false when the operator no longer lists the origin.
+      tags: [Payload encryption]
+      x-implemented: '031'
+      parameters: [{$ref: '#/components/parameters/NamespaceId'}]
+      responses:
+        '200': {description: Endpoint, content: {application/json: {schema: {$ref: '#/components/schemas/CodecEndpoint'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    put:
+      operationId: putCodecEndpoint
+      summary: Set the codec endpoint (audited)
+      description: 'Needs `codec:manage`. The URL origin must be one of the operator''s `SAGAT_STUDIO_CODEC_ORIGINS` (`422`, `details.reason = CODEC_DESTINATION_DENIED`); the Studio CSP `connect-src` lists those origins deployment-wide (ADR-0062, coordinator C15). `levelCeiling: pii` additionally needs `payload:read-internal` and the caller''s 016 reveal grant (`403 PII_REVEAL_NOT_GRANTED`); the caller is recorded as the ceiling''s setter (coordinator C9). `expectedRevision` gives optimistic concurrency (`409`).'
+      tags: [Payload encryption]
+      x-implemented: '031'
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/CodecEndpointRequest'}}}
+      responses:
+        '200': {description: Saved, content: {application/json: {schema: {$ref: '#/components/schemas/CodecEndpoint'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+    delete:
+      operationId: deleteCodecEndpoint
+      summary: Remove the codec endpoint (audited)
+      tags: [Payload encryption]
+      x-implemented: '031'
+      parameters: [{$ref: '#/components/parameters/NamespaceId'}]
+      responses:
+        '204': {description: Removed}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /namespaces/{namespaceId}/codec-assertions:
+    post:
+      operationId: issueCodecAssertion
+      summary: A short-lived, audience-bound assertion for the namespace codec server
+      description: |
+        `decode` needs `run:read`; `encode` needs `run:start`. `reveal: ["pii"]` additionally needs `payload:read-internal`
+        and the namespace reveal grant (`403`, `details.reason = PII_REVEAL_NOT_GRANTED`). Audited as
+        `codec.assertion_issued` in the transaction that precedes signing; `pii` issuances never collapse. No endpoint:
+        `409`, `details.reason = CODEC_ENDPOINT_NOT_CONFIGURED`; origin no longer allowed: `409`,
+        `details.reason = CODEC_DESTINATION_DENIED`; a `pii` request when the ceiling's setter no longer holds the grant:
+        `409`, `details.reason = CODEC_CEILING_UNCONFIRMED`. `maxLevel` is min(caller audience, endpoint `levelCeiling`).
+        The assertion only narrows what the customer's codec server allows a person it authenticated itself
+        (ADR-0066 point 8). Lifetime is the deployment setting `SAGAT_CODEC_ASSERTION_TTL_SECS` (default 60 s, at most
+        300 s); a request cannot change it. Response is `Cache-Control: private, no-store`.
+      tags: [Payload encryption]
+      x-implemented: '031'
+      parameters: [{$ref: '#/components/parameters/NamespaceId'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/CodecAssertionRequest'}}}
+      responses:
+        '200':
+          description: Assertion
+          headers: {Cache-Control: {schema: {type: string, const: 'private, no-store'}}}
+          content: {application/json: {schema: {$ref: '#/components/schemas/CodecAssertion'}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /codec-jwks:
+    get:
+      operationId: getCodecJwks
+      summary: Public keys that verify codec assertions (current and previous)
+      description: 'Unauthenticated; public keys only; `Cache-Control: public, max-age=300`.'
+      tags: [Payload encryption]
+      x-implemented: '031'
+      security: []
+      responses:
+        '200': {description: JWK set, content: {application/json: {schema: {$ref: '#/components/schemas/JwkSet'}}}}
+  /namespaces/{namespaceId}/key-usage-scans:
+    get:
+      operationId: listKeyUsageScans
+      tags: [Payload encryption]
+      x-implemented: '031'
+      parameters: [{$ref: '#/components/parameters/NamespaceId'}, {$ref: '#/components/parameters/Cursor'}, {$ref: '#/components/parameters/Limit'}]
+      responses:
+        '200': {description: Page of scans, content: {application/json: {schema: {$ref: '#/components/schemas/KeyUsageScanPage'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      operationId: startKeyUsageScan
+      summary: Count retained envelopes per key reference in the namespace (audited)
+      description: Needs `codec:manage`. One running scan per namespace (`409`, `details.reason = KEY_USAGE_SCAN_RUNNING`).
+      tags: [Payload encryption]
+      x-implemented: '031'
+      parameters: [{$ref: '#/components/parameters/NamespaceId'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      responses:
+        '202': {description: Scan accepted, content: {application/json: {schema: {$ref: '#/components/schemas/KeyUsageScan'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /namespaces/{namespaceId}/key-usage-scans/{scanId}:
+    get:
+      operationId: getKeyUsageScan
+      tags: [Payload encryption]
+      x-implemented: '031'
+      parameters: [{$ref: '#/components/parameters/NamespaceId'}, {name: scanId, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses:
+        '200': {description: Scan, content: {application/json: {schema: {$ref: '#/components/schemas/KeyUsageScan'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /namespaces/{namespaceId}/key-usage-scans/{scanId}/cancel:
+    post:
+      operationId: cancelKeyUsageScan
+      tags: [Payload encryption]
+      x-implemented: '031'
+      parameters: [{$ref: '#/components/parameters/NamespaceId'}, {name: scanId, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses:
+        '200': {description: Cancelled or already finished, content: {application/json: {schema: {$ref: '#/components/schemas/KeyUsageScan'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+components:
+  schemas:
+    EncodedLocation:
+      type: object
+      additionalProperties: false
+      required: [pointer, encoding, level]
+      properties:
+        pointer: {type: string, maxLength: 512, description: 'RFC 6901 pointer; a `*` segment is every array element.'}
+        encoding: {type: string, enum: [encrypted, compressed]}
+        level: {type: string, enum: [public, internal, pii, secret]}
+    PayloadPlan:
+      type: object
+      additionalProperties: false
+      required: [workflowId, versionId, versionNumber, encodingRules, tenantId, namespaceId, carriers]
+      properties:
+        tenantId: {type: string, format: uuid, description: 'ctx.t of every envelope the caller encodes for this plan.'}
+        namespaceId: {type: string, format: uuid, description: 'ctx.n of every envelope the caller encodes for this plan.'}
+        workflowId: {type: string, format: uuid}
+        versionId: {type: string, format: uuid}
+        versionNumber: {type: integer, minimum: 1}
+        encodingRules: {type: integer, enum: [0, 1]}
+        carriers:
+          type: array
+          maxItems: 1026
+          items:
+            type: object
+            additionalProperties: false
+            required: [carrier, locations]
+            properties:
+              carrier: {type: string, enum: [inputSchema, outputSchema, nodeOutputSchema, heartbeatSchema, streamSchema]}
+              channel: {type: string, description: 'Stream channel name, for streamSchema only.'}
+              nodeId: {type: string}
+              locations: {type: array, maxItems: 64, items: {$ref: '#/components/schemas/EncodedLocation'}}
+    CodecEndpointRequest:
+      type: object
+      additionalProperties: false
+      required: [url, levelCeiling]
+      properties:
+        url: {type: string, format: uri, maxLength: 512, description: 'https only (http for loopback in development); no userinfo, query or fragment.'}
+        levelCeiling: {type: string, enum: [public, internal, pii], description: 'Highest level any assertion for this endpoint may carry (coordinator C9); secret is never allowed.'}
+        expectedRevision: {type: integer, minimum: 0}
+    CodecEndpoint:
+      type: object
+      additionalProperties: false
+      required: [url, origin, levelCeiling, ceilingConfirmed, revision, originAllowed, updatedAt]
+      properties:
+        url: {type: string}
+        origin: {type: string}
+        levelCeiling: {type: string, enum: [public, internal, pii]}
+        ceilingConfirmed: {type: boolean, description: 'False when the ceiling is pii and its setter no longer holds the reveal grant; pii assertions are then refused until an administrator with the grant sets it again.'}
+        revision: {type: integer, minimum: 1}
+        originAllowed: {type: boolean}
+        updatedAt: {type: string, format: date-time}
+    CodecAssertionRequest:
+      type: object
+      additionalProperties: false
+      required: [purpose]
+      properties:
+        purpose: {type: string, enum: [decode, encode]}
+        reveal: {type: array, maxItems: 1, uniqueItems: true, items: {type: string, const: pii}}
+    CodecAssertion:
+      type: object
+      additionalProperties: false
+      required: [assertion, tokenType, audience, maxLevel, expiresAt]
+      properties:
+        assertion: {type: string, description: 'Compact JWS (ES256). Never logged, never persisted by the Studio.'}
+        tokenType: {type: string, const: Bearer}
+        audience: {type: string}
+        maxLevel: {type: string, enum: [public, internal, pii]}
+        expiresAt: {type: string, format: date-time}
+    JwkSet:
+      type: object
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          maxItems: 2
+          items:
+            type: object
+            required: [kty, crv, x, y, kid, alg, use]
+            properties:
+              kty: {const: EC}
+              crv: {const: P-256}
+              x: {type: string}
+              y: {type: string}
+              kid: {type: string}
+              alg: {const: ES256}
+              use: {const: sig}
+    KeyUsageScan:
+      type: object
+      additionalProperties: false
+      required: [id, state, requestedAt, scannedPayloads, results, resultsTruncated]
+      properties:
+        id: {type: string, format: uuid}
+        state: {type: string, enum: [QUEUED, RUNNING, SUCCEEDED, FAILED, CANCELLED]}
+        requestedAt: {type: string, format: date-time}
+        finishedAt: {type: [string, 'null'], format: date-time}
+        scannedPayloads: {type: integer, minimum: 0}
+        failureCode: {type: [string, 'null'], enum: [SCAN_LIMIT_REACHED, UNAVAILABLE, null]}
+        resultsTruncated: {type: boolean}
+        results:
+          type: array
+          maxItems: 1024
+          items:
+            type: object
+            additionalProperties: false
+            required: [encoding, algorithm, envelopes, oldestPayloadAt, newestPayloadAt]
+            properties:
+              kid: {type: string, description: 'Absent for compression-only envelopes.'}
+              kv: {type: string}
+              encoding: {type: string, enum: [encrypted, compressed]}
+              algorithm: {type: string, enum: [aes-256-gcm, none]}
+              envelopes: {type: integer, minimum: 1}
+              oldestPayloadAt: {type: string, format: date-time}
+              newestPayloadAt: {type: string, format: date-time}
+    KeyUsageScanPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/KeyUsageScan'}}
+        nextCursor: {type: [string, 'null']}
+# Additive changes to existing canonical components (described, merged by T031-008):
+#  VersionSummary.properties.encodingRules: {type: integer, enum: [0, 1]} — required in responses of servers with 031.
+#  PayloadDisclosureRequest (each branch): includeEnvelopes: {type: boolean, default: false}.
+#  PayloadDisclosureNode.oneOf += {kind: const encoded, encoding: enum [encrypted, compressed],
+#     level: enum [public, internal, pii], pointer: string (the location pattern, = envelope ctx.p),
+#     envelope: {$ref: envelope.schema.json}} — returned only when includeEnvelopes is true.
+#  PayloadDisclosureNode withheld.reason enum += [ENCODED, RESPONSE_BUDGET]; a withheld encoded node carries no size.
+#  CodecEndpoint has no authentication mode: the codec server always authenticates the person itself (ADR-0066).
+#  DefinitionProblem.code descriptions += the ENCODING_* codes of contracts/workflow-encoding.md section 6.
+#  DiffFinding.code += ENCODING_ADDED, ENCODING_REMOVED.
+#  Error.details.reason += ENCODING, ENCODING_REQUIRED, ENVELOPE_INVALID, ENVELOPE_LEVEL_MISMATCH,
+#     ENVELOPE_CONTEXT_MISMATCH, ENCODING_CARRIAGE_MISMATCH, ENCODING_NOT_PRODUCIBLE, CODEC_DESTINATION_DENIED,
+#     CODEC_ENDPOINT_NOT_CONFIGURED, CODEC_CEILING_UNCONFIRMED, KEY_USAGE_SCAN_RUNNING (see errors.md).
+#  signalExecutionChain and the 018 with-start operations: same encoding reasons and the fingerprint rule of FR-031-013.
+#  Optional request header X-Sagat-Content-Fingerprint on every keyed write carrying envelopes (D1669).
+#  startRun / signalRun descriptions: plaintext, a wrong context or an undeclared envelope is 422 with the reasons above.
+#  AuthContext permissions examples += codec:manage for admin.

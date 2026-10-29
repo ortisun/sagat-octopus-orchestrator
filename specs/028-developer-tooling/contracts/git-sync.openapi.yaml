@@ -1,0 +1,265 @@
+openapi: 3.1.0
+info:
+  title: Sagat Octopus Orchestrator — Git sync (draft fragment, feature 028)
+  version: 0.1.0-draft
+  description: >-
+    Additive operations to merge into `specs/001-platform-foundation/contracts/openapi.yaml` at implementation.
+    Every route uses the authenticated tenant; a foreign or missing namespace, binding, export, import or conflict is
+    an opaque `404`. Responses carry `X-Trace-Id`; errors use the canonical envelope. Credentials are referenced by
+    namespace secret **name**; no response ever contains a secret value, a token or a provider response body.
+paths:
+  /namespaces/{namespaceId}/git-binding:
+    parameters: [{$ref: '#/components/parameters/NamespaceId'}]
+    get:
+      operationId: getGitBinding
+      tags: [GitSync]
+      x-implemented: 'no (028)'
+      summary: The namespace's repository binding, its head revision and health (gitsync:read)
+      responses:
+        '200': {description: Binding, content: {application/json: {schema: {$ref: '#/components/schemas/GitBinding'}}}}
+        '404': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/NotFound'}
+    put:
+      operationId: putGitBinding
+      tags: [GitSync]
+      x-implemented: 'no (028)'
+      summary: Create the binding, or replace its settings if still at expectedRevision (gitsync:manage)
+      description: >-
+        Checks the API host against the operator allowlist and the caller's current `secret:use` on every referenced
+        secret. A change of provider, host, repository, branch or manifest directory supersedes pending jobs and enqueues
+        a RESYNC export. Same key and body replays; changed body under the key conflicts.
+      parameters: [{$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/PutGitBindingRequest'}}}
+      responses:
+        '200': {description: Updated, content: {application/json: {schema: {$ref: '#/components/schemas/GitBinding'}}}}
+        '201': {description: Created, content: {application/json: {schema: {$ref: '#/components/schemas/GitBinding'}}}}
+        '409': {description: 'CONFLICT: REVISION_CONFLICT, IDEMPOTENCY_KEY_REUSED'}
+        '422': {description: 'VALIDATION_FAILED: GIT_DESTINATION_DENIED, GIT_SETTINGS_INVALID, SECRET_NOT_USABLE'}
+        '429': {description: 'QUOTA_EXCEEDED: bindings per tenant'}
+    delete:
+      operationId: deleteGitBinding
+      tags: [GitSync]
+      x-implemented: 'no (028)'
+      summary: Remove the binding; its history is kept (gitsync:manage)
+      parameters: [{name: expectedRevision, in: query, required: true, schema: {type: integer, minimum: 1}}]
+      responses:
+        '204': {description: Removed}
+        '409': {description: 'CONFLICT: REVISION_CONFLICT'}
+  /namespaces/{namespaceId}/git-binding/{action}:
+    parameters:
+      - {$ref: '#/components/parameters/NamespaceId'}
+      - {name: action, in: path, required: true, schema: {type: string, enum: [pause, resume, probe, import]}}
+    post:
+      operationId: actOnGitBinding
+      tags: [GitSync]
+      x-implemented: 'no (028)'
+      summary: Pause, resume, probe (fixed read of branch and manifest) or import the head now (gitsync:manage)
+      parameters: [{$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        content: {application/json: {schema: {type: object, additionalProperties: false, properties: {reason: {type: string, minLength: 8, maxLength: 2000}}}}}
+      responses:
+        '202': {description: 'Accepted; a probe or an import is a job of its own', content: {application/json: {schema: {$ref: '#/components/schemas/JobRef'}}}}
+        '409': {description: 'CONFLICT: BINDING_PAUSED, BINDING_NOT_PAUSED'}
+  /namespaces/{namespaceId}/git-sync/workflows:
+    parameters: [{$ref: '#/components/parameters/NamespaceId'}]
+    get:
+      operationId: listGitSyncWorkflows
+      tags: [GitSync]
+      x-implemented: 'no (028)'
+      summary: Per-workflow sync status (gitsync:read)
+      parameters:
+        - {name: status, in: query, schema: {$ref: '#/components/schemas/SyncStatus'}}
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/Cursor'}
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/Limit'}
+      responses:
+        '200': {description: Page, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: '#/components/schemas/WorkflowSyncState'}}, nextCursor: {type: [string, 'null']}}}}}}
+  /namespaces/{namespaceId}/git-sync/jobs:
+    parameters: [{$ref: '#/components/parameters/NamespaceId'}]
+    get:
+      operationId: listGitSyncJobs
+      tags: [GitSync]
+      x-implemented: 'no (028)'
+      summary: Exports and imports, newest first (gitsync:read)
+      parameters:
+        - {name: kind, in: query, schema: {type: string, enum: [EXPORT, IMPORT]}}
+        - {name: state, in: query, schema: {type: string, enum: [PENDING, LEASED, RECORDED, APPLIED, PARTIAL, SUPERSEDED, DEAD]}}
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/Cursor'}
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/Limit'}
+      responses:
+        '200': {description: Page, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: '#/components/schemas/SyncJob'}}, nextCursor: {type: [string, 'null']}}}}}}
+  /namespaces/{namespaceId}/git-sync/jobs/{jobId}/redrive:
+    parameters:
+      - {$ref: '#/components/parameters/NamespaceId'}
+      - {name: jobId, in: path, required: true, schema: {type: string, format: uuid}}
+    post:
+      operationId: redriveGitSyncJob
+      tags: [GitSync]
+      x-implemented: 'no (028)'
+      summary: Return a DEAD job to PENDING with a fresh attempt budget (gitsync:manage)
+      parameters: [{$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/IdempotencyKey'}]
+      responses:
+        '202': {description: Redriven, content: {application/json: {schema: {$ref: '#/components/schemas/SyncJob'}}}}
+        '409': {description: 'CONFLICT: JOB_NOT_DEAD, JOB_SUPERSEDED'}
+  /namespaces/{namespaceId}/git-sync/conflicts:
+    parameters: [{$ref: '#/components/parameters/NamespaceId'}]
+    get:
+      operationId: listGitSyncConflicts
+      tags: [GitSync]
+      x-implemented: 'no (028)'
+      summary: Open and recent conflicts (gitsync:read)
+      parameters:
+        - {name: state, in: query, schema: {type: string, enum: [OPEN, RESOLVED, SUPERSEDED]}}
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/Cursor'}
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/Limit'}
+      responses:
+        '200': {description: Page, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: '#/components/schemas/Conflict'}}, nextCursor: {type: [string, 'null']}}}}}}
+  /namespaces/{namespaceId}/git-sync/conflicts/{conflictId}:
+    parameters:
+      - {$ref: '#/components/parameters/NamespaceId'}
+      - {name: conflictId, in: path, required: true, schema: {type: string, format: uuid}}
+    get:
+      operationId: getGitSyncConflict
+      tags: [GitSync]
+      x-implemented: 'no (028)'
+      summary: One conflict with the server's diffs base→draft and base→repository (gitsync:read + definition:read)
+      description: 'The documents are workflow definitions, shown like a draft is; Cache-Control is no-store.'
+      responses:
+        '200': {description: Conflict, content: {application/json: {schema: {$ref: '#/components/schemas/ConflictDetail'}}}}
+  /namespaces/{namespaceId}/git-sync/conflicts/{conflictId}/resolve:
+    parameters:
+      - {$ref: '#/components/parameters/NamespaceId'}
+      - {name: conflictId, in: path, required: true, schema: {type: string, format: uuid}}
+    post:
+      operationId: resolveGitSyncConflict
+      tags: [GitSync]
+      x-implemented: 'no (028)'
+      summary: Take the repository's document or keep the draft (gitsync:read + definition:write)
+      parameters: [{$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [resolution, expectedDraftRevision, reason]
+              properties:
+                resolution: {type: string, enum: [TAKE_REPOSITORY, KEEP_DRAFT]}
+                expectedDraftRevision: {type: integer, minimum: 1}
+                reason: {type: string, minLength: 8, maxLength: 2000}
+      responses:
+        '200': {description: Resolved, content: {application/json: {schema: {$ref: '#/components/schemas/Conflict'}}}}
+        '409': {description: 'CONFLICT: REVISION_CONFLICT (the draft moved), CONFLICT_NOT_OPEN'}
+  /git-webhooks/{bindingId}:
+    parameters: [{name: bindingId, in: path, required: true, schema: {type: string, format: uuid}}]
+    post:
+      operationId: receiveGitWebhook
+      tags: [GitSync]
+      security: []
+      x-implemented: 'no (028)'
+      summary: Provider webhook of one binding, authenticated by its signature only
+      description: >-
+        GitHub: `X-Hub-Signature-256` (HMAC-SHA256 of the raw body), `X-GitHub-Delivery`, `X-GitHub-Event`. GitLab:
+        Standard Webhooks signing token (`webhook-id`, `webhook-timestamp` within 300 s, `webhook-signature`); the
+        legacy `X-Gitlab-Token` alone is refused. An unknown binding, a paused or deleted one, a bad signature, a stale
+        timestamp or a missing header are all the same `401`. Bodies above the ceiling are `413` (head reconciliation
+        catches up). Only `push` to the tracked branch enqueues an import; other events are `202 IGNORED`. Rate limits
+        per source address and per binding apply before any secret is read; an unknown binding is verified with a
+        random key so its `401` costs the same work.
+      requestBody: {required: true, content: {application/json: {schema: {type: object}}}}
+      responses:
+        '202': {description: 'ENQUEUED, IGNORED or DUPLICATE', content: {application/json: {schema: {type: object, required: [status], properties: {status: {type: string, enum: [ENQUEUED, IGNORED, DUPLICATE]}}}}}}
+        '401': {description: 'Refused (uniform)'}
+        '413': {description: 'Body too large'}
+        '429': {description: 'Rate of this binding exceeded'}
+components:
+  parameters:
+    NamespaceId: {name: namespaceId, in: path, required: true, schema: {type: string, format: uuid}}
+  schemas:
+    SyncStatus: {type: string, enum: [IN_SYNC, EXPORT_PENDING, PULL_REQUEST_OPEN, DRAFT_FROM_REPOSITORY, CONFLICT, DRIFT, REMOVED_IN_REPOSITORY, ERROR]}
+    BindingSettings:
+      type: object
+      additionalProperties: false
+      required: [provider, apiBaseUrl, repository, branch, manifestDir, auth, webhookSecret]
+      properties:
+        provider: {type: string, enum: [GITHUB, GITLAB]}
+        apiBaseUrl: {type: string, format: uri, maxLength: 255, description: 'https only; must be on the operator allowlist.'}
+        repository: {type: string, maxLength: 255, description: 'GitHub owner/name; GitLab numeric project id or full path.'}
+        branch: {type: string, maxLength: 255, pattern: '^(?!.*\.\.)(?!/)[A-Za-z0-9._/-]+$'}
+        manifestDir: {type: string, maxLength: 255, pattern: '^(?!/)(?!(.*/)?\.\.(/|$))[A-Za-z0-9._/-]*$', description: 'Directory of sagat.yaml; empty for the root.'}
+        auth:
+          oneOf:
+            - {type: object, additionalProperties: false, required: [kind, appId, installationId, privateKeySecret], properties: {kind: {const: GITHUB_APP}, appId: {type: integer, minimum: 1}, installationId: {type: integer, minimum: 1}, privateKeySecret: {type: string, description: 'Name of a namespace secret holding the App private key (PEM).'}}}
+            - {type: object, additionalProperties: false, required: [kind, tokenSecret], properties: {kind: {const: GITLAB_TOKEN}, tokenSecret: {type: string, description: 'Name of a namespace secret holding a project or group access token.'}}}
+        webhookSecret: {type: string, description: 'Name of a namespace secret holding the webhook secret or GitLab signing token.'}
+        outboundPolicy: {type: string, enum: [PULL_REQUEST, DIRECT_PUSH], default: PULL_REQUEST}
+        inboundPolicy: {type: string, enum: [DRAFT, DRAFT_AND_REQUEST], default: DRAFT, description: 'DRAFT_AND_REQUEST opens a publication request only while the latest probe shows that the tracked branch requires an approving review; such a request needs the namespace approvals plus one.'}
+        reconcileIntervalSeconds: {type: integer, minimum: 60, maximum: 3600, default: 300}
+    PutGitBindingRequest:
+      type: object
+      additionalProperties: false
+      required: [settings]
+      properties:
+        expectedRevision: {type: integer, minimum: 1, description: 'Required when the binding exists.'}
+        settings: {$ref: '#/components/schemas/BindingSettings'}
+    GitBinding:
+      type: object
+      required: [id, namespaceId, revision, state, settings, webhookPath]
+      properties:
+        id: {type: string, format: uuid}
+        namespaceId: {type: string, format: uuid}
+        revision: {type: integer}
+        state: {type: string, enum: [ACTIVE, PAUSED]}
+        pauseReason: {type: [string, 'null'], enum: [OPERATOR, CONSECUTIVE_DEAD, CREDENTIALS_INVALID, null]}
+        settings: {$ref: '#/components/schemas/BindingSettings'}
+        webhookPath: {type: string, description: '/v1/git-webhooks/{id}'}
+        lastImportedCommit: {type: [string, 'null']}
+        lastProbe: {type: [object, 'null'], properties: {at: {type: string, format: date-time}, outcome: {type: string}, revision: {type: integer}, reviewRequired: {type: [boolean, 'null'], description: 'What the provider reported about required approving reviews on the tracked branch; null when it could not be read.'}}}
+    WorkflowSyncState:
+      type: object
+      required: [workflowId, name, status]
+      properties:
+        workflowId: {type: string, format: uuid}
+        name: {type: string}
+        path: {type: [string, 'null']}
+        status: {$ref: '#/components/schemas/SyncStatus'}
+        baseCommit: {type: [string, 'null']}
+        changeRequestUrl: {type: [string, 'null'], format: uri}
+        conflictId: {type: [string, 'null'], format: uuid}
+    SyncJob:
+      type: object
+      required: [id, kind, state, attempt, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        kind: {type: string, enum: [EXPORT, IMPORT, PROBE]}
+        state: {type: string}
+        attempt: {type: integer}
+        workflowId: {type: [string, 'null'], format: uuid}
+        commit: {type: [string, 'null']}
+        changeRequestUrl: {type: [string, 'null'], format: uri}
+        errorCode: {type: [string, 'null'], enum: [GIT_CREDENTIALS_INVALID, GIT_REPOSITORY_NOT_FOUND, GIT_BRANCH_PROTECTED, GIT_RATE_LIMITED, GIT_PROVIDER_UNAVAILABLE, GIT_MANIFEST_INVALID, GIT_DOCUMENT_TOO_LARGE, GIT_SECRET_IN_DOCUMENT, GIT_DESTINATION_DENIED, GIT_OUTCOME_UNKNOWN, GIT_REVIEW_NOT_VERIFIED, null]}
+        createdAt: {type: string, format: date-time}
+        finishedAt: {type: [string, 'null'], format: date-time}
+    JobRef: {type: object, required: [jobId], properties: {jobId: {type: string, format: uuid}}}
+    Conflict:
+      type: object
+      required: [id, workflowId, state, repositoryCommit, draftRevision, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        workflowId: {type: string, format: uuid}
+        state: {type: string, enum: [OPEN, RESOLVED, SUPERSEDED]}
+        resolution: {type: [string, 'null'], enum: [TAKE_REPOSITORY, KEEP_DRAFT, null]}
+        repositoryCommit: {type: string}
+        draftRevision: {type: integer}
+        createdAt: {type: string, format: date-time}
+        resolvedBy: {type: [string, 'null']}
+    ConflictDetail:
+      allOf:
+        - {$ref: '#/components/schemas/Conflict'}
+        - type: object
+          required: [baseToDraft, baseToRepository]
+          properties:
+            baseToDraft: {type: object, description: 'The server diff of ADR-0016 (same shape as diffWorkflow).'}
+            baseToRepository: {type: object}
+            repositoryDocument: {type: object, description: 'The workflow document read from the repository.'}

@@ -1,0 +1,89 @@
+# DRAFT AsyncAPI 3.0 fragment for feature 021. Not implemented. Merged by T021-060 into
+# specs/001-platform-foundation/contracts/events.asyncapi.yaml as a minor version (grow-only,
+# docs/event-schema-evolution.md): EventDocument.event gains two optional properties; two new
+# data messages describe documents the platform itself produces. The baseline
+# (events.baseline.json) is regenerated deliberately and reviewed.
+asyncapi: 3.0.0
+info: {title: Feature 021 draft fragment, version: 0.0.0-draft}
+components:
+  messages:
+    EventDocumentAdditions:
+      name: EventDocumentAdditions
+      summary: Optional properties added to EventDocument.payload.properties.event. Disclosed exactly like data (FR-016-026).
+      payload:
+        type: object
+        properties:
+          message:
+            type: [object, 'null']
+            description: Broker metadata of the message the event came from (Kafka, MQTT, Pub/Sub, Service Bus). Absent for other sources.
+            properties:
+              key: {type: [string, 'null'], description: 'Kafka record key as UTF-8 text; null when absent or not UTF-8 (then keyBase64).'}
+              keyBase64: {type: [string, 'null']}
+              topic: {type: [string, 'null']}
+              partition: {type: [integer, 'null']}
+              offset: {type: [integer, 'null']}
+              timestamp: {type: [string, 'null'], format: date-time}
+              deliveryAttempt: {type: [integer, 'null']}
+          request:
+            type: [object, 'null']
+            description: Route request captures. Absent for other sources.
+            properties:
+              method: {type: string, enum: [POST, PUT, PATCH, DELETE]}
+              pathParams: {type: object, additionalProperties: {type: string}}
+              query: {type: object, additionalProperties: {type: string}}
+              headers: {type: object, additionalProperties: {type: string}}
+    CdcChangeData:
+      name: CdcChangeData
+      summary: The data of an event of type cdc.insert, cdc.update, cdc.delete or cdc.truncate.
+      payload:
+        type: object
+        required: [op, schema, table, commitLsn, commitTime]
+        properties:
+          op: {type: string, enum: [insert, update, delete, truncate]}
+          schema: {type: string}
+          table: {type: string}
+          commitLsn: {type: string, pattern: '^[0-9A-F]{1,8}/[0-9A-F]{1,8}$'}
+          commitTime: {type: string, format: date-time}
+          xid: {type: [integer, 'null']}
+          new: {type: [object, 'null'], additionalProperties: {$ref: '#/components/schemas/Cell'}}
+          old: {type: [object, 'null'], additionalProperties: {$ref: '#/components/schemas/Cell'}}
+    EmailMessageData:
+      name: EmailMessageData
+      summary: The data of an event received by an EMAIL endpoint (default type email.received).
+      payload:
+        type: object
+        required: [from, to, subject, provider]
+        properties:
+          messageId: {type: [string, 'null']}
+          from: {type: string}
+          to: {type: array, items: {type: string}}
+          cc: {type: array, items: {type: string}}
+          subject: {type: string}
+          date: {type: [string, 'null'], format: date-time}
+          text: {type: [string, 'null']}
+          html: {type: [string, 'null']}
+          headers: {type: object, additionalProperties: {type: string}}
+          attachments:
+            type: array
+            items:
+              type: object
+              required: [filename, contentType, sizeBytes]
+              properties:
+                filename: {type: string}
+                contentType: {type: string}
+                sizeBytes: {type: integer, minimum: 0}
+                contentBase64: {type: [string, 'null']}
+          truncated: {type: boolean}
+          provider: {type: string, enum: [MAILGUN, GENERIC_RELAY]}
+  schemas:
+    Cell:
+      description: 'Feature 017 typed cell, or {"unchanged": true} for an unchanged TOAST value.'
+      oneOf:
+        - type: object
+          required: [type, value]
+          properties:
+            type: {type: string, enum: ['null', boolean, integer, decimal, float, text, timestamp, date, binary, json]}
+            value: {}
+        - type: object
+          required: [unchanged]
+          properties: {unchanged: {const: true}}

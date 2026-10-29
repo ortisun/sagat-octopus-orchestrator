@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sagat-octopus-orchestrator.io/drafts/023/workflow-script-language.schema.json",
+  "title": "Feature 023 draft fragment: script node language enum (additive IR v1)",
+  "description": "Not canonical. T023-051 merges the four new values into both `script.language` enums of specs/001-platform-foundation/contracts/workflow.schema.json (the node branch and the shared property definition), keeping apiVersion sagat-octopus-orchestrator.io/v1 (ADR-0032). The field stays informational: the runner takes the language from the signed artifact (005 G106). Publication additionally refuses a script node whose pinned artifact's language is disabled by the namespace script runtime policy, with publication error code SCRIPT_LANGUAGE_DISABLED; that check reads the artifact row, not this field. At run time the engine also refuses to lease a step whose artifact language is disabled, failing it as non-retryable SCRIPT_DENIED with an audit record (FR-023-017).",
+  "$defs": {
+    "scriptLanguage": {
+      "enum": ["typescript", "python", "csharp", "go", "java", "bash", "powershell", "php", "rust", "python-data"],
+      "description": "Informational: the runner takes the language from the artifact. python-data is reserved for the image-catalog runtime of feature 024 (FR-023-027)."
+    },
+    "scriptNodeExample": {
+      "type": "object",
+      "examples": [
+        {
+          "id": "rotate-logs",
+          "type": "script",
+          "artifactDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "language": "bash",
+          "secrets": ["ops.token"],
+          "outputSchema": {"type": "object", "properties": {"rotated": {"type": "integer", "x-sagat-classification": "internal"}}}
+        }
+      ]
+    }
+  },
+  "x-publication-errors": [
+    {
+      "code": "SCRIPT_LANGUAGE_DISABLED",
+      "meaning": "A script node pins a ready artifact of the tenant whose language the namespace script runtime policy disables. Same severity as UNKNOWN_SCRIPT; the message names the node id, never the source."
+    }
+  ]
+}

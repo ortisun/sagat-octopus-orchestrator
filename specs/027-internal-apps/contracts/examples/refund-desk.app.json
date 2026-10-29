@@ -1,0 +1,116 @@
+{
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "kind": "App",
+  "metadata": {
+    "name": "refund-desk",
+    "title": "Refund desk",
+    "description": "Illustrative shape only: not an accepted contract and not runnable today."
+  },
+  "parameters": {
+    "runId": { "schema": { "type": "string", "maxLength": 64 }, "classification": "internal" }
+  },
+  "bindings": {
+    "waiting": {
+      "kind": "listRuns",
+      "workflow": "refund",
+      "status": ["WAITING"],
+      "limit": 50,
+      "trigger": { "on": "interval", "intervalSeconds": 30 }
+    },
+    "summary": {
+      "kind": "query",
+      "workflow": "refund",
+      "target": { "run": { "ref": "components.waitingTable.selectedRow.id" } },
+      "operation": "summary",
+      "args": {},
+      "trigger": { "on": "change", "refs": [ { "ref": "components.waitingTable.selectedRow.id" } ] }
+    },
+    "approve": {
+      "kind": "update",
+      "workflow": "refund",
+      "target": { "run": { "ref": "components.waitingTable.selectedRow.id" } },
+      "operation": "approve",
+      "args": { "note": { "ref": "components.approveForm.values.note" } },
+      "expectedStateRevision": { "ref": "bindings.summary.stateRevision" },
+      "label": "Approve the selected refund"
+    },
+    "reconcile": {
+      "kind": "start",
+      "workflow": "refund-reconciliation",
+      "input": { "since": { "ref": "components.reconcileForm.values.since" } },
+      "label": "Start a reconciliation"
+    },
+    "lastResult": {
+      "kind": "runResult",
+      "workflow": "refund-reconciliation",
+      "target": { "run": { "ref": "bindings.reconcile.runId" } },
+      "source": "result",
+      "trigger": { "on": "change", "refs": [ { "ref": "bindings.reconcile.runId" } ] }
+    }
+  },
+  "pages": [
+    {
+      "id": "main",
+      "title": "Refunds waiting for a decision",
+      "components": [
+        {
+          "id": "intro",
+          "kind": "text",
+          "layout": { "col": 1, "row": 1, "width": 12, "height": 1 },
+          "content": "Select a refund to see its summary."
+        },
+        {
+          "id": "waitingTable",
+          "kind": "table",
+          "layout": { "col": 1, "row": 2, "width": 7, "height": 8 },
+          "caption": "Waiting refunds",
+          "data": { "ref": "bindings.waiting.items" },
+          "columns": [
+            { "path": "id", "label": "Run", "format": "text" },
+            { "path": "createdAt", "label": "Started", "format": "datetime" },
+            { "path": "status", "label": "Status", "format": "status" }
+          ],
+          "selection": "single"
+        },
+        {
+          "id": "details",
+          "kind": "tabs",
+          "layout": { "col": 8, "row": 2, "width": 5, "height": 8 },
+          "label": "Selected refund",
+          "visibleWhen": { "op": "notEmpty", "ref": { "ref": "components.waitingTable.selectedRow.id" } },
+          "tabs": [
+            {
+              "id": "summaryTab",
+              "label": "Summary",
+              "components": [
+                {
+                  "id": "summaryText",
+                  "kind": "text",
+                  "layout": { "col": 1, "row": 1, "width": 12, "height": 2 },
+                  "value": {
+                    "template": "Amount {0}, requested by {1}",
+                    "args": [ { "ref": "bindings.summary.result.amount" }, { "ref": "bindings.summary.result.requester" } ]
+                  }
+                },
+                {
+                  "id": "approveForm",
+                  "kind": "form",
+                  "layout": { "col": 1, "row": 3, "width": 12, "height": 3 },
+                  "label": "Approval note",
+                  "submit": { "binding": "approve", "label": "Approve" }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "reconcileForm",
+          "kind": "form",
+          "layout": { "col": 1, "row": 10, "width": 6, "height": 3 },
+          "label": "Reconciliation",
+          "submit": { "binding": "reconcile", "label": "Start reconciliation" }
+        }
+      ]
+    }
+  ]
+}
