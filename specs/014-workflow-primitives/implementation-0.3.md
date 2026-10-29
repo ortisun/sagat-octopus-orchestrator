@@ -1602,6 +1602,25 @@ This adds release integration evidence without enabling general nesting, capacit
 closing the eight canonical 014 tasks. Full 65-scenario/release-tree CI remains separate.
 
 
+## B1d.1 bounded read-only capacity discovery — 2026-10-27
+
+Branch feature/014-capacity-discovery is cut from develop and reuses the verified v0.3 integration
+baseline, leaving PR56's pending CI head unchanged. The first new capacity runtime component is a
+read-only bounded scan of ACTIVE ChildRoot memberships. It preserves tenant/namespace/current-head
+identity, advances beyond filtered pages and returns no execution authority. A partial covering
+index excludes retained FINISHED membership history from its intended access path. There is no
+production caller or group mutation. Exact semantics and limitations: capacity-discovery.md.
+
+Two native REDs preceded implementation; a valid zero-revision chain exposed and corrected a
+decoder assumption. Nine discovery tests, the complete43-case capacity regression and42 SQL
+privilege checks pass. An overbroad migration-test setup was isolated to its actual scoped schema
+without changing its lock/commit/refusal assertions. Strict workspace Clippy and final focused
+Clippy, contracts/static gates and all six source-bound actual-released profiles pass. The full
+SDK aggregate in the contract-only gate is ignored explicitly. Original failures and all positive
+receipts are linked from capacity-discovery.md. Canonical tasks remain open; this closes only the
+bounded discovery component, not B1d, group quota/creation/transfer or nested execution.
+
+
 ## Build-dependency security gate — 2026-10-28
 
 After the Redis fixture correction, CI for PR56 (run40686861523,

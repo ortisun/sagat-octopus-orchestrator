@@ -1,6 +1,7 @@
 # Capacity eligibility after a policy reduction (B1c) — resolved by owner decision O701
 
-Status: **group eligibility decided, no group runtime code.** The separate 0.3
+Status: **group eligibility decided; dormant read-only discovery implemented, no production group caller.**
+[Bounded discovery evidence](./capacity-discovery.md) covers B1d.1 only. The separate 0.3
 [explicit zero tenant policy](./zero-iteration-policy.md) implements flat admission configuration
 without enabling groups. The owner answered O701 on 2026-10-26: a reduction of
 `iteration_concurrency` (including to 0) does **not** pause admitted work. The pause-based model that
@@ -76,5 +77,5 @@ behaviour that already exists and is unrelated to the tenant concurrency limit.
   passed. Two read-only reviews found no code defect; their architecture review is what exposed the
   conflict with the released reduction contract and led to O701. That evidence is history, not a
   delivered capability.
-- After removal `crates/` is identical to `origin/develop`; the gates were re-run on that tree (see
+- At that removal checkpoint `crates/` was identical to `origin/develop`; the gates were re-run on that tree (see
   `validation-report.md`).

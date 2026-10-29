@@ -8,6 +8,7 @@ pub mod approval_progress;
 pub mod approval_scheduler;
 pub mod authz;
 pub mod bindings;
+pub mod capacity_discovery;
 pub mod capacity_finish;
 pub mod chain_progress;
 pub mod classification;

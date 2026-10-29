@@ -1,0 +1,236 @@
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:291:9
+    |
+278 | pub struct CreateTopicsResponse {
+    |            -------------------- field in this struct
+...
+291 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `name`, `value`, `read_only`, `config_source`, `is_sensitive`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:321:9
+    |
+319 | pub struct CreateTopicResponseConfig {
+    |            ------------------------- fields in this struct
+320 |     /// The configuration name.
+321 |     pub name: CompactString,
+    |         ^^^^
+...
+324 |     pub value: CompactNullableString,
+    |         ^^^^^
+...
+327 |     pub read_only: Boolean,
+    |         ^^^^^^^^^
+...
+330 |     pub config_source: Int8,
+    |         ^^^^^^^^^^^^^
+...
+333 |     pub is_sensitive: Boolean,
+    |         ^^^^^^^^^^^^
+...
+336 |     pub tagged_fields: TaggedFields,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponseConfig` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `num_partitions`, `replication_factor`, `configs`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:374:9
+    |
+359 | pub struct CreateTopicResponse {
+    |            ------------------- fields in this struct
+...
+374 |     pub num_partitions: Option<Int32>,
+    |         ^^^^^^^^^^^^^^
+...
+379 |     pub replication_factor: Option<Int16>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+384 |     pub configs: Vec<CreateTopicResponseConfig>,
+    |         ^^^^^^^
+...
+389 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `low_watermark` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:182:9
+    |
+177 | pub struct DeleteResponsePartition {
+    |            ----------------------- fields in this struct
+...
+182 |     pub low_watermark: Int64,
+    |         ^^^^^^^^^^^^^
+...
+190 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:226:9
+    |
+216 | pub struct DeleteResponseTopic {
+    |            ------------------- field in this struct
+...
+226 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:269:9
+    |
+258 | pub struct DeleteRecordsResponse {
+    |            --------------------- field in this struct
+...
+269 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteRecordsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:101:9
+    |
+ 88 | pub struct DeleteTopicsResponse {
+    |            -------------------- field in this struct
+...
+101 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:144:9
+    |
+129 | pub struct DeleteTopicsResponseTopic {
+    |            ------------------------- field in this struct
+...
+144 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `producer_id` and `first_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:170:9
+    |
+168 | pub struct FetchResponseAbortedTransaction {
+    |            ------------------------------- fields in this struct
+169 |     /// The producer id associated with the aborted transaction.
+170 |     pub producer_id: Int64,
+    |         ^^^^^^^^^^^
+...
+173 |     pub first_offset: Int64,
+    |         ^^^^^^^^^^^^
+    |
+    = note: `FetchResponseAbortedTransaction` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `aborted_transactions` is never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:213:9
+    |
+192 | pub struct FetchResponsePartition {
+    |            ---------------------- field in this struct
+...
+213 |     pub aborted_transactions: Vec<FetchResponseAbortedTransaction>,
+    |         ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `FetchResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `timestamp` is never read
+   --> vendor/rskafka/src/protocol/messages/list_offsets.rs:184:9
+    |
+169 | pub struct ListOffsetsResponsePartition {
+    |            ---------------------------- field in this struct
+...
+184 |     pub timestamp: Option<Int64>,
+    |         ^^^^^^^^^
+    |
+    = note: `ListOffsetsResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `log_append_time_ms` and `log_start_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/produce.rs:148:9
+    |
+132 | pub struct ProduceResponsePartitionResponse {
+    |            -------------------------------- fields in this struct
+...
+148 |     pub log_append_time_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+153 |     pub log_start_offset: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^
+    |
+    = note: `ProduceResponsePartitionResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `session_lifetime_ms` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/sasl_msg.rs:198:9
+    |
+181 | pub struct SaslAuthenticateResponse {
+    |            ------------------------ fields in this struct
+...
+198 |     pub session_lifetime_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^^
+...
+203 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `SaslAuthenticateResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: struct `CompactArray` is never constructed
+   --> vendor/rskafka/src/protocol/primitives.rs:725:12
+    |
+725 | pub struct CompactArray<T>(pub Option<Vec<T>>);
+    |            ^^^^^^^^^^^^
+
+warning: `rskafka` (lib) generated 14 warnings
+    Finished `test` profile [unoptimized] target(s) in 0.66s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs/debug/deps/integration_workflow_primitives-3ae15f412e875693)
+
+running 43 tests
+test capacity_finish::active_holder_fk_is_deferred_and_abort_preserves_both_rows ... ok
+test capacity_finish::barriers::audit_outbox_receipt_and_deferred_commit_failures_roll_back_all_effects ... ok
+test capacity_finish::barriers::group_busy_consumes_transaction_and_releases_own_chain_and_run ... ok
+test capacity_finish::barriers::own_chain_wait_precedes_run_lock_and_serializes_duplicate_commands ... ok
+test capacity_finish::barriers::postwait_expiry_refuses_first_application_and_receipt_replay ... ok
+test capacity_finish::commit_loss::unknown_commit_reconciles_actual_commit_and_abort_without_inventing_a_new_key ... ok
+test capacity_finish::continued_history_never_finishes_logical_member_even_after_successor_final ... ok
+test capacity_finish::contradictory_final_outcome_refuses_finish_and_root_binding_grants_no_authority ... ok
+test capacity_finish::counters_identity_and_tenant_namespace_bindings_are_enforced ... ok
+test capacity_finish::current_child_final_finishes_once_without_rewriting_execution ... ok
+test capacity_finish::discovery::a_vacant_active_member_is_discovered_with_its_current_head ... ok
+test capacity_finish::discovery::actual_child_continuation_changes_the_discovered_head_without_changing_membership ... ok
+test capacity_finish::discovery::an_empty_filtered_page_advances_before_a_fresh_store_resumes ... ok
+test capacity_finish::discovery::discovery_span_records_bounded_counts_without_tenant_fields ... ok
+test capacity_finish::discovery::equal_registry_ids_in_two_tenants_keep_their_own_namespace_and_head ... ok
+test capacity_finish::discovery::invalid_discovery_windows_are_typed_refusals ... ok
+test capacity_finish::discovery::retained_finished_members_are_not_scan_input_and_the_index_reverses ... ok
+test capacity_finish::discovery::runtime_discovery_ignores_a_held_row_lock_and_rewrites_nothing ... ok
+test capacity_finish::discovery::shard_and_tenant_filters_consume_their_page_without_granting_authority ... ok
+test capacity_finish::downgrade_waits_for_writer_before_deciding_whether_storage_is_empty ... ok
+test capacity_finish::empty_schema_reverses_but_retained_tombstones_refuse_downgrade ... ok
+test capacity_finish::exhausted_sql_revision_leaves_no_partial_finish ... ok
+test capacity_finish::finishing_selected_child_preserves_other_members_and_historical_receipt ... ok
+test capacity_finish::historical_holder_receipt_survives_later_holder_finish ... ok
+test capacity_finish::native_finish_rejects_live_wrong_scope_stale_fence_and_conflicting_replay ... ok
+test capacity_finish::native_fixture_reaches_current_child_final_through_real_runtime_writers ... ok
+test capacity_finish::observations::filtered_finish_span_cannot_overwrite_its_callers_outcome_or_status ... ok
+test capacity_finish::observations::returned_outcomes_export_closed_spans_and_only_confirmed_first_commits_count ... ok
+test capacity_finish::races::committed_handoff_overtakes_discovered_old_owner_without_forwarding_finish ... ok
+test capacity_finish::races::same_tenant_members_in_two_namespaces_keep_exact_binding_and_receipt_identity ... ok
+test capacity_finish::runtime_has_only_selected_columns_and_receipt_append_privileges ... ok
+test capacity_finish::scoped_binding::active_scoped_identity_and_finished_retention_use_always_guards ... ok
+test capacity_finish::scoped_binding::downgrade::active_member_and_finished_tombstone_receipt_each_refuse_downgrade ... ok
+test capacity_finish::scoped_binding::downgrade::child_root_native_finish_survives_down_and_up_with_legacy_grants ... ok
+test capacity_finish::scoped_binding::downgrade::downgrade_waits_on_original_run_then_observes_committed_scoped_member ... ok
+test capacity_finish::scoped_binding::receipt_operation_revision_and_member_keys_remain_global_across_kinds ... ok
+test capacity_finish::scoped_binding::runtime_insert_columns_are_exactly_legacy_and_scoped_release_stays_closed ... ok
+test capacity_finish::scoped_binding::scoped_member_and_receipt_bind_to_a_qualified_flat_run_beside_child_root ... ok
+test capacity_finish::scoped_binding::variants_bounds_qualified_run_and_exact_receipt_binding_are_closed ... ok
+test capacity_finish::tombstones_and_receipts_survive_owner_mutation_attempts ... ok
+test capacity_finish::vacant_nonholder_receipt_keeps_epoch_and_fixed_fingerprint_bounds ... ok
+test capacity_finish::valid_owner_fixture_precedes_capacity_constraint_probes ... ok
+test hint_contract::capacity_finish_hint_is_closed_control_metadata ... ok
+
+test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 665 filtered out; finished in 111.05s

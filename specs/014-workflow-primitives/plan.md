@@ -15,6 +15,11 @@ The owner requested completion of the remaining implementation for release 0.3 o
 ordered remaining increments and actual verification. Existing unchecked tasks and
 publication gates remain authoritative until their acceptance evidence is obtained.
 
+The capacity work is decomposed into bounded transaction families. The implemented read-only
+[B1d.1 discovery component](./capacity-discovery.md) is metadata-only; it enables no group mutation
+or nested body. Later own-member authority, acquisition/transfer, creation and quota/backfill
+gates remain prerequisites to production activation.
+
 Deliver current-API order examples for all five SDKs (US01), then implement bounded dynamic
 collections, sequential loops, native approval, switch, declarative Query/Update and run-chain
 continuation (US02–US07) through accepted dependency-ordered slices. US01, bounded switch,
