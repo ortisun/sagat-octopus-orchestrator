@@ -9,7 +9,7 @@ use std::{os::fd::OwnedFd, path::PathBuf, process::Stdio, time::Duration};
 use tokio::net::UnixStream;
 use uuid::Uuid;
 
-#[path = "../../fixtures/released-v02/control.rs"]
+#[path = "../../fixtures/release-upgrade/control.rs"]
 pub(super) mod control;
 const RELEASE: &str = "bfda342073db71e84f30bdc79ccf3fbc97a7153c";
 
@@ -17,28 +17,28 @@ pub(super) fn verify_overlays(build: &Value) {
     let overlays = build["overlays"].as_array().expect("verified overlay list");
     let expected: [(&str, &[u8]); 6] = [
         (
-            "tests/fixtures/released-v02/callback_cutover.rs",
-            include_bytes!("../../fixtures/released-v02/callback_cutover.rs"),
+            "tests/fixtures/release-upgrade/callback_cutover.rs",
+            include_bytes!("../../fixtures/release-upgrade/callback_cutover.rs"),
         ),
         (
-            "tests/fixtures/released-v02/cutover.rs",
-            include_bytes!("../../fixtures/released-v02/cutover.rs"),
+            "tests/fixtures/release-upgrade/cutover.rs",
+            include_bytes!("../../fixtures/release-upgrade/cutover.rs"),
         ),
         (
-            "tests/fixtures/released-v02/phase.rs",
-            include_bytes!("../../fixtures/released-v02/phase.rs"),
+            "tests/fixtures/release-upgrade/phase.rs",
+            include_bytes!("../../fixtures/release-upgrade/phase.rs"),
         ),
         (
-            "tests/fixtures/released-v02/wait-state.sql",
-            include_bytes!("../../fixtures/released-v02/wait-state.sql"),
+            "tests/fixtures/release-upgrade/wait-state.sql",
+            include_bytes!("../../fixtures/release-upgrade/wait-state.sql"),
         ),
         (
-            "tests/fixtures/released-v02/inflight.rs",
-            include_bytes!("../../fixtures/released-v02/inflight.rs"),
+            "tests/fixtures/release-upgrade/inflight.rs",
+            include_bytes!("../../fixtures/release-upgrade/inflight.rs"),
         ),
         (
-            "tests/fixtures/released-v02/control.rs",
-            include_bytes!("../../fixtures/released-v02/control.rs"),
+            "tests/fixtures/release-upgrade/control.rs",
+            include_bytes!("../../fixtures/release-upgrade/control.rs"),
         ),
     ];
     assert_eq!(overlays.len(), expected.len() + 1);
@@ -58,7 +58,7 @@ pub(super) fn verify_overlays(build: &Value) {
     // Actual immutable v0.2.0 main.rs plus the sole declared phase registration.
     assert_eq!(
         main[0]["sha256"],
-        "6188765ccfa57f3ae61f0cf9b94a95f362e2acb3439eb191282ad9e4f587eafd"
+        "447a9e560754da23f9c65a64250096c5a17af6ae8a62657d4674ec195ce4d19b"
     );
 }
 
@@ -91,19 +91,19 @@ async fn live_lease(
 }
 
 #[tokio::test]
-#[ignore = "requires verified actual released source; use the released-v02 profile runner"]
+#[ignore = "requires verified actual released source; use the release-upgrade profile runner"]
 async fn a_released_worker_reports_and_replays_its_old_lease_after_server_upgrade() {
     run_profile(control::ProfileMode::Forward).await;
 }
 
 #[tokio::test]
-#[ignore = "requires verified actual released source; use the released-v02 profile runner"]
+#[ignore = "requires verified actual released source; use the release-upgrade profile runner"]
 async fn a_released_worker_reports_and_replays_its_old_applied_lookup_after_server_upgrade() {
     run_profile(control::ProfileMode::AppliedLookup).await;
 }
 
 #[tokio::test]
-#[ignore = "requires verified actual released source; use the released-v02 profile runner"]
+#[ignore = "requires verified actual released source; use the release-upgrade profile runner"]
 async fn a_released_applied_report_refuses_output_and_compensates_original_effects_over_quota() {
     run_profile(control::ProfileMode::AppliedOutputQuota).await;
 }
@@ -127,12 +127,12 @@ async fn run_profile(mode: control::ProfileMode) {
     );
     assert_eq!(
         build["coordinatorSha256"],
-        control::sha(include_bytes!("released_v02_inflight.rs")),
+        control::sha(include_bytes!("release_upgrade_inflight.rs")),
         "runner must bind the actually executed coordinator"
     );
     assert_eq!(
         build["coordinatorPath"],
-        "tests/integration/workflow-primitives/released_v02_inflight.rs"
+        "tests/integration/workflow-primitives/release_upgrade_inflight.rs"
     );
     verify_overlays(&build);
     let binary = PathBuf::from(build["binary"].as_str().expect("old binary"));
@@ -141,7 +141,7 @@ async fn run_profile(mode: control::ProfileMode) {
         build_path.canonicalize().expect("build path").parent()
     );
     assert_eq!(
-        super::released_v02_upgrade::file_sha(&binary),
+        super::release_upgrade::file_sha(&binary),
         build["binarySha256"].as_str().expect("binary hash")
     );
     assert_eq!(
@@ -160,7 +160,7 @@ async fn run_profile(mode: control::ProfileMode) {
         parent.set_nonblocking(true).expect("nonblocking parent phase socket");
         let mut stream=UnixStream::from_std(parent).expect("async parent phase socket");
         let mut command=tokio::process::Command::new(&binary);
-        command.arg(format!("released_v02_phase::inflight::{old_case}")).args(["--exact","--nocapture"])
+        command.arg(format!("release_upgrade_phase::inflight::{old_case}")).args(["--exact","--nocapture"])
             .env("SAGAT_TEST_DATABASE_URL",&owner.admin_url).env("RUST_TEST_THREADS","1")
             .stdin(Stdio::from(OwnedFd::from(old))).kill_on_drop(true);
         let mut child=command.spawn().expect("actual released worker process");
@@ -178,7 +178,7 @@ async fn run_profile(mode: control::ProfileMode) {
         progress.enter("normal migration and current runtime-role endpoint");
         sagat_infra_postgres::migrate(&db.pool).await.expect("current normal migration");
         let after:i64=sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations WHERE success").fetch_one(&db.pool).await.expect("current migration boundary");
-        assert_eq!(after,20261225000000);
+        assert_eq!(after,20261226000000);
         let api=support::api::start_on_db(db,Options {runtime_role:true,..Options::default()}).await;
         let role:String=sqlx::query_scalar("SELECT current_user").fetch_one(&api.api_pool).await.expect("current service role");
         assert_eq!(role,"sagat_app");
@@ -265,7 +265,7 @@ async fn run_profile(mode: control::ProfileMode) {
         released_terminal_reader(&binary,&owner.admin_url,&witness).await;
         let result=json!({"releaseCommit":RELEASE,"oldWorkerReport":true,"appliedLookup":applied_lookup,"scenario":mode.scenario(),"exactReceiptReplay":true,"singleReportTransaction":true,"singleLookupCompletion":applied_lookup,"singleAppliedVerdict":applied_lookup,"logicalBytesChargedOnce":!mode.refuses_output(),"noRefusedOutputCharge":mode.refuses_output(),"oldImmutablePrefix":true,"oldTerminalReader":true,"prefixVerifiedAfterFinalization":true,"schemaBefore":before,"schemaAfter":after,"currentSchedulerWorkingTicks":worked,"run":mode.terminal_status(),"outputRefused":mode.refuses_output()});
         std::fs::write(std::env::var_os("SAGAT_V02_RESULT").expect("selected phase result path"),serde_json::to_vec_pretty(&result).expect("result metadata")).expect("write non-sensitive result");
-        println!("released-v02 in-flight: actual released report/replay, current finalization and released terminal reader passed");
+        println!("release-upgrade in-flight: actual released report/replay, current finalization and released terminal reader passed");
     }).await;
 }
 
@@ -500,7 +500,7 @@ async fn released_terminal_reader(binary: &std::path::Path, server: &str, witnes
     let mut stream = UnixStream::from_std(parent).expect("async terminal reader transport");
     let mut command = tokio::process::Command::new(binary);
     command
-        .arg("released_v02_phase::inflight::read_finished_inflight_profile_with_released_code")
+        .arg("release_upgrade_phase::inflight::read_finished_inflight_profile_with_released_code")
         .args(["--exact", "--nocapture"])
         .env("SAGAT_TEST_DATABASE_URL", server)
         .env("RUST_TEST_THREADS", "1")

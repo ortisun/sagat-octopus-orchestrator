@@ -36,7 +36,7 @@ event dispatchers, public scoped-event activation, all-five old SDK behavior or 
 Those remain separate acceptance gates. The test starts every required service itself and never
 relies on another project's or a manually started database.
 
-The later [in-flight FORWARD profile](./released-v02-inflight-profile.md) has separate evidence
+The later [in-flight FORWARD profile](./release-upgrade-inflight-profile.md) has separate evidence
 for a real old leased report/replay; it does not broaden this first active-data checkpoint
 or supply the scoped-event dispatcher cutover fence.
 

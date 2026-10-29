@@ -37,7 +37,7 @@ Run with the pinned toolchain, a private absolute CARGO_TARGET_DIR outside the r
 and Docker reachable:
 
 ```sh
-python3 scripts/test-released-v02-profile.py --scenario inflight-worker
+python3 scripts/test-release-upgrade-profile.py --scenario inflight-worker
 ```
 
 This is a test-only released-source proof, not a distributed old SDK asset or an automatic

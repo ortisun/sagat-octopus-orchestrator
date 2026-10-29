@@ -13,6 +13,7 @@ mod bindings;
 mod breaker;
 mod capacity_discovery;
 mod capacity_finish;
+mod capacity_vacate;
 mod chain_progress;
 mod collection_outputs;
 mod connectors;
@@ -54,6 +55,7 @@ mod workers;
 
 pub use approval_progress::PgApprovalProgressStore;
 pub use capacity_finish::PgCapacityFinishStore;
+pub use capacity_vacate::PgCapacityVacateStore;
 pub use chain_progress::{PgChainProgressStore, initialize_chain_in_transaction};
 pub use declared_operations::PgDeclaredOperationStore;
 pub use definitions::PgDefinitionStore;

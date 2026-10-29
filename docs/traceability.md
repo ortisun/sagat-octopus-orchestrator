@@ -447,7 +447,7 @@ reviewed workflow/runtime reference files then passed all five SDKs without a bl
 (36.39 s, focused scenario). The final integrated regression and release-wide gates remain
 separate. Existing IR v1, worker minor1.5, closed errors, journal/graph projection and metric
 vocabulary are retained. No nested capacity or large-resource criterion is closed here.
-[The 0.3 execution ledger](../specs/014-workflow-primitives/implementation-0.3.md) owns
+[The 0.3 execution ledger](../specs/014-workflow-primitives/implementation-ledger.md) owns
 current commands/results, including the incompatible unpublished legacy-fixture limitation.
 
 ### 0.3 local collection decision increment (2026-10-26)
@@ -853,7 +853,7 @@ discovery, cancellation, backfill/closed schema constraints and retained journal
 downgrade refusal. Full/path/frontier readers reject dispatch masquerading against a pinned
 definition. Pure-domain and owner/runtime native tests keep both controls outside frozen
 OrdinaryLeafV1. Common SDK fixture `collection-control-entry` exercises existing builders and
-worker1.5. Exact invocation results/limits are in implementation-0.3.md; no canonical task or
+worker1.5. Exact invocation results/limits are in implementation-ledger.md; no canonical task or
 release closure is inferred from these focused fixtures.
 
 
@@ -865,7 +865,7 @@ public Timer entry/activity progression, worker absence, exact accounting, pause
 prepared logical/deadline changes, malformed full/path/frontier reads, journal rollback and
 both actual cancellation/fire commit orders. public_scheduler_entries_remain_outside_the_frozen_ordinary_leaf_profile
 keeps the dormant source predicate closed. Common SDK collection-timers uses existing sleep
-builders in all five languages. Exact counts/limits remain in implementation-0.3.md; no
+builders in all five languages. Exact counts/limits remain in implementation-ledger.md; no
 canonical task or release closure follows these focused fixtures.
 
 ### 2026-10-27 explicit zero iteration policy
@@ -877,7 +877,7 @@ lock orders. The existing collections_http quota test retains role/namespace/cei
 regressions (the new1025/default1024 HTTP ceiling check has a separately recorded final gate).
 The OpenAPI quota description and generated Studio API comment match; ordinary
 quota.changed audit and existing capacity refusal vocabulary remain in use. Exact failed and
-passed invocations are in implementation-0.3.md; nested/runtime/release tasks stay open.
+passed invocations are in implementation-ledger.md; nested/runtime/release tasks stay open.
 
 ### 2026-10-27 scoped event-wait recorded preparation
 
@@ -898,7 +898,7 @@ and refuses missing/refused authority, earlier clocks, physical drift and foreig
 Injected journal failure preserves projection, usage, payloads, audit, outbox and telemetry.
 The complete runtime-role focused gate passes11/0/0; domain583, contracts49 and strict workspace
 Clippy pass separately. Exact failures, commands, timings, review corrections and subsequent
-regressions are in `specs/014-workflow-primitives/implementation-0.3.md`. Public bodies and scoped
+regressions are in `specs/014-workflow-primitives/implementation-ledger.md`. Public bodies and scoped
 delivery remain closed; native timeout, drain, receiver, SDK/rollout/resource acceptance remain
 pending. This checkpoint closes no canonical runtime or release task.
 
@@ -1004,8 +1004,8 @@ assumptions are in the0.3 ledger. Public/old-reader/final release acceptance rem
 
 ### 2026-10-27 actual released-v0.2 active-data profile
 
-T014-016/017/040/043, FR-014-014/015/017: released_v02_upgrade plus
-scripts/test-released-v02-profile.py prove immutable released-source public production, normal
+T014-016/017/040/043, FR-014-014/015/017: release_upgrade plus
+scripts/test-release-upgrade-profile.py prove immutable released-source public production, normal
 migration20261220000000→20261223000000, current runtime-role completion, exact legacy receipt
 and released REST/native replay with unchanged original prefixes. Final coordinator1/0/0
 passes8.42s; eight source-boundary controls pass. Exact phase output, source/binary identities
@@ -1015,7 +1015,7 @@ reports, scoped-event cutover/public activation and all eight canonical tasks re
 
 ### 2026-10-27 genuine released-worker in-flight report
 
-T014-016/017/040/043, FR-014-014/015/017: released_v02_inflight proves the actual old generated
+T014-016/017/040/043, FR-014-014/015/017: release_upgrade_inflight proves the actual old generated
 client reports its original live scoped FORWARD capability across normal migration to current
 services, exact duplicate receipt, durable token/fence/output/fingerprint/logical-byte charge,
 old immutable/native replay and required current scheduler finalization. Coordinator1/0/0
@@ -1041,7 +1041,7 @@ FR-014-004/005/014/015/017 → collection_events six real runtime-role tests →
 waitEvent/event-publish contracts with bounded public collection-body guard → existing exact-path
 receipt/outcome/audit/metrics → scoped-event-publication.md and its public happy/timeout/cancel/
 compensation demos. Actual released dispatcher login revocation, session termination and process
-join precede current publication in released_v02_cutover; old/new replay passes. Common
+join precede current publication in release_upgrade_cutover; old/new replay passes. Common
 collection-events passes all existing five SDKs without blessing. This is partial T014-014–017/
 040/043/044 evidence; nesting/capacity, final resource/fault and integrated six-SDK release gates
 remain open. No mixed-version or automatic operator-fencing claim is added.
@@ -1055,7 +1055,7 @@ contracts in `tests/contract/scalability-ha/redis_chart.rs`. Acceptance remains 
 
 ### Combined v0.3 Redis callback cutover and sixth SDK (2026-10-27)
 
-FR-033-004/005/009, SC-033-004, T033-007 → released_v02_callback_cutover and the verified immutable
+FR-033-004/005/009, SC-033-004, T033-007 → release_upgrade_callback_cutover and the verified immutable
 release runner → actual old HTTP publish/read, login/session revocation and process join before
 current Redis API activation → real XADD/DELIVERED identity and unchanged old metadata. The shared
 fixture now lives in tests/support/brokers.rs. Combined 139 messaging/Redis tests and 109 Rust SDK
@@ -1072,3 +1072,13 @@ bounded counts and no tenant/payload fields → specs/014-workflow-primitives/ca
 The wider43-case capacity gate,42 SQL privilege checks and six actual released-source upgrade
 profiles pass. There is no public group API, production discovery caller, acquisition, fresh
 admission or new nested publication capability; canonical runtime/resource/release gates stay open.
+
+## Dormant native capacity Vacate — 2026-10-28
+
+T014-014–017/040/043/044, FR-014-014/015 → `capacity_finish::vacate` (18 native tests, CI pending)
+→ exact application command and migration 26 transfer receipts → additive reference-only
+`capacity.member.vacated` AsyncAPI hint → closed `workflow.capacity.vacate` span and operation/outcome
+metrics → [operator guidance](runbooks/workflow-primitives.md). Source inventory fitness rejects
+new or changed literal SQL step-status writers; actual worker-claim races use held database locks.
+[Evidence and limits](../specs/014-workflow-primitives/capacity-vacate-acquire.md) explicitly retain
+the interrupted local run and CI obligations. No task or public nested capability closes here.

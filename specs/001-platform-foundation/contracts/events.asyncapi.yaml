@@ -77,6 +77,15 @@ channels:
     messages:
       capacityMemberFinished:
         $ref: '#/components/messages/CapacityMemberFinished'
+  capacityMemberVacated:
+    address: sagat.v1.capacity.member.vacated.{tenant}
+    description: A quiescent ChildRoot member vacated capacity possession while retaining active membership. Reference-only discovery hint, not execution or foreign-run scheduling authority; no production caller is enabled by this vocabulary.
+    parameters:
+      tenant:
+        description: Tenant id (UUID).
+    messages:
+      capacityMemberVacated:
+        $ref: '#/components/messages/CapacityMemberVacated'
   capacityScopedMemberFinished:
     address: sagat.v1.capacity.scoped_member.finished.{tenant}
     description: A dormant scoped-path capacity member settled from retained OrdinaryLeafV1 source evidence. Reference-only discovery hint, not execution or foreign-run scheduling authority; no production caller is enabled by this vocabulary.
@@ -274,6 +283,10 @@ operations:
     action: send
     channel: {$ref: '#/channels/capacityMemberFinished'}
     messages: [{$ref: '#/channels/capacityMemberFinished/messages/capacityMemberFinished'}]
+  publishCapacityMemberVacated:
+    action: send
+    channel: {$ref: '#/channels/capacityMemberVacated'}
+    messages: [{$ref: '#/channels/capacityMemberVacated/messages/capacityMemberVacated'}]
   publishCapacityScopedMemberFinished:
     action: send
     channel: {$ref: '#/channels/capacityScopedMemberFinished'}
@@ -451,6 +464,28 @@ components:
           resultingRevision: {type: integer, minimum: 2, maximum: 9223372036854775807}
           epoch: {type: integer, minimum: 1, maximum: 9223372036854775807}
           retired: {type: boolean}
+          traceId: {type: [string, 'null'], description: 'W3C trace id (32 hex) of the owning run.'}
+    CapacityMemberVacated:
+      name: CapacityMemberVacated
+      contentType: application/json
+      description: Reference-only capacity vacancy metadata. Read current guarded state before acting; revisions here describe the committed receipt, not current execution authority.
+      headers:
+        type: object
+        properties:
+          Nats-Msg-Id: {type: string, description: 'The outbox row id; stable across redeliveries.'}
+      payload:
+        type: object
+        additionalProperties: false
+        required: [tenantId, namespaceId, groupId, memberId, chainId, headRunId, resultingRevision, epoch]
+        properties:
+          tenantId: {type: string, format: uuid}
+          namespaceId: {type: string, format: uuid}
+          groupId: {type: string, format: uuid}
+          memberId: {type: string, format: uuid}
+          chainId: {type: string, format: uuid}
+          headRunId: {type: string, format: uuid}
+          resultingRevision: {type: integer, minimum: 2, maximum: 9223372036854775807}
+          epoch: {type: integer, minimum: 2, maximum: 9223372036854775807}
           traceId: {type: [string, 'null'], description: 'W3C trace id (32 hex) of the owning run.'}
     CapacityScopedMemberFinished:
       name: CapacityScopedMemberFinished

@@ -41,6 +41,20 @@ CI sets the Cargo dev and test profiles to `debug = "line-tables-only"`. This re
 backtraces while omitting type and variable debugging metadata; test commands are unchanged, and
 `debug_assertions` and the build-script `DEBUG=true` value remain enabled for these profiles.
 
+The Rust workspace job shares the SDK job's existing dependency-cache key (`sdks`) and enables
+`cache-on-failure`. Both jobs use the same root workspace/profile; the action retains its compiler,
+environment, platform and manifest hashes, and Cargo checks artifact freshness. Saving compiled
+dependencies after a test failure lets later attempts reuse them. Every test gate still executes.
+Workspace crates retain the action's default exclusion, so compiling/linking this repository's
+test executables can still be substantial. Cache restoration alone does not establish a timing
+improvement; inspect the cache-hit log and measured build stages before claiming one.
+
+The loop-drain recovery test performs its expected-error downgrade probes on dedicated
+PostgreSQL sessions. SQLx 0.9 returns early on a refused migration before its session advisory
+unlock; returning that connection to a pool can block a later probe. The fixture acknowledges
+unlock and closes the session before reporting its outcome, with bounded waits and database-scoped
+lock assertions. This regression runs first in the capacity/migration CI preflight.
+
 ## Critical matrix
 
 | Scenario | Expected invariant |

@@ -29,7 +29,7 @@ to frozen verified source. Run with Docker reachable, pinned toolchain and an ow
 CARGO_TARGET_DIR outside the repository:
 
 ```sh
-python3 scripts/test-released-v02-profile.py --scenario applied-lookup
+python3 scripts/test-release-upgrade-profile.py --scenario applied-lookup
 ```
 
 This does not prove quota-refusal/drain frontier, original-forward compensation under a stop,

@@ -646,7 +646,7 @@ From the repository root, with Docker reachable and the pinned toolchain install
 
 ```sh
 CARGO_TARGET_DIR=<owned-absolute-target-outside-repository> \
-  python3 scripts/test-released-v02-profile.py
+  python3 scripts/test-release-upgrade-profile.py
 ```
 
 The runner verifies an immutable released-source archive, uses separate build targets, owns
@@ -663,7 +663,7 @@ its established database sessions and stop/join every old control-plane/engine p
 distinct runtime logins per deployment generation. A shared unchanged database login does not
 provide that credential fence. Workers using the supported old protocol may reconnect to
 current services; this does not authorize old control-plane or engine binaries.
-See the [bounded contract](../../specs/014-workflow-primitives/released-v02-profile.md) and
+See the [bounded contract](../../specs/014-workflow-primitives/release-upgrade-profile.md) and
 [actual evidence](../../specs/014-workflow-primitives/evidence/released-v02-20261027/README.md).
 
 
@@ -671,7 +671,7 @@ For a genuine old worker's already-leased scoped task, use the separate in-fligh
 
 ```sh
 CARGO_TARGET_DIR=<owned-absolute-target-outside-repository> \
-  python3 scripts/test-released-v02-profile.py --scenario inflight-worker
+  python3 scripts/test-release-upgrade-profile.py --scenario inflight-worker
 ```
 
 It keeps the original task capability in the old process, refreshes subject authentication
@@ -686,7 +686,7 @@ For a genuine old uncertain forward followed by its Applied reconciliation looku
 
 ```sh
 CARGO_TARGET_DIR=<owned-absolute-target-outside-repository> \
-  python3 scripts/test-released-v02-profile.py --scenario applied-lookup
+  python3 scripts/test-release-upgrade-profile.py --scenario applied-lookup
 ```
 
 The old worker produces the uncertainty/lookup, then reports and replays Applied to current
@@ -711,10 +711,25 @@ Run the current public/SDK checks and the actual old-process cutover fixture:
 ```sh
 SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test -p sagat-tests --test integration_workflow_primitives --locked -- collection_events::
 SAGAT_SDK_SCENARIO=collection-events cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
-CARGO_TARGET_DIR=<owned-absolute-target-outside-repository> python3 scripts/test-released-v02-profile.py --scenario scoped-event-cutover
+CARGO_TARGET_DIR=<owned-absolute-target-outside-repository> python3 scripts/test-release-upgrade-profile.py --scenario scoped-event-cutover
 ```
 
 The common scenario uses concurrency 1 to compare a deterministic journal. The native tests
 use concurrency 2 and independently inspect correlation, retained values, ordered results,
 receipts, replay and slot release. Do not roll back to an old execution binary while unsupported
 new records remain; use a compatible current reader and roll forward to recover.
+
+### Dormant ChildRoot capacity Vacate (v0.3 implementation increment)
+
+The native Vacate adapter has no scheduler or public call site. It changes capacity metadata only;
+it cannot pause a worker or permit a new claim. Do not manually manufacture receipts or use a
+replayed epoch as permission. Retain the entire original command on `CommitOutcomeUnknown` or
+cancellation and reconcile with the same key; a renewed scheduler lease is allowed, changed identity
+or expected counters are a fingerprint conflict. `Busy` requires a fresh transaction.
+
+A current final head belongs to Finish. Leased or running steps, including expired leases, refuse
+Vacate. A worker claim that advances the run first makes a retained command stale before the
+lease refusal is evaluated. Migration 26 down is an operator-only rollback after services are
+quiesced; retained transfer receipts refuse rollback. The sweeper, acquisition, claim guards and
+receipt retention policy remain activation prerequisites. See
+[the protocol/evidence ledger](../../specs/014-workflow-primitives/capacity-vacate-acquire.md).

@@ -10,6 +10,7 @@ pub mod authz;
 pub mod bindings;
 pub mod capacity_discovery;
 pub mod capacity_finish;
+pub mod capacity_vacate;
 pub mod chain_progress;
 pub mod classification;
 pub mod classification_index;

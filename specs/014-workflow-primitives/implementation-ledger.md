@@ -1333,7 +1333,7 @@ remain pending.
 
 ## Actual released-v0.2 active-data profile — 2026-10-27
 
-The [released profile contract](./released-v02-profile.md) now has an executable coordinator
+The [released profile contract](./release-upgrade-profile.md) now has an executable coordinator
 and a reproducible source-verifying runner. It archives actual v0.2.0 commit
 bfda342073db71e84f30bdc79ccf3fbc97a7153c; 649 production/configuration files are checked against
 that immutable source, with exactly three declared test overlays. Old/current targets are
@@ -1392,7 +1392,7 @@ does not require rerunning the unchanged86-case production event gate as a new c
 
 ## Actual released worker reports its old in-flight lease — 2026-10-27
 
-[The bounded in-flight contract](./released-v02-inflight-profile.md) now has a separate ignored
+[The bounded in-flight contract](./release-upgrade-inflight-profile.md) now has a separate ignored
 coordinator and released-source phase. The exact old generated gRPC1.5 client holds the original
 scoped task capability/request in memory across normal schema upgrade and reports it twice to
 current runtime-role services. Safely inherited anonymous Unix sockets carry capped length-prefixed
@@ -1447,7 +1447,7 @@ All eight canonical tasks stay open.
 
 ## Actual released Applied lookup and post-final reader — 2026-10-27
 
-[released-v02-applied-profile.md](./released-v02-applied-profile.md) extends the source-verified
+[release-upgrade-applied-profile.md](./release-upgrade-applied-profile.md) extends the source-verified
 in-flight proof without changing production behavior. Actual old REST/gRPC/scheduler code
 reports OUTCOME_UNKNOWN for charge, then leases the real qualified charge~r reconciliation.
 Its original target instance/node/provider key are asserted; the lookup capability/request
@@ -1569,7 +1569,7 @@ verifier and actual old terminal reader both accept COMPENSATED.
 
 The final five actual-released profiles pass independently, including ordinary FORWARD/Applied,
 active data and dispatcher cutover. Details, reproducible commands, timings, source hashes, review
-corrections and original receipts are in [released-v02-output-quota.md](released-v02-output-quota.md).
+corrections and original receipts are in [release-upgrade-output-quota.md](release-upgrade-output-quota.md).
 A stale supplemental result-copy bug is corrected with provenance; new per-invocation result paths
 and identity/hash checks prevent reuse. The Python verifier battery passes 16 tests. No production
 workflow semantics changed in this increment. Ledger item 1 remains open for the wider authority
@@ -1650,3 +1650,29 @@ Strict workspace/all-target Clippy also passes (169.35s); formatting, architectu
 and agent configuration pass. The new CI run must pass before merge. This build fix closes
 neither general nesting nor the remaining canonical release tasks.
 Refs: T014-043, T033-007.
+
+## Repeated downgrade probe diagnosis — 2026-10-29
+
+CI run40814452229 passed all other11 jobs and the capacity/migration preflight,
+but `loop_progress::expression_failure_drains_once_restarts_and_finishes_from_the_journal`
+had no terminal result after every other test in its target completed. The run was
+cancelled for diagnosis; it is not workspace acceptance. The unchanged test passed
+cache-only run40815946785, which completed all11 jobs.
+
+Pinned SQLx0.9.0 `Migrator::undo` returns from a failed `revert` before its session-level
+advisory unlock. Two expected-error probes through `&PgPool` can reuse that locked
+session or block on it from another connection. This is a source-supported mechanism;
+the cancelled runner did not expose a PostgreSQL lock snapshot proving its exact wait.
+The RED assertion requires no advisory lock in the isolated fixture database after
+the first expected error, before retrying. CI40824487650/job123284265848 reproduced
+that precise defect: one lock remained instead of zero; the named test failed in7.81s.
+The other jobs were cancelled after preserving this failure.
+
+Both probes now use a dedicated raw PostgreSQL connection. A completed refusal explicitly
+acknowledges the SQLx advisory unlock before closing the session; close is attempted before
+asserting either the bounded probe or cleanup outcome. Database-scoped assertions require zero
+advisory locks after the first refusal and after the final guard check. Existing lifetime-ledger
+and retained-loop rollback refusal assertions remain. The scenario runs first in CI preflight.
+Full corrected CI is pending. No release or primitive task is closed here.
+
+Refs: T014-043.

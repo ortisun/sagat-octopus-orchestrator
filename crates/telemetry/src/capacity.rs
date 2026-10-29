@@ -42,3 +42,43 @@ impl CapacityFinishOutcome {
         }
     }
 }
+
+/// Closed outcomes for dormant Vacate; no identifiers or caller-supplied messages in labels.
+pub const CAPACITY_VACATE_SPAN: &str = "workflow.capacity.vacate";
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapacityVacateOutcome {
+    Applied,
+    Replayed,
+    Busy,
+    NotQuiescent,
+    NotHolder,
+    Stale,
+    Denied,
+    Refused,
+    StorageError,
+    Unknown,
+}
+impl CapacityVacateOutcome {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Applied => "applied",
+            Self::Replayed => "replayed",
+            Self::Busy => "busy",
+            Self::NotQuiescent => "not_quiescent",
+            Self::NotHolder => "not_holder",
+            Self::Stale => "stale",
+            Self::Denied => "denied",
+            Self::Refused => "refused",
+            Self::StorageError => "storage_error",
+            Self::Unknown => "unknown",
+        }
+    }
+    pub fn record(self, duration: Duration) {
+        metrics::counter!("workflow_capacity_transfer_attempts_total", "operation"=>"vacate", "outcome"=>self.as_str()).increment(1);
+        metrics::histogram!("workflow_capacity_transfer_duration_seconds", "operation"=>"vacate", "outcome"=>self.as_str()).record(duration.as_secs_f64());
+        if self == Self::Applied {
+            metrics::counter!("workflow_capacity_member_vacated_total").increment(1);
+        }
+    }
+}

@@ -69,7 +69,7 @@ One bounded review found a missing Unix module gate, now fixed; its formatting c
 reproduce (`cargo fmt --all -- --check` passed before that fix). No Windows runtime is claimed.
 
 Reproduce with the standard private target and owned Docker fixture environment:
-`python3 scripts/test-released-v02-profile.py --scenario redis-callback-cutover`.
+`python3 scripts/test-release-upgrade-profile.py --scenario redis-callback-cutover`.
 The final integrated release CI, remaining 014 nested-capacity/fault/resource work and publication
 remain open. T033-007 stays unchecked for those release gates; its cold-cutover prerequisite is
 now evidenced rather than inferred from the default-off flag.
