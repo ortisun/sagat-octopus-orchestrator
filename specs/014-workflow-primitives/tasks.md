@@ -257,3 +257,11 @@ evidence; the dormant exact native port also has focused tests. Local native fau
 closed observation checkpoints are recorded in the validation report; broader B1/B2 and runtime
 acceptance remain pending. Follow
 tasks/project-completion/todo.md without checking canonical runtime tasks.
+
+## Dormant ChildRoot Acquire checkpoint — 2026-10-29
+
+T014-014–017/040/042–044 remain open. The separate [Acquire proof plan](./capacity-acquire.md)
+records the exact non-final ChildRoot transaction, typed refusals, immutable original-key receipt,
+audit/OTel and reference-only hint. CI40866588862 ran command tests 8/0/0, adapter error projections
+2/0/0 and audit 1/0/0; Clippy passed. Native recovery/contention and full integrated acceptance
+remain pending. No creator, scheduler caller, claim guard, runnable predicate or nesting is enabled.

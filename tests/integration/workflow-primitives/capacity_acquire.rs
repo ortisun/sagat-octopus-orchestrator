@@ -565,3 +565,60 @@ async fn exact_binding_and_persistence_counter_ceiling_refuse_without_mutation()
 
 #[path = "capacity_acquire_recovery.rs"]
 mod recovery;
+
+#[tokio::test]
+async fn a_live_or_expired_worker_lease_is_not_an_acquire_readiness_predicate() {
+    crate::support::bounded::within(
+        "Acquire possession without worker readiness",
+        crate::support::bounded::LIFECYCLE_LIMIT,
+        async {
+            for expired in [false, true] {
+                let w = crate::support::engine::world_with(sagat_application::worker::WorkerSettings {
+                    lease_ttl: std::time::Duration::from_secs(600),
+                    session_ttl: std::time::Duration::from_secs(600),
+                    ..sagat_application::worker::WorkerSettings::default()
+                }).await;
+                let (parent, child) = spawn_native_child(&w, false).await;
+                let scheduler = super::super::chains::scheduler(&w, "capacity-acquire-long-lease").await;
+                let round = scheduler.tick().await;
+                assert_eq!(round.children_started, 1, "{round:?}");
+                assert_eq!(round.failed, 0);
+                let mut f = seed_capacity(w, child).await;
+                f.w.execution_pool = f.w.db.runtime_pool_with(16).await;
+                let n = NativeFixture { f, parent, scheduler };
+                let initial = command(&n).await;
+                PgCapacityVacateStore::new(n.f.w.execution_pool.clone())
+                    .vacate_current_child_root(&CapacityVacateCommand {
+                        operation_key: initial.operation_key, identity: initial.identity,
+                        expected: initial.expected, scheduler: initial.scheduler,
+                    }).await.expect("vacancy before real lease");
+                let session = n.f.w.session(&["capacity.work"]).await;
+                let tasks = n.f.w.poll(&session, 1).await;
+                assert_eq!(tasks.len(), 1);
+                assert_eq!(tasks[0].run_id.as_uuid(), n.f.chain);
+                if expired {
+                    n.f.w.age_lease(RunId::new(n.f.chain), "work").await;
+                }
+                let c = command(&n).await;
+                let before = execution_snapshot(&n.f).await;
+                let versions = super::vacate::untouched(&n.f).await;
+                let lease: (String, bool) = sqlx::query_as("SELECT status,lease_expires_at>clock_timestamp() FROM steps WHERE tenant_id=$1 AND run_id=$2 AND node='work'")
+                    .bind(n.f.w.admin.tenant_id().as_uuid()).bind(n.f.chain)
+                    .fetch_one(&n.f.w.db.pool).await.expect("actual lease liveness immediately before Acquire");
+                assert_eq!(lease, ("LEASED".into(), !expired));
+                PgCapacityAcquireStore::new(n.f.w.execution_pool.clone())
+                    .acquire_current_child_root(&c)
+                    .await
+                    .expect("Acquire does not infer runnable work or inspect lease eligibility");
+                assert_eq!(
+                    header(&n.f).await,
+                    (3, 3, 1, "HELD".into(), Some(n.f.member))
+                );
+                assert_eq!(execution_snapshot(&n.f).await, before);
+                assert_eq!(super::vacate::untouched(&n.f).await, versions);
+                assert_eq!(counts(&n.f).await, (1, 1, 1));
+            }
+        },
+    )
+    .await;
+}

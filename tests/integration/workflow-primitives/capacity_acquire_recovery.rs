@@ -345,3 +345,35 @@ async fn scheduler_expiry_while_chain_is_held_refuses_application_and_replay() {
             }
         }).await;
 }
+
+#[tokio::test]
+async fn a_real_deferred_foreign_key_abort_is_confirmed_and_rolls_back_every_write() {
+    crate::support::bounded::within(
+        "Acquire confirmed deferred foreign key abort",
+        crate::support::bounded::LIFECYCLE_LIMIT,
+        async {
+            let n = vacant_fixture().await;
+            let c = command(&n).await;
+            let store = PgCapacityAcquireStore::new(n.f.w.execution_pool.clone());
+            let before = execution_snapshot(&n.f).await;
+            // Test-only instrumentation causes a real PostgreSQL FK violation at COMMIT,
+            // rather than simulating a database error or losing the acknowledgement.
+            sqlx::raw_sql("CREATE TABLE acquire_fk_parent(id uuid PRIMARY KEY); CREATE TABLE acquire_fk_probe(id uuid REFERENCES acquire_fk_parent(id) DEFERRABLE INITIALLY DEFERRED); GRANT SELECT ON acquire_fk_parent TO sagat_app; GRANT INSERT ON acquire_fk_probe TO sagat_app; CREATE FUNCTION acquire_fk_probe() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO acquire_fk_probe VALUES(NEW.operation_key); RETURN NEW; END $$; CREATE TRIGGER acquire_fk_probe AFTER INSERT ON capacity_group_transfer_receipts FOR EACH ROW WHEN (NEW.kind='ACQUIRE') EXECUTE FUNCTION acquire_fk_probe();")
+                .execute(&n.f.w.db.pool).await.expect("real deferred FK probe");
+            assert_eq!(store.acquire_current_child_root(&c).await, Err(Error::Storage(sagat_application::error::StoreError::MissingReference)));
+            assert_eq!(header(&n.f).await, (2, 2, 1, "VACANT".into(), None));
+            assert_eq!(counts(&n.f).await, (0, 0, 0));
+            assert_eq!(execution_snapshot(&n.f).await, before);
+            let probe: i64 = sqlx::query_scalar("SELECT count(*) FROM acquire_fk_probe")
+                .fetch_one(&n.f.w.db.pool).await.expect("aborted FK probe");
+            assert_eq!(probe, 0);
+            sqlx::query("INSERT INTO acquire_fk_parent VALUES($1)").bind(c.operation_key)
+                .execute(&n.f.w.db.pool).await.expect("satisfy owned test constraint");
+            let result = store.acquire_current_child_root(&c).await.expect("same command after confirmed abort");
+            assert!(!result.replayed);
+            assert_eq!(header(&n.f).await, (3, 3, 1, "HELD".into(), Some(n.f.member)));
+            assert_eq!(counts(&n.f).await, (1, 1, 1));
+            assert_eq!(execution_snapshot(&n.f).await, before);
+        },
+    ).await;
+}

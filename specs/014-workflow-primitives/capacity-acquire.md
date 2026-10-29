@@ -117,3 +117,15 @@ were added, including the actual winning holder and both ACTIVE memberships; rev
 found no further substantive issue. Cases also check audit, outbox and receipt refusals separately.
 These are added tests, not yet claimed passing. The current CI40866588862 passed the command,
 adapter/error mapping and audit unit steps; its native preflight is still pending.
+
+Reading CI40866588862/job123422782145 logs confirmed actual focused results: application command
+regression 8 passed/0 failed/0 ignored (27.83s compilation), adapter error mapping 2/0/0
+(43.95s compilation), acquired audit 1/0/0 (6.76s compilation), and Clippy success in3m47s.
+Two additional proof cases bring the pending native matrix to17: real deferred FK COMMIT abort
+returns typed MissingReference and rolls back, and real live/expired worker leases remain unchanged
+by Acquire. All broader acceptance stays open pending execution.
+
+The focused deferred-FK/lease-proof review found that a default30s lease could expire before the
+supposed-live branch executes. The fixture now uses an explicit600s lease/session inside the300s
+lifecycle bound and asserts the database liveness predicate immediately before Acquire. Cycle2
+found no substantive issue. This is proof-quality review, not a native passing result.
