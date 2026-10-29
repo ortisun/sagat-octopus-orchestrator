@@ -42,6 +42,56 @@ jobs:
       - run: cargo test --workspace --locked --no-fail-fast
         timeout-minutes: 110
 
+  released-upgrade:
+    name: released v0.2 upgrade compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_BUILD_JOBS: "1"
+      RUST_TEST_THREADS: "1"
+      SAGAT_TEST_AS_RUNTIME_ROLE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The producer is the immutable v0.2.0 tree, not a current-source imitation.
+          fetch-depth: 0
+      - run: rustup show active-toolchain
+      - name: released producer, migration, current progress and released reader
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/sagat-upgrade-current-target
+          TMPDIR: ${{ runner.temp }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h "$RUNNER_TEMP"
+          evidence="$RUNNER_TEMP/sagat-upgrade-evidence"
+          mkdir "$evidence"
+          prepared=""
+          for scenario in active-data inflight-worker applied-lookup applied-output-quota scoped-event-cutover redis-callback-cutover; do
+            args=(--scenario "$scenario")
+            if [[ -n "$prepared" ]]; then args+=(--prepared-run "$prepared"); fi
+            python3 scripts/test-released-v02-profile.py "${args[@]}"
+            roots=("$RUNNER_TEMP"/sagat-released-v02-*)
+            [[ ${#roots[@]} -eq 1 ]]
+            prepared="${roots[0]}"
+            mkdir "$evidence/$scenario"
+            cp "$prepared"/*.json "$prepared"/*.txt "$evidence/$scenario/"
+            cp -R "$prepared"/outcome-* "$evidence/$scenario/"
+          done
+      - name: retain upgrade receipts and failures
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: released-upgrade-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/sagat-upgrade-evidence/
+            ${{ runner.temp }}/sagat-released-v02-*/*.json
+            ${{ runner.temp }}/sagat-released-v02-*/*.txt
+            ${{ runner.temp }}/sagat-released-v02-*/outcome-*/*.json
+          if-no-files-found: error
+
   native-runners:
     name: native Go and Java (${{ matrix.os }})
     strategy:
