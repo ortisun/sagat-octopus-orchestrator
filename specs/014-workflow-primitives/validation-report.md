@@ -4290,3 +4290,20 @@ not full-suite acceptance. A new CI preflight executes both named regressions an
 cases before the full workspace gate, without skipping any required suite. The integration branch
 also acquired the independent Dependabot target-branch fix; it is merged into this feature before
 new validation. All corrected gates remain pending the new integrated-head CI run.
+
+### Focused CI correction: respect the transfer rollback boundary
+
+Run [40811743421](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/40811743421)
+passed the isolated lease-index test (1/0/0, 13.55s) and then failed Finish's rollback race
+(0/1/0, 5.79s): it received an error at migration 26 instead of the expected retained-storage
+refusal at migration 10. The fixture was still running the full rollback with an active group
+writer, although migration 26 explicitly requires quiesced services. Observing its first
+conflicting relation lock did not establish that unsupported concurrent rollback contract.
+
+The Finish fixture now rolls back the empty transfer schema to migration 25 while quiesced,
+then starts its writer and runs the original Finish rollback race. Its causal lock observation,
+required migration-10/SQLSTATE-55000 refusal and retained-tombstone check remain. Transfer
+rollback still has its own empty/retained native coverage and makes no online guarantee.
+Migration error assertions now include the original database error if the version differs,
+so a later regression will not hide its cause behind only two migration numbers. New CI
+verification is required; no canonical task closes.

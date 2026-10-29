@@ -357,7 +357,10 @@ const BEFORE_CAPACITY: i64 = 20_261_209_000_000;
 fn retained_downgrade(error: sqlx::migrate::MigrateError) {
     match error {
         sqlx::migrate::MigrateError::ExecuteMigration(error, version) => {
-            assert_eq!(version, 20_261_210_000_000);
+            assert_eq!(
+                version, 20_261_210_000_000,
+                "unexpected downgrade error: {error:?}"
+            );
             error_is(error, "55000", None);
         }
         other => panic!("expected typed retained-storage downgrade refusal, got {other:?}"),
@@ -510,6 +513,12 @@ async fn vacant_nonholder_receipt_keeps_epoch_and_fixed_fingerprint_bounds() {
 #[tokio::test]
 async fn downgrade_waits_for_writer_before_deciding_whether_storage_is_empty() {
     let w = world().await;
+    // Transfer-receipt rollback is explicitly quiesced-only. Remove that later schema
+    // before starting the concurrent writer that probes Finish's own rollback guard.
+    MIGRATOR
+        .undo(&w.db.pool, 20_261_225_000_000)
+        .await
+        .expect("quiesced transfer rollback before the Finish writer race");
     let mut writer =
         w.db.pool
             .begin()
@@ -523,7 +532,6 @@ async fn downgrade_waits_for_writer_before_deciding_whether_storage_is_empty() {
         .bind(w.admin.tenant_id().as_uuid()).bind(Uuid::new_v4()).execute(&mut *writer).await.expect("uncommitted tombstone fixture");
     let pool = w.db.pool.clone();
     let downgrade = tokio::spawn(async move { MIGRATOR.undo(&pool, BEFORE_CAPACITY).await });
-    // A later migration may first wait here while removing a referencing table's FK.
     // Observe the exact relation/mode/blocker, not the spelling of the current DDL.
     crate::support::eventually("downgrade actually waits on writer before emptiness check",|| async {
         sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE database=(SELECT oid FROM pg_database WHERE datname=current_database()) AND relation='capacity_groups'::regclass AND mode='AccessExclusiveLock' AND NOT granted AND $1=ANY(pg_blocking_pids(pid)))")
