@@ -732,3 +732,22 @@ remaining release limits. No public wire field, migration, grant or worker minor
 its native evidence. Observed ids/revisions are hints, never acquisition or execution permits.
 The common IR/worker wire contracts and public publication gates are unchanged. This internal
 port does not expose capacity-group management through REST or an SDK.
+
+### Dormant ChildRoot Vacate
+
+`CapacityVacateCommand` reuses Finish identity and expected counters, with a separate domain-separated
+fingerprint and immutable transfer receipt. A replay checks binding and current scheduler authority
+before returning the original receipt, ahead of head/CAS/quiescence checks; it is never current
+permission to execute. The first transition only updates the capacity header plus audit, outbox
+and receipt. `capacity.member.vacated` is an additive closed reference-only hint in the foundation
+AsyncAPI contract; consumers reconcile PostgreSQL authority.
+
+The engine audit action is `capacity.member.vacated`, resource `capacity_group`, without repeat
+collapse. Span `workflow.capacity.vacate`, attempt counter `workflow_capacity_transfer_attempts_total`
+and duration `workflow_capacity_transfer_duration_seconds` use a closed outcome vocabulary and
+fixed operation `vacate`; `workflow_capacity_member_vacated_total` counts acknowledged first
+transitions only. Metrics have no tenant, group or run labels.
+
+See [the protocol and evidence ledger](../capacity-vacate-acquire.md). The native adapter is dormant;
+Acquire, automatic recovery and worker claim gating are not activated. CI must validate the new
+tests and non-regeneration AsyncAPI baseline before merge.

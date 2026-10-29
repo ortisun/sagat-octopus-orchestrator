@@ -1,13 +1,14 @@
 # Vacate and Acquire for ChildRoot capacity members (B1d.2 / B2) — proposal D706–D715, revision 2
 
-Status: **proposal, no code.** Revision 2 after one correctness and one architecture review (both read-only, on
-revision 1). Refs: T014-014..017/040/042, ADR-0030 §§13–19, ADR-0037, A0/A1 (`capacity.rs`), B0 lock inventory, B1a
+Status: **Vacate implemented, dormant; CI validation pending. Acquire and the sweeper remain proposals.**
+Revision 2 followed correctness and architecture reviews; the native Vacate increment has separate
+transaction and storage/contract reviews (2026-10-28). Refs: T014-014..017/040/042, ADR-0030 §§13–19, ADR-0037, A0/A1 (`capacity.rs`), B0 lock inventory, B1a
 entry decision, `capacity-eligibility.md` D703–D705, `capacity-discovery.md` (B1d.1, read-only, another branch).
 Ids: D706–D715, G714–G723, O705–O706 (range D701–D799 / G701–G799 / O701–O799).
 
-The pure transitions `CapacityGroup::vacate` and `acquire` exist and are tested; no transactional adapter uses
-them. This document specifies two native commands that do, for **ChildRoot members only**, dormant, with no
-production caller. Possession is not a permit: neither command leases, releases, cancels or changes a run, a
+The pure transitions `CapacityGroup::vacate` and `acquire` exist and are tested. The transactional
+`PgCapacityVacateStore` now uses Vacate for **ChildRoot members only**, dormant, with no production caller.
+The native Acquire command remains unimplemented. Possession is not a permit: neither command leases, releases, cancels or changes a run, a
 step or a chain. Items marked *(review)* come from a reviewer's reading of the code; re-verify them when the
 test is written, they are not yet evidence.
 
@@ -46,7 +47,7 @@ test is written, they are not yet evidence.
 - **D708 — Vacate gate (quiescence), structural.** The selected member is the holder (`NotHolder` otherwise) and
   ACTIVE. The chain's current head equals the observed head, and the head is **not final** (a FINAL head belongs
   to Finish, which already vacates; `finality()` becomes a three-way verdict final / not final / contradictory and
-  a `CONTINUED` head is not final). **No step of the head run is `LEASED` or `RUNNING`**, expired or not; the gate
+  a current `CONTINUED` head is contradictory; a historical continued head can replay its receipt). **No step of the head run is `LEASED` or `RUNNING`**, expired or not; the gate
   reads no clock. `READY`, `PENDING`, `WAITING` and `RETRY_WAIT` steps may remain. *Soundness:* the only statements
   that set a step to `LEASED` or `RUNNING` are in `execution.rs` (`persist`, about line 5749) and
   `execution/path.rs` (about line 1122) *(review)*, and both run under chain `U` then run `U`; the probe is a plain
@@ -119,7 +120,7 @@ test is written, they are not yet evidence.
 
 `crates/domain` (new `execution/capacity_transfer.rs` with the pure gates; `execution/mod.rs`: one `mod` line next
 to `mod capacity;` and a change to the `pub use capacity::{…}` block; `audit.rs` and its test),
-`crates/application/src/capacity_transfer.rs` and `lib.rs`, `crates/infra-postgres` (adapter, `lib.rs`, migration
+`crates/application/src/capacity_vacate.rs` and `lib.rs`, `crates/infra-postgres` (adapter, `lib.rs`, migration
 with column-list INSERT grant and a down that refuses retained receipts, `storage-classification.json` whose
 existing "no retained content/log delta" wording must be revisited), `crates/telemetry/src/capacity.rs` and
 `lib.rs`, the AsyncAPI contract and baseline, `specs/014-workflow-primitives/contracts/README.md`,
@@ -139,7 +140,8 @@ block and an alphabetical list.
    `PENDING`, `WAITING`, `RETRY_WAIT`; refused for a non-holder, for a final head, for a `SCOPED_PATH` member
    (`BindingMismatch`) and for a member without a parent link.
 4. **Races with barriers, never sleeps:** a claim transaction holds chain and run behind a barrier, Vacate waits,
-   the claim commits `LEASED`, Vacate returns `NotQuiescent`, and the reverse order; Vacate against Finish of the
+   the claim commits `LEASED`, the retained command returns `StaleRunRevision`, and a refreshed command
+   returns `NotQuiescent`; also test the reverse order; Vacate against Finish of the
    same member; two members racing to Acquire in both orders (one winner, the loser is `Busy`; its stale command on
    retry is `StaleGroupRevision`, and only a refreshed command sees `Occupied`); a held group row gives `Busy` and
    releases the chain and run guards (independent probes).
@@ -153,16 +155,21 @@ block and an alphabetical list.
 7. Cross-tenant, cross-namespace and member/chain mismatch are inert; an absent group is never "vacant".
 8. Runtime-privilege audit passes for every statement; the down migration refuses with retained receipts; the
    `confirmed_abort` classifier has its own unit test.
-9. Fitness (rule 21): an inventory test that fails when a statement that sets `LEASED`/`RUNNING` appears outside
-   the two known places; it flips to "must read possession" when C1 gates claims.
+9. Fitness (rule 21): the reviewed `contracts/step-status-writers.json` records every extracted literal SQL
+   statement that writes `steps.status` (31 statements in six files, including non-lease writers). The
+   platform-foundation inventory test rejects additions or changes. This conservative source inventory does
+   not prove bind-expression semantics or locks; native claim barriers and review remain necessary. C1 must
+   add possession checks before activation. Regenerate explicitly with
+   `SAGAT_UPDATE_STEP_WRITER_INVENTORY=1 cargo test -p sagat-tests --test integration_platform_foundation -- step_status_writer_inventory_is_explicit_before_capacity_activation`,
+   read the diff, then rerun without the update flag.
 10. A lost hint (rule 9) is covered when the sweeper exists; until then the gap is recorded, not tested.
 
 ## Open obligations
 
-- **G714 — Index for the lease probe (planned, not conditional).** `steps_run_open_idx (tenant_id, run_id)` covers
+- **G714 — Index for the lease probe (implemented; CI validation pending).** `steps_run_open_idx (tenant_id, run_id)` covers
   five open statuses *(review)*, so the success case walks every open step of the run (thousands on a 10k-item
-  collection). Add the additive partial index on `(tenant_id, run_id) WHERE status IN ('LEASED','RUNNING')` and prove
-  the plan with `EXPLAIN`.
+  collection). Migration `20261226000000` adds the partial index on `(tenant_id, run_id) WHERE status IN ('LEASED','RUNNING')` with an `EXPLAIN` availability probe. That forced-index probe is not evidence of natural planner choice
+  or large-workload performance.
 - **G715 — Runnable predicate.** The scheduler has no single definition (`maintenance.rs` `due_*`, `workers.rs`
   `CLAIMABLE`, the loop and collection discovery). Before Acquire may claim work, one shared `macro_rules!` SQL
   fragment under the scheduler and Acquire plus a differential test over every wake and step status, boundary
@@ -197,5 +204,25 @@ block and an alphabetical list.
   sagat-domain --all-targets --locked -D warnings`, `cargo fmt --check`, `check-architecture.py` (24 crates, no
   cycles) and `check-agent-config.py` pass. Private `CARGO_TARGET_DIR`, `CARGO_PROFILE_DEV_DEBUG=0`, 2 jobs. The
   truth table in the test is hand-written and is the specification; no mutation run (paused by the owner).
-- Not started: application port and fingerprint, migration and receipt table, PostgreSQL adapter, native tests,
-  telemetry, audit, contracts. Nothing is ticked in `tasks.md`; the eight canonical tasks stay open.
+- **2026-10-28 — native Vacate increment, CI pending.** Application command/fingerprint, immutable transfer
+  receipts (migration 26), PostgreSQL transaction, typed errors, audit, closed telemetry and the additive
+  `capacity.member.vacated` AsyncAPI hint are implemented. Eighteen native cases cover ordinary/replayed
+  transitions, leased and expired leases, CAS/fence/binding refusal, continuation replay, NOWAIT release,
+  atomic rollback, concurrent duplicates, real worker-claim serialization, scheduler expiry, lost COMMIT
+  acknowledgements, migration/grants/index availability, mixed member kinds and OTLP/metrics.
+  Independent read-only transaction review found no defect; storage review corrected the classification
+  bound for the reserved `ACQUIRE` discriminator from six to seven bytes.
+- **Validation record:** fingerprint stub RED: three failed; native adapter stub RED: three failed. The first
+  native implementation run returned eight passed and one fixture error (`lease_until` was not a column);
+  the fixture now uses the existing `age_lease` helper. AsyncAPI checks returned three passed/one missing
+  baseline failure, followed by one explicit baseline-regeneration pass; the additive diff was read.
+  An expanded native run was interrupted for disk exhaustion and is **not acceptance evidence**. Its
+  diagnostic output exposed two test-harness issues, corrected with recursive blocker discovery and the
+  existing COMMIT proxy's required constraint name. The complete corrected suite, fingerprint tests,
+  non-regeneration baseline, runtime grants and released-source profiles must pass CI.
+- The standalone existing-source SQL scanner rejected an empty writer inventory (31 missing statements);
+  this negative control is not a Cargo test result. The checked-in inventory is validated by the CI test.
+- No production caller, Acquire, sweeper, claim guard, creator or quota/backfill is enabled. The migration's
+  down path is an operator rollback with services quiesced, and refuses retained receipts. G720 receipt
+  retention, O705/O706 and other activation obligations remain open. Nothing is ticked in `tasks.md`; the
+  eight canonical tasks stay open.

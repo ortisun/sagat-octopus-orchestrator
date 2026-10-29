@@ -709,3 +709,12 @@ guard. Keep the eight-node bound and existing graph/schema/tenant rules. Root si
 approvals/children/nesting/capacity remain separately gated. Public and common-SDK evidence and
 observed failures are in scoped-event-publication.md and implementation-0.3.md. No canonical task
 closes through this partial increment; final integrated six-language and release gates remain.
+
+## Dormant native ChildRoot Vacate — 2026-10-28
+
+[Slice V](./capacity-vacate-acquire.md) implements exact non-final ChildRoot Vacate and immutable
+receipt replay, including after continuation. Chain/run/group guards, current scheduler fencing,
+CAS and the lease probe precede the atomic header/audit/outbox/receipt write. The 18 native cases
+and released-source compatibility profiles are pending CI validation; the interrupted local run
+is not a passing gate. Acquire, the caller, claim guards, creation and quota/backfill remain
+prerequisites to activation. No canonical task closes in this increment.

@@ -1072,3 +1072,13 @@ bounded counts and no tenant/payload fields → specs/014-workflow-primitives/ca
 The wider43-case capacity gate,42 SQL privilege checks and six actual released-source upgrade
 profiles pass. There is no public group API, production discovery caller, acquisition, fresh
 admission or new nested publication capability; canonical runtime/resource/release gates stay open.
+
+## Dormant native capacity Vacate — 2026-10-28
+
+T014-014–017/040/043/044, FR-014-014/015 → `capacity_finish::vacate` (18 native tests, CI pending)
+→ exact application command and migration 26 transfer receipts → additive reference-only
+`capacity.member.vacated` AsyncAPI hint → closed `workflow.capacity.vacate` span and operation/outcome
+metrics → [operator guidance](runbooks/workflow-primitives.md). Source inventory fitness rejects
+new or changed literal SQL step-status writers; actual worker-claim races use held database locks.
+[Evidence and limits](../specs/014-workflow-primitives/capacity-vacate-acquire.md) explicitly retain
+the interrupted local run and CI obligations. No task or public nested capability closes here.

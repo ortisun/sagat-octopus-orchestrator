@@ -120,7 +120,7 @@ async fn released_callback_writer_is_fenced_before_redis_activation() {
         let sessions:i64=sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE usename='released_callback_writer'").fetch_one(&db.pool).await.expect("old sessions");assert_eq!(sessions,0);
         progress.enter("normal migration and explicit Redis activation after old process join");
         sagat_infra_postgres::migrate(&db.pool).await.expect("current normal migration");
-        let after:i64=sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations WHERE success").fetch_one(&db.pool).await.expect("current schema boundary");assert_eq!(after,20261225000000);
+        let after:i64=sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations WHERE success").fetch_one(&db.pool).await.expect("current schema boundary");assert_eq!(after,20261226000000);
         let api=support::api::start_on_db(db,Options {runtime_role:true,redis_callbacks:true,..Options::default()}).await;
         let old_run:RunId=witness["run"].as_str().expect("old run").parse().expect("UUID");
         api.executions.verify_run(tenant,old_run).await.expect("old run replay after migration");

@@ -173,6 +173,7 @@ fn source_files() -> Vec<PathBuf> {
 #[derive(Default)]
 struct Extracted {
     statements: usize,
+    step_status_writers: BTreeMap<String, BTreeSet<String>>,
     needs: BTreeMap<Need, Vec<Site>>,
     /// A lock clause or DML verb in a literal that is not part of any statement: nothing audits it.
     fragments: Vec<Site>,
@@ -245,6 +246,26 @@ fn extract_all() -> Extracted {
                 excerpt: excerpt(&statement.text),
             };
             for need in sql_needs::needs(&statement.text) {
+                let writes_status = match &need {
+                    Need::Update(table, column) => table == "steps" && column == "status",
+                    Need::Insert(table, columns) => {
+                        table == "steps"
+                            && (columns.is_empty() || columns.iter().any(|c| c == "status"))
+                    }
+                    _ => false,
+                };
+                if writes_status {
+                    all.step_status_writers
+                        .entry(relative.clone())
+                        .or_default()
+                        .insert(
+                            statement
+                                .text
+                                .split_whitespace()
+                                .collect::<Vec<_>>()
+                                .join(" "),
+                        );
+                }
                 all.needs.entry(need).or_default().push(site.clone());
             }
         }
@@ -961,5 +982,30 @@ async fn the_sweep_switch_connects_the_services_as_the_runtime_role_and_only_the
         as_runtime > 0,
         crate::support::as_runtime_role(),
         "{as_runtime} connection(s) as {RUNTIME_ROLE}"
+    );
+}
+
+/// New/changed status-writing SQL must be reviewed before Vacate's own-run quiescence proof stands.
+/// This is conservative: it includes terminal/ready writers too, not just worker lease writers.
+/// Bind-expression semantics and the run guards remain the responsibility of barrier tests/review.
+#[test]
+fn step_status_writer_inventory_is_explicit_before_capacity_activation() {
+    let actual = extract_all().step_status_writers;
+    let path =
+        repository().join("specs/014-workflow-primitives/contracts/step-status-writers.json");
+    if std::env::var_os("SAGAT_UPDATE_STEP_WRITER_INVENTORY").is_some() {
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&actual).expect("writer inventory JSON") + "\n",
+        )
+        .expect("write reviewed inventory");
+    }
+    let expected: BTreeMap<String, BTreeSet<String>> =
+        serde_json::from_str(&std::fs::read_to_string(path).expect("reviewed writer inventory"))
+            .expect("inventory JSON");
+    assert!(!actual.is_empty());
+    assert_eq!(
+        actual, expected,
+        "step status SQL changed: inspect lease creation and chain/own-run guards before updating this inventory"
     );
 }

@@ -4247,3 +4247,12 @@ pass again separately on the lint-corrected source: cutover60.90s runner, active
 FORWARD8.43s, Applied8.41s. A missing CARGO_TARGET_DIR in one wrapper was refused before
 build/runtime; its0.09s setup failure is not a runtime RED. Exact receipts and source bindings
 are in evidence/public-scoped-events-20261027. No canonical or integrated release gate closes.
+
+## Native ChildRoot Vacate increment — 2026-10-28, CI pending
+
+The implementation and named test matrix are recorded in
+[capacity-vacate-acquire.md](./capacity-vacate-acquire.md#progress-slice-v). Fingerprint and native
+stubs were observed failing. The first implemented native run was 8 passed/1 fixture error, now
+corrected. A later disk-interrupted run is not a complete validation result. All corrected native
+tests, fingerprint/error/audit tests, the non-blessed contract baseline, writer inventory, privilege
+audit and actual released-v0.2 upgrade profiles remain CI gates. No canonical checkbox is closed.

@@ -718,3 +718,18 @@ The common scenario uses concurrency 1 to compare a deterministic journal. The n
 use concurrency 2 and independently inspect correlation, retained values, ordered results,
 receipts, replay and slot release. Do not roll back to an old execution binary while unsupported
 new records remain; use a compatible current reader and roll forward to recover.
+
+### Dormant ChildRoot capacity Vacate (v0.3 implementation increment)
+
+The native Vacate adapter has no scheduler or public call site. It changes capacity metadata only;
+it cannot pause a worker or permit a new claim. Do not manually manufacture receipts or use a
+replayed epoch as permission. Retain the entire original command on `CommitOutcomeUnknown` or
+cancellation and reconcile with the same key; a renewed scheduler lease is allowed, changed identity
+or expected counters are a fingerprint conflict. `Busy` requires a fresh transaction.
+
+A current final head belongs to Finish. Leased or running steps, including expired leases, refuse
+Vacate. A worker claim that advances the run first makes a retained command stale before the
+lease refusal is evaluated. Migration 26 down is an operator-only rollback after services are
+quiesced; retained transfer receipts refuse rollback. The sweeper, acquisition, claim guards and
+receipt retention policy remain activation prerequisites. See
+[the protocol/evidence ledger](../../specs/014-workflow-primitives/capacity-vacate-acquire.md).
