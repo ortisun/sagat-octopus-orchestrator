@@ -113,6 +113,11 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `NewRun` admissions `schedule`, `business_id`, `delay`, `reset` processed by `RunStore::create` in
   ADR-0050 order — `crates/application/src/{schedules.rs,batch.rs,runs.rs,runs/business_id.rs,runs/reset.rs}`
   — validation unit tests — FR-018-005, FR-018-021.
+  *Part done 2026-10-29 (task stays open).* `ScheduleStore` (create, read, list) and the records it speaks
+  (`ScheduleRecord`, `NewSchedule`, `StoredInput`, origin and state) in `application/src/schedules.rs`, beside the
+  `ScheduleCalendar` port. The strict JSON codec lives in `application/src/schedule_codec.rs` (moved from `infra-ir` so that
+  `api-http` and `infra-postgres` share it without an edge between adapters). Not done: `BusinessIdStore`, `BatchStore`,
+  `ResetStore`, and the `NewRun` admissions processed by `RunStore::create`.
 - [ ] T018-012 Lock-order interleaving harness (barriers, deadlock counter) for the merged admission slots
   of ADR-0050 decision 7 and both aggregate orders (aggregate → run; run → bookkeeping row), with
   slot-order cases for the admission paths of 019, 021, 022, 024, 025, 026 and 030 as they merge —
@@ -135,6 +140,16 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
 - [ ] T018-014 [US1] PostgreSQL `ScheduleStore` (revisions, head CAS, due scan by `(shard, next_wake_at)`
   bounded by `now()`, actions, purge) — `crates/infra-postgres/src/schedules.rs` —
   `tests/integration/schedules-bulk-operations/store.rs` — FR-018-001, FR-018-013, FR-018-014.
+  *Part done 2026-10-29 (task stays open).* `PgScheduleStore` (`infra-postgres/src/schedules.rs`) creates, reads and lists
+  schedules with their head revision: one transaction takes the namespace fence (advisory lock), checks the name and the
+  quota (active and paused count, deleted do not), stores the input as a content-addressed payload after checking its
+  digest, inserts the schedule, its revision and the audit record, and commits (the head-revision key is deferred).
+  Evidence: `cargo test -p sagat-tests --test integration_schedules_bulk_operations --locked` — 25 passed (11 of the store:
+  read-back equality, revision and audit committed together, a refused name leaves nothing, quota, a 6-way race for the
+  last 3 places, content charged, shared input payload, forged digest refused, another tenant sees nothing, paging, runtime
+  role), also with `SAGAT_TEST_AS_RUNTIME_ROLE=1`; `integration_platform_foundation` 101 passed (the runtime-privilege audit
+  reads these statements); removing the fence makes the race test fail (6 created instead of 3). Not done: update, pause,
+  resume, delete (head CAS), the due scan by `(shard, next_wake_at)`, actions, purge.
 - [ ] T018-015 [US1] Schedule admission inside `RunStore::create` (fence, CAS, action + state after the
   initial reduction, refusal commits nothing) — `crates/infra-postgres/src/{execution.rs,schedules.rs}`
   — one-commit content test — FR-018-004, FR-018-005.

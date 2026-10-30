@@ -26,6 +26,8 @@ pub enum ConflictKind {
     ConnectorSlug,
     /// A script with that name already exists in the namespace.
     ScriptName,
+    /// A schedule with that name already exists in the namespace.
+    ScheduleName,
     /// A request to publish was published without the approvals it needs.
     RequestNotApproved,
 }

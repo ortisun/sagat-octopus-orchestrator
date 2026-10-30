@@ -76,6 +76,8 @@ pub enum ScheduleError {
     NoteTooLong,
     #[error("remaining actions are 1 to {MAX_REMAINING_ACTIONS}")]
     BadRemaining,
+    #[error("a name is 1 to 128 lowercase letters, digits and dashes, not starting with a dash")]
+    BadName,
     #[error("the nominal time field is a top-level identifier of at most 64 characters")]
     BadNominalTimeField,
     #[error("a run timeout is one second to 366 days")]
@@ -105,6 +107,19 @@ pub struct Ceilings {
     pub tracking_limit: u32,
     /// Actions taken in one recovery in catch-up mode `ALL`.
     pub catchup_actions: u32,
+}
+
+impl Ceilings {
+    /// The hard ceilings. Used to read back what was stored, which must never be refused because a
+    /// namespace lowered its own ceiling afterwards.
+    pub const HARD: Self = Self {
+        spec_entries: MAX_SPEC_ENTRIES,
+        exclusions: MAX_EXCLUSIONS,
+        min_spacing_ms: MIN_SPACING_FLOOR_MS,
+        buffer_limit: MAX_BUFFER_LIMIT,
+        tracking_limit: MAX_TRACKING_LIMIT,
+        catchup_actions: MAX_CATCHUP_ACTIONS,
+    };
 }
 
 impl Default for Ceilings {
@@ -605,6 +620,42 @@ impl RemainingActions {
 }
 
 // --- what a schedule starts ---------------------------------------------------------------------
+
+pub const MAX_NAME_CHARS: usize = 128;
+
+/// The name of a schedule, unique among the schedules of a namespace. Customer text.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct ScheduleName(String);
+
+impl ScheduleName {
+    /// # Errors
+    /// [`ScheduleError::BadName`] unless it is 1 to 128 of `a-z`, `0-9` and `-`, not starting with `-`.
+    pub fn new(value: &str) -> Result<Self, ScheduleError> {
+        let mut chars = value.chars();
+        let head_ok = chars
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+        if !head_ok
+            || value.len() > MAX_NAME_CHARS
+            || !chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        {
+            return Err(ScheduleError::BadName);
+        }
+        Ok(Self(value.to_owned()))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// The name is customer text and stays out of logs.
+impl fmt::Debug for ScheduleName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ScheduleName(..)")
+    }
+}
 
 /// Which version of the workflow each action starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

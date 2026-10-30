@@ -69,6 +69,7 @@ pub use pool::{BeginSafely, PoolConfig, connect, spawn_pool_metrics};
 pub use primitives::PgCollectionStore;
 pub use privilege::{LeastPrivilegeError, PrivilegeFinding};
 pub use reveal_grants::has_effective_payload_reveal_grant;
+pub use schedules::PgScheduleStore;
 pub use scoped_leaf_finish::PgScopedLeafFinishStore;
 pub use sqlx::PgPool;
 pub use telemetry::PROJECTOR_LEASE;

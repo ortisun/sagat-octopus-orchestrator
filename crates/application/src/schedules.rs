@@ -4,8 +4,17 @@
 //! the domain keeps the declared spec and an adapter (`sagat-infra-ir`) makes it mean something,
 //! the way it does for the cron triggers of feature 004 ([`crate::dispatch::CronSchedule`]).
 
-use sagat_domain::schedules::{Ceilings, ScheduleSpec};
+use std::future::Future;
+
+use sagat_domain::audit::AuditRecord;
+use sagat_domain::identity::{NamespaceId, TenantId};
+use sagat_domain::schedules::{
+    Ceilings, Policies, ScheduleId, ScheduleName, ScheduleSpec, ScheduleTarget,
+};
 use time::OffsetDateTime;
+use uuid::Uuid;
+
+use crate::error::StoreError;
 
 /// How many occurrences a single call may be asked for. A caller that needs more asks again from
 /// the last one it got.
@@ -74,4 +83,151 @@ pub trait ScheduleCalendar: Send + Sync {
     ) -> Result<Option<OffsetDateTime>, CalendarFailure> {
         Ok(self.occurrences(spec, after, None, 1)?.first().copied())
     }
+}
+
+// --- the schedule, as stored --------------------------------------------------------------------
+
+/// Who owns a schedule: a person through the API, or a cron trigger of a published workflow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScheduleOrigin {
+    Api,
+    Trigger,
+}
+
+impl ScheduleOrigin {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Api => "API",
+            Self::Trigger => "TRIGGER",
+        }
+    }
+}
+
+impl std::str::FromStr for ScheduleOrigin {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "API" => Ok(Self::Api),
+            "TRIGGER" => Ok(Self::Trigger),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScheduleState {
+    Active,
+    Paused,
+    /// A tombstone: the name is free, the history is kept.
+    Deleted,
+}
+
+impl ScheduleState {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "ACTIVE",
+            Self::Paused => "PAUSED",
+            Self::Deleted => "DELETED",
+        }
+    }
+}
+
+impl std::str::FromStr for ScheduleState {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "ACTIVE" => Ok(Self::Active),
+            "PAUSED" => Ok(Self::Paused),
+            "DELETED" => Ok(Self::Deleted),
+            _ => Err(()),
+        }
+    }
+}
+
+/// A schedule with its head revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScheduleRecord {
+    pub id: ScheduleId,
+    pub tenant_id: TenantId,
+    pub namespace_id: NamespaceId,
+    pub name: ScheduleName,
+    pub origin: ScheduleOrigin,
+    /// The cron trigger of a `TRIGGER` schedule.
+    pub trigger_id: Option<Uuid>,
+    pub state: ScheduleState,
+    /// The head revision; a revision never changes.
+    pub revision: u32,
+    /// Compare-and-swap token of every change of the schedule.
+    pub state_version: u64,
+    pub spec: ScheduleSpec,
+    pub policies: Policies,
+    pub target: ScheduleTarget,
+    /// The input of the runs: a payload of the tenant, not part of the target.
+    pub input_digest: Option<[u8; 32]>,
+    pub note: Option<String>,
+    pub note_by: Option<String>,
+    pub note_at: Option<OffsetDateTime>,
+    /// Whose `run:start` every action is checked against.
+    pub authorized_by: String,
+    pub remaining_actions: Option<u32>,
+    /// The next nominal time, before jitter.
+    pub next_action_at: Option<OffsetDateTime>,
+    /// The instant that nominal time is acted on, jitter included.
+    pub next_actual_at: Option<OffsetDateTime>,
+    /// When a time that could not start is tried again.
+    pub retry_at: Option<OffsetDateTime>,
+    pub tracked_runs: Vec<Uuid>,
+    pub buffered: u32,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
+}
+
+/// The payload of a schedule's input: what the store keeps beside the revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredInput {
+    pub digest: [u8; 32],
+    pub bytes: Vec<u8>,
+}
+
+/// A schedule to create, with its first revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewSchedule {
+    /// Revision 1, state version 1.
+    pub record: ScheduleRecord,
+    /// The bytes of `record.input_digest`, when the schedule has an input.
+    pub input: Option<StoredInput>,
+    pub request_id: Option<String>,
+}
+
+/// Storage port of the schedules. Implemented by `sagat-infra-postgres`.
+pub trait ScheduleStore: Send + Sync {
+    /// Stores a new schedule and its first revision with its audit record, counting it against the
+    /// namespace's quota (`limit`, active and paused ones). `Conflict(ScheduleName)` when the name
+    /// is taken in the namespace; `QuotaExceeded` when the namespace is full.
+    fn create_schedule(
+        &self,
+        new: &NewSchedule,
+        limit: u64,
+        audit: &AuditRecord,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// The schedule with its head revision. A deleted one is still returned (the caller decides).
+    fn schedule(
+        &self,
+        tenant: TenantId,
+        id: ScheduleId,
+    ) -> impl Future<Output = Result<Option<ScheduleRecord>, StoreError>> + Send;
+
+    /// The schedules of a namespace that have not been deleted, by id, after `after` when given.
+    fn schedules(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        after: Option<ScheduleId>,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<ScheduleRecord>, StoreError>> + Send;
 }

@@ -30,6 +30,29 @@ fn a_schedule_id_is_an_id_of_its_own_that_round_trips() {
 }
 
 #[test]
+fn a_name_is_one_to_a_hundred_and_twenty_eight_lowercase_characters_digits_and_dashes() {
+    use sagat_domain::schedules::ScheduleName;
+    for ok in ["a", "0", "nightly-report", "a-b-c", &"x".repeat(128)] {
+        assert_eq!(ScheduleName::new(ok).expect(ok).as_str(), ok);
+    }
+    for bad in [
+        "",
+        "-leading",
+        "Upper",
+        "has space",
+        "under_score",
+        "caf\u{e9}",
+        &"x".repeat(129),
+    ] {
+        assert_eq!(
+            ScheduleName::new(bad).expect_err(bad),
+            ScheduleError::BadName,
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
 fn the_audit_trail_names_schedules_and_batch_jobs() {
     assert_eq!(ResourceType::Schedule.as_str(), "schedule");
     assert_eq!(ResourceType::BatchJob.as_str(), "batch_job");

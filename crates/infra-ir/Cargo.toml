@@ -20,7 +20,7 @@ sagat-application.workspace = true
 sagat-domain.workspace = true
 sagat-infra-expr.workspace = true
 sagat-infra-schema.workspace = true
-time = { workspace = true, features = ["formatting", "parsing", "macros"] }
+time = { workspace = true, features = ["parsing", "macros"] }
 serde_json.workspace = true
 serde.workspace = true
 sha2 = "0.11"

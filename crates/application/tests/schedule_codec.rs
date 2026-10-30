@@ -2,14 +2,14 @@
 //! the database and the domain (`contracts/schedule-spec.schema.json`, `T018-016`).
 #![allow(clippy::expect_used, clippy::panic)]
 
+use sagat_application::schedule_codec::{
+    CodecError, CodecReason, policies_from_json, policies_to_json, spec_from_json, spec_to_json,
+    target_from_json, target_to_json,
+};
 use sagat_domain::business_ids::{ConflictPolicy, ReusePolicy};
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::schedules::{
     CatchupMode, Ceilings, DstAmbiguous, DstGap, Overlap, ScheduleError, VersionPolicy,
-};
-use sagat_infra_ir::schedule_codec::{
-    CodecError, CodecReason, policies_from_json, policies_to_json, spec_from_json, spec_to_json,
-    target_from_json, target_to_json,
 };
 use serde_json::{Value, json};
 

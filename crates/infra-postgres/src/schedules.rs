@@ -1,6 +1,250 @@
 //! The schedule store (feature 018): schedules, their immutable revisions, the actions taken on
 //! their nominal times, backfills and the owed cancellations of `CANCEL_OTHER`.
 //!
-//! PENDING (T018-014): the migration `20261230000000_schedules` and the storage classification
-//! already name this file as the writer of those tables' columns. No statement is issued from here
-//! yet; the store arrives with its tests.
+//! This file owns the columns of those tables in the storage classification. So far it creates and
+//! reads schedules; the changes (update, pause, resume, delete) and the pass's statements arrive
+//! with their tasks (T018-014..).
+
+use sagat_application::error::{ConflictKind, StoreError};
+use sagat_application::schedule_codec::{
+    policies_from_json, policies_to_json, spec_from_json, spec_to_json, target_from_json,
+    target_to_json,
+};
+use sagat_application::schedules::{
+    NewSchedule, ScheduleOrigin, ScheduleRecord, ScheduleState, ScheduleStore,
+};
+use sagat_domain::audit::AuditRecord;
+use sagat_domain::identity::{NamespaceId, TenantId};
+use sagat_domain::schedules::{Ceilings, ScheduleId, ScheduleName};
+use serde_json::Value;
+use sha2::{Digest as _, Sha256};
+use sqlx::PgPool;
+use sqlx::postgres::PgRow;
+use time::OffsetDateTime;
+use uuid::Uuid;
+
+use crate::identity::{col, corrupt, insert_audit, store_error};
+use crate::pool::BeginSafely;
+use crate::quotas::{ensure_room_for_schedule, lock_schedules};
+
+/// The schedule store over PostgreSQL.
+#[derive(Clone)]
+pub struct PgScheduleStore {
+    pool: PgPool,
+}
+
+impl PgScheduleStore {
+    #[must_use]
+    pub const fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+macro_rules! select_schedules {
+    ($tail:literal) => {
+        concat!(
+            "SELECT s.tenant_id, s.namespace_id, s.id, s.name, s.origin, s.trigger_id, s.state, ",
+            "s.head_revision, s.state_version, s.note, s.note_by, s.note_at, s.authorized_by, ",
+            "s.remaining_actions, s.next_action_at, s.next_actual_at, s.retry_at, s.tracked_runs, ",
+            "s.buffered, s.created_at, s.updated_at, r.spec, r.policies, r.action, r.input_digest ",
+            "FROM schedules s ",
+            "JOIN schedule_revisions r ON r.tenant_id = s.tenant_id AND r.schedule_id = s.id ",
+            "AND r.revision = s.head_revision ",
+            $tail
+        )
+    };
+}
+
+fn record_from(row: &PgRow) -> Result<ScheduleRecord, StoreError> {
+    // What was stored is read back under the hard ceilings: a namespace that lowered its own
+    // ceiling afterwards does not make an existing schedule unreadable.
+    let ceilings = Ceilings::HARD;
+    let name: String = col(row, "name")?;
+    let origin: String = col(row, "origin")?;
+    let state: String = col(row, "state")?;
+    let spec: Value = col(row, "spec")?;
+    let policies: Value = col(row, "policies")?;
+    let action: Value = col(row, "action")?;
+    let digest: Option<Vec<u8>> = col(row, "input_digest")?;
+    let revision: i32 = col(row, "head_revision")?;
+    let state_version: i64 = col(row, "state_version")?;
+    let remaining: Option<i32> = col(row, "remaining_actions")?;
+    let buffered: i32 = col(row, "buffered")?;
+    Ok(ScheduleRecord {
+        id: ScheduleId::new(col::<Uuid>(row, "id")?),
+        tenant_id: TenantId::new(col::<Uuid>(row, "tenant_id")?),
+        namespace_id: NamespaceId::new(col::<Uuid>(row, "namespace_id")?),
+        name: ScheduleName::new(&name).map_err(|_| corrupt("schedule name"))?,
+        origin: origin
+            .parse::<ScheduleOrigin>()
+            .map_err(|()| corrupt("schedule origin"))?,
+        trigger_id: col(row, "trigger_id")?,
+        state: state
+            .parse::<ScheduleState>()
+            .map_err(|()| corrupt("schedule state"))?,
+        revision: u32::try_from(revision).map_err(|_| corrupt("schedule revision"))?,
+        state_version: u64::try_from(state_version)
+            .map_err(|_| corrupt("schedule state version"))?,
+        spec: spec_from_json(&spec, &ceilings).map_err(|_| corrupt("schedule spec"))?,
+        policies: policies_from_json(&policies, &ceilings)
+            .map_err(|_| corrupt("schedule policies"))?,
+        target: target_from_json(&action).map_err(|_| corrupt("schedule action"))?,
+        input_digest: match digest {
+            None => None,
+            Some(bytes) => Some(
+                <[u8; 32]>::try_from(bytes.as_slice())
+                    .map_err(|_| corrupt("schedule input digest"))?,
+            ),
+        },
+        note: col(row, "note")?,
+        note_by: col(row, "note_by")?,
+        note_at: col::<Option<OffsetDateTime>>(row, "note_at")?,
+        authorized_by: col(row, "authorized_by")?,
+        remaining_actions: match remaining {
+            None => None,
+            Some(n) => Some(u32::try_from(n).map_err(|_| corrupt("remaining actions"))?),
+        },
+        next_action_at: col(row, "next_action_at")?,
+        next_actual_at: col(row, "next_actual_at")?,
+        retry_at: col(row, "retry_at")?,
+        tracked_runs: col(row, "tracked_runs")?,
+        buffered: u32::try_from(buffered).map_err(|_| corrupt("buffered count"))?,
+        created_at: col(row, "created_at")?,
+        updated_at: col(row, "updated_at")?,
+    })
+}
+
+impl ScheduleStore for PgScheduleStore {
+    async fn create_schedule(
+        &self,
+        new: &NewSchedule,
+        limit: u64,
+        audit: &AuditRecord,
+    ) -> Result<(), StoreError> {
+        let r = &new.record;
+        if let Some(input) = &new.input {
+            // payloads are content-addressed: the bytes must be the ones the digest names
+            if Sha256::digest(&input.bytes).as_slice() != input.digest.as_slice()
+                || r.input_digest != Some(input.digest)
+            {
+                return Err(StoreError::StateConflict(
+                    "the input of a schedule must match its digest",
+                ));
+            }
+        }
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        lock_schedules(&mut tx, r.tenant_id, r.namespace_id).await?;
+        let taken: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM schedules \
+             WHERE tenant_id = $1 AND namespace_id = $2 AND name = $3 AND state <> 'DELETED')",
+        )
+        .bind(r.tenant_id.as_uuid())
+        .bind(r.namespace_id.as_uuid())
+        .bind(r.name.as_str())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        if taken {
+            return Err(StoreError::Conflict(ConflictKind::ScheduleName));
+        }
+        ensure_room_for_schedule(&mut tx, r.tenant_id, r.namespace_id, limit).await?;
+        if let Some(input) = &new.input {
+            sqlx::query(
+                "INSERT INTO payloads (tenant_id,digest,content) VALUES ($1,$2,$3) \
+                 ON CONFLICT (tenant_id,digest) DO NOTHING",
+            )
+            .bind(r.tenant_id.as_uuid())
+            .bind(input.digest.as_slice())
+            .bind(input.bytes.as_slice())
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        }
+        sqlx::query(
+            "INSERT INTO schedules \
+             (tenant_id, namespace_id, id, name, origin, trigger_id, state, head_revision, state_version, \
+              note, note_by, note_at, authorized_by, remaining_actions, next_action_at, next_actual_at, \
+              retry_at, tracked_runs, buffered, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)",
+        )
+        .bind(r.tenant_id.as_uuid())
+        .bind(r.namespace_id.as_uuid())
+        .bind(r.id.as_uuid())
+        .bind(r.name.as_str())
+        .bind(r.origin.as_str())
+        .bind(r.trigger_id)
+        .bind(r.state.as_str())
+        .bind(i32::try_from(r.revision).unwrap_or(i32::MAX))
+        .bind(i64::try_from(r.state_version).unwrap_or(i64::MAX))
+        .bind(r.note.as_deref())
+        .bind(r.note_by.as_deref())
+        .bind(r.note_at)
+        .bind(&r.authorized_by)
+        .bind(r.remaining_actions.map(|n| i32::try_from(n).unwrap_or(i32::MAX)))
+        .bind(r.next_action_at)
+        .bind(r.next_actual_at)
+        .bind(r.retry_at)
+        .bind(&r.tracked_runs)
+        .bind(i32::try_from(r.buffered).unwrap_or(i32::MAX))
+        .bind(r.created_at)
+        .bind(r.updated_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        sqlx::query(
+            "INSERT INTO schedule_revisions \
+             (tenant_id, schedule_id, revision, spec, policies, action, input_digest, actor, request_id, created_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+        )
+        .bind(r.tenant_id.as_uuid())
+        .bind(r.id.as_uuid())
+        .bind(i32::try_from(r.revision).unwrap_or(i32::MAX))
+        .bind(spec_to_json(&r.spec))
+        .bind(policies_to_json(&r.policies))
+        .bind(target_to_json(&r.target))
+        .bind(r.input_digest.as_ref().map(<[u8; 32]>::as_slice))
+        .bind(&r.authorized_by)
+        .bind(new.request_id.as_deref())
+        .bind(r.created_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        insert_audit(&mut tx, audit).await?;
+        tx.commit().await.map_err(store_error)
+    }
+
+    async fn schedule(
+        &self,
+        tenant: TenantId,
+        id: ScheduleId,
+    ) -> Result<Option<ScheduleRecord>, StoreError> {
+        let row = sqlx::query(select_schedules!("WHERE s.tenant_id = $1 AND s.id = $2"))
+            .bind(tenant.as_uuid())
+            .bind(id.as_uuid())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(store_error)?;
+        row.as_ref().map(record_from).transpose()
+    }
+
+    async fn schedules(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        after: Option<ScheduleId>,
+        limit: u32,
+    ) -> Result<Vec<ScheduleRecord>, StoreError> {
+        let rows = sqlx::query(select_schedules!(
+            "WHERE s.tenant_id = $1 AND s.namespace_id = $2 AND s.state <> 'DELETED' \
+             AND ($3::uuid IS NULL OR s.id > $3) ORDER BY s.id LIMIT $4"
+        ))
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(after.map(ScheduleId::as_uuid))
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_error)?;
+        rows.iter().map(record_from).collect()
+    }
+}

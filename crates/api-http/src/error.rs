@@ -564,6 +564,7 @@ impl ApiError {
                     }
                     ConflictKind::ConnectorSlug => "a connector with this slug already exists",
                     ConflictKind::ScriptName => "a script with this name already exists",
+                    ConflictKind::ScheduleName => "a schedule with this name already exists",
                     ConflictKind::RequestNotApproved => {
                         "the request is not approved with what the namespace asks for now"
                     }
@@ -573,7 +574,8 @@ impl ApiError {
                     ConflictKind::WorkflowName
                     | ConflictKind::WebhookSubscriptionName
                     | ConflictKind::BrokerSubscriptionName
-                    | ConflictKind::ScriptName => {
+                    | ConflictKind::ScriptName
+                    | ConflictKind::ScheduleName => {
                         json!({ "field": "name" })
                     }
                     ConflictKind::EventIdReused => json!({ "reason": "EVENT_ID_REUSED" }),
