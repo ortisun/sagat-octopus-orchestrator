@@ -330,8 +330,7 @@ impl PathExecutionTx for PgPathExecutionTx {
     }
 
     async fn worker_capacity_available(&mut self) -> Result<bool, StoreError> {
-        // RED scaffold; root and exact-path grants must share the same storage guard.
-        Ok(true)
+        worker_capacity::available(&mut self.tx, &self.snapshot.info).await
     }
 
     async fn commit(self) -> Result<(), StoreError> {

@@ -13,6 +13,7 @@ mod database;
 mod path;
 mod path_read;
 mod scoped_events;
+mod worker_capacity;
 use scoped_events::EventWaitReadState;
 pub(crate) use scoped_events::validate_scoped_event_identity;
 
@@ -4769,8 +4770,7 @@ impl RunTx for PgRunTx {
     }
 
     async fn worker_capacity_available(&mut self) -> Result<bool, StoreError> {
-        // RED scaffold: the native test must expose the missing possession prerequisite.
-        Ok(true)
+        worker_capacity::available(&mut self.tx, &self.info).await
     }
 
     async fn commit(mut self) -> Result<(), StoreError> {

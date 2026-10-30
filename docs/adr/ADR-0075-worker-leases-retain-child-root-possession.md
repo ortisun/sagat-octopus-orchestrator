@@ -3,7 +3,8 @@
 **Status:** Proposed (2026-10-29; production activation remains gated)
 **Decided by:** Owner for O705/O706 scope; implementation proposal reviewed by agent
 **Refines / supersedes:** ADR-0030; no accepted semantics superseded
-**Enforced by:** `capacity_worker_possession`, focused PostgreSQL worker-capacity tests;
+**Enforced by:** `capacity_worker_possession`, focused PostgreSQL worker-capacity tests,
+`scripts/check-capacity-activation.py` and its negative fixtures;
 production activation remains a separate acceptance gate
 
 ## Context

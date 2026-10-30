@@ -14,8 +14,11 @@ These explicit answers are recorded in `docs/owner-decisions.md`; they are not e
 ## Ordered increments
 
 - [x] Record the actual O705/O706 answers and identify cross-session ownership.
-- [ ] Inventory current capacity readers/writers and claim/discovery gates; define an ADR
+- [x] Inventory current capacity readers/writers and claim/discovery gates; define an ADR
   for the group lock position and caller boundaries before adding a production caller (G721).
+  ADR-0075 is proposed; root/scoped `WorkerService` are the two `LeaseGrant` producers.
+  The activation/source inventory fitness check passes, with five negative/positive tests.
+  This text scan is not a general Rust call-graph proof and does not close runtime G721.
 - [x] Add the pure worker-possession prerequisite, independently of runnable-work eligibility.
   `capacity_worker_possession`: RED 0 passed / 6 failed (wrongly accepted facts); after the
   implementation, `cargo test -p sagat-domain --locked --quiet`: 614 passed / 0 failed /
@@ -59,3 +62,15 @@ caller exists. This is an observation to be enforced and reviewed, not a runtime
 hints at activity admission. Native transfer/Finish already lock chain → own run → group NOWAIT
 → current scheduler fence, with immutable receipt reconciliation. Their previously passing
 native tests are regression prerequisites, not new coordinator acceptance.
+
+The PostgreSQL RED test ran in CI40988195080/job123844042134 on1079a1a0:
+`capacity_finish::worker_leases::vacant_child_stays_ready_without_consuming_an_attempt_or_quota`
+failed at `vacancy grants no external lease`: 0 passed / 1 failed / 0 ignored, 10.29s.
+The build used the cache and took 1m17s. The superseded preliminary workflow was cancelled
+after collecting this expected failure, to release shared CI runners; it is not a full gate pass.
+The adapter scaffold was then replaced with the shared transactional guard. Nine focused
+PostgreSQL tests and the integrated gates await CI; production activation remains off.
+
+`python3 -m unittest discover -s scripts/tests -q`: 70 tests, OK, one pre-existing skip.
+The new fitness check separately observed RED (five failing negative subcases), then GREEN
+(five tests pass). Formatting, architecture (24 crates), agent configuration and actionlint pass.

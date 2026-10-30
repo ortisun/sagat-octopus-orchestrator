@@ -24,6 +24,7 @@ An architectural rule that nothing checks is a wish. Each row is a rule and what
 | Observability vocabulary is closed and low-cardinality | telemetry tests (`observability.rs`, `approval_telemetry.rs`), metrics enums |
 | Docs and generated references match the code | `contract_developer_experience`, `npm run check:api` |
 | Agent guidance is bounded and consistent | `scripts/check-agent-config.py` |
+| Incomplete capacity coordination stays dormant; new lease producers need inventory review | `scripts/check-capacity-activation.py` and negative fixtures (source-text check, not a call-graph proof); runtime lock/race tests remain required |
 | The temporary Kafka dependency snapshot matches its registry source except for the reviewed zstd version | `scripts/check-vendor.py` and its negative controls (CI `architecture`) |
 
 When you add a rule worth keeping, add its row and its check in the same change.
