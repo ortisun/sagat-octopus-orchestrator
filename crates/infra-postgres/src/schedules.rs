@@ -12,15 +12,21 @@ use sagat_application::schedule_codec::{
     target_to_json,
 };
 use sagat_application::schedules::{
-    NewSchedule, Revise, ScheduleOrigin, ScheduleRecord, ScheduleState, ScheduleStore, StateChange,
-    TargetCheck,
+    BufferedAction, DueSchedule, NewSchedule, Reconcile, RecordedAction, Revise, ScheduleAdmission,
+    ScheduleDecision, ScheduleOrigin, ScheduleRecord, ScheduleState, ScheduleStore, ShardFence,
+    StateChange, TargetCheck,
 };
 use sagat_domain::audit::AuditRecord;
+use sagat_domain::execution::{RunId, RunStatus};
 use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_domain::quota::QuotaResource;
-use sagat_domain::schedules::{Ceilings, ScheduleId, ScheduleName, ScheduleTarget, VersionPolicy};
+use sagat_domain::schedules::{
+    ActionKind, Ceilings, Outcome, ScheduleId, ScheduleName, ScheduleTarget, VersionPolicy,
+};
+use sagat_domain::sharding::Shard;
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
+use sqlx::PgConnection;
 use sqlx::PgPool;
 use sqlx::postgres::PgRow;
 use time::OffsetDateTime;
@@ -29,6 +35,248 @@ use uuid::Uuid;
 use crate::identity::{col, corrupt, insert_audit, store_error};
 use crate::pool::BeginSafely;
 use crate::quotas::{effective, ensure_room_for_schedule, lock_schedules};
+
+/// What the pass holds when it acts for a schedule, checked in the transaction that acts: the shard
+/// lease, then the schedule row under `FOR UPDATE` with the compare-and-swap on the state the
+/// decision was made on (ADR-0050 decision 7 puts this before every other admission lock). A
+/// refusal is a [`StoreError::StateConflict`] and commits nothing.
+async fn lock_schedule(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    schedule: ScheduleId,
+    fence: Option<&ShardFence>,
+    expected_state_version: u64,
+    allow_paused: bool,
+) -> Result<(), StoreError> {
+    if let Some(fence) = fence {
+        let shard = Shard::of(schedule.as_uuid());
+        let generation = i64::try_from(fence.lease.generation).ok();
+        let (true, Some(generation)) = (fence.lease.shard == shard, generation) else {
+            return Err(StoreError::StateConflict(
+                "the shard lease is not the one of this schedule",
+            ));
+        };
+        let held: Option<i16> = sqlx::query_scalar(
+            "SELECT shard FROM scheduler_shards \
+             WHERE shard = $1 AND generation = $2 AND owner = $3 FOR SHARE",
+        )
+        .bind(i16::from(shard.index()))
+        .bind(generation)
+        .bind(&fence.owner)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(store_error)?;
+        // expiry is observed only after the lock: a volatile predicate could run before a lock wait
+        let current: Option<Option<OffsetDateTime>> = if held.is_some() {
+            sqlx::query_scalar(
+                "WITH tick AS MATERIALIZED (SELECT clock_timestamp() AS now) \
+                 SELECT CASE WHEN s.expires_at > tick.now THEN tick.now END \
+                 FROM scheduler_shards s CROSS JOIN tick \
+                 WHERE s.shard = $1 AND s.generation = $2 AND s.owner = $3",
+            )
+            .bind(i16::from(shard.index()))
+            .bind(generation)
+            .bind(&fence.owner)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(store_error)?
+        } else {
+            None
+        };
+        if current.flatten().is_none() {
+            return Err(StoreError::StateConflict(
+                "the shard lease is no longer held",
+            ));
+        }
+    }
+    let row: Option<(String, i64)> = sqlx::query_as(
+        "SELECT state, state_version FROM schedules WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
+    )
+    .bind(tenant.as_uuid())
+    .bind(schedule.as_uuid())
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    let Some((state, version)) = row else {
+        return Err(StoreError::MissingReference);
+    };
+    let acts = state == ScheduleState::Active.as_str()
+        || (allow_paused && state == ScheduleState::Paused.as_str());
+    if !acts {
+        return Err(StoreError::StateConflict("the schedule is not active"));
+    }
+    if u64::try_from(version).ok() != Some(expected_state_version) {
+        return Err(StoreError::StateConflict(
+            "the schedule changed since the decision was made",
+        ));
+    }
+    Ok(())
+}
+
+/// The first half of admitting the run of a schedule's action: see [`lock_schedule`].
+pub(crate) async fn lock_for_admission(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    admission: &ScheduleAdmission,
+) -> Result<(), StoreError> {
+    lock_schedule(
+        conn,
+        tenant,
+        admission.schedule,
+        admission.fence.as_ref(),
+        admission.expected_state_version,
+        // trigger-now works while the schedule is paused
+        admission.kind == ActionKind::Triggered,
+    )
+    .await
+}
+
+fn conflict_on_duplicate(error: sqlx::Error) -> StoreError {
+    match &error {
+        sqlx::Error::Database(db) if db.is_unique_violation() => {
+            StoreError::StateConflict("the schedule already acted on that time")
+        }
+        _ => store_error(error),
+    }
+}
+
+/// Inserts an action row that has no run.
+async fn insert_recorded(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    schedule: ScheduleId,
+    action: &RecordedAction,
+    now: OffsetDateTime,
+) -> Result<(), StoreError> {
+    sqlx::query(
+        "INSERT INTO schedule_actions \
+         (tenant_id, schedule_id, origin, nominal_at, kind, revision, outcome, reason, decided_at, \
+          summary_count, summary_last_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+    )
+    .bind(tenant.as_uuid())
+    .bind(schedule.as_uuid())
+    .bind(action.kind.origin().as_str())
+    .bind(action.nominal_at)
+    .bind(action.kind.as_str())
+    .bind(i32::try_from(action.revision).unwrap_or(i32::MAX))
+    .bind(action.outcome.as_str())
+    .bind(action.reason)
+    .bind(now)
+    .bind(
+        action
+            .summary
+            .map(|(n, _)| i32::try_from(n).unwrap_or(i32::MAX)),
+    )
+    .bind(action.summary.map(|(_, last)| last))
+    .execute(conn)
+    .await
+    .map_err(conflict_on_duplicate)?;
+    Ok(())
+}
+
+/// The counters of a schedule after rows were recorded: one per outcome, a summary counting the
+/// times it stands for.
+fn bumped(counters: &mut Value, outcome: Outcome, by: u64) {
+    if let Value::Object(map) = counters {
+        let key = outcome.as_str().to_owned();
+        let now = map
+            .get(&key)
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            .saturating_add(by);
+        map.insert(key, Value::from(now));
+    }
+}
+
+/// The second half, once the run row exists: the action is recorded with the run (a waiting action
+/// becomes the started one), the summaries ride along, and the schedule moves to the state the
+/// decision chose. A second action for the same nominal time is refused by its identity.
+pub(crate) async fn record_start(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    run: RunId,
+    admission: &ScheduleAdmission,
+    now: OffsetDateTime,
+) -> Result<(), StoreError> {
+    let released = sqlx::query(
+        "UPDATE schedule_actions SET outcome = 'STARTED', run_id = $5, actual_at = $6, decided_at = $6 \
+         WHERE tenant_id = $1 AND schedule_id = $2 AND origin = $3 AND nominal_at = $4 \
+           AND outcome = 'BUFFERED'",
+    )
+    .bind(tenant.as_uuid())
+    .bind(admission.schedule.as_uuid())
+    .bind(admission.kind.origin().as_str())
+    .bind(admission.nominal_at)
+    .bind(run.as_uuid())
+    .bind(now)
+    .execute(&mut *conn)
+    .await
+    .map_err(store_error)?
+    .rows_affected()
+        == 1;
+    if !released {
+        sqlx::query(
+            "INSERT INTO schedule_actions \
+             (tenant_id, schedule_id, origin, nominal_at, kind, revision, outcome, actual_at, decided_at, run_id) \
+             VALUES ($1, $2, $3, $4, $5, $6, 'STARTED', $7, $7, $8)",
+        )
+        .bind(tenant.as_uuid())
+        .bind(admission.schedule.as_uuid())
+        .bind(admission.kind.origin().as_str())
+        .bind(admission.nominal_at)
+        .bind(admission.kind.as_str())
+        .bind(i32::try_from(admission.revision).unwrap_or(i32::MAX))
+        .bind(now)
+        .bind(run.as_uuid())
+        .execute(&mut *conn)
+        .await
+        .map_err(conflict_on_duplicate)?;
+    }
+    // the row is locked: its counters can be read, changed here and written back
+    let mut counters: Value =
+        sqlx::query_scalar("SELECT counters FROM schedules WHERE tenant_id = $1 AND id = $2")
+            .bind(tenant.as_uuid())
+            .bind(admission.schedule.as_uuid())
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(store_error)?;
+    bumped(&mut counters, Outcome::Started, 1);
+    for action in &admission.after.extra {
+        insert_recorded(conn, tenant, admission.schedule, action, now).await?;
+        bumped(
+            &mut counters,
+            action.outcome,
+            action.summary.map_or(1, |(n, _)| u64::from(n)),
+        );
+    }
+    sqlx::query(
+        "UPDATE schedules SET state_version = state_version + 1, next_action_at = $3, \
+         next_actual_at = $4, retry_at = NULL, remaining_actions = $5, \
+         tracked_runs = array_append(tracked_runs, $6), \
+         buffered = GREATEST(buffered - $8, 0), counters = $9, updated_at = $7, \
+         recheck_at = CASE WHEN GREATEST(buffered - $8, 0) > 0 THEN $7 + interval '5 seconds' ELSE NULL END \
+         WHERE tenant_id = $1 AND id = $2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(admission.schedule.as_uuid())
+    .bind(admission.after.next_action_at)
+    .bind(admission.after.next_actual_at)
+    .bind(
+        admission
+            .after
+            .remaining_actions
+            .map(|n| i32::try_from(n).unwrap_or(i32::MAX)),
+    )
+    .bind(run.as_uuid())
+    .bind(now)
+    .bind(i32::from(released))
+    .bind(counters)
+    .execute(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    Ok(())
+}
 
 /// The schedule store over PostgreSQL.
 #[derive(Clone)]
@@ -48,7 +296,7 @@ macro_rules! select_schedules {
         concat!(
             "SELECT s.tenant_id, s.namespace_id, s.id, s.name, s.origin, s.trigger_id, s.state, ",
             "s.head_revision, s.state_version, s.note, s.note_by, s.note_at, s.authorized_by, ",
-            "s.remaining_actions, s.next_action_at, s.next_actual_at, s.retry_at, s.tracked_runs, ",
+            "s.remaining_actions, s.next_action_at, s.next_actual_at, s.retry_at, s.recheck_at, s.tracked_runs, ",
             "s.buffered, s.created_at, s.updated_at, r.spec, r.policies, r.action, r.input_digest ",
             "FROM schedules s ",
             "JOIN schedule_revisions r ON r.tenant_id = s.tenant_id AND r.schedule_id = s.id ",
@@ -110,6 +358,7 @@ fn record_from(row: &PgRow) -> Result<ScheduleRecord, StoreError> {
         next_action_at: col(row, "next_action_at")?,
         next_actual_at: col(row, "next_actual_at")?,
         retry_at: col(row, "retry_at")?,
+        recheck_at: col(row, "recheck_at")?,
         tracked_runs: col(row, "tracked_runs")?,
         buffered: u32::try_from(buffered).map_err(|_| corrupt("buffered count"))?,
         created_at: col(row, "created_at")?,
@@ -229,8 +478,8 @@ impl ScheduleStore for PgScheduleStore {
             "INSERT INTO schedules \
              (tenant_id, namespace_id, id, name, origin, trigger_id, state, head_revision, state_version, \
               note, note_by, note_at, authorized_by, remaining_actions, next_action_at, next_actual_at, \
-              retry_at, tracked_runs, buffered, created_at, updated_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)",
+              retry_at, tracked_runs, buffered, created_at, updated_at, recheck_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)",
         )
         .bind(r.tenant_id.as_uuid())
         .bind(r.namespace_id.as_uuid())
@@ -253,6 +502,7 @@ impl ScheduleStore for PgScheduleStore {
         .bind(i32::try_from(r.buffered).unwrap_or(i32::MAX))
         .bind(r.created_at)
         .bind(r.updated_at)
+        .bind(r.recheck_at)
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
@@ -523,5 +773,260 @@ impl ScheduleStore for PgScheduleStore {
         insert_audit(&mut tx, audit).await?;
         tx.commit().await.map_err(store_error)?;
         Ok(true)
+    }
+
+    async fn due_schedules(
+        &self,
+        shards: &[Shard],
+        limit: u32,
+    ) -> Result<Vec<DueSchedule>, StoreError> {
+        let shards: Vec<i16> = shards.iter().map(|s| i16::from(s.index())).collect();
+        let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
+            "SELECT tenant_id, id FROM schedules \
+             WHERE shard = ANY($1) AND state = 'ACTIVE' AND next_wake_at <= clock_timestamp() \
+             ORDER BY next_wake_at, id LIMIT $2",
+        )
+        .bind(shards)
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_error)?;
+        Ok(rows
+            .into_iter()
+            .map(|(tenant, id)| DueSchedule {
+                tenant_id: TenantId::new(tenant),
+                id: ScheduleId::new(id),
+            })
+            .collect())
+    }
+
+    async fn run_statuses(
+        &self,
+        tenant: TenantId,
+        runs: &[Uuid],
+    ) -> Result<Vec<(Uuid, RunStatus)>, StoreError> {
+        let rows: Vec<(Uuid, String)> =
+            sqlx::query_as("SELECT id, status FROM runs WHERE tenant_id = $1 AND id = ANY($2)")
+                .bind(tenant.as_uuid())
+                .bind(runs)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(store_error)?;
+        rows.into_iter()
+            .map(|(id, status)| {
+                status
+                    .parse::<RunStatus>()
+                    .map(|s| (id, s))
+                    .map_err(|_| corrupt("run status"))
+            })
+            .collect()
+    }
+
+    async fn oldest_buffered(
+        &self,
+        tenant: TenantId,
+        id: ScheduleId,
+    ) -> Result<Option<BufferedAction>, StoreError> {
+        let row: Option<(OffsetDateTime, String, i32)> = sqlx::query_as(
+            "SELECT nominal_at, kind, revision FROM schedule_actions \
+             WHERE tenant_id = $1 AND schedule_id = $2 AND outcome = 'BUFFERED' \
+             ORDER BY nominal_at LIMIT 1",
+        )
+        .bind(tenant.as_uuid())
+        .bind(id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_error)?;
+        row.map(|(nominal_at, kind, revision)| {
+            Ok(BufferedAction {
+                nominal_at,
+                kind: kind
+                    .parse::<ActionKind>()
+                    .map_err(|()| corrupt("action kind"))?,
+                revision: u32::try_from(revision).map_err(|_| corrupt("action revision"))?,
+            })
+        })
+        .transpose()
+    }
+
+    async fn input(
+        &self,
+        tenant: TenantId,
+        digest: &[u8; 32],
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        sqlx::query_scalar("SELECT content FROM payloads WHERE tenant_id = $1 AND digest = $2")
+            .bind(tenant.as_uuid())
+            .bind(digest.as_slice())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(store_error)
+    }
+
+    async fn namespace_slug(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+    ) -> Result<Option<String>, StoreError> {
+        sqlx::query_scalar("SELECT slug FROM namespaces WHERE tenant_id = $1 AND id = $2")
+            .bind(tenant.as_uuid())
+            .bind(namespace.as_uuid())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(store_error)
+    }
+
+    async fn record_decision(
+        &self,
+        decision: &ScheduleDecision,
+        audit: Option<&AuditRecord>,
+    ) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        lock_schedule(
+            &mut tx,
+            decision.tenant_id,
+            decision.schedule,
+            decision.fence.as_ref(),
+            decision.expected_state_version,
+            false,
+        )
+        .await?;
+        let mut counters: Value =
+            sqlx::query_scalar("SELECT counters FROM schedules WHERE tenant_id = $1 AND id = $2")
+                .bind(decision.tenant_id.as_uuid())
+                .bind(decision.schedule.as_uuid())
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(store_error)?;
+        let mut waiting: i32 = 0;
+        for action in decision.actions.iter().chain(&decision.after.extra) {
+            insert_recorded(
+                &mut tx,
+                decision.tenant_id,
+                decision.schedule,
+                action,
+                decision.at,
+            )
+            .await?;
+            bumped(
+                &mut counters,
+                action.outcome,
+                action.summary.map_or(1, |(n, _)| u64::from(n)),
+            );
+            if action.outcome == Outcome::Buffered {
+                waiting += 1;
+            }
+        }
+        sqlx::query(
+            "UPDATE schedules SET state_version = state_version + 1, next_action_at = $3, \
+             next_actual_at = $4, retry_at = NULL, remaining_actions = $5, \
+             buffered = buffered + $6, counters = $7, \
+             recheck_at = CASE WHEN buffered + $6 > 0 THEN $9 + interval '5 seconds' ELSE NULL END, \
+             state = CASE WHEN $8::text IS NULL THEN state ELSE 'PAUSED' END, \
+             note = COALESCE($8, note), note_by = CASE WHEN $8::text IS NULL THEN note_by ELSE 'system' END, \
+             note_at = CASE WHEN $8::text IS NULL THEN note_at ELSE $9 END, updated_at = $9 \
+             WHERE tenant_id = $1 AND id = $2",
+        )
+        .bind(decision.tenant_id.as_uuid())
+        .bind(decision.schedule.as_uuid())
+        .bind(decision.after.next_action_at)
+        .bind(decision.after.next_actual_at)
+        .bind(
+            decision
+                .after
+                .remaining_actions
+                .map(|n| i32::try_from(n).unwrap_or(i32::MAX)),
+        )
+        .bind(waiting)
+        .bind(counters)
+        .bind(decision.pause.as_ref().map(|p| p.note.as_str()))
+        .bind(decision.at)
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        if let Some(audit) = audit {
+            insert_audit(&mut tx, audit).await?;
+        }
+        tx.commit().await.map_err(store_error)
+    }
+
+    async fn reconcile_schedule(
+        &self,
+        reconcile: &Reconcile,
+        audit: Option<&AuditRecord>,
+    ) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        lock_schedule(
+            &mut tx,
+            reconcile.tenant_id,
+            reconcile.schedule,
+            reconcile.fence.as_ref(),
+            reconcile.expected_state_version,
+            false,
+        )
+        .await?;
+        sqlx::query(
+            "UPDATE schedules SET state_version = state_version + 1, \
+             tracked_runs = COALESCE((SELECT array_agg(t) FROM unnest(tracked_runs) AS t WHERE t <> ALL($3)), '{}'), \
+             state = CASE WHEN $4::text IS NULL THEN state ELSE 'PAUSED' END, \
+             note = COALESCE($4, note), note_by = CASE WHEN $4::text IS NULL THEN note_by ELSE 'system' END, \
+             note_at = CASE WHEN $4::text IS NULL THEN note_at ELSE $5 END, updated_at = $5 \
+             WHERE tenant_id = $1 AND id = $2",
+        )
+        .bind(reconcile.tenant_id.as_uuid())
+        .bind(reconcile.schedule.as_uuid())
+        .bind(&reconcile.forget)
+        .bind(reconcile.pause.as_ref().map(|p| p.note.as_str()))
+        .bind(reconcile.at)
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        if let Some(audit) = audit {
+            insert_audit(&mut tx, audit).await?;
+        }
+        tx.commit().await.map_err(store_error)
+    }
+
+    async fn recheck_schedule(
+        &self,
+        tenant: TenantId,
+        id: ScheduleId,
+        expected_state_version: u64,
+        at: Option<OffsetDateTime>,
+    ) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        lock_schedule(&mut tx, tenant, id, None, expected_state_version, false).await?;
+        sqlx::query(
+            "UPDATE schedules SET state_version = state_version + 1, recheck_at = $3 \
+             WHERE tenant_id = $1 AND id = $2",
+        )
+        .bind(tenant.as_uuid())
+        .bind(id.as_uuid())
+        .bind(at)
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        tx.commit().await.map_err(store_error)
+    }
+
+    async fn defer_schedule(
+        &self,
+        tenant: TenantId,
+        id: ScheduleId,
+        expected_state_version: u64,
+        retry_at: OffsetDateTime,
+    ) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        lock_schedule(&mut tx, tenant, id, None, expected_state_version, false).await?;
+        sqlx::query(
+            "UPDATE schedules SET state_version = state_version + 1, retry_at = $3, next_actual_at = $3 \
+             WHERE tenant_id = $1 AND id = $2",
+        )
+        .bind(tenant.as_uuid())
+        .bind(id.as_uuid())
+        .bind(retry_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        tx.commit().await.map_err(store_error)
     }
 }

@@ -980,6 +980,11 @@ impl RunStore for PgRunStore {
                     .await?;
                 return Ok(Applied::Replayed(existing));
             }
+            // The action of a schedule takes its fence and the schedule row before any other
+            // admission lock (ADR-0050 decision 7).
+            if let Some(schedule) = &new.schedule {
+                crate::schedules::lock_for_admission(&mut tx, tenant, schedule).await?;
+            }
             // Advance the rerun FK's stable identity guard before admission locks.
             // This grants no authority over the source run's business state (ADR-0039).
             if let Some(source) = new.info.rerun_of {
@@ -1147,9 +1152,10 @@ impl RunStore for PgRunStore {
                 "INSERT INTO runs (id, tenant_id, namespace_id, workflow_id, workflow_version_id, \
                  status, run_version, paused, input_digest, correlation_id, started_by, trace_id, \
                  deadline_at, created_at, updated_at, parent_run_id, parent_node, cancel_policy, \
-                 depth, root_run_id, trace_parent_span, rerun_of, input_blob_id, origin) \
+                 depth, root_run_id, trace_parent_span, rerun_of, input_blob_id, origin, \
+                 schedule_id, schedule_nominal_at, schedule_action_kind, schedule_revision) \
                  VALUES ($1, $2, $3, $4, $5, 'RUNNING', 0, false, $6, $7, $8, $9, $10, $11, $11, \
-                         $12, $13, $14, $15, $16, $17, $18, $19, $20)",
+                         $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)",
             )
             .bind(info.run_id.as_uuid())
             .bind(tenant.as_uuid())
@@ -1171,9 +1177,20 @@ impl RunStore for PgRunStore {
             .bind(info.rerun_of.map(|r| r.as_uuid()))
             .bind(input_blob.map(sagat_domain::blobs::BlobId::as_uuid))
             .bind(info.origin.map(sagat_application::runs::RunOrigin::as_str))
+            .bind(new.schedule.as_ref().map(|s| s.schedule.as_uuid()))
+            .bind(new.schedule.as_ref().map(|s| s.nominal_at))
+            .bind(new.schedule.as_ref().map(|s| s.kind.as_str()))
+            .bind(
+                new.schedule
+                    .as_ref()
+                    .map(|s| i32::try_from(s.revision).unwrap_or(i32::MAX)),
+            )
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
+            if let Some(schedule) = &new.schedule {
+                crate::schedules::record_start(&mut tx, tenant, info.run_id, schedule, now).await?;
+            }
             capture_run_limits(
                 &mut tx,
                 tenant.as_uuid(),

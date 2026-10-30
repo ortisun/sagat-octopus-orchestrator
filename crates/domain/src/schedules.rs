@@ -846,6 +846,19 @@ impl ActionKind {
     }
 }
 
+impl FromStr for ActionKind {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "SCHEDULED" => Ok(Self::Scheduled),
+            "TRIGGERED" => Ok(Self::Triggered),
+            "BACKFILL" => Ok(Self::Backfill),
+            _ => Err(()),
+        }
+    }
+}
+
 /// Part of the identity of an action: at most one action exists per tenant, schedule, origin and
 /// nominal time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

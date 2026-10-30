@@ -5082,6 +5082,7 @@ where
         );
         let limits = RunLimits::of(&self.store, tenant, parent.info.namespace_id).await?;
         let new = NewRun {
+            schedule: None,
             retained: None,
             limits,
             info,

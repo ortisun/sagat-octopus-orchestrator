@@ -62,6 +62,8 @@ pub struct NewRun {
     pub input_blob: Option<crate::blobs::RunInputBinding>,
     pub audit: AuditRecord,
     pub idempotency: Idempotency,
+    /// The schedule action this run is the result of, committed with the run (feature 018).
+    pub schedule: Option<crate::schedules::ScheduleAdmission>,
 }
 
 /// One journal entry as the API shows it.
@@ -521,7 +523,29 @@ where
         request: &StartRun<'_>,
         ctx: &RequestContext,
     ) -> Result<RunRecord, AppError> {
-        self.start_with(principal, request, None, None, ctx).await
+        self.start_with(principal, request, None, None, None, ctx)
+            .await
+    }
+
+    /// Starts the run of a schedule's action (feature 018). The principal is the schedule
+    /// (`system:schedule:<id>`) holding the role of whoever authorized it, so the run says who started
+    /// it and `run:start` is the authority of that subject today. The run is admitted under the scope
+    /// `schedule:{id}` and the key of the action, and the action row and the new state of the schedule
+    /// commit with it.
+    ///
+    /// # Errors
+    /// As [`Self::start`], and [`AppError::StateConflict`] when the schedule is not active, changed
+    /// since the decision, the shard lease is no longer held, or the key of the action already has
+    /// its run: another process acted on that time first, and this one did not.
+    pub async fn start_scheduled(
+        &self,
+        principal: &Principal,
+        request: &StartRun<'_>,
+        admission: crate::schedules::ScheduleAdmission,
+        ctx: &RequestContext,
+    ) -> Result<RunRecord, AppError> {
+        self.start_with(principal, request, None, None, Some(admission), ctx)
+            .await
     }
 
     /// Starts with a staged upload belonging to this principal. The external bytes stay opaque;
@@ -533,7 +557,7 @@ where
         id: sagat_domain::blobs::BlobId,
         ctx: &RequestContext,
     ) -> Result<RunRecord, AppError> {
-        self.start_with(principal, request, None, Some(id), ctx)
+        self.start_with(principal, request, None, Some(id), None, ctx)
             .await
     }
 
@@ -599,6 +623,7 @@ where
             },
             Some(Rerun { of: id, reason }),
             None,
+            None,
             ctx,
         )
         .await
@@ -610,6 +635,7 @@ where
         request: &StartRun<'_>,
         rerun: Option<Rerun<'_>>,
         input_blob: Option<sagat_domain::blobs::BlobId>,
+        scheduled: Option<crate::schedules::ScheduleAdmission>,
         ctx: &RequestContext,
     ) -> Result<RunRecord, AppError> {
         principal.authorize(Permission::RunStart)?;
@@ -772,6 +798,21 @@ where
         if let Some(blob_idempotency) = blob_idempotency {
             idempotency = blob_idempotency;
         }
+        if let Some(admission) = &scheduled {
+            // an action is recognised by its schedule and its nominal time, whatever the caller sends
+            idempotency = Idempotency {
+                scope: format!("schedule:{}", admission.schedule),
+                key: admission.run_key(),
+                fingerprint: fingerprint(&[
+                    b"schedule.action",
+                    admission.schedule.to_string().as_bytes(),
+                    admission.run_key().as_bytes(),
+                    workflow.id().to_string().as_bytes(),
+                    version.version.id().to_string().as_bytes(),
+                    request.input,
+                ]),
+            };
+        }
         let (input, input_binding) = match input_blob {
             Some(id) => {
                 let (blobs, checker) = self.input_blobs.as_ref().ok_or(AppError::Unavailable)?;
@@ -828,7 +869,9 @@ where
             input_blob: input_binding,
             audit,
             idempotency,
+            schedule: scheduled,
         };
+        let scheduled_start = new.schedule.is_some();
         let created = match self.store.create(new).await {
             Ok(created) => created,
             Err(error) => {
@@ -837,7 +880,8 @@ where
                 return Err(error.into());
             }
         };
-        self.finish_start(principal, run_id, created, ctx).await
+        self.finish_start(principal, run_id, created, scheduled_start, ctx)
+            .await
     }
 
     async fn finish_start(
@@ -845,9 +889,15 @@ where
         principal: &Principal,
         run_id: RunId,
         created: Applied<S::Tx>,
+        scheduled: bool,
         ctx: &RequestContext,
     ) -> Result<RunRecord, AppError> {
         match created {
+            // the key of a scheduled time is the platform's own: nobody retries it, so a replay is
+            // another process that acted on that time first
+            Applied::Replayed(_) if scheduled => Err(AppError::StateConflict(
+                "the schedule already acted on that time",
+            )),
             Applied::Replayed(existing) => {
                 let id = existing.parse::<RunId>().map_err(|_| AppError::Internal)?;
                 self.store
@@ -1652,4 +1702,38 @@ fn fingerprint(parts: &[&[u8]]) -> Vec<u8> {
 #[must_use]
 pub fn event_names(events: &[RunEvent]) -> Vec<&'static str> {
     events.iter().map(RunEvent::name).collect()
+}
+
+impl<S, C, E> crate::schedule_firing::ScheduledStarts for RunService<S, C, E>
+where
+    S: RunStore + DefinitionStore,
+    C: Clock,
+    E: ExpressionEvaluator,
+{
+    async fn start_scheduled(
+        &self,
+        principal: &Principal,
+        request: &crate::schedule_firing::ScheduledStart<'_>,
+        admission: crate::schedules::ScheduleAdmission,
+        ctx: &RequestContext,
+    ) -> Result<RunId, AppError> {
+        let key = admission.run_key();
+        let started = RunService::start_scheduled(
+            self,
+            principal,
+            &StartRun {
+                namespace: request.namespace,
+                workflow: request.workflow,
+                version: request.version,
+                input: request.input,
+                correlation_id: None,
+                deadline: None,
+                key: &key,
+            },
+            admission,
+            ctx,
+        )
+        .await?;
+        Ok(started.info.run_id)
+    }
 }

@@ -2467,6 +2467,24 @@
       ]
     },
     {
+      "table": "runs",
+      "column": "schedule_action_kind",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK runs_schedule_action_kind_valid permits only SCHEDULED, TRIGGERED or BACKFILL."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
       "table": "saga_plan_entries",
       "column": "after",
       "sql_type": "_text",

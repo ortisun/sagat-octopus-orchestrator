@@ -120,7 +120,7 @@ async fn table_exists(pool: &PgPool, name: &str) -> bool {
 /// Rolls the schema back to `target` on a session of its own. SQLx 0.9 leaves a refused migration
 /// holding its session advisory lock, so the lock is released explicitly and the session closed,
 /// never returned to a pool where the next rollback would wait for it for ever.
-async fn undo_to(db: &TestDb, target: i64) -> Result<(), sqlx::migrate::MigrateError> {
+pub(crate) async fn undo_to(db: &TestDb, target: i64) -> Result<(), sqlx::migrate::MigrateError> {
     let mut connection = bounded::within(
         "connect the isolated migrator",
         bounded::START_LIMIT,

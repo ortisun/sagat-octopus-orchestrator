@@ -190,6 +190,14 @@ impl Subject {
         Self("system:gateway".to_owned())
     }
 
+    /// The actor recorded for what a schedule does by itself (starting a run at a nominal time,
+    /// feature 018): `system:schedule:<id>`. Like the other platform actors it lives in the reserved
+    /// `system:` namespace, so nobody can authenticate as it.
+    #[must_use]
+    pub fn schedule(schedule: ::uuid::Uuid) -> Self {
+        Self(format!("system:schedule:{schedule}"))
+    }
+
     /// Validates and wraps a subject.
     ///
     /// # Errors

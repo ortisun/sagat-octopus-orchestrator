@@ -187,10 +187,133 @@ pub struct ScheduleRecord {
     pub next_actual_at: Option<OffsetDateTime>,
     /// When a time that could not start is tried again.
     pub retry_at: Option<OffsetDateTime>,
+    /// When the runs that hold back a waiting action are looked at again.
+    pub recheck_at: Option<OffsetDateTime>,
     pub tracked_runs: Vec<Uuid>,
     pub buffered: u32,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
+}
+
+/// The shard lease a pass holds when it acts for a schedule. An HTTP command (trigger-now) holds
+/// none: it does not invent a scheduler lease.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShardFence {
+    pub owner: String,
+    pub lease: crate::shards::Lease,
+}
+
+/// Where a schedule goes once an action has started a run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScheduleAfter {
+    pub next_action_at: Option<OffsetDateTime>,
+    pub next_actual_at: Option<OffsetDateTime>,
+    /// The new count of actions that may still start a run; `None` for a schedule with no limit.
+    pub remaining_actions: Option<u32>,
+    /// Rows recorded in the same transaction: the summaries of the times a recovery did not act on.
+    pub extra: Vec<RecordedAction>,
+}
+
+/// An action row that has no run: a skip, a wait, a drop, a summary or a revoked authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedAction {
+    pub nominal_at: OffsetDateTime,
+    pub kind: sagat_domain::schedules::ActionKind,
+    pub revision: u32,
+    pub outcome: sagat_domain::schedules::Outcome,
+    /// The closed code that qualifies the outcome (`TRACKING_LIMIT`, `AUTHORITY_REVOKED`).
+    pub reason: Option<&'static str>,
+    /// How many times a summary stands for, and the last of them.
+    pub summary: Option<(u32, OffsetDateTime)>,
+}
+
+/// A decision that starts no run, committed with the new state of the schedule (`FR-018-005`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScheduleDecision {
+    pub tenant_id: TenantId,
+    pub schedule: ScheduleId,
+    /// The state version the decision was made on.
+    pub expected_state_version: u64,
+    pub fence: Option<ShardFence>,
+    pub actions: Vec<RecordedAction>,
+    pub after: ScheduleAfter,
+    /// When the schedule stops: its authority was revoked, or a run failed and it asks to pause.
+    pub pause: Option<AutoPause>,
+    pub at: OffsetDateTime,
+}
+
+/// A pause the platform makes, with the system note that says why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutoPause {
+    pub note: String,
+}
+
+/// Tracked runs that have ended, to forget, and whether their ending pauses the schedule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reconcile {
+    pub tenant_id: TenantId,
+    pub schedule: ScheduleId,
+    pub expected_state_version: u64,
+    pub fence: Option<ShardFence>,
+    pub forget: Vec<Uuid>,
+    pub pause: Option<AutoPause>,
+    pub at: OffsetDateTime,
+}
+
+/// A schedule whose time has come, as the due scan sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DueSchedule {
+    pub tenant_id: TenantId,
+    pub id: ScheduleId,
+}
+
+/// A waiting action, the oldest first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BufferedAction {
+    pub nominal_at: OffsetDateTime,
+    pub kind: sagat_domain::schedules::ActionKind,
+    pub revision: u32,
+}
+
+/// An action of a schedule that starts a run (`FR-018-005`). It rides on the creation of the run, so
+/// the fence check, the compare-and-swap on the schedule, the run, the action row and the new state
+/// of the schedule commit together or not at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScheduleAdmission {
+    pub schedule: ScheduleId,
+    /// With the origin of `kind`, the identity of the action: at most one per schedule.
+    pub nominal_at: OffsetDateTime,
+    pub kind: sagat_domain::schedules::ActionKind,
+    /// The revision the action is taken under.
+    pub revision: u32,
+    /// The state version the decision was made on: any other change in between refuses the
+    /// admission, and the pass decides again.
+    pub expected_state_version: u64,
+    pub fence: Option<ShardFence>,
+    pub after: ScheduleAfter,
+}
+
+impl ScheduleAdmission {
+    /// The key the run is admitted under, within the scope `schedule:{id}`: `nominal-{epoch ms}` for
+    /// a scheduled or backfilled time and `manual-{epoch µs}` for trigger-now, so a manual action
+    /// never shares an identity with a scheduled time.
+    #[must_use]
+    pub fn run_key(&self) -> String {
+        match self.kind.origin() {
+            sagat_domain::schedules::Origin::Spec => {
+                format!(
+                    "nominal-{}",
+                    self.nominal_at.unix_timestamp_nanos().div_euclid(1_000_000)
+                )
+            }
+            sagat_domain::schedules::Origin::Manual => {
+                format!(
+                    "manual-{}",
+                    self.nominal_at.unix_timestamp_nanos().div_euclid(1_000)
+                )
+            }
+        }
+    }
 }
 
 /// The payload of a schedule's input: what the store keeps beside the revision.
@@ -314,6 +437,78 @@ pub trait ScheduleStore: Send + Sync {
         audit: &AuditRecord,
     ) -> impl Future<Output = Result<Option<ScheduleRecord>, StoreError>> + Send;
 
+    /// The schedules of the given shards whose wake time has come by the database clock, the
+    /// earliest first. Only active schedules are due.
+    fn due_schedules(
+        &self,
+        shards: &[sagat_domain::sharding::Shard],
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<DueSchedule>, StoreError>> + Send;
+
+    /// The status of each of the given runs of a tenant (a run that is gone is absent).
+    fn run_statuses(
+        &self,
+        tenant: TenantId,
+        runs: &[Uuid],
+    ) -> impl Future<Output = Result<Vec<(Uuid, sagat_domain::execution::RunStatus)>, StoreError>> + Send;
+
+    /// The oldest action of the schedule that is still waiting.
+    fn oldest_buffered(
+        &self,
+        tenant: TenantId,
+        id: ScheduleId,
+    ) -> impl Future<Output = Result<Option<BufferedAction>, StoreError>> + Send;
+
+    /// The bytes of a payload of the tenant (the input of a schedule), by digest.
+    fn input(
+        &self,
+        tenant: TenantId,
+        digest: &[u8; 32],
+    ) -> impl Future<Output = Result<Option<Vec<u8>>, StoreError>> + Send;
+
+    /// The slug of a namespace.
+    fn namespace_slug(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+    ) -> impl Future<Output = Result<Option<String>, StoreError>> + Send;
+
+    /// Records a decision that starts no run, with the new state of the schedule and, when given,
+    /// an audit record, in one transaction under the fence and the compare-and-swap. A change in
+    /// between, or a lost lease, is a `StateConflict` and commits nothing.
+    fn record_decision(
+        &self,
+        decision: &ScheduleDecision,
+        audit: Option<&AuditRecord>,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// Forgets tracked runs that ended and pauses the schedule when asked, under the same fence.
+    fn reconcile_schedule(
+        &self,
+        reconcile: &Reconcile,
+        audit: Option<&AuditRecord>,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// Asks to look at the schedule again at `at` (a waiting action is held back by an open run),
+    /// or clears the request with `None`.
+    fn recheck_schedule(
+        &self,
+        tenant: TenantId,
+        id: ScheduleId,
+        expected_state_version: u64,
+        at: Option<OffsetDateTime>,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// Keeps a time owed after an admission refusal: the schedule tries it again at `retry_at`,
+    /// under the same key, with the time and its state unchanged.
+    fn defer_schedule(
+        &self,
+        tenant: TenantId,
+        id: ScheduleId,
+        expected_state_version: u64,
+        retry_at: OffsetDateTime,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
     /// Deletes: the schedule stays as a tombstone, its name is free, its waiting actions become
     /// `DROPPED_DELETED`, its runs are untouched. `false` when there was nothing to delete.
     fn delete_schedule(
@@ -343,6 +538,29 @@ pub struct ScheduleWrite {
     pub paused: bool,
     pub note: Option<Note>,
     pub remaining_actions: Option<RemainingActions>,
+}
+
+/// The first nominal time after `after` and the instant it is acted on (jitter included). The
+/// jitter is the digest of the schedule and the nominal time, bounded by the gap to the next nominal
+/// time, so every engine process computes the same instant.
+///
+/// # Errors
+/// [`CalendarFailure`] when the spec cannot be evaluated.
+pub fn next_times<K: ScheduleCalendar>(
+    calendar: &K,
+    id: ScheduleId,
+    spec: &ScheduleSpec,
+    after: OffsetDateTime,
+) -> Result<(Option<OffsetDateTime>, Option<OffsetDateTime>), CalendarFailure> {
+    let Some(nominal) = calendar.next_after(spec, after)? else {
+        return Ok((None, None));
+    };
+    let gap_ms = calendar
+        .next_after(spec, nominal)?
+        .and_then(|following| u64::try_from((following - nominal).whole_milliseconds()).ok());
+    let digest: [u8; 32] = Sha256::digest(jitter_seed(id.as_uuid(), nominal)).into();
+    let offset = jitter_offset_ms(&digest, spec.jitter_ms(), gap_ms);
+    Ok((Some(nominal), actual_time(nominal, offset, spec.end_at())))
 }
 
 fn invalid(reason: &'static str, field: &str) -> AppError {
@@ -407,30 +625,13 @@ where
         }
     }
 
-    /// The first nominal time after `after` and the instant it is acted on (jitter included). The
-    /// jitter is the digest of the schedule and the nominal time, bounded by the gap to the next
-    /// nominal time, so every engine process computes the same instant.
     fn next_times(
         &self,
         id: ScheduleId,
         spec: &ScheduleSpec,
         after: OffsetDateTime,
     ) -> Result<(Option<OffsetDateTime>, Option<OffsetDateTime>), AppError> {
-        let Some(nominal) = self
-            .calendar
-            .next_after(spec, after)
-            .map_err(calendar_error)?
-        else {
-            return Ok((None, None));
-        };
-        let gap_ms = self
-            .calendar
-            .next_after(spec, nominal)
-            .map_err(calendar_error)?
-            .and_then(|following| u64::try_from((following - nominal).whole_milliseconds()).ok());
-        let digest: [u8; 32] = Sha256::digest(jitter_seed(id.as_uuid(), nominal)).into();
-        let offset = jitter_offset_ms(&digest, spec.jitter_ms(), gap_ms);
-        Ok((Some(nominal), actual_time(nominal, offset, spec.end_at())))
+        next_times(&self.calendar, id, spec, after).map_err(calendar_error)
     }
 
     /// Everything a write is checked against before anything is stored.
@@ -460,6 +661,13 @@ where
             TargetCheck::VersionMissing => {
                 return Err(invalid("SCHEDULE_SPEC_INVALID", "action.versionId"));
             }
+        }
+        if write.target.business_id().is_some() {
+            // PENDING (US03): business identifiers are not enforced yet, so a schedule that asks
+            // for one is refused instead of silently starting runs without it.
+            return Err(AppError::NotAllowed(
+                "business identifiers on schedules are not available yet",
+            ));
         }
         self.calendar
             .validate(&write.spec, now, &self.ceilings)
@@ -540,6 +748,7 @@ where
             next_action_at,
             next_actual_at,
             retry_at: None,
+            recheck_at: None,
             tracked_runs: Vec::new(),
             buffered: 0,
             created_at: now,

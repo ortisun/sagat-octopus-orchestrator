@@ -82,6 +82,9 @@ ENVIRONMENT (serve):
     SAGAT_POLL_IDLE_RETRY_MS          retry hint when nothing is ready [500]
     SAGAT_SCHEDULER_INTERVAL_MS       pause between idle scheduler ticks [500]
     SAGAT_SCHEDULER_BATCH             candidates per pass per tick (1-5000) [200]
+    SAGAT_SCHEDULES_ENABLED           fire schedules from this replica [false]
+    SAGAT_SCHEDULES_BATCH             due schedules per round (1-5000) [100]
+    SAGAT_SCHEDULES_POLL_MS           pause when a round found nothing [1000]
     SAGAT_SCHEDULER_CONCURRENCY       candidates of one pass acted on at once (1-64) [8]
     SAGAT_SCHEDULER_FAIRNESS          share each pass between tenants by weight; false takes the oldest
                                       candidates only (a diagnostic, for measuring) [true]

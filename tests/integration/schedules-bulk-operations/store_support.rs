@@ -48,6 +48,7 @@ pub fn record(tenant: TenantId, namespace: NamespaceId, name: &str) -> ScheduleR
         next_action_at: Some(now),
         next_actual_at: Some(now),
         retry_at: None,
+        recheck_at: None,
         tracked_runs: vec![],
         buffered: 0,
         created_at: now,
