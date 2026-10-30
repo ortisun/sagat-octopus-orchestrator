@@ -1,0 +1,83 @@
+{
+  "skill": "egm:egm-drift-report",
+  "skill_path": "/Users/marcelo/.codex/plugins/cache/egm/egm/0.1.0/skills/egm-drift-report/SKILL.md",
+  "status": "complete",
+  "report": "2026-10-30_DRIFT_REPORT.md",
+  "review_date": "2026-10-30",
+  "head": "888074e6237b2a1ce9c85f83ec5703b081c65dd6",
+  "branch": "develop",
+  "scope": {
+    "frozen_readmes": 203,
+    "definition": "The 26 modified and 177 newly created bootstrap README files in this checkout; excludes later review-directory README files and untouched documentation.",
+    "inventory": "inventory.json",
+    "all_report_sections": 203,
+    "affected_readmes": 6,
+    "no_discrepancy_found_readmes": 197
+  },
+  "method": [
+    "Processed frozen README files sequentially. Read their contents and resolved current local source references, with mirrored vendor contracts mapped to the unchanged upstream source tree.",
+    "The checker loads full document/cited-source text. It screens lexical source names and components of qualified symbols, relative Markdown links/heading targets and source hashes. These are mechanical checks rather than semantic proof or symbol ownership/type checking.",
+    "Compared behavior, limits, side effects, entry points, protocol boundaries and current implementation using focused semantic source reads. Reviewed composed contracts at their stated abstraction; a private helper without its own citation is not automatically missing functionality.",
+    "Compared all six worker.proto copies byte-for-byte; compared four embedded JSON error catalogs and decoded TypeScript/Python generated catalog entries. Screened committed Python/Go bindings for 71 distinct declared field names and ten RPC names, decoding the Python serialized descriptor before checking.",
+    "Checked 194 Cargo package/test references against local manifests; these are static target membership checks.",
+    "Read current authoring availability validation, Studio language selector, canonical/generated OpenAPI description, Java runner channels, Java packaging/release workflow and C# report retry loop to substantiate each reported discrepancy.",
+    "No subagents or external services were used. No runtime suites, builds, containers, publications, dependency installations, generated-file blessing or canonical task edits were performed."
+  ],
+  "coverage": {
+    "document_lines_loaded": 9858,
+    "lexical_citations_checked": 5257,
+    "unique_resolved_cited_files": 956,
+    "local_markdown_links_checked": 403,
+    "files_loaded_fully_by_checker": 1159,
+    "qualified_rust_method_citations_screened": 388,
+    "qualified_method_candidates": 0,
+    "shared_contract_checks": 16,
+    "cargo_target_checks": 194
+  },
+  "limits": [
+    "This is static drift detection, not an exhaustive semantic verification of every implementation body, field, race, dependency, transitive document or security guarantee.",
+    "Full-file loading by the checker must not be read as a claim that every source line received manual reasoning. Named interfaces/reference grounding was screened across all 203 targets; semantic reads were focused on documented behaviors and likely mismatches.",
+    "Example code blocks were not compiled or executed. Link checks do not verify remote URLs or renderer-specific line anchors.",
+    "Shared-contract byte equality and field/RPC-name screening do not establish generated-code byte equality, wire compatibility at runtime or a complete model/type equivalence proof.",
+    "Historical runtime/advisory notes were retained as historical claims; they were not reproduced or refreshed. No remote tag, release, registry or CI success was verified.",
+    "Existing dormant/nesting/capacity limitations were not treated as missing implementation when the README already states them; documented performance ceilings remain unaccepted.",
+    "The OpenAPI language-availability discrepancy is a linked local-contract finding supporting the root-guide issue. The API README itself is not falsely marked as contradicting its generated source."
+  ],
+  "findings": {
+    "file": "findings.json",
+    "distinct": 4,
+    "Major": 2,
+    "Nit": 2,
+    "status": "all open; fixes not applied"
+  },
+  "static_verification_command": "python3 tasks/reviews/2026-10-30-readme-drift/verify_static.py",
+  "source_hashes": "static_checks.json",
+  "additional_evidence_hashes": {
+    "README.md": "f70b40f1f8c571498069edc7ca9ebe3cb7afb21473842453879268d727e5b642",
+    "frontend/apps/studio/src/features/scripts/languages.ts": "5d6cf98be3bd60078663eecccdca16ef43f39ba0023bd29f9898f6ca6e76f2b5",
+    "frontend/apps/studio/src/features/scripts/CreateScriptDialog.tsx": "2d339dcd7b677f35f2611a667d698de24e32f4b5a6e118117638701652284cfa",
+    "crates/domain/src/scripts.rs": "9e88a0b48ebb5e8746f98656ecb3083ed53404c7e35d7095d4db32470dec9e37",
+    "crates/application/src/scripts.rs": "c3d835e7fe5e88f90231758a92d344867ecfd8f3e343dc93e1498f42f29cc3fe",
+    "apps/cli/src/script.rs": "337d4c232cffd6a8395d44ca96c21649b3abd2f2db9f06f83633dda049441d42",
+    "specs/001-platform-foundation/contracts/openapi.yaml": "302f0901904eed82329de0a5906a49b2c76865ffbcabfe72af0510e1cd9d0687",
+    "frontend/apps/studio/src/api/schema.d.ts": "9af10e5fb2c26909496e4c099efcd17e6c393eb1bcc65bde4726e3e0553259b4",
+    "sdks/java/README.md": "f8461b68e0711c7e5712498e3ae0c66c924e9303a207f46dd1f9dedb68b89a1e",
+    ".github/workflows/release.yml": "7fb33ce3f170714bfe5c361416c58788d92a13405b5c030c996cd4a1a9d32ab0",
+    "scripts/package-sdks.sh": "bde6126a20e20f9e9f5a552a9e53d8a4af04d47c2e8a72f996afc010d1717b42",
+    "runners/java/host/sagat/host/RuntimeHost.java": "350ea31dbb2906ec593677424a1391fc23a1af45ea3fa158c17ec369c91fda86",
+    "sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/Workers/README.md": "3d01fdf3faf5be59414e1fb5e2eed0beeb1b168390e6188c9aff97420079061b",
+    "sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/Workers/WorkerHost.cs": "f4949b32dfb4eedf929018687fc37b3d9fa867cefaf0d084ad7151f484680006"
+  },
+  "canonical_task_checkboxes_changed": false,
+  "readmes_changed_by_this_review": false,
+  "source_or_vendor_files_changed": false,
+  "output_sha256": {
+    "2026-10-30_DRIFT_REPORT.md": "c0261bd23cf00df0c3dac1aec89c42d12ebddc74b1a9a58ee8138c98ae11a3cd",
+    "command_targets.json": "271a69309efc44ed495a17b4f215b039589b7d05faeac4ed18a044eab9265156",
+    "findings.json": "fa57cb4b47822ef318d1ef63b6328326cd1c616d9edbba302bbafc47c22611b6",
+    "inventory.json": "2d2a781440da33c9bf3bcc932e8c3bb66f4133f869233cb408884931f244be20",
+    "shared_contract_checks.json": "947e84d71dc8f79e260dc1a30f0ed0b07fefcd11dd2a0fa831fc568b046fe8a5",
+    "static_checks.json": "d6561036657c28f448bfa342ef9bbcce89ebef882cf069ac0520a48ce940238a",
+    "verify_static.py": "8482b0367c028184bb969a2db68ce5d01f8552d229351bab5a22bbeb706517af"
+  }
+}
