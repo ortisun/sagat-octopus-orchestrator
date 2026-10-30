@@ -44,6 +44,11 @@ jobs:
           cargo test -p sagat-infra-postgres --lib --locked capacity_discovery::tests:: || proof_failed=1
           cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::discovery::holders:: --nocapture || proof_failed=1
           exit "$proof_failed"
+      - name: scoped event quota rollback boundary
+        env:
+          SAGAT_TEST_AS_RUNTIME_ROLE: "1"
+          RUST_TEST_THREADS: "2"
+        run: cargo test -p sagat-tests --test integration_workflow_primitives --locked -- scoped_event_storage::receiver::a_dispatcher_quota_refusal --nocapture
       - name: worker capacity lease boundary
         env:
           SAGAT_TEST_AS_RUNTIME_ROLE: "1"
