@@ -42,7 +42,7 @@ pub const MAX_REMAINING_ACTIONS: u32 = 1_000_000;
 
 /// Why a spec, a policy or a value object was refused. Each one is a `VALIDATION_FAILED` at the API;
 /// the meaning travels in `details.reason`, never in a new `Error.code`.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ScheduleError {
     #[error("a spec needs at least one calendar, cron string or interval")]
     NoEntries,

@@ -141,6 +141,15 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
 - [ ] T018-016 [US1] `ScheduleService` and `ScheduleFiring` (version policy, input check at action,
   `nominalTimeField`, business-id prefix, retry backoff) — `crates/application/src/schedules.rs` —
   tests over the real store — FR-018-001, FR-018-005, FR-018-016.
+  *Part done 2026-10-29 (task stays open).* Done: what the service stands on, with no service yet. Domain: `ScheduleId`,
+  `ScheduleTarget` (workflow, active or pinned version, run timeout, nominal-time field, business-id prefix; the id of an
+  action is `<prefix>-<nominal time>`, refused rather than truncated past 200 characters) and the audit resource types
+  `schedule` and `batch_job`. Adapter: `infra-ir/src/schedule_codec.rs`, the strict JSON codec of the spec, the policies and
+  the target (unknown fields refused with their path, defaults written out in the canonical form, times normalised to UTC).
+  Evidence: `schedule_target` 8 passed; `cargo test -p sagat-infra-ir --test schedule_codec --locked` 15 passed, two mutations
+  (no UTC normalisation, unknown fields accepted) caught; workspace builds, clippy `-D warnings` and `check-architecture.py`
+  clean. Not done: `ScheduleService`, `ScheduleFiring`, the version policy at the action, input check at the action, retry
+  backoff, and the `ScheduleStore` they stand on (T018-011/014).
 - [ ] T018-017 [US1] Schedule pass (owned shards, fairness, round ceiling, metrics) and engine wiring —
   `crates/scheduler/src/{schedules.rs,lib.rs,monitor.rs}`, `apps/execution-engine/src/lib.rs` — two-replica
   pass tests — FR-018-005, FR-018-044.

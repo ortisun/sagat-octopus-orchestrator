@@ -17,6 +17,7 @@ mod database;
 mod database_result;
 mod declared_state;
 pub mod schedule_calendar;
+pub mod schedule_codec;
 pub use database_result::JsonDatabaseResultValidator;
 mod diff;
 mod evaluator;
