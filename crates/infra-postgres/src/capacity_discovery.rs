@@ -8,7 +8,7 @@ use sagat_application::{
     maintenance::Window,
 };
 use sagat_domain::{
-    execution::{CapacityGroupId, CapacityMemberId, RunId},
+    execution::{CapacityGroupId, CapacityMemberId, CapacityPossession, RunId},
     identity::{NamespaceId, TenantId},
     sharding::Shard,
 };
@@ -39,6 +39,24 @@ fn counter(row: &PgRow, name: &str) -> Result<u64, Error> {
         .try_get(name)
         .map_err(|_| Error::ContradictoryProjection)?;
     u64::try_from(value).map_err(|_| Error::ContradictoryProjection)
+}
+
+#[derive(Clone, Copy)]
+enum DiscoverySelection {
+    Vacant,
+    HeldHolder,
+}
+
+impl DiscoverySelection {
+    fn selects(
+        self,
+        _candidate: &CapacityCandidate,
+        _possession: CapacityPossession,
+        _window: &Window,
+    ) -> bool {
+        // RED scaffold: the deterministic table must expose the missing shared selection.
+        false
+    }
 }
 fn decode(row: &PgRow) -> Result<(CapacityCandidate, bool), Error> {
     macro_rules! field {
@@ -91,6 +109,19 @@ fn decode(row: &PgRow) -> Result<(CapacityCandidate, bool), Error> {
 }
 
 impl CapacityDiscoveryStore for PgRunStore {
+    async fn discover_child_root_holders(
+        &self,
+        _window: &Window,
+        _after: Option<CapacityDiscoveryCursor>,
+    ) -> Result<CapacityDiscoveryPage, Error> {
+        // RED scaffold only: native tests must expose the missing holder discovery.
+        Ok(CapacityDiscoveryPage {
+            candidates: Vec::new(),
+            scanned_through: None,
+            has_more: false,
+        })
+    }
+
     #[tracing::instrument(name="scheduler.action",skip_all,fields(kind="capacity_discovery",scanned=tracing::field::Empty,selected=tracing::field::Empty))]
     async fn discover_vacant_child_roots(
         &self,
@@ -138,5 +169,53 @@ impl CapacityDiscoveryStore for PgRunStore {
             .record("scanned", scanned)
             .record("selected", page.candidates.len());
         Ok(page)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sagat_domain::sharding::ShardSet;
+
+    #[test]
+    fn both_modes_select_the_current_head_shard_instead_of_the_stable_chain() {
+        let candidate = CapacityCandidate {
+            cursor: CapacityDiscoveryCursor {
+                tenant_id: TenantId::new(Uuid::from_u128(3)),
+                group_id: CapacityGroupId::new(Uuid::from_u128(4)),
+                member_id: CapacityMemberId::new(Uuid::from_u128(5)),
+            },
+            namespace_id: NamespaceId::new(Uuid::from_u128(6)),
+            chain_id: RunId::new(Uuid::from_u128(0)),
+            head_run_id: RunId::new(Uuid::from_u128(1)),
+            group_revision: 1,
+            group_epoch: 1,
+            chain_revision: 1,
+            run_revision: 1,
+        };
+        let chain_shard = Shard::of(candidate.chain_id.as_uuid());
+        let head_shard = Shard::of(candidate.head_run_id.as_uuid());
+        assert_ne!(
+            chain_shard, head_shard,
+            "fixed fixture must have disjoint shards"
+        );
+        for (selection, possession) in [
+            (DiscoverySelection::Vacant, CapacityPossession::Vacant),
+            (
+                DiscoverySelection::HeldHolder,
+                CapacityPossession::Held(candidate.cursor.member_id),
+            ),
+        ] {
+            let mut window = Window::everything(1);
+            window.shards = ShardSet::empty();
+            window.shards.insert(chain_shard);
+            assert!(!selection.selects(&candidate, possession, &window));
+            window.shards = ShardSet::empty();
+            window.shards.insert(head_shard);
+            assert!(
+                selection.selects(&candidate, possession, &window),
+                "current head owns selection"
+            );
+        }
     }
 }

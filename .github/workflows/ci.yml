@@ -34,6 +34,16 @@ jobs:
           # A failed test must not discard the dependencies already compiled.
           cache-on-failure: true
       - run: cargo fmt --all -- --check
+      - name: bounded ChildRoot holder discovery
+        env:
+          SAGAT_TEST_AS_RUNTIME_ROLE: "1"
+          RUST_TEST_THREADS: "2"
+        run: |
+          # Report both the pure shard table and the real PostgreSQL cases on a failure.
+          proof_failed=0
+          cargo test -p sagat-infra-postgres --lib --locked capacity_discovery::tests:: || proof_failed=1
+          cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::discovery::holders:: --nocapture || proof_failed=1
+          exit "$proof_failed"
       - name: worker capacity lease boundary
         env:
           SAGAT_TEST_AS_RUNTIME_ROLE: "1"
