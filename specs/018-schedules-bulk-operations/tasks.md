@@ -155,9 +155,23 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `DROPPED_DELETED`, the name is free, a second delete is a no-op). Evidence: `integration_schedules_bulk_operations` 34
   passed (9 in `changes`), also as the runtime role; `integration_platform_foundation` 101; dropping the head check fails 2
   tests. Not done: the due scan by `(shard, next_wake_at)`, actions, purge, backfills, obligations.
-- [ ] T018-015 [US1] Schedule admission inside `RunStore::create` (fence, CAS, action + state after the
+- [x] T018-015 [US1] Schedule admission inside `RunStore::create` (fence, CAS, action + state after the
   initial reduction, refusal commits nothing) — `crates/infra-postgres/src/{execution.rs,schedules.rs}`
   — one-commit content test — FR-018-004, FR-018-005.
+  *Done 2026-10-29.* `create` takes the shard fence (`scheduler_shards` `FOR SHARE`, expiry by the database clock), then the
+  schedule row `FOR UPDATE` with the compare-and-swap on `state_version` (ADR-0050 decision 7), right after the replay check;
+  the run (with its four provenance columns, migration `20261230000200`, immutable by an `ALWAYS` trigger), the action row and
+  the new state of the schedule commit together. A replay of the key of a time is `StateConflict` (another process acted
+  first), never a second `Ok`. Evidence: `integration_schedules_bulk_operations` 82 passed (12 in `admission`:
+  `a_scheduled_action_starts_its_run_and_moves_the_schedule_in_one_commit`, `the_same_nominal_time_never_starts_a_second_run`,
+  `a_decision_made_on_a_stale_schedule_commits_nothing`, `a_paused_schedule_admits_no_scheduled_run`,
+  `a_run_the_admission_refuses_takes_the_action_and_the_schedule_change_with_it`, the three lease tests,
+  `a_scheduled_run_is_audited_as_started_by_the_schedule`, `the_provenance_of_a_run_never_changes`, and for migration
+  `20261230000200`: `a_rollback_is_refused_while_a_run_carries_the_provenance_of_a_schedule` (refused, drained by an operator,
+  rolled back, migrated forward with the run present) and `the_provenance_of_a_run_is_all_or_nothing_and_of_a_known_kind`;
+  without the guard in `down.sql` the first fails); also as the runtime role; `integration_platform_foundation` 101,
+  `integration_security_multitenancy` 126, `integration_durable_execution` 178; workspace clippy
+  `-D warnings`, `cargo fmt --check`, `check-architecture.py` and `check-agent-config.py` clean.
 - [ ] T018-016 [US1] `ScheduleService` and `ScheduleFiring` (version policy, input check at action,
   `nominalTimeField`, business-id prefix, retry backoff) — `crates/application/src/schedules.rs` —
   tests over the real store — FR-018-001, FR-018-005, FR-018-016.
@@ -176,9 +190,25 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   (`SCHEDULE_INPUT_INVALID` today means "not an object" or too large; the schema check belongs to the action time and to
   the definitions port), `nominalTimeField` against the input schema (`NOMINAL_TIME_FIELD_INVALID`), `ScheduleFiring`
   (version policy, input check, business-id prefix, retry backoff at the action).
+  *Update 2026-10-29:* `ScheduleFiring` is built (`application/src/schedule_firing.rs`): one step per call — reconcile the
+  tracked runs that ended (pause-on-failure with a system note and audit), recheck the authority (a revoked membership pauses
+  the schedule with an `AUTHORITY_REVOKED` row), release the oldest waiting action when nothing is open, wake a waiting action
+  every 5 s while a run holds it back, plan the recovery of the due times and act (start, skip, buffer, drop, coalesce); a
+  refused admission keeps the time owed and retries it under the same key with a delay of 5 s to 5 min; the nominal time goes
+  into the declared input field. The business-id prefix is refused with `NotAllowed` until US03. Evidence: 15 tests in
+  `firing.rs`, 82 passed in all, also as the runtime role. Not done: the input check against the schema of the target
+  version, `nominalTimeField` against that schema, business-id prefix.
 - [ ] T018-017 [US1] Schedule pass (owned shards, fairness, round ceiling, metrics) and engine wiring —
   `crates/scheduler/src/{schedules.rs,lib.rs,monitor.rs}`, `apps/execution-engine/src/lib.rs` — two-replica
   pass tests — FR-018-005, FR-018-044.
+  *Part done 2026-10-29 (task stays open).* `SchedulePass` (`scheduler/src/schedules.rs`) looks at the due schedules of the
+  shards the replica owns (`batch` per round), takes at most `steps_per_schedule` steps per schedule per round, and acts under
+  the lease of the keeper's placement; the engine runs it behind `SAGAT_SCHEDULES_ENABLED` (off by default, with
+  `SAGAT_SCHEDULES_BATCH` and `SAGAT_SCHEDULES_POLL_MS`). Evidence: 4 tests in `pass.rs` (one replica starts the run; a
+  replica with no shard does nothing; two replicas split twelve schedules by shard and each time starts one run; a replica
+  whose lease was taken is refused where it acts and the time stays owed), 2 in `apps/execution-engine/tests/config.rs`;
+  removing the fence from the pass makes the lease test fail (1 step, 0 refused instead of 0 and 1). Not done: fairness
+  between tenants, the gauges (`scheduler_lag_seconds{pass="schedules"}`, `schedule_actions_total`) and the monitor alert.
 - [ ] T018-018 [US1] REST create/read/list/update/delete — `crates/api-http/src/routes/{schedules.rs,mod.rs}`,
   `crates/api-http/src/dto_schedules.rs` — contract tests — FR-018-001, FR-018-013, FR-018-043.
 - [ ] T018-019 [P] [US1] US01 scenarios 1–5 — `tests/integration/schedules-bulk-operations/schedules.rs`
