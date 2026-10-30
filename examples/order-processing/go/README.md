@@ -51,3 +51,30 @@ a provider that does not support deduplication.
   and that this process registered all four.
 - `UNAUTHENTICATED` or `FORBIDDEN`: obtain a fresh development token with the needed namespace and
   worker bindings.
+
+## Interface
+
+- The `main` package runs the local `run` driver and its activity handlers. [examples/order-processing/go/main.go:main]
+
+## Invariants
+
+- The four connection settings are mandatory; missing settings exit 2. [examples/order-processing/go/main.go:requiredSetting]
+- Scenario defaults to routing and accepts only routing, fulfillment, or reminder. [examples/order-processing/go/main.go:selectedScenario]
+- The command waits at most 60 seconds and treats a terminal status other than `SUCCEEDED` as an error. [examples/order-processing/go/main.go:run]
+- The Go 1.25 module replaces its SDK dependency with the checkout SDK. [examples/order-processing/go/go.mod:replace]
+
+## Side Effects
+
+- Builds `bin/order-processing`. [examples/order-processing/go/prepare.sh:go build]
+- Launch replaces the shell with the compiled executable; missing output exits 2. [examples/order-processing/go/run.sh:exec]
+- Starts/stops the worker, starts/waits for a workflow, handles OS interrupt, and prints diagnostics. [examples/order-processing/go/main.go:run]
+
+## Verification
+
+From the repository root, with Docker, the selected example toolchains, and a private `CARGO_TARGET_DIR` outside the checkout:
+
+```sh
+cargo test -p sagat-tests --test e2e_developer_experience --locked -- --ignored order_processing::
+```
+
+The shared real-platform suite is declared in `tests/Cargo.toml`; language preparation and run commands remain in the example READMEs. [tests/Cargo.toml:e2e_developer_experience]

@@ -18,7 +18,7 @@ sagat workflow publish hello-world/workflow.json
 sagat worker bind --workflow hello-world/workflow.json     # let your identity serve its two activities
 
 ./prepare.sh        # dotnet build -c Release (once, and after a change)
-./run.sh            # runs the build; dotnet run [-- NAME] builds and runs in one step
+./run.sh            # executes the Release build; dotnet run [-- NAME] builds and runs in one step
 ```
 
 It prints, in every language:
@@ -38,6 +38,33 @@ and `sagat workflow inspect <run>` shows the journal: the same one whatever the 
   (its first argument, here `Who`) and, in `context.Steps`, the outputs of the steps before it
   (`context.Steps["compose"]`); what it returns is its output, written as JSON in camel case.
 - A real effect (a payment, an e-mail) sends `context.IdempotencyKey` to its provider: it is the same
-  for every attempt of the step, so a repeat does not do it twice.
+  for every attempt of the step; the provider must deduplicate that key to prevent duplicate effects.
 - `HelloWorld.csproj` points at the SDK in this checkout (`ProjectReference`); once the SDK is published,
   replace that line with `<PackageReference Include="SagatOctopusOrchestrator.Sdk" Version="0.2.0" />`.
+
+## Interface
+
+- Top-level command execution uses local `RunAsync` and internal input/output records. [examples/hello-world/dotnet/Program.cs:RunAsync]
+
+## Invariants
+
+- The four connection settings are mandatory; missing settings exit 2. [examples/hello-world/dotnet/Program.cs:Setting]
+- Registers compose/deliver activities and reads the prior compose output; the name defaults to Ada. [examples/hello-world/dotnet/Program.cs:RunAsync]
+- The command waits at most 60 seconds and succeeds only with `RunStatuses.Succeeded`. [examples/hello-world/dotnet/Program.cs:RunAsync]
+- The executable targets `net10.0` and references the checkout SDK with nullable types and invariant globalization enabled. [examples/hello-world/dotnet/HelloWorld.csproj:PropertyGroup]
+
+## Side Effects
+
+- Writes Release output with telemetry/first-run behavior disabled. [examples/hello-world/dotnet/prepare.sh:dotnet build]
+- Launch requires the built DLL, then replaces the shell with `dotnet`; a missing DLL exits 1. [examples/hello-world/dotnet/run.sh:exec]
+- Starts/stops a worker, starts/waits for a workflow, handles Ctrl-C, and prints diagnostics. [examples/hello-world/dotnet/Program.cs:RunAsync]
+
+## Verification
+
+From the repository root, with Docker, the selected example toolchains, and a private `CARGO_TARGET_DIR` outside the checkout:
+
+```sh
+cargo test -p sagat-tests --test e2e_developer_experience --locked -- --ignored
+```
+
+The shared real-platform suite is declared in `tests/Cargo.toml`; language preparation and run commands remain in the example READMEs. [tests/Cargo.toml:e2e_developer_experience]
