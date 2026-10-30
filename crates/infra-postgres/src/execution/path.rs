@@ -329,6 +329,11 @@ impl PathExecutionTx for PgPathExecutionTx {
         Ok(Some(document))
     }
 
+    async fn worker_capacity_available(&mut self) -> Result<bool, StoreError> {
+        // RED scaffold; root and exact-path grants must share the same storage guard.
+        Ok(true)
+    }
+
     async fn commit(self) -> Result<(), StoreError> {
         if self.scoped_event_delivery_attempted && self.scoped_event_persistence_failed {
             return Err(corrupt(

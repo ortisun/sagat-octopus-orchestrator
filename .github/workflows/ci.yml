@@ -34,6 +34,12 @@ jobs:
           # A failed test must not discard the dependencies already compiled.
           cache-on-failure: true
       - run: cargo fmt --all -- --check
+      - name: worker capacity lease boundary
+        env:
+          SAGAT_TEST_AS_RUNTIME_ROLE: "1"
+          RUST_TEST_THREADS: "2"
+        run: |
+          cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::worker_leases:: --nocapture
       - name: capacity transfer command regression
         run: cargo test -p sagat-application --lib --locked capacity_
       - name: capacity transfer adapter and audit regression

@@ -11,7 +11,11 @@ use sagat_domain::{
 };
 use uuid::Uuid;
 
-fn fixture() -> (CapacityGroup, CapacityMemberSnapshot, CapacityMemberSnapshot) {
+fn fixture() -> (
+    CapacityGroup,
+    CapacityMemberSnapshot,
+    CapacityMemberSnapshot,
+) {
     let group_id = CapacityGroupId::new(Uuid::from_u128(1));
     let holder = CapacityMemberSnapshot::new(
         group_id,
@@ -102,7 +106,9 @@ fn foreign_group_cannot_reuse_the_holder_identity() {
 fn retired_group_refuses_even_a_stale_active_holder_fact() {
     let (mut group, holder, other) = fixture();
     group.finish(group.revision(), other).expect("finish other");
-    group.finish(group.revision(), holder).expect("finish holder");
+    group
+        .finish(group.revision(), holder)
+        .expect("finish holder");
     assert_eq!(
         group.check_worker_possession(holder),
         Err(CapacityGroupError::Retired)

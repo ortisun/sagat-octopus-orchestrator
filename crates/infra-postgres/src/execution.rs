@@ -4768,6 +4768,11 @@ impl RunTx for PgRunTx {
         Ok(inserted)
     }
 
+    async fn worker_capacity_available(&mut self) -> Result<bool, StoreError> {
+        // RED scaffold: the native test must expose the missing possession prerequisite.
+        Ok(true)
+    }
+
     async fn commit(mut self) -> Result<(), StoreError> {
         if self.scoped_event_delivery_attempted && self.scoped_event_persistence_failed {
             return Err(corrupt(
