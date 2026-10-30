@@ -111,12 +111,12 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `contract_schedules_bulk_operations` — FR-018-043, FR-018-046.
   *Part done 2026-10-30 (task stays open).* The REST operations built so far are merged into
   `specs/001-platform-foundation/contracts/openapi.yaml` with `x-implemented: '018'`: `listSchedules`, `createSchedule`,
-  `getSchedule`, `updateSchedule`, `deleteSchedule`, `pauseSchedule`, `resumeSchedule` (the spec and policies schemas are
+  `getSchedule`, `updateSchedule`, `deleteSchedule`, `pauseSchedule`, `resumeSchedule`, `triggerSchedule` (the spec and policies schemas are
   inlined as `ScheduleSpec`/`SchedulePolicies`, because the canonical document has no external references; business-id
   fields are left out until US03; G1015 names what the draft listed and is not built). `docs/reference/api.md` regenerated
-  after reading the diff (7 operations, group Schedules) and `frontend/apps/studio/src/api/schema.d.ts` regenerated
+  after reading the diff (8 operations, group Schedules) and `frontend/apps/studio/src/api/schema.d.ts` regenerated
   (`npm run check:api` clean, `npm run typecheck` clean). Evidence: `contract_schedules_bulk_operations` 1 passed (every
-  response of the seven operations, 2xx and 4xx, validated against the schema, plus a check that all seven were
+  response of the eight operations, 2xx and 4xx, validated against the schema, plus a check that all eight were
   exercised); the cross-tenant battery (`contract_rest_security_multitenancy`, 17 passed) now holds a victim schedule and
   a valid body for each write; `contract_payload_classification` 18, `contract_developer_experience` 8,
   `contract_rest_platform_foundation` 9 and the other REST contract suites pass. Not done: the AsyncAPI additions and the
@@ -259,9 +259,23 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `service::pausing_needs_a_note_and_the_operate_permission` and
   `service::every_change_is_audited_with_who_did_it_and_never_a_payload`, the conformance scenarios of both operations
   (200, 403, 404, 422), also as the runtime role.
-- [ ] T018-024 [US2] Trigger-now (origin `MANUAL`, key `manual-{µs}`, paused, overlap override, replay, no
+- [x] T018-024 [US2] Trigger-now (origin `MANUAL`, key `manual-{µs}`, paused, overlap override, replay, no
   decrement, no collision with a scheduled time at the same instant) —
   `tests/integration/schedules-bulk-operations/trigger.rs` — FR-018-004, FR-018-010.
+  *Done 2026-10-30.* `ScheduleFiring::trigger` (the run is started as `system:schedule:<id>` under the role of the caller,
+  D1800) and `POST /namespaces/{id}/schedules/{id}/trigger` (202, `triggerSchedule`), served by `ScheduleApi`, which
+  puts the administration of a schedule and its actions behind the one `Arc<dyn ScheduleUseCase>`. The action is
+  `TRIGGERED`/`MANUAL` at the request's microsecond, works while paused (the decision path of the store takes the
+  paused lock for a manual action too), never uses up a remaining action (a waiting trigger is released without
+  decrementing), leaves a time that is owed alone (`retry_at`), and is deduplicated: the `Idempotency-Key` is
+  written to `command_dedupe` in the transaction of the action and the answer, first or repeated, is read back
+  from what was stored. Evidence: `integration_schedules_bulk_operations` 107 passed (9 in `trigger`: paused
+  start and skip, remaining actions, overlap rule and override, same instant as a scheduled time, replay and
+  `IDEMPOTENCY_KEY_REUSED`, two requests with one key at once, roles/tenant/trigger-owned/deleted, an owed time, a
+  waiting trigger; 3 more in `rest`), also as the runtime role; the conformance test validates the operation's
+  202/400/401/403/404/422 and the battery sends it with a valid body. Removing the paused lock of the decision path,
+  the preservation of `retry_at` or the no-decrement of a released trigger each makes exactly its test fail. Not done:
+  `CANCEL_OTHER` still buffers without owing the open runs a cancellation (T018-030 owns the obligations); G1017.
 - [ ] T018-025 [US2] Backfill create/list/cancel and incremental pass steps with cursor, `ALREADY_ACTED`
   — `crates/scheduler/src/schedules.rs`, `crates/infra-postgres/src/schedules.rs` — crash resumes from
   cursor — FR-018-011.
