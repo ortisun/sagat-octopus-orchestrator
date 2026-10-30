@@ -271,7 +271,7 @@ async fn a_workflow_that_is_not_in_the_namespace_is_refused_where_it_is_named() 
         .expect_err("no such workflow");
     assert_eq!(
         reason(&error),
-        ("SCHEDULE_SPEC_INVALID", Some("action.workflowId"))
+        ("SCHEDULE_SPEC_INVALID", Some("/action/workflowId"))
     );
 }
 
@@ -325,7 +325,7 @@ async fn an_input_must_be_an_object_and_stay_small() {
         .expect_err("array");
     assert_eq!(
         reason(&error),
-        ("SCHEDULE_INPUT_INVALID", Some("action.input"))
+        ("SCHEDULE_INPUT_INVALID", Some("/action/input"))
     );
 
     let mut request = write(&w, "input-huge", &daily_nine());
@@ -583,7 +583,7 @@ async fn a_schedule_owned_by_a_cron_trigger_is_changed_through_its_workflow() {
             )
             .await
             .map(|_| ()),
-        w.service.delete(&alice, created.id, &ctx()).await,
+        w.service.delete(&alice, created.id, None, &ctx()).await,
     ] {
         assert!(
             matches!(
@@ -672,7 +672,7 @@ async fn pausing_needs_a_note_and_the_operate_permission() {
         )
         .await
         .expect_err("an empty note");
-    assert_eq!(reason(&error), ("SCHEDULE_SPEC_INVALID", Some("note")));
+    assert_eq!(reason(&error), ("SCHEDULE_SPEC_INVALID", Some("/note")));
 }
 
 #[tokio::test]
@@ -691,14 +691,14 @@ async fn deleting_is_for_writers_and_leaves_nothing_to_read() {
         .expect("create");
     assert!(matches!(
         w.service
-            .delete(&who(&w, "olga", Role::Operator), created.id, &ctx())
+            .delete(&who(&w, "olga", Role::Operator), created.id, None, &ctx())
             .await,
         Err(AppError::Forbidden {
             permission: Permission::ScheduleWrite
         })
     ));
     w.service
-        .delete(&alice, created.id, &ctx())
+        .delete(&alice, created.id, None, &ctx())
         .await
         .expect("delete");
     assert!(matches!(
@@ -706,7 +706,7 @@ async fn deleting_is_for_writers_and_leaves_nothing_to_read() {
         Err(AppError::NotFound)
     ));
     assert!(matches!(
-        w.service.delete(&alice, created.id, &ctx()).await,
+        w.service.delete(&alice, created.id, None, &ctx()).await,
         Err(AppError::NotFound)
     ));
     assert!(
@@ -756,7 +756,7 @@ async fn every_change_is_audited_with_who_did_it_and_never_a_payload() {
         .await
         .expect("resume");
     w.service
-        .delete(&alice, created.id, &ctx())
+        .delete(&alice, created.id, None, &ctx())
         .await
         .expect("delete");
     let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
@@ -787,4 +787,194 @@ async fn every_change_is_audited_with_who_did_it_and_never_a_payload() {
             "{reason}"
         );
     }
+}
+
+// --- describing and deleting at a revision ---------------------------------------------------------
+
+#[tokio::test]
+async fn a_description_has_the_next_times_the_counters_and_the_latest_decisions() {
+    let w = world().await;
+    let alice = who(&w, "alice", Role::Developer);
+    let created = w
+        .service
+        .create(
+            &alice,
+            w.namespace,
+            write(&w, "described", &daily_nine()),
+            &ctx(),
+        )
+        .await
+        .expect("create");
+    let quiet = w
+        .service
+        .describe(&alice, created.id, 3, 5)
+        .await
+        .expect("describe");
+    assert_eq!(quiet.record, created);
+    assert_eq!(
+        quiet.next,
+        (0..3)
+            .map(|d| {
+                let t = start() + Duration::hours(21) + Duration::days(d);
+                (t, t)
+            })
+            .collect::<Vec<_>>(),
+        "Thursday, Friday and Saturday at 09:00, no jitter"
+    );
+    assert!(quiet.activity.recent.is_empty() && quiet.activity.counters.is_empty());
+
+    // three decisions, one of them a summary, and the counters the pass keeps
+    for (nominal, outcome, reason, summary) in [
+        (1_000, "SKIPPED_OVERLAP", Some("OVERLAP"), None),
+        (2_000, "DROPPED_BUFFER_FULL", None, None),
+        (3_000, "COALESCED", None, Some((4, 2_900))),
+    ] {
+        sqlx::query(
+            "INSERT INTO schedule_actions (tenant_id, schedule_id, origin, nominal_at, kind, revision, \
+             outcome, reason, decided_at, summary_count, summary_last_at) \
+             VALUES ($1, $2, 'SPEC', to_timestamp($3), 'SCHEDULED', 1, $4, $5, to_timestamp($3), $6, \
+             to_timestamp($7))",
+        )
+        .bind(w.tenant.as_uuid())
+        .bind(created.id.as_uuid())
+        .bind(f64::from(nominal))
+        .bind(outcome)
+        .bind(reason)
+        .bind(summary.map(|(n, _)| n))
+        .bind(summary.map(|(_, t)| f64::from(t)))
+        .execute(&w.db.pool)
+        .await
+        .expect("action");
+    }
+    sqlx::query(
+        "UPDATE schedules SET counters = '{\"SKIPPED_OVERLAP\": 1, \"STARTED\": 7}' WHERE id = $1",
+    )
+    .bind(created.id.as_uuid())
+    .execute(&w.db.pool)
+    .await
+    .expect("counters");
+
+    let busy = w
+        .service
+        .describe(&alice, created.id, 0, 2)
+        .await
+        .expect("describe");
+    assert!(busy.next.is_empty(), "none were asked for");
+    assert_eq!(
+        busy.activity
+            .recent
+            .iter()
+            .map(|a| (a.outcome.as_str(), a.reason.as_deref(), a.summary_count))
+            .collect::<Vec<_>>(),
+        vec![
+            ("COALESCED", None, Some(4)),
+            ("DROPPED_BUFFER_FULL", None, None)
+        ],
+        "the latest two decisions, newest first"
+    );
+    assert_eq!(
+        busy.activity.recent[0].summary_last_nominal_at,
+        Some(OffsetDateTime::from_unix_timestamp(2_900).expect("instant"))
+    );
+    assert_eq!(
+        busy.activity.counters.into_iter().collect::<Vec<_>>(),
+        vec![("SKIPPED_OVERLAP".to_owned(), 1), ("STARTED".to_owned(), 7)]
+    );
+}
+
+#[tokio::test]
+async fn a_paused_schedule_lists_no_next_times_and_reading_needs_schedule_read() {
+    let w = world().await;
+    let alice = who(&w, "alice", Role::Developer);
+    let created = w
+        .service
+        .create(
+            &alice,
+            w.namespace,
+            write(&w, "resting", &daily_nine()),
+            &ctx(),
+        )
+        .await
+        .expect("create");
+    w.service
+        .pause(
+            &alice,
+            created.id,
+            Note::new("not now").expect("note"),
+            &ctx(),
+        )
+        .await
+        .expect("pause");
+    let paused = w
+        .service
+        .describe(&alice, created.id, 10, 10)
+        .await
+        .expect("describe");
+    assert!(paused.next.is_empty(), "nothing is acted on while paused");
+
+    let worker = who(&w, "robot", Role::Worker);
+    assert!(matches!(
+        w.service.describe(&worker, created.id, 1, 1).await,
+        Err(AppError::Forbidden {
+            permission: Permission::ScheduleRead
+        })
+    ));
+    let stranger = Principal::new(
+        TenantId::generate(),
+        Subject::parse("mallory").expect("subject"),
+        Role::Admin,
+    );
+    assert!(matches!(
+        w.service.describe(&stranger, created.id, 1, 1).await,
+        Err(AppError::NotFound)
+    ));
+}
+
+#[tokio::test]
+async fn a_delete_at_a_stale_revision_deletes_nothing_and_at_the_head_deletes() {
+    let w = world().await;
+    let alice = who(&w, "alice", Role::Developer);
+    let created = w
+        .service
+        .create(
+            &alice,
+            w.namespace,
+            write(&w, "versioned", &daily_nine()),
+            &ctx(),
+        )
+        .await
+        .expect("create");
+    let revised = w
+        .service
+        .update(
+            &alice,
+            created.id,
+            write(&w, "versioned", &daily_nine()),
+            1,
+            &ctx(),
+        )
+        .await
+        .expect("a second revision");
+    assert_eq!(revised.revision, 2);
+    let stale = w
+        .service
+        .delete(&alice, created.id, Some(1), &ctx())
+        .await
+        .expect_err("revision 1 is not the head");
+    assert!(
+        matches!(stale, AppError::RevisionConflict { current: 2 }),
+        "{stale:?}"
+    );
+    assert!(
+        w.service.get(&alice, created.id).await.is_ok(),
+        "still there"
+    );
+    w.service
+        .delete(&alice, created.id, Some(2), &ctx())
+        .await
+        .expect("delete at the head");
+    assert!(matches!(
+        w.service.get(&alice, created.id).await,
+        Err(AppError::NotFound)
+    ));
 }

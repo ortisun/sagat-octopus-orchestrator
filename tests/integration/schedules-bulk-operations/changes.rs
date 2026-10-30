@@ -359,6 +359,7 @@ async fn a_deleted_schedule_cannot_be_paused_or_revised() {
             .delete_schedule(
                 w.tenant,
                 created.id,
+                None,
                 OffsetDateTime::now_utc(),
                 &audit(&w, AuditAction::ScheduleDeleted, created.id)
             )
@@ -428,6 +429,7 @@ async fn deleting_leaves_a_tombstone_drops_waiting_actions_and_frees_the_name() 
             .delete_schedule(
                 w.tenant,
                 created.id,
+                None,
                 now,
                 &audit(&w, AuditAction::ScheduleDeleted, created.id)
             )
@@ -477,6 +479,7 @@ async fn deleting_leaves_a_tombstone_drops_waiting_actions_and_frees_the_name() 
             .delete_schedule(
                 w.tenant,
                 created.id,
+                None,
                 now,
                 &audit(&w, AuditAction::ScheduleDeleted, created.id)
             )
@@ -514,6 +517,7 @@ async fn nothing_changes_for_a_schedule_of_another_tenant() {
             .delete_schedule(
                 stranger,
                 created.id,
+                None,
                 OffsetDateTime::now_utc(),
                 &audit(&w, AuditAction::ScheduleDeleted, created.id)
             )
@@ -547,6 +551,7 @@ async fn the_runtime_role_can_change_a_schedule() {
             .delete_schedule(
                 w.tenant,
                 created.id,
+                None,
                 OffsetDateTime::now_utc(),
                 &audit(&w, AuditAction::ScheduleDeleted, created.id)
             )

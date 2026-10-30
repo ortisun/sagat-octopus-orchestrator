@@ -152,6 +152,17 @@ fn body_of(operation: &str) -> Option<Value> {
         "promoteWorkflowVersion" => {
             json!({"namespaceId": "{namespaceId}", "reason": "cross-tenant battery probe", "acceptBreaking": true})
         }
+        // Feature 018: an administrator of another tenant writing or pausing the victim's schedules.
+        "createSchedule" => json!({
+            "name": "attacker-schedule", "spec": {"intervals": [{"everyMs": 3_600_000}]},
+            "action": {"workflowId": "{workflowId}", "input": {"attacker": true}}
+        }),
+        "updateSchedule" => json!({
+            "name": "victim-schedule", "spec": {"intervals": [{"everyMs": 3_600_000}]},
+            "action": {"workflowId": "{workflowId}", "input": {"attacker": true}},
+            "expectedRevision": 1
+        }),
+        "pauseSchedule" | "resumeSchedule" => json!({"note": "cross-tenant battery probe"}),
         // Feature 008: an administrator of another tenant draining the victim's worker.
         "drainWorker" | "undrainWorker" => {
             json!({"reason": "cross-tenant battery probe"})
@@ -208,6 +219,7 @@ fn is_resource_id(name: &str) -> bool {
             | "namespaceId"
             | "workflowId"
             | "runId"
+            | "scheduleId"
             | "scriptId"
             | "executionId"
             | "requestId"
@@ -263,6 +275,7 @@ async fn snapshot(api: &TestApi, victim: &Victim) -> Value {
         format!("/namespaces/{ns}/secrets/stripe-key/pools"),
         format!("/namespaces/{ns}/egress-policy"),
         format!("/namespaces/{ns}/scripts"),
+        format!("/namespaces/{ns}/schedules"),
         format!(
             "/namespaces/{ns}/scripts/{}/versions",
             victim.ids["scriptId"]
@@ -439,8 +452,26 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
     assert_eq!(status, 202, "{test_run}");
     let test_run = test_run["id"].as_str().expect("test run id").to_owned();
 
+    let (status, schedule) = send(
+        &api,
+        "POST",
+        &format!("/namespaces/{ns}/schedules"),
+        alice,
+        Some(&json!({
+            "name": "victim-schedule", "spec": {"intervals": [{"everyMs": 3_600_000}]},
+            "action": {"workflowId": wf, "input": {"victim": true}}
+        })),
+    )
+    .await;
+    assert_eq!(status, 201, "{schedule}");
+    let schedule = schedule["scheduleId"]
+        .as_str()
+        .expect("schedule id")
+        .to_owned();
+
     let victim = Victim {
         ids: BTreeMap::from([
+            ("scheduleId", schedule.clone()),
             ("scriptId", script.clone()),
             ("testRunId", test_run.clone()),
             ("executionId", Uuid::now_v7().to_string()),
@@ -462,7 +493,8 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
         ]),
     };
     let before = snapshot(&api, &victim).await;
-    let victim_ids: Vec<&String> = vec![&ws, &ns, &wf, &run, &script, &test_run, &request];
+    let victim_ids: Vec<&String> =
+        vec![&ws, &ns, &wf, &run, &script, &test_run, &request, &schedule];
 
     // Operations nobody has built yet are listed by name, so they cannot be forgotten later.
     let not_built: BTreeSet<&str> = ["publishEvent", "receiveSignedWebhook"]
@@ -504,7 +536,13 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
             .expect("json")
         });
 
-        let real = victim.fill(&template, true);
+        // Deleting a schedule names the revision it expects, in the query.
+        let query = if operation == "deleteSchedule" {
+            "?expectedRevision=1"
+        } else {
+            ""
+        };
+        let real = format!("{}{query}", victim.fill(&template, true));
         let attacker = if incident {
             ("runner-bob", "globex")
         } else {
@@ -520,7 +558,7 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
                 "{operation} {method} {template}: {answer}"
             );
             // The same call against ids that exist nowhere gets the same answer.
-            let fake = victim.fill(&template, false);
+            let fake = format!("{}{query}", victim.fill(&template, false));
             let fake_body = body.as_ref().map(|b| {
                 serde_json::from_str(
                     &b.to_string()

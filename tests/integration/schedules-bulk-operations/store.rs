@@ -462,7 +462,9 @@ async fn the_list_pages_by_id_and_hides_deleted_schedules() {
         .await
         .expect("delete");
     ids.remove(2);
+    // ids are time-ordered, and the listing is newest first
     ids.sort();
+    ids.reverse();
 
     let first = store
         .schedules(w.tenant, w.namespace, None, 3)

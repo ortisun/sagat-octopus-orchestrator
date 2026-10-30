@@ -4,16 +4,18 @@
 //! the domain keeps the declared spec and an adapter (`sagat-infra-ir`) makes it mean something,
 //! the way it does for the cron triggers of feature 004 ([`crate::dispatch::CronSchedule`]).
 
+use std::collections::BTreeMap;
 use std::future::Future;
+use std::pin::Pin;
 
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::identity::{NamespaceId, Permission, Principal, TenantId};
 use sagat_domain::quota::QuotaResource;
 use sagat_domain::schedules::{
-    Ceilings, Note, Policies, RemainingActions, ScheduleId, ScheduleName, ScheduleSpec,
-    ScheduleTarget, actual_time, jitter_offset_ms, jitter_seed,
+    ActionKind, Ceilings, Note, Origin, Policies, RemainingActions, ScheduleId, ScheduleName,
+    ScheduleSpec, ScheduleTarget, actual_time, jitter_offset_ms, jitter_seed,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -22,6 +24,7 @@ use crate::clock::Clock;
 use crate::error::{AppError, StoreError};
 use crate::identity::RequestContext;
 use crate::quotas::QuotaLookup;
+use crate::schedule_codec::{CodecError, policies_from_json, spec_from_json, target_from_json};
 
 /// How many occurrences a single call may be asked for. A caller that needs more asks again from
 /// the last one it got.
@@ -378,6 +381,41 @@ pub enum TargetCheck {
     VersionMissing,
 }
 
+/// A decision of a schedule, as read back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionView {
+    pub nominal_at: OffsetDateTime,
+    pub actual_at: Option<OffsetDateTime>,
+    pub kind: ActionKind,
+    pub origin: Origin,
+    pub revision: u32,
+    /// A closed vocabulary that only grows: a reader treats an unknown value as another outcome.
+    pub outcome: String,
+    pub reason: Option<String>,
+    pub run_id: Option<Uuid>,
+    pub backfill_id: Option<Uuid>,
+    /// How many times a `COALESCED` or `MISSED_CATCHUP_WINDOW` summary stands for.
+    pub summary_count: Option<u32>,
+    pub summary_last_nominal_at: Option<OffsetDateTime>,
+    pub decided_at: OffsetDateTime,
+}
+
+/// The counters of a schedule and its latest decisions.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScheduleActivity {
+    pub counters: BTreeMap<String, u64>,
+    pub recent: Vec<ActionView>,
+}
+
+/// A schedule as `describe` shows it: the record, the times it will act on next and what it has done.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScheduleDescription {
+    pub record: ScheduleRecord,
+    /// `(nominal, actual)` of the next times; empty while the schedule is paused or exhausted.
+    pub next: Vec<(OffsetDateTime, OffsetDateTime)>,
+    pub activity: ScheduleActivity,
+}
+
 /// Storage port of the schedules. Implemented by `sagat-infra-postgres`.
 pub trait ScheduleStore: Send + Sync {
     /// Whether the namespace exists in `tenant`.
@@ -412,7 +450,8 @@ pub trait ScheduleStore: Send + Sync {
         id: ScheduleId,
     ) -> impl Future<Output = Result<Option<ScheduleRecord>, StoreError>> + Send;
 
-    /// The schedules of a namespace that have not been deleted, by id, after `after` when given.
+    /// The schedules of a namespace that have not been deleted, newest first (ids are time-ordered),
+    /// those after `after` in that order when given.
     fn schedules(
         &self,
         tenant: TenantId,
@@ -511,13 +550,23 @@ pub trait ScheduleStore: Send + Sync {
 
     /// Deletes: the schedule stays as a tombstone, its name is free, its waiting actions become
     /// `DROPPED_DELETED`, its runs are untouched. `false` when there was nothing to delete.
+    /// `RevisionConflict` when `expected_revision` is given and the head is another one.
     fn delete_schedule(
         &self,
         tenant: TenantId,
         id: ScheduleId,
+        expected_revision: Option<u32>,
         now: OffsetDateTime,
         audit: &AuditRecord,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    /// What a schedule has done: its counters and its `recent` latest decisions, newest first.
+    fn activity(
+        &self,
+        tenant: TenantId,
+        id: ScheduleId,
+        recent: u32,
+    ) -> impl Future<Output = Result<ScheduleActivity, StoreError>> + Send;
 }
 
 // --- the service --------------------------------------------------------------------------------
@@ -558,9 +607,49 @@ pub fn next_times<K: ScheduleCalendar>(
     let gap_ms = calendar
         .next_after(spec, nominal)?
         .and_then(|following| u64::try_from((following - nominal).whole_milliseconds()).ok());
+    Ok((Some(nominal), actual_instant(id, spec, nominal, gap_ms)))
+}
+
+/// The instant `nominal` is acted on: the jitter of the schedule and the time, bounded by the gap to
+/// the next nominal time.
+fn actual_instant(
+    id: ScheduleId,
+    spec: &ScheduleSpec,
+    nominal: OffsetDateTime,
+    gap_ms: Option<u64>,
+) -> Option<OffsetDateTime> {
     let digest: [u8; 32] = Sha256::digest(jitter_seed(id.as_uuid(), nominal)).into();
     let offset = jitter_offset_ms(&digest, spec.jitter_ms(), gap_ms);
-    Ok((Some(nominal), actual_time(nominal, offset, spec.end_at())))
+    actual_time(nominal, offset, spec.end_at())
+}
+
+/// The next `count` times after `after` as `(nominal, actual)`. A time whose jitter would pass the
+/// end of the spec is not acted on and is left out.
+///
+/// # Errors
+/// [`CalendarFailure`] when the spec cannot be evaluated.
+pub fn upcoming<K: ScheduleCalendar>(
+    calendar: &K,
+    id: ScheduleId,
+    spec: &ScheduleSpec,
+    after: OffsetDateTime,
+    count: usize,
+) -> Result<Vec<(OffsetDateTime, OffsetDateTime)>, CalendarFailure> {
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    let nominals = calendar.occurrences(spec, after, None, count + 1)?;
+    Ok(nominals
+        .iter()
+        .take(count)
+        .enumerate()
+        .filter_map(|(i, &nominal)| {
+            let gap_ms = nominals.get(i + 1).and_then(|following| {
+                u64::try_from((*following - nominal).whole_milliseconds()).ok()
+            });
+            actual_instant(id, spec, nominal, gap_ms).map(|actual| (nominal, actual))
+        })
+        .collect())
 }
 
 fn invalid(reason: &'static str, field: &str) -> AppError {
@@ -572,10 +661,10 @@ fn invalid(reason: &'static str, field: &str) -> AppError {
 
 fn calendar_error(error: CalendarFailure) -> AppError {
     match error {
-        CalendarFailure::TimeZone => invalid("SCHEDULE_ZONE_UNKNOWN", "spec.timezone"),
-        CalendarFailure::Cron => invalid("SCHEDULE_SPEC_INVALID", "spec.cron"),
-        CalendarFailure::NeverFires => invalid("SCHEDULE_NEVER_FIRES", "spec"),
-        CalendarFailure::TooFrequent => invalid("SCHEDULE_TOO_FREQUENT", "spec"),
+        CalendarFailure::TimeZone => invalid("SCHEDULE_ZONE_UNKNOWN", "/spec/timezone"),
+        CalendarFailure::Cron => invalid("SCHEDULE_SPEC_INVALID", "/spec/cron"),
+        CalendarFailure::NeverFires => invalid("SCHEDULE_NEVER_FIRES", "/spec"),
+        CalendarFailure::TooFrequent => invalid("SCHEDULE_TOO_FREQUENT", "/spec"),
         CalendarFailure::LimitTooLarge => {
             AppError::NotAllowed("too many occurrences were asked for at once")
         }
@@ -585,10 +674,10 @@ fn calendar_error(error: CalendarFailure) -> AppError {
 /// The input as the payload that is stored: an object of at most [`MAX_INPUT_BYTES`].
 fn stored_input(input: &Value) -> Result<StoredInput, AppError> {
     if !input.is_object() {
-        return Err(invalid("SCHEDULE_INPUT_INVALID", "action.input"));
+        return Err(invalid("SCHEDULE_INPUT_INVALID", "/action/input"));
     }
-    let bytes =
-        serde_json::to_vec(input).map_err(|_| invalid("SCHEDULE_INPUT_INVALID", "action.input"))?;
+    let bytes = serde_json::to_vec(input)
+        .map_err(|_| invalid("SCHEDULE_INPUT_INVALID", "/action/input"))?;
     if bytes.len() > MAX_INPUT_BYTES {
         return Err(AppError::PayloadTooLarge(
             "the input of a schedule is at most 64 KiB",
@@ -597,6 +686,80 @@ fn stored_input(input: &Value) -> Result<StoredInput, AppError> {
     Ok(StoredInput {
         digest: Sha256::digest(&bytes).into(),
         bytes,
+    })
+}
+
+/// What a caller sends to create or replace a schedule, before it is checked against the ceilings.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScheduleDocument {
+    pub name: String,
+    pub spec: Value,
+    /// Absent: every policy takes its default.
+    pub policies: Option<Value>,
+    /// The target (`workflowId`, ...) with the `input` of the runs.
+    pub action: Value,
+    pub paused: bool,
+    pub note: Option<String>,
+    pub remaining_actions: Option<u32>,
+}
+
+/// The JSON pointer of a dotted codec path: `spec.calendars[0].hour` is `/spec/calendars/0/hour`.
+fn pointer(path: &str) -> String {
+    let mut out = String::from("/");
+    for c in path.chars() {
+        match c {
+            '.' | '[' => out.push('/'),
+            ']' => {}
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+fn codec_error(error: &CodecError) -> AppError {
+    invalid("SCHEDULE_SPEC_INVALID", &pointer(&error.path))
+}
+
+/// Decodes a document against `ceilings`.
+///
+/// # Errors
+/// [`AppError::InvalidSchedule`] naming the field as a JSON pointer.
+pub fn decode_document(
+    document: ScheduleDocument,
+    ceilings: &Ceilings,
+) -> Result<ScheduleWrite, AppError> {
+    let name =
+        ScheduleName::new(&document.name).map_err(|_| invalid("SCHEDULE_SPEC_INVALID", "/name"))?;
+    let spec = spec_from_json(&document.spec, ceilings).map_err(|e| codec_error(&e))?;
+    let policies = policies_from_json(&document.policies.unwrap_or_else(|| json!({})), ceilings)
+        .map_err(|e| codec_error(&e))?;
+    let Value::Object(mut action) = document.action else {
+        return Err(invalid("SCHEDULE_SPEC_INVALID", "/action"));
+    };
+    let input = action
+        .remove("input")
+        .ok_or_else(|| invalid("SCHEDULE_INPUT_INVALID", "/action/input"))?;
+    let target = target_from_json(&Value::Object(action)).map_err(|e| codec_error(&e))?;
+    let note = document
+        .note
+        .as_deref()
+        .map(Note::new)
+        .transpose()
+        .map_err(|_| invalid("SCHEDULE_SPEC_INVALID", "/note"))?;
+    let remaining_actions = document
+        .remaining_actions
+        .map(RemainingActions::new)
+        .transpose()
+        .map_err(|_| invalid("SCHEDULE_SPEC_INVALID", "/remainingActions"))?;
+    Ok(ScheduleWrite {
+        name,
+        spec,
+        policies,
+        target,
+        input,
+        paused: document.paused,
+        note,
+        remaining_actions,
     })
 }
 
@@ -656,10 +819,10 @@ where
         {
             TargetCheck::Found => {}
             TargetCheck::WorkflowMissing => {
-                return Err(invalid("SCHEDULE_SPEC_INVALID", "action.workflowId"));
+                return Err(invalid("SCHEDULE_SPEC_INVALID", "/action/workflowId"));
             }
             TargetCheck::VersionMissing => {
-                return Err(invalid("SCHEDULE_SPEC_INVALID", "action.versionId"));
+                return Err(invalid("SCHEDULE_SPEC_INVALID", "/action/versionId"));
             }
         }
         if write.target.business_id().is_some() {
@@ -798,6 +961,57 @@ where
         self.load(principal, id).await
     }
 
+    /// A schedule with the next `next` times it will act on and its `recent` latest decisions.
+    ///
+    /// # Errors
+    /// As [`Self::get`]; [`AppError::InvalidSchedule`] when the stored spec can no longer be evaluated.
+    pub async fn describe(
+        &self,
+        principal: &Principal,
+        id: ScheduleId,
+        next: u32,
+        recent: u32,
+    ) -> Result<ScheduleDescription, AppError> {
+        principal.authorize(Permission::ScheduleRead)?;
+        let record = self.load(principal, id).await?;
+        let now = self.clock.now();
+        let next = if record.state == ScheduleState::Active {
+            upcoming(
+                &self.calendar,
+                record.id,
+                &record.spec,
+                now,
+                usize::try_from(next.min(100)).unwrap_or(0),
+            )
+            .map_err(calendar_error)?
+        } else {
+            Vec::new()
+        };
+        let activity = self
+            .store
+            .activity(principal.tenant_id(), id, recent.min(100))
+            .await?;
+        Ok(ScheduleDescription {
+            record,
+            next,
+            activity,
+        })
+    }
+
+    /// The namespace a schedule is in. The route has already admitted the caller to a namespace;
+    /// this is what it compares with, so a schedule of another namespace is as absent as one of
+    /// another tenant.
+    ///
+    /// # Errors
+    /// [`AppError::NotFound`].
+    pub async fn namespace_of(
+        &self,
+        principal: &Principal,
+        id: ScheduleId,
+    ) -> Result<NamespaceId, AppError> {
+        Ok(self.load(principal, id).await?.namespace_id)
+    }
+
     async fn load(
         &self,
         principal: &Principal,
@@ -809,7 +1023,7 @@ where
         }
     }
 
-    /// The schedules of a namespace, by id, after `after`.
+    /// The schedules of a namespace, newest first, those after `after` in that order.
     ///
     /// # Errors
     /// [`AppError::Forbidden`] without `schedule:read`; [`AppError::NotFound`] for a namespace that
@@ -920,6 +1134,7 @@ where
         &self,
         principal: &Principal,
         id: ScheduleId,
+        expected_revision: Option<u32>,
         ctx: &RequestContext,
     ) -> Result<(), AppError> {
         principal.authorize(Permission::ScheduleWrite)?;
@@ -941,7 +1156,7 @@ where
         );
         if self
             .store
-            .delete_schedule(principal.tenant_id(), id, now, &audit)
+            .delete_schedule(principal.tenant_id(), id, expected_revision, now, &audit)
             .await?
         {
             Ok(())
@@ -996,7 +1211,7 @@ where
         ctx: &RequestContext,
     ) -> Result<ScheduleRecord, AppError> {
         if note.as_str().is_empty() {
-            return Err(invalid("SCHEDULE_SPEC_INVALID", "note"));
+            return Err(invalid("SCHEDULE_SPEC_INVALID", "/note"));
         }
         let current = self.load(principal, id).await?;
         if current.origin == ScheduleOrigin::Trigger {
@@ -1039,5 +1254,175 @@ where
             )
             .await?
             .ok_or(AppError::NotFound)
+    }
+}
+
+// --- the use cases, behind a trait object --------------------------------------------------------
+
+/// The answer of a use case, boxed so the HTTP layer holds one `Arc<dyn ScheduleUseCase>` whatever
+/// the store, the calendar and the clock behind it are.
+pub type ScheduleFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, AppError>> + Send + 'a>>;
+
+/// What the HTTP layer asks of the schedules. Implemented by [`ScheduleService`].
+pub trait ScheduleUseCase: Send + Sync {
+    fn namespace_of<'a>(
+        &'a self,
+        principal: &'a Principal,
+        id: ScheduleId,
+    ) -> ScheduleFuture<'a, NamespaceId>;
+
+    fn create<'a>(
+        &'a self,
+        principal: &'a Principal,
+        namespace: NamespaceId,
+        document: ScheduleDocument,
+        ctx: &'a RequestContext,
+    ) -> ScheduleFuture<'a, ScheduleRecord>;
+
+    fn describe<'a>(
+        &'a self,
+        principal: &'a Principal,
+        id: ScheduleId,
+        next: u32,
+        recent: u32,
+    ) -> ScheduleFuture<'a, ScheduleDescription>;
+
+    fn list<'a>(
+        &'a self,
+        principal: &'a Principal,
+        namespace: NamespaceId,
+        after: Option<ScheduleId>,
+        limit: u32,
+    ) -> ScheduleFuture<'a, Vec<ScheduleRecord>>;
+
+    fn update<'a>(
+        &'a self,
+        principal: &'a Principal,
+        id: ScheduleId,
+        document: ScheduleDocument,
+        expected_revision: u32,
+        ctx: &'a RequestContext,
+    ) -> ScheduleFuture<'a, ScheduleRecord>;
+
+    fn delete<'a>(
+        &'a self,
+        principal: &'a Principal,
+        id: ScheduleId,
+        expected_revision: u32,
+        ctx: &'a RequestContext,
+    ) -> ScheduleFuture<'a, ()>;
+
+    fn pause<'a>(
+        &'a self,
+        principal: &'a Principal,
+        id: ScheduleId,
+        note: Note,
+        ctx: &'a RequestContext,
+    ) -> ScheduleFuture<'a, ScheduleRecord>;
+
+    fn resume<'a>(
+        &'a self,
+        principal: &'a Principal,
+        id: ScheduleId,
+        note: Note,
+        ctx: &'a RequestContext,
+    ) -> ScheduleFuture<'a, ScheduleRecord>;
+}
+
+impl<S, K, C> ScheduleUseCase for ScheduleService<S, K, C>
+where
+    S: ScheduleStore + QuotaLookup + 'static,
+    K: ScheduleCalendar + 'static,
+    C: Clock + 'static,
+{
+    fn namespace_of<'a>(
+        &'a self,
+        principal: &'a Principal,
+        id: ScheduleId,
+    ) -> ScheduleFuture<'a, NamespaceId> {
+        Box::pin(Self::namespace_of(self, principal, id))
+    }
+
+    fn create<'a>(
+        &'a self,
+        principal: &'a Principal,
+        namespace: NamespaceId,
+        document: ScheduleDocument,
+        ctx: &'a RequestContext,
+    ) -> ScheduleFuture<'a, ScheduleRecord> {
+        Box::pin(async move {
+            let write = decode_document(document, &self.ceilings)?;
+            Self::create(self, principal, namespace, write, ctx).await
+        })
+    }
+
+    fn describe<'a>(
+        &'a self,
+        principal: &'a Principal,
+        id: ScheduleId,
+        next: u32,
+        recent: u32,
+    ) -> ScheduleFuture<'a, ScheduleDescription> {
+        Box::pin(Self::describe(self, principal, id, next, recent))
+    }
+
+    fn list<'a>(
+        &'a self,
+        principal: &'a Principal,
+        namespace: NamespaceId,
+        after: Option<ScheduleId>,
+        limit: u32,
+    ) -> ScheduleFuture<'a, Vec<ScheduleRecord>> {
+        Box::pin(Self::list(self, principal, namespace, after, limit))
+    }
+
+    fn update<'a>(
+        &'a self,
+        principal: &'a Principal,
+        id: ScheduleId,
+        document: ScheduleDocument,
+        expected_revision: u32,
+        ctx: &'a RequestContext,
+    ) -> ScheduleFuture<'a, ScheduleRecord> {
+        Box::pin(async move {
+            let write = decode_document(document, &self.ceilings)?;
+            Self::update(self, principal, id, write, expected_revision, ctx).await
+        })
+    }
+
+    fn delete<'a>(
+        &'a self,
+        principal: &'a Principal,
+        id: ScheduleId,
+        expected_revision: u32,
+        ctx: &'a RequestContext,
+    ) -> ScheduleFuture<'a, ()> {
+        Box::pin(Self::delete(
+            self,
+            principal,
+            id,
+            Some(expected_revision),
+            ctx,
+        ))
+    }
+
+    fn pause<'a>(
+        &'a self,
+        principal: &'a Principal,
+        id: ScheduleId,
+        note: Note,
+        ctx: &'a RequestContext,
+    ) -> ScheduleFuture<'a, ScheduleRecord> {
+        Box::pin(Self::pause(self, principal, id, note, ctx))
+    }
+
+    fn resume<'a>(
+        &'a self,
+        principal: &'a Principal,
+        id: ScheduleId,
+        note: Note,
+        ctx: &'a RequestContext,
+    ) -> ScheduleFuture<'a, ScheduleRecord> {
+        Box::pin(Self::resume(self, principal, id, note, ctx))
     }
 }

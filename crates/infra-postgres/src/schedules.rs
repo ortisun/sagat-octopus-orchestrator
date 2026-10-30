@@ -12,16 +12,16 @@ use sagat_application::schedule_codec::{
     target_to_json,
 };
 use sagat_application::schedules::{
-    BufferedAction, DueSchedule, NewSchedule, Reconcile, RecordedAction, Revise, ScheduleAdmission,
-    ScheduleDecision, ScheduleOrigin, ScheduleRecord, ScheduleState, ScheduleStore, ShardFence,
-    StateChange, TargetCheck,
+    ActionView, BufferedAction, DueSchedule, NewSchedule, Reconcile, RecordedAction, Revise,
+    ScheduleActivity, ScheduleAdmission, ScheduleDecision, ScheduleOrigin, ScheduleRecord,
+    ScheduleState, ScheduleStore, ShardFence, StateChange, TargetCheck,
 };
 use sagat_domain::audit::AuditRecord;
 use sagat_domain::execution::{RunId, RunStatus};
 use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_domain::quota::QuotaResource;
 use sagat_domain::schedules::{
-    ActionKind, Ceilings, Outcome, ScheduleId, ScheduleName, ScheduleTarget, VersionPolicy,
+    ActionKind, Ceilings, Origin, Outcome, ScheduleId, ScheduleName, ScheduleTarget, VersionPolicy,
 };
 use sagat_domain::sharding::Shard;
 use serde_json::Value;
@@ -551,7 +551,7 @@ impl ScheduleStore for PgScheduleStore {
     ) -> Result<Vec<ScheduleRecord>, StoreError> {
         let rows = sqlx::query(select_schedules!(
             "WHERE s.tenant_id = $1 AND s.namespace_id = $2 AND s.state <> 'DELETED' \
-             AND ($3::uuid IS NULL OR s.id > $3) ORDER BY s.id LIMIT $4"
+             AND ($3::uuid IS NULL OR s.id < $3) ORDER BY s.id DESC LIMIT $4"
         ))
         .bind(tenant.as_uuid())
         .bind(namespace.as_uuid())
@@ -730,22 +730,31 @@ impl ScheduleStore for PgScheduleStore {
         &self,
         tenant: TenantId,
         id: ScheduleId,
+        expected_revision: Option<u32>,
         now: OffsetDateTime,
         audit: &AuditRecord,
     ) -> Result<bool, StoreError> {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
-        let state: Option<String> = sqlx::query_scalar(
-            "SELECT state FROM schedules WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
+        let head: Option<(String, i32)> = sqlx::query_as(
+            "SELECT state, head_revision FROM schedules \
+             WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
         )
         .bind(tenant.as_uuid())
         .bind(id.as_uuid())
         .fetch_optional(&mut *tx)
         .await
         .map_err(store_error)?;
-        match state.as_deref() {
-            None => return Ok(false),
-            Some(s) if s == ScheduleState::Deleted.as_str() => return Ok(false),
-            Some(_) => {}
+        let Some((state, head_revision)) = head else {
+            return Ok(false);
+        };
+        if state == ScheduleState::Deleted.as_str() {
+            return Ok(false);
+        }
+        let current = u32::try_from(head_revision).map_err(|_| corrupt("schedule revision"))?;
+        if expected_revision.is_some_and(|expected| expected != current) {
+            return Err(StoreError::RevisionConflict {
+                current: u64::from(current),
+            });
         }
         // the actions that were still waiting will never start
         sqlx::query(
@@ -773,6 +782,77 @@ impl ScheduleStore for PgScheduleStore {
         insert_audit(&mut tx, audit).await?;
         tx.commit().await.map_err(store_error)?;
         Ok(true)
+    }
+
+    async fn activity(
+        &self,
+        tenant: TenantId,
+        id: ScheduleId,
+        recent: u32,
+    ) -> Result<ScheduleActivity, StoreError> {
+        let counters: Option<Value> =
+            sqlx::query_scalar("SELECT counters FROM schedules WHERE tenant_id = $1 AND id = $2")
+                .bind(tenant.as_uuid())
+                .bind(id.as_uuid())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(store_error)?;
+        let counters = match counters {
+            Some(Value::Object(map)) => map
+                .into_iter()
+                .map(|(name, value)| {
+                    value
+                        .as_u64()
+                        .map(|n| (name, n))
+                        .ok_or_else(|| corrupt("schedule counter"))
+                })
+                .collect::<Result<_, _>>()?,
+            Some(_) => return Err(corrupt("schedule counters")),
+            None => return Ok(ScheduleActivity::default()),
+        };
+        let rows = sqlx::query(
+            "SELECT nominal_at, actual_at, kind, revision, outcome, reason, run_id, backfill_id, \
+                    summary_count, summary_last_at, decided_at \
+             FROM schedule_actions WHERE tenant_id = $1 AND schedule_id = $2 \
+             ORDER BY decided_at DESC, nominal_at DESC LIMIT $3",
+        )
+        .bind(tenant.as_uuid())
+        .bind(id.as_uuid())
+        .bind(i64::from(recent))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_error)?;
+        let recent = rows
+            .iter()
+            .map(|row| {
+                let kind: ActionKind = col::<String>(row, "kind")?
+                    .parse()
+                    .map_err(|()| corrupt("action kind"))?;
+                let count: Option<i32> = col(row, "summary_count")?;
+                Ok(ActionView {
+                    nominal_at: col(row, "nominal_at")?,
+                    actual_at: col(row, "actual_at")?,
+                    kind,
+                    origin: if kind == ActionKind::Triggered {
+                        Origin::Manual
+                    } else {
+                        Origin::Spec
+                    },
+                    revision: u32::try_from(col::<i32>(row, "revision")?)
+                        .map_err(|_| corrupt("action revision"))?,
+                    outcome: col(row, "outcome")?,
+                    reason: col(row, "reason")?,
+                    run_id: col(row, "run_id")?,
+                    backfill_id: col(row, "backfill_id")?,
+                    summary_count: count
+                        .map(|n| u32::try_from(n).map_err(|_| corrupt("summary count")))
+                        .transpose()?,
+                    summary_last_nominal_at: col(row, "summary_last_at")?,
+                    decided_at: col(row, "decided_at")?,
+                })
+            })
+            .collect::<Result<Vec<_>, StoreError>>()?;
+        Ok(ScheduleActivity { counters, recent })
     }
 
     async fn due_schedules(

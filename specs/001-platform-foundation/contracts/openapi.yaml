@@ -42,6 +42,8 @@ tags:
     description: Operator inspection, reconciliation, audit, and platform operations.
   - name: Governance
     description: Quotas, worker bindings, secrets and egress policy of a tenant or namespace (feature 009).
+  - name: Schedules
+    description: Schedules that start runs at calendar, cron and interval times, with overlap, catch-up and pause policies (feature 018).
   - name: Versions
     description: Approvals before a publication, the active version of a workflow and its history, and promotion between environments (feature 011).
 paths:
@@ -3680,6 +3682,182 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/schedules:
+    get:
+      operationId: listSchedules
+      summary: List the schedules of a namespace, newest first
+      tags: [Schedules]
+      x-implemented: '018'
+      description: |
+        Needs `schedule:read`. Never returns the input of the runs, only its digest.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200': {description: 'A page of schedules', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/SchedulePage'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    post:
+      operationId: createSchedule
+      summary: Create a schedule
+      tags: [Schedules]
+      x-implemented: '018'
+      description: |
+        Needs `schedule:write` and `run:start`; the caller becomes `authorizedBy`, the subject whose `run:start` every action of the schedule is checked against. The spec is validated (the zone, the bounds, at least one occurrence, the minimum spacing over the next 1,000 occurrences) and the input must be an object of at most 64 KiB. It counts against the namespace's `schedules` quota. A name is unique among the schedules of a namespace that have not been deleted.
+        A refusal names `details.reason` (`SCHEDULE_SPEC_INVALID`, `SCHEDULE_ZONE_UNKNOWN`, `SCHEDULE_NEVER_FIRES`, `SCHEDULE_TOO_FREQUENT`, `SCHEDULE_INPUT_INVALID`) and, where it can, `details.field` as a JSON pointer. A request sent again after a lost answer is told what the first one did (409 for a name in use), it is never applied twice.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ScheduleWrite'}
+      responses:
+        '201': {description: 'The schedule', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Schedule'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/schedules/{scheduleId}:
+    get:
+      operationId: getSchedule
+      summary: Describe a schedule with its next times and what it has done
+      tags: [Schedules]
+      x-implemented: '018'
+      description: |
+        Needs `schedule:read`. `nextActions` are the next times it will act on (none while it is paused or has ended); `recentActions` its latest decisions, newest first; `openRuns` the runs it started that are still open; `counters` how many of each outcome it has had.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScheduleId'}
+        - {name: nextCount, in: query, schema: {type: integer, minimum: 0, maximum: 100, default: 10}}
+        - {name: recentCount, in: query, schema: {type: integer, minimum: 0, maximum: 100, default: 10}}
+      responses:
+        '200': {description: 'The schedule', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScheduleDescription'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    put:
+      operationId: updateSchedule
+      summary: Replace the spec, the policies and the action as a new revision
+      tags: [Schedules]
+      x-implemented: '018'
+      description: |
+        Needs `schedule:write` and `run:start`; the caller becomes `authorizedBy`. `expectedRevision` is required: a stale one is `409` with `details.reason` `REVISION_CONFLICT` and `details.currentRevision`. A schedule a cron trigger owns is `409` `SCHEDULE_TRIGGER_OWNED`. The input is always sent whole. The next time is the first one strictly after the update.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScheduleId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ScheduleUpdate'}
+      responses:
+        '200': {description: 'The new revision', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Schedule'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: deleteSchedule
+      summary: Delete a schedule; the runs it started are not touched
+      tags: [Schedules]
+      x-implemented: '018'
+      description: |
+        Needs `schedule:write` and `run:start`. `expectedRevision` is required and checked in the transaction that deletes: a stale one is `409` `REVISION_CONFLICT`. The actions that were waiting are dropped (`DROPPED_DELETED`), the name is free, and the history stays.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScheduleId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+        - {name: expectedRevision, in: query, required: true, schema: {type: integer, minimum: 1}}
+      responses:
+        '204': {description: 'Deleted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/schedules/{scheduleId}/pause:
+    post:
+      operationId: pauseSchedule
+      summary: Pause a schedule with a note
+      tags: [Schedules]
+      x-implemented: '018'
+      description: |
+        Needs `schedule:operate`. No time is acted on while it is paused, and none is caught up afterwards. Pausing a paused schedule replaces the note. Audited, without the note. A schedule a cron trigger owns is `409` `SCHEDULE_TRIGGER_HANDOVER_PENDING` until the operator hands the triggers over.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScheduleId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ScheduleNote'}
+      responses:
+        '200': {description: 'The paused schedule', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Schedule'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/schedules/{scheduleId}/resume:
+    post:
+      operationId: resumeSchedule
+      summary: Resume a schedule with a note; it continues from the first time after now
+      tags: [Schedules]
+      x-implemented: '018'
+      description: |
+        Needs `schedule:operate` and `run:start`; the caller becomes `authorizedBy`. The times that passed while it was paused are not caught up. Audited, without the note. A schedule a cron trigger owns is `409` `SCHEDULE_TRIGGER_HANDOVER_PENDING` until the operator hands the triggers over.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScheduleId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ScheduleNote'}
+      responses:
+        '200': {description: 'The resumed schedule', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Schedule'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
 components:
   securitySchemes:
     webhookHmac: {type: apiKey, in: header, name: X-Octopus-Signature, description: 'Required only for endpoints configured with the HMAC profile.'}
@@ -3726,6 +3904,11 @@ components:
       in: query
       description: Page size; values outside 1..200 are clamped.
       schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+    ScheduleId:
+      name: scheduleId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
     WorkerSubject:
       name: subject
       in: path
@@ -6444,6 +6627,209 @@ components:
         version: {oneOf: [{$ref: '#/components/schemas/WorkflowVersion'}, {type: 'null'}]}
         request: {oneOf: [{$ref: '#/components/schemas/PublicationRequest'}, {type: 'null'}]}
         activeVersion: {type: [integer, 'null'], minimum: 1}
+    ScheduleRange:
+      type: object
+      additionalProperties: false
+      required: [start]
+      properties:
+        start: {type: integer, minimum: 0}
+        end: {type: integer, minimum: 0, description: 'Inclusive; equals start when absent.'}
+        step: {type: integer, minimum: 1, default: 1}
+    ScheduleField:
+      type: array
+      minItems: 1
+      maxItems: 32
+      items: {$ref: '#/components/schemas/ScheduleRange'}
+      description: Union of ranges. The server checks each bound against the domain of the field.
+    ScheduleCalendarSpec:
+      type: object
+      additionalProperties: false
+      description: >-
+        A structured calendar. `second`, `minute` and `hour` default to `[{start: 0}]`; `dayOfMonth`, `month`,
+        `year` and `dayOfWeek` default to every value. Domains: second 0-59, minute 0-59, hour 0-23,
+        dayOfMonth 1-31, month 1-12, year 2000-2200, dayOfWeek 0-6 (0 is Sunday). A day matches when both
+        `dayOfMonth` and `dayOfWeek` match.
+      properties:
+        second: {$ref: '#/components/schemas/ScheduleField'}
+        minute: {$ref: '#/components/schemas/ScheduleField'}
+        hour: {$ref: '#/components/schemas/ScheduleField'}
+        dayOfMonth: {$ref: '#/components/schemas/ScheduleField'}
+        month: {$ref: '#/components/schemas/ScheduleField'}
+        year: {$ref: '#/components/schemas/ScheduleField'}
+        dayOfWeek: {$ref: '#/components/schemas/ScheduleField'}
+        comment: {type: string, maxLength: 128}
+    ScheduleCronString:
+      type: string
+      maxLength: 120
+      pattern: '^[A-Za-z0-9*/,?\- ]+$'
+      description: >-
+        The grammar of a cron trigger (feature 004): five fields (minute, hour, day of month, month, day of
+        week), evaluated with the same calendar library.
+    ScheduleIntervalSpec:
+      type: object
+      additionalProperties: false
+      required: [everyMs]
+      properties:
+        everyMs: {type: integer, minimum: 10000, maximum: 31622400000}
+        offsetMs: {type: integer, minimum: 0, default: 0, description: 'Phase from the Unix epoch; less than everyMs.'}
+    ScheduleDstPolicy:
+      type: object
+      additionalProperties: false
+      properties:
+        gap: {type: string, enum: [SKIP, SHIFT_FORWARD], default: SKIP, description: 'A local time that does not exist: no action, or the first valid instant after the gap.'}
+        ambiguous: {type: string, enum: [ONCE_EARLIER, TWICE], default: ONCE_EARLIER, description: 'A local time that happens twice: the earlier instant only, or both.'}
+    ScheduleSpec:
+      type: object
+      additionalProperties: false
+      description: >-
+        When a schedule acts. At least one of `calendars`, `cron` and `intervals`. The server also
+        enforces: the entries together are at most the effective ceiling (default 10, hard 32); at least
+        one occurrence falls inside `[startAt, endAt)`; no two of the next 1,000 occurrences are closer than
+        the effective minimum spacing (default 60 s, floor 10 s); `jitterMs` is at most 24 hours.
+      properties:
+        calendars: {type: array, maxItems: 32, items: {$ref: '#/components/schemas/ScheduleCalendarSpec'}}
+        cron: {type: array, maxItems: 32, items: {$ref: '#/components/schemas/ScheduleCronString'}}
+        intervals: {type: array, maxItems: 32, items: {$ref: '#/components/schemas/ScheduleIntervalSpec'}}
+        exclusions: {type: array, maxItems: 32, items: {$ref: '#/components/schemas/ScheduleCalendarSpec'}, description: A nominal time matched by any exclusion is not an occurrence.}
+        startAt: {type: string, format: date-time}
+        endAt: {type: string, format: date-time, description: 'Exclusive. No action is taken at or after it, jitter included.'}
+        timezone: {type: string, minLength: 1, maxLength: 64, default: UTC, description: 'An IANA name; the calendars and cron strings are evaluated in it, the intervals are not.'}
+        jitterMs: {type: integer, minimum: 0, maximum: 86400000, default: 0, description: 'A deterministic offset in [0, jitterMs) per schedule and nominal time, bounded by the gap to the next nominal time.'}
+        dst: {$ref: '#/components/schemas/ScheduleDstPolicy'}
+      anyOf:
+        - {required: [calendars]}
+        - {required: [cron]}
+        - {required: [intervals]}
+    ScheduleOverlapPolicy:
+      type: string
+      enum: [SKIP, BUFFER_ONE, BUFFER_ALL, CANCEL_OTHER, ALLOW_ALL]
+      default: SKIP
+      description: What a time does while a run the schedule started is still open. There is no terminate variant.
+    SchedulePolicies:
+      type: object
+      additionalProperties: false
+      properties:
+        overlap: {$ref: '#/components/schemas/ScheduleOverlapPolicy'}
+        catchupWindowMs: {type: integer, minimum: 10000, maximum: 31622400000, default: 31622400000}
+        catchupMode: {type: string, enum: [ONE, ALL], default: ONE}
+        pauseOnFailure: {type: boolean, default: false}
+        bufferLimit: {type: integer, minimum: 1, maximum: 1000, default: 100, description: 'BUFFER_ALL only; clamped to the ceiling of the namespace.'}
+    ScheduleAction:
+      type: object
+      additionalProperties: false
+      required: [workflowId, input]
+      properties:
+        workflowId: {type: string, format: uuid}
+        versionPolicy: {type: string, enum: [ACTIVE, PINNED], default: ACTIVE}
+        versionId: {type: string, format: uuid, description: Required with PINNED, refused otherwise.}
+        input: {type: object, description: 'The input of every run, at most 64 KiB; never returned.'}
+        nominalTimeField: {type: string, pattern: '^[A-Za-z_][A-Za-z0-9_]{0,63}$', description: 'A top-level input property set to the nominal time of the action (RFC 3339, UTC).'}
+        runTimeoutMs: {type: integer, minimum: 1000, maximum: 31622400000}
+    ScheduleFields:
+      type: object
+      required: [name, spec, action]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 128, pattern: '^[a-z0-9][a-z0-9-]*$'}
+        spec: {$ref: '#/components/schemas/ScheduleSpec'}
+        policies: {$ref: '#/components/schemas/SchedulePolicies'}
+        action: {$ref: '#/components/schemas/ScheduleAction'}
+        paused: {type: boolean, default: false}
+        note: {type: string, maxLength: 512}
+        remainingActions: {type: integer, minimum: 1, maximum: 1000000}
+    ScheduleWrite:
+      allOf:
+        - {$ref: '#/components/schemas/ScheduleFields'}
+      unevaluatedProperties: false
+    ScheduleUpdate:
+      allOf:
+        - {$ref: '#/components/schemas/ScheduleFields'}
+        - type: object
+          required: [expectedRevision]
+          properties:
+            expectedRevision: {type: integer, minimum: 1}
+      unevaluatedProperties: false
+    ScheduleNote:
+      type: object
+      additionalProperties: false
+      required: [note]
+      properties:
+        note: {type: string, minLength: 1, maxLength: 512}
+    Schedule:
+      type: object
+      required: [scheduleId, name, origin, state, revision, createdAt]
+      properties:
+        scheduleId: {type: string, format: uuid}
+        name: {type: string}
+        origin: {type: string, enum: [API, TRIGGER]}
+        triggerId: {type: string, format: uuid, description: TRIGGER only.}
+        state: {type: string, enum: [ACTIVE, PAUSED]}
+        exhausted: {type: boolean, description: '`remainingActions` reached zero.'}
+        revision: {type: integer, minimum: 1}
+        spec: {$ref: '#/components/schemas/ScheduleSpec'}
+        policies: {$ref: '#/components/schemas/SchedulePolicies'}
+        action:
+          type: object
+          description: The action without its input; `inputDigest` (SHA-256, hex) describes the input.
+          properties:
+            workflowId: {type: string, format: uuid}
+            versionPolicy: {type: string, enum: [ACTIVE, PINNED]}
+            versionId: {type: string, format: uuid}
+            inputDigest: {type: string, pattern: '^[0-9a-f]{64}$'}
+            nominalTimeField: {type: string}
+            runTimeoutMs: {type: integer}
+        note: {type: [string, 'null']}
+        noteBy: {type: [string, 'null']}
+        noteAt: {type: [string, 'null'], format: date-time}
+        authorizedBy: {type: string}
+        remainingActions: {type: [integer, 'null']}
+        nextActionAt: {type: [string, 'null'], format: date-time}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    ScheduleDescription:
+      allOf:
+        - {$ref: '#/components/schemas/Schedule'}
+        - type: object
+          required: [nextActions, recentActions, openRuns, bufferedCount, counters]
+          properties:
+            nextActions:
+              type: array
+              maxItems: 100
+              items:
+                type: object
+                required: [nominalTime, actualTime]
+                properties:
+                  nominalTime: {type: string, format: date-time}
+                  actualTime: {type: string, format: date-time}
+            recentActions: {type: array, maxItems: 100, items: {$ref: '#/components/schemas/ScheduleActionRecord'}}
+            openRuns: {type: array, maxItems: 1000, items: {type: string, format: uuid}}
+            bufferedCount: {type: integer, minimum: 0}
+            counters: {type: object, additionalProperties: {type: integer, minimum: 0}}
+    SchedulePage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Schedule'}}
+        nextCursor: {type: [string, 'null']}
+    ScheduleActionOutcome:
+      type: string
+      enum: [STARTED, BUFFERED, SKIPPED_OVERLAP, DROPPED_BUFFER_FULL, DROPPED_DELETED, COALESCED, MISSED_CATCHUP_WINDOW, ALREADY_ACTED, AUTHORITY_REVOKED, BUSINESS_ID_CONFLICT]
+      description: The set only grows; a client treats an unknown value as another outcome.
+    ScheduleActionRecord:
+      type: object
+      required: [nominalTime, kind, revision, outcome, decidedAt]
+      properties:
+        nominalTime: {type: string, format: date-time}
+        actualTime: {type: [string, 'null'], format: date-time}
+        kind: {type: string, enum: [SCHEDULED, TRIGGERED, BACKFILL]}
+        origin: {type: string, enum: [SPEC, MANUAL], description: 'The identity of the time: SPEC (scheduled and backfill actions share the nominal times of the spec) or MANUAL (trigger-now).'}
+        revision: {type: integer, minimum: 1}
+        outcome: {$ref: '#/components/schemas/ScheduleActionOutcome'}
+        reason: {type: [string, 'null'], description: 'A closed code, for example TRACKING_LIMIT.'}
+        runId: {type: [string, 'null'], format: uuid}
+        backfillId: {type: [string, 'null'], format: uuid}
+        summaryCount: {type: [integer, 'null'], minimum: 1, description: 'How many times a COALESCED or MISSED_CATCHUP_WINDOW summary stands for.'}
+        summaryLastNominalTime: {type: [string, 'null'], format: date-time}
+        decidedAt: {type: string, format: date-time}
   responses:
     PayloadTooLarge: {description: 'The body is larger than this endpoint takes', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     BadRequest: {description: 'A required header is missing or the body is not valid JSON', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}

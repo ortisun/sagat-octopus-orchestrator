@@ -117,6 +117,7 @@ ENVIRONMENT (serve):
                                       same type, case-insensitive, whitespace trimmed [unset]
     SAGAT_ALLOW_INSECURE_JWKS_HTTP    allow an http JWKS URL (dev only) [false]
     SAGAT_REDIS_CALLBACKS_ENABLED     enable Redis callback creation after a cold upgrade [false]
+    SAGAT_SCHEDULES_ENABLED           serve the schedule routes (the engine fires them under the same flag) [false]
     SAGAT_SECRETS_KEYS                key ring that seals secrets: id:base64,id2:base64; without it the
                                       secret routes do not exist. The engine needs the same ring
     SAGAT_API_ALLOW_PLAINTEXT_SECRETS  with a key ring, outside dev, say that TLS is terminated in

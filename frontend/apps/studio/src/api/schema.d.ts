@@ -2637,6 +2637,99 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/namespaces/{namespaceId}/schedules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the schedules of a namespace, newest first
+         * @description Needs `schedule:read`. Never returns the input of the runs, only its digest.
+         */
+        get: operations["listSchedules"];
+        put?: never;
+        /**
+         * Create a schedule
+         * @description Needs `schedule:write` and `run:start`; the caller becomes `authorizedBy`, the subject whose `run:start` every action of the schedule is checked against. The spec is validated (the zone, the bounds, at least one occurrence, the minimum spacing over the next 1,000 occurrences) and the input must be an object of at most 64 KiB. It counts against the namespace's `schedules` quota. A name is unique among the schedules of a namespace that have not been deleted.
+         *     A refusal names `details.reason` (`SCHEDULE_SPEC_INVALID`, `SCHEDULE_ZONE_UNKNOWN`, `SCHEDULE_NEVER_FIRES`, `SCHEDULE_TOO_FREQUENT`, `SCHEDULE_INPUT_INVALID`) and, where it can, `details.field` as a JSON pointer. A request sent again after a lost answer is told what the first one did (409 for a name in use), it is never applied twice.
+         */
+        post: operations["createSchedule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/schedules/{scheduleId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Describe a schedule with its next times and what it has done
+         * @description Needs `schedule:read`. `nextActions` are the next times it will act on (none while it is paused or has ended); `recentActions` its latest decisions, newest first; `openRuns` the runs it started that are still open; `counters` how many of each outcome it has had.
+         */
+        get: operations["getSchedule"];
+        /**
+         * Replace the spec, the policies and the action as a new revision
+         * @description Needs `schedule:write` and `run:start`; the caller becomes `authorizedBy`. `expectedRevision` is required: a stale one is `409` with `details.reason` `REVISION_CONFLICT` and `details.currentRevision`. A schedule a cron trigger owns is `409` `SCHEDULE_TRIGGER_OWNED`. The input is always sent whole. The next time is the first one strictly after the update.
+         */
+        put: operations["updateSchedule"];
+        post?: never;
+        /**
+         * Delete a schedule; the runs it started are not touched
+         * @description Needs `schedule:write` and `run:start`. `expectedRevision` is required and checked in the transaction that deletes: a stale one is `409` `REVISION_CONFLICT`. The actions that were waiting are dropped (`DROPPED_DELETED`), the name is free, and the history stays.
+         */
+        delete: operations["deleteSchedule"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/schedules/{scheduleId}/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Pause a schedule with a note
+         * @description Needs `schedule:operate`. No time is acted on while it is paused, and none is caught up afterwards. Pausing a paused schedule replaces the note. Audited, without the note. A schedule a cron trigger owns is `409` `SCHEDULE_TRIGGER_HANDOVER_PENDING` until the operator hands the triggers over.
+         */
+        post: operations["pauseSchedule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/schedules/{scheduleId}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resume a schedule with a note; it continues from the first time after now
+         * @description Needs `schedule:operate` and `run:start`; the caller becomes `authorizedBy`. The times that passed while it was paused are not caught up. Audited, without the note. A schedule a cron trigger owns is `409` `SCHEDULE_TRIGGER_HANDOVER_PENDING` until the operator hands the triggers over.
+         */
+        post: operations["resumeSchedule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -3809,8 +3902,8 @@ export interface components {
          *     operation and connection defaults remain smaller. Count ceilings default/max are
          *     database_connections 100/1000 (including paused), database_concurrency 16/64,
          *     tenant_database_concurrency 64/256, secret_provider_operations 32/128.
-     *     Schedules (feature 018) are schedules 200/10000, counting active and paused ones, and
-     *     schedule_backfills 4/16, counting backfills that have not finished.
+         *     Schedules (feature 018) are schedules 200/10000, counting active and paused ones, and
+         *     schedule_backfills 4/16, counting backfills that have not finished.
          *     Zero disables new admission for count/rate/retention resources, never means unlimited.
          *     Lowering a limit does not erase retained content or rewrite existing expiry.
          */
@@ -5098,6 +5191,228 @@ export interface components {
             request?: components["schemas"]["PublicationRequest"] | null;
             activeVersion?: number | null;
         };
+        ScheduleRange: {
+            start: number;
+            /** @description Inclusive; equals start when absent. */
+            end?: number;
+            /** @default 1 */
+            step: number;
+        };
+        /** @description Union of ranges. The server checks each bound against the domain of the field. */
+        ScheduleField: components["schemas"]["ScheduleRange"][];
+        /** @description A structured calendar. `second`, `minute` and `hour` default to `[{start: 0}]`; `dayOfMonth`, `month`, `year` and `dayOfWeek` default to every value. Domains: second 0-59, minute 0-59, hour 0-23, dayOfMonth 1-31, month 1-12, year 2000-2200, dayOfWeek 0-6 (0 is Sunday). A day matches when both `dayOfMonth` and `dayOfWeek` match. */
+        ScheduleCalendarSpec: {
+            second?: components["schemas"]["ScheduleField"];
+            minute?: components["schemas"]["ScheduleField"];
+            hour?: components["schemas"]["ScheduleField"];
+            dayOfMonth?: components["schemas"]["ScheduleField"];
+            month?: components["schemas"]["ScheduleField"];
+            year?: components["schemas"]["ScheduleField"];
+            dayOfWeek?: components["schemas"]["ScheduleField"];
+            comment?: string;
+        };
+        /** @description The grammar of a cron trigger (feature 004): five fields (minute, hour, day of month, month, day of week), evaluated with the same calendar library. */
+        ScheduleCronString: string;
+        ScheduleIntervalSpec: {
+            everyMs: number;
+            /**
+             * @description Phase from the Unix epoch; less than everyMs.
+             * @default 0
+             */
+            offsetMs: number;
+        };
+        ScheduleDstPolicy: {
+            /**
+             * @description A local time that does not exist: no action, or the first valid instant after the gap.
+             * @default SKIP
+             * @enum {string}
+             */
+            gap: "SKIP" | "SHIFT_FORWARD";
+            /**
+             * @description A local time that happens twice: the earlier instant only, or both.
+             * @default ONCE_EARLIER
+             * @enum {string}
+             */
+            ambiguous: "ONCE_EARLIER" | "TWICE";
+        };
+        /** @description When a schedule acts. At least one of `calendars`, `cron` and `intervals`. The server also enforces: the entries together are at most the effective ceiling (default 10, hard 32); at least one occurrence falls inside `[startAt, endAt)`; no two of the next 1,000 occurrences are closer than the effective minimum spacing (default 60 s, floor 10 s); `jitterMs` is at most 24 hours. */
+        ScheduleSpec: {
+            calendars?: components["schemas"]["ScheduleCalendarSpec"][];
+            cron?: components["schemas"]["ScheduleCronString"][];
+            intervals?: components["schemas"]["ScheduleIntervalSpec"][];
+            /** @description A nominal time matched by any exclusion is not an occurrence. */
+            exclusions?: components["schemas"]["ScheduleCalendarSpec"][];
+            /** Format: date-time */
+            startAt?: string;
+            /**
+             * Format: date-time
+             * @description Exclusive. No action is taken at or after it, jitter included.
+             */
+            endAt?: string;
+            /**
+             * @description An IANA name; the calendars and cron strings are evaluated in it, the intervals are not.
+             * @default UTC
+             */
+            timezone: string;
+            /**
+             * @description A deterministic offset in [0, jitterMs) per schedule and nominal time, bounded by the gap to the next nominal time.
+             * @default 0
+             */
+            jitterMs: number;
+            dst?: components["schemas"]["ScheduleDstPolicy"];
+        } | unknown | unknown | unknown;
+        /**
+         * @description What a time does while a run the schedule started is still open. There is no terminate variant.
+         * @default SKIP
+         * @enum {string}
+         */
+        ScheduleOverlapPolicy: "SKIP" | "BUFFER_ONE" | "BUFFER_ALL" | "CANCEL_OTHER" | "ALLOW_ALL";
+        SchedulePolicies: {
+            overlap?: components["schemas"]["ScheduleOverlapPolicy"];
+            /** @default 31622400000 */
+            catchupWindowMs: number;
+            /**
+             * @default ONE
+             * @enum {string}
+             */
+            catchupMode: "ONE" | "ALL";
+            /** @default false */
+            pauseOnFailure: boolean;
+            /**
+             * @description BUFFER_ALL only; clamped to the ceiling of the namespace.
+             * @default 100
+             */
+            bufferLimit: number;
+        };
+        ScheduleAction: {
+            /** Format: uuid */
+            workflowId: string;
+            /**
+             * @default ACTIVE
+             * @enum {string}
+             */
+            versionPolicy: "ACTIVE" | "PINNED";
+            /**
+             * Format: uuid
+             * @description Required with PINNED
+             */
+            versionId?: string;
+            /** @description The input of every run, at most 64 KiB; never returned. */
+            input: Record<string, never>;
+            /** @description A top-level input property set to the nominal time of the action (RFC 3339, UTC). */
+            nominalTimeField?: string;
+            runTimeoutMs?: number;
+        };
+        ScheduleFields: {
+            name: string;
+            spec: components["schemas"]["ScheduleSpec"];
+            policies?: components["schemas"]["SchedulePolicies"];
+            action: components["schemas"]["ScheduleAction"];
+            /** @default false */
+            paused: boolean;
+            note?: string;
+            remainingActions?: number;
+        };
+        ScheduleWrite: components["schemas"]["ScheduleFields"];
+        ScheduleUpdate: components["schemas"]["ScheduleFields"] & {
+            expectedRevision: number;
+        };
+        ScheduleNote: {
+            note: string;
+        };
+        Schedule: {
+            /** Format: uuid */
+            scheduleId: string;
+            name: string;
+            /** @enum {string} */
+            origin: "API" | "TRIGGER";
+            /**
+             * Format: uuid
+             * @description TRIGGER only.
+             */
+            triggerId?: string;
+            /** @enum {string} */
+            state: "ACTIVE" | "PAUSED";
+            /** @description `remainingActions` reached zero. */
+            exhausted?: boolean;
+            revision: number;
+            spec?: components["schemas"]["ScheduleSpec"];
+            policies?: components["schemas"]["SchedulePolicies"];
+            /** @description The action without its input; `inputDigest` (SHA-256, hex) describes the input. */
+            action?: {
+                /** Format: uuid */
+                workflowId?: string;
+                /** @enum {string} */
+                versionPolicy?: "ACTIVE" | "PINNED";
+                /** Format: uuid */
+                versionId?: string;
+                inputDigest?: string;
+                nominalTimeField?: string;
+                runTimeoutMs?: number;
+            };
+            note?: string | null;
+            noteBy?: string | null;
+            /** Format: date-time */
+            noteAt?: string | null;
+            authorizedBy?: string;
+            remainingActions?: number | null;
+            /** Format: date-time */
+            nextActionAt?: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        ScheduleDescription: components["schemas"]["Schedule"] & {
+            nextActions: {
+                /** Format: date-time */
+                nominalTime: string;
+                /** Format: date-time */
+                actualTime: string;
+            }[];
+            recentActions: components["schemas"]["ScheduleActionRecord"][];
+            openRuns: string[];
+            bufferedCount: number;
+            counters: {
+                [key: string]: number;
+            };
+        };
+        SchedulePage: {
+            items: components["schemas"]["Schedule"][];
+            nextCursor?: string | null;
+        };
+        /**
+         * @description The set only grows; a client treats an unknown value as another outcome.
+         * @enum {string}
+         */
+        ScheduleActionOutcome: "STARTED" | "BUFFERED" | "SKIPPED_OVERLAP" | "DROPPED_BUFFER_FULL" | "DROPPED_DELETED" | "COALESCED" | "MISSED_CATCHUP_WINDOW" | "ALREADY_ACTED" | "AUTHORITY_REVOKED" | "BUSINESS_ID_CONFLICT";
+        ScheduleActionRecord: {
+            /** Format: date-time */
+            nominalTime: string;
+            /** Format: date-time */
+            actualTime?: string | null;
+            /** @enum {string} */
+            kind: "SCHEDULED" | "TRIGGERED" | "BACKFILL";
+            /**
+             * @description The identity of the time: SPEC (scheduled and backfill actions share the nominal times of the spec) or MANUAL (trigger-now).
+             * @enum {string}
+             */
+            origin?: "SPEC" | "MANUAL";
+            revision: number;
+            outcome: components["schemas"]["ScheduleActionOutcome"];
+            /** @description A closed code, for example TRACKING_LIMIT. */
+            reason?: string | null;
+            /** Format: uuid */
+            runId?: string | null;
+            /** Format: uuid */
+            backfillId?: string | null;
+            /** @description How many times a COALESCED or MISSED_CATCHUP_WINDOW summary stands for. */
+            summaryCount?: number | null;
+            /** Format: date-time */
+            summaryLastNominalTime?: string | null;
+            /** Format: date-time */
+            decidedAt: string;
+        };
     };
     responses: {
         /** @description The body is larger than this endpoint takes */
@@ -5203,6 +5518,7 @@ export interface components {
         Cursor: string;
         /** @description Page size; values outside 1..200 are clamped. */
         Limit: number;
+        ScheduleId: string;
         /** @description The identity (the `sub` of its token), URL-encoded. */
         WorkerSubject: string;
         /** @description The namespace member identity (the `sub` of its token), URL-encoded. */
@@ -10741,6 +11057,272 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listSchedules: {
+        parameters: {
+            query?: {
+                /** @description Opaque cursor returned as `nextCursor` by the previous page. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size; values outside 1..200 are clamped. */
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of schedules */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SchedulePage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    createSchedule: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScheduleWrite"];
+            };
+        };
+        responses: {
+            /** @description The schedule */
+            201: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Schedule"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    getSchedule: {
+        parameters: {
+            query?: {
+                nextCount?: number;
+                recentCount?: number;
+            };
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                scheduleId: components["parameters"]["ScheduleId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The schedule */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleDescription"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    updateSchedule: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                scheduleId: components["parameters"]["ScheduleId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScheduleUpdate"];
+            };
+        };
+        responses: {
+            /** @description The new revision */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Schedule"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    deleteSchedule: {
+        parameters: {
+            query: {
+                expectedRevision: number;
+            };
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                scheduleId: components["parameters"]["ScheduleId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    pauseSchedule: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                scheduleId: components["parameters"]["ScheduleId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScheduleNote"];
+            };
+        };
+        responses: {
+            /** @description The paused schedule */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Schedule"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    resumeSchedule: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                scheduleId: components["parameters"]["ScheduleId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScheduleNote"];
+            };
+        };
+        responses: {
+            /** @description The resumed schedule */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Schedule"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["ValidationError"];
             429: components["responses"]["TooManyRequests"];

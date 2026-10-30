@@ -940,6 +940,26 @@ fn openbao_alone_requires_secret_transport_protection() {
 }
 
 #[test]
+fn schedules_are_an_explicit_strict_operator_switch() {
+    assert!(
+        !ServeConfig::from_lookup(&env(&OIDC))
+            .expect("defaults")
+            .schedules_enabled,
+        "off by default"
+    );
+    let mut values = OIDC.to_vec();
+    values.push(("SAGAT_SCHEDULES_ENABLED", "true"));
+    assert!(
+        ServeConfig::from_lookup(&env(&values))
+            .expect("activated")
+            .schedules_enabled
+    );
+    values.pop();
+    values.push(("SAGAT_SCHEDULES_ENABLED", "maybe"));
+    assert!(ServeConfig::from_lookup(&env(&values)).is_err());
+}
+
+#[test]
 fn redis_callback_activation_is_an_explicit_strict_operator_switch() {
     assert!(
         !ServeConfig::from_lookup(&env(&OIDC))

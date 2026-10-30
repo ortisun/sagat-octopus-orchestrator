@@ -532,6 +532,16 @@ pub async fn serve_with_admin(
         SystemClock,
         serve.runbook_base.clone(),
     ));
+    if serve.schedules_enabled {
+        governance = governance.with_schedules(Arc::new(
+            sagat_application::schedules::ScheduleService::new(
+                sagat_infra_postgres::PgScheduleStore::new(pool.clone()),
+                sagat_infra_ir::schedule_calendar::SpecCalendar,
+                SystemClock,
+                sagat_domain::schedules::Ceilings::default(),
+            ),
+        ));
+    }
     let provider: Option<Arc<dyn sagat_application::secret_provider::SecretProvider>> =
         match &serve.openbao {
             Some(settings) => Some(

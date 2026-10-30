@@ -11,6 +11,7 @@ mod changes;
 mod firing;
 mod migration;
 mod pass;
+mod rest;
 mod service;
 mod store;
 mod store_support;
