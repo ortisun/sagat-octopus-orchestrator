@@ -49,3 +49,30 @@ unknown result before retrying; this avoids claiming exactly-once behavior the p
 - a wait timeout: check the identity's workflow bindings and that it can serve all four activities.
 - `UNAUTHENTICATED` or `FORBIDDEN`: create a fresh development token with the namespace and worker
   bindings.
+
+## Interface
+
+- Top-level command execution uses local `RunAsync` and internal input/output records. [examples/order-processing/dotnet/Program.cs:RunAsync]
+
+## Invariants
+
+- The four connection settings are mandatory; missing settings exit 2. [examples/order-processing/dotnet/Program.cs:RequiredSetting]
+- Scenario defaults to routing and accepts only routing, fulfillment, or reminder. [examples/order-processing/dotnet/Program.cs:SelectedScenario]
+- The command waits at most 60 seconds and succeeds only with `RunStatuses.Succeeded`. [examples/order-processing/dotnet/Program.cs:RunAsync]
+- The executable targets `net10.0` and references the checkout SDK with nullable types and invariant globalization enabled. [examples/order-processing/dotnet/OrderProcessing.csproj:PropertyGroup]
+
+## Side Effects
+
+- Writes Release output with telemetry/first-run behavior disabled. [examples/order-processing/dotnet/prepare.sh:dotnet build]
+- Launch requires the built DLL, then replaces the shell with `dotnet`; a missing DLL exits 2. [examples/order-processing/dotnet/run.sh:exec]
+- Starts/stops a worker, starts/waits for a workflow, handles Ctrl-C, and prints diagnostics. [examples/order-processing/dotnet/Program.cs:RunAsync]
+
+## Verification
+
+From the repository root, with Docker, the selected example toolchains, and a private `CARGO_TARGET_DIR` outside the checkout:
+
+```sh
+cargo test -p sagat-tests --test e2e_developer_experience --locked -- --ignored order_processing::
+```
+
+The shared real-platform suite is declared in `tests/Cargo.toml`; language preparation and run commands remain in the example READMEs. [tests/Cargo.toml:e2e_developer_experience]

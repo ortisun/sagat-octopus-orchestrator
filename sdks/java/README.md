@@ -1,11 +1,13 @@
 # sagat-octopus-orchestrator-sdk — Java
 
+> Documentation status: the contract sections below describe the inspected source. Existing runtime, test-count and advisory records are historical developer notes; this documentation update did not rerun or revalidate those records.
+
 The Java SDK of the Sagat Octopus Orchestrator: a **client** for runs and events, a **worker host** for
 activities, compensations and reconciliations, and **builders** of the workflow document. One artifact.
 
 The SDK keeps no journal of its own. The platform owns every state, every retry decision and every timer; the
 SDK speaks its REST API and its worker protocol (gRPC) and reports faithfully. It behaves like the TypeScript,
-Go, Python and C# SDKs because all five are held to the same conformance suite
+Go, Python, C# and Rust SDKs through the shared conformance suite
 (`tests/contract/sdk-conformance/`); the behaviour is written down in [`../SPEC.md`](../SPEC.md).
 
 ## Install
@@ -45,11 +47,11 @@ try (SagatClient client = SagatClient.create(config)) {
 }
 ```
 
-`start` takes a workflow name or id. Every call has a blocking form and an `...Async` form returning a
+`start` takes a workflow name or id. Most network operations have a blocking form and an `...Async` form returning a
 `CompletableFuture` (the asynchronous form runs the blocking one on an executor, so cancelling the future
 interrupts a call that is waiting; the executor is the client's own, or yours through
-`ClientConfig.Builder.asyncExecutor`). `listAll` is a lazy `Stream` that reads a page when the previous one is
-consumed, in the order the server gave (newest first).
+`ClientConfig.Builder.asyncExecutor`). `resolveWorkflow` has no asynchronous counterpart. `listAll` is a lazy `Stream` that reads a page when the previous one is
+consumed, in the order returned by the server.
 
 For a large run input, call `uploadRunInput(onePassInputStream, options)`, then pass its verified
 `BlobDescriptor` to `startWithBlob`. The upload is streamed once and never retried; its descriptor is accepted
@@ -59,8 +61,7 @@ The SDK propagates the W3C `traceparent` (the one you pass, else the ambient con
 `ClientConfig.Builder.traceContext(...)`, for example from OpenTelemetry), the correlation id and the deadline, and
 retries **only when that is safe**: a `GET`, or a `POST` that carries an idempotency key (8 to 160 visible ASCII
 characters) or an event id (the SDK generates one per call and reuses it for every retry of that call), and only
-after `TRANSPORT`, `UNAVAILABLE`, `RATE_LIMITED` or `INTERNAL` errors (`SagatException.isRetriable()`); never a `4xx`
-other than `429`, whatever the body claims. A `501`, or a `404` that does not carry the platform's error envelope, is
+after `TRANSPORT`, `UNAVAILABLE`, `RATE_LIMITED` or `INTERNAL` errors (`SagatException.isRetriable()`); HTTP 408 maps to `UNAVAILABLE`, while other non-rate-limit 4xx failures are not retried merely because a body claims they are retryable. A `501`, or a `404` that does not carry the platform's error envelope, is
 `NOT_FOUND` with the reason `UNSUPPORTED_BY_SERVER` (a newer SDK talking to an older server).
 
 Every failure is a `SagatException` with `code()`, `httpStatus()` / `grpcStatus()`, `retryable()`, `traceId()`,
@@ -147,13 +148,13 @@ ObjectNode document = WorkflowBuilder.named("order-flow")
 ```
 
 The builders (`step`, `sleep`/`sleepMs`, `waitForEvent`, `invokeChild`, `condition`, `parallel`, `saga`, `end`) have no
-side effects and refuse what the server would refuse and they can see (a duplicate id, a dangling reference, a
-saga without a body), as `VALIDATION_FAILED`. A duplicate node id is raised when the node is added, across nested flows;
+side effects and apply local validation (including duplicate IDs, dangling references and empty saga bodies),
+raising `VALIDATION_FAILED`. These checks do not establish server acceptance. A duplicate node id is raised when the node is added, across nested flows;
 a `Flow` joined to a workflow (`parallel`, `saga`) is read when `build()` is called, so a step added to it after it was joined
 is part of the document (ids are checked again against the whole document each time a node is added, and by `build()`);
 a flow can be joined to more than one workflow and each reads it. `WorkflowBuilder.append(Flow)` is the exception: it adds a
 copy of the flow's nodes as they are then. `build()` returns the document; `toJson()` its canonical JSON (RFC 8785: no whitespace, keys sorted by UTF-16 code
-unit, numbers as ECMAScript prints them, so `1.0` is `1`), byte for byte what the other four SDKs write for the same
+unit, numbers as ECMAScript prints them, so `1.0` is `1`), byte for byte what the five peer SDKs write for the same
 program. Canonical text refuses an integer beyond 2^53 - 1 (send it as a string); the text sent on the wire does not
 round anything.
 
@@ -174,8 +175,8 @@ The snippets above are compiled by the build (`sdk/src/test/java/.../ReadmeExamp
 * gRPC accepts `io.grpc.ClientInterceptor`s: `WorkerConfig.Builder.interceptor(...)`.
 * `TlsOptions` configures TLS for both channels (see below). Plain `http://` outside loopback is accepted and logs
   one warning when the client or the host is created (it names only the host); `https://` logs none.
-* Logs go to `System.Logger` (`dev.sagatoctopusorchestrator.sdk`, `...sdk.worker`) and never contain a payload, a
-  token, a lease token or a secret. `WorkerConfig.Builder.onEvent(...)` receives `WorkerEvent`s (tasks taken,
+* SDK-generated logs go to `System.Logger` (`dev.sagatoctopusorchestrator.sdk`, `...sdk.worker`) with bounded fields.
+  `ActivityLogger` forwards caller-supplied text; handlers must keep payloads, tokens and secrets out of that text. `WorkerConfig.Builder.onEvent(...)` receives `WorkerEvent`s (tasks taken,
   completed with their duration, failed, stale, heartbeats, polls, reconnects) for metrics. `OpenTelemetryBridge`
   adapts this callback and `ClientConfig.Builder.traceContext(...)` without installing a provider or exporter.
 
@@ -308,7 +309,7 @@ version `grpc-protobuf` 1.83.1 depends on), Jackson 2.22.3, JUnit Jupiter 5.14.4
 ## Develop
 
 ```text
-./mvnw -q verify                      # compiles (the stubs are generated from sdk/src/main/proto/worker.proto), then runs the 204 unit tests
+./mvnw -q verify                      # compiles generated stubs and SDK code, then runs configured tests
 scripts/sync-shared.sh                # copies worker.proto and error-catalog.json from the repository; SharedContractsTest fails when behind
 conformance/prepare.sh                # builds the runner (target/classpath.txt); conformance/run.sh build|run ... is what the harness calls
 cargo test -p sagat-tests --test sdk_conformance -- --ignored   # the conformance suite (needs Docker), from the repository root
@@ -326,3 +327,31 @@ Use the database builder with a logical connection created in Sagat. See the
 [five-language guide](../../docs/guides/managed-database-sdk.md) for typed parameters,
 result consumption, permissions and the shared real-service scenario. Credentials
 are resolved by the separate managed executor.
+
+<!-- EGM directory contract -->
+
+## Interface
+
+- Parent coordinates dev.sagatoctopusorchestrator:sagat-octopus-orchestrator-sdk-parent:0.2.0 group sdk and conformance modules. Production contracts below cover sdk and scripts. [pom.xml:artifactId] [pom.xml:modules]
+- The Maven wrapper pins Maven 3.9.16 and a distribution SHA-256; Maven configuration enables strict checksums. [.mvn/wrapper/maven-wrapper.properties:distributionUrl] [.mvn/wrapper/maven-wrapper.properties:distributionSha256Sum] [.mvn/maven.config:--strict-checksums]
+
+- [scripts](./scripts/README.md) — component contract.
+- [sdk](./sdk/README.md) — component contract.
+
+## Invariants
+
+- The parent pins Java release 17 and dependency versions for gRPC, protobuf, Jackson, JUnit and OpenTelemetry. [pom.xml:maven.compiler.release] [pom.xml:grpc.version] [pom.xml:protobuf.version] [pom.xml:jackson.version] [pom.xml:junit.version] [pom.xml:opentelemetry.version]
+
+## Side Effects
+
+- Invoked Maven builds may download the wrapper, dependencies and code generators and write compiled artifacts. [.mvn/wrapper/maven-wrapper.properties:distributionUrl] [sdk/pom.xml:protocArtifact] [sdk/pom.xml:pluginArtifact]
+
+## Verification
+
+Run from the repository root:
+
+```sh
+cd sdks/java && ./mvnw -q verify
+```
+
+These commands are documented from the existing build configuration; they were not executed during this documentation update.
