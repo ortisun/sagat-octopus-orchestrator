@@ -12,14 +12,57 @@ use sagat_infra_ir::JsonEvaluator;
 use sagat_infra_postgres::{PgCapacityAcquireStore, PgCapacityVacateStore, PgRunStore};
 use std::time::Duration;
 
+#[path = "capacity_worker_preflight.rs"]
+mod preflight;
+
 async fn guarded_fixture() -> NativeFixture {
-    let mut n = super::barriers::runtime_fixture().await;
+    guarded_fixture_with_continuation(false).await
+}
+
+async fn guarded_fixture_with_continuation(continue_first: bool) -> NativeFixture {
+    use sagat_scheduler::{Keeper, KeeperSettings, Placement, Scheduler, SchedulerSettings};
+    let mut w = world().await;
+    w.execution_pool = w.db.runtime_pool_with(16).await;
+    let store = PgRunStore::new(w.execution_pool.clone(), w.cache.clone());
+    let placement = Placement::new(format!("capacity-worker-{}", Uuid::new_v4()));
+    Keeper::new(
+        store.clone(),
+        placement.clone(),
+        KeeperSettings {
+            ttl: Duration::from_secs(600),
+        },
+    )
+    .round()
+    .await
+    .expect("scheduler authority outlives 300s scenario bound");
+    let scheduler = Scheduler::new(
+        store,
+        Engine::new(JsonEvaluator),
+        SystemEntropy,
+        SchedulerSettings::default(),
+    )
+    .with_children(w.cache.clone())
+    .with_placement(placement);
+    let (parent, child) = spawn_native_child(&w, continue_first).await;
+    let report = scheduler.tick().await;
+    assert_eq!(report.children_started, 1, "{report:?}");
+    assert_eq!(report.failed, 0);
+    let f = seed_capacity(w, child).await;
+    let mut n = NativeFixture {
+        f,
+        parent,
+        scheduler,
+    };
     configure_guarded_worker(&mut n);
     n
 }
 
 fn configure_guarded_worker(n: &mut NativeFixture) {
-    n.f.w.workers = WorkerService::new(
+    n.f.w.workers = default_workers(n).with_child_root_capacity_guard();
+}
+
+fn default_workers(n: &NativeFixture) -> crate::support::engine::Workers {
+    WorkerService::new(
         PgRunStore::new(n.f.w.execution_pool.clone(), n.f.w.cache.clone()),
         SystemClock,
         Engine::new(JsonEvaluator),
@@ -31,7 +74,6 @@ fn configure_guarded_worker(n: &mut NativeFixture) {
         },
     )
     .with_vault(n.f.w.keys.cipher())
-    .with_child_root_capacity_guard();
 }
 
 async fn vacate(n: &NativeFixture) {
@@ -108,6 +150,22 @@ async fn vacant_child_stays_ready_without_consuming_an_attempt_or_quota() {
             );
             assert_eq!(execution_snapshot(&n.f).await, before);
             assert_eq!(super::vacate::untouched(&n.f).await, tuples);
+            // Default-off is executable: the same still-READY work uses the legacy path.
+            let tasks = default_workers(&n)
+                .poll(
+                    &session.principal,
+                    session.worker_id,
+                    &session.token,
+                    1,
+                    None,
+                )
+                .await
+                .expect("default worker retains dormant compatibility");
+            assert_eq!(
+                tasks.len(),
+                1,
+                "constructor must not activate the incomplete protocol"
+            );
         },
     )
     .await;
@@ -126,6 +184,29 @@ async fn acquire_allows_a_lease_and_existing_report_ignores_a_busy_group() {
             let tasks = n.f.w.poll(&session, 1).await;
             assert_eq!(tasks.len(), 1);
             let gate = group_lock(&n).await;
+            let heartbeat = tokio::time::timeout(
+                Duration::from_secs(5),
+                n.f.w.workers.heartbeat(
+                    &session.principal,
+                    &crate::support::engine::task_ref(&tasks[0]),
+                ),
+            )
+            .await
+            .expect("heartbeat never waits on G")
+            .expect("existing lease renews");
+            assert!(heartbeat.lease_expires_at.is_some());
+            let generation: i64 = sqlx::query_scalar(
+                "SELECT generation FROM steps WHERE tenant_id=$1 AND run_id=$2 AND node='work'",
+            )
+            .bind(n.f.w.admin.tenant_id().as_uuid())
+            .bind(tasks[0].run_id.as_uuid())
+            .fetch_one(&n.f.w.db.pool)
+            .await
+            .expect("renewed lease fence");
+            assert_eq!(
+                u64::try_from(generation).expect("nonnegative generation"),
+                tasks[0].fence.generation
+            );
             tokio::time::timeout(
                 Duration::from_secs(5),
                 n.f.w.complete(&session, &tasks[0], &serde_json::json!({})),
@@ -186,6 +267,52 @@ async fn duplicate_active_groups_do_not_choose_an_arbitrary_holder() {
                 .execute(&mut *tx).await.expect("second active membership");
             tx.commit().await.expect("deferred FK valid");
             assert_no_claim(&n).await;
+        },
+    ).await;
+}
+
+#[tokio::test]
+async fn an_active_nonholder_stays_ready_while_the_other_member_is_leased() {
+    use sagat_application::capacity_acquire::{
+        CapacityAcquireCommand, CurrentChildRootAcquireStore,
+    };
+    crate::support::bounded::within(
+        "unambiguous nonholder worker refusal",
+        crate::support::bounded::LIFECYCLE_LIMIT,
+        async {
+            let n = guarded_fixture().await;
+            let (_, peer) = spawn_native_child(&n.f.w, false).await;
+            let report = n.scheduler.tick().await;
+            assert_eq!(report.children_started, 1, "{report:?}");
+            assert_eq!(report.failed, 0);
+            let member = Uuid::new_v4();
+            // Owner join fixture only; possession itself moves via real native commands.
+            let mut owner = n.f.w.db.pool.begin().await.expect("second member fixture");
+            sqlx::query("INSERT INTO capacity_group_members(tenant_id,group_id,member_id,namespace_id,member_kind,chain_id,state) VALUES($1,$2,$3,$4,'CHILD_ROOT',$5,'ACTIVE')")
+                .bind(n.f.w.admin.tenant_id().as_uuid()).bind(n.f.group).bind(member)
+                .bind(n.f.w.namespace.id().as_uuid()).bind(peer.as_uuid())
+                .execute(&mut *owner).await.expect("peer membership fixture");
+            sqlx::query("UPDATE capacity_groups SET revision=revision+1,active_members=active_members+1 WHERE tenant_id=$1 AND group_id=$2")
+                .bind(n.f.w.admin.tenant_id().as_uuid()).bind(n.f.group)
+                .execute(&mut *owner).await.expect("fixture join preserves old holder");
+            owner.commit().await.expect("join fixture commits");
+            vacate(&n).await;
+            let c = native_member_command(&n.f, member, peer, peer).await;
+            PgCapacityAcquireStore::new(n.f.w.execution_pool.clone())
+                .acquire_current_child_root(&CapacityAcquireCommand {
+                    operation_key:c.operation_key, identity:c.identity, expected:c.expected, scheduler:c.scheduler,
+                }).await.expect("peer genuinely acquires G");
+            let session = n.f.w.session(&["capacity.work"]).await;
+            let tasks = n.f.w.poll(&session, 2).await;
+            assert_eq!(tasks.len(), 1);
+            assert_eq!(tasks[0].run_id, peer, "SQL must bind the selected member, not substitute G's holder");
+            let old: (String, i32, Option<Vec<u8>>) = sqlx::query_as("SELECT status,attempt,lease_token_hash FROM steps WHERE tenant_id=$1 AND run_id=$2 AND node='work'")
+                .bind(n.f.w.admin.tenant_id().as_uuid()).bind(n.f.chain)
+                .fetch_one(&n.f.w.db.pool).await.expect("nonholder step remains untouched");
+            assert_eq!(old, ("READY".into(), 0, None));
+            let used: i64 = sqlx::query_scalar("SELECT count(*) FROM steps WHERE tenant_id=$1 AND status IN ('LEASED','RUNNING')")
+                .bind(n.f.w.admin.tenant_id().as_uuid()).fetch_one(&n.f.w.db.pool).await.expect("actual activity occupancy");
+            assert_eq!(used, 1, "only the holder spends activity concurrency");
         },
     ).await;
 }
@@ -296,9 +423,7 @@ async fn continued_member_uses_the_current_head_and_refuses_its_old_run() {
         "worker membership follows actual continuation",
         crate::support::bounded::LIFECYCLE_LIMIT,
         async {
-            let mut n = native_fixture(true).await;
-            n.f.w.execution_pool = n.f.w.db.runtime_pool_with(16).await;
-            configure_guarded_worker(&mut n);
+            let n = guarded_fixture_with_continuation(true).await;
             let initial = complete_native_activity(&n).await;
             let report = n.scheduler.tick().await;
             assert_eq!(report.continuations_advanced, 1, "{report:?}");
@@ -331,26 +456,12 @@ async fn scoped_claims_use_the_same_group_guard_before_attempt_or_quota() {
         crate::support::bounded::LIFECYCLE_LIMIT,
         async {
             let f = super::super::scoped_worker::fixture("capacity-scoped-guard").await;
-            // Internal structured fixture and owner metadata only: tests adapter wiring,
-            // not public ChildRoot+collection admission or a production creator.
-            let group = Uuid::new_v4();
-            let member = Uuid::new_v4();
+            let (group, member) = seed_scoped_binding(&f).await;
             let tenant = f.world.admin.tenant_id().as_uuid();
-            let namespace = f.world.namespace.id().as_uuid();
             let run = f.run.as_uuid();
-            let mut owner = f.world.db.pool.begin().await.expect("scoped metadata fixture");
-            sqlx::query("INSERT INTO execution_chains(tenant_id,namespace_id,chain_id,current_run_id,definition_version_id,started_by,max_segments,original_deadline_at,created_at,updated_at) SELECT tenant_id,namespace_id,id,id,workflow_version_id,started_by,1,clock_timestamp()+interval '1 hour',clock_timestamp(),clock_timestamp() FROM runs WHERE tenant_id=$1 AND namespace_id=$2 AND id=$3")
-                .bind(tenant).bind(namespace).bind(run).execute(&mut *owner).await.expect("owner chain identity fixture");
-            sqlx::query("INSERT INTO chain_segments(tenant_id,namespace_id,chain_id,segment_index,run_id,created_at) VALUES($1,$2,$3,0,$3,clock_timestamp())")
-                .bind(tenant).bind(namespace).bind(run).execute(&mut *owner).await.expect("owner segment fixture");
-            sqlx::query("INSERT INTO capacity_groups(tenant_id,group_id,revision,epoch,active_members,possession) VALUES($1,$2,1,1,1,'VACANT')")
-                .bind(tenant).bind(group).execute(&mut *owner).await.expect("vacant owner group fixture");
-            sqlx::query("INSERT INTO capacity_group_members(tenant_id,group_id,member_id,namespace_id,member_kind,chain_id,state) VALUES($1,$2,$3,$4,'CHILD_ROOT',$5,'ACTIVE')")
-                .bind(tenant).bind(group).bind(member).bind(namespace).bind(run)
-                .execute(&mut *owner).await.expect("chain capacity binding fixture");
-            owner.commit().await.expect("owner fixture commits");
             let before: Vec<(String, i32, Option<Vec<u8>>)> = sqlx::query_as("SELECT status,attempt,lease_token_hash FROM steps WHERE tenant_id=$1 AND run_id=$2 ORDER BY instance_path_nodes,instance_path_indices,node")
                 .bind(tenant).bind(run).fetch_all(&f.world.db.pool).await.expect("exact step baseline");
+            assert!(before.iter().any(|(status, attempt, token)| status == "READY" && *attempt == 0 && token.is_none()));
             let tasks = f.workers.clone().with_child_root_capacity_guard().poll(
                 &f.session.principal, f.session.worker_id, &f.session.token, 2, None,
             ).await.expect("scoped poll");
@@ -358,6 +469,42 @@ async fn scoped_claims_use_the_same_group_guard_before_attempt_or_quota() {
             let after: Vec<(String, i32, Option<Vec<u8>>)> = sqlx::query_as("SELECT status,attempt,lease_token_hash FROM steps WHERE tenant_id=$1 AND run_id=$2 ORDER BY instance_path_nodes,instance_path_indices,node")
                 .bind(tenant).bind(run).fetch_all(&f.world.db.pool).await.expect("steps after scoped refusal");
             assert_eq!(after, before);
+            // Owner metadata fixture only: do not claim native Acquire/public nested support.
+            sqlx::query("UPDATE capacity_groups SET possession='HELD',holder_member_id=$3,revision=2,epoch=2 WHERE tenant_id=$1 AND group_id=$2")
+                .bind(tenant).bind(group).bind(member).execute(&f.world.db.pool).await.expect("owner fixture selects active holder");
+            let tasks = f.workers.clone().with_child_root_capacity_guard().poll(
+                &f.session.principal, f.session.worker_id, &f.session.token, 1, None,
+            ).await.expect("held scoped poll");
+            assert_eq!(tasks.len(), 1, "guarded exact-path adapter can grant an eligible holder");
+            assert!(!tasks[0].instance.path().is_root());
         },
     ).await;
+}
+
+async fn seed_scoped_binding(f: &super::super::scoped_worker::Fixture) -> (Uuid, Uuid) {
+    // Internal structured fixture and owner metadata only: tests adapter wiring,
+    // not public ChildRoot+collection admission or a production creator.
+    let group = Uuid::new_v4();
+    let member = Uuid::new_v4();
+    let tenant = f.world.admin.tenant_id().as_uuid();
+    let namespace = f.world.namespace.id().as_uuid();
+    let run = f.run.as_uuid();
+    let mut owner = f
+        .world
+        .db
+        .pool
+        .begin()
+        .await
+        .expect("scoped metadata fixture");
+    sqlx::query("INSERT INTO execution_chains(tenant_id,namespace_id,chain_id,current_run_id,definition_version_id,started_by,max_segments,original_deadline_at,created_at,updated_at) SELECT tenant_id,namespace_id,id,id,workflow_version_id,started_by,1,clock_timestamp()+interval '1 hour',clock_timestamp(),clock_timestamp() FROM runs WHERE tenant_id=$1 AND namespace_id=$2 AND id=$3")
+    .bind(tenant).bind(namespace).bind(run).execute(&mut *owner).await.expect("owner chain identity fixture");
+    sqlx::query("INSERT INTO chain_segments(tenant_id,namespace_id,chain_id,segment_index,run_id,created_at) VALUES($1,$2,$3,0,$3,clock_timestamp())")
+    .bind(tenant).bind(namespace).bind(run).execute(&mut *owner).await.expect("owner segment fixture");
+    sqlx::query("INSERT INTO capacity_groups(tenant_id,group_id,revision,epoch,active_members,possession) VALUES($1,$2,1,1,1,'VACANT')")
+    .bind(tenant).bind(group).execute(&mut *owner).await.expect("vacant owner group fixture");
+    sqlx::query("INSERT INTO capacity_group_members(tenant_id,group_id,member_id,namespace_id,member_kind,chain_id,state) VALUES($1,$2,$3,$4,'CHILD_ROOT',$5,'ACTIVE')")
+    .bind(tenant).bind(group).bind(member).bind(namespace).bind(run)
+    .execute(&mut *owner).await.expect("chain capacity binding fixture");
+    owner.commit().await.expect("owner fixture commits");
+    (group, member)
 }

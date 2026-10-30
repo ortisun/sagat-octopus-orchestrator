@@ -68,8 +68,19 @@ The PostgreSQL RED test ran in CI40988195080/job123844042134 on1079a1a0:
 failed at `vacancy grants no external lease`: 0 passed / 1 failed / 0 ignored, 10.29s.
 The build used the cache and took 1m17s. The superseded preliminary workflow was cancelled
 after collecting this expected failure, to release shared CI runners; it is not a full gate pass.
-The adapter scaffold was then replaced with the shared transactional guard. Nine focused
-PostgreSQL tests and the integrated gates await CI; production activation remains off.
+The adapter scaffold was then replaced with the shared transactional guard. On17ed8d63,
+CI40989029829/job123846699397 passed nine focused PostgreSQL tests (9/0/0,18.60s), the
+command/adapter/audit regressions (8/0/0,2/0/0,1/0/0), strict workspace/all-target Clippy
+(2m35s), non-bless AsyncAPI (4/0/0), native Acquire (17/0/0,27.72s), the changed hint,
+loop recovery and lease-index regression. The workflow was superseded after review expanded
+coverage; it did not finish the full workspace gate and is not a full CI pass.
+
+The test review found six actionable gaps: nonholder SQL projection, default-off behavior,
+scoped positive grants, internal oversized-input failure before the guard, heartbeat and
+scheduler fixture lease duration. All were addressed. A separate exact-path oversized-input
+case closed the second-cycle finding; the third review found no concrete bug. The test-specific
+Keeper and worker leases now last600s, beyond the300s scenario bound. Twelve focused tests
+and the complete integrated gates await the final CI run. Production activation remains off.
 
 `python3 -m unittest discover -s scripts/tests -q`: 70 tests, OK, one pre-existing skip.
 The new fitness check separately observed RED (five failing negative subcases), then GREEN
