@@ -341,6 +341,127 @@ async fn buffer_one_keeps_one_waiting_drops_the_next_and_starts_the_waiting_one_
     assert_eq!((after.buffered, after.tracked_runs.len()), (0, 1));
 }
 
+/// The hour before the last whole hour: near the database's clock, in the past.
+fn an_hour_ago() -> OffsetDateTime {
+    let now = OffsetDateTime::now_utc().unix_timestamp();
+    OffsetDateTime::from_unix_timestamp(now - now % 3_600 - 3_600).expect("instant")
+}
+
+#[tokio::test]
+async fn buffer_all_keeps_each_time_up_to_its_limit_and_starts_them_in_order() {
+    // the store sets the time to look at a waiting action again from the database's clock, so the
+    // clock of the test starts near it: an hour ago, and moves ahead
+    let started = an_hour_ago();
+    let f = fixture_from(started).await;
+    let schedule = f
+        .create(
+            "queue",
+            &hourly(),
+            &json!({"overlap": "BUFFER_ALL", "bufferLimit": 2}),
+            None,
+        )
+        .await;
+    f.clock.advance(Duration::hours(1) + Duration::seconds(1));
+    f.drain(&schedule).await; // 13:00 starts
+    for _ in 0..3 {
+        f.clock.advance(Duration::hours(1));
+        f.drain(&schedule).await; // 14:00 and 15:00 wait, 16:00 finds the buffer full
+    }
+    assert_eq!(
+        f.outcomes(&schedule).await,
+        outcomes_of(&[("BUFFERED", 2), ("DROPPED_BUFFER_FULL", 1), ("STARTED", 1)])
+    );
+    assert_eq!(f.read(&schedule).await.buffered, 2);
+
+    for expected_runs in [2, 3] {
+        let open = *f.runs(&schedule).await.last().expect("a run");
+        f.end(open, "SUCCEEDED").await;
+        f.clock.advance(Duration::seconds(6));
+        f.drain(&schedule).await; // forgets the run, then starts the oldest waiting action
+        assert_eq!(f.runs(&schedule).await.len(), expected_runs);
+    }
+    assert_eq!(
+        f.outcomes(&schedule).await,
+        outcomes_of(&[("DROPPED_BUFFER_FULL", 1), ("STARTED", 3)])
+    );
+    let nominal: Vec<OffsetDateTime> = sqlx::query_scalar(
+        "SELECT schedule_nominal_at FROM runs WHERE schedule_id = $1 ORDER BY created_at",
+    )
+    .bind(schedule.id.as_uuid())
+    .fetch_all(&f.w.db.pool)
+    .await
+    .expect("nominal times");
+    assert_eq!(
+        nominal,
+        vec![
+            started + Duration::hours(1),
+            started + Duration::hours(2),
+            started + Duration::hours(3)
+        ],
+        "in the order the times came"
+    );
+    assert_eq!(f.read(&schedule).await.buffered, 0);
+}
+
+#[tokio::test]
+async fn a_waiting_action_keeps_the_revision_it_was_taken_under() {
+    let f = fixture().await;
+    let schedule = f
+        .create(
+            "revised",
+            &hourly(),
+            &json!({"overlap": "BUFFER_ONE"}),
+            None,
+        )
+        .await;
+    f.clock.advance(Duration::hours(1) + Duration::seconds(1));
+    f.drain(&schedule).await; // 13:00 starts
+    f.clock.advance(Duration::hours(1));
+    f.drain(&schedule).await; // 14:00 waits, under revision 1
+
+    let replacement = ScheduleWrite {
+        name: ScheduleName::new("revised").expect("name"),
+        spec: spec_from_json(&hourly(), &Ceilings::default()).expect("spec"),
+        policies: policies_from_json(&json!({"overlap": "BUFFER_ONE"}), &Ceilings::default())
+            .expect("policies"),
+        target: target_from_json(&json!({"workflowId": f.workflow.to_string()})).expect("target"),
+        input: json!({"region": "us"}),
+        paused: false,
+        note: None,
+        remaining_actions: None,
+    };
+    let updated = f
+        .service
+        .update(
+            &f.w.admin,
+            schedule.id,
+            replacement,
+            1,
+            &RequestContext::default(),
+        )
+        .await
+        .expect("update");
+    assert_eq!(updated.revision, 2);
+
+    let first = f.runs(&schedule).await[0];
+    f.end(first, "SUCCEEDED").await;
+    f.clock.advance(Duration::seconds(6));
+    f.drain(&schedule).await;
+    let revisions: Vec<i32> = sqlx::query_scalar(
+        "SELECT schedule_revision FROM runs WHERE schedule_id = $1 ORDER BY created_at",
+    )
+    .bind(schedule.id.as_uuid())
+    .fetch_all(&f.w.db.pool)
+    .await
+    .expect("revisions");
+    assert_eq!(
+        revisions,
+        vec![1, 1],
+        "the waiting action starts under the revision it was taken under, not the head"
+    );
+    assert_eq!(f.read(&schedule).await.revision, 2);
+}
+
 #[tokio::test]
 async fn allow_all_starts_beside_an_open_run() {
     let f = fixture().await;

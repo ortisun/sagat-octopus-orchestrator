@@ -279,9 +279,25 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
 - [ ] T018-025 [US2] Backfill create/list/cancel and incremental pass steps with cursor, `ALREADY_ACTED`
   — `crates/scheduler/src/schedules.rs`, `crates/infra-postgres/src/schedules.rs` — crash resumes from
   cursor — FR-018-011.
-- [ ] T018-026 [US2] `SKIP`, `BUFFER_ONE`, `BUFFER_ALL`, `ALLOW_ALL`, open-run tracking, buffered start —
+- [x] T018-026 [US2] `SKIP`, `BUFFER_ONE`, `BUFFER_ALL`, `ALLOW_ALL`, open-run tracking, buffered start —
   `tests/integration/schedules-bulk-operations/overlap.rs` — SC-018-003 table — FR-018-006, FR-018-007.
-- [ ] T018-027 [US2] Remaining actions and `pauseOnFailure` — US02 scenario 6 — FR-018-007, FR-018-012.
+  *Done 2026-10-30; the scenarios live in `firing.rs`, which already holds the fixture and the clock, and no
+  `overlap.rs` was made.* The decision table is proved in the domain (`crates/domain/tests/schedules.rs` and the
+  property test `schedules_properties.rs`, which found D1043) and end to end over PostgreSQL by
+  `skip_records_the_time_it_skipped_while_a_run_is_open`,
+  `buffer_one_keeps_one_waiting_drops_the_next_and_starts_the_waiting_one_when_the_run_ends`,
+  `buffer_all_keeps_each_time_up_to_its_limit_and_starts_them_in_order` (limit 2: two wait, the third is
+  `DROPPED_BUFFER_FULL`, the waiting ones start in the order the times came, each when the run before it ends),
+  `allow_all_starts_beside_an_open_run` and `two_processes_acting_on_the_same_time_start_exactly_one_run`;
+  tracking forgets an ended run and the buffered start releases the oldest waiting action. `integration_schedules_bulk_operations`
+  109 passed, also as the runtime role. The tracking ceiling (`TRACKING_LIMIT`) is proved in the domain only.
+  `CANCEL_OTHER` is T018-030.
+- [x] T018-027 [US2] Remaining actions and `pauseOnFailure` — US02 scenario 6 — FR-018-007, FR-018-012.
+  *Done 2026-10-30.* Evidence in `firing.rs`: `a_schedule_with_two_actions_left_stops_after_them` (the third time
+  records nothing and the schedule has no next action), `a_failed_run_pauses_a_schedule_that_asks_for_it_with_a_system_note`
+  (system note, `schedule.auto_paused` audit), `a_cancelled_run_does_not_pause_a_schedule_that_pauses_on_failure`; in
+  `trigger.rs`, `trigger_now_does_not_use_up_a_remaining_action` and
+  `a_waiting_trigger_starts_when_the_run_ends_and_uses_up_nothing` (only a scheduled start decrements).
 - [ ] T018-028 [US2] Describe (next N, recent, counters), actions route, action purge keeping `BUFFERED`
   — `crates/infra-postgres/src/maintenance.rs` — contract + purge tests — FR-018-013.
 - [ ] T018-029 [US2] Catch-up after a simulated outage (`ONE`, `ALL`, summary, trigger-owned 366 d) —
@@ -289,8 +305,17 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
 - [ ] T018-030 [US2] `CANCEL_OTHER` obligations via the ordinary cancel use case; races with self
   completion and with failed compensation — `tests/fault/schedules-bulk-operations/cancel_other.rs` —
   first commit wins — FR-018-006, FR-018-007.
-- [ ] T018-031 [US2] Revisions on update; delete → `DROPPED_DELETED`, name freed —
+- [x] T018-031 [US2] Revisions on update; delete → `DROPPED_DELETED`, name freed —
   `tests/integration/schedules-bulk-operations/revisions.rs` — FR-018-014.
+  *Done 2026-10-30; the tests are in `changes.rs`, `service.rs` and `firing.rs` (no `revisions.rs`).* Evidence:
+  `changes::a_revision_moves_the_head_and_keeps_the_old_one`, `a_stale_expected_revision_is_a_conflict_that_changes_nothing`,
+  `of_two_revisions_from_the_same_revision_exactly_one_wins`, `a_revision_can_rename_but_not_to_a_name_that_is_taken`,
+  `deleting_leaves_a_tombstone_drops_waiting_actions_and_frees_the_name` (two waiting actions become
+  `DROPPED_DELETED`), `a_deleted_schedule_cannot_be_paused_or_revised`;
+  `service::an_update_is_a_new_revision_from_the_first_time_after_it`, `deleting_is_for_writers_and_leaves_nothing_to_read`,
+  `a_delete_at_a_stale_revision_deletes_nothing_and_at_the_head_deletes`; and
+  `firing::a_waiting_action_keeps_the_revision_it_was_taken_under` (an update while an action waits: the run starts under
+  revision 1 and the head is 2).
 - [ ] T018-032 [P] [US2] Studio schedules (list, detail, form with server-computed next times,
   pause/resume, trigger, backfill preview; tokens, WCAG AA, tables) —
   `frontend/apps/studio/src/features/schedules/`, `frontend/apps/studio/src/api/endpoints.ts` —
