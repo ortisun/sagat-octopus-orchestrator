@@ -67,6 +67,16 @@ pub enum ApiOperation {
     PublicationApprove,
     VersionActivate,
     Promotion,
+    ScheduleRead,
+    /// Create, replace and delete a schedule: every action runs as its authorizer.
+    ScheduleWrite,
+    ScheduleOperate,
+    /// Resume also makes the caller the authority of the schedule.
+    ScheduleResume,
+    /// Trigger-now starts a run as the schedule, under the role of the caller.
+    ScheduleTrigger,
+    /// A backfill starts runs as the schedule, under the role of its requester.
+    ScheduleBackfill,
 }
 
 impl ApiOperation {
@@ -76,8 +86,8 @@ impl ApiOperation {
             EgressManage, EventManage, EventPublish, EventRead, NamespaceRead, OpsRead,
             PublicationApprove, PublicationManage, QuotaManage, QuotaRead, RunOperate,
             RunPayloadInspect, RunQuery, RunRead, RunSignal, RunStart, RunUpdate, SagaOverride,
-            ScriptPublish, ScriptRead, ScriptWrite, SecretManage, SecretRead, VersionActivate,
-            WorkerBind, WorkerManage,
+            ScheduleOperate, ScheduleRead, ScriptPublish, ScriptRead, ScriptWrite, SecretManage,
+            SecretRead, VersionActivate, WorkerBind, WorkerManage,
         };
         match self {
             Self::NamespaceRead => &[NamespaceRead],
@@ -117,6 +127,12 @@ impl ApiOperation {
             Self::PublicationApprove => &[PublicationApprove],
             Self::VersionActivate => &[VersionActivate],
             Self::Promotion => &[DefinitionPublish, DefinitionWrite],
+            Self::ScheduleRead => &[ScheduleRead],
+            Self::ScheduleWrite => &[Permission::ScheduleWrite, RunStart],
+            Self::ScheduleOperate => &[ScheduleOperate],
+            Self::ScheduleResume | Self::ScheduleTrigger | Self::ScheduleBackfill => {
+                &[ScheduleOperate, RunStart]
+            }
         }
     }
 }

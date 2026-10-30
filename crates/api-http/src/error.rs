@@ -564,6 +564,7 @@ impl ApiError {
                     }
                     ConflictKind::ConnectorSlug => "a connector with this slug already exists",
                     ConflictKind::ScriptName => "a script with this name already exists",
+                    ConflictKind::ScheduleName => "a schedule with this name already exists",
                     ConflictKind::RequestNotApproved => {
                         "the request is not approved with what the namespace asks for now"
                     }
@@ -573,7 +574,8 @@ impl ApiError {
                     ConflictKind::WorkflowName
                     | ConflictKind::WebhookSubscriptionName
                     | ConflictKind::BrokerSubscriptionName
-                    | ConflictKind::ScriptName => {
+                    | ConflictKind::ScriptName
+                    | ConflictKind::ScheduleName => {
                         json!({ "field": "name" })
                     }
                     ConflictKind::EventIdReused => json!({ "reason": "EVENT_ID_REUSED" }),
@@ -634,6 +636,23 @@ impl ApiError {
             AppError::StateConflict(message) => {
                 let mut e = Self::new(StatusCode::CONFLICT, ErrorCode::Conflict, message);
                 e.parts.details = Some(json!({ "reason": "STATE_CONFLICT" }));
+                e
+            }
+            AppError::InvalidSchedule { reason, field } => {
+                let mut e = Self::validation(format!("the schedule is not acceptable: {reason}"));
+                e.parts.details = Some(match field {
+                    Some(field) => json!({ "reason": reason, "field": field }),
+                    None => json!({ "reason": reason }),
+                });
+                e
+            }
+            AppError::ScheduleConflict { reason } => {
+                let mut e = Self::new(
+                    StatusCode::CONFLICT,
+                    ErrorCode::Conflict,
+                    "the schedule is in a state that cannot take this request",
+                );
+                e.parts.details = Some(json!({ "reason": reason }));
                 e
             }
             AppError::Invalid(inner) => Self::validation(inner.to_string()),

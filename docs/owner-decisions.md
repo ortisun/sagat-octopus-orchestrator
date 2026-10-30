@@ -84,3 +84,21 @@ retaining PostgreSQL authority, worker gRPC, NATS compatibility and existing HTT
 [Specification](../specs/033-redis-streams/spec.md); [ADR-0069](adr/ADR-0069-redis-streams-share-outbox-and-delivery-authority.md).
 Implementation/tests remain required; no production deployment, automatic release or inbound Redis
 connector is inferred. This explicitly approves dependencies on the existing004/009/017 services.
+
+## 2026-10-29 — Feature 018 approved for implementation
+
+The owner asked to implement the specified features that are still missing and chose **feature 018
+(schedules and bulk run operations)** first. The approval covers this feature only; the other fourteen
+parity drafts (019–032) of pull request #53 stay unapproved.
+
+- **ADR-0050 accepted.** [ADR-0050](adr/ADR-0050-many-run-operations-admit-under-stable-keys-and-never-buffer-or-reopen.md)
+  is `Accepted`. Its decisions that rely on the run permit of proposed ADR-0056 (feature 022) remain gated until 022 is accepted.
+- **O1000 (a):** a schedule whose authorizing subject loses access is paused with an audited system note at the next action.
+- **O1001:** a closed business id is remembered 30 days by default, namespace-configurable up to 366.
+- **O1002 (a):** `run:batch` is held by admin and operator only.
+- **Dependencies:** only the existing 004/009/017 services and the six SDKs. Features 019, 020 and 022 are not approved,
+  so the tasks that need them (T018-037's permit, T018-051, T018-053's permit, T018-055, T018-077, T018-079) stay blocked.
+- **Branching:** `feature/018-schedules-bulk-operations` is cut from `develop`; only the 018 directory and ADR-0050 were
+  brought from the parity branch, so pull request #53 is not merged by this delivery.
+
+[Specification](../specs/018-schedules-bulk-operations/spec.md); answers in its `research.md` §5; D1040 adds the Rust SDK to its scope.

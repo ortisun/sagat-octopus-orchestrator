@@ -383,3 +383,19 @@ path = "e2e/database-connections/main.rs"
 [[test]]
 name = "integration_redis_streams"
 path = "integration/redis-streams/main.rs"
+
+[[test]]
+name = "integration_schedules_bulk_operations"
+path = "integration/schedules-bulk-operations/main.rs"
+
+[[test]]
+name = "fault_schedules_bulk_operations"
+path = "fault/schedules-bulk-operations/main.rs"
+
+[[test]]
+name = "contract_schedules_bulk_operations"
+path = "contract/schedules-bulk-operations/main.rs"
+
+[[test]]
+name = "e2e_schedules_bulk_operations"
+path = "e2e/schedules-bulk-operations/main.rs"

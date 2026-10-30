@@ -90,6 +90,8 @@ fn app_error_variant(error: &AppError) -> &'static str {
         AppError::SecretUnavailable { .. } => "SecretUnavailable",
         AppError::StaleAttempt => "StaleAttempt",
         AppError::StateConflict(_) => "StateConflict",
+        AppError::InvalidSchedule { .. } => "InvalidSchedule",
+        AppError::ScheduleConflict { .. } => "ScheduleConflict",
         AppError::Invalid(_) => "Invalid",
         AppError::InvalidScript(_) => "InvalidScript",
         AppError::QuotaExceeded(_) => "QuotaExceeded",

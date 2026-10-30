@@ -15,6 +15,7 @@ pub mod payload_disclosure;
 pub mod payload_inspection;
 pub mod primitives;
 pub mod runner;
+pub mod schedules;
 pub mod scripts;
 pub mod versioning;
 

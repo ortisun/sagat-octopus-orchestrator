@@ -352,6 +352,8 @@ fn operations_outside_the_approved_additions_and_event_extensions_are_byte_stabl
                 // Feature 017 is merged independently with this branch. Its additive operations
                 // were not part of the T016-007 baseline and must not create a false regression.
                 || operation["x-implemented"] == "017"
+                // Feature 018 adds its operations after the T016-007 baseline, the same way.
+                || operation["x-implemented"] == "018"
             {
                 continue;
             }

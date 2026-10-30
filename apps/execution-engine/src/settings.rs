@@ -18,7 +18,7 @@ use sagat_infra_connectors::redis::RedisConfig;
 use sagat_infra_nats::NatsConfig;
 use sagat_scheduler::{
     DeliverySettings, DispatchSettings, EventDispatchSettings, KeeperSettings, MonitorSettings,
-    ProjectorSettings, SchedulerSettings,
+    ProjectorSettings, ScheduleSettings, SchedulerSettings,
 };
 use sagat_telemetry::OtlpConfig;
 
@@ -75,6 +75,12 @@ pub struct EngineConfig {
     pub events: EventDispatchSettings,
     /// Pause between event dispatch rounds when the last one found nothing to do.
     pub event_poll: Duration,
+    /// Whether the replica fires schedules (`SAGAT_SCHEDULES_ENABLED`, off by default until the
+    /// feature is released): the REST routes can create schedules either way, none fires without it.
+    pub schedules_enabled: bool,
+    pub schedules: ScheduleSettings,
+    /// Pause between schedule rounds when the last one found nothing to do.
+    pub schedule_poll: Duration,
     /// The worker that sends outbound webhooks.
     pub deliveries: DeliverySettings,
     /// Pause between delivery rounds when the last one found nothing to send.
@@ -557,6 +563,30 @@ impl EngineConfig {
             optional(get, "SAGAT_EVENT_POLL_MS", 200u64)?,
         )?);
 
+        let schedules_enabled = flag(get, "SAGAT_SCHEDULES_ENABLED")?;
+        let schedule_defaults = ScheduleSettings::default();
+        let schedules = ScheduleSettings {
+            batch: u32::try_from(positive(
+                "SAGAT_SCHEDULES_BATCH",
+                optional(
+                    get,
+                    "SAGAT_SCHEDULES_BATCH",
+                    u64::from(schedule_defaults.batch),
+                )?,
+            )?)
+            .ok()
+            .filter(|batch| *batch <= MAX_BATCH)
+            .ok_or_else(|| ConfigError::Invalid {
+                name: "SAGAT_SCHEDULES_BATCH",
+                reason: format!("must be at most {MAX_BATCH}"),
+            })?,
+            ..schedule_defaults
+        };
+        let schedule_poll = Duration::from_millis(positive(
+            "SAGAT_SCHEDULES_POLL_MS",
+            optional(get, "SAGAT_SCHEDULES_POLL_MS", 1_000u64)?,
+        )?);
+
         let delivery_defaults = DeliverySettings::default();
         let deliveries = DeliverySettings {
             batch: u32::try_from(positive(
@@ -764,6 +794,9 @@ impl EngineConfig {
             outbox_poll,
             events,
             event_poll,
+            schedules_enabled,
+            schedules,
+            schedule_poll,
             deliveries,
             delivery_poll,
             connector_refresh,

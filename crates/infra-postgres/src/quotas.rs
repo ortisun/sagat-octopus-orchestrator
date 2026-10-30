@@ -367,6 +367,71 @@ pub(crate) async fn ensure_room_for_connector(
     judge(QuotaResource::Connectors, count, limit)
 }
 
+/// Takes the lock of the schedules of one namespace for the rest of the transaction.
+pub(crate) async fn lock_schedules(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+) -> Result<(), StoreError> {
+    lock(conn, QuotaResource::Schedules, tenant, Some(namespace)).await
+}
+
+/// A new schedule fits in its namespace: active and paused ones count, deleted ones do not. The
+/// caller holds [`lock_schedules`].
+pub(crate) async fn ensure_room_for_schedule(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    limit: u64,
+) -> Result<(), StoreError> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM schedules \
+         WHERE tenant_id = $1 AND namespace_id = $2 AND state <> 'DELETED'",
+    )
+    .bind(tenant.as_uuid())
+    .bind(namespace.as_uuid())
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    judge(QuotaResource::Schedules, count, limit)
+}
+
+/// Takes the lock of the backfills of one namespace for the rest of the transaction.
+pub(crate) async fn lock_backfills(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+) -> Result<(), StoreError> {
+    lock(
+        conn,
+        QuotaResource::ScheduleBackfills,
+        tenant,
+        Some(namespace),
+    )
+    .await
+}
+
+/// A new backfill fits in its namespace: the ones still active count. The caller holds
+/// [`lock_backfills`].
+pub(crate) async fn ensure_room_for_backfill(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    limit: u64,
+) -> Result<(), StoreError> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM schedule_backfills b \
+         JOIN schedules s ON s.tenant_id = b.tenant_id AND s.id = b.schedule_id \
+         WHERE b.tenant_id = $1 AND s.namespace_id = $2 AND b.state IN ('PENDING', 'RUNNING')",
+    )
+    .bind(tenant.as_uuid())
+    .bind(namespace.as_uuid())
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    judge(QuotaResource::ScheduleBackfills, count, limit)
+}
+
 /// Takes the lock of the scripts of one namespace for the rest of the transaction.
 pub(crate) async fn lock_scripts(
     conn: &mut PgConnection,
@@ -451,7 +516,7 @@ pub(crate) async fn ensure_room_for_secret(
     judge(QuotaResource::Secrets, count, limit)
 }
 
-async fn effective(
+pub(crate) async fn effective(
     pool: &PgPool,
     tenant: TenantId,
     namespace: Option<NamespaceId>,
@@ -1050,6 +1115,23 @@ impl QuotaStore for PgRunStore {
             QuotaResource::SecretProviderOperations => sqlx::query_scalar(
                 "SELECT count(*) FROM secret_provider_operations WHERE tenant_id=$1 AND namespace_id=$2 AND state='pending'")
                 .bind(tenant.as_uuid()).bind(namespace).fetch_one(&self.pool).await,
+            QuotaResource::Schedules => sqlx::query_scalar(
+                "SELECT count(*) FROM schedules \
+                 WHERE tenant_id = $1 AND namespace_id = $2 AND state <> 'DELETED'",
+            )
+            .bind(tenant.as_uuid())
+            .bind(namespace)
+            .fetch_one(&self.pool)
+            .await,
+            QuotaResource::ScheduleBackfills => sqlx::query_scalar(
+                "SELECT count(*) FROM schedule_backfills b \
+                 JOIN schedules s ON s.tenant_id = b.tenant_id AND s.id = b.schedule_id \
+                 WHERE b.tenant_id = $1 AND s.namespace_id = $2 AND b.state IN ('PENDING', 'RUNNING')",
+            )
+            .bind(tenant.as_uuid())
+            .bind(namespace)
+            .fetch_one(&self.pool)
+            .await,
             QuotaResource::ApiRequestsPerSecond
             | QuotaResource::EventsPerSecond
             | QuotaResource::EventRetentionSeconds

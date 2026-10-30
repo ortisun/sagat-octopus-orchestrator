@@ -32,6 +32,7 @@ mod dto_exec;
 mod dto_gov;
 mod dto_ops;
 mod dto_primitives;
+mod dto_schedules;
 mod dto_scripts;
 mod dto_versioning;
 pub mod error;
@@ -402,6 +403,7 @@ where
 
     let serves_secrets = state.secrets().is_some();
     let serves_events = state.events().is_some();
+    let serves_schedules = state.schedules().is_some();
     let serves_outbound = state.outbound().is_some();
     let serves_connectors = state.connectors().is_some();
     let serves_scripts = state.scripts().is_some();
@@ -545,6 +547,45 @@ where
                     axum::routing::post(ev::receive_webhook::<B<S, C, G>>),
                 )
                 .layer(RequestBodyLimitLayer::new(ev::EVENT_MAX_BODY_BYTES)),
+        );
+    }
+    // Schedules are deployment-gated: without the service the routes are not there at all.
+    if serves_schedules {
+        use routes::schedules as sc;
+        router = router.merge(
+            Router::new()
+                .route(
+                    "/namespaces/{namespace_id}/schedules",
+                    get(sc::list_schedules::<B<S, C, G>>).post(sc::create_schedule::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/schedules/{schedule_id}",
+                    get(sc::get_schedule::<B<S, C, G>>)
+                        .put(sc::update_schedule::<B<S, C, G>>)
+                        .delete(sc::delete_schedule::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/schedules/{schedule_id}/pause",
+                    axum::routing::post(sc::pause_schedule::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/schedules/{schedule_id}/resume",
+                    axum::routing::post(sc::resume_schedule::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/schedules/{schedule_id}/trigger",
+                    axum::routing::post(sc::trigger_schedule::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/schedules/{schedule_id}/backfills",
+                    get(sc::list_schedule_backfills::<B<S, C, G>>)
+                        .post(sc::create_schedule_backfill::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/schedules/{schedule_id}/backfills/{backfill_id}/cancel",
+                    axum::routing::post(sc::cancel_schedule_backfill::<B<S, C, G>>),
+                )
+                .layer(RequestBodyLimitLayer::new(sc::SCHEDULE_MAX_BODY_BYTES)),
         );
     }
     if serves_outbound {
