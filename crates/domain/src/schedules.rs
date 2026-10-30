@@ -16,6 +16,8 @@ use std::str::FromStr;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
+use crate::business_ids::{BusinessId, ConflictPolicy, ReusePolicy};
+use crate::definition::{WorkflowId, WorkflowVersionId};
 use crate::execution::RunStatus;
 use crate::triggers::{CronSpec, is_timezone_name};
 
@@ -74,7 +76,20 @@ pub enum ScheduleError {
     NoteTooLong,
     #[error("remaining actions are 1 to {MAX_REMAINING_ACTIONS}")]
     BadRemaining,
+    #[error("the nominal time field is a top-level identifier of at most 64 characters")]
+    BadNominalTimeField,
+    #[error("a run timeout is one second to 366 days")]
+    BadRunTimeout,
+    #[error(
+        "a business id prefix is 1 to 160 visible ASCII characters and leaves room for the time"
+    )]
+    BadBusinessIdPrefix,
 }
+
+uuid_id!(
+    /// Identifier of a schedule.
+    ScheduleId
+);
 
 /// The effective ceilings of a namespace: the lower of the request, the namespace and the
 /// deployment, never above the hard ones. The defaults are the design values of the plan.
@@ -586,6 +601,167 @@ impl RemainingActions {
     #[must_use]
     pub const fn get(self) -> u32 {
         self.0
+    }
+}
+
+// --- what a schedule starts ---------------------------------------------------------------------
+
+/// Which version of the workflow each action starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VersionPolicy {
+    /// The version that is active when the action is taken.
+    Active,
+    /// Always this version.
+    Pinned(WorkflowVersionId),
+}
+
+/// The longest prefix of a business id made by an action: with its dash and the 20 characters of a
+/// UTC time in seconds it stays inside the 200 of a business id.
+pub const MAX_BUSINESS_ID_PREFIX_CHARS: usize = 160;
+pub const MIN_RUN_TIMEOUT_MS: u64 = 1_000;
+pub const MAX_RUN_TIMEOUT_MS: u64 = 31_622_400_000;
+const MAX_NOMINAL_TIME_FIELD_CHARS: usize = 64;
+
+/// What a target declares; [`ScheduleTarget::new`] checks it. The input of the run is a payload
+/// stored beside the revision, not part of the target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetParts {
+    pub workflow: WorkflowId,
+    pub version: VersionPolicy,
+    /// A declared top-level input property that receives the nominal time (RFC 3339 UTC).
+    pub nominal_time_field: Option<String>,
+    pub run_timeout_ms: Option<u64>,
+    /// The runs of the schedule get the business id `<prefix>-<nominal time>`.
+    pub business_id_prefix: Option<String>,
+    pub business_id_conflict: ConflictPolicy,
+    pub business_id_reuse: ReusePolicy,
+}
+
+/// The business id an action gives its run, and what happens when it is taken.
+#[derive(Clone, PartialEq, Eq)]
+pub struct TargetBusinessId {
+    prefix: String,
+    conflict: ConflictPolicy,
+    reuse: ReusePolicy,
+}
+
+/// The prefix is customer text and stays out of logs.
+impl fmt::Debug for TargetBusinessId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TargetBusinessId")
+            .field("conflict", &self.conflict)
+            .field("reuse", &self.reuse)
+            .finish_non_exhaustive()
+    }
+}
+
+impl TargetBusinessId {
+    #[must_use]
+    pub fn prefix(&self) -> &str {
+        &self.prefix
+    }
+
+    #[must_use]
+    pub const fn conflict(&self) -> ConflictPolicy {
+        self.conflict
+    }
+
+    #[must_use]
+    pub const fn reuse(&self) -> ReusePolicy {
+        self.reuse
+    }
+
+    /// The business id of the action taken at `nominal_time` (already rendered as RFC 3339 UTC).
+    ///
+    /// # Errors
+    /// [`ScheduleError::BadBusinessIdPrefix`] when the result is not a legal business id: it is
+    /// refused, never truncated.
+    pub fn for_nominal_time(&self, nominal_time: &str) -> Result<BusinessId, ScheduleError> {
+        BusinessId::new(&format!("{}-{nominal_time}", self.prefix))
+            .map_err(|_| ScheduleError::BadBusinessIdPrefix)
+    }
+}
+
+/// The workflow a schedule runs and how.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScheduleTarget {
+    workflow: WorkflowId,
+    version: VersionPolicy,
+    nominal_time_field: Option<String>,
+    run_timeout_ms: Option<u64>,
+    business_id: Option<TargetBusinessId>,
+}
+
+impl ScheduleTarget {
+    /// # Errors
+    /// [`ScheduleError::BadNominalTimeField`], [`ScheduleError::BadRunTimeout`] or
+    /// [`ScheduleError::BadBusinessIdPrefix`].
+    pub fn new(parts: TargetParts) -> Result<Self, ScheduleError> {
+        if let Some(field) = &parts.nominal_time_field {
+            let mut chars = field.chars();
+            let head_ok = chars
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+            if !head_ok
+                || field.chars().count() > MAX_NOMINAL_TIME_FIELD_CHARS
+                || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+            {
+                return Err(ScheduleError::BadNominalTimeField);
+            }
+        }
+        if parts
+            .run_timeout_ms
+            .is_some_and(|ms| !(MIN_RUN_TIMEOUT_MS..=MAX_RUN_TIMEOUT_MS).contains(&ms))
+        {
+            return Err(ScheduleError::BadRunTimeout);
+        }
+        let business_id = match parts.business_id_prefix {
+            None => None,
+            Some(prefix) => {
+                if prefix.chars().count() > MAX_BUSINESS_ID_PREFIX_CHARS
+                    || BusinessId::new(&prefix).is_err()
+                {
+                    return Err(ScheduleError::BadBusinessIdPrefix);
+                }
+                Some(TargetBusinessId {
+                    prefix,
+                    conflict: parts.business_id_conflict,
+                    reuse: parts.business_id_reuse,
+                })
+            }
+        };
+        Ok(Self {
+            workflow: parts.workflow,
+            version: parts.version,
+            nominal_time_field: parts.nominal_time_field,
+            run_timeout_ms: parts.run_timeout_ms,
+            business_id,
+        })
+    }
+
+    #[must_use]
+    pub const fn workflow(&self) -> WorkflowId {
+        self.workflow
+    }
+
+    #[must_use]
+    pub const fn version(&self) -> VersionPolicy {
+        self.version
+    }
+
+    #[must_use]
+    pub fn nominal_time_field(&self) -> Option<&str> {
+        self.nominal_time_field.as_deref()
+    }
+
+    #[must_use]
+    pub const fn run_timeout_ms(&self) -> Option<u64> {
+        self.run_timeout_ms
+    }
+
+    #[must_use]
+    pub const fn business_id(&self) -> Option<&TargetBusinessId> {
+        self.business_id.as_ref()
     }
 }
 

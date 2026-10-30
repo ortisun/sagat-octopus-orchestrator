@@ -484,6 +484,10 @@ pub enum ResourceType {
     WebhookSubscription,
     BrokerSubscription,
     Connector,
+    /// A schedule of feature 018.
+    Schedule,
+    /// A batch job of feature 018.
+    BatchJob,
     Script,
     /// A version of a script, as `script-id/number`.
     ScriptVersion,
@@ -523,6 +527,8 @@ impl ResourceType {
             Self::WebhookSubscription => "webhook_subscription",
             Self::BrokerSubscription => "broker_subscription",
             Self::Connector => "connector",
+            Self::Schedule => "schedule",
+            Self::BatchJob => "batch_job",
             Self::Script => "script",
             Self::ScriptVersion => "script_version",
             Self::PublicationRequest => "publication_request",
