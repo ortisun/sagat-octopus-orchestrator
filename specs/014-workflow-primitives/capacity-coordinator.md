@@ -13,7 +13,16 @@ lookback's SHARE but prevents the subsequent claim's UPDATE SKIP LOCKED. The tes
 positive quota-refusal diagnostic, so an unrelated lookup error cannot satisfy the proof.
 This is a controlled counterexample to the same-tick counter assumption, not evidence that
 the original CI failure had that exact lock owner or that asynchronous rollback was its cause.
-Native execution and the separate direct-dispatch/held-lookback correction remain pending.
+CI41002714537/job123890570512 on4eda4eb0 observed that RED:0 passed/1 failed/0 ignored,
+8.31s, at the old tuple assertion after the positive quota diagnostic had passed. Its build
+took1m38s; the preliminary workflow was cancelled after preserving this result.
+
+The correction separates direct dispatch(scan0/batch1) from held-source lookback(scan1/batch1).
+The first requires a durable quota retry class with zero consumed attempts; the second requires
+the actual quota warning, unchanged persistence and a pending inbox without retry metadata.
+Both retain complete rollback/accounting snapshots, absence of receipts/scan markers and cold
+lookback recovery for both waits exactly once. The held source is explicitly unlocked. Both
+native GREEN tests and the corrected complete integrated gates remain pending.
 
 Refs: T014-014–017/040/042–044, FR-014-004/005/014/015, G715/G717/G719/G721.
 Base: `develop@888074e6`, after native Acquire PR65. Own branch/worktree:

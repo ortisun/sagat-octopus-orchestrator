@@ -203,39 +203,69 @@ async fn scoped_lookback_and_scan_markers_require_each_complete_current_candidat
 
 #[tokio::test]
 async fn a_dispatcher_quota_refusal_rolls_back_receipts_and_retries_pending_lookback() {
-    let name = "receiver-quota-rollback";
+    quota_refusal(false).await;
+}
+
+#[tokio::test]
+async fn a_dispatcher_quota_refusal_with_held_inbox_keeps_lookback_pending() {
+    quota_refusal(true).await;
+}
+
+async fn quota_refusal(hold_inbox: bool) {
+    crate::support::bounded::within(
+        "scoped dispatcher quota rollback and cold recovery",
+        crate::support::bounded::LIFECYCLE_LIMIT,
+        quota_refusal_scenario(hold_inbox),
+    )
+    .await;
+}
+
+async fn quota_refusal_scenario(hold_inbox: bool) {
+    let name = if hold_inbox {
+        "receiver-quota-held-inbox"
+    } else {
+        "receiver-quota-rollback"
+    };
     let (fixture, store) = subscribed(name).await;
     publish(&fixture, name).await;
     sqlx::query("INSERT INTO quota_limits (tenant_id,namespace_id,resource,max_value,updated_by) SELECT tenant_id,NULL,'tenant_content_bytes',content_bytes+content_reserved_bytes,'test' FROM tenant_retained_usage WHERE tenant_id=$1").bind(fixture.world.admin.tenant_id().as_uuid()).execute(&fixture.world.db.pool).await.expect("close actual current quota");
-    // RED: make the mixed-tick claim skip deterministic while permitting real lookback reads.
-    let mut held_inbox = fixture
-        .world
-        .db
-        .pool
-        .begin()
-        .await
-        .expect("owned inbox barrier");
-    sqlx::query("SELECT event_id FROM inbox_events WHERE tenant_id=$1 AND event_id='collection-receiver-event' FOR SHARE")
-        .bind(fixture.world.admin.tenant_id().as_uuid())
-        .fetch_one(&mut *held_inbox)
-        .await
-        .expect("hold compatible scoped source lock before the mixed tick");
+    let held_inbox = if hold_inbox {
+        let mut tx = fixture
+            .world
+            .db
+            .pool
+            .begin()
+            .await
+            .expect("owned inbox barrier");
+        // Compatible with scoped source validation, conflicting with UPDATE SKIP LOCKED.
+        sqlx::query("SELECT event_id FROM inbox_events WHERE tenant_id=$1 AND event_id='collection-receiver-event' FOR SHARE")
+            .bind(fixture.world.admin.tenant_id().as_uuid())
+            .fetch_one(&mut *tx)
+            .await
+            .expect("hold compatible scoped source lock before the mixed tick");
+        Some(tx)
+    } else {
+        None
+    };
     let before = guards::snapshot(&fixture).await;
     let (_log_guard, captured) = crate::support::logs::capture();
     let refused = crate::support::bounded::within(
-        "mixed lookback quota refusal with held inbox",
+        "native scoped event quota refusal",
         std::time::Duration::from_secs(30),
-        dispatcher(&store, 1, 1).tick(),
+        // Test dispatch retry independently of any failed lookback's source-lock cleanup.
+        dispatcher(&store, u32::from(hold_inbox), 1).tick(),
     )
     .await;
     let diagnostic = captured.text();
-    assert!(
-        diagnostic
-            .lines()
-            .any(|line| line.contains("delivering a past event failed")
-                && line.contains("limit reached: retained content bytes of the tenant")),
-        "the real lookback must reach its quota refusal: {diagnostic}"
-    );
+    if hold_inbox {
+        assert!(
+            diagnostic
+                .lines()
+                .any(|line| line.contains("delivering a past event failed")
+                    && line.contains("limit reached: retained content bytes of the tenant")),
+            "the real lookback must reach its quota refusal: {diagnostic}"
+        );
+    }
     assert_eq!(
         (
             refused.steps_woken,
@@ -243,14 +273,22 @@ async fn a_dispatcher_quota_refusal_rolls_back_receipts_and_retries_pending_look
             refused.dispatched,
             refused.dead
         ),
-        (0, 1, 0, 0)
+        (0, u32::from(!hold_inbox), 0, 0),
+        "retry is required for a claimed event; a held inbox remains pending: {diagnostic}"
     );
-    held_inbox
-        .rollback()
-        .await
-        .expect("release owned inbox barrier");
+    if let Some(tx) = held_inbox {
+        tx.rollback().await.expect("release owned inbox barrier");
+    }
+    let inbox: (String, i32, Option<String>) = sqlx::query_as(
+        "SELECT status,attempts,last_error FROM inbox_events WHERE tenant_id=$1 AND event_id='collection-receiver-event'",
+    ).bind(fixture.world.admin.tenant_id().as_uuid()).fetch_one(&fixture.world.db.pool).await.expect("durable refusal class and attempt budget");
+    assert_eq!((inbox.0.as_str(), inbox.1), ("PENDING", 0));
+    assert_eq!(
+        inbox.2.as_deref(),
+        (!hold_inbox).then_some("a quota of the namespace or tenant was reached; will retry")
+    );
     let mut after = guards::snapshot(&fixture).await;
-    let retry_log_bytes:i64=sqlx::query_scalar("SELECT octet_length(last_error)::bigint FROM inbox_events WHERE tenant_id=$1 AND event_id='collection-receiver-event'").bind(fixture.world.admin.tenant_id().as_uuid()).fetch_one(&fixture.world.db.pool).await.expect("expected retained retry metadata");
+    let retry_log_bytes:i64=sqlx::query_scalar("SELECT coalesce(octet_length(last_error),0)::bigint FROM inbox_events WHERE tenant_id=$1 AND event_id='collection-receiver-event'").bind(fixture.world.admin.tenant_id().as_uuid()).fetch_one(&fixture.world.db.pool).await.expect("expected retained retry metadata");
     assert_eq!(
         after["retained"]["log_bytes"].as_i64().expect("log bytes")
             - before["retained"]["log_bytes"]
