@@ -34,6 +34,11 @@ jobs:
           # A failed test must not discard the dependencies already compiled.
           cache-on-failure: true
       - run: cargo fmt --all -- --check
+      - name: scoped event quota rollback boundary
+        env:
+          SAGAT_TEST_AS_RUNTIME_ROLE: "1"
+          RUST_TEST_THREADS: "2"
+        run: cargo test -p sagat-tests --test integration_workflow_primitives --locked -- scoped_event_storage::receiver::a_dispatcher_quota_refusal_rolls_back_receipts_and_retries_pending_lookback --exact --nocapture
       - name: worker capacity lease boundary
         env:
           SAGAT_TEST_AS_RUNTIME_ROLE: "1"

@@ -1,5 +1,20 @@
 # ChildRoot capacity coordination
 
+## Integrated gate failure — 2026-10-30
+
+CI40992862636/job123859130204 onffe54ab4 failed the existing
+`scoped_event_storage::receiver::a_dispatcher_quota_refusal_rolls_back_receipts_and_retries_pending_lookback`:
+its mixed lookback/claim tick returned(0,0,0,0), while the test required(0,1,0,0).
+The same receiver source passed the previous ec29e41b workspace. Neither result is discarded;
+the original failure is retained in the CI log. No merge or complete gate pass is claimed.
+
+A held inbox SHARE reproducer is prepared before changing the assertion: it permits native
+lookback's SHARE but prevents the subsequent claim's UPDATE SKIP LOCKED. The test requires a
+positive quota-refusal diagnostic, so an unrelated lookup error cannot satisfy the proof.
+This is a controlled counterexample to the same-tick counter assumption, not evidence that
+the original CI failure had that exact lock owner or that asynchronous rollback was its cause.
+Native execution and the separate direct-dispatch/held-lookback correction remain pending.
+
 Refs: T014-014–017/040/042–044, FR-014-004/005/014/015, G715/G717/G719/G721.
 Base: `develop@888074e6`, after native Acquire PR65. Own branch/worktree:
 `feature/014-capacity-coordinator` / `sagat-octopus-capacity-coordinator`.
