@@ -148,8 +148,13 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   read-back equality, revision and audit committed together, a refused name leaves nothing, quota, a 6-way race for the
   last 3 places, content charged, shared input payload, forged digest refused, another tenant sees nothing, paging, runtime
   role), also with `SAGAT_TEST_AS_RUNTIME_ROLE=1`; `integration_platform_foundation` 101 passed (the runtime-privilege audit
-  reads these statements); removing the fence makes the race test fail (6 created instead of 3). Not done: update, pause,
-  resume, delete (head CAS), the due scan by `(shard, next_wake_at)`, actions, purge.
+  reads these statements); removing the fence makes the race test fail (6 created instead of 3).
+  *Update 2026-10-29:* `revise_schedule` (a new revision under a compare-and-swap on the head, rename with the name check,
+  conflict leaves nothing, six racing revisions have one winner), `set_schedule_state` (pause or resume with the note, actor
+  and time; the resumer becomes the authority; not a revision) and `delete_schedule` (tombstone, waiting actions become
+  `DROPPED_DELETED`, the name is free, a second delete is a no-op). Evidence: `integration_schedules_bulk_operations` 34
+  passed (9 in `changes`), also as the runtime role; `integration_platform_foundation` 101; dropping the head check fails 2
+  tests. Not done: the due scan by `(shard, next_wake_at)`, actions, purge, backfills, obligations.
 - [ ] T018-015 [US1] Schedule admission inside `RunStore::create` (fence, CAS, action + state after the
   initial reduction, refusal commits nothing) — `crates/infra-postgres/src/{execution.rs,schedules.rs}`
   — one-commit content test — FR-018-004, FR-018-005.

@@ -203,6 +203,42 @@ pub struct NewSchedule {
     pub request_id: Option<String>,
 }
 
+/// A new revision of a schedule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Revise {
+    /// The desired content: `revision` is `expected_revision + 1`, `state` is `Active` or `Paused`,
+    /// `authorized_by` is the updater, and the next times are recomputed from the new spec.
+    pub record: ScheduleRecord,
+    /// The head revision the caller saw. A different head is a conflict, not an overwrite.
+    pub expected_revision: u32,
+    pub input: Option<StoredInput>,
+    pub request_id: Option<String>,
+}
+
+/// The note that comes with a pause or a resume.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateNote {
+    pub text: String,
+    pub by: String,
+    pub at: OffsetDateTime,
+}
+
+/// A pause or a resume: not a revision of the schedule, a change of its state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateChange {
+    pub tenant_id: TenantId,
+    pub id: ScheduleId,
+    /// `Active` or `Paused`.
+    pub state: ScheduleState,
+    pub note: Option<StateNote>,
+    /// The resumer becomes the authority of the schedule; a pause leaves it alone.
+    pub authorized_by: Option<String>,
+    /// The next times, recomputed by a resume; a pause clears them.
+    pub next_action_at: Option<OffsetDateTime>,
+    pub next_actual_at: Option<OffsetDateTime>,
+    pub updated_at: OffsetDateTime,
+}
+
 /// Storage port of the schedules. Implemented by `sagat-infra-postgres`.
 pub trait ScheduleStore: Send + Sync {
     /// Stores a new schedule and its first revision with its audit record, counting it against the
@@ -230,4 +266,30 @@ pub trait ScheduleStore: Send + Sync {
         after: Option<ScheduleId>,
         limit: u32,
     ) -> impl Future<Output = Result<Vec<ScheduleRecord>, StoreError>> + Send;
+
+    /// Adds a revision and moves the head to it, with its audit record. `None` when the schedule
+    /// does not exist for the tenant or was deleted; `RevisionConflict` when the head is not
+    /// `expected_revision`; `Conflict(ScheduleName)` when a rename takes a name that is in use.
+    fn revise_schedule(
+        &self,
+        revise: &Revise,
+        audit: &AuditRecord,
+    ) -> impl Future<Output = Result<Option<ScheduleRecord>, StoreError>> + Send;
+
+    /// Pauses or resumes. `None` when the schedule does not exist for the tenant or was deleted.
+    fn set_schedule_state(
+        &self,
+        change: &StateChange,
+        audit: &AuditRecord,
+    ) -> impl Future<Output = Result<Option<ScheduleRecord>, StoreError>> + Send;
+
+    /// Deletes: the schedule stays as a tombstone, its name is free, its waiting actions become
+    /// `DROPPED_DELETED`, its runs are untouched. `false` when there was nothing to delete.
+    fn delete_schedule(
+        &self,
+        tenant: TenantId,
+        id: ScheduleId,
+        now: OffsetDateTime,
+        audit: &AuditRecord,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 }

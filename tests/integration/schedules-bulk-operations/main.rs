@@ -6,5 +6,7 @@
 #[path = "../../support/mod.rs"]
 mod support;
 
+mod changes;
 mod migration;
 mod store;
+mod store_support;
