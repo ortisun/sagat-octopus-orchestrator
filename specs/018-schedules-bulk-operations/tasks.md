@@ -109,6 +109,18 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   reasons; assert `workflow.schema.json` and `worker.baseline.json` unchanged —
   `specs/001-platform-foundation/contracts/{openapi.yaml,events.asyncapi.yaml,events.baseline.json}` —
   `contract_schedules_bulk_operations` — FR-018-043, FR-018-046.
+  *Part done 2026-10-30 (task stays open).* The REST operations built so far are merged into
+  `specs/001-platform-foundation/contracts/openapi.yaml` with `x-implemented: '018'`: `listSchedules`, `createSchedule`,
+  `getSchedule`, `updateSchedule`, `deleteSchedule`, `pauseSchedule`, `resumeSchedule` (the spec and policies schemas are
+  inlined as `ScheduleSpec`/`SchedulePolicies`, because the canonical document has no external references; business-id
+  fields are left out until US03; G1015 names what the draft listed and is not built). `docs/reference/api.md` regenerated
+  after reading the diff (7 operations, group Schedules) and `frontend/apps/studio/src/api/schema.d.ts` regenerated
+  (`npm run check:api` clean, `npm run typecheck` clean). Evidence: `contract_schedules_bulk_operations` 1 passed (every
+  response of the seven operations, 2xx and 4xx, validated against the schema, plus a check that all seven were
+  exercised); the cross-tenant battery (`contract_rest_security_multitenancy`, 17 passed) now holds a victim schedule and
+  a valid body for each write; `contract_payload_classification` 18, `contract_developer_experience` 8,
+  `contract_rest_platform_foundation` 9 and the other REST contract suites pass. Not done: the AsyncAPI additions and the
+  baseline regeneration, the operations of US02..US07.
 - [ ] T018-011 Ports `ScheduleStore`, `ScheduleCalendar`, `BusinessIdStore`, `BatchStore`, `ResetStore`;
   `NewRun` admissions `schedule`, `business_id`, `delay`, `reset` processed by `RunStore::create` in
   ADR-0050 order — `crates/application/src/{schedules.rs,batch.rs,runs.rs,runs/business_id.rs,runs/reset.rs}`
@@ -211,6 +223,18 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   between tenants, the gauges (`scheduler_lag_seconds{pass="schedules"}`, `schedule_actions_total`) and the monitor alert.
 - [ ] T018-018 [US1] REST create/read/list/update/delete — `crates/api-http/src/routes/{schedules.rs,mod.rs}`,
   `crates/api-http/src/dto_schedules.rs` — contract tests — FR-018-001, FR-018-013, FR-018-043.
+  *Part done 2026-10-30 (task stays open).* Built behind `SAGAT_SCHEDULES_ENABLED` (control plane, off by default):
+  `ScheduleUseCase` (a trait object over `ScheduleService`, so the HTTP layer needs no new generic parameter), the document
+  decoder `decode_document` (the ceilings of the service; a refusal names `details.field` as a JSON pointer), `describe`
+  (next times from the calendar, counters and latest decisions from the store), an atomic delete at `expectedRevision`,
+  the listing newest first, and the routes with their `ApiOperation`s (`ScheduleRead`, `ScheduleWrite`, `ScheduleOperate`,
+  `ScheduleResume`). Admission authorizes for the namespace of the path first; a schedule of another namespace or tenant
+  is `404`. The Idempotency-Key is required but not replayed (G1014). Evidence: `integration_schedules_bulk_operations`
+  (10 in `rest`: the whole life, the input never returned, refusals with reason and pointer, name conflict, newest-first
+  paging, key required, pause and resume, roles, namespace and tenant isolation, malformed ids; 3 in `service` for
+  `describe` and delete at a revision; `crates/application/tests/schedule_document.rs` 4); without the namespace check of
+  the route the isolation test fails. Not done: the list filters `origin`, `state`, `workflowId`, `name` and `inputBytes`
+  (G1015).
 - [ ] T018-019 [P] [US1] US01 scenarios 1–5 — `tests/integration/schedules-bulk-operations/schedules.rs`
   — target output — FR-018-001..005, FR-018-016.
 - [ ] T018-020 [US1] Faults: crash after each statement of transaction 2, stale fence, duplicate pass,
@@ -225,8 +249,16 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
 
 ## Phase 4: US02 — Operate a schedule (P1)
 
-- [ ] T018-023 [US2] Pause/resume with note and audit — `crates/application/src/schedules.rs`,
+- [x] T018-023 [US2] Pause/resume with note and audit — `crates/application/src/schedules.rs`,
   `crates/api-http/src/routes/schedules.rs` — paused times not caught up — FR-018-009.
+  *Done 2026-10-30.* The service has paused and resumed since T018-016 (the note, actor and time stored with the schedule;
+  the resumer becomes `authorizedBy`; audited without the note; a resume continues from the first time after it and
+  catches nothing up); the routes are `pauseSchedule` and `resumeSchedule`. Evidence:
+  `rest::pausing_and_resuming_keep_a_note_and_the_times`, `rest::roles_decide_who_may_read_write_and_operate`,
+  `service::operators_pause_and_resume_with_a_note_and_the_next_time_follows_the_resume`,
+  `service::pausing_needs_a_note_and_the_operate_permission` and
+  `service::every_change_is_audited_with_who_did_it_and_never_a_payload`, the conformance scenarios of both operations
+  (200, 403, 404, 422), also as the runtime role.
 - [ ] T018-024 [US2] Trigger-now (origin `MANUAL`, key `manual-{µs}`, paused, overlap override, replay, no
   decrement, no collision with a scheduled time at the same instant) —
   `tests/integration/schedules-bulk-operations/trigger.rs` — FR-018-004, FR-018-010.
