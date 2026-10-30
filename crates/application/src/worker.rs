@@ -500,6 +500,7 @@ pub struct WorkerService<S, C, E, R> {
     engine: Engine<E>,
     entropy: R,
     settings: WorkerSettings,
+    child_root_capacity_guard: bool,
     /// Opens secrets for workers; `None` when the instance has no key ring (secrets are off).
     vault: Option<crate::secrets::SecretReader>,
     database_credentials: Option<Arc<dyn crate::database::DatabaseCredentialsCodec>>,
@@ -532,10 +533,19 @@ where
             engine,
             entropy,
             settings,
+            child_root_capacity_guard: false,
             vault: None,
             database_credentials: None,
             database_results: None,
         }
+    }
+
+    /// Enables the bounded ChildRoot lease prerequisite for a gated runtime/test harness.
+    /// Production activation requires the separate coordinator/creator and rollout evidence.
+    #[must_use]
+    pub const fn with_child_root_capacity_guard(mut self) -> Self {
+        self.child_root_capacity_guard = true;
+        self
     }
 
     /// Both codecs are required before managed results can enter retention.
@@ -1084,6 +1094,11 @@ where
             if input.len() > byte_budget - *bytes - run_bytes {
                 // This task fits a fresh response. Leave it READY, without consuming an attempt,
                 // and return every lease already made in this transaction.
+                break;
+            }
+            // Input-limit failure above is internal progress with no external lease. Possession
+            // gates admission below; any applicable G lock remains held through the batch commit.
+            if self.child_root_capacity_guard && !tx.worker_capacity_available().await? {
                 break;
             }
             if managed {

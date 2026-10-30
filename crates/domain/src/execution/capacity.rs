@@ -192,6 +192,28 @@ impl CapacityGroup {
         self.possession
     }
 
+    /// Checks only the possession prerequisite of a new worker lease (O706).
+    ///
+    /// This does not establish execution eligibility or authorize existing-lease reports.
+    /// The adapter must supply current exact membership under the group lock and retain that
+    /// lock through the lease commit, alongside its own chain/run and worker authority.
+    ///
+    /// # Errors
+    /// Refuses retired groups, foreign/inactive member facts and any member without possession.
+    pub fn check_worker_possession(
+        &self,
+        member: CapacityMemberSnapshot,
+    ) -> Result<(), CapacityGroupError> {
+        if self.possession == CapacityPossession::Retired {
+            return Err(CapacityGroupError::Retired);
+        }
+        self.check_active(member)?;
+        if self.possession != CapacityPossession::Held(member.member) {
+            return Err(CapacityGroupError::NotHolder);
+        }
+        Ok(())
+    }
+
     /// Joins a never-used identity without changing the holder's epoch.
     ///
     /// # Errors

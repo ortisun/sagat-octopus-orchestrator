@@ -55,6 +55,14 @@ unlock; returning that connection to a pool can block a later probe. The fixture
 unlock and closes the session before reporting its outcome, with bounded waits and database-scoped
 lock assertions. This regression runs first in the capacity/migration CI preflight.
 
+Scoped event quota tests separate a claimed event's durable retry from a mixed lookback/claim
+tick. A controlled inbox SHARE permits native lookback while making UPDATE SKIP LOCKED defer
+the claim; that tick need not increment a retry counter. The held-source case requires a
+positive quota-refusal diagnostic, unchanged execution/receipt/accounting snapshots, and cold
+lookback recovery after the explicit unlock. The independent dispatch case requires the stored
+quota retry class and zero consumed attempts. Neither proof assumes an unobserved rollback
+cleanup timing or relies on sleeping until a lock disappears.
+
 ## Critical matrix
 
 | Scenario | Expected invariant |
