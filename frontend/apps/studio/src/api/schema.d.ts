@@ -2751,6 +2751,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/namespaces/{namespaceId}/schedules/{scheduleId}/backfills": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The backfills of a schedule, newest first
+         * @description Needs `schedule:read`. At most the latest 100.
+         */
+        get: operations["listScheduleBackfills"];
+        put?: never;
+        /**
+         * Act on every nominal time of a past range that has no action yet
+         * @description Needs `schedule:operate` and `run:start`; the runs are the schedule's, under the role of the caller. `start` is in the range and `end` is not, and `end` must not be after now (`422` `BACKFILL_RANGE_INVALID`). The range may hold at most 1,000 nominal times (`422` `BACKFILL_LIMIT`). The overlap rule is `BUFFER_ALL` unless the body names another; a backfill never drops a time that does not fit: it waits for room. A time that already has an action is counted `ALREADY_ACTED` and never gets a second run. One backfill runs at a time on a schedule and a namespace has the number its `schedule_backfills` quota says (`429`). It works while the schedule is paused, and its times take no remaining action.
+         */
+        post: operations["createScheduleBackfill"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/schedules/{scheduleId}/backfills/{backfillId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Stop a backfill; the times it acted on stay acted on
+         * @description Needs `schedule:operate`. Stopping a backfill that has ended changes nothing and is not audited again.
+         */
+        post: operations["cancelScheduleBackfill"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -5341,6 +5385,39 @@ export interface components {
         ScheduleTriggerRequest: {
             overlap?: components["schemas"]["ScheduleOverlapPolicy"];
         };
+        ScheduleBackfillRequest: {
+            /** Format: date-time */
+            start: string;
+            /**
+             * Format: date-time
+             * @description Exclusive; not after now.
+             */
+            end: string;
+            overlap?: components["schemas"]["ScheduleOverlapPolicy"];
+        };
+        ScheduleBackfill: {
+            /** Format: uuid */
+            backfillId: string;
+            /** Format: date-time */
+            start: string;
+            /** Format: date-time */
+            end: string;
+            /**
+             * Format: date-time
+             * @description The last nominal time acted on or found already acted on.
+             */
+            cursor?: string | null;
+            /** @enum {string} */
+            state: "PENDING" | "RUNNING" | "COMPLETED" | "CANCELLED";
+            overlap: components["schemas"]["ScheduleOverlapPolicy"];
+            /** @description How many times of each outcome, ALREADY_ACTED included. */
+            counts: {
+                [key: string]: number;
+            };
+        };
+        ScheduleBackfillList: {
+            items: components["schemas"]["ScheduleBackfill"][];
+        };
         ScheduleNote: {
             note: string;
         };
@@ -5506,6 +5583,15 @@ export interface components {
         TooManyRequests: {
             headers: {
                 "Retry-After"?: number;
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+        /** @description A limit of the tenant or the namespace is reached (details.limit names it): free capacity or ask an administrator. A request budget that is used up is the same status with a Retry-After header */
+        QuotaExceeded: {
+            headers: {
                 [name: string]: unknown;
             };
             content: {
@@ -11159,7 +11245,7 @@ export interface operations {
             409: components["responses"]["Conflict"];
             413: components["responses"]["PayloadTooLarge"];
             422: components["responses"]["ValidationError"];
-            429: components["responses"]["TooManyRequests"];
+            429: components["responses"]["QuotaExceeded"];
             503: components["responses"]["Unavailable"];
             default: components["responses"]["InternalError"];
         };
@@ -11389,6 +11475,112 @@ export interface operations {
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["ValidationError"];
+            429: components["responses"]["QuotaExceeded"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listScheduleBackfills: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                scheduleId: components["parameters"]["ScheduleId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The backfills */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleBackfillList"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    createScheduleBackfill: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                scheduleId: components["parameters"]["ScheduleId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScheduleBackfillRequest"];
+            };
+        };
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleBackfill"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["QuotaExceeded"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    cancelScheduleBackfill: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                scheduleId: components["parameters"]["ScheduleId"];
+                backfillId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The backfill */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleBackfill"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
             default: components["responses"]["InternalError"];

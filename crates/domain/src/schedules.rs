@@ -494,6 +494,34 @@ pub enum Overlap {
     AllowAll,
 }
 
+impl Overlap {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Skip => "SKIP",
+            Self::BufferOne => "BUFFER_ONE",
+            Self::BufferAll => "BUFFER_ALL",
+            Self::CancelOther => "CANCEL_OTHER",
+            Self::AllowAll => "ALLOW_ALL",
+        }
+    }
+}
+
+impl FromStr for Overlap {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "SKIP" => Ok(Self::Skip),
+            "BUFFER_ONE" => Ok(Self::BufferOne),
+            "BUFFER_ALL" => Ok(Self::BufferAll),
+            "CANCEL_OTHER" => Ok(Self::CancelOther),
+            "ALLOW_ALL" => Ok(Self::AllowAll),
+            _ => Err(()),
+        }
+    }
+}
+
 /// Which missed times are acted on after an outage.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum CatchupMode {

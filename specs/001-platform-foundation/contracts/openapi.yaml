@@ -3728,7 +3728,7 @@ paths:
         '409': {$ref: '#/components/responses/Conflict'}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
         '422': {$ref: '#/components/responses/ValidationError'}
-        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '429': {$ref: '#/components/responses/QuotaExceeded'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
   /namespaces/{namespaceId}/schedules/{scheduleId}:
@@ -3884,6 +3884,74 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/QuotaExceeded'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/schedules/{scheduleId}/backfills:
+    get:
+      operationId: listScheduleBackfills
+      summary: The backfills of a schedule, newest first
+      tags: [Schedules]
+      x-implemented: '018'
+      description: |
+        Needs `schedule:read`. At most the latest 100.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScheduleId'}
+      responses:
+        '200': {description: 'The backfills', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScheduleBackfillList'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    post:
+      operationId: createScheduleBackfill
+      summary: Act on every nominal time of a past range that has no action yet
+      tags: [Schedules]
+      x-implemented: '018'
+      description: |
+        Needs `schedule:operate` and `run:start`; the runs are the schedule's, under the role of the caller. `start` is in the range and `end` is not, and `end` must not be after now (`422` `BACKFILL_RANGE_INVALID`). The range may hold at most 1,000 nominal times (`422` `BACKFILL_LIMIT`). The overlap rule is `BUFFER_ALL` unless the body names another; a backfill never drops a time that does not fit: it waits for room. A time that already has an action is counted `ALREADY_ACTED` and never gets a second run. One backfill runs at a time on a schedule and a namespace has the number its `schedule_backfills` quota says (`429`). It works while the schedule is paused, and its times take no remaining action.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScheduleId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ScheduleBackfillRequest'}
+      responses:
+        '202': {description: 'Accepted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScheduleBackfill'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/QuotaExceeded'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/schedules/{scheduleId}/backfills/{backfillId}/cancel:
+    post:
+      operationId: cancelScheduleBackfill
+      summary: Stop a backfill; the times it acted on stay acted on
+      tags: [Schedules]
+      x-implemented: '018'
+      description: |
+        Needs `schedule:operate`. Stopping a backfill that has ended changes nothing and is not audited again.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScheduleId'}
+        - {name: backfillId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      responses:
+        '200': {description: 'The backfill', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScheduleBackfill'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
@@ -6782,6 +6850,30 @@ components:
       additionalProperties: false
       properties:
         overlap: {$ref: '#/components/schemas/ScheduleOverlapPolicy'}
+    ScheduleBackfillRequest:
+      type: object
+      additionalProperties: false
+      required: [start, end]
+      properties:
+        start: {type: string, format: date-time}
+        end: {type: string, format: date-time, description: 'Exclusive; not after now.'}
+        overlap: {$ref: '#/components/schemas/ScheduleOverlapPolicy'}
+    ScheduleBackfill:
+      type: object
+      required: [backfillId, start, end, state, overlap, counts]
+      properties:
+        backfillId: {type: string, format: uuid}
+        start: {type: string, format: date-time}
+        end: {type: string, format: date-time}
+        cursor: {type: [string, 'null'], format: date-time, description: 'The last nominal time acted on or found already acted on.'}
+        state: {type: string, enum: [PENDING, RUNNING, COMPLETED, CANCELLED]}
+        overlap: {$ref: '#/components/schemas/ScheduleOverlapPolicy'}
+        counts: {type: object, additionalProperties: {type: integer, minimum: 0}, description: 'How many times of each outcome, ALREADY_ACTED included.'}
+    ScheduleBackfillList:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, maxItems: 100, items: {$ref: '#/components/schemas/ScheduleBackfill'}}
     ScheduleNote:
       type: object
       additionalProperties: false
@@ -6873,5 +6965,6 @@ components:
     Conflict: {description: Conflict or stale version, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     ValidationError: {description: Invalid input/schema/graph, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     TooManyRequests: {description: 'The caller exceeded its request budget (per token subject, checked before any database lookup, or per tenant); retry after the delay in Retry-After', headers: {Retry-After: {schema: {type: integer, minimum: 1}}}, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    QuotaExceeded: {description: 'A limit of the tenant or the namespace is reached (details.limit names it): free capacity or ask an administrator. A request budget that is used up is the same status with a Retry-After header', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     Unavailable: {description: A dependency is temporarily unavailable; retry later, headers: {Retry-After: {schema: {type: integer, minimum: 0}}}, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     InternalError: {description: "Any other failure: 500 for an unexpected error, 408 when the request timed out. Same envelope.", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}

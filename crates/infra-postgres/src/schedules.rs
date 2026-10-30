@@ -12,8 +12,9 @@ use sagat_application::schedule_codec::{
     target_to_json,
 };
 use sagat_application::schedules::{
-    ActionDedupe, ActionView, BufferedAction, DueSchedule, NewSchedule, Reconcile, RecordedAction,
-    Revise, ScheduleActivity, ScheduleAdmission, ScheduleDecision, ScheduleOrigin, ScheduleRecord,
+    ActionDedupe, ActionView, BackfillProgress, BackfillRecord, BackfillState, BufferedAction,
+    DueBackfill, DueSchedule, NewBackfill, NewSchedule, Reconcile, RecordedAction, Revise,
+    ScheduleActivity, ScheduleAdmission, ScheduleDecision, ScheduleOrigin, ScheduleRecord,
     ScheduleState, ScheduleStore, ShardFence, StateChange, TargetCheck,
 };
 use sagat_domain::audit::AuditRecord;
@@ -21,7 +22,7 @@ use sagat_domain::execution::{RunId, RunStatus};
 use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_domain::quota::QuotaResource;
 use sagat_domain::schedules::{
-    ActionKind, Ceilings, Outcome, ScheduleId, ScheduleName, ScheduleTarget, VersionPolicy,
+    ActionKind, Ceilings, Origin, Outcome, ScheduleId, ScheduleName, ScheduleTarget, VersionPolicy,
 };
 use sagat_domain::sharding::Shard;
 use serde_json::Value;
@@ -34,7 +35,9 @@ use uuid::Uuid;
 
 use crate::identity::{col, corrupt, insert_audit, store_error};
 use crate::pool::BeginSafely;
-use crate::quotas::{effective, ensure_room_for_schedule, lock_schedules};
+use crate::quotas::{
+    effective, ensure_room_for_backfill, ensure_room_for_schedule, lock_backfills, lock_schedules,
+};
 
 /// What the pass holds when it acts for a schedule, checked in the transaction that acts: the shard
 /// lease, then the schedule row under `FOR UPDATE` with the compare-and-swap on the state the
@@ -125,8 +128,8 @@ pub(crate) async fn lock_for_admission(
         admission.schedule,
         admission.fence.as_ref(),
         admission.expected_state_version,
-        // trigger-now works while the schedule is paused
-        admission.kind == ActionKind::Triggered,
+        // trigger-now and a backfill work while the schedule is paused
+        admission.kind != ActionKind::Scheduled,
     )
     .await
 }
@@ -203,6 +206,9 @@ pub(crate) async fn record_start(
         remember_request(conn, tenant, &manual.dedupe).await?;
         insert_audit(conn, &manual.audit).await?;
     }
+    if let Some(progress) = &admission.backfill {
+        advance_backfill(conn, tenant, admission.schedule, progress, now).await?;
+    }
     let released = sqlx::query(
         "UPDATE schedule_actions SET outcome = 'STARTED', run_id = $5, actual_at = $6, decided_at = $6 \
          WHERE tenant_id = $1 AND schedule_id = $2 AND origin = $3 AND nominal_at = $4 \
@@ -276,8 +282,8 @@ pub(crate) async fn record_start(
     .bind(now)
     .bind(i32::from(released))
     .bind(counters)
-    // a manual action is not the time that is owed
-    .bind(admission.kind == ActionKind::Triggered)
+    // a manual action or a backfill is not the time that is owed
+    .bind(admission.kind != ActionKind::Scheduled)
     .execute(&mut *conn)
     .await
     .map_err(store_error)?;
@@ -303,6 +309,107 @@ async fn remember_request(
         ))
     }
 }
+
+/// Moves a backfill on in the transaction of the step: counts the outcome, sets the cursor and
+/// completes the backfill when no time is left. `StateConflict` when it is no longer active (it was
+/// stopped between the decision and the commit), so the step commits nothing.
+async fn advance_backfill(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    schedule: ScheduleId,
+    progress: &BackfillProgress,
+    now: OffsetDateTime,
+) -> Result<(), StoreError> {
+    let row: Option<(String, Value)> = sqlx::query_as(
+        "SELECT state, counters FROM schedule_backfills \
+         WHERE tenant_id = $1 AND schedule_id = $2 AND id = $3 FOR UPDATE",
+    )
+    .bind(tenant.as_uuid())
+    .bind(schedule.as_uuid())
+    .bind(progress.id)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    let Some((state, mut counters)) = row else {
+        return Err(StoreError::MissingReference);
+    };
+    if !state
+        .parse::<BackfillState>()
+        .is_ok_and(BackfillState::is_active)
+    {
+        return Err(StoreError::StateConflict(
+            "the backfill is no longer running",
+        ));
+    }
+    if let Some(outcome) = progress.outcome {
+        bump(&mut counters, outcome);
+    }
+    sqlx::query(
+        "UPDATE schedule_backfills SET state = $4, cursor_at = $5, counters = $6, \
+         finished_at = CASE WHEN $4 = 'COMPLETED' THEN $7 ELSE NULL END \
+         WHERE tenant_id = $1 AND schedule_id = $2 AND id = $3",
+    )
+    .bind(tenant.as_uuid())
+    .bind(schedule.as_uuid())
+    .bind(progress.id)
+    .bind(if progress.finished {
+        "COMPLETED"
+    } else {
+        "RUNNING"
+    })
+    .bind(progress.cursor)
+    .bind(counters)
+    .bind(now)
+    .execute(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    Ok(())
+}
+
+/// Adds one to a named counter.
+fn bump(counters: &mut Value, name: &str) {
+    if let Value::Object(map) = counters {
+        let n = map.get(name).and_then(Value::as_u64).unwrap_or(0);
+        map.insert(name.to_owned(), Value::from(n + 1));
+    }
+}
+
+/// A backfill row.
+fn backfill_from(row: &PgRow) -> Result<BackfillRecord, StoreError> {
+    let counters = match col::<Value>(row, "counters")? {
+        Value::Object(map) => map
+            .into_iter()
+            .map(|(name, value)| {
+                value
+                    .as_u64()
+                    .map(|n| (name, n))
+                    .ok_or_else(|| corrupt("backfill counter"))
+            })
+            .collect::<Result<_, _>>()?,
+        _ => return Err(corrupt("backfill counters")),
+    };
+    Ok(BackfillRecord {
+        id: col(row, "id")?,
+        tenant_id: TenantId::new(col::<Uuid>(row, "tenant_id")?),
+        schedule: ScheduleId::new(col::<Uuid>(row, "schedule_id")?),
+        start: col(row, "range_start")?,
+        end: col(row, "range_end")?,
+        cursor: col(row, "cursor_at")?,
+        overlap: col::<String>(row, "overlap")?
+            .parse()
+            .map_err(|()| corrupt("backfill overlap"))?,
+        state: col::<String>(row, "state")?
+            .parse::<BackfillState>()
+            .map_err(|()| corrupt("backfill state"))?,
+        requested_by: col(row, "requested_by")?,
+        counters,
+        created_at: col(row, "created_at")?,
+        finished_at: col(row, "finished_at")?,
+    })
+}
+
+const BACKFILL_COLUMNS: &str = "tenant_id, schedule_id, id, range_start, range_end, cursor_at, \
+                                overlap, state, requested_by, counters, created_at, finished_at";
 
 /// An action row as `ActionView`.
 fn action_view(row: &PgRow) -> Result<ActionView, StoreError> {
@@ -830,9 +937,218 @@ impl ScheduleStore for PgScheduleStore {
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
+        // a deleted schedule backfills nothing more
+        sqlx::query(
+            "UPDATE schedule_backfills SET state = 'CANCELLED', finished_at = $3 \
+             WHERE tenant_id = $1 AND schedule_id = $2 AND state IN ('PENDING', 'RUNNING')",
+        )
+        .bind(tenant.as_uuid())
+        .bind(id.as_uuid())
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
         insert_audit(&mut tx, audit).await?;
         tx.commit().await.map_err(store_error)?;
         Ok(true)
+    }
+
+    async fn create_backfill(
+        &self,
+        new: &NewBackfill,
+        audit: &AuditRecord,
+    ) -> Result<(), StoreError> {
+        let b = &new.record;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        lock_backfills(&mut tx, b.tenant_id, new.namespace).await?;
+        // the row is shared: a delete of the schedule waits for this, or this finds it deleted
+        let state: Option<String> = sqlx::query_scalar(
+            "SELECT state FROM schedules WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
+        )
+        .bind(b.tenant_id.as_uuid())
+        .bind(b.schedule.as_uuid())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        match state.as_deref() {
+            None => return Err(StoreError::MissingReference),
+            Some(s) if s == ScheduleState::Deleted.as_str() => {
+                return Err(StoreError::MissingReference);
+            }
+            Some(_) => {}
+        }
+        let own: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM schedule_backfills \
+             WHERE tenant_id = $1 AND schedule_id = $2 AND state IN ('PENDING', 'RUNNING')",
+        )
+        .bind(b.tenant_id.as_uuid())
+        .bind(b.schedule.as_uuid())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        if own >= i64::from(new.per_schedule_limit) {
+            return Err(StoreError::QuotaExceeded {
+                what: "schedule_backfills_per_schedule",
+            });
+        }
+        ensure_room_for_backfill(&mut tx, b.tenant_id, new.namespace, new.namespace_limit).await?;
+        sqlx::query(
+            "INSERT INTO schedule_backfills \
+             (tenant_id, schedule_id, id, range_start, range_end, cursor_at, overlap, state, \
+              requested_by, counters, created_at, finished_at) \
+             VALUES ($1, $2, $3, $4, $5, NULL, $6, 'PENDING', $7, '{}'::jsonb, $8, NULL)",
+        )
+        .bind(b.tenant_id.as_uuid())
+        .bind(b.schedule.as_uuid())
+        .bind(b.id)
+        .bind(b.start)
+        .bind(b.end)
+        .bind(b.overlap.as_str())
+        .bind(&b.requested_by)
+        .bind(b.created_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        insert_audit(&mut tx, audit).await?;
+        tx.commit().await.map_err(store_error)
+    }
+
+    async fn action_exists(
+        &self,
+        tenant: TenantId,
+        schedule: ScheduleId,
+        origin: Origin,
+        nominal_at: OffsetDateTime,
+    ) -> Result<bool, StoreError> {
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM schedule_actions \
+             WHERE tenant_id = $1 AND schedule_id = $2 AND origin = $3 AND nominal_at = $4)",
+        )
+        .bind(tenant.as_uuid())
+        .bind(schedule.as_uuid())
+        .bind(origin.as_str())
+        .bind(nominal_at)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(store_error)
+    }
+
+    async fn backfills(
+        &self,
+        tenant: TenantId,
+        schedule: ScheduleId,
+    ) -> Result<Vec<BackfillRecord>, StoreError> {
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+            // the column list is a constant of this module
+            "SELECT {BACKFILL_COLUMNS} FROM schedule_backfills \
+             WHERE tenant_id = $1 AND schedule_id = $2 ORDER BY created_at DESC, id DESC LIMIT 100"
+        )))
+        .bind(tenant.as_uuid())
+        .bind(schedule.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_error)?;
+        rows.iter().map(backfill_from).collect()
+    }
+
+    async fn backfill(
+        &self,
+        tenant: TenantId,
+        schedule: ScheduleId,
+        id: Uuid,
+    ) -> Result<Option<BackfillRecord>, StoreError> {
+        let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {BACKFILL_COLUMNS} FROM schedule_backfills \
+             WHERE tenant_id = $1 AND schedule_id = $2 AND id = $3"
+        )))
+        .bind(tenant.as_uuid())
+        .bind(schedule.as_uuid())
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_error)?;
+        row.as_ref().map(backfill_from).transpose()
+    }
+
+    async fn cancel_backfill(
+        &self,
+        tenant: TenantId,
+        schedule: ScheduleId,
+        id: Uuid,
+        now: OffsetDateTime,
+        audit: &AuditRecord,
+    ) -> Result<Option<BackfillRecord>, StoreError> {
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        let state: Option<String> = sqlx::query_scalar(
+            "SELECT state FROM schedule_backfills \
+             WHERE tenant_id = $1 AND schedule_id = $2 AND id = $3 FOR UPDATE",
+        )
+        .bind(tenant.as_uuid())
+        .bind(schedule.as_uuid())
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let Some(state) = state else {
+            return Ok(None);
+        };
+        if state
+            .parse::<BackfillState>()
+            .is_ok_and(BackfillState::is_active)
+        {
+            sqlx::query(
+                "UPDATE schedule_backfills SET state = 'CANCELLED', finished_at = $4 \
+                 WHERE tenant_id = $1 AND schedule_id = $2 AND id = $3",
+            )
+            .bind(tenant.as_uuid())
+            .bind(schedule.as_uuid())
+            .bind(id)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
+            insert_audit(&mut tx, audit).await?;
+        }
+        let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {BACKFILL_COLUMNS} FROM schedule_backfills \
+             WHERE tenant_id = $1 AND schedule_id = $2 AND id = $3"
+        )))
+        .bind(tenant.as_uuid())
+        .bind(schedule.as_uuid())
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let record = backfill_from(&row)?;
+        tx.commit().await.map_err(store_error)?;
+        Ok(Some(record))
+    }
+
+    async fn due_backfills(
+        &self,
+        shards: &[Shard],
+        limit: u32,
+    ) -> Result<Vec<DueBackfill>, StoreError> {
+        let shards: Vec<i16> = shards.iter().map(|s| i16::from(s.index())).collect();
+        let rows: Vec<(Uuid, Uuid, Uuid)> = sqlx::query_as(
+            "SELECT b.tenant_id, b.schedule_id, b.id FROM schedule_backfills b \
+             JOIN schedules s ON s.tenant_id = b.tenant_id AND s.id = b.schedule_id \
+             WHERE s.shard = ANY($1) AND b.state IN ('PENDING', 'RUNNING') AND s.state <> 'DELETED' \
+             ORDER BY b.created_at, b.id LIMIT $2",
+        )
+        .bind(shards)
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_error)?;
+        Ok(rows
+            .into_iter()
+            .map(|(tenant, schedule, id)| DueBackfill {
+                tenant_id: TenantId::new(tenant),
+                schedule: ScheduleId::new(schedule),
+                id,
+            })
+            .collect())
     }
 
     async fn trigger_replay(
@@ -1026,11 +1342,12 @@ impl ScheduleStore for PgScheduleStore {
     ) -> Result<(), StoreError> {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         // a manual action works on a paused schedule too, and is not the time that is owed
-        let manual = !decision.actions.is_empty()
-            && decision
-                .actions
-                .iter()
-                .all(|a| a.kind == ActionKind::Triggered);
+        let manual = decision.backfill.is_some()
+            || (!decision.actions.is_empty()
+                && decision
+                    .actions
+                    .iter()
+                    .all(|a| a.kind == ActionKind::Triggered));
         lock_schedule(
             &mut tx,
             decision.tenant_id,
@@ -1042,6 +1359,16 @@ impl ScheduleStore for PgScheduleStore {
         .await?;
         if let Some(dedupe) = &decision.dedupe {
             remember_request(&mut tx, decision.tenant_id, dedupe).await?;
+        }
+        if let Some(progress) = &decision.backfill {
+            advance_backfill(
+                &mut tx,
+                decision.tenant_id,
+                decision.schedule,
+                progress,
+                decision.at,
+            )
+            .await?;
         }
         let mut counters: Value =
             sqlx::query_scalar("SELECT counters FROM schedules WHERE tenant_id = $1 AND id = $2")

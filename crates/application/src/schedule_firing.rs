@@ -15,8 +15,8 @@ use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::execution::{RunId, RunStatus};
 use sagat_domain::identity::{Permission, Principal, Subject};
 use sagat_domain::schedules::{
-    ActionKind, Ceilings, Decision, Outcome, Reason, Release, ScheduleId, Standing, VersionPolicy,
-    decide, failure_pauses, plan_catch_up, release,
+    ActionKind, Ceilings, Decision, Origin, Outcome, Reason, Release, ScheduleId, Standing,
+    VersionPolicy, decide, failure_pauses, plan_catch_up, release,
 };
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
@@ -26,9 +26,10 @@ use crate::definitions::Idempotency;
 use crate::error::{AppError, StoreError};
 use crate::identity::{IdentityStore, RequestContext};
 use crate::schedules::{
-    ActionDedupe, ActionView, AutoPause, DueSchedule, ManualRequest, Reconcile, RecordedAction,
-    ScheduleAdmission, ScheduleAfter, ScheduleCalendar, ScheduleDecision, ScheduleOrigin,
-    ScheduleRecord, ScheduleState, ScheduleStore, ShardFence, next_times,
+    ActionDedupe, ActionView, AutoPause, BackfillProgress, DueBackfill, DueSchedule, ManualRequest,
+    Reconcile, RecordedAction, ScheduleAdmission, ScheduleAfter, ScheduleCalendar,
+    ScheduleDecision, ScheduleOrigin, ScheduleRecord, ScheduleState, ScheduleStore, ShardFence,
+    next_times,
 };
 
 /// What a schedule starts, as the run service needs it.
@@ -203,22 +204,8 @@ where
         // stored times are, so a replay is answered with exactly what the first request was
         let now = micros(self.clock.now());
         let nominal = now;
-        let statuses = self
-            .store
-            .run_statuses(record.tenant_id, &record.tracked_runs)
-            .await?;
-        let open = record
-            .tracked_runs
-            .iter()
-            .filter(|run| {
-                statuses
-                    .iter()
-                    .find(|(s, _)| s == *run)
-                    .is_some_and(|(_, status)| !status.is_terminal())
-            })
-            .count();
         let standing = Standing {
-            open_runs: u32::try_from(open).unwrap_or(u32::MAX),
+            open_runs: self.open_runs(&record).await?,
             buffered: record.buffered,
             // a manual action is not limited by what is left
             remaining: None,
@@ -265,6 +252,7 @@ where
                     fence: None,
                     after,
                     manual: Some(ManualRequest { dedupe, audit }),
+                    backfill: None,
                 };
                 self.start_run(&record, &principal, admission, ctx).await?;
                 self.committed_action(caller, idempotency).await
@@ -297,9 +285,216 @@ where
                     pause: None,
                     at: now,
                     dedupe: Some(dedupe),
+                    backfill: None,
                 };
                 self.store.record_decision(&decision, Some(&audit)).await?;
                 self.committed_action(caller, idempotency).await
+            }
+        }
+    }
+
+    /// How many of the runs the schedule tracks are still open: an ended one, or one that is gone,
+    /// is closed even if the pass has not forgotten it yet.
+    async fn open_runs(&self, record: &ScheduleRecord) -> Result<u32, AppError> {
+        let statuses = self
+            .store
+            .run_statuses(record.tenant_id, &record.tracked_runs)
+            .await?;
+        let open = record
+            .tracked_runs
+            .iter()
+            .filter(|run| {
+                statuses
+                    .iter()
+                    .find(|(s, _)| s == *run)
+                    .is_some_and(|(_, status)| !status.is_terminal())
+            })
+            .count();
+        Ok(u32::try_from(open).unwrap_or(u32::MAX))
+    }
+
+    /// Takes the next step of a backfill (`FR-018-011`): the first nominal time of the range after
+    /// the cursor, acted on under the overlap rule of the backfill, with the cursor and the counters
+    /// committed in the same transaction. A time that already has an action is counted
+    /// `ALREADY_ACTED` and never gets a second run; a backfill whose buffer is full waits for room
+    /// instead of dropping times; one whose requester can no longer start runs is stopped. A crash
+    /// resumes after the committed cursor.
+    ///
+    /// # Errors
+    /// [`AppError::Unavailable`] or [`AppError::Internal`] when the store fails.
+    pub async fn backfill_step(
+        &self,
+        due: &DueBackfill,
+        fence: Option<ShardFence>,
+    ) -> Result<Fired, AppError> {
+        let Some(record) = self.store.schedule(due.tenant_id, due.schedule).await? else {
+            return Ok(Fired::Idle);
+        };
+        if record.state == ScheduleState::Deleted {
+            return Ok(Fired::Idle);
+        }
+        let Some(backfill) = self
+            .store
+            .backfill(due.tenant_id, due.schedule, due.id)
+            .await?
+        else {
+            return Ok(Fired::Idle);
+        };
+        if !backfill.state.is_active() {
+            return Ok(Fired::Idle);
+        }
+        let now = self.clock.now();
+        let system = Subject::schedule(record.id.as_uuid());
+
+        // whose authority the runs are started under: the requester's, today
+        let authorized = match Subject::parse(&backfill.requested_by) {
+            Ok(subject) => self
+                .identity
+                .find_membership(record.tenant_id, &subject)
+                .await?
+                .filter(|m| m.role().grants(Permission::RunStart)),
+            Err(_) => None,
+        };
+        let Some(membership) = authorized else {
+            let audit = self.audit(
+                &record,
+                &system,
+                AuditAction::ScheduleBackfillCancelled,
+                "authority revoked",
+                now,
+            );
+            self.store
+                .cancel_backfill(record.tenant_id, record.id, backfill.id, now, &audit)
+                .await?;
+            return Ok(Fired::Acted);
+        };
+
+        let after = backfill
+            .cursor
+            .unwrap_or(backfill.start - Duration::milliseconds(1));
+        let next = self
+            .calendar
+            .occurrences(
+                &record.spec,
+                after,
+                Some(backfill.end - Duration::milliseconds(1)),
+                1,
+            )
+            .map_err(|_| AppError::Internal)?;
+        let progress = |cursor, outcome, finished| BackfillProgress {
+            id: backfill.id,
+            cursor,
+            outcome,
+            finished,
+        };
+        let decision = |actions, progress| ScheduleDecision {
+            tenant_id: record.tenant_id,
+            schedule: record.id,
+            expected_state_version: record.state_version,
+            fence: fence.clone(),
+            actions,
+            after: ScheduleAfter {
+                next_action_at: record.next_action_at,
+                next_actual_at: record.next_actual_at,
+                remaining_actions: record.remaining_actions,
+                extra: Vec::new(),
+            },
+            pause: None,
+            at: now,
+            dedupe: None,
+            backfill: Some(progress),
+        };
+        let Some(&time) = next.first() else {
+            // no time is left in the range
+            let done = progress(backfill.cursor.unwrap_or(backfill.start), None, true);
+            return self.committed(
+                self.store
+                    .record_decision(&decision(Vec::new(), done), None)
+                    .await,
+            );
+        };
+        if self
+            .store
+            .action_exists(record.tenant_id, record.id, Origin::Spec, time)
+            .await?
+        {
+            let seen = progress(time, Some("ALREADY_ACTED"), false);
+            return self.committed(
+                self.store
+                    .record_decision(&decision(Vec::new(), seen), None)
+                    .await,
+            );
+        }
+        let standing = Standing {
+            open_runs: self.open_runs(&record).await?,
+            buffered: record.buffered,
+            // a backfill is not limited by what is left
+            remaining: None,
+        };
+        let policies = record.policies.with_overlap(backfill.overlap);
+        match decide(&policies, &standing, &self.ceilings) {
+            Decision::Start => {
+                let principal = Principal::new(record.tenant_id, system.clone(), membership.role());
+                let admission = ScheduleAdmission {
+                    schedule: record.id,
+                    nominal_at: time,
+                    kind: ActionKind::Backfill,
+                    revision: record.revision,
+                    expected_state_version: record.state_version,
+                    fence,
+                    after: ScheduleAfter {
+                        next_action_at: record.next_action_at,
+                        next_actual_at: record.next_actual_at,
+                        remaining_actions: record.remaining_actions,
+                        extra: Vec::new(),
+                    },
+                    manual: None,
+                    backfill: Some(progress(time, Some("STARTED"), false)),
+                };
+                match self
+                    .start_run(&record, &principal, admission, &RequestContext::default())
+                    .await
+                {
+                    Ok(_) => Ok(Fired::Acted),
+                    // another process acted first, or the lease is gone: nothing was committed
+                    Err(AppError::StateConflict(reason)) => Ok(Fired::Refused(reason)),
+                    // the backfill waits and tries this time again
+                    Err(
+                        AppError::QuotaExceeded(_)
+                        | AppError::Unavailable
+                        | AppError::Busy { .. }
+                        | AppError::NotAllowed(_),
+                    ) => Ok(Fired::Refused(
+                        "the admission was refused; the backfill waits",
+                    )),
+                    Err(other) => Err(other),
+                }
+            }
+            // no room to wait in: the backfill waits instead of dropping times
+            Decision::DropBufferFull => Ok(Fired::Idle),
+            // cannot be: nothing limits a backfill
+            Decision::Exhausted => Err(AppError::Internal),
+            other @ (Decision::Skip { .. } | Decision::Buffer { .. }) => {
+                let (outcome, reason) = match other {
+                    Decision::Skip { reason } => {
+                        (Outcome::SkippedOverlap, reason.map(Reason::as_str))
+                    }
+                    _ => (Outcome::Buffered, None),
+                };
+                let action = RecordedAction {
+                    nominal_at: time,
+                    kind: ActionKind::Backfill,
+                    revision: record.revision,
+                    outcome,
+                    reason,
+                    summary: None,
+                };
+                let step = progress(time, Some(outcome.as_str()), false);
+                self.committed(
+                    self.store
+                        .record_decision(&decision(vec![action], step), None)
+                        .await,
+                )
             }
         }
     }
@@ -424,6 +619,7 @@ where
                 }),
                 at: now,
                 dedupe: None,
+                backfill: None,
             };
             let audit = self.audit(
                 &record,
@@ -465,6 +661,7 @@ where
                     extra: Vec::new(),
                 },
                 manual: None,
+                backfill: None,
             };
             return self.start(&record, &principal, admission, now, &ctx).await;
         }
@@ -527,6 +724,7 @@ where
                 pause: None,
                 at: now,
                 dedupe: None,
+                backfill: None,
             };
             return self.committed(self.store.record_decision(&decision, None).await);
         }
@@ -568,6 +766,7 @@ where
                     fence,
                     after,
                     manual: None,
+                    backfill: None,
                 };
                 self.start(&record, &principal, admission, now, &ctx).await
             }
@@ -617,6 +816,7 @@ where
             pause: None,
             at: now,
             dedupe: None,
+            backfill: None,
         };
         self.committed(self.store.record_decision(&decision, None).await)
     }

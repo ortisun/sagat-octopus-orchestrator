@@ -31,6 +31,10 @@ struct Replica {
 }
 
 fn replica(f: &Fixture, name: &str) -> Replica {
+    replica_with(f, name, ScheduleSettings::default())
+}
+
+fn replica_with(f: &Fixture, name: &str, settings: ScheduleSettings) -> Replica {
     let placement = Placement::new(format!("{name}-{}", Uuid::now_v7()));
     let keeper = Keeper::new(
         f.w.store.clone(),
@@ -49,7 +53,7 @@ fn replica(f: &Fixture, name: &str) -> Replica {
     );
     Replica {
         keeper,
-        pass: SchedulePass::new(firing, placement.clone(), ScheduleSettings::default()),
+        pass: SchedulePass::new(firing, placement.clone(), settings),
         placement,
     }
 }
@@ -217,4 +221,125 @@ async fn a_replica_that_lost_its_lease_is_refused_where_it_acts_and_the_time_sta
         .expect("give the shard back");
     assert_eq!(a.pass.round().await.steps, 1);
     assert_eq!(runs_of(&f, schedule.id.as_uuid()).await, 1);
+}
+
+#[tokio::test]
+async fn a_replica_works_through_the_backfills_of_the_shards_it_holds() {
+    let start = some_hours_ago();
+    let f = fixture_from(start).await;
+    let schedule = f.create("past", &hourly(), &json!({}), None).await;
+    let a = replica(&f, "a");
+    a.keep().await;
+    let backfill = f
+        .service
+        .create_backfill(
+            &f.w.admin,
+            schedule.id,
+            &sagat_application::schedules::BackfillRequest {
+                start: start - Duration::hours(3),
+                end: start,
+                overlap: Some(sagat_domain::schedules::Overlap::AllowAll),
+            },
+            &sagat_application::identity::RequestContext::default(),
+        )
+        .await
+        .expect("backfill");
+
+    let round = a.pass.round().await;
+    assert_eq!(round.failed, 0);
+    assert_eq!(
+        round.steps, 4,
+        "three times, then the step that completes it"
+    );
+    assert_eq!(runs_of(&f, schedule.id.as_uuid()).await, 3);
+    let state: String = sqlx::query_scalar("SELECT state FROM schedule_backfills WHERE id = $1")
+        .bind(backfill.id)
+        .fetch_one(&f.w.db.pool)
+        .await
+        .expect("state");
+    assert_eq!(state, "COMPLETED");
+
+    // a replica that holds no shard does not touch it
+    let idle = replica(&f, "idle");
+    let other = f.create("untouched", &hourly(), &json!({}), None).await;
+    f.service
+        .create_backfill(
+            &f.w.admin,
+            other.id,
+            &sagat_application::schedules::BackfillRequest {
+                start: start - Duration::hours(3),
+                end: start,
+                overlap: None,
+            },
+            &sagat_application::identity::RequestContext::default(),
+        )
+        .await
+        .expect("backfill");
+    assert_eq!(idle.pass.round().await, ScheduleRound::default());
+    assert_eq!(runs_of(&f, other.id.as_uuid()).await, 0);
+}
+
+#[tokio::test]
+async fn a_backfill_resumes_after_the_committed_cursor_when_another_replica_takes_over() {
+    let start = some_hours_ago();
+    let f = fixture_from(start).await;
+    let schedule = f.create("resumed", &hourly(), &json!({}), None).await;
+    let first = replica_with(
+        &f,
+        "first",
+        ScheduleSettings {
+            batch: 100,
+            steps_per_schedule: 2,
+        },
+    );
+    first.keep().await;
+    let backfill = f
+        .service
+        .create_backfill(
+            &f.w.admin,
+            schedule.id,
+            &sagat_application::schedules::BackfillRequest {
+                start: start - Duration::hours(3),
+                end: start,
+                overlap: Some(sagat_domain::schedules::Overlap::AllowAll),
+            },
+            &sagat_application::identity::RequestContext::default(),
+        )
+        .await
+        .expect("backfill");
+
+    // two steps, then the replica is gone: its leases run out and another one takes the shards
+    assert_eq!(first.pass.round().await.steps, 2);
+    assert_eq!(runs_of(&f, schedule.id.as_uuid()).await, 2);
+    // the replica is no longer counted either, or the new one would take only its fair share of two
+    for table in ["scheduler_shards", "scheduler_members"] {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE {table} SET expires_at = now() - interval '1 second'"
+        )))
+        .execute(&f.w.db.pool)
+        .await
+        .expect("the replica's leases and membership lapse");
+    }
+    let second = replica(&f, "second");
+    second.keep().await;
+
+    let round = second.pass.round().await;
+    assert_eq!(
+        (round.steps, round.failed),
+        (2, 0),
+        "the third time, then the step that completes it"
+    );
+    assert_eq!(
+        runs_of(&f, schedule.id.as_uuid()).await,
+        3,
+        "each time got one run, none twice"
+    );
+    let (state, cursor): (String, Option<OffsetDateTime>) =
+        sqlx::query_as("SELECT state, cursor_at FROM schedule_backfills WHERE id = $1")
+            .bind(backfill.id)
+            .fetch_one(&f.w.db.pool)
+            .await
+            .expect("backfill");
+    assert_eq!(state, "COMPLETED");
+    assert_eq!(cursor, Some(start - Duration::hours(1)));
 }

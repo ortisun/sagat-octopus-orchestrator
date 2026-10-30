@@ -8,7 +8,8 @@ use std::collections::BTreeMap;
 
 use sagat_application::schedule_codec::{policies_to_json, spec_to_json, target_to_json};
 use sagat_application::schedules::{
-    ActionView, ScheduleDescription, ScheduleDocument, ScheduleRecord, ScheduleState,
+    ActionView, BackfillRecord, ScheduleDescription, ScheduleDocument, ScheduleRecord,
+    ScheduleState,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -119,6 +120,54 @@ impl From<OverlapBody> for sagat_domain::schedules::Overlap {
             OverlapBody::AllowAll => Self::AllowAll,
         }
     }
+}
+
+/// The body of `createScheduleBackfill`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BackfillRequestBody {
+    #[serde(with = "time::serde::rfc3339")]
+    pub start: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub end: OffsetDateTime,
+    #[serde(default)]
+    pub overlap: Option<OverlapBody>,
+}
+
+/// A backfill.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackfillBody {
+    pub backfill_id: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub start: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub end: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub cursor: Option<OffsetDateTime>,
+    pub state: &'static str,
+    pub overlap: &'static str,
+    pub counts: BTreeMap<String, u64>,
+}
+
+impl From<&BackfillRecord> for BackfillBody {
+    fn from(backfill: &BackfillRecord) -> Self {
+        Self {
+            backfill_id: backfill.id.to_string(),
+            start: backfill.start,
+            end: backfill.end,
+            cursor: backfill.cursor,
+            state: backfill.state.as_str(),
+            overlap: backfill.overlap.as_str(),
+            counts: backfill.counters.clone(),
+        }
+    }
+}
+
+/// The backfills of a schedule, newest first.
+#[derive(Debug, Serialize)]
+pub struct BackfillListBody {
+    pub items: Vec<BackfillBody>,
 }
 
 /// A schedule. The input of its runs is described by its digest, never returned.

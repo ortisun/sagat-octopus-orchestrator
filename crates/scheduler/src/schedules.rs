@@ -82,6 +82,62 @@ where
         }
     }
 
+    /// The active backfills of the shards the replica owns, one step at a time under the lease of
+    /// the shard of their schedule, like the schedules themselves.
+    async fn backfills(
+        &self,
+        snapshot: &crate::shards::Snapshot,
+        now: Instant,
+        shards: &[Shard],
+        round: &mut ScheduleRound,
+    ) {
+        let backfills = match self
+            .firing
+            .store()
+            .due_backfills(shards, self.settings.batch)
+            .await
+        {
+            Ok(backfills) => backfills,
+            Err(error) => {
+                tracing::warn!(%error, "could not look for backfills");
+                round.failed += 1;
+                return;
+            }
+        };
+        for backfill in backfills {
+            let shard = Shard::of(backfill.schedule.as_uuid());
+            let Some(lease) = snapshot.lease_of(shard, now) else {
+                continue;
+            };
+            let fence = ShardFence {
+                owner: self.placement.owner().to_owned(),
+                lease,
+            };
+            for _ in 0..self.settings.steps_per_schedule {
+                match self
+                    .firing
+                    .backfill_step(&backfill, Some(fence.clone()))
+                    .await
+                {
+                    Ok(Fired::Acted) => round.steps += 1,
+                    Ok(Fired::Idle) => break,
+                    Ok(Fired::Refused(reason)) => {
+                        tracing::debug!(reason, "a backfill step was refused");
+                        metrics::counter!("scheduler_fenced_total", "kind" => "backfill")
+                            .increment(1);
+                        round.refused += 1;
+                        break;
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "a backfill step failed");
+                        round.failed += 1;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     /// Runs one round. A failure is logged and counted; the next round starts over from what is
     /// stored.
     pub async fn round(&self) -> ScheduleRound {
@@ -106,6 +162,7 @@ where
             }
         };
         round.due = due.len();
+        self.backfills(&snapshot, now, &shards, &mut round).await;
         for schedule in due {
             let shard = Shard::of(schedule.id.as_uuid());
             let Some(lease) = snapshot.lease_of(shard, now) else {

@@ -5,6 +5,7 @@
 use reqwest::Method;
 use sagat_domain::identity::Role;
 use serde_json::{Value, json};
+use uuid::Uuid;
 
 use crate::support::api::json_of;
 use crate::support::worker::{HUMAN, Platform, TENANT, chain_ir, platform};
@@ -719,6 +720,141 @@ async fn only_those_who_may_start_runs_can_trigger_and_nobody_outside_the_namesp
         r.p.api
             .as_user(Method::POST, &trigger, "bob", "globex")
             .header("idempotency-key", "trigger-key-0004")
+            .send()
+            .await
+            .expect("send");
+    assert_eq!(response.status(), 404, "another tenant");
+}
+
+/// A range of the past: the three hours before the last whole hour.
+fn past_range() -> Value {
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let end = now - now % 3_600;
+    let rfc = |s: i64| {
+        time::OffsetDateTime::from_unix_timestamp(s)
+            .expect("instant")
+            .format(&time::format_description::well_known::Rfc3339)
+            .expect("format")
+    };
+    json!({"start": rfc(end - 3 * 3_600), "end": rfc(end)})
+}
+
+#[tokio::test]
+async fn a_backfill_is_asked_for_listed_and_stopped_over_http() {
+    let r = rig().await;
+    let id = Rig::id(&r.create("history").await);
+    let backfills = format!("{}/backfills", r.schedule(&id));
+
+    let (status, accepted) = r
+        .keyed(
+            HUMAN,
+            Method::POST,
+            &backfills,
+            "backfill-key-0001",
+            Some(&past_range()),
+        )
+        .await;
+    assert_eq!(status, 202, "{accepted}");
+    assert_eq!(accepted["state"], "PENDING");
+    assert_eq!(
+        accepted["overlap"], "BUFFER_ALL",
+        "the default of a backfill"
+    );
+    assert_eq!(accepted["counts"], json!({}));
+    assert_eq!(accepted["cursor"], Value::Null);
+    let backfill = accepted["backfillId"].as_str().expect("id").to_owned();
+
+    let (status, listed) = r.p.rest(Method::GET, &backfills, None).await;
+    assert_eq!(status, 200, "{listed}");
+    assert_eq!(listed["items"].as_array().expect("items").len(), 1);
+    assert_eq!(listed["items"][0]["backfillId"], backfill.as_str());
+
+    // one at a time on a schedule
+    let (status, busy) = r
+        .keyed(
+            HUMAN,
+            Method::POST,
+            &backfills,
+            "backfill-key-0002",
+            Some(&past_range()),
+        )
+        .await;
+    assert_eq!(status, 429, "{busy}");
+
+    let cancel = format!("{backfills}/{backfill}/cancel");
+    let (status, stopped) = r
+        .keyed(HUMAN, Method::POST, &cancel, "backfill-key-0003", None)
+        .await;
+    assert_eq!(status, 200, "{stopped}");
+    assert_eq!(stopped["state"], "CANCELLED");
+    let (status, again) = r
+        .keyed(HUMAN, Method::POST, &cancel, "backfill-key-0004", None)
+        .await;
+    assert_eq!(status, 200, "{again}");
+    assert_eq!(again, stopped, "stopping it twice changes nothing");
+    let (status, _) = r
+        .keyed(
+            HUMAN,
+            Method::POST,
+            &format!("{backfills}/{}/cancel", Uuid::now_v7()),
+            "backfill-key-0005",
+            None,
+        )
+        .await;
+    assert_eq!(status, 404);
+}
+
+#[tokio::test]
+async fn a_range_that_makes_no_sense_is_refused_and_the_roles_are_kept() {
+    let r = rig().await;
+    let id = Rig::id(&r.create("bounds").await);
+    let backfills = format!("{}/backfills", r.schedule(&id));
+    let range = past_range();
+    let mut backwards = range.clone();
+    backwards["start"] = range["end"].clone();
+    backwards["end"] = range["start"].clone();
+    let (status, refused) = r
+        .keyed(
+            HUMAN,
+            Method::POST,
+            &backfills,
+            "backfill-key-0001",
+            Some(&backwards),
+        )
+        .await;
+    assert_eq!(status, 422, "{refused}");
+    assert_eq!(reason(&refused), "BACKFILL_RANGE_INVALID");
+    let (status, refused) = r
+        .keyed(
+            HUMAN,
+            Method::POST,
+            &backfills,
+            "backfill-key-0002",
+            Some(&json!({"start": range["start"], "end": range["end"], "overlap": "SOMETIMES"})),
+        )
+        .await;
+    assert_eq!(status, 422, "{refused}");
+
+    r.p.grant(r.p.tenant, "vera", Role::Viewer).await;
+    let (status, _) = r
+        .keyed("vera", Method::GET, &backfills, "backfill-key-0003", None)
+        .await;
+    assert_eq!(status, 200, "a viewer reads them");
+    let (status, _) = r
+        .keyed(
+            "vera",
+            Method::POST,
+            &backfills,
+            "backfill-key-0004",
+            Some(&range),
+        )
+        .await;
+    assert_eq!(status, 403, "and asks for none");
+    let response =
+        r.p.api
+            .as_user(Method::POST, &backfills, "bob", "globex")
+            .header("idempotency-key", "backfill-key-0005")
+            .json(&range)
             .send()
             .await
             .expect("send");

@@ -97,6 +97,7 @@ impl Fixture {
                 extra: vec![],
             },
             manual: None,
+            backfill: None,
         }
     }
 

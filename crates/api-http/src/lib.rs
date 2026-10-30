@@ -576,6 +576,15 @@ where
                     "/namespaces/{namespace_id}/schedules/{schedule_id}/trigger",
                     axum::routing::post(sc::trigger_schedule::<B<S, C, G>>),
                 )
+                .route(
+                    "/namespaces/{namespace_id}/schedules/{schedule_id}/backfills",
+                    get(sc::list_schedule_backfills::<B<S, C, G>>)
+                        .post(sc::create_schedule_backfill::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/schedules/{schedule_id}/backfills/{backfill_id}/cancel",
+                    axum::routing::post(sc::cancel_schedule_backfill::<B<S, C, G>>),
+                )
                 .layer(RequestBodyLimitLayer::new(sc::SCHEDULE_MAX_BODY_BYTES)),
         );
     }

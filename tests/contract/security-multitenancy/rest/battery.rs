@@ -164,6 +164,9 @@ fn body_of(operation: &str) -> Option<Value> {
         }),
         "pauseSchedule" | "resumeSchedule" => json!({"note": "cross-tenant battery probe"}),
         "triggerSchedule" => json!({"overlap": "ALLOW_ALL"}),
+        "createScheduleBackfill" => {
+            json!({"start": "2026-10-01T00:00:00Z", "end": "2026-10-02T00:00:00Z"})
+        }
         // Feature 008: an administrator of another tenant draining the victim's worker.
         "drainWorker" | "undrainWorker" => {
             json!({"reason": "cross-tenant battery probe"})
@@ -473,6 +476,7 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
     let victim = Victim {
         ids: BTreeMap::from([
             ("scheduleId", schedule.clone()),
+            ("backfillId", Uuid::now_v7().to_string()),
             ("scriptId", script.clone()),
             ("testRunId", test_run.clone()),
             ("executionId", Uuid::now_v7().to_string()),

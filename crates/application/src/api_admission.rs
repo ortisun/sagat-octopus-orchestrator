@@ -75,6 +75,8 @@ pub enum ApiOperation {
     ScheduleResume,
     /// Trigger-now starts a run as the schedule, under the role of the caller.
     ScheduleTrigger,
+    /// A backfill starts runs as the schedule, under the role of its requester.
+    ScheduleBackfill,
 }
 
 impl ApiOperation {
@@ -128,7 +130,9 @@ impl ApiOperation {
             Self::ScheduleRead => &[ScheduleRead],
             Self::ScheduleWrite => &[Permission::ScheduleWrite, RunStart],
             Self::ScheduleOperate => &[ScheduleOperate],
-            Self::ScheduleResume | Self::ScheduleTrigger => &[ScheduleOperate, RunStart],
+            Self::ScheduleResume | Self::ScheduleTrigger | Self::ScheduleBackfill => {
+                &[ScheduleOperate, RunStart]
+            }
         }
     }
 }

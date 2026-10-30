@@ -17,6 +17,9 @@ const ONE: &str = "/namespaces/{namespaceId}/schedules/{scheduleId}";
 const PAUSE: &str = "/namespaces/{namespaceId}/schedules/{scheduleId}/pause";
 const RESUME: &str = "/namespaces/{namespaceId}/schedules/{scheduleId}/resume";
 const TRIGGER: &str = "/namespaces/{namespaceId}/schedules/{scheduleId}/trigger";
+const BACKFILLS: &str = "/namespaces/{namespaceId}/schedules/{scheduleId}/backfills";
+const CANCEL_BACKFILL: &str =
+    "/namespaces/{namespaceId}/schedules/{scheduleId}/backfills/{backfillId}/cancel";
 
 fn keyed(s: Scenario, n: u32) -> Scenario {
     s.with_header("idempotency-key", format!("contract-key-{n:04}"))
@@ -338,6 +341,107 @@ async fn every_schedule_operation_conforms_to_the_contract_on_its_normal_and_err
     .await;
     record((m, t, s));
 
+    // ---- backfills
+    let range = json!({"start": "2026-10-01T00:00:00Z", "end": "2026-10-01T03:00:00Z"});
+    let (m, t, s, accepted) = check_body(
+        &api,
+        &spec,
+        &keyed(
+            scenario(
+                "POST",
+                BACKFILLS,
+                &format!("{one}/backfills"),
+                alice.clone(),
+                Some(range.clone()),
+                202,
+            ),
+            80,
+        ),
+    )
+    .await;
+    record((m, t, s));
+    let backfill = accepted["backfillId"].as_str().expect("id").to_owned();
+    for (n, (who, doc, expect)) in [
+        (alice.clone(), Some(range.clone()), 429),
+        (
+            alice.clone(),
+            Some(json!({"start": "2026-10-01T03:00:00Z", "end": "2026-10-01T00:00:00Z"})),
+            422,
+        ),
+        (vera.clone(), Some(range.clone()), 403),
+        (bob.clone(), Some(range.clone()), 404),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let n = u32::try_from(n).expect("small") + 81;
+        let (m, t, s, _) = check_body(
+            &api,
+            &spec,
+            &keyed(
+                scenario(
+                    "POST",
+                    BACKFILLS,
+                    &format!("{one}/backfills"),
+                    who,
+                    doc,
+                    expect,
+                ),
+                n,
+            ),
+        )
+        .await;
+        record((m, t, s));
+    }
+    for (who, expect) in [
+        (alice.clone(), 200),
+        (vera.clone(), 200),
+        (bob.clone(), 404),
+    ] {
+        let (m, t, s, _) = check_body(
+            &api,
+            &spec,
+            &scenario(
+                "GET",
+                BACKFILLS,
+                &format!("{one}/backfills"),
+                who,
+                None,
+                expect,
+            ),
+        )
+        .await;
+        record((m, t, s));
+    }
+    for (n, (who, expect)) in [
+        (vera.clone(), 403),
+        (bob.clone(), 404),
+        (alice.clone(), 200),
+        (alice.clone(), 200),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let n = u32::try_from(n).expect("small") + 90;
+        let (m, t, s, _) = check_body(
+            &api,
+            &spec,
+            &keyed(
+                scenario(
+                    "POST",
+                    CANCEL_BACKFILL,
+                    &format!("{one}/backfills/{backfill}/cancel"),
+                    who,
+                    None,
+                    expect,
+                ),
+                n,
+            ),
+        )
+        .await;
+        record((m, t, s));
+    }
+
     // ---- delete
     for (n, (path, who, expect)) in [
         (format!("{one}?expectedRevision=1"), alice.clone(), 409),
@@ -369,8 +473,8 @@ async fn every_schedule_operation_conforms_to_the_contract_on_its_normal_and_err
         .collect();
     assert_eq!(
         implemented.len(),
-        8,
-        "the contract names eight schedule operations"
+        11,
+        "the contract names eleven schedule operations"
     );
     for operation in &implemented {
         assert!(

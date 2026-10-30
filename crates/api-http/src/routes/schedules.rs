@@ -18,8 +18,9 @@ use serde::Deserialize;
 
 use crate::admission::admit;
 use crate::dto_schedules::{
-    ScheduleActionBody, ScheduleBody, ScheduleDescriptionBody, ScheduleNoteBody, SchedulePageBody,
-    ScheduleUpdateBody, ScheduleWriteBody, TriggerBody,
+    BackfillBody, BackfillListBody, BackfillRequestBody, ScheduleActionBody, ScheduleBody,
+    ScheduleDescriptionBody, ScheduleNoteBody, SchedulePageBody, ScheduleUpdateBody,
+    ScheduleWriteBody, TriggerBody,
 };
 use crate::error::ApiError;
 use crate::extract::{ApiJson, Caller};
@@ -314,4 +315,74 @@ pub async fn trigger_schedule<B: Governance>(
         StatusCode::ACCEPTED,
         Json(ScheduleActionBody::from(&action)),
     ))
+}
+
+pub async fn create_schedule_backfill<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((namespace, id)): Path<(String, String)>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<BackfillRequestBody>,
+) -> Result<(StatusCode, Json<BackfillBody>), ApiError> {
+    idempotency_key(&headers)?;
+    let id = admitted_schedule(
+        &state,
+        &caller,
+        &namespace,
+        &id,
+        ApiOperation::ScheduleBackfill,
+    )
+    .await?;
+    let backfill = schedules(&state)?
+        .create_backfill(
+            &caller.session.principal,
+            id,
+            sagat_application::schedules::BackfillRequest {
+                start: body.start,
+                end: body.end,
+                overlap: body.overlap.map(Into::into),
+            },
+            &caller.ctx,
+        )
+        .await?;
+    Ok((StatusCode::ACCEPTED, Json(BackfillBody::from(&backfill))))
+}
+
+pub async fn list_schedule_backfills<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((namespace, id)): Path<(String, String)>,
+) -> Result<Json<BackfillListBody>, ApiError> {
+    let id =
+        admitted_schedule(&state, &caller, &namespace, &id, ApiOperation::ScheduleRead).await?;
+    let backfills = schedules(&state)?
+        .backfills(&caller.session.principal, id)
+        .await?;
+    Ok(Json(BackfillListBody {
+        items: backfills.iter().map(BackfillBody::from).collect(),
+    }))
+}
+
+pub async fn cancel_schedule_backfill<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((namespace, id, backfill)): Path<(String, String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<BackfillBody>, ApiError> {
+    idempotency_key(&headers)?;
+    let backfill = backfill
+        .parse::<uuid::Uuid>()
+        .map_err(|_| ApiError::not_found())?;
+    let id = admitted_schedule(
+        &state,
+        &caller,
+        &namespace,
+        &id,
+        ApiOperation::ScheduleOperate,
+    )
+    .await?;
+    let stopped = schedules(&state)?
+        .cancel_backfill(&caller.session.principal, id, backfill, &caller.ctx)
+        .await?;
+    Ok(Json(BackfillBody::from(&stopped)))
 }

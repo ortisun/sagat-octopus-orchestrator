@@ -10,9 +10,11 @@ use crate::identity::{IdentityStore, RequestContext};
 use crate::quotas::QuotaLookup;
 use crate::schedule_firing::{ScheduleFiring, ScheduledStarts, TriggerRequest};
 use crate::schedules::{
-    ActionView, ScheduleCalendar, ScheduleDescription, ScheduleDocument, ScheduleFuture,
-    ScheduleRecord, ScheduleService, ScheduleStore, ScheduleUseCase, decode_document,
+    ActionView, BackfillRecord, BackfillRequest, ScheduleCalendar, ScheduleDescription,
+    ScheduleDocument, ScheduleFuture, ScheduleRecord, ScheduleService, ScheduleStore,
+    ScheduleUseCase, decode_document,
 };
+use uuid::Uuid;
 
 /// The use cases of schedules over one store, one calendar and one run service.
 pub struct ScheduleApi<S, K, C, I, R> {
@@ -126,6 +128,38 @@ where
         ctx: &'a RequestContext,
     ) -> ScheduleFuture<'a, ScheduleRecord> {
         Box::pin(self.service.resume(principal, id, note, ctx))
+    }
+
+    fn create_backfill<'a>(
+        &'a self,
+        principal: &'a Principal,
+        id: ScheduleId,
+        request: BackfillRequest,
+        ctx: &'a RequestContext,
+    ) -> ScheduleFuture<'a, BackfillRecord> {
+        Box::pin(async move {
+            self.service
+                .create_backfill(principal, id, &request, ctx)
+                .await
+        })
+    }
+
+    fn backfills<'a>(
+        &'a self,
+        principal: &'a Principal,
+        id: ScheduleId,
+    ) -> ScheduleFuture<'a, Vec<BackfillRecord>> {
+        Box::pin(self.service.backfills(principal, id))
+    }
+
+    fn cancel_backfill<'a>(
+        &'a self,
+        principal: &'a Principal,
+        id: ScheduleId,
+        backfill: Uuid,
+        ctx: &'a RequestContext,
+    ) -> ScheduleFuture<'a, BackfillRecord> {
+        Box::pin(self.service.cancel_backfill(principal, id, backfill, ctx))
     }
 
     fn trigger<'a>(

@@ -254,6 +254,8 @@ pub struct ScheduleDecision {
     pub at: OffsetDateTime,
     /// Set by a manual action (trigger-now).
     pub dedupe: Option<ActionDedupe>,
+    /// Set by a step of a backfill: where it got to, committed with the decision.
+    pub backfill: Option<BackfillProgress>,
 }
 
 /// A pause the platform makes, with the system note that says why.
@@ -308,6 +310,8 @@ pub struct ScheduleAdmission {
     /// Set by a manual action (trigger-now): the key it was asked under, and the audit of the
     /// caller's request, committed with the run.
     pub manual: Option<ManualRequest>,
+    /// Set by a step of a backfill: where it got to, committed with the run.
+    pub backfill: Option<BackfillProgress>,
 }
 
 /// What rides with a manual action when it starts a run.
@@ -400,6 +404,108 @@ pub enum TargetCheck {
     WorkflowMissing,
     /// The workflow exists but not the pinned version of it.
     VersionMissing,
+}
+
+/// Where a backfill is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackfillState {
+    Pending,
+    Running,
+    Completed,
+    Cancelled,
+}
+
+impl BackfillState {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "PENDING",
+            Self::Running => "RUNNING",
+            Self::Completed => "COMPLETED",
+            Self::Cancelled => "CANCELLED",
+        }
+    }
+
+    /// Whether it still has times to act on.
+    #[must_use]
+    pub const fn is_active(self) -> bool {
+        matches!(self, Self::Pending | Self::Running)
+    }
+}
+
+impl std::str::FromStr for BackfillState {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "PENDING" => Ok(Self::Pending),
+            "RUNNING" => Ok(Self::Running),
+            "COMPLETED" => Ok(Self::Completed),
+            "CANCELLED" => Ok(Self::Cancelled),
+            _ => Err(()),
+        }
+    }
+}
+
+/// A request to act on the nominal times of a past range that have no action yet (`FR-018-011`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackfillRequest {
+    pub start: OffsetDateTime,
+    /// Exclusive, and not after now.
+    pub end: OffsetDateTime,
+    /// `BUFFER_ALL` when absent.
+    pub overlap: Option<Overlap>,
+}
+
+/// A backfill, as stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackfillRecord {
+    pub id: Uuid,
+    pub tenant_id: TenantId,
+    pub schedule: ScheduleId,
+    pub start: OffsetDateTime,
+    pub end: OffsetDateTime,
+    /// The last nominal time acted on (or found already acted on): a crash resumes after it.
+    pub cursor: Option<OffsetDateTime>,
+    pub overlap: Overlap,
+    pub state: BackfillState,
+    pub requested_by: String,
+    /// How many times of each outcome, `ALREADY_ACTED` included.
+    pub counters: BTreeMap<String, u64>,
+    pub created_at: OffsetDateTime,
+    pub finished_at: Option<OffsetDateTime>,
+}
+
+/// A backfill to store, with the limits it is admitted under.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewBackfill {
+    pub record: BackfillRecord,
+    pub namespace: NamespaceId,
+    /// Backfills that may be active in the namespace.
+    pub namespace_limit: u64,
+    /// Backfills that may be active on the schedule.
+    pub per_schedule_limit: u32,
+}
+
+/// A backfill with a time to act on, found by a pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DueBackfill {
+    pub tenant_id: TenantId,
+    pub schedule: ScheduleId,
+    pub id: Uuid,
+}
+
+/// How a step moved a backfill, committed in the transaction of the step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackfillProgress {
+    pub id: Uuid,
+    /// The nominal time the step dealt with.
+    pub cursor: OffsetDateTime,
+    /// The outcome to count (`STARTED`, `BUFFERED`, `ALREADY_ACTED`, ...); none for the step that
+    /// finds no time left.
+    pub outcome: Option<&'static str>,
+    /// There is no time left: the backfill is complete.
+    pub finished: bool,
 }
 
 /// A decision of a schedule, as read back.
@@ -588,6 +694,56 @@ pub trait ScheduleStore: Send + Sync {
         tenant: TenantId,
         idempotency: &crate::definitions::Idempotency,
     ) -> impl Future<Output = Result<Option<ActionView>, StoreError>> + Send;
+
+    /// Stores a backfill with its audit record. `MissingReference` when the schedule is not there or
+    /// was deleted; `QuotaExceeded` when the schedule or the namespace has its backfills running.
+    fn create_backfill(
+        &self,
+        new: &NewBackfill,
+        audit: &AuditRecord,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// Whether the schedule already has an action for the nominal time of that origin.
+    fn action_exists(
+        &self,
+        tenant: TenantId,
+        schedule: ScheduleId,
+        origin: Origin,
+        nominal_at: OffsetDateTime,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    /// The backfills of a schedule, newest first (at most 100).
+    fn backfills(
+        &self,
+        tenant: TenantId,
+        schedule: ScheduleId,
+    ) -> impl Future<Output = Result<Vec<BackfillRecord>, StoreError>> + Send;
+
+    /// One backfill of a schedule.
+    fn backfill(
+        &self,
+        tenant: TenantId,
+        schedule: ScheduleId,
+        id: Uuid,
+    ) -> impl Future<Output = Result<Option<BackfillRecord>, StoreError>> + Send;
+
+    /// Stops a backfill that is still active (the audit record is written only then); one that has
+    /// ended is returned as it is. `None` when there is no such backfill.
+    fn cancel_backfill(
+        &self,
+        tenant: TenantId,
+        schedule: ScheduleId,
+        id: Uuid,
+        now: OffsetDateTime,
+        audit: &AuditRecord,
+    ) -> impl Future<Output = Result<Option<BackfillRecord>, StoreError>> + Send;
+
+    /// The active backfills of schedules in the given shards, the oldest first.
+    fn due_backfills(
+        &self,
+        shards: &[sagat_domain::sharding::Shard],
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<DueBackfill>, StoreError>> + Send;
 
     /// What a schedule has done: its counters and its `recent` latest decisions, newest first.
     fn activity(
@@ -1290,7 +1446,139 @@ where
             .await?
             .ok_or(AppError::NotFound)
     }
+
+    /// Asks to act on the nominal times of a past range that have no action yet, one at a time and
+    /// under an overlap rule of its own (`BUFFER_ALL` by default). The caller is whose authority the
+    /// runs are started under. A schedule runs one backfill at a time and a namespace the number its
+    /// `schedule_backfills` quota says.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `schedule:operate` and `run:start`; [`AppError::NotFound`];
+    /// [`AppError::ScheduleConflict`] for a schedule a cron trigger owns;
+    /// [`AppError::InvalidSchedule`] with `BACKFILL_RANGE_INVALID` or `BACKFILL_LIMIT`;
+    /// [`AppError::QuotaExceeded`].
+    pub async fn create_backfill(
+        &self,
+        principal: &Principal,
+        id: ScheduleId,
+        request: &BackfillRequest,
+        ctx: &RequestContext,
+    ) -> Result<BackfillRecord, AppError> {
+        principal.authorize(Permission::ScheduleOperate)?;
+        principal.authorize(Permission::RunStart)?;
+        let schedule = self.load(principal, id).await?;
+        if schedule.origin == ScheduleOrigin::Trigger {
+            return Err(AppError::ScheduleConflict {
+                reason: "SCHEDULE_TRIGGER_HANDOVER_PENDING",
+            });
+        }
+        let now = self.clock.now();
+        if request.start >= request.end || request.end > now {
+            return Err(invalid("BACKFILL_RANGE_INVALID", "/end"));
+        }
+        // the range holds its start and not its end
+        let times = self
+            .calendar
+            .occurrences(
+                &schedule.spec,
+                request.start - time::Duration::milliseconds(1),
+                Some(request.end - time::Duration::milliseconds(1)),
+                MAX_BACKFILL_ACTIONS + 1,
+            )
+            .map_err(calendar_error)?;
+        if times.len() > MAX_BACKFILL_ACTIONS {
+            return Err(invalid("BACKFILL_LIMIT", "/start"));
+        }
+        let namespace_limit = self
+            .store
+            .effective_limit(
+                principal.tenant_id(),
+                Some(schedule.namespace_id),
+                QuotaResource::ScheduleBackfills,
+            )
+            .await?;
+        let record = BackfillRecord {
+            id: Uuid::now_v7(),
+            tenant_id: principal.tenant_id(),
+            schedule: id,
+            start: request.start,
+            end: request.end,
+            cursor: None,
+            overlap: request.overlap.unwrap_or(Overlap::BufferAll),
+            state: BackfillState::Pending,
+            requested_by: principal.subject().as_str().to_owned(),
+            counters: BTreeMap::new(),
+            created_at: now,
+            finished_at: None,
+        };
+        let audit = Self::audit(
+            principal,
+            AuditAction::ScheduleBackfillRequested,
+            id,
+            "backfill requested",
+            ctx,
+            now,
+        );
+        self.store
+            .create_backfill(
+                &NewBackfill {
+                    record: record.clone(),
+                    namespace: schedule.namespace_id,
+                    namespace_limit,
+                    per_schedule_limit: 1,
+                },
+                &audit,
+            )
+            .await?;
+        Ok(record)
+    }
+
+    /// The backfills of a schedule, newest first.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `schedule:read`; [`AppError::NotFound`].
+    pub async fn backfills(
+        &self,
+        principal: &Principal,
+        id: ScheduleId,
+    ) -> Result<Vec<BackfillRecord>, AppError> {
+        principal.authorize(Permission::ScheduleRead)?;
+        self.load(principal, id).await?;
+        Ok(self.store.backfills(principal.tenant_id(), id).await?)
+    }
+
+    /// Stops a backfill: what it acted on stays acted on. Stopping one that has ended changes
+    /// nothing.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `schedule:operate`; [`AppError::NotFound`].
+    pub async fn cancel_backfill(
+        &self,
+        principal: &Principal,
+        id: ScheduleId,
+        backfill: Uuid,
+        ctx: &RequestContext,
+    ) -> Result<BackfillRecord, AppError> {
+        principal.authorize(Permission::ScheduleOperate)?;
+        self.load(principal, id).await?;
+        let now = self.clock.now();
+        let audit = Self::audit(
+            principal,
+            AuditAction::ScheduleBackfillCancelled,
+            id,
+            "backfill cancelled",
+            ctx,
+            now,
+        );
+        self.store
+            .cancel_backfill(principal.tenant_id(), id, backfill, now, &audit)
+            .await?
+            .ok_or(AppError::NotFound)
+    }
 }
+
+/// Most nominal times one backfill may hold (the hard ceiling is 10,000).
+pub const MAX_BACKFILL_ACTIONS: usize = 1_000;
 
 // --- the use cases, behind a trait object --------------------------------------------------------
 
@@ -1362,6 +1650,29 @@ pub trait ScheduleUseCase: Send + Sync {
         note: Note,
         ctx: &'a RequestContext,
     ) -> ScheduleFuture<'a, ScheduleRecord>;
+
+    /// Asks to act on the times of a past range that have no action yet (`FR-018-011`).
+    fn create_backfill<'a>(
+        &'a self,
+        principal: &'a Principal,
+        id: ScheduleId,
+        request: BackfillRequest,
+        ctx: &'a RequestContext,
+    ) -> ScheduleFuture<'a, BackfillRecord>;
+
+    fn backfills<'a>(
+        &'a self,
+        principal: &'a Principal,
+        id: ScheduleId,
+    ) -> ScheduleFuture<'a, Vec<BackfillRecord>>;
+
+    fn cancel_backfill<'a>(
+        &'a self,
+        principal: &'a Principal,
+        id: ScheduleId,
+        backfill: Uuid,
+        ctx: &'a RequestContext,
+    ) -> ScheduleFuture<'a, BackfillRecord>;
 
     /// Acts on the schedule now (`FR-018-010`); `overlap` replaces its rule for this action only.
     fn trigger<'a>(
