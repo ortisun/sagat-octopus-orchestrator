@@ -648,6 +648,96 @@ async fn a_rollback_is_refused_after_the_cron_handover() {
     assert!(table_exists(&db.pool, "schedule_trigger_handover").await);
 }
 
+const QUOTA_MIGRATION: i64 = 20_261_230_000_100;
+
+#[tokio::test]
+async fn both_quota_tables_accept_the_schedule_resources_for_a_namespace() {
+    let db = migrated_db().await;
+    let (tenant, namespace) = namespace(&db.pool).await;
+    for resource in ["schedules", "schedule_backfills"] {
+        sqlx::query(
+            "INSERT INTO quota_limits (tenant_id, namespace_id, resource, max_value, updated_by) \
+             VALUES ($1, $2, $3, 5, 'admin')",
+        )
+        .bind(tenant)
+        .bind(namespace)
+        .bind(resource)
+        .execute(&db.pool)
+        .await
+        .unwrap_or_else(|e| panic!("limit for {resource}: {e}"));
+        sqlx::query(
+            "INSERT INTO quota_ceilings (tenant_id, resource, max_value, granted_by) VALUES ($1, $2, 10, 'operator')",
+        )
+        .bind(tenant)
+        .bind(resource)
+        .execute(&db.pool)
+        .await
+        .unwrap_or_else(|e| panic!("ceiling for {resource}: {e}"));
+    }
+    assert_eq!(
+        code(
+            sqlx::query(
+                "INSERT INTO quota_limits (tenant_id, namespace_id, resource, max_value, updated_by) \
+                 VALUES ($1, $2, 'schedule_nonsense', 5, 'admin')",
+            )
+            .bind(tenant)
+            .bind(namespace)
+            .execute(&db.pool)
+            .await
+        ),
+        CHECK_VIOLATION,
+        "a resource nobody named is still refused"
+    );
+}
+
+#[tokio::test]
+async fn the_quota_rollback_is_refused_while_a_schedule_limit_or_ceiling_is_set() {
+    let db = migrated_db().await;
+    let (tenant, namespace) = namespace(&db.pool).await;
+    sqlx::query(
+        "INSERT INTO quota_limits (tenant_id, namespace_id, resource, max_value, updated_by) \
+         VALUES ($1, $2, 'schedules', 5, 'admin')",
+    )
+    .bind(tenant)
+    .bind(namespace)
+    .execute(&db.pool)
+    .await
+    .expect("limit");
+    assert!(
+        undo_to(&db, MIGRATION).await.is_err(),
+        "an operator's limit is not dropped by a rollback"
+    );
+    sqlx::query("DELETE FROM quota_limits WHERE resource = 'schedules'")
+        .execute(&db.pool)
+        .await
+        .expect("the operator removes the limit first");
+    undo_to(&db, MIGRATION)
+        .await
+        .expect("rollback of the quota migration alone");
+    assert_eq!(
+        code(
+            sqlx::query(
+                "INSERT INTO quota_limits (tenant_id, namespace_id, resource, max_value, updated_by) \
+                 VALUES ($1, $2, 'schedules', 5, 'admin')",
+            )
+            .bind(tenant)
+            .bind(namespace)
+            .execute(&db.pool)
+            .await
+        ),
+        CHECK_VIOLATION,
+        "the previous list is back"
+    );
+    let recorded: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM _sqlx_migrations WHERE version = $1")
+            .bind(QUOTA_MIGRATION)
+            .fetch_one(&db.pool)
+            .await
+            .expect("recorded");
+    assert_eq!(recorded, 0);
+    migrate(&db.pool).await.expect("forward again");
+}
+
 #[tokio::test]
 async fn migrating_an_empty_database_creates_the_same_schema_as_migrating_step_by_step() {
     // the migration must not depend on data that an earlier migration left behind

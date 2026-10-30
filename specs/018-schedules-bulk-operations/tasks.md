@@ -69,10 +69,14 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `run:batch`) with the role matrix of the plan, and the 16 audit actions. Evidence: `cargo test -p sagat-domain
   --test schedule_permissions --locked` — 6 passed; the whole domain suite 684 passed, 0 failed (the hand-written
   matrix of `crates/domain/tests/identity.rs` was updated on purpose: 48 → 52 permissions); `cargo check
-  --workspace --all-targets` compiles. Not done: the five quota resources (`schedules`, `schedule_backfills`,
-  `batch_jobs`, `tenant_batch_jobs`, `pending_resets`). They are persisted behind the `quota_ceilings_resource_valid`
-  CHECK and `QuotaResource::ALL` is iterated by code that talks to PostgreSQL, so they land with the migration of
-  T018-008, in the same commit, to keep every commit consistent.
+  --workspace --all-targets` compiles. *Update 2026-10-29:* the quota resources `schedules` (200, hard 10,000) and
+  `schedule_backfills` (4, hard 16) are done with migration `20261230000100_schedule_quota_resources` (it widens
+  `quota_ceilings_resource_valid`, `quota_limits_resource_valid` and `quota_limits_tenant_scoped`; its `down` refuses while a
+  limit or ceiling for them is set), their usage counts in `infra-postgres/src/quotas.rs`, the OpenAPI enums and the generated
+  Studio types. Evidence: `schedule_quotas` 4 passed, the whole domain suite 695 passed, `integration_schedules_bulk_operations`
+  14 passed, `integration_security_multitenancy` 126 passed, `integration_platform_foundation` 101 passed, workspace clippy
+  clean. Still open: `batch_jobs`, `tenant_batch_jobs` and `pending_resets`, which land with the tables they count (their
+  usage cannot be written before those tables exist).
 - [ ] T018-008 Additive migrations (tables incl. `schedule_actions` PK with `origin`, `batch_jobs.selection_horizon xid8`,
   `schedule_trigger_handover`, and the instance-capability registry tables unless 029 or 031 shipped them; `runs` columns with the erasure-aware
   immutability trigger; `run_shard` partial indexes; ALWAYS triggers; grants; trigger-owned backfill;

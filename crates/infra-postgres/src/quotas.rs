@@ -1050,6 +1050,23 @@ impl QuotaStore for PgRunStore {
             QuotaResource::SecretProviderOperations => sqlx::query_scalar(
                 "SELECT count(*) FROM secret_provider_operations WHERE tenant_id=$1 AND namespace_id=$2 AND state='pending'")
                 .bind(tenant.as_uuid()).bind(namespace).fetch_one(&self.pool).await,
+            QuotaResource::Schedules => sqlx::query_scalar(
+                "SELECT count(*) FROM schedules \
+                 WHERE tenant_id = $1 AND namespace_id = $2 AND state <> 'DELETED'",
+            )
+            .bind(tenant.as_uuid())
+            .bind(namespace)
+            .fetch_one(&self.pool)
+            .await,
+            QuotaResource::ScheduleBackfills => sqlx::query_scalar(
+                "SELECT count(*) FROM schedule_backfills b \
+                 JOIN schedules s ON s.tenant_id = b.tenant_id AND s.id = b.schedule_id \
+                 WHERE b.tenant_id = $1 AND s.namespace_id = $2 AND b.state IN ('PENDING', 'RUNNING')",
+            )
+            .bind(tenant.as_uuid())
+            .bind(namespace)
+            .fetch_one(&self.pool)
+            .await,
             QuotaResource::ApiRequestsPerSecond
             | QuotaResource::EventsPerSecond
             | QuotaResource::EventRetentionSeconds

@@ -3809,12 +3809,14 @@ export interface components {
          *     operation and connection defaults remain smaller. Count ceilings default/max are
          *     database_connections 100/1000 (including paused), database_concurrency 16/64,
          *     tenant_database_concurrency 64/256, secret_provider_operations 32/128.
+     *     Schedules (feature 018) are schedules 200/10000, counting active and paused ones, and
+     *     schedule_backfills 4/16, counting backfills that have not finished.
          *     Zero disables new admission for count/rate/retention resources, never means unlimited.
          *     Lowering a limit does not erase retained content or rewrite existing expiry.
          */
         Quota: {
             /** @enum {string} */
-            resource: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days" | "database_statement_bytes" | "database_parameters" | "database_parameter_bytes" | "database_rows" | "database_result_bytes" | "database_timeout_ms" | "database_connect_timeout_ms" | "database_pool_size" | "database_idle_timeout_ms" | "database_connections" | "database_concurrency" | "tenant_database_concurrency" | "secret_provider_operations";
+            resource: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days" | "database_statement_bytes" | "database_parameters" | "database_parameter_bytes" | "database_rows" | "database_result_bytes" | "database_timeout_ms" | "database_connect_timeout_ms" | "database_pool_size" | "database_idle_timeout_ms" | "database_connections" | "database_concurrency" | "tenant_database_concurrency" | "secret_provider_operations" | "schedules" | "schedule_backfills";
             /** Format: int64 */
             limit: number;
             /**
@@ -5212,7 +5214,7 @@ export interface components {
         DeliveryId: string;
         ConnectorId: string;
         DeadLetterId: string;
-        QuotaResourceName: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days" | "database_statement_bytes" | "database_parameters" | "database_parameter_bytes" | "database_rows" | "database_result_bytes" | "database_timeout_ms" | "database_connect_timeout_ms" | "database_pool_size" | "database_idle_timeout_ms" | "database_connections" | "database_concurrency" | "tenant_database_concurrency" | "secret_provider_operations";
+        QuotaResourceName: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days" | "database_statement_bytes" | "database_parameters" | "database_parameter_bytes" | "database_rows" | "database_result_bytes" | "database_timeout_ms" | "database_connect_timeout_ms" | "database_pool_size" | "database_idle_timeout_ms" | "database_connections" | "database_concurrency" | "tenant_database_concurrency" | "secret_provider_operations" | "schedules" | "schedule_backfills";
         ActivityName: string;
         WorkflowId: string;
         VersionNumber: number;
