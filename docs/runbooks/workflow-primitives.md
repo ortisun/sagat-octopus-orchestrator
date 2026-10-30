@@ -733,3 +733,24 @@ lease refusal is evaluated. Migration 26 down is an operator-only rollback after
 quiesced; retained transfer receipts refuse rollback. The sweeper, acquisition, claim guards and
 receipt retention policy remain activation prerequisites. See
 [the protocol/evidence ledger](../../specs/014-workflow-primitives/capacity-vacate-acquire.md).
+
+### ChildRoot worker guard validation
+
+The internal worker possession guard defaults off and has no operator environment switch.
+Do not enable it in production before coordinator, creator, quota/backfill, retention and
+mixed-version fencing acceptance. Existing binaries bypass this guard; deploying new storage
+alone is not a safe activation procedure. Do not change the header or invent receipts to
+unstick a group.
+
+In the gated harness, `worker_claim_skipped_total` records closed `capacity_*` reasons and
+`worker.capacity.check` traces the tenant/run without payloads. `capacity_group_busy` means a
+poll skipped G without waiting; `capacity_not_holder` means the current selected member cannot
+receive a new lease. Ambiguous memberships and unsupported scopes require investigation of the
+creator/data invariant, not selecting an arbitrary group. FINISHED history is never a legacy
+exemption. An existing lease must still renew/report under its original authority while G is busy.
+An internal input-limit failure may advance the journal without delivering an external task.
+
+Reproduce the bounded regression with a private target and
+`SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::worker_leases::`.
+All databases/locks belong to the test fixtures. [The coordinator ledger](../../specs/014-workflow-primitives/capacity-coordinator.md)
+states actual results; these tests do not establish the remaining sweeper or public nesting gates.

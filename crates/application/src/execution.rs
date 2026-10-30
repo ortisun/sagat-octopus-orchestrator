@@ -837,6 +837,13 @@ pub trait PathExecutionTx: Send {
         effects: Effects,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
 
+    /// Checks the ChildRoot possession prerequisite for a new external worker lease, retaining
+    /// any applicable group lock through commit. Requires the existing own chain/run locks.
+    /// False grants no lease; deterministic preflight failures and existing reports do not call it.
+    fn worker_capacity_available(
+        &mut self,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
     fn commit(self) -> impl Future<Output = Result<(), StoreError>> + Send;
 }
 
@@ -1370,6 +1377,11 @@ pub trait RunTx: Send {
     fn record_delivery(
         &mut self,
         delivery: &crate::dispatch::DeliveryRef,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    /// Full-run counterpart of [`PathExecutionTx::worker_capacity_available`].
+    fn worker_capacity_available(
+        &mut self,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
     /// Commits. Dropping the transaction instead rolls everything back.
