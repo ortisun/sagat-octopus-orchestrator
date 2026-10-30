@@ -273,6 +273,15 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
   The `Idempotency-Key` is recorded in `command_dedupe` (scope `schedule-trigger:<id>`) in the transaction
   that records the action, so a request and its key commit together or not at all. Numbered above the
   reserved blocks because 018's own (D1000..D1039) is full (G1016).
+- **D1801** (2026-10-30, T018-025) A backfill is a state machine of the schedule: each step is one transaction
+  that takes the first nominal time of its range after the cursor and commits the action (or the decision) together
+  with the new cursor, the counters and the state of the backfill, under the same lock order as any other action
+  (shard fence, schedule row, backfill row). It runs under the role of its requester, checked again at every step
+  (a requester who lost `run:start` stops it), and it works while the schedule is paused, because it is the
+  operator's explicit request and not one of the schedule's own times. A backfill never drops a time: when the
+  overlap rule would drop one (`DROPPED_BUFFER_FULL`) the step waits instead and tries the same time again, so the
+  cursor never passes a time that was neither acted on nor found acted on. Its times take no remaining action. The
+  range holds at most 1,000 times (hard ceiling 10,000, T018-022) and a schedule runs one backfill at a time.
 - **D1605** Reset-rule registry (coordinator C1): every journal event type has one rule (`COPY`,
   `REMATERIALIZE`, `EXCLUDE`, `REFUSE` — a window until a named closing event) in
   `contracts/journal-and-events.md`; existing types are owned by 018 for this purpose; drafts 019, 020,

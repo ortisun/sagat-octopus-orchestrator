@@ -111,12 +111,12 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `contract_schedules_bulk_operations` — FR-018-043, FR-018-046.
   *Part done 2026-10-30 (task stays open).* The REST operations built so far are merged into
   `specs/001-platform-foundation/contracts/openapi.yaml` with `x-implemented: '018'`: `listSchedules`, `createSchedule`,
-  `getSchedule`, `updateSchedule`, `deleteSchedule`, `pauseSchedule`, `resumeSchedule`, `triggerSchedule` (the spec and policies schemas are
+  `getSchedule`, `updateSchedule`, `deleteSchedule`, `pauseSchedule`, `resumeSchedule`, `triggerSchedule`, `listScheduleBackfills`, `createScheduleBackfill`, `cancelScheduleBackfill` (the spec and policies schemas are
   inlined as `ScheduleSpec`/`SchedulePolicies`, because the canonical document has no external references; business-id
   fields are left out until US03; G1015 names what the draft listed and is not built). `docs/reference/api.md` regenerated
-  after reading the diff (8 operations, group Schedules) and `frontend/apps/studio/src/api/schema.d.ts` regenerated
+  after reading the diff (11 operations, group Schedules) and `frontend/apps/studio/src/api/schema.d.ts` regenerated
   (`npm run check:api` clean, `npm run typecheck` clean). Evidence: `contract_schedules_bulk_operations` 1 passed (every
-  response of the eight operations, 2xx and 4xx, validated against the schema, plus a check that all eight were
+  response of the eleven operations, 2xx and 4xx, validated against the schema, plus a check that all eleven were
   exercised); the cross-tenant battery (`contract_rest_security_multitenancy`, 17 passed) now holds a victim schedule and
   a valid body for each write; `contract_payload_classification` 18, `contract_developer_experience` 8,
   `contract_rest_platform_foundation` 9 and the other REST contract suites pass. Not done: the AsyncAPI additions and the
@@ -276,9 +276,25 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   202/400/401/403/404/422 and the battery sends it with a valid body. Removing the paused lock of the decision path,
   the preservation of `retry_at` or the no-decrement of a released trigger each makes exactly its test fail. Not done:
   `CANCEL_OTHER` still buffers without owing the open runs a cancellation (T018-030 owns the obligations); G1017.
-- [ ] T018-025 [US2] Backfill create/list/cancel and incremental pass steps with cursor, `ALREADY_ACTED`
+- [x] T018-025 [US2] Backfill create/list/cancel and incremental pass steps with cursor, `ALREADY_ACTED`
   — `crates/scheduler/src/schedules.rs`, `crates/infra-postgres/src/schedules.rs` — crash resumes from
   cursor — FR-018-011.
+  *Done 2026-10-30.* `ScheduleService::create_backfill`/`backfills`/`cancel_backfill` and the REST operations
+  `listScheduleBackfills`, `createScheduleBackfill` (202), `cancelScheduleBackfill`; `ScheduleFiring::backfill_step`,
+  which the pass (`SchedulePass`) runs for the backfills of the shards it holds. A step is one transaction: the first
+  time of the range after the cursor, acted on under the overlap rule of the backfill (`BUFFER_ALL` by default), with
+  the cursor, the counters and the state of the backfill committed with the run or the recorded decision (D1801). A
+  time that already has an action is counted `ALREADY_ACTED` and never gets a second run; a backfill whose buffer is
+  full waits instead of dropping times; one whose requester lost `run:start` is stopped; deleting the schedule stops
+  its backfills. One backfill runs at a time on a schedule and a namespace has its `schedule_backfills` quota; a range
+  holds at most 1,000 times. Evidence: `integration_schedules_bulk_operations` 123 passed (11 in `backfill`: the
+  record and its defaults, `BACKFILL_RANGE_INVALID` and `BACKFILL_LIMIT`, the schedule and namespace limits, stopping
+  is final and idempotent, roles and delete, the steps in order, `ALREADY_ACTED`, a paused schedule and a stopped
+  backfill, a revoked requester, waiting instead of dropping; in `pass`, the pass works through the backfills of its
+  shards and `a_backfill_resumes_after_the_committed_cursor_when_another_replica_takes_over`: two steps, the leases
+  lapse, another replica finishes it, three runs for three times; in `rest`, two); the conformance test covers the
+  three operations (202/200/422/429/403/404) and the battery sends them with valid bodies. Without the
+  `ALREADY_ACTED` check its test fails. Not done: the Studio form (T018-032), the metrics of the pass.
 - [x] T018-026 [US2] `SKIP`, `BUFFER_ONE`, `BUFFER_ALL`, `ALLOW_ALL`, open-run tracking, buffered start —
   `tests/integration/schedules-bulk-operations/overlap.rs` — SC-018-003 table — FR-018-006, FR-018-007.
   *Done 2026-10-30; the scenarios live in `firing.rs`, which already holds the fixture and the clock, and no
