@@ -19,7 +19,7 @@ async fn guarded_fixture() -> NativeFixture {
     guarded_fixture_with_continuation(false).await
 }
 
-async fn guarded_fixture_with_continuation(continue_first: bool) -> NativeFixture {
+pub(super) async fn guarded_fixture_with_continuation(continue_first: bool) -> NativeFixture {
     use sagat_scheduler::{Keeper, KeeperSettings, Placement, Scheduler, SchedulerSettings};
     let mut w = world().await;
     w.execution_pool = w.db.runtime_pool_with(16).await;
