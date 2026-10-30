@@ -178,7 +178,7 @@ async fn run_profile(mode: control::ProfileMode) {
         progress.enter("normal migration and current runtime-role endpoint");
         sagat_infra_postgres::migrate(&db.pool).await.expect("current normal migration");
         let after:i64=sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations WHERE success").fetch_one(&db.pool).await.expect("current migration boundary");
-        assert_eq!(after,20261226000000);
+        assert_eq!(after,20261231000000);
         let api=support::api::start_on_db(db,Options {runtime_role:true,..Options::default()}).await;
         let role:String=sqlx::query_scalar("SELECT current_user").fetch_one(&api.api_pool).await.expect("current service role");
         assert_eq!(role,"sagat_app");

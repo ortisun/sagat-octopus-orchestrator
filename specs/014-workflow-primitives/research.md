@@ -1791,3 +1791,17 @@ Text, gates, receipt and required evidence: [capacity-vacate-acquire.md](./capac
 - **D706** — ChildRoot members only; `SCOPED_PATH` gets its own commands and receipt table. **D707** — Finish's lock order, but the receipt lookup comes before the head check (these commands target a head that can continue). **D708** — Vacate gate: holder, current non-final head, no `LEASED`/`RUNNING` step (expired or not), no clock read; the soundness argument names the two statements that set those statuses. **D709** — Acquire gate is minimal (vacant at the epoch, active member, non-final head, movable run status) and does not claim the member has work. **D710** — writes are the header, audit, outbox and receipt only. **D711** — one append-only `capacity_group_transfer_receipts` table with `resulting_active_members` and the Finish foreign keys; it is evidence, not authority. **D712** — closed errors, exhaustive domain-error mapping, one span with the label `operation`, a refusal class, two audit actions, two outbox hints. **D713** — commit uncertainty follows Finish, with one shared `confirmed_abort`. **D714** (proposed) — a holder that cannot progress is vacated or finished by a level-triggered scheduler-tick sweeper, not inline. **D715** — two slices, Vacate first.
 - **G714** (planned) partial index on `LEASED`/`RUNNING` steps; **G715** (open) one shared runnable predicate and a differential test before Acquire claims work; **G716** (open) `SCOPED_PATH` members; **G717** (open) nothing reads possession yet, plus an inventory fitness test; **G718** (open) fairness and starvation not claimed; **G719** (open) the caller is the D714 sweeper; **G720** (open) receipt retention; **G721** (open) ADR for the possession protocol and the group lock position before any production caller; **G722** (open) which runs are members; **G723** (open) zombie workers and blocking activities.
 - **O705** (open, owner) — approve the sweeper (D714) instead of vacating inline when the holder becomes idle? **O706** (open, owner) — does possession gate only worker leases, or also scheduler-owned transitions?
+
+
+## ChildRoot coordination owner answers — 2026-10-29
+
+The owner answered O705 with “Sweeper no tick do scheduler, em transação própria (recomendado)”
+and O706 with “Apenas concessão de leases aos workers (recomendado)”. O705/O706 are answered:
+D714's level-triggered scheduler sweep is approved, with an independent native transaction per
+operation; possession gates worker-lease grants only. Scheduler-owned transitions, reports,
+heartbeats, signal/timer handling and settlement are not gated by possession. Existing leases
+still use their existing fencing and expiry semantics. These answers do not waive G715/G717/G721,
+claim/transfer races, membership admission, scoped-path support, quota or release acceptance.
+Implementation order and ownership are in [capacity-coordinator.md](./capacity-coordinator.md).
+Native Vacate/Acquire are already merged through PR59/65; their passing evidence is not repeated
+as proof of production coordination.

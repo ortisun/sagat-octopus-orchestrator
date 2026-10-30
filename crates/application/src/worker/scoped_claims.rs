@@ -217,6 +217,9 @@ where
             if input.len() > byte_budget - *bytes - run_bytes {
                 break;
             }
+            if self.child_root_capacity_guard && !tx.worker_capacity_available().await? {
+                break;
+            }
             if !tx.activity_admitted(&activity).await? {
                 metrics::counter!("quota_exceeded_total", "limit" => "activity_concurrency")
                     .increment(1);
