@@ -15,3 +15,4 @@ mod rest;
 mod service;
 mod store;
 mod store_support;
+mod trigger;

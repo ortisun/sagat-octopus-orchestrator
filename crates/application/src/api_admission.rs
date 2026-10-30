@@ -73,6 +73,8 @@ pub enum ApiOperation {
     ScheduleOperate,
     /// Resume also makes the caller the authority of the schedule.
     ScheduleResume,
+    /// Trigger-now starts a run as the schedule, under the role of the caller.
+    ScheduleTrigger,
 }
 
 impl ApiOperation {
@@ -126,7 +128,7 @@ impl ApiOperation {
             Self::ScheduleRead => &[ScheduleRead],
             Self::ScheduleWrite => &[Permission::ScheduleWrite, RunStart],
             Self::ScheduleOperate => &[ScheduleOperate],
-            Self::ScheduleResume => &[ScheduleOperate, RunStart],
+            Self::ScheduleResume | Self::ScheduleTrigger => &[ScheduleOperate, RunStart],
         }
     }
 }

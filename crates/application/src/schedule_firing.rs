@@ -15,19 +15,20 @@ use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::execution::{RunId, RunStatus};
 use sagat_domain::identity::{Permission, Principal, Subject};
 use sagat_domain::schedules::{
-    ActionKind, Ceilings, Decision, Outcome, Reason, Release, Standing, VersionPolicy, decide,
-    failure_pauses, plan_catch_up, release,
+    ActionKind, Ceilings, Decision, Outcome, Reason, Release, ScheduleId, Standing, VersionPolicy,
+    decide, failure_pauses, plan_catch_up, release,
 };
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::clock::Clock;
+use crate::definitions::Idempotency;
 use crate::error::{AppError, StoreError};
 use crate::identity::{IdentityStore, RequestContext};
 use crate::schedules::{
-    AutoPause, DueSchedule, Reconcile, RecordedAction, ScheduleAdmission, ScheduleAfter,
-    ScheduleCalendar, ScheduleDecision, ScheduleRecord, ScheduleState, ScheduleStore, ShardFence,
-    next_times,
+    ActionDedupe, ActionView, AutoPause, DueSchedule, ManualRequest, Reconcile, RecordedAction,
+    ScheduleAdmission, ScheduleAfter, ScheduleCalendar, ScheduleDecision, ScheduleOrigin,
+    ScheduleRecord, ScheduleState, ScheduleStore, ShardFence, next_times,
 };
 
 /// What a schedule starts, as the run service needs it.
@@ -63,11 +64,26 @@ pub enum Fired {
     Refused(&'static str),
 }
 
+/// `at` kept to the microsecond, the precision of the stored times.
+fn micros(at: OffsetDateTime) -> OffsetDateTime {
+    OffsetDateTime::from_unix_timestamp_nanos(at.unix_timestamp_nanos().div_euclid(1_000) * 1_000)
+        .unwrap_or(at)
+}
+
 /// How long a refused time waits before it is tried again: as long as it is already late, between
 /// 5 seconds and 5 minutes, so the wait grows by doubling and a long refusal ends in the catch-up
 /// window rather than in a loop.
 fn retry_delay(late: Duration) -> Duration {
     late.clamp(Duration::seconds(5), Duration::minutes(5))
+}
+
+/// A request to act on a schedule now (`FR-018-010`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TriggerRequest<'a> {
+    /// The overlap rule for this action only; `None` keeps the one of the schedule.
+    pub overlap: Option<sagat_domain::schedules::Overlap>,
+    /// The `Idempotency-Key` of the request: the same key and request give the same action.
+    pub key: &'a str,
 }
 
 /// Acts on the schedules whose time has come.
@@ -110,6 +126,195 @@ where
     /// The store the firing reads and writes, for the pass that looks for what is due.
     pub const fn store(&self) -> &S {
         &self.store
+    }
+
+    /// Acts on a schedule now (`FR-018-010`): one `TRIGGERED` action at the time of the request, also
+    /// while the schedule is paused. The overlap rule is the schedule's unless the request overrides
+    /// it. The action never shares an identity with a scheduled time, never uses up a remaining
+    /// action and leaves a time that is owed alone. The run is the schedule's (`startedBy` is
+    /// `system:schedule:<id>`) under the role of the caller, so a caller who cannot start runs cannot
+    /// make the schedule start one. The same `Idempotency-Key` and request give the same action.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `schedule:operate` and `run:start`; [`AppError::NotFound`];
+    /// [`AppError::ScheduleConflict`] for a schedule a cron trigger owns before the handover;
+    /// [`AppError::IdempotencyKeyReused`] for a key used by another request; the errors of the
+    /// admission of a run (a full quota, a workflow with no published version) when the action
+    /// would start one.
+    pub async fn trigger(
+        &self,
+        caller: &Principal,
+        id: ScheduleId,
+        request: &TriggerRequest<'_>,
+        ctx: &RequestContext,
+    ) -> Result<ActionView, AppError> {
+        caller.authorize(Permission::ScheduleOperate)?;
+        caller.authorize(Permission::RunStart)?;
+        let idempotency = Idempotency {
+            scope: format!("schedule-trigger:{id}"),
+            key: request.key.to_owned(),
+            fingerprint: match request.overlap {
+                None => b"overlap=schedule".to_vec(),
+                Some(overlap) => format!("overlap={overlap:?}").into_bytes(),
+            },
+        };
+        if let Some(done) = self
+            .store
+            .trigger_replay(caller.tenant_id(), &idempotency)
+            .await?
+        {
+            return Ok(done);
+        }
+        match self
+            .trigger_once(caller, id, request, &idempotency, ctx)
+            .await
+        {
+            // a request with the same key, or another at the same instant, committed first: if it
+            // was the same request this one is told what it did
+            Err(AppError::StateConflict(reason)) => self
+                .store
+                .trigger_replay(caller.tenant_id(), &idempotency)
+                .await?
+                .ok_or(AppError::StateConflict(reason)),
+            other => other,
+        }
+    }
+
+    async fn trigger_once(
+        &self,
+        caller: &Principal,
+        id: ScheduleId,
+        request: &TriggerRequest<'_>,
+        idempotency: &Idempotency,
+        ctx: &RequestContext,
+    ) -> Result<ActionView, AppError> {
+        let record = self
+            .store
+            .schedule(caller.tenant_id(), id)
+            .await?
+            .filter(|r| r.state != ScheduleState::Deleted)
+            .ok_or(AppError::NotFound)?;
+        if record.origin == ScheduleOrigin::Trigger {
+            return Err(AppError::ScheduleConflict {
+                reason: "SCHEDULE_TRIGGER_HANDOVER_PENDING",
+            });
+        }
+        // the instant is kept to the microsecond: that is what the identity of the action and the
+        // stored times are, so a replay is answered with exactly what the first request was
+        let now = micros(self.clock.now());
+        let nominal = now;
+        let statuses = self
+            .store
+            .run_statuses(record.tenant_id, &record.tracked_runs)
+            .await?;
+        let open = record
+            .tracked_runs
+            .iter()
+            .filter(|run| {
+                statuses
+                    .iter()
+                    .find(|(s, _)| s == *run)
+                    .is_some_and(|(_, status)| !status.is_terminal())
+            })
+            .count();
+        let standing = Standing {
+            open_runs: u32::try_from(open).unwrap_or(u32::MAX),
+            buffered: record.buffered,
+            // a manual action is not limited by what is left
+            remaining: None,
+        };
+        let policies = request
+            .overlap
+            .map_or(record.policies, |o| record.policies.with_overlap(o));
+        let dedupe = ActionDedupe {
+            idempotency: idempotency.clone(),
+            resource: format!(
+                "manual-{}",
+                nominal.unix_timestamp_nanos().div_euclid(1_000)
+            ),
+        };
+        let audit = AuditRecord::by(
+            caller,
+            AuditAction::ScheduleTriggered,
+            ResourceType::Schedule,
+            record.id.to_string(),
+            None,
+            now,
+        )
+        .with_reason("trigger-now");
+        // whatever the schedule is about to do next is not touched by a manual action
+        let after = ScheduleAfter {
+            next_action_at: record.next_action_at,
+            next_actual_at: record.next_actual_at,
+            remaining_actions: record.remaining_actions,
+            extra: Vec::new(),
+        };
+        match decide(&policies, &standing, &self.ceilings) {
+            Decision::Start => {
+                let principal = Principal::new(
+                    record.tenant_id,
+                    Subject::schedule(record.id.as_uuid()),
+                    caller.role(),
+                );
+                let admission = ScheduleAdmission {
+                    schedule: record.id,
+                    nominal_at: nominal,
+                    kind: ActionKind::Triggered,
+                    revision: record.revision,
+                    expected_state_version: record.state_version,
+                    fence: None,
+                    after,
+                    manual: Some(ManualRequest { dedupe, audit }),
+                };
+                self.start_run(&record, &principal, admission, ctx).await?;
+                self.committed_action(caller, idempotency).await
+            }
+            // nothing is left to give cannot happen: the count was not given
+            Decision::Exhausted => Err(AppError::Internal),
+            other
+            @ (Decision::Skip { .. } | Decision::Buffer { .. } | Decision::DropBufferFull) => {
+                let (outcome, reason) = match other {
+                    Decision::Skip { reason } => {
+                        (Outcome::SkippedOverlap, reason.map(Reason::as_str))
+                    }
+                    Decision::Buffer { .. } => (Outcome::Buffered, None),
+                    _ => (Outcome::DroppedBufferFull, None),
+                };
+                let decision = ScheduleDecision {
+                    tenant_id: record.tenant_id,
+                    schedule: record.id,
+                    expected_state_version: record.state_version,
+                    fence: None,
+                    actions: vec![RecordedAction {
+                        nominal_at: nominal,
+                        kind: ActionKind::Triggered,
+                        revision: record.revision,
+                        outcome,
+                        reason,
+                        summary: None,
+                    }],
+                    after,
+                    pause: None,
+                    at: now,
+                    dedupe: Some(dedupe),
+                };
+                self.store.record_decision(&decision, Some(&audit)).await?;
+                self.committed_action(caller, idempotency).await
+            }
+        }
+    }
+
+    /// The action a request committed, as it was stored: the first answer and every replay of it are
+    /// the same.
+    async fn committed_action(
+        &self,
+        caller: &Principal,
+        idempotency: &Idempotency,
+    ) -> Result<ActionView, AppError> {
+        self.store
+            .trigger_replay(caller.tenant_id(), idempotency)
+            .await?
+            .ok_or(AppError::Internal)
     }
 
     /// Takes the next step for a due schedule.
@@ -218,6 +423,7 @@ where
                     note: "the authorizing subject can no longer start runs".to_owned(),
                 }),
                 at: now,
+                dedupe: None,
             };
             let audit = self.audit(
                 &record,
@@ -252,9 +458,13 @@ where
                 after: ScheduleAfter {
                     next_action_at: record.next_action_at,
                     next_actual_at: record.next_actual_at,
-                    remaining_actions: record.remaining_actions.map(|n| n.saturating_sub(1)),
+                    // only a scheduled action uses one up; a waiting trigger-now does not
+                    remaining_actions: record.remaining_actions.map(|n| {
+                        n.saturating_sub(u32::from(waiting.kind == ActionKind::Scheduled))
+                    }),
                     extra: Vec::new(),
                 },
+                manual: None,
             };
             return self.start(&record, &principal, admission, now, &ctx).await;
         }
@@ -316,6 +526,7 @@ where
                 },
                 pause: None,
                 at: now,
+                dedupe: None,
             };
             return self.committed(self.store.record_decision(&decision, None).await);
         }
@@ -356,6 +567,7 @@ where
                     expected_state_version: record.state_version,
                     fence,
                     after,
+                    manual: None,
                 };
                 self.start(&record, &principal, admission, now, &ctx).await
             }
@@ -404,6 +616,7 @@ where
             after,
             pause: None,
             at: now,
+            dedupe: None,
         };
         self.committed(self.store.record_decision(&decision, None).await)
     }
@@ -417,6 +630,40 @@ where
         now: OffsetDateTime,
         ctx: &RequestContext,
     ) -> Result<Fired, AppError> {
+        let nominal = admission.nominal_at;
+        match self.start_run(record, principal, admission, ctx).await {
+            Ok(_) => Ok(Fired::Acted),
+            // another process acted first, or the lease is gone: nothing was committed
+            Err(AppError::StateConflict(reason)) => Ok(Fired::Refused(reason)),
+            // no room, a store that is down, a workflow with no published version: the time stays
+            // owed and is tried again under the same key
+            Err(
+                AppError::QuotaExceeded(_)
+                | AppError::Unavailable
+                | AppError::Busy { .. }
+                | AppError::NotAllowed(_),
+            ) => {
+                let retry_at = now + retry_delay(now - nominal);
+                self.store
+                    .defer_schedule(record.tenant_id, record.id, record.state_version, retry_at)
+                    .await?;
+                Ok(Fired::Refused(
+                    "the admission was refused; the time stays owed",
+                ))
+            }
+            Err(other) => Err(other),
+        }
+    }
+
+    /// Builds the request of the run of an action and sends it to the run service, which admits the
+    /// run and commits the action with it.
+    async fn start_run(
+        &self,
+        record: &ScheduleRecord,
+        principal: &Principal,
+        admission: ScheduleAdmission,
+        ctx: &RequestContext,
+    ) -> Result<RunId, AppError> {
         let nominal = admission.nominal_at;
         let version = match record.target.version() {
             VersionPolicy::Active => None,
@@ -442,32 +689,9 @@ where
             version,
             input: &input,
         };
-        match self
-            .starts
+        self.starts
             .start_scheduled(principal, &request, admission, ctx)
             .await
-        {
-            Ok(_) => Ok(Fired::Acted),
-            // another process acted first, or the lease is gone: nothing was committed
-            Err(AppError::StateConflict(reason)) => Ok(Fired::Refused(reason)),
-            // no room, a store that is down, a workflow with no published version: the time stays
-            // owed and is tried again under the same key
-            Err(
-                AppError::QuotaExceeded(_)
-                | AppError::Unavailable
-                | AppError::Busy { .. }
-                | AppError::NotAllowed(_),
-            ) => {
-                let retry_at = now + retry_delay(now - nominal);
-                self.store
-                    .defer_schedule(record.tenant_id, record.id, record.state_version, retry_at)
-                    .await?;
-                Ok(Fired::Refused(
-                    "the admission was refused; the time stays owed",
-                ))
-            }
-            Err(other) => Err(other),
-        }
     }
 
     fn committed(&self, result: Result<(), StoreError>) -> Result<Fired, AppError> {

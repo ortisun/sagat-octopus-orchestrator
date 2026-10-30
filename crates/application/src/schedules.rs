@@ -12,8 +12,8 @@ use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::identity::{NamespaceId, Permission, Principal, TenantId};
 use sagat_domain::quota::QuotaResource;
 use sagat_domain::schedules::{
-    ActionKind, Ceilings, Note, Origin, Policies, RemainingActions, ScheduleId, ScheduleName,
-    ScheduleSpec, ScheduleTarget, actual_time, jitter_offset_ms, jitter_seed,
+    ActionKind, Ceilings, Note, Origin, Overlap, Policies, RemainingActions, ScheduleId,
+    ScheduleName, ScheduleSpec, ScheduleTarget, actual_time, jitter_offset_ms, jitter_seed,
 };
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
@@ -230,6 +230,15 @@ pub struct RecordedAction {
     pub summary: Option<(u32, OffsetDateTime)>,
 }
 
+/// The `Idempotency-Key` of a manual action, recorded in the transaction that makes the action: a
+/// request sent again finds it and is answered with what the first one did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionDedupe {
+    pub idempotency: crate::definitions::Idempotency,
+    /// The identity of the action the key stands for (`manual-{epoch µs}`).
+    pub resource: String,
+}
+
 /// A decision that starts no run, committed with the new state of the schedule (`FR-018-005`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScheduleDecision {
@@ -243,6 +252,8 @@ pub struct ScheduleDecision {
     /// When the schedule stops: its authority was revoked, or a run failed and it asks to pause.
     pub pause: Option<AutoPause>,
     pub at: OffsetDateTime,
+    /// Set by a manual action (trigger-now).
+    pub dedupe: Option<ActionDedupe>,
 }
 
 /// A pause the platform makes, with the system note that says why.
@@ -294,6 +305,16 @@ pub struct ScheduleAdmission {
     pub expected_state_version: u64,
     pub fence: Option<ShardFence>,
     pub after: ScheduleAfter,
+    /// Set by a manual action (trigger-now): the key it was asked under, and the audit of the
+    /// caller's request, committed with the run.
+    pub manual: Option<ManualRequest>,
+}
+
+/// What rides with a manual action when it starts a run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManualRequest {
+    pub dedupe: ActionDedupe,
+    pub audit: AuditRecord,
 }
 
 impl ScheduleAdmission {
@@ -560,6 +581,14 @@ pub trait ScheduleStore: Send + Sync {
         audit: &AuditRecord,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
+    /// The action a manual request (trigger-now) made, if the key was used before. A request that
+    /// differs from the first one is `IdempotencyKeyReused`.
+    fn trigger_replay(
+        &self,
+        tenant: TenantId,
+        idempotency: &crate::definitions::Idempotency,
+    ) -> impl Future<Output = Result<Option<ActionView>, StoreError>> + Send;
+
     /// What a schedule has done: its counters and its `recent` latest decisions, newest first.
     fn activity(
         &self,
@@ -786,6 +815,12 @@ where
             clock,
             ceilings: ceilings.clamped(),
         }
+    }
+
+    /// The ceilings a document is decoded against.
+    #[must_use]
+    pub const fn ceilings(&self) -> &Ceilings {
+        &self.ceilings
     }
 
     fn next_times(
@@ -1327,102 +1362,14 @@ pub trait ScheduleUseCase: Send + Sync {
         note: Note,
         ctx: &'a RequestContext,
     ) -> ScheduleFuture<'a, ScheduleRecord>;
-}
 
-impl<S, K, C> ScheduleUseCase for ScheduleService<S, K, C>
-where
-    S: ScheduleStore + QuotaLookup + 'static,
-    K: ScheduleCalendar + 'static,
-    C: Clock + 'static,
-{
-    fn namespace_of<'a>(
+    /// Acts on the schedule now (`FR-018-010`); `overlap` replaces its rule for this action only.
+    fn trigger<'a>(
         &'a self,
         principal: &'a Principal,
         id: ScheduleId,
-    ) -> ScheduleFuture<'a, NamespaceId> {
-        Box::pin(Self::namespace_of(self, principal, id))
-    }
-
-    fn create<'a>(
-        &'a self,
-        principal: &'a Principal,
-        namespace: NamespaceId,
-        document: ScheduleDocument,
+        overlap: Option<Overlap>,
+        key: &'a str,
         ctx: &'a RequestContext,
-    ) -> ScheduleFuture<'a, ScheduleRecord> {
-        Box::pin(async move {
-            let write = decode_document(document, &self.ceilings)?;
-            Self::create(self, principal, namespace, write, ctx).await
-        })
-    }
-
-    fn describe<'a>(
-        &'a self,
-        principal: &'a Principal,
-        id: ScheduleId,
-        next: u32,
-        recent: u32,
-    ) -> ScheduleFuture<'a, ScheduleDescription> {
-        Box::pin(Self::describe(self, principal, id, next, recent))
-    }
-
-    fn list<'a>(
-        &'a self,
-        principal: &'a Principal,
-        namespace: NamespaceId,
-        after: Option<ScheduleId>,
-        limit: u32,
-    ) -> ScheduleFuture<'a, Vec<ScheduleRecord>> {
-        Box::pin(Self::list(self, principal, namespace, after, limit))
-    }
-
-    fn update<'a>(
-        &'a self,
-        principal: &'a Principal,
-        id: ScheduleId,
-        document: ScheduleDocument,
-        expected_revision: u32,
-        ctx: &'a RequestContext,
-    ) -> ScheduleFuture<'a, ScheduleRecord> {
-        Box::pin(async move {
-            let write = decode_document(document, &self.ceilings)?;
-            Self::update(self, principal, id, write, expected_revision, ctx).await
-        })
-    }
-
-    fn delete<'a>(
-        &'a self,
-        principal: &'a Principal,
-        id: ScheduleId,
-        expected_revision: u32,
-        ctx: &'a RequestContext,
-    ) -> ScheduleFuture<'a, ()> {
-        Box::pin(Self::delete(
-            self,
-            principal,
-            id,
-            Some(expected_revision),
-            ctx,
-        ))
-    }
-
-    fn pause<'a>(
-        &'a self,
-        principal: &'a Principal,
-        id: ScheduleId,
-        note: Note,
-        ctx: &'a RequestContext,
-    ) -> ScheduleFuture<'a, ScheduleRecord> {
-        Box::pin(Self::pause(self, principal, id, note, ctx))
-    }
-
-    fn resume<'a>(
-        &'a self,
-        principal: &'a Principal,
-        id: ScheduleId,
-        note: Note,
-        ctx: &'a RequestContext,
-    ) -> ScheduleFuture<'a, ScheduleRecord> {
-        Box::pin(Self::resume(self, principal, id, note, ctx))
-    }
+    ) -> ScheduleFuture<'a, ActionView>;
 }

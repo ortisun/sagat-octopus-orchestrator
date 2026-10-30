@@ -542,3 +542,185 @@ async fn an_identifier_that_is_not_one_is_not_found() {
         .await;
     assert_eq!(status, 404);
 }
+
+impl Rig {
+    /// A request with an Idempotency-Key of the test's choosing.
+    async fn keyed(
+        &self,
+        sub: &str,
+        method: Method,
+        path: &str,
+        key: &str,
+        body: Option<&Value>,
+    ) -> (u16, Value) {
+        let mut request = self
+            .p
+            .api
+            .as_user(method, path, sub, TENANT)
+            .header("idempotency-key", key);
+        if let Some(body) = body {
+            request = request.json(body);
+        }
+        let response = request.send().await.expect("send");
+        let status = response.status().as_u16();
+        let text = response.text().await.expect("body");
+        (status, serde_json::from_str(&text).unwrap_or(Value::Null))
+    }
+}
+
+#[tokio::test]
+async fn trigger_now_acts_at_once_and_a_repeat_with_the_key_is_told_the_same() {
+    let r = rig().await;
+    let id = Rig::id(&r.create("manual").await);
+    let trigger = format!("{}/trigger", r.schedule(&id));
+
+    // the body is optional
+    let (status, first) = r
+        .keyed(HUMAN, Method::POST, &trigger, "trigger-key-0001", None)
+        .await;
+    assert_eq!(status, 202, "{first}");
+    assert_eq!(first["kind"], "TRIGGERED");
+    assert_eq!(first["origin"], "MANUAL");
+    assert_eq!(first["outcome"], "STARTED");
+    let run = first["runId"].as_str().expect("a run").to_owned();
+
+    let (status, again) = r
+        .keyed(HUMAN, Method::POST, &trigger, "trigger-key-0001", None)
+        .await;
+    assert_eq!(status, 202, "{again}");
+    assert_eq!(again, first, "the answer of the first request");
+    let (status, reused) = r
+        .keyed(
+            HUMAN,
+            Method::POST,
+            &trigger,
+            "trigger-key-0001",
+            Some(&json!({"overlap": "ALLOW_ALL"})),
+        )
+        .await;
+    assert_eq!(status, 409, "{reused}");
+    assert_eq!(reason(&reused), "IDEMPOTENCY_KEY_REUSED");
+
+    // the schedule shows it
+    let (_, described) = r.p.rest(Method::GET, &r.schedule(&id), None).await;
+    assert_eq!(described["openRuns"], json!([run]));
+    assert_eq!(described["recentActions"][0]["outcome"], "STARTED");
+    assert_eq!(described["recentActions"][0]["origin"], "MANUAL");
+    assert_eq!(described["counters"]["STARTED"], 1);
+
+    // while that run is open the schedule's own rule (skip) applies, unless the request overrides it
+    let (status, skipped) = r
+        .keyed(
+            HUMAN,
+            Method::POST,
+            &trigger,
+            "trigger-key-0002",
+            Some(&json!({})),
+        )
+        .await;
+    assert_eq!(status, 202, "{skipped}");
+    assert_eq!(skipped["outcome"], "SKIPPED_OVERLAP");
+    let (status, allowed) = r
+        .keyed(
+            HUMAN,
+            Method::POST,
+            &trigger,
+            "trigger-key-0003",
+            Some(&json!({"overlap": "ALLOW_ALL"})),
+        )
+        .await;
+    assert_eq!(status, 202, "{allowed}");
+    assert_eq!(allowed["outcome"], "STARTED");
+}
+
+#[tokio::test]
+async fn trigger_now_works_while_paused_and_refuses_a_bad_request() {
+    let r = rig().await;
+    let id = Rig::id(&r.create("paused-manual").await);
+    let (status, _) =
+        r.p.rest(
+            Method::POST,
+            &format!("{}/pause", r.schedule(&id)),
+            Some(&json!({"note": "freeze"})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    let trigger = format!("{}/trigger", r.schedule(&id));
+    let (status, started) = r
+        .keyed(HUMAN, Method::POST, &trigger, "trigger-key-0001", None)
+        .await;
+    assert_eq!(status, 202, "{started}");
+    assert_eq!(started["outcome"], "STARTED");
+    let (_, read) = r.p.rest(Method::GET, &r.schedule(&id), None).await;
+    assert_eq!(read["state"], "PAUSED", "it stays paused");
+
+    for (n, bad) in [
+        json!({"overlap": "SOMETIMES"}),
+        json!({"surprise": true}),
+        json!("text"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (status, refused) = r
+            .keyed(
+                HUMAN,
+                Method::POST,
+                &trigger,
+                &format!("trigger-bad-000{n}"),
+                Some(&bad),
+            )
+            .await;
+        assert_eq!(status, 422, "{bad} -> {refused}");
+    }
+    // the key is required
+    let response =
+        r.p.api
+            .as_user(Method::POST, &trigger, HUMAN, TENANT)
+            .send()
+            .await
+            .expect("send");
+    assert_eq!(response.status(), 400);
+}
+
+#[tokio::test]
+async fn only_those_who_may_start_runs_can_trigger_and_nobody_outside_the_namespace() {
+    let r = rig().await;
+    let id = Rig::id(&r.create("guarded-manual").await);
+    r.p.grant(r.p.tenant, "vera", Role::Viewer).await;
+    r.p.grant(r.p.tenant, "dev", Role::Developer).await;
+    let trigger = format!("{}/trigger", r.schedule(&id));
+
+    let (status, _) = r
+        .keyed("vera", Method::POST, &trigger, "trigger-key-0001", None)
+        .await;
+    assert_eq!(status, 403, "a viewer reads");
+    let (status, started) = r
+        .keyed("dev", Method::POST, &trigger, "trigger-key-0002", None)
+        .await;
+    assert_eq!(status, 202, "{started}");
+
+    let workspace = r.p.api.create_workspace(HUMAN, TENANT, "second").await;
+    let other =
+        r.p.api
+            .create_namespace(HUMAN, TENANT, &workspace, "elsewhere", "dev")
+            .await;
+    let (status, _) = r
+        .keyed(
+            HUMAN,
+            Method::POST,
+            &format!("/namespaces/{other}/schedules/{id}/trigger"),
+            "trigger-key-0003",
+            None,
+        )
+        .await;
+    assert_eq!(status, 404, "another namespace");
+    let response =
+        r.p.api
+            .as_user(Method::POST, &trigger, "bob", "globex")
+            .header("idempotency-key", "trigger-key-0004")
+            .send()
+            .await
+            .expect("send");
+    assert_eq!(response.status(), 404, "another tenant");
+}

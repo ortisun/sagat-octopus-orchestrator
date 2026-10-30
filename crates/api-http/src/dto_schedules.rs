@@ -90,6 +90,37 @@ pub struct ScheduleNoteBody {
     pub note: String,
 }
 
+/// The body of `triggerSchedule`; the whole body is optional.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TriggerBody {
+    #[serde(default)]
+    pub overlap: Option<OverlapBody>,
+}
+
+/// The overlap rules a request may name.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum OverlapBody {
+    Skip,
+    BufferOne,
+    BufferAll,
+    CancelOther,
+    AllowAll,
+}
+
+impl From<OverlapBody> for sagat_domain::schedules::Overlap {
+    fn from(overlap: OverlapBody) -> Self {
+        match overlap {
+            OverlapBody::Skip => Self::Skip,
+            OverlapBody::BufferOne => Self::BufferOne,
+            OverlapBody::BufferAll => Self::BufferAll,
+            OverlapBody::CancelOther => Self::CancelOther,
+            OverlapBody::AllowAll => Self::AllowAll,
+        }
+    }
+}
+
 /// A schedule. The input of its runs is described by its digest, never returned.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

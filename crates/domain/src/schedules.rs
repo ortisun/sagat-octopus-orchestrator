@@ -558,6 +558,13 @@ impl Policies {
         self.overlap
     }
 
+    /// The same policies with another overlap rule: what a trigger-now that overrides it uses.
+    #[must_use]
+    pub const fn with_overlap(mut self, overlap: Overlap) -> Self {
+        self.overlap = overlap;
+        self
+    }
+
     #[must_use]
     pub const fn catchup_window_ms(&self) -> u64 {
         self.catchup_window_ms

@@ -7,6 +7,7 @@
 //! that is gone), never applies it twice.
 
 use axum::Json;
+use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use sagat_application::api_admission::{ApiOperation, ApiTarget};
@@ -17,8 +18,8 @@ use serde::Deserialize;
 
 use crate::admission::admit;
 use crate::dto_schedules::{
-    ScheduleBody, ScheduleDescriptionBody, ScheduleNoteBody, SchedulePageBody, ScheduleUpdateBody,
-    ScheduleWriteBody,
+    ScheduleActionBody, ScheduleBody, ScheduleDescriptionBody, ScheduleNoteBody, SchedulePageBody,
+    ScheduleUpdateBody, ScheduleWriteBody, TriggerBody,
 };
 use crate::error::ApiError;
 use crate::extract::{ApiJson, Caller};
@@ -275,4 +276,42 @@ pub async fn resume_schedule<B: Governance>(
         .resume(&caller.session.principal, id, note, &caller.ctx)
         .await?;
     Ok(Json(ScheduleBody::from(&resumed)))
+}
+
+pub async fn trigger_schedule<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((namespace, id)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<(StatusCode, Json<ScheduleActionBody>), ApiError> {
+    let key = idempotency_key(&headers)?;
+    // the whole body is optional
+    let request = if body.is_empty() {
+        TriggerBody::default()
+    } else {
+        serde_json::from_slice::<TriggerBody>(&body)
+            .map_err(|_| ApiError::validation("request body does not match the expected schema"))?
+    };
+    let id = admitted_schedule(
+        &state,
+        &caller,
+        &namespace,
+        &id,
+        ApiOperation::ScheduleTrigger,
+    )
+    .await?;
+    let action = schedules(&state)?
+        .trigger(
+            &caller.session.principal,
+            id,
+            request.overlap.map(Into::into),
+            key,
+            &caller.ctx,
+        )
+        .await?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(ScheduleActionBody::from(&action)),
+    ))
 }

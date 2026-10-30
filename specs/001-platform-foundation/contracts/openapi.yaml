@@ -3858,6 +3858,35 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/schedules/{scheduleId}/trigger:
+    post:
+      operationId: triggerSchedule
+      summary: Act on a schedule now, also while it is paused
+      tags: [Schedules]
+      x-implemented: '018'
+      description: |
+        Needs `schedule:operate` and `run:start`. One `TRIGGERED` action at the time of the request (`origin` `MANUAL`: it never shares an identity with a scheduled time, even at the same instant), with the overlap rule of the schedule unless the body names another for this action only. It does not use up a remaining action, is not limited by the catch-up window and leaves a time that is owed alone. The run is the schedule's (`startedBy` is `system:schedule:<id>`) under the role of the caller. The answer says what became of the action: a run `STARTED`, or `BUFFERED`, `SKIPPED_OVERLAP`, `DROPPED_BUFFER_FULL`.
+        The same `Idempotency-Key` and request give the same action; the same key with another request is `409` `IDEMPOTENCY_KEY_REUSED`. A schedule a cron trigger owns is `409` `SCHEDULE_TRIGGER_HANDOVER_PENDING` until the operator hands the triggers over.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScheduleId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ScheduleTriggerRequest'}
+      responses:
+        '202': {description: 'What became of the action', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScheduleActionRecord'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
 components:
   securitySchemes:
     webhookHmac: {type: apiKey, in: header, name: X-Octopus-Signature, description: 'Required only for endpoints configured with the HMAC profile.'}
@@ -6748,6 +6777,11 @@ components:
           properties:
             expectedRevision: {type: integer, minimum: 1}
       unevaluatedProperties: false
+    ScheduleTriggerRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        overlap: {$ref: '#/components/schemas/ScheduleOverlapPolicy'}
     ScheduleNote:
       type: object
       additionalProperties: false

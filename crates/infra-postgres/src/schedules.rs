@@ -12,8 +12,8 @@ use sagat_application::schedule_codec::{
     target_to_json,
 };
 use sagat_application::schedules::{
-    ActionView, BufferedAction, DueSchedule, NewSchedule, Reconcile, RecordedAction, Revise,
-    ScheduleActivity, ScheduleAdmission, ScheduleDecision, ScheduleOrigin, ScheduleRecord,
+    ActionDedupe, ActionView, BufferedAction, DueSchedule, NewSchedule, Reconcile, RecordedAction,
+    Revise, ScheduleActivity, ScheduleAdmission, ScheduleDecision, ScheduleOrigin, ScheduleRecord,
     ScheduleState, ScheduleStore, ShardFence, StateChange, TargetCheck,
 };
 use sagat_domain::audit::AuditRecord;
@@ -21,7 +21,7 @@ use sagat_domain::execution::{RunId, RunStatus};
 use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_domain::quota::QuotaResource;
 use sagat_domain::schedules::{
-    ActionKind, Ceilings, Origin, Outcome, ScheduleId, ScheduleName, ScheduleTarget, VersionPolicy,
+    ActionKind, Ceilings, Outcome, ScheduleId, ScheduleName, ScheduleTarget, VersionPolicy,
 };
 use sagat_domain::sharding::Shard;
 use serde_json::Value;
@@ -199,6 +199,10 @@ pub(crate) async fn record_start(
     admission: &ScheduleAdmission,
     now: OffsetDateTime,
 ) -> Result<(), StoreError> {
+    if let Some(manual) = &admission.manual {
+        remember_request(conn, tenant, &manual.dedupe).await?;
+        insert_audit(conn, &manual.audit).await?;
+    }
     let released = sqlx::query(
         "UPDATE schedule_actions SET outcome = 'STARTED', run_id = $5, actual_at = $6, decided_at = $6 \
          WHERE tenant_id = $1 AND schedule_id = $2 AND origin = $3 AND nominal_at = $4 \
@@ -252,8 +256,8 @@ pub(crate) async fn record_start(
     }
     sqlx::query(
         "UPDATE schedules SET state_version = state_version + 1, next_action_at = $3, \
-         next_actual_at = $4, retry_at = NULL, remaining_actions = $5, \
-         tracked_runs = array_append(tracked_runs, $6), \
+         next_actual_at = $4, retry_at = CASE WHEN $10 THEN retry_at ELSE NULL END, \
+         remaining_actions = $5, tracked_runs = array_append(tracked_runs, $6), \
          buffered = GREATEST(buffered - $8, 0), counters = $9, updated_at = $7, \
          recheck_at = CASE WHEN GREATEST(buffered - $8, 0) > 0 THEN $7 + interval '5 seconds' ELSE NULL END \
          WHERE tenant_id = $1 AND id = $2",
@@ -272,10 +276,57 @@ pub(crate) async fn record_start(
     .bind(now)
     .bind(i32::from(released))
     .bind(counters)
+    // a manual action is not the time that is owed
+    .bind(admission.kind == ActionKind::Triggered)
     .execute(&mut *conn)
     .await
     .map_err(store_error)?;
     Ok(())
+}
+
+/// Records the key of a manual request in the transaction that makes its action. `StateConflict`
+/// when the key is already recorded: a request with the same key committed first, and the caller
+/// starts over, which turns this one into a replay.
+async fn remember_request(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    dedupe: &ActionDedupe,
+) -> Result<(), StoreError> {
+    let hash = crate::definitions::hash(&dedupe.idempotency.fingerprint);
+    if crate::definitions::remember(conn, tenant, &dedupe.idempotency, &hash, &dedupe.resource)
+        .await?
+    {
+        Ok(())
+    } else {
+        Err(StoreError::StateConflict(
+            "a request with this key was already applied",
+        ))
+    }
+}
+
+/// An action row as `ActionView`.
+fn action_view(row: &PgRow) -> Result<ActionView, StoreError> {
+    let kind: ActionKind = col::<String>(row, "kind")?
+        .parse()
+        .map_err(|()| corrupt("action kind"))?;
+    let count: Option<i32> = col(row, "summary_count")?;
+    Ok(ActionView {
+        nominal_at: col(row, "nominal_at")?,
+        actual_at: col(row, "actual_at")?,
+        kind,
+        origin: kind.origin(),
+        revision: u32::try_from(col::<i32>(row, "revision")?)
+            .map_err(|_| corrupt("action revision"))?,
+        outcome: col(row, "outcome")?,
+        reason: col(row, "reason")?,
+        run_id: col(row, "run_id")?,
+        backfill_id: col(row, "backfill_id")?,
+        summary_count: count
+            .map(|n| u32::try_from(n).map_err(|_| corrupt("summary count")))
+            .transpose()?,
+        summary_last_nominal_at: col(row, "summary_last_at")?,
+        decided_at: col(row, "decided_at")?,
+    })
 }
 
 /// The schedule store over PostgreSQL.
@@ -784,6 +835,45 @@ impl ScheduleStore for PgScheduleStore {
         Ok(true)
     }
 
+    async fn trigger_replay(
+        &self,
+        tenant: TenantId,
+        idempotency: &sagat_application::definitions::Idempotency,
+    ) -> Result<Option<ActionView>, StoreError> {
+        let mut conn = self.pool.acquire().await.map_err(store_error)?;
+        let hash = crate::definitions::hash(&idempotency.fingerprint);
+        let Some(resource) =
+            crate::definitions::replay(&mut conn, tenant, idempotency, &hash).await?
+        else {
+            return Ok(None);
+        };
+        // the resource is the identity of the action: `manual-{epoch µs}`
+        let micros: i128 = resource
+            .strip_prefix("manual-")
+            .and_then(|n| n.parse().ok())
+            .ok_or_else(|| corrupt("manual action identity"))?;
+        let nominal = OffsetDateTime::from_unix_timestamp_nanos(micros * 1_000)
+            .map_err(|_| corrupt("manual action time"))?;
+        let schedule = idempotency
+            .scope
+            .strip_prefix("schedule-trigger:")
+            .and_then(|id| id.parse::<ScheduleId>().ok())
+            .ok_or_else(|| corrupt("manual action scope"))?;
+        let row = sqlx::query(
+            "SELECT nominal_at, actual_at, kind, revision, outcome, reason, run_id, backfill_id, \
+                    summary_count, summary_last_at, decided_at \
+             FROM schedule_actions \
+             WHERE tenant_id = $1 AND schedule_id = $2 AND origin = 'MANUAL' AND nominal_at = $3",
+        )
+        .bind(tenant.as_uuid())
+        .bind(schedule.as_uuid())
+        .bind(nominal)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(store_error)?;
+        row.as_ref().map(action_view).transpose()
+    }
+
     async fn activity(
         &self,
         tenant: TenantId,
@@ -824,33 +914,7 @@ impl ScheduleStore for PgScheduleStore {
         .map_err(store_error)?;
         let recent = rows
             .iter()
-            .map(|row| {
-                let kind: ActionKind = col::<String>(row, "kind")?
-                    .parse()
-                    .map_err(|()| corrupt("action kind"))?;
-                let count: Option<i32> = col(row, "summary_count")?;
-                Ok(ActionView {
-                    nominal_at: col(row, "nominal_at")?,
-                    actual_at: col(row, "actual_at")?,
-                    kind,
-                    origin: if kind == ActionKind::Triggered {
-                        Origin::Manual
-                    } else {
-                        Origin::Spec
-                    },
-                    revision: u32::try_from(col::<i32>(row, "revision")?)
-                        .map_err(|_| corrupt("action revision"))?,
-                    outcome: col(row, "outcome")?,
-                    reason: col(row, "reason")?,
-                    run_id: col(row, "run_id")?,
-                    backfill_id: col(row, "backfill_id")?,
-                    summary_count: count
-                        .map(|n| u32::try_from(n).map_err(|_| corrupt("summary count")))
-                        .transpose()?,
-                    summary_last_nominal_at: col(row, "summary_last_at")?,
-                    decided_at: col(row, "decided_at")?,
-                })
-            })
+            .map(action_view)
             .collect::<Result<Vec<_>, StoreError>>()?;
         Ok(ScheduleActivity { counters, recent })
     }
@@ -961,15 +1025,24 @@ impl ScheduleStore for PgScheduleStore {
         audit: Option<&AuditRecord>,
     ) -> Result<(), StoreError> {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        // a manual action works on a paused schedule too, and is not the time that is owed
+        let manual = !decision.actions.is_empty()
+            && decision
+                .actions
+                .iter()
+                .all(|a| a.kind == ActionKind::Triggered);
         lock_schedule(
             &mut tx,
             decision.tenant_id,
             decision.schedule,
             decision.fence.as_ref(),
             decision.expected_state_version,
-            false,
+            manual,
         )
         .await?;
+        if let Some(dedupe) = &decision.dedupe {
+            remember_request(&mut tx, decision.tenant_id, dedupe).await?;
+        }
         let mut counters: Value =
             sqlx::query_scalar("SELECT counters FROM schedules WHERE tenant_id = $1 AND id = $2")
                 .bind(decision.tenant_id.as_uuid())
@@ -998,8 +1071,8 @@ impl ScheduleStore for PgScheduleStore {
         }
         sqlx::query(
             "UPDATE schedules SET state_version = state_version + 1, next_action_at = $3, \
-             next_actual_at = $4, retry_at = NULL, remaining_actions = $5, \
-             buffered = buffered + $6, counters = $7, \
+             next_actual_at = $4, retry_at = CASE WHEN $10 THEN retry_at ELSE NULL END, \
+             remaining_actions = $5, buffered = buffered + $6, counters = $7, \
              recheck_at = CASE WHEN buffered + $6 > 0 THEN $9 + interval '5 seconds' ELSE NULL END, \
              state = CASE WHEN $8::text IS NULL THEN state ELSE 'PAUSED' END, \
              note = COALESCE($8, note), note_by = CASE WHEN $8::text IS NULL THEN note_by ELSE 'system' END, \
@@ -1020,6 +1093,7 @@ impl ScheduleStore for PgScheduleStore {
         .bind(counters)
         .bind(decision.pause.as_ref().map(|p| p.note.as_str()))
         .bind(decision.at)
+        .bind(manual)
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;

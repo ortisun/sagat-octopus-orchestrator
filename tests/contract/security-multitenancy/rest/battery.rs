@@ -163,6 +163,7 @@ fn body_of(operation: &str) -> Option<Value> {
             "expectedRevision": 1
         }),
         "pauseSchedule" | "resumeSchedule" => json!({"note": "cross-tenant battery probe"}),
+        "triggerSchedule" => json!({"overlap": "ALLOW_ALL"}),
         // Feature 008: an administrator of another tenant draining the victim's worker.
         "drainWorker" | "undrainWorker" => {
             json!({"reason": "cross-tenant battery probe"})

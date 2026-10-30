@@ -572,6 +572,10 @@ where
                     "/namespaces/{namespace_id}/schedules/{schedule_id}/resume",
                     axum::routing::post(sc::resume_schedule::<B<S, C, G>>),
                 )
+                .route(
+                    "/namespaces/{namespace_id}/schedules/{schedule_id}/trigger",
+                    axum::routing::post(sc::trigger_schedule::<B<S, C, G>>),
+                )
                 .layer(RequestBodyLimitLayer::new(sc::SCHEDULE_MAX_BODY_BYTES)),
         );
     }

@@ -2730,6 +2730,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/namespaces/{namespaceId}/schedules/{scheduleId}/trigger": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Act on a schedule now, also while it is paused
+         * @description Needs `schedule:operate` and `run:start`. One `TRIGGERED` action at the time of the request (`origin` `MANUAL`: it never shares an identity with a scheduled time, even at the same instant), with the overlap rule of the schedule unless the body names another for this action only. It does not use up a remaining action, is not limited by the catch-up window and leaves a time that is owed alone. The run is the schedule's (`startedBy` is `system:schedule:<id>`) under the role of the caller. The answer says what became of the action: a run `STARTED`, or `BUFFERED`, `SKIPPED_OVERLAP`, `DROPPED_BUFFER_FULL`.
+         *     The same `Idempotency-Key` and request give the same action; the same key with another request is `409` `IDEMPOTENCY_KEY_REUSED`. A schedule a cron trigger owns is `409` `SCHEDULE_TRIGGER_HANDOVER_PENDING` until the operator hands the triggers over.
+         */
+        post: operations["triggerSchedule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -5316,6 +5337,9 @@ export interface components {
         ScheduleWrite: components["schemas"]["ScheduleFields"];
         ScheduleUpdate: components["schemas"]["ScheduleFields"] & {
             expectedRevision: number;
+        };
+        ScheduleTriggerRequest: {
+            overlap?: components["schemas"]["ScheduleOverlapPolicy"];
         };
         ScheduleNote: {
             note: string;
@@ -11317,6 +11341,46 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Schedule"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    triggerSchedule: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                scheduleId: components["parameters"]["ScheduleId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ScheduleTriggerRequest"];
+            };
+        };
+        responses: {
+            /** @description What became of the action */
+            202: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleActionRecord"];
                 };
             };
             400: components["responses"]["BadRequest"];

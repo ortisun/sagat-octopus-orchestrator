@@ -533,14 +533,31 @@ pub async fn serve_with_admin(
         serve.runbook_base.clone(),
     ));
     if serve.schedules_enabled {
-        governance = governance.with_schedules(Arc::new(
-            sagat_application::schedules::ScheduleService::new(
-                sagat_infra_postgres::PgScheduleStore::new(pool.clone()),
-                sagat_infra_ir::schedule_calendar::SpecCalendar,
-                SystemClock,
-                sagat_domain::schedules::Ceilings::default(),
-            ),
-        ));
+        let ceilings = sagat_domain::schedules::Ceilings::default();
+        let schedules = || sagat_infra_postgres::PgScheduleStore::new(pool.clone());
+        governance =
+            governance.with_schedules(Arc::new(sagat_application::schedule_api::ScheduleApi::new(
+                sagat_application::schedules::ScheduleService::new(
+                    schedules(),
+                    sagat_infra_ir::schedule_calendar::SpecCalendar,
+                    SystemClock,
+                    ceilings,
+                ),
+                // trigger-now starts a run in this process, as the schedule: it needs the run service
+                sagat_application::schedule_firing::ScheduleFiring::new(
+                    schedules(),
+                    sagat_infra_ir::schedule_calendar::SpecCalendar,
+                    SystemClock,
+                    sagat_infra_postgres::PgIdentityStore::new(pool.clone()),
+                    sagat_application::runs::RunService::new(
+                        executions.clone(),
+                        SystemClock,
+                        sagat_application::execution::Engine::new(sagat_infra_ir::JsonEvaluator),
+                        cache.clone(),
+                    ),
+                    ceilings,
+                ),
+            )));
     }
     let provider: Option<Arc<dyn sagat_application::secret_provider::SecretProvider>> =
         match &serve.openbao {

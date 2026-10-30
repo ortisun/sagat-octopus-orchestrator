@@ -75,7 +75,7 @@ pub(crate) fn t0() -> OffsetDateTime {
     OffsetDateTime::from_unix_timestamp(1_793_188_800).expect("instant")
 }
 
-async fn fixture() -> Fixture {
+pub(crate) async fn fixture() -> Fixture {
     fixture_from(t0()).await
 }
 
@@ -152,7 +152,7 @@ impl Fixture {
         }
     }
 
-    async fn fire(&self, schedule: &ScheduleRecord) -> Fired {
+    pub(crate) async fn fire(&self, schedule: &ScheduleRecord) -> Fired {
         self.firing
             .fire(&self.due(schedule), None)
             .await
@@ -160,7 +160,7 @@ impl Fixture {
     }
 
     /// Fires until the schedule has nothing more to do now; returns how many steps were taken.
-    async fn drain(&self, schedule: &ScheduleRecord) -> u32 {
+    pub(crate) async fn drain(&self, schedule: &ScheduleRecord) -> u32 {
         let mut steps = 0;
         for _ in 0..50 {
             match self.fire(schedule).await {
@@ -198,7 +198,7 @@ impl Fixture {
     }
 
     /// Ends a run the way the schedule sees it: only its status matters here.
-    async fn end(&self, run: Uuid, status: &str) {
+    pub(crate) async fn end(&self, run: Uuid, status: &str) {
         sqlx::query("UPDATE runs SET status = $2, finished_at = now() WHERE id = $1")
             .bind(run)
             .bind(status)

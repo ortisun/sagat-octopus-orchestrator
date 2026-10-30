@@ -391,14 +391,27 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         SystemClock,
         "docs/runbooks/alerts.md",
     ))
-    .with_schedules(Arc::new(
+    .with_schedules(Arc::new(sagat_application::schedule_api::ScheduleApi::new(
         sagat_application::schedules::ScheduleService::new(
             sagat_infra_postgres::PgScheduleStore::new(api_pool.clone()),
             sagat_infra_ir::schedule_calendar::SpecCalendar,
             SystemClock,
             sagat_domain::schedules::Ceilings::default(),
         ),
-    ))
+        sagat_application::schedule_firing::ScheduleFiring::new(
+            sagat_infra_postgres::PgScheduleStore::new(api_pool.clone()),
+            sagat_infra_ir::schedule_calendar::SpecCalendar,
+            SystemClock,
+            sagat_infra_postgres::PgIdentityStore::new(api_pool.clone()),
+            sagat_application::runs::RunService::new(
+                executions.clone(),
+                SystemClock,
+                Engine::new(JsonEvaluator),
+                cache.clone(),
+            ),
+            sagat_domain::schedules::Ceilings::default(),
+        ),
+    )))
     .with_secrets(SecretService::new(
         executions.clone(),
         SystemClock,

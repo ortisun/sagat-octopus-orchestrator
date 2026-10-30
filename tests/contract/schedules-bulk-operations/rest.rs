@@ -16,6 +16,7 @@ const LIST: &str = "/namespaces/{namespaceId}/schedules";
 const ONE: &str = "/namespaces/{namespaceId}/schedules/{scheduleId}";
 const PAUSE: &str = "/namespaces/{namespaceId}/schedules/{scheduleId}/pause";
 const RESUME: &str = "/namespaces/{namespaceId}/schedules/{scheduleId}/resume";
+const TRIGGER: &str = "/namespaces/{namespaceId}/schedules/{scheduleId}/trigger";
 
 fn keyed(s: Scenario, n: u32) -> Scenario {
     s.with_header("idempotency-key", format!("contract-key-{n:04}"))
@@ -298,6 +299,45 @@ async fn every_schedule_operation_conforms_to_the_contract_on_its_normal_and_err
     .await;
     record((m, t, s));
 
+    // ---- trigger now
+    for (n, (who, doc, expect)) in [
+        (alice.clone(), None, 202),
+        (alice.clone(), Some(json!({"overlap": "ALLOW_ALL"})), 202),
+        (alice.clone(), Some(json!({"overlap": "SOMETIMES"})), 422),
+        (vera.clone(), None, 403),
+        (bob.clone(), None, 404),
+        (As::Anonymous, None, 401),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let n = u32::try_from(n).expect("small") + 70;
+        let (m, t, s, _) = check_body(
+            &api,
+            &spec,
+            &keyed(
+                scenario("POST", TRIGGER, &format!("{one}/trigger"), who, doc, expect),
+                n,
+            ),
+        )
+        .await;
+        record((m, t, s));
+    }
+    let (m, t, s, _) = check_body(
+        &api,
+        &spec,
+        &scenario(
+            "POST",
+            TRIGGER,
+            &format!("{one}/trigger"),
+            alice.clone(),
+            None,
+            400,
+        ),
+    )
+    .await;
+    record((m, t, s));
+
     // ---- delete
     for (n, (path, who, expect)) in [
         (format!("{one}?expectedRevision=1"), alice.clone(), 409),
@@ -329,8 +369,8 @@ async fn every_schedule_operation_conforms_to_the_contract_on_its_normal_and_err
         .collect();
     assert_eq!(
         implemented.len(),
-        7,
-        "the contract names seven schedule operations"
+        8,
+        "the contract names eight schedule operations"
     );
     for operation in &implemented {
         assert!(

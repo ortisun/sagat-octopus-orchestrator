@@ -45,6 +45,7 @@ pub mod quotas;
 pub mod reveal_grants;
 pub mod runs;
 pub mod sandbox;
+pub mod schedule_api;
 pub mod schedule_codec;
 pub mod schedule_firing;
 pub mod schedules;
