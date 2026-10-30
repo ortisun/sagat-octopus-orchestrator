@@ -6,16 +6,19 @@
 //! with their tasks (T018-014..).
 
 use sagat_application::error::{ConflictKind, StoreError};
+use sagat_application::quotas::QuotaLookup;
 use sagat_application::schedule_codec::{
     policies_from_json, policies_to_json, spec_from_json, spec_to_json, target_from_json,
     target_to_json,
 };
 use sagat_application::schedules::{
     NewSchedule, Revise, ScheduleOrigin, ScheduleRecord, ScheduleState, ScheduleStore, StateChange,
+    TargetCheck,
 };
 use sagat_domain::audit::AuditRecord;
 use sagat_domain::identity::{NamespaceId, TenantId};
-use sagat_domain::schedules::{Ceilings, ScheduleId, ScheduleName};
+use sagat_domain::quota::QuotaResource;
+use sagat_domain::schedules::{Ceilings, ScheduleId, ScheduleName, ScheduleTarget, VersionPolicy};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use sqlx::PgPool;
@@ -25,7 +28,7 @@ use uuid::Uuid;
 
 use crate::identity::{col, corrupt, insert_audit, store_error};
 use crate::pool::BeginSafely;
-use crate::quotas::{ensure_room_for_schedule, lock_schedules};
+use crate::quotas::{effective, ensure_room_for_schedule, lock_schedules};
 
 /// The schedule store over PostgreSQL.
 #[derive(Clone)]
@@ -114,7 +117,69 @@ fn record_from(row: &PgRow) -> Result<ScheduleRecord, StoreError> {
     })
 }
 
+impl QuotaLookup for PgScheduleStore {
+    async fn effective_limit(
+        &self,
+        tenant: TenantId,
+        namespace: Option<NamespaceId>,
+        resource: QuotaResource,
+    ) -> Result<u64, StoreError> {
+        effective(&self.pool, tenant, namespace, resource).await
+    }
+}
+
 impl ScheduleStore for PgScheduleStore {
+    async fn namespace_exists(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+    ) -> Result<bool, StoreError> {
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM namespaces WHERE tenant_id = $1 AND id = $2)",
+        )
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(store_error)
+    }
+
+    async fn target_check(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        target: &ScheduleTarget,
+    ) -> Result<TargetCheck, StoreError> {
+        let workflow: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM workflows WHERE tenant_id = $1 AND namespace_id = $2 AND id = $3)",
+        )
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(target.workflow().as_uuid())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(store_error)?;
+        if !workflow {
+            return Ok(TargetCheck::WorkflowMissing);
+        }
+        if let VersionPolicy::Pinned(version) = target.version() {
+            let found: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM workflow_versions \
+                 WHERE tenant_id = $1 AND workflow_id = $2 AND id = $3)",
+            )
+            .bind(tenant.as_uuid())
+            .bind(target.workflow().as_uuid())
+            .bind(version.as_uuid())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(store_error)?;
+            if !found {
+                return Ok(TargetCheck::VersionMissing);
+            }
+        }
+        Ok(TargetCheck::Found)
+    }
+
     async fn create_schedule(
         &self,
         new: &NewSchedule,
@@ -261,14 +326,13 @@ impl ScheduleStore for PgScheduleStore {
                 "a revision follows the one the caller saw and leaves the schedule active or paused",
             ));
         }
-        if let Some(input) = &revise.input {
-            if Sha256::digest(&input.bytes).as_slice() != input.digest.as_slice()
-                || r.input_digest != Some(input.digest)
-            {
-                return Err(StoreError::StateConflict(
-                    "the input of a schedule must match its digest",
-                ));
-            }
+        if let Some(input) = &revise.input
+            && (Sha256::digest(&input.bytes).as_slice() != input.digest.as_slice()
+                || r.input_digest != Some(input.digest))
+        {
+            return Err(StoreError::StateConflict(
+                "the input of a schedule must match its digest",
+            ));
         }
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         // the fence first (a rename claims a name of the namespace), then the row

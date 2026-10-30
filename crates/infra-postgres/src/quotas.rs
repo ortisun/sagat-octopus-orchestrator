@@ -480,7 +480,7 @@ pub(crate) async fn ensure_room_for_secret(
     judge(QuotaResource::Secrets, count, limit)
 }
 
-async fn effective(
+pub(crate) async fn effective(
     pool: &PgPool,
     tenant: TenantId,
     namespace: Option<NamespaceId>,

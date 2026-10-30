@@ -638,6 +638,23 @@ impl ApiError {
                 e.parts.details = Some(json!({ "reason": "STATE_CONFLICT" }));
                 e
             }
+            AppError::InvalidSchedule { reason, field } => {
+                let mut e = Self::validation(format!("the schedule is not acceptable: {reason}"));
+                e.parts.details = Some(match field {
+                    Some(field) => json!({ "reason": reason, "field": field }),
+                    None => json!({ "reason": reason }),
+                });
+                e
+            }
+            AppError::ScheduleConflict { reason } => {
+                let mut e = Self::new(
+                    StatusCode::CONFLICT,
+                    ErrorCode::Conflict,
+                    "the schedule is in a state that cannot take this request",
+                );
+                e.parts.details = Some(json!({ "reason": reason }));
+                e
+            }
             AppError::Invalid(inner) => Self::validation(inner.to_string()),
             AppError::InvalidScript(inner) => {
                 let mut e = Self::validation(inner.to_string());

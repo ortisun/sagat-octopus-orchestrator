@@ -131,6 +131,17 @@ pub enum AppError {
     /// A request the *current state* of the resource cannot accept (cancelling a finished run).
     #[error("conflict with the current state: {0}")]
     StateConflict(&'static str),
+    /// A schedule (feature 018) that is not acceptable: `reason` is the closed `details.reason`
+    /// of the contract and `field` the place of the request it concerns. Never a payload.
+    #[error("invalid schedule: {reason}")]
+    InvalidSchedule {
+        reason: &'static str,
+        field: Option<String>,
+    },
+    /// A schedule that is in a state the request cannot be taken in (`details.reason` of the
+    /// contract): owned by a cron trigger, or waiting for the trigger handover.
+    #[error("schedule conflict: {reason}")]
+    ScheduleConflict { reason: &'static str },
     /// The request was well-formed but violates a domain rule.
     #[error("invalid input: {0}")]
     Invalid(IdentityError),

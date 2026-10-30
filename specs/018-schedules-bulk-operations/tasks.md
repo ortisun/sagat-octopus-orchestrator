@@ -161,15 +161,21 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
 - [ ] T018-016 [US1] `ScheduleService` and `ScheduleFiring` (version policy, input check at action,
   `nominalTimeField`, business-id prefix, retry backoff) — `crates/application/src/schedules.rs` —
   tests over the real store — FR-018-001, FR-018-005, FR-018-016.
-  *Part done 2026-10-29 (task stays open).* Done: what the service stands on, with no service yet. Domain: `ScheduleId`,
-  `ScheduleTarget` (workflow, active or pinned version, run timeout, nominal-time field, business-id prefix; the id of an
-  action is `<prefix>-<nominal time>`, refused rather than truncated past 200 characters) and the audit resource types
-  `schedule` and `batch_job`. Adapter: `infra-ir/src/schedule_codec.rs`, the strict JSON codec of the spec, the policies and
-  the target (unknown fields refused with their path, defaults written out in the canonical form, times normalised to UTC).
-  Evidence: `schedule_target` 8 passed; `cargo test -p sagat-infra-ir --test schedule_codec --locked` 15 passed, two mutations
-  (no UTC normalisation, unknown fields accepted) caught; workspace builds, clippy `-D warnings` and `check-architecture.py`
-  clean. Not done: `ScheduleService`, `ScheduleFiring`, the version policy at the action, input check at the action, retry
-  backoff, and the `ScheduleStore` they stand on (T018-011/014).
+  *Part done 2026-10-29 (task stays open).* `ScheduleService` is built: create, get, list, update, delete, pause and resume,
+  in `application/src/schedules.rs`. Writers hold `schedule:write` + `run:start`, operators `schedule:operate` (+ `run:start` to
+  resume), readers `schedule:read`; the namespace and the target workflow (and a pinned version) must exist; the calendar
+  validates the spec and its refusals carry the contract's reasons (`SCHEDULE_ZONE_UNKNOWN`, `SCHEDULE_NEVER_FIRES`,
+  `SCHEDULE_TOO_FREQUENT`, `SCHEDULE_SPEC_INVALID`, `SCHEDULE_INPUT_INVALID`); the next nominal time and the jittered actual
+  time are computed from the schedule id (SHA-256 of `jitter_seed`), an update continues from the first time after it and a
+  resume from the first time after the resume with nothing caught up; the updater or resumer becomes `authorizedBy`; every
+  change is audited without payload or note; a cron-trigger-owned schedule answers `SCHEDULE_TRIGGER_OWNED` /
+  `SCHEDULE_TRIGGER_HANDOVER_PENDING`; new `AppError::InvalidSchedule` / `ScheduleConflict` map to 422 / 409 with those
+  reasons. Evidence: `integration_schedules_bulk_operations` 51 passed (17 in `service`), also as the runtime role;
+  `integration_platform_foundation` 101; workspace clippy `-D warnings`, `check-architecture.py` and `cargo fmt --check` clean;
+  api-http + application + domain + infra-ir 1,251 passed. Not done: the input check against the target version's schema
+  (`SCHEDULE_INPUT_INVALID` today means "not an object" or too large; the schema check belongs to the action time and to
+  the definitions port), `nominalTimeField` against the input schema (`NOMINAL_TIME_FIELD_INVALID`), `ScheduleFiring`
+  (version policy, input check, business-id prefix, retry backoff at the action).
 - [ ] T018-017 [US1] Schedule pass (owned shards, fairness, round ceiling, metrics) and engine wiring —
   `crates/scheduler/src/{schedules.rs,lib.rs,monitor.rs}`, `apps/execution-engine/src/lib.rs` — two-replica
   pass tests — FR-018-005, FR-018-044.

@@ -8,5 +8,6 @@ mod support;
 
 mod changes;
 mod migration;
+mod service;
 mod store;
 mod store_support;
