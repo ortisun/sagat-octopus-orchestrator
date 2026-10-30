@@ -1,0 +1,42 @@
+{
+  "kind": "Parent read-only source checks",
+  "checks": [
+    {
+      "revision": "7d7868ff",
+      "path": "tests/fault/workflow-primitives/collection_sources.rs",
+      "source_sha256": "6142fb76496a18f597b31cbc22b5cd54f1e61fc4021712f5cae849b2372c9091",
+      "lines": 234,
+      "verify_run_token_present": false,
+      "assert_consistent_token_present": false,
+      "collection_sources_registered": null
+    },
+    {
+      "revision": "7d7868ff",
+      "path": "tests/fault/workflow-primitives/main.rs",
+      "source_sha256": "2416f2d8abce4337bac26fa3fa54370bf7c49ee745106c38ee69d71ab9992aae",
+      "lines": 16,
+      "verify_run_token_present": false,
+      "assert_consistent_token_present": false,
+      "collection_sources_registered": true
+    },
+    {
+      "revision": "7d7868ff",
+      "path": "tests/support/blob_collections.rs",
+      "source_sha256": "9c9d472ede0c0ce09a22232ac6d753f9fdb28d7ebcbe2085f65ca0ed7dfa4c90",
+      "lines": 270,
+      "verify_run_token_present": false,
+      "assert_consistent_token_present": false,
+      "collection_sources_registered": null
+    },
+    {
+      "revision": "7d7868ff",
+      "path": "tests/support/worker.rs",
+      "source_sha256": "46ec61873635a41513cda96b8090e16a6ba2d8888662e5ac6717e32f0110bca3",
+      "lines": 770,
+      "verify_run_token_present": false,
+      "assert_consistent_token_present": false,
+      "collection_sources_registered": null
+    }
+  ],
+  "conclusion": "The cited historical collection_sources tests and shared fixture files do not contain the named replay-oracle calls. This does not negate their separate persisted-state assertions or dispute any historical test exit result. No tests were run."
+}
