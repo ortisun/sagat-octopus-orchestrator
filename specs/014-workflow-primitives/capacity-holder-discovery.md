@@ -28,7 +28,10 @@ from PR66 remains required when the branches integrate. No wider publication is 
 ## Ordered work and evidence
 
 - [x] Check branch/worktree ownership and retain the O705 boundary.
-- [ ] Observe native failing holder/pagination/lock/window tests against an explicit RED stub.
+- [x] Observe native failing holder/pagination/lock/window tests against an explicit RED stub.
+  CI40996294090/job123870096210 on5fc6748f: pure selector0/1/0 (`current head owns selection`),
+  all nine PostgreSQL cases0/9/0 in17.35s, missing observations/cursors/window errors/spans.
+  Actual continuation and public pause reached the intended lookup assertions successfully.
 - [ ] Share the existing bounded query/decoder with separate selection, without copying SQL
   or changing vacant discovery semantics; review the exact selected-holder predicate.
 - [ ] Verify runtime role, pagination/reconstruction, nonblocking held-G reads, metadata-only
@@ -36,7 +39,7 @@ from PR66 remains required when the branches integrate. No wider publication is 
 - [ ] Integrate the validated dependency and run all required gates before merge.
 
 Heavy/native execution remains on CI per owner preference. Tests under preparation are not
-claimed as executed; the production port MUST NOT be enabled with the RED scaffold.
+claimed as GREEN; the production port MUST NOT be enabled with the RED scaffold.
 
 The first bounded review found six actionable coverage gaps (shards, oversized exclusions,
 all effect tables, holder-specific span/counts, actual Run revision/nonrunnable heads and
@@ -53,3 +56,10 @@ Vacant and HeldHolder modes with fixed UUID0/1 and an asserted disjoint-shard pr
 head-only shard accepts; stable-chain-only shard rejects. No probabilistic retries or skipped
 test may replace this proof. The close-span test MUST distinguish1/0 and1/1 counts, require
 close/time.busy/time.idle, and exclude namespace along with all other resource ids.
+
+The scaffolds were replaced after the above RED: both wrappers call one bounded query helper,
+the shared decoder returns the existing typed possession, and a private selector applies the
+mode/exact-holder and current-head shard/tenant checks. The SQL macro is byte-for-byte unchanged,
+with the same two fixed cursor-builder sites; no query/index/writer/grant was added. The code
+review found no actionable defect. The preliminary RED workflow was superseded/cancelled after
+collecting both failure families, to release shared runners. GREEN native and full CI remain pending.

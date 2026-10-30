@@ -50,15 +50,22 @@ enum DiscoverySelection {
 impl DiscoverySelection {
     fn selects(
         self,
-        _candidate: &CapacityCandidate,
-        _possession: CapacityPossession,
-        _window: &Window,
+        candidate: &CapacityCandidate,
+        possession: CapacityPossession,
+        window: &Window,
     ) -> bool {
-        // RED scaffold: the deterministic table must expose the missing shared selection.
-        false
+        let selected = match self {
+            Self::Vacant => possession == CapacityPossession::Vacant,
+            Self::HeldHolder => possession == CapacityPossession::Held(candidate.cursor.member_id),
+        };
+        selected
+            && window
+                .shards
+                .contains(Shard::of(candidate.head_run_id.as_uuid()))
+            && !window.exclude.contains(&candidate.cursor.tenant_id)
     }
 }
-fn decode(row: &PgRow) -> Result<(CapacityCandidate, bool), Error> {
+fn decode(row: &PgRow) -> Result<(CapacityCandidate, CapacityPossession), Error> {
     macro_rules! field {
         ($name:literal,$ty:ty) => {
             row.try_get::<$ty, _>($name)
@@ -84,9 +91,9 @@ fn decode(row: &PgRow) -> Result<(CapacityCandidate, bool), Error> {
         return Err(Error::ContradictoryProjection);
     }
     let holder = field!("holder_member_id", Option<Uuid>);
-    let vacant = match field!("possession", String).as_str() {
-        "VACANT" if holder.is_none() => true,
-        "HELD" if holder.is_some() => false,
+    let possession = match (field!("possession", String).as_str(), holder) {
+        ("VACANT", None) => CapacityPossession::Vacant,
+        ("HELD", Some(holder)) => CapacityPossession::Held(CapacityMemberId::new(holder)),
         _ => return Err(Error::ContradictoryProjection),
     };
     let head = field!("current_run_id", Uuid);
@@ -104,22 +111,19 @@ fn decode(row: &PgRow) -> Result<(CapacityCandidate, bool), Error> {
             chain_revision,
             run_revision: counter(row, "run_version")?,
         },
-        vacant,
+        possession,
     ))
 }
 
 impl CapacityDiscoveryStore for PgRunStore {
+    #[tracing::instrument(name="scheduler.action",skip_all,fields(kind="capacity_holder_discovery",scanned=tracing::field::Empty,selected=tracing::field::Empty))]
     async fn discover_child_root_holders(
         &self,
-        _window: &Window,
-        _after: Option<CapacityDiscoveryCursor>,
+        window: &Window,
+        after: Option<CapacityDiscoveryCursor>,
     ) -> Result<CapacityDiscoveryPage, Error> {
-        // RED scaffold only: native tests must expose the missing holder discovery.
-        Ok(CapacityDiscoveryPage {
-            candidates: Vec::new(),
-            scanned_through: None,
-            has_more: false,
-        })
+        self.discover_capacity_members(window, after, DiscoverySelection::HeldHolder)
+            .await
     }
 
     #[tracing::instrument(name="scheduler.action",skip_all,fields(kind="capacity_discovery",scanned=tracing::field::Empty,selected=tracing::field::Empty))]
@@ -127,6 +131,18 @@ impl CapacityDiscoveryStore for PgRunStore {
         &self,
         window: &Window,
         after: Option<CapacityDiscoveryCursor>,
+    ) -> Result<CapacityDiscoveryPage, Error> {
+        self.discover_capacity_members(window, after, DiscoverySelection::Vacant)
+            .await
+    }
+}
+
+impl PgRunStore {
+    async fn discover_capacity_members(
+        &self,
+        window: &Window,
+        after: Option<CapacityDiscoveryCursor>,
+        selection: DiscoverySelection,
     ) -> Result<CapacityDiscoveryPage, Error> {
         if !(1..=CAPACITY_DISCOVERY_PAGE_MAX).contains(&window.limit)
             || window.exclude.len() > CAPACITY_DISCOVERY_PAGE_MAX as usize
@@ -154,14 +170,9 @@ impl CapacityDiscoveryStore for PgRunStore {
             has_more,
         };
         for row in rows.into_iter().take(window.limit as usize) {
-            let (candidate, vacant) = decode(&row)?;
+            let (candidate, possession) = decode(&row)?;
             page.scanned_through = Some(candidate.cursor);
-            if vacant
-                && window
-                    .shards
-                    .contains(Shard::of(candidate.head_run_id.as_uuid()))
-                && !window.exclude.contains(&candidate.cursor.tenant_id)
-            {
+            if selection.selects(&candidate, possession, window) {
                 page.candidates.push(candidate);
             }
         }
