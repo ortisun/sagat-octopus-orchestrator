@@ -90,6 +90,8 @@ jobs:
           # The producer is the immutable v0.2.0 tree, not a current-source imitation.
           fetch-depth: 0
       - run: rustup show active-toolchain
+      - name: current upgrade schema boundary before producer build
+        run: python3 scripts/check-upgrade-boundary.py
       - name: released producer, migration, current progress and released reader
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/sagat-upgrade-current-target
@@ -154,6 +156,7 @@ jobs:
       - run: python3 -m unittest discover -s scripts/tests -v
       - run: python3 scripts/check-architecture.py
       - run: python3 scripts/check-capacity-activation.py
+      - run: python3 scripts/check-upgrade-boundary.py
       - run: python3 scripts/check-vendor.py
       - run: python3 scripts/check-agent-config.py
 

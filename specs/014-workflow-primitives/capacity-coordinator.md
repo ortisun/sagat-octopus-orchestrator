@@ -85,3 +85,26 @@ and the complete integrated gates await the final CI run. Production activation 
 `python3 -m unittest discover -s scripts/tests -q`: 70 tests, OK, one pre-existing skip.
 The new fitness check separately observed RED (five failing negative subcases), then GREEN
 (five tests pass). Formatting, architecture (24 crates), agent configuration and actionlint pass.
+
+On ec29e41b, CI40990030632 passed the expanded12-case PostgreSQL step, strict Clippy and the
+capacity/migration preflight, plus Studio/browser, Compose, scale/recovery, native runners,
+architecture, contracts, dependencies and observability. SDK/workspace completion remained
+pending when the released-source profile failed. Artifact12949496918 (SHA256
+`9f6c22cd8b0a34677aa66243c86859271611b6e2890e2d7f4cf5a7fb50519117`) retains the failure:
+`release_upgrade_active_rows_upgrade_progress_and_remain_readable_by_the_release` migrated
+normally to20261231000000 but still asserted20261226000000 (outer0/1/0,15.60s; actual released
+producer phase1/0/0,2.57s). The three current-schema profile oracles were stale after the new
+index migration. The immutable released commit/source and old schema20261220000000 were not changed.
+
+The correction pins only those three `after` assertions to20261231000000. A narrow source
+fitness check now runs before the expensive released-producer build and in architecture CI:
+its negative controls observed RED (five failed subcases), then four tests pass; against the
+actual tree it first rejected all three stale26 oracles, then passed after the correction.
+Review additionally exposed comment/string-only matches in the first narrow checker. Six new
+negative subcases observed RED; a lexical mask now excludes line/nested block comments,
+normal/raw/byte strings and character literals, retaining lifetimes and numeric assertions.
+The six checker tests and actual-tree check pass. This checks only current `after` oracles;
+immutable released-source/schema verification remains owned by the real runtime profiles.
+The second bounded review found no new actionable defect. All76 Python tooling tests pass,
+with one existing skip. The real six-profile upgrade gate
+and complete final CI remain required; the lightweight check does not replace their evidence.
