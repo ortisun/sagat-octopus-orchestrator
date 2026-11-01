@@ -529,11 +529,7 @@ impl Scope {
         assert_eq!(actual, expected);
         assert_eq!(
             expected,
-            Err(ExecutionError::IllegalInstanceTransition {
-                instance: instance.clone(),
-                status: StepStatus::Waiting,
-                event: "step.retry_requested",
-            }),
+            Err(ExecutionError::OutcomeUnresolved(instance.clone())),
             "an unknown effect needs an outcome-bearing resolution before another attempt"
         );
         assert_eq!(self.state, before, "a refused retry changes no run state");

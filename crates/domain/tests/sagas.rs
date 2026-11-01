@@ -1804,9 +1804,9 @@ fn a_retry_is_refused_on_a_step_of_a_saga_that_stopped_going_forward() {
     assert!(
         matches!(
             run.operator_retry("x2"),
-            Err(ExecutionError::IllegalTransition { .. })
+            Err(ExecutionError::OutcomeUnresolved(_))
         ),
-        "a retry would be cancelled the moment it was granted"
+        "x2's outcome is unknown: nobody may repeat it, and a retry would be cancelled anyway"
     );
     // What the person can still do is say whether it happened: the saga undoes it, or not.
     run.operator_resolve("x2", ReviewOutcome::Succeeded)

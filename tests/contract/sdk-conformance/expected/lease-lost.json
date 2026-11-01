@@ -82,7 +82,7 @@
       "error": {
         "code": "CONFLICT",
         "message": "<text>",
-        "reason": "STATE_CONFLICT",
+        "reason": "OUTCOME_UNRESOLVED",
         "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
         "retryAfterMs": null,
         "retryable": false,

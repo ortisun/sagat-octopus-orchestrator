@@ -176,7 +176,7 @@ async fn successful_report_at_full_storage_retains_review_without_defensive_comp
                 "storage refusal left the external outcome unknown",
             )
             .await,
-            Err(AppError::StateConflict(_))
+            Err(AppError::OutcomeUnresolved)
         ),
         "unknown successful output requires an outcome-bearing resolution"
     );
@@ -421,7 +421,7 @@ async fn assert_run_output_limit_preserves_review(content_quota_closed: bool) {
             "the successful output could not be retained"
         )
         .await,
-        Err(AppError::StateConflict(_))
+        Err(AppError::OutcomeUnresolved)
     ));
     assert_eq!(w.journal(run).await, journal);
     let replay = w

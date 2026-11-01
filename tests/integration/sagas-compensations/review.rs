@@ -215,7 +215,7 @@ async fn unknown_effect_retry_requires_resolution_for_compensation_even_for_admi
         )
         .await;
     assert!(
-        matches!(operator_refused, Err(AppError::StateConflict(_))),
+        matches!(operator_refused, Err(AppError::OutcomeUnresolved)),
         "run:operate reaches the source-aware state refusal: {operator_refused:?}"
     );
     assert_eq!(
@@ -240,7 +240,7 @@ async fn unknown_effect_retry_requires_resolution_for_compensation_even_for_admi
         )
         .await;
     assert!(
-        matches!(refused, Err(AppError::StateConflict(_))),
+        matches!(refused, Err(AppError::OutcomeUnresolved)),
         "{refused:?}"
     );
     assert_eq!(
@@ -822,7 +822,7 @@ async fn unknown_effect_retry_requires_resolution_for_original_even_for_admin() 
         )
         .await;
     assert!(
-        matches!(operator_refused, Err(AppError::StateConflict(_))),
+        matches!(operator_refused, Err(AppError::OutcomeUnresolved)),
         "run:operate reaches the source-aware state refusal: {operator_refused:?}"
     );
     assert_eq!(
@@ -847,7 +847,7 @@ async fn unknown_effect_retry_requires_resolution_for_original_even_for_admin() 
         )
         .await;
     assert!(
-        matches!(refused, Err(AppError::StateConflict(_))),
+        matches!(refused, Err(AppError::OutcomeUnresolved)),
         "SagaOverride does not establish the original outcome: {refused:?}"
     );
     assert_eq!(
