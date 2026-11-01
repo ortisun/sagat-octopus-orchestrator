@@ -8,7 +8,8 @@ A self-hosted platform for durable workflows, sagas and event-driven automation.
 Studio or with TypeScript, Go, Python, C#, Java and Rust SDKs; run activities in your workers and inline
 scripts in isolated containers. Inspect execution history, retries and compensations in the same UI.
 
-PostgreSQL is the source of truth. NATS JetStream transports notifications; Kafka, NATS and SQS
+PostgreSQL is the source of truth. Notifications use NATS JetStream by default or the configured
+Redis Streams alternative ([transport setup](docs/runbooks/events.md#redis-streams-v03)); Kafka, NATS and SQS
 connectors integrate external systems. External effects are **at-least-once**: use idempotency keys
 and reconciliation for operations such as payments.
 
@@ -154,7 +155,7 @@ arbitrary variable to `.env` does not automatically inject it into a container.
 | Script artifacts | `SAGAT_SCRIPT_SIGNING_KEY` | Persistent Ed25519 signing key on every control-plane replica |
 | Trace links | `SAGAT_STUDIO_TRACE_URL` | Public URL template, e.g. `http://127.0.0.1:16686/trace/{traceId}`; HTTPS required outside loopback |
 | Studio files | `SAGAT_STUDIO_DIR` | `/srv/studio` in the image; an absolute path to `frontend/apps/studio/dist` natively |
-| Internal broker | `SAGAT_NATS_URL`, `SAGAT_NATS_REQUIRE_TLS`, `SAGAT_NATS_CREDENTIALS_FILE` | Native/deployment configuration; Compose uses its local `nats` service |
+| Internal broker | `SAGAT_EVENT_TRANSPORT`; NATS: `SAGAT_NATS_URL`, `SAGAT_NATS_REQUIRE_TLS`, `SAGAT_NATS_CREDENTIALS_FILE`; Redis: `SAGAT_REDIS_URL` and bounded stream settings | Compose defaults to NATS; explicit Redis selection, credentials/TLS and cutover are in the [events runbook](docs/runbooks/events.md#redis-streams-v03) |
 | Telemetry | `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`, `SAGAT_LOG_FORMAT` | Point each process at the collector it can reach |
 | Sandbox | `SAGAT_RUNNER_*`, container engine access | Separate runner identity, token, namespace bindings and language images |
 
@@ -275,7 +276,7 @@ configuration state, not proof of connectivity.** Check runtime errors and messa
 credential rotation, pause and resume the connector so its reader reloads the credentials.
 
 This menu manages **inbound connectors**. Outbound broker subscriptions use the separate API
-explained in [the events runbook](docs/runbooks/events.md). The platform's **internal NATS** is a
+explained in [the events runbook](docs/runbooks/events.md). The platform's **selected internal NATS/Redis transport** is a
 deployment setting, separate from customer integrations. Custom broker CA/client-certificate upload
 is not part of the current form or adapter contract.
 
@@ -401,7 +402,7 @@ backend, database, worker or runner.
 ### What the chart installs
 
 [infra/helm](infra/helm) installs the control plane/Studio, execution engine and optional SDK worker
-pools, with services, disruption budgets and NetworkPolicies. PostgreSQL, NATS, OIDC, certificates,
+pools, with services, disruption budgets and NetworkPolicies. PostgreSQL, the selected NATS/Redis service, OIDC, certificates,
 Prometheus, KEDA and the sandbox runner's container-engine infrastructure are **not installed by the
 chart**. Database migrations are also an explicit operator step.
 
@@ -446,14 +447,15 @@ have the owner/runtime roles and runtime grants; the development initialization 
 | `database.existingSecret` | `DATABASE_URL` | Runtime `sagat_app` database URL; provision the role and grants separately |
 | Migration Job secret, operator-managed | `DATABASE_URL` | Database owner URL, used only for migrations |
 | `secrets.existingSecret`, if enabled | `SAGAT_SECRETS_KEYS` | Shared API/engine encryption key ring |
-| `nats.credentialsSecret`, if used | `nats.creds` | Internal NATS authentication |
+| `nats.credentialsSecret`, if used | `nats.creds` | Selected internal NATS authentication |
+| `redis.urlSecret`, when Redis is selected | `redis.urlKey` (default `url`) | Internal `rediss://` connection URL; keep credentials out of values files |
 | `engine.grpc.tlsSecret`, if native TLS | `tls.crt`, `tls.key` | Worker API TLS |
 | `controlPlane.nativeTls.tlsSecret` and `.clientCaSecret`, if native TLS | `tls.crt`, `tls.key`; `ca.crt` | Public API TLS and verified webhook client identity |
 
 The HA example names an ingress TLS-termination setup, an engine TLS Secret and a sample worker
 image/token. Supply those dependencies or adapt/remove the corresponding settings. Configure
 `oidc.*`, database URLs, image registry/tag, worker activity bindings and all network peers for your
-actual installation. NetworkPolicies fail closed: DNS, PostgreSQL, OIDC and configured NATS peers
+actual installation. NetworkPolicies fail closed: DNS, PostgreSQL, OIDC and selected NATS/Redis peers
 must be explicit. Global allow-all peers are refused. An application-level egress rule does not
 replace Kubernetes network authorization.
 

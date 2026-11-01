@@ -101,6 +101,19 @@ pub(super) fn structured_workflow(name: &str) -> serde_json::Value {
     })
 }
 
+fn quota_fallback_workflow(name: &str) -> serde_json::Value {
+    let mut document = structured_workflow(name);
+    let nodes = document["bodies"]["line"]["nodes"]
+        .as_array_mut()
+        .expect("line body nodes");
+    nodes[0]
+        .as_object_mut()
+        .expect("activity")
+        .remove("secrets");
+    nodes[0]["onError"] = json!("b");
+    document
+}
+
 fn digest(bytes: &[u8]) -> Digest {
     Digest::new(Sha256::digest(bytes).into())
 }
@@ -535,6 +548,39 @@ async fn close_content_quota(fixture: &Fixture) {
         .expect("enable content enforcement");
 }
 
+async fn inject_once_unknown_review_content_quota(fixture: &Fixture) {
+    sqlx::raw_sql(
+        "CREATE SEQUENCE scoped_unknown_review_quota_once; \
+         GRANT USAGE ON SEQUENCE scoped_unknown_review_quota_once TO sagat_app; \
+         CREATE FUNCTION reject_first_scoped_unknown_review() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN \
+           IF nextval('scoped_unknown_review_quota_once')=1 THEN \
+             RAISE EXCEPTION 'test-only scoped unknown review content quota refusal' \
+               USING ERRCODE='54000', CONSTRAINT='tenant_content_quota_exceeded'; \
+           END IF; \
+           RETURN NEW; \
+         END $$; \
+         CREATE TRIGGER reject_first_scoped_unknown_review BEFORE INSERT ON run_events \
+         FOR EACH ROW WHEN (NEW.event_type='step.needs_review' \
+                            AND cardinality(NEW.instance_path_nodes)>0) \
+         EXECUTE FUNCTION reject_first_scoped_unknown_review()",
+    )
+    .execute(&fixture.world.db.pool)
+    .await
+    .expect("one-shot scoped unknown review quota fault");
+}
+
+async fn remove_unknown_review_content_quota_fault(fixture: &Fixture) {
+    sqlx::raw_sql(
+        "DROP TRIGGER reject_first_scoped_unknown_review ON run_events; \
+         DROP FUNCTION reject_first_scoped_unknown_review(); \
+         DROP SEQUENCE scoped_unknown_review_quota_once",
+    )
+    .execute(&fixture.world.db.pool)
+    .await
+    .expect("remove one-shot scoped unknown review quota fault");
+}
+
 async fn storage_quota_audits(fixture: &Fixture, reason: &str) -> i64 {
     sqlx::query_scalar(
         "SELECT count(*) FROM audit_records WHERE tenant_id=$1 AND action=$2 \
@@ -549,7 +595,7 @@ async fn storage_quota_audits(fixture: &Fixture, reason: &str) -> i64 {
     .expect("storage quota audit count")
 }
 
-async fn cancel(fixture: &Fixture, key: &str) {
+async fn try_cancel(fixture: &Fixture, key: &str) -> Result<(), AppError> {
     let cache = DefinitionCache::new(Arc::new(StructuredJsonIrCodec), 8);
     RunService::new(
         PgRunStore::new(fixture.world.db.pool.clone(), cache.clone()).with_scoped_worker_protocol(),
@@ -567,7 +613,13 @@ async fn cancel(fixture: &Fixture, key: &str) {
         &ctx(),
     )
     .await
-    .expect("request collection cancellation");
+    .map(|_| ())
+}
+
+async fn cancel(fixture: &Fixture, key: &str) {
+    try_cancel(fixture, key)
+        .await
+        .expect("request collection cancellation");
 }
 
 async fn subscribe_to_run_finished(fixture: &Fixture, label: &str) -> Uuid {
@@ -1657,6 +1709,112 @@ async fn instance_retry_evidence(fixture: &Fixture, task: &ClaimedTask) -> (Stri
     .expect("scoped retry evidence")
 }
 
+async fn instance_review_evidence(
+    fixture: &Fixture,
+    task: &ClaimedTask,
+) -> (Uuid, String, Option<String>, Option<String>, i64, i64) {
+    let path = task.instance.path().segments();
+    sqlx::query_as(
+        "SELECT s.step_id,s.status,s.waiting_kind,s.failure_code, \
+          (SELECT count(*) FROM run_events e \
+             WHERE e.tenant_id=s.tenant_id AND e.run_id=s.run_id \
+               AND e.event_type='step.needs_review' AND e.node=s.node \
+               AND e.instance_path_nodes=s.instance_path_nodes \
+               AND e.instance_path_indices=s.instance_path_indices), \
+          (SELECT count(*) FROM run_events e \
+             WHERE e.tenant_id=s.tenant_id AND e.run_id=s.run_id \
+               AND e.event_type='step.retry_scheduled' AND e.node=s.node \
+               AND e.instance_path_nodes=s.instance_path_nodes \
+               AND e.instance_path_indices=s.instance_path_indices) \
+         FROM steps s \
+         WHERE s.tenant_id=$1 AND s.run_id=$2 AND s.node=$3 \
+           AND s.instance_path_nodes=$4 AND s.instance_path_indices=$5",
+    )
+    .bind(fixture.world.admin.tenant_id().as_uuid())
+    .bind(fixture.run.as_uuid())
+    .bind(task.instance.node().as_str())
+    .bind(
+        path.iter()
+            .map(|segment| segment.scope_node().as_str().to_owned())
+            .collect::<Vec<_>>(),
+    )
+    .bind(
+        path.iter()
+            .map(|segment| i32::try_from(segment.iteration_index()).expect("index"))
+            .collect::<Vec<_>>(),
+    )
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("scoped review evidence")
+}
+
+#[derive(Debug, PartialEq, Eq, sqlx::FromRow)]
+struct QuotaReportEvidence {
+    step_status: String,
+    waiting_kind: Option<String>,
+    failure_code: Option<String>,
+    routed: bool,
+    output_is_null: bool,
+    stop_reason: Option<String>,
+    stop_code: Option<String>,
+    stop_events: i64,
+    review_events: i64,
+    completed_events: i64,
+    routed_events: i64,
+    failed_or_retried_events: i64,
+    successor_steps: i64,
+}
+
+async fn quota_report_evidence(fixture: &Fixture, task: &ClaimedTask) -> QuotaReportEvidence {
+    let path = task.instance.path().segments();
+    sqlx::query_as::<_, QuotaReportEvidence>(
+        "SELECT s.status AS step_status,s.waiting_kind,s.failure_code,s.routed,
+                s.output_digest IS NULL AS output_is_null, \
+                r.stop_reason,r.stop_code, \
+          (SELECT count(*) FROM run_events e WHERE e.tenant_id=s.tenant_id AND e.run_id=s.run_id \
+             AND e.event_type='run.stop_requested') AS stop_events, \
+          (SELECT count(*) FROM run_events e WHERE e.tenant_id=s.tenant_id AND e.run_id=s.run_id \
+             AND e.event_type='step.needs_review' AND e.node=s.node \
+             AND e.instance_path_nodes=s.instance_path_nodes \
+             AND e.instance_path_indices=s.instance_path_indices) AS review_events, \
+          (SELECT count(*) FROM run_events e WHERE e.tenant_id=s.tenant_id AND e.run_id=s.run_id \
+             AND e.event_type='step.completed' \
+             AND e.node=s.node AND e.instance_path_nodes=s.instance_path_nodes \
+             AND e.instance_path_indices=s.instance_path_indices) AS completed_events, \
+          (SELECT count(*) FROM run_events e WHERE e.tenant_id=s.tenant_id AND e.run_id=s.run_id \
+             AND e.event_type='step.routed' \
+             AND e.node=s.node AND e.instance_path_nodes=s.instance_path_nodes \
+             AND e.instance_path_indices=s.instance_path_indices) AS routed_events, \
+          (SELECT count(*) FROM run_events e WHERE e.tenant_id=s.tenant_id AND e.run_id=s.run_id \
+             AND e.event_type IN ('step.failed','step.cancelled','step.retry_scheduled') \
+             AND e.node=s.node AND e.instance_path_nodes=s.instance_path_nodes \
+             AND e.instance_path_indices=s.instance_path_indices) AS failed_or_retried_events, \
+          (SELECT count(*) FROM steps next WHERE next.tenant_id=s.tenant_id AND next.run_id=s.run_id \
+             AND next.node='b' \
+             AND next.instance_path_nodes=s.instance_path_nodes \
+             AND next.instance_path_indices=s.instance_path_indices) AS successor_steps \
+         FROM steps s JOIN runs r ON r.tenant_id=s.tenant_id AND r.id=s.run_id \
+         WHERE s.tenant_id=$1 AND s.run_id=$2 AND s.node=$3 \
+           AND s.instance_path_nodes=$4 AND s.instance_path_indices=$5",
+    )
+    .bind(fixture.world.admin.tenant_id().as_uuid())
+    .bind(fixture.run.as_uuid())
+    .bind(task.instance.node().as_str())
+    .bind(
+        path.iter()
+            .map(|segment| segment.scope_node().as_str().to_owned())
+            .collect::<Vec<_>>(),
+    )
+    .bind(
+        path.iter()
+            .map(|segment| i32::try_from(segment.iteration_index()).expect("index"))
+            .collect::<Vec<_>>(),
+    )
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("source-aware scoped quota report evidence")
+}
+
 #[tokio::test]
 async fn two_equal_nodes_keep_distinct_leases_outputs_routes_and_replays() {
     let fixture = fixture("scoped-worker-identities").await;
@@ -1878,7 +2036,316 @@ async fn a_late_journal_failure_rolls_back_the_whole_scoped_report() {
 }
 
 #[tokio::test]
-async fn scoped_maintenance_does_not_read_whole_run_iteration_history() {
+async fn an_uncertain_scoped_report_is_atomic_idempotent_and_keeps_its_path_after_restart() {
+    let fixture = fixture("scoped-worker-unknown-report").await;
+    let task = poll(&fixture, 1).await.pop().expect("one scoped task");
+    let outbox_before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM event_outbox WHERE aggregate_id=$1")
+            .bind(fixture.run.as_uuid())
+            .fetch_one(&fixture.world.db.pool)
+            .await
+            .expect("outbox before report");
+    sqlx::query(
+        "CREATE FUNCTION reject_scoped_review_report() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN \
+           IF NEW.event_type='step.needs_review' \
+              AND cardinality(NEW.instance_path_nodes)>0 THEN \
+             RAISE EXCEPTION 'injected scoped review failure'; \
+           END IF; \
+           RETURN NEW; \
+         END $$",
+    )
+    .execute(&fixture.world.db.pool)
+    .await
+    .expect("fault function");
+    sqlx::query(
+        "CREATE TRIGGER reject_scoped_review_report BEFORE INSERT ON run_events \
+         FOR EACH ROW EXECUTE FUNCTION reject_scoped_review_report()",
+    )
+    .execute(&fixture.world.db.pool)
+    .await
+    .expect("fault trigger");
+
+    let failed = fixture
+        .workers
+        .fail(
+            &fixture.session.principal,
+            &task_ref(&task),
+            "OUTCOME_UNKNOWN",
+            false,
+            "scoped-unknown-report",
+        )
+        .await
+        .expect_err("the required journal write fails");
+    assert!(
+        matches!(failed, AppError::Internal | AppError::Unavailable),
+        "unexpected failure: {failed:?}"
+    );
+    sqlx::query("DROP TRIGGER reject_scoped_review_report ON run_events")
+        .execute(&fixture.world.db.pool)
+        .await
+        .expect("drop fault trigger");
+    sqlx::query("DROP FUNCTION reject_scoped_review_report()")
+        .execute(&fixture.world.db.pool)
+        .await
+        .expect("drop fault function");
+
+    assert_eq!(
+        instance_review_evidence(&fixture, &task).await,
+        (task.step_id, "LEASED".into(), None, None, 0, 0),
+        "the failed commit retains the exact lease and writes no decision"
+    );
+    let outbox_after_failure: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM event_outbox WHERE aggregate_id=$1")
+            .bind(fixture.run.as_uuid())
+            .fetch_one(&fixture.world.db.pool)
+            .await
+            .expect("outbox after failed report");
+    assert_eq!(
+        outbox_after_failure, outbox_before,
+        "rollback dispatches nothing"
+    );
+
+    let first = fixture
+        .workers
+        .fail(
+            &fixture.session.principal,
+            &task_ref(&task),
+            "OUTCOME_UNKNOWN",
+            false,
+            "scoped-unknown-report",
+        )
+        .await
+        .expect("retry the uncertain report after rollback");
+    assert!(!first.already_applied);
+    let replay = fixture
+        .workers
+        .fail(
+            &fixture.session.principal,
+            &task_ref(&task),
+            "OUTCOME_UNKNOWN",
+            false,
+            "scoped-unknown-report",
+        )
+        .await
+        .expect("replay the identical uncertain report");
+    assert!(replay.already_applied);
+    assert_eq!(
+        instance_review_evidence(&fixture, &task).await,
+        (
+            task.step_id,
+            "WAITING".into(),
+            Some("OPERATOR".into()),
+            Some("OUTCOME_UNKNOWN".into()),
+            1,
+            0,
+        ),
+        "one receipt produces one review decision for the exact path"
+    );
+    let untouched_sibling: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM steps WHERE tenant_id=$1 AND run_id=$2 AND node='a' \
+           AND instance_path_indices<>$3 AND status='READY' \
+           AND waiting_kind IS NULL AND failure_code IS NULL",
+    )
+    .bind(fixture.world.admin.tenant_id().as_uuid())
+    .bind(fixture.run.as_uuid())
+    .bind(vec![i32::try_from(index(&task)).expect("index")])
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("untouched sibling instance");
+    assert_eq!(
+        untouched_sibling, 1,
+        "the decision did not cross instance paths"
+    );
+
+    let restarted = scheduler(&fixture).tick().await;
+    assert_eq!(restarted.retries_released, 0, "{restarted:?}");
+    assert_eq!(
+        instance_review_evidence(&fixture, &task).await,
+        (
+            task.step_id,
+            "WAITING".into(),
+            Some("OPERATOR".into()),
+            Some("OUTCOME_UNKNOWN".into()),
+            1,
+            0,
+        ),
+        "restart preserves the unresolved instance identity"
+    );
+    fixture
+        .store
+        .verify_run(fixture.world.admin.tenant_id(), fixture.run)
+        .await
+        .expect("the uncertain scoped report replays to the same exact path");
+}
+
+#[tokio::test]
+async fn scoped_content_quota_fallback_preserves_success_or_unknown_before_any_error_route() {
+    for source in ["success", "unknown"] {
+        for stop_before in [false, true] {
+            let name = format!("scoped-content-quota-{source}-{stop_before}");
+            let fixture = fixture_with_document(&name, quota_fallback_workflow(&name)).await;
+            let task = poll(&fixture, 1).await.pop().expect("one scoped task");
+            assert_eq!(task.instance.node().as_str(), "a");
+            if stop_before {
+                cancel(&fixture, &format!("cancel-before-{source}")).await;
+            }
+            close_content_quota(&fixture).await;
+            if source == "unknown" {
+                // A failure report has no retained payload of its own. Force the real quota error
+                // at its first review write so this arm exercises the source-aware fallback, not
+                // merely the ordinary unknown-report path. The sequence increment survives the
+                // rejected transaction and lets the fallback persist the retained review.
+                inject_once_unknown_review_content_quota(&fixture).await;
+            }
+            let key = format!("scoped-content-quota-{source}-{stop_before}");
+
+            let (first, replay) = if source == "success" {
+                let output = serde_json::to_vec(&json!({
+                    "fresh-scoped-output": format!("{name}-{}", Uuid::now_v7())
+                }))
+                .expect("fresh output");
+                let first = fixture
+                    .workers
+                    .complete(&fixture.session.principal, &task_ref(&task), &output, &key)
+                    .await
+                    .expect("retain the known success without its unpersistable output");
+                let replay = fixture
+                    .workers
+                    .complete(&fixture.session.principal, &task_ref(&task), &output, &key)
+                    .await
+                    .expect("replay the successful report");
+                (first, replay)
+            } else {
+                let first = fixture
+                    .workers
+                    .fail(
+                        &fixture.session.principal,
+                        &task_ref(&task),
+                        "OUTCOME_UNKNOWN",
+                        false,
+                        &key,
+                    )
+                    .await
+                    .expect("retain the original unknown outcome at the content limit");
+                let replay = fixture
+                    .workers
+                    .fail(
+                        &fixture.session.principal,
+                        &task_ref(&task),
+                        "OUTCOME_UNKNOWN",
+                        false,
+                        &key,
+                    )
+                    .await
+                    .expect("replay the unknown report");
+                (first, replay)
+            };
+            if source == "unknown" {
+                remove_unknown_review_content_quota_fault(&fixture).await;
+            }
+            assert_eq!(
+                first.step_status.as_str(),
+                if source == "success" {
+                    "SUCCEEDED"
+                } else {
+                    "WAITING"
+                }
+            );
+            assert!(!first.already_applied);
+            assert!(replay.already_applied);
+
+            let expected = if source == "success" {
+                QuotaReportEvidence {
+                    step_status: "SUCCEEDED".into(),
+                    waiting_kind: None,
+                    failure_code: None,
+                    routed: false,
+                    output_is_null: true,
+                    stop_reason: Some(if stop_before { "CANCELLED" } else { "FAILED" }.into()),
+                    stop_code: (!stop_before).then(|| "STORAGE_QUOTA_EXCEEDED".into()),
+                    stop_events: 1,
+                    review_events: 0,
+                    completed_events: 1,
+                    routed_events: 0,
+                    failed_or_retried_events: 0,
+                    successor_steps: 0,
+                }
+            } else {
+                QuotaReportEvidence {
+                    step_status: "WAITING".into(),
+                    waiting_kind: Some("OPERATOR".into()),
+                    failure_code: Some("OUTCOME_UNKNOWN".into()),
+                    routed: false,
+                    output_is_null: true,
+                    stop_reason: Some(if stop_before { "CANCELLED" } else { "FAILED" }.into()),
+                    stop_code: (!stop_before).then(|| "STORAGE_QUOTA_EXCEEDED".into()),
+                    stop_events: 1,
+                    review_events: 1,
+                    completed_events: 0,
+                    routed_events: 0,
+                    failed_or_retried_events: 0,
+                    successor_steps: 0,
+                }
+            };
+            let retained = quota_report_evidence(&fixture, &task).await;
+            assert_eq!(
+                retained, expected,
+                "{source}, stop_before={stop_before}: the quota fallback must not rewrite the source report"
+            );
+            let source_event = if source == "success" {
+                "step.completed"
+            } else {
+                "step.needs_review"
+            };
+            let (stop_sequence, source_sequence): (i64, i64) = sqlx::query_as(
+                "SELECT stop.seq,source.seq FROM run_events stop CROSS JOIN run_events source \
+                 WHERE stop.tenant_id=$1 AND stop.run_id=$2 \
+                   AND stop.event_type='run.stop_requested' \
+                   AND source.tenant_id=stop.tenant_id AND source.run_id=stop.run_id \
+                   AND source.event_type=$3 AND source.node=$4 \
+                   AND source.instance_path_nodes=$5 AND source.instance_path_indices=$6",
+            )
+            .bind(fixture.world.admin.tenant_id().as_uuid())
+            .bind(fixture.run.as_uuid())
+            .bind(source_event)
+            .bind(task.instance.node().as_str())
+            .bind(vec!["items".to_owned()])
+            .bind(vec![i32::try_from(index(&task)).expect("index")])
+            .fetch_one(&fixture.world.db.pool)
+            .await
+            .expect("stop and exact source-aware report sequence");
+            assert!(
+                stop_sequence < source_sequence,
+                "the existing or atomic quota stop precedes the retained source outcome"
+            );
+
+            if !stop_before {
+                let before_late_cancel = quota_report_evidence(&fixture, &task).await;
+                assert!(
+                    matches!(
+                        try_cancel(&fixture, &format!("cancel-after-{source}")).await,
+                        Err(AppError::StateConflict(_))
+                    ),
+                    "the later cancellation cannot replace the storage stop"
+                );
+                assert_eq!(
+                    quota_report_evidence(&fixture, &task).await,
+                    before_late_cancel,
+                    "a stop attempted after the report cannot erase its source"
+                );
+            }
+            fixture
+                .store
+                .verify_run(fixture.world.admin.tenant_id(), fixture.run)
+                .await
+                .expect("source-aware scoped quota fallback replays");
+        }
+    }
+}
+
+#[tokio::test]
+async fn scoped_maintenance_reviews_ambiguity_without_whole_run_iteration_history() {
     let fixture = fixture("bounded-scoped-maintenance").await;
     let original = poll(&fixture, 1).await.pop().expect("one scoped task");
     age_instance_column(&fixture, &original, "lease_expires_at").await;
@@ -1916,16 +2383,16 @@ async fn scoped_maintenance_does_not_read_whole_run_iteration_history() {
     assert_eq!(expired.failed, 0, "{expired:?}");
     assert_eq!(expired.leases_expired, 1, "{expired:?}");
     assert_eq!(
-        instance_retry_evidence(&fixture, &original).await,
-        ("RETRY_WAIT".into(), 1, 1, 0)
-    );
-    age_instance_column(&fixture, &original, "next_attempt_at").await;
-    let released = scheduler.tick().await;
-    assert_eq!(released.failed, 0, "{released:?}");
-    assert_eq!(released.retries_released, 1, "{released:?}");
-    assert_eq!(
-        instance_retry_evidence(&fixture, &original).await,
-        ("READY".into(), 1, 1, 1)
+        instance_review_evidence(&fixture, &original).await,
+        (
+            original.step_id,
+            "WAITING".into(),
+            Some("OPERATOR".into()),
+            Some("LEASE_EXPIRED".into()),
+            1,
+            0,
+        ),
+        "loss of an external-capable scoped lease is not a retry permission"
     );
     sqlx::query("GRANT SELECT ON iteration_checkpoints TO sagat_app")
         .execute(&fixture.world.db.pool)
@@ -1991,7 +2458,7 @@ async fn a_scoped_failure_retries_after_restart_and_rejects_the_old_fence() {
 }
 
 #[tokio::test]
-async fn a_scoped_lost_lease_rolls_back_then_recovers_after_restart() {
+async fn a_scoped_lost_lease_rolls_back_then_reviews_after_restart() {
     let fixture = fixture("scoped-worker-lost-lease").await;
     let original = poll(&fixture, 1).await.pop().expect("one scoped task");
     age_instance_column(&fixture, &original, "lease_expires_at").await;
@@ -2004,11 +2471,11 @@ async fn a_scoped_lost_lease_rolls_back_then_recovers_after_restart() {
     );
 
     sqlx::query(
-        "CREATE FUNCTION reject_scoped_retry() RETURNS trigger LANGUAGE plpgsql AS $$ \
+        "CREATE FUNCTION reject_scoped_review() RETURNS trigger LANGUAGE plpgsql AS $$ \
          BEGIN \
-           IF NEW.event_type='step.retry_scheduled' \
+           IF NEW.event_type='step.needs_review' \
               AND cardinality(NEW.instance_path_nodes)>0 THEN \
-             RAISE EXCEPTION 'injected scoped retry failure'; \
+             RAISE EXCEPTION 'injected scoped review failure'; \
            END IF; \
            RETURN NEW; \
          END $$",
@@ -2017,8 +2484,8 @@ async fn a_scoped_lost_lease_rolls_back_then_recovers_after_restart() {
     .await
     .expect("fault function");
     sqlx::query(
-        "CREATE TRIGGER reject_scoped_retry BEFORE INSERT ON run_events \
-         FOR EACH ROW EXECUTE FUNCTION reject_scoped_retry()",
+        "CREATE TRIGGER reject_scoped_review BEFORE INSERT ON run_events \
+         FOR EACH ROW EXECUTE FUNCTION reject_scoped_review()",
     )
     .execute(&fixture.world.db.pool)
     .await
@@ -2032,11 +2499,11 @@ async fn a_scoped_lost_lease_rolls_back_then_recovers_after_restart() {
         ("LEASED".into(), 1, 0, 0)
     );
 
-    sqlx::query("DROP TRIGGER reject_scoped_retry ON run_events")
+    sqlx::query("DROP TRIGGER reject_scoped_review ON run_events")
         .execute(&fixture.world.db.pool)
         .await
         .expect("drop fault trigger");
-    sqlx::query("DROP FUNCTION reject_scoped_retry()")
+    sqlx::query("DROP FUNCTION reject_scoped_review()")
         .execute(&fixture.world.db.pool)
         .await
         .expect("drop fault function");
@@ -2044,8 +2511,15 @@ async fn a_scoped_lost_lease_rolls_back_then_recovers_after_restart() {
     let recovered = scheduler(&fixture).tick().await;
     assert_eq!(recovered.leases_expired, 1, "{recovered:?}");
     assert_eq!(
-        instance_retry_evidence(&fixture, &original).await,
-        ("RETRY_WAIT".into(), 1, 1, 0)
+        instance_review_evidence(&fixture, &original).await,
+        (
+            original.step_id,
+            "WAITING".into(),
+            Some("OPERATOR".into()),
+            Some("LEASE_EXPIRED".into()),
+            1,
+            0,
+        )
     );
     assert_eq!(
         complete(&fixture, &original, 1, "scoped-late-after-loss")
@@ -2054,19 +2528,24 @@ async fn a_scoped_lost_lease_rolls_back_then_recovers_after_restart() {
         Err(AppError::StaleAttempt)
     );
 
-    age_instance_column(&fixture, &original, "next_attempt_at").await;
-    let released = scheduler(&fixture).tick().await;
-    assert_eq!(released.retries_released, 1, "{released:?}");
-    let replacement = poll(&fixture, 8)
+    let restarted = scheduler(&fixture).tick().await;
+    assert_eq!(restarted.retries_released, 0, "{restarted:?}");
+    assert_eq!(
+        instance_review_evidence(&fixture, &original).await,
+        (
+            original.step_id,
+            "WAITING".into(),
+            Some("OPERATOR".into()),
+            Some("LEASE_EXPIRED".into()),
+            1,
+            0,
+        )
+    );
+    fixture
+        .store
+        .verify_run(fixture.world.admin.tenant_id(), fixture.run)
         .await
-        .into_iter()
-        .find(|candidate| candidate.instance == original.instance)
-        .expect("recovered scoped task");
-    assert_eq!(replacement.fence.attempt, 2);
-    assert_eq!(replacement.fence.generation, 2);
-    complete(&fixture, &replacement, 2, "scoped-loss-recovered")
-        .await
-        .expect("complete recovered task");
+        .expect("lost scoped lease replays to the same review instance");
 }
 
 #[tokio::test]

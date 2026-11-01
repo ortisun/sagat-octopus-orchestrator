@@ -209,3 +209,9 @@ value policy or in-flight compatibility requires a new decision with the constit
 ADR-0039 additionally advances the unrelated rerun source identity KEY SHARE guard before
 creation admission. This grants no source business-state authority and relies on its documented
 current rerun-root/child-writer separation. It does not change the child-link protocol above.
+
+## Proposed refinement — 2026-11-01
+
+[ADR-0076](ADR-0076-compensation-failure-and-uncertain-effects.md) records owner-approved direction for compensation review, truthful terminal
+failure and qualified uncertain-effect recovery. It is PROPOSED pending coordinated adoption;
+this record is not fully superseded and its historical rationale remains unchanged.

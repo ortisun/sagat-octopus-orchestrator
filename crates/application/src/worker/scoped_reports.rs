@@ -123,12 +123,6 @@ where
         report: PathReport<'_>,
         idempotency: Idempotency,
     ) -> Result<StepAck, AppError> {
-        let leak_what = if matches!(&report, PathReport::Completion { .. }) {
-            "output"
-        } else {
-            "failure code"
-        };
-        let blob_report = matches!(&report, PathReport::Completion { blob: Some(_), .. });
         loop {
             let (tx, leaked, scanned_versions) = match self
                 .checked_path_report(principal, task, &report, &idempotency)
@@ -142,6 +136,7 @@ where
                 } => (tx, leaked, scanned_versions),
             };
             let fallback_leak = leaked.clone();
+            let fallback_versions = scanned_versions.clone();
             let result = self
                 .apply_path_report(
                     principal,
@@ -175,44 +170,15 @@ where
                     if what == QuotaResource::TenantContentBytes.limit_name() =>
                 {
                     metrics::counter!("quota_exceeded_total", "limit" => what).increment(1);
-                    let mut tx = self.open_worker_path(principal, task).await?;
-                    if let Some(stored) = tx.replay(&idempotency).await? {
-                        return Ok(parse_ack(&stored, true, task.run_id));
-                    }
-                    if blob_report {
-                        Self::live_path_fence(&mut tx, task, true).await?;
-                    } else {
-                        Self::verify_path_lease(&mut tx, task).await?;
-                    }
-                    let now = tx.now();
-                    let snapshot = tx.snapshot();
-                    let progress = execution::fail_path_instance(
-                        &snapshot.definition,
-                        &mut snapshot.state,
-                        task.instance,
-                        execution::Failure {
-                            fence: task.fence,
-                            code: FailureCode::storage_quota_exceeded(),
-                            retryable: false,
-                            jitter_sample: 0.0,
-                        },
-                        now,
+                    self.refuse_scoped_content(
+                        principal,
+                        task,
+                        &report,
+                        fallback_versions,
+                        fallback_leak,
+                        idempotency,
                     )
-                    .map_err(|e| engine_error(EngineError::Execution(e)))?;
-                    let mut effects =
-                        Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
-                    effects.reported = Some(reported_lease(task));
-                    if let Some(name) = &fallback_leak {
-                        effects.audit = Some(self.leak_audit(
-                            principal,
-                            &tx.snapshot().info,
-                            task,
-                            name,
-                            leak_what,
-                        ));
-                    }
-                    tx.persist_addressed(&progress.events, &[], effects).await?;
-                    self.finish_path_report(tx, task, idempotency).await
+                    .await
                 }
                 other => other,
             };
@@ -400,7 +366,9 @@ where
                     }
                 }
                 outputs.clear();
-                failure = Some((FailureCode::run_data_limit(), false));
+                // Outside the atomic known-success refusal path, lost output cannot establish
+                // that an external effect failed. Preserve recovery instead of routing onError.
+                failure = Some((FailureCode::outcome_unknown(), false));
             }
         }
         let now = tx.now();

@@ -3,8 +3,9 @@
 //! The matching native drain and scheduler consume the durable stop. This path is reached only
 //! through the closed candidate selected by `scoped_reports`.
 
-use super::scoped_reports::{RefusalCandidate, RefusalFencePolicy};
+use super::scoped_reports::{PathReport, RefusalCandidate, RefusalFencePolicy};
 use super::*;
+use crate::secrets::StoredSecret;
 use sagat_domain::audit::RunDataLimitAuditReason;
 use sagat_domain::execution::{AddressedProgress, RunState, ScopedOutputRefusalSuccess};
 use sagat_domain::workflow::WorkflowDefinition;
@@ -172,6 +173,127 @@ where
             step_status,
             run_status,
         }))
+    }
+
+    /// A content-quota rejection rolls back the attempted report. Retain its source outcome
+    /// without payloads, after a durable stop closes ordinary routing in the same transaction.
+    pub(super) async fn refuse_scoped_content(
+        &self,
+        principal: &Principal,
+        task: &TaskRef<'_>,
+        report: &PathReport<'_>,
+        scanned_versions: Option<Vec<StoredSecret>>,
+        leaked: Option<SecretName>,
+        idempotency: Idempotency,
+    ) -> Result<StepAck, AppError> {
+        let mut tx = self.open(principal, task, Lock::Wait).await?;
+        if let Some(ack) = self
+            .replayed(principal, &mut tx, task, &idempotency)
+            .await?
+        {
+            return Ok(ack);
+        }
+        self.verify(&mut tx, task).await?;
+        self.ensure_bound(principal, &mut tx, task).await?;
+        let fence_policy = if matches!(report, PathReport::Completion { blob: Some(_), .. }) {
+            RefusalFencePolicy::Live {
+                allow_cancellation: true,
+            }
+        } else if scanned_versions.is_some() {
+            RefusalFencePolicy::Live {
+                allow_cancellation: matches!(
+                    report,
+                    PathReport::Failure {
+                        raw_code: "CANCELLED",
+                        retryable: false,
+                        ..
+                    }
+                ),
+            }
+        } else {
+            RefusalFencePolicy::LeaseMatch
+        };
+        Self::strict_refusal_fence(&mut tx, task, &fence_policy).await?;
+        if let Some(scanned) = &scanned_versions {
+            let names = Self::declared_secrets_of(&mut tx, task.instance);
+            if *scanned != tx.secret_versions(&names).await? {
+                return Err(AppError::Unavailable);
+            }
+        }
+        let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
+        effects.reported = Some(reported_lease(task));
+        let (failure, verdict) = if let Some(name) = leaked {
+            let what = if matches!(report, PathReport::Completion { .. }) {
+                "output"
+            } else {
+                "failure code"
+            };
+            effects.audit = Some(self.leak_audit(principal, tx.info(), task, &name, what));
+            (Some(FailureCode::secret_in_output()), None)
+        } else {
+            match report {
+                PathReport::Failure { code, .. } => (Some(code.clone()), None),
+                PathReport::Completion { output, .. }
+                    if task.instance.node().is_reconciliation() =>
+                {
+                    match self.engine.evaluator().reconcile_answer(output) {
+                        Ok(answer) => (None, Some(answer.verdict)),
+                        Err(_) => (Some(FailureCode::reconciliation_answer_invalid()), None),
+                    }
+                }
+                PathReport::Completion { .. } => (None, None),
+            }
+        };
+        self.engine
+            .run(
+                &mut tx,
+                Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None),
+                |definition, state, _| {
+                    execution::prepare_scoped_content_refusal(
+                        definition,
+                        state,
+                        task.instance,
+                        task.fence,
+                    )
+                    .map(|progress| ((), progress))
+                },
+            )
+            .await
+            .map_err(engine_error)?;
+        let instance = task.instance.clone();
+        let fence = task.fence;
+        self.engine
+            .run_addressed(
+                &mut tx,
+                Vec::new(),
+                effects,
+                move |definition, state, now| {
+                    let progress = if let Some(code) = failure {
+                        execution::fail_instance(
+                            definition,
+                            state,
+                            &instance,
+                            execution::Failure {
+                                fence,
+                                code,
+                                retryable: false,
+                                jitter_sample: 0.0,
+                            },
+                            now,
+                        )?
+                    } else if let Some(verdict) = verdict {
+                        execution::complete_reconciliation_instance(
+                            definition, state, &instance, fence, verdict, 0.0, now,
+                        )?
+                    } else {
+                        execution::complete_instance(definition, state, &instance, fence)?
+                    };
+                    Ok(((), progress))
+                },
+            )
+            .await
+            .map_err(engine_error)?;
+        self.finish(tx, task, idempotency).await
     }
 
     async fn strict_refusal_fence<Tx: RunTx>(

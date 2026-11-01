@@ -1,6 +1,8 @@
 //! Bounded path planning is equivalent to the full run oracle without retaining unrelated paths.
 #![allow(clippy::expect_used)]
 
+mod common;
+
 use sagat_domain::execution::{
     AddressedPlan, AddressedRunEvent, CollectionPhase, ExecutionInstanceId, Fence, InstancePath,
     PathExecutionState, RunEvent, RunId, RunState, StepStatus, complete_instance,
@@ -177,6 +179,104 @@ fn state_with_local_collection(iterations: u32) -> RunState {
 }
 
 #[test]
+fn nested_forward_retry_is_refused_when_an_outer_scope_is_draining() {
+    use sagat_domain::execution::{
+        CollectionDrainReason, ExecutionError, mark_for_review_instance, retry_review_instance,
+        retry_review_path_instance,
+    };
+
+    let leaf = definition().body(&id("body")).expect("leaf body").clone();
+    let outer = BodyDefinition::new(
+        id("outer"),
+        id("inner"),
+        vec![
+            Node::new(
+                id("inner"),
+                NodeKind::ForEach {
+                    items: Expression::parse("item").expect("items"),
+                    body: id("body"),
+                    result: Expression::parse("bodyResult").expect("result"),
+                    max_items: 10,
+                    max_concurrency: 1,
+                },
+            )
+            .with_next(id("returned")),
+            Node::new(
+                id("returned"),
+                NodeKind::Return {
+                    result: Expression::parse("1").expect("result"),
+                },
+            ),
+        ],
+    )
+    .expect("outer body");
+    let def = WorkflowDefinition::new_structured(
+        Slug::parse("nested-retry").expect("workflow"),
+        id("items"),
+        vec![
+            Node::new(
+                id("items"),
+                NodeKind::ForEach {
+                    items: Expression::parse("input.items").expect("items"),
+                    body: id("outer"),
+                    result: Expression::parse("bodyResult").expect("result"),
+                    max_items: 10,
+                    max_concurrency: 1,
+                },
+            )
+            .with_next(id("done")),
+            Node::new(id("done"), NodeKind::End { output: None }),
+        ],
+        vec![outer, leaf],
+        sagat_domain::workflow::WorkflowLimits::default(),
+    )
+    .expect("nested definition");
+    let mut full = state_with_local_collection(1);
+    let path = path(0).child(id("inner"), 0).expect("nested path");
+    let work = ExecutionInstanceId::in_path(path.clone(), id("work"));
+    full.apply_addressed(
+        &AddressedRunEvent::in_path(path.clone(), RunEvent::StepReleased { node: id("work") })
+            .expect("release address"),
+    )
+    .expect("release work");
+    mark_for_review_instance(&def, &mut full, &work, time::OffsetDateTime::UNIX_EPOCH)
+        .expect("hold known work");
+    assert!(
+        retry_review_instance(
+            &def,
+            &mut full.clone(),
+            &work,
+            time::OffsetDateTime::UNIX_EPOCH
+        )
+        .is_ok()
+    );
+    full.apply(&RunEvent::CollectionDrainStarted {
+        node: id("items"),
+        reason: CollectionDrainReason::Cancelled,
+    })
+    .expect("outer scope begins draining before the inner scope");
+    let mut bounded = PathExecutionState::from_run(&full, path).expect("nested path snapshot");
+    let before = full.clone();
+    let bounded_before = bounded.clone();
+    assert!(matches!(
+        retry_review_instance(&def, &mut full, &work, time::OffsetDateTime::UNIX_EPOCH),
+        Err(ExecutionError::IllegalInstanceTransition {
+            event: "step.retry_requested",
+            ..
+        })
+    ));
+    assert!(matches!(
+        retry_review_path_instance(&def, &mut bounded, &work, time::OffsetDateTime::UNIX_EPOCH),
+        Err(ExecutionError::IllegalInstanceTransition {
+            event: "step.retry_requested",
+            ..
+        })
+    ));
+    assert_eq!(full, before);
+    assert_eq!(bounded, bounded_before);
+}
+
+#[test]
 fn one_path_snapshot_excludes_every_unrelated_iteration() {
     let full = state(256);
     let local = PathExecutionState::from_run(&full, path(255)).expect("complete local snapshot");
@@ -304,7 +404,6 @@ fn bounded_worker_lifecycle_matches_the_full_run_oracle() {
 fn bounded_reconciliation_and_review_reduce_like_the_full_run() {
     use sagat_domain::execution::{FailureCode, ReconcileResult, ReviewOutcome};
     use sagat_domain::saga::ReconcileVerdict;
-    use time::OffsetDateTime;
 
     for decision in 0..6 {
         let mut full = state(3);
@@ -322,13 +421,9 @@ fn bounded_reconciliation_and_review_reduce_like_the_full_run() {
         let mut bounded = PathExecutionState::from_run(&full, path(1)).expect("bounded state");
         let (verdict, result) = match decision {
             0 => (ReconcileVerdict::Applied, ReconcileResult::Succeeded),
-            1 => (
+            1 | 2 => (
                 ReconcileVerdict::NotApplied,
-                ReconcileResult::RetryAt(OffsetDateTime::UNIX_EPOCH),
-            ),
-            2 => (
-                ReconcileVerdict::NotApplied,
-                ReconcileResult::Failed(FailureCode::reconciled_not_applied()),
+                ReconcileResult::Review(FailureCode::reconciliation_not_final()),
             ),
             _ => (
                 ReconcileVerdict::Unknown,
@@ -361,7 +456,7 @@ fn bounded_reconciliation_and_review_reduce_like_the_full_run() {
             },
         ];
         let outcome = match decision {
-            3 => Some(ReviewOutcome::Succeeded),
+            2 | 3 => Some(ReviewOutcome::Succeeded),
             4 => Some(ReviewOutcome::Failed(
                 FailureCode::parse("DECLINED").expect("code"),
             )),
@@ -380,16 +475,122 @@ fn bounded_reconciliation_and_review_reduce_like_the_full_run() {
         }
         for event in events {
             let addressed = AddressedRunEvent::in_path(path(1), event).expect("effect address");
-            full.apply_addressed(&addressed).expect("full reducer");
-            bounded
-                .apply_addressed(&addressed)
-                .expect("bounded effect reducer");
+            let before_full = full.clone();
+            let before_bounded = bounded.clone();
+            let expected = full.apply_addressed(&addressed);
+            let actual = bounded.apply_addressed(&addressed);
+            assert_eq!(actual, expected, "decision {decision}");
+            if matches!(addressed.event(), RunEvent::StepRetryRequested { .. }) {
+                assert!(
+                    matches!(
+                        expected,
+                        Err(
+                            sagat_domain::execution::ExecutionError::IllegalInstanceTransition { .. }
+                        )
+                    ),
+                    "an unresolved lookup cannot authorize a repeat"
+                );
+                assert_eq!(full, before_full, "the full reducer changed on refusal");
+                assert_eq!(
+                    bounded, before_bounded,
+                    "the bounded reducer changed on refusal"
+                );
+            } else {
+                expected.expect("full reducer");
+                actual.expect("bounded effect reducer");
+            }
             assert_eq!(
                 bounded,
                 PathExecutionState::from_run(&full, path(1)).expect("oracle"),
                 "decision {decision}"
             );
         }
+    }
+}
+
+#[test]
+fn bounded_reducer_rejects_forged_negative_lookup_outcomes_like_the_full_oracle() {
+    use sagat_domain::execution::{ExecutionError, FailureCode, ReconcileResult};
+    use sagat_domain::saga::ReconcileVerdict;
+    use time::OffsetDateTime;
+
+    let forged = [
+        ReconcileResult::RetryAt(OffsetDateTime::UNIX_EPOCH),
+        ReconcileResult::Failed(FailureCode::reconciled_not_applied()),
+        ReconcileResult::Review(FailureCode::parse("MANUAL_REVIEW").expect("code")),
+    ];
+    for result in forged {
+        let mut full = state(2);
+        let work = member(0, "work");
+        let lookup = work.node().reconciliation();
+        full.apply_addressed(
+            &AddressedRunEvent::in_path(
+                path(0),
+                RunEvent::StepReleased {
+                    node: work.node().clone(),
+                },
+            )
+            .expect("release address"),
+        )
+        .expect("release");
+        let (fence, _) = lease_instance(&mut full, &work).expect("lease forward");
+        for event in [
+            RunEvent::ReconciliationRequested {
+                node: work.node().clone(),
+                fence,
+                cause: FailureCode::outcome_unknown(),
+            },
+            RunEvent::StepReleased {
+                node: lookup.clone(),
+            },
+            RunEvent::StepLeased {
+                node: lookup.clone(),
+                attempt: 1,
+                generation: 1,
+            },
+            RunEvent::StepCompleted {
+                node: lookup.clone(),
+                attempt: 1,
+                generation: 1,
+            },
+        ] {
+            full.apply_addressed(
+                &AddressedRunEvent::in_path(path(0), event).expect("setup address"),
+            )
+            .expect("valid reconciliation setup");
+        }
+        let mut bounded = PathExecutionState::from_run(&full, path(0)).expect("bounded state");
+        let event = AddressedRunEvent::in_path(
+            path(0),
+            RunEvent::ReconciliationConcluded {
+                node: work.node().clone(),
+                verdict: ReconcileVerdict::NotApplied,
+                result,
+            },
+        )
+        .expect("conclusion address");
+        let before_full = full.clone();
+        let before_bounded = bounded.clone();
+
+        let expected = full.apply_addressed(&event);
+        let actual = bounded.apply_addressed(&event);
+        assert_eq!(
+            actual, expected,
+            "bounded refusal must match the full reducer"
+        );
+        assert!(
+            matches!(expected, Err(ExecutionError::Invariant(_))),
+            "a negative observation authorizes only RECONCILIATION_NOT_FINAL review"
+        );
+        assert_eq!(full, before_full, "the full refusal changes no state");
+        assert_eq!(
+            bounded, before_bounded,
+            "the bounded refusal changes no state"
+        );
+        assert_eq!(
+            bounded,
+            PathExecutionState::from_run(&full, path(0)).expect("oracle after refusal")
+        );
     }
 }
 
@@ -657,8 +858,15 @@ fn bounded_lookup_verdict_and_operator_commands_match_full_replay() {
             bounded,
             PathExecutionState::from_run(&full, path(1)).expect("oracle")
         );
-        if case >= 2 {
-            let (expected, actual) = if case == 2 {
+        if case >= 1 {
+            if case == 1 {
+                assert!(matches!(
+                    full.instance(&work).and_then(|step| step.waiting_on()),
+                    Some(sagat_domain::execution::WaitingOn::Operator { code })
+                        if code == &FailureCode::reconciliation_not_final()
+                ));
+            }
+            let (expected, actual) = if case <= 2 {
                 (
                     retry_review_instance(&def, &mut full, &work, now),
                     retry_review_path_instance(&def, &mut bounded, &work, now),
@@ -757,20 +965,17 @@ fn bounded_expiry_matches_full_policy_for_ambiguity_cancellation_and_stale_fence
                     } else {
                         assert!(actual.is_ok());
                         let step = bounded.local_instance(work.node()).expect("expired step");
-                        let expected_status = if policy & 2 != 0 || policy & 1 != 0 {
-                            StepStatus::Waiting
-                        } else if cancelled {
-                            StepStatus::Cancelled
-                        } else {
-                            StepStatus::RetryWait
-                        };
-                        assert_eq!(step.status(), expected_status);
+                        assert_eq!(
+                            step.status(),
+                            StepStatus::Waiting,
+                            "an ambiguous expiry is reviewed even with attempts left or cancellation requested"
+                        );
                         if policy & 2 != 0 {
                             assert_eq!(
                                 step.waiting_on(),
                                 Some(&sagat_domain::execution::WaitingOn::Reconciliation)
                             );
-                        } else if policy & 1 != 0 {
+                        } else {
                             assert!(matches!(
                                 step.waiting_on(),
                                 Some(sagat_domain::execution::WaitingOn::Operator { .. })
@@ -780,5 +985,61 @@ fn bounded_expiry_matches_full_policy_for_ambiguity_cancellation_and_stale_fence
                 }
             }
         }
+    }
+}
+
+#[test]
+fn root_compensation_plan_rejects_succeeded_derived_lookup_ids_without_mutation() {
+    use common::{Harness, activity, build, effect, id, sid};
+    use sagat_domain::execution::{FailureCode, PlannedEntry, RunEvent};
+    use sagat_domain::saga::ReconcileVerdict;
+
+    let mut run = Harness::start(build(
+        "settlement",
+        vec![
+            common::saga("settlement", "pay"),
+            effect("pay", true).with_next(id("hold")),
+            activity("hold"),
+        ],
+    ));
+    let effect_fence = run.lease("pay");
+    run.fail_with("pay", effect_fence, "OUTCOME_UNKNOWN", false)
+        .expect("ambiguous effect requests reconciliation");
+    let lookup_fence = run.lease("pay~r");
+    run.reconcile("pay~r", lookup_fence, ReconcileVerdict::Applied)
+        .expect("lookup succeeds and proves the original effect");
+    assert_eq!(run.status("pay~r"), StepStatus::Succeeded);
+
+    let mut aborting = run.state.clone();
+    aborting
+        .apply(&RunEvent::SagaAborting {
+            node: id("settlement"),
+            cause: FailureCode::parse("AFTER_LOOKUP").expect("code"),
+        })
+        .expect("saga starts aborting");
+
+    for (entries, irreversible) in [
+        (
+            vec![PlannedEntry {
+                node: sid("pay~r"),
+                after: Vec::new(),
+            }],
+            Vec::new(),
+        ),
+        (Vec::new(), vec![sid("pay~r")]),
+    ] {
+        let mut candidate = aborting.clone();
+        let before = candidate.clone();
+        assert!(
+            candidate
+                .apply(&RunEvent::CompensationPlanned {
+                    node: id("settlement"),
+                    entries,
+                    irreversible,
+                })
+                .is_err(),
+            "a derived lookup is not an original effect even when it succeeded"
+        );
+        assert_eq!(candidate, before, "a rejected plan changes no state");
     }
 }

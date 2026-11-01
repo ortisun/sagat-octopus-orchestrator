@@ -13,3 +13,5 @@ Rules:
 5. `python3 scripts/check-agent-config.py` checks that each file starts with `# ADR-NNNN`, has a Status line near the top, and that numbers are unique. Older ADRs use a dash after the number; new ones use the colon of the template.
 
 Release checkpoints: [ADR-0040](ADR-0040-release-checkpoints-preserve-incomplete-feature-boundaries.md) preserves incomplete-feature boundaries and all technical release gates.
+
+Proposed recovery refinement: [ADR-0076](ADR-0076-compensation-failure-and-uncertain-effects.md) — S1-B/S2-B owner direction approved; delivery-1 implementation in verification, acceptance evidence pending, US04 open.

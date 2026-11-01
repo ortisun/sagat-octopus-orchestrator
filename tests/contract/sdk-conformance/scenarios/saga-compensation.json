@@ -1,6 +1,6 @@
 {
   "name": "saga-compensation",
-  "description": "US03: a saga whose last step fails for good is compensated in reverse order; every SDK receives the compensation as a COMPENSATION task that names the step it undoes and the key of the effect at the provider. A step whose outcome is unknown is reconciled, and the reconciler answers exactly a verdict. The other two verdicts of a reconciler: `not_applied` (the platform tries the step again, which then succeeds) and `unknown` (nobody can say: the run waits for an operator and nothing is retried blindly).",
+  "description": "US03: a saga whose last step fails for good is compensated in reverse order; every SDK receives the compensation as a COMPENSATION task that names the step it undoes and the key of the effect at the provider. A step whose outcome is unknown is reconciled, and the reconciler answers exactly a verdict. Neither `not_applied` nor `unknown` proves a final outcome: the run waits for an operator and nothing is retried blindly. The not-applied case continues only after an audited outcome-bearing resolution. The human resolution is a simulated assertion of final success; no provider verification is claimed.",
   "workflows": {
     "saga": {
       "name": "saga-flow",
@@ -179,15 +179,7 @@
         },
         "saga.pay2": {
           "behavior": {
-            "failsUntilAttempt": 2,
-            "fails": {
-              "code": "OUTCOME_UNKNOWN",
-              "message": "unknown",
-              "retryable": false
-            },
-            "returns": {
-              "paid": true
-            }
+            "outcomeUnknown": "the provider did not answer the not-applied request"
           }
         },
         "saga.lookup-none": {
@@ -258,6 +250,27 @@
       }
     },
     {
+      "id": "not-applied-concluded",
+      "op": "awaitJournal",
+      "run": "not-applied",
+      "eventType": "reconciliation.concluded",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "not-applied-state",
+      "op": "get",
+      "run": "not-applied"
+    },
+    {
+      "id": "not-applied-resolved",
+      "op": "operate",
+      "run": "not-applied",
+      "action": "RESOLVE_STEP",
+      "stepId": "pay2",
+      "outcome": "SUCCEEDED",
+      "reason": "simulated human assertion of final success; no provider verification is claimed"
+    },
+    {
       "id": "not-applied-done",
       "op": "waitForCompletion",
       "run": "not-applied",
@@ -280,7 +293,7 @@
       "id": "undecided-asked",
       "op": "awaitWorkerLog",
       "worker": "w1",
-      "count": 13,
+      "count": 12,
       "timeoutMs": 20000
     },
     {
@@ -300,5 +313,6 @@
       "op": "events",
       "run": "undecided"
     }
-  ]
+  ],
+  "reviewEvidence": true
 }

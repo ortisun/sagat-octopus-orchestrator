@@ -1,0 +1,70 @@
+SDK fixture convergence review for feature 037
+
+Scope: common scenarios lease-lost, worker-shutdown, failures-and-retries,
+saga-compensation, their affected expected documents, and the existing Rust
+E2E/fault assertions. No production or SDK implementation was changed here.
+
+Observed RED:
+- Initial E2E wrapper: 4 passed, 2 failed (saga assertion and unknown outcome).
+- Initial fault wrapper: 7 passed, 2 failed (lease lost and worker shutdown).
+- Initial full conformance PID4878 completed all 66 scenarios, including
+  60 runtime scenarios in all six languages. The 360 runtime documents agree
+  across languages. Only failures-and-retries, lease-lost and worker-shutdown
+  differ from their old runtime goldens; no other full-gate FAIL was reported.
+- The first candidate command lacked SAGAT_RUST_SDK_TARGET_DIR and failed before
+  runtime. Preserved separately as d1-sdk-candidate-lease-lost-env-red.txt; fixed
+  by selecting the exact external Rust SDK artifact target used by PID4878.
+
+Candidate review performed before changing checked-in expected documents:
+- Generated each scenario without SAGAT_SDK_BLESS. The six normalized runtime
+  candidates were exactly equal per scenario. Only old expected-document
+  comparisons failed. Builder agreement remained mandatory for all six SDKs.
+- Read the actual diffs; archived as d1-sdk-source-review.diff and
+  d1-sdk-golden-review.diff. Checked original hashes before applying six goldens.
+- lease-lost and worker-shutdown keep the original worker log unchanged:
+  cancellation reason remains lease-lost/shutdown. The unknown original remains
+  attempt one, direct RETRY_STEP is rejected with STATE_CONFLICT, and the
+  successor activity is released only after explicit RESOLVE_STEP SUCCEEDED.
+  Final worker two log contains one distinct successor at attempt one, not a
+  repetition of the original. The complete journal has no automatic retry.
+- Human resolution has exactly one saga.step_resolved audit row for alice,
+  with the explicit simulated human assertion/no-provider-verification reason.
+- failures-and-retries preserves known-failure observations and all worker
+  logs exactly; only the unknown outcome becomes WAITING/operator and
+  MANUAL_REVIEW with no finishedAt, retry or terminal-failure event. Its fixed
+  sleep is replaced by a bounded durable step.needs_review observation.
+- saga-compensation only adds the human audit to its already-correct runtime
+  candidate; the Rust assertion now requires the retained original attempt,
+  no repeat, and reconciliation < human resolution < run completion.
+- Both lease fixtures use 120-second lease TTL. The existing control endpoint
+  explicitly ages the target lease, so expiry does not depend on a short TTL.
+  Worker two heartbeat 60 seconds avoids optional started-event timing noise
+  while remaining within that TTL; successor completion is bounded at 30 seconds.
+
+Verification strategy:
+- Canonical four-scenario replay runs without bless in all six official SDKs.
+- Parent independently runs the whole E2E and fault SDK wrappers in parallel.
+- SAGAT_SDK_REUSE=1 only reuses runners prepared from this same checkout;
+  456 tracked SDK source file hashes matched before candidate generation and
+  before the final replay. SAGAT_SDK_LANGS is unset: no language is excluded.
+- env removes inherited RUST_LOG and SAGAT_SDK_BLESS. Runtime role is enabled.
+- Shared backend and Rust SDK targets are retained; only the agent-owned
+  temporary candidate directory will be removed after the final replay.
+
+Final replay results follow in the per-scenario d1-sdk-*-green.txt logs.
+
+SDK source snapshot SHA-256: 64afe6abeeafd3431287f10089a51de4686de5267e569e80262d9ab21558ff93
+
+Final canonical replay complete (no bless):
+- lease-lost: all six languages; test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 19.65s
+- worker-shutdown: all six languages; test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 22.49s
+- failures-and-retries: all six languages; test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 35.34s
+- saga-compensation: all six languages; test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 50.55s
+
+All four commands exited zero: 24 runtime scenario/language combinations.
+Owned source and golden hashes were checked again after all gates.
+All 456 SDK source hashes were unchanged again after all gates; manifest
+archived as d1-sdk-reuse-source-sha256.json. Scoped git diff --check: exit 0.
+Parent owns the independent full E2E/fault wrapper results.
+Removed only agent-owned temporary directory sagat-037-sdk-review-rdidp332;
+shared backend and Rust SDK target directories remain intact.

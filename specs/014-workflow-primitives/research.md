@@ -1805,3 +1805,16 @@ claim/transfer races, membership admission, scoped-path support, quota or releas
 Implementation order and ownership are in [capacity-coordinator.md](./capacity-coordinator.md).
 Native Vacate/Acquire are already merged through PR59/65; their passing evidence is not repeated
 as proof of production coordination.
+
+## 2026-11-01 — B02 owner direction (pre-implementation record)
+
+The owner approved S1-B/S2-B in [feature 037](../037-compensation-safety/spec.md); the
+[approval record](../037-compensation-safety/research.md) distinguishes direction from adoption.
+Default compensation review must survive cancellation/deadline; explicit saga `fail` retains
+terminal failure/history without a promised active post-terminal review queue. Unknown external
+effects require consultation/review unless the specific compensation exception is qualified by
+provider evidence, current authority and adapter tests, including finality and late effects.
+O381 is answered “hold for both” at product level. At this decision point the explicit-saga
+correction was not implemented. Delivery 1 is now implementation in verification; O380 scope-level
+policy fields remain deferred, earlier D63/D66 and other dated evidence remain historical, and no
+acceptance is claimed by this note.

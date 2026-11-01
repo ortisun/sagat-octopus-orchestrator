@@ -35,3 +35,15 @@ Feature014's [dormant ChildRoot Acquire](../specs/014-workflow-primitives/capaci
 adds fenced possession transfer and original-key reconciliation beside Vacate/Finish. Native and
 integrated acceptance is in progress; canonical tasks and the release remain open. Runnable work,
 sweeper/callers, claim guards, nested admission and quota/backfill remain required before activation.
+
+### Approved direction — compensation safety, 2026-11-01
+
+[Feature 037](../specs/037-compensation-safety/spec.md) records approved S1-B/S2-B: preserve review
+across cancellation, retain explicit truthful terminal failure and qualify uncertain-effect recovery.
+Dependencies: 003/014 execution, 009 authority and shared SDK/Studio contracts. Gate order: reviewed
+Constitution/ADR adoption diff → approved detailed design → traced red-first implementation and
+persistence/fault/client acceptance → provider qualification where applicable. The approved
+[delivery plan](../specs/037-compensation-safety/plan.md) is now in implementation verification;
+no completion, new service, qualified provider, merge, release or date is implied. Delivery 1
+enables no qualification exception. US04 remains a provider-evidence/design gate; full feature
+acceptance cannot be declared from the first delivery.

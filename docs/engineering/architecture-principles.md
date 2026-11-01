@@ -4,7 +4,7 @@ Source of the principles: the constitution. This page says how a principle becom
 
 ## Shape
 
-A Rust **modular monolith**, a crate per bounded context, ports and adapters, dependencies pointing inwards: `domain ← application ← adapters ← apps`. A process is split out only after measurement. PostgreSQL is the authority; the transactional outbox and the inbox carry messages; NATS is a hint. Overview: `docs/architecture/overview.md`.
+A Rust **modular monolith**, a crate per bounded context, ports and adapters, dependencies pointing inwards: `domain ← application ← adapters ← apps`. A process is split out only after measurement. PostgreSQL is the authority; the transactional outbox and the inbox carry messages; the selected NATS/Redis transport is a hint (ADR-0069). Overview: `docs/architecture/overview.md`.
 
 ## Principles to checks (fitness functions)
 
@@ -58,3 +58,11 @@ State each as stimulus, environment, response and measure (`docs/architecture/ob
 | Product/scope/release decision | `docs/owner-decisions.md` |
 | Operational procedure | `docs/runbooks/` |
 | Evidence of a measured claim | `validation-report.md`, `tests/performance/reports/` |
+
+## Recovery checks — implementation in verification
+
+[Feature 037](../../specs/037-compensation-safety/spec.md) delivery 1 adds domain, contract,
+persistence, tenant and fault fitness checks for cancellation/review invariance and unknown-effect
+refusal. Until their results are recorded in the validation report, do not mark the target enforced.
+Qualification/finality/authority exceptions remain open under US04; existing baseline tests remain
+historical rather than acceptance of the changed rules.

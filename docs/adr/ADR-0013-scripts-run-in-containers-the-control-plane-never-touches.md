@@ -6,6 +6,10 @@ The C# language/dependency restrictions below are superseded by
 [ADR-0021](ADR-0021-csharp-builds-use-a-curated-offline-toolchain.md), which introduces a curated
 offline Roslyn toolchain and versioned binary bundles. All isolation boundaries still apply.
 
+The Go and Java refusal below is superseded by
+[ADR-0024](ADR-0024-go-and-java-use-native-v3-artifacts.md), which defines their native
+artifact execution. This notice preserves the original decision text and its isolation boundaries.
+
 ## Context
 
 ADR-0006 decided that scripts are untrusted execution: compiled in build workers, run in isolated

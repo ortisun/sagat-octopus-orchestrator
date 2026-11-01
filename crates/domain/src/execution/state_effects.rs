@@ -124,15 +124,14 @@ pub(in crate::execution) fn apply_effect_event<S: InstanceSteps>(
             if !matches!(step.waiting, Some(WaitingOn::Reconciliation)) {
                 return Err(illegal_transition(instance, step.status, name));
             }
-            let paired = matches!(
-                (verdict, result),
+            let paired = match (verdict, result) {
                 (ReconcileVerdict::Applied, ReconcileResult::Succeeded)
-                    | (
-                        ReconcileVerdict::NotApplied,
-                        ReconcileResult::RetryAt(_) | ReconcileResult::Failed(_)
-                    )
-                    | (ReconcileVerdict::Unknown, ReconcileResult::Review(_))
-            );
+                | (ReconcileVerdict::Unknown, ReconcileResult::Review(_)) => true,
+                (ReconcileVerdict::NotApplied, ReconcileResult::Review(code)) => {
+                    *code == FailureCode::reconciliation_not_final()
+                }
+                _ => false,
+            };
             if !paired {
                 return Err(ExecutionError::Invariant(
                     "a reconciliation result does not follow from what it found",
@@ -195,7 +194,12 @@ pub(in crate::execution) fn apply_effect_event<S: InstanceSteps>(
             // does not want to wait for: the scheduler's own `retry_due` finds it no longer in
             // `RETRY_WAIT` and does nothing, so the two cannot both start an attempt.
             let step = state.locate_effect_step(instance, name, &[Waiting, RetryWait])?;
-            if step.status == Waiting && !matches!(step.waiting, Some(WaitingOn::Operator { .. })) {
+            if (step.status == Waiting && !matches!(step.waiting, Some(WaitingOn::Operator { .. })))
+                || step
+                    .failure
+                    .as_ref()
+                    .is_some_and(FailureCode::leaves_outcome_unknown)
+            {
                 return Err(illegal_transition(instance, step.status, name));
             }
             step.status = Ready;

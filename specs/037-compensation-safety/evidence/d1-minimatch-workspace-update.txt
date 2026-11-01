@@ -1,0 +1,3 @@
+npm error code EOVERRIDE
+npm error Override for minimatch@file:/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/frontend/tools/minimatch-compat conflicts with direct dependency
+npm error A complete log of this run can be found in: /Users/marcelo/.npm/_logs/2026-11-01T16_01_35_523Z-debug-0.log

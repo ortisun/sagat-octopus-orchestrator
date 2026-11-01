@@ -1,0 +1,29 @@
+    Blocking waiting for file lock on build directory
+   Compiling sagat-domain v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/crates/domain)
+    Finished `test` profile [unoptimized] target(s) in 1m 31s
+     Running tests/execution.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/execution-5e8f09605a50e4f1)
+
+running 2 tests
+
+thread 'storage_quota_failure_stops_before_on_error_can_release_more_work' (781776504) panicked at crates/domain/tests/execution.rs:709:5:
+assertion `left == right` failed
+  left: Failed
+ right: Waiting
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'storage_quota_failure_preserves_an_existing_stop_and_owed_compensation' (781776503) panicked at crates/domain/tests/execution.rs:739:5:
+assertion `left == right` failed
+  left: Cancelled
+ right: ManualReview
+test storage_quota_failure_stops_before_on_error_can_release_more_work ... FAILED
+test storage_quota_failure_preserves_an_existing_stop_and_owed_compensation ... FAILED
+
+failures:
+
+failures:
+    storage_quota_failure_preserves_an_existing_stop_and_owed_compensation
+    storage_quota_failure_stops_before_on_error_can_release_more_work
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 65 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p sagat-domain --test execution`

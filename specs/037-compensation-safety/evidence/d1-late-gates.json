@@ -1,0 +1,27 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--locked",
+      "--offline",
+      "--test",
+      "integration_scalability_ha"
+    ],
+    "exit": 0,
+    "log": "d1-scalability-runtime.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--locked",
+      "--offline",
+      "--doc"
+    ],
+    "exit": 0,
+    "log": "d1-doctests-final.txt"
+  }
+]

@@ -8,19 +8,39 @@
   },
   "workspaces": [
     "apps/*",
-    "e2e"
+    "e2e",
+    "tools/minimatch-compat"
   ],
   "scripts": {
     "build": "npm run build --workspace @sagat/studio",
     "dev": "npm run dev --workspace @sagat/studio",
     "typecheck": "npm run typecheck --workspace @sagat/studio",
     "lint": "npm run lint --workspace @sagat/studio",
-    "test": "npm run test --workspace @sagat/studio",
+    "test": "npm run test:tooling && npm run test --workspace @sagat/studio",
     "api": "npm run api --workspace @sagat/studio",
     "check:api": "npm run check:api --workspace @sagat/studio",
-    "e2e": "npm run test --workspace @sagat/e2e"
+    "e2e": "npm run test --workspace @sagat/e2e",
+    "test:tooling": "node --test tools/minimatch.test.mjs"
   },
   "overrides": {
-    "dompurify": "3.4.17"
+    "dompurify": "3.4.17",
+    "@eslint/config-array": {
+      "minimatch": "11.0.1+sagat.1"
+    },
+    "@eslint/eslintrc": {
+      "minimatch": "11.0.1+sagat.1"
+    },
+    "eslint": {
+      "minimatch": "11.0.1+sagat.1"
+    },
+    "eslint-plugin-jsx-a11y": {
+      "minimatch": "11.0.1+sagat.1"
+    },
+    "@redocly/openapi-core": {
+      "minimatch": "11.0.1+sagat.1"
+    },
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "11.0.1+sagat.1"
+    }
   }
 }

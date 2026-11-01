@@ -19,7 +19,7 @@ use super::instance::ExecutionInstanceId;
 use super::path_state::PathExecutionState;
 use super::plan::{AddressedPlan, Evaluation, Plan, after, plan, plan_addressed, plan_path};
 use super::sagas::policies;
-use super::state::{RunId, RunState, SagaPhase, StepState, StepStatus, WaitingOn};
+use super::state::{RunId, RunState, StepState, StepStatus, WaitingOn};
 use crate::saga::{NodeOrigin, OnCompensationFailure, ReconcileVerdict};
 use crate::workflow::{NodeId, NodeKind, Scope, WorkflowDefinition};
 
@@ -642,11 +642,42 @@ pub fn prepare_scoped_output_refusal(
         return Err(ExecutionError::UnknownInstance(instance.clone()));
     }
 
+    prepare_scoped_report_stop(state, FailureCode::run_data_limit())
+}
+
+/// Retains a content-quota stop before the caller records the original scoped outcome without
+/// outputs in the same transaction. Structured owners drain later; root settlement cannot own it.
+/// A previous cancellation, timeout or failure remains authoritative.
+///
+/// # Errors
+/// Refuses a root instance, stale lease, unknown definition node or inactive ancestry.
+pub fn prepare_scoped_content_refusal(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    instance: &ExecutionInstanceId,
+    fence: Fence,
+) -> Result<Progress, ExecutionError> {
+    if instance.path().is_root() {
+        return Err(ExecutionError::Invariant(
+            "root work used scoped content refusal",
+        ));
+    }
+    require_instance_lease(state, instance, fence)?;
+    if def.node_for_instance(instance).is_none() || !has_live_ancestry(def, state, instance) {
+        return Err(ExecutionError::UnknownInstance(instance.clone()));
+    }
+    prepare_scoped_report_stop(state, FailureCode::storage_quota_exceeded())
+}
+
+fn prepare_scoped_report_stop(
+    state: &mut RunState,
+    code: FailureCode,
+) -> Result<Progress, ExecutionError> {
     let mut events = Vec::new();
     if state.stop_reason().is_none() {
         let stop = RunEvent::RunStopRequested {
             reason: StopReason::Failed,
-            code: Some(FailureCode::run_data_limit()),
+            code: Some(code),
         };
         state.apply(&stop)?;
         events.push(stop);
@@ -732,9 +763,7 @@ pub struct Failure {
 /// Whether the outcome of an attempt that ended with this code is unknown: the effect may or may
 /// not have happened.
 fn is_ambiguous(code: &FailureCode) -> bool {
-    *code == FailureCode::lease_expired()
-        || *code == FailureCode::attempt_timeout()
-        || *code == FailureCode::outcome_unknown()
+    code.leaves_outcome_unknown()
 }
 
 /// What a compensation does when its retries are spent, by the policy of the saga it belongs to.
@@ -768,7 +797,7 @@ fn end_attempt(
         .node(node)
         .ok_or_else(|| ExecutionError::UnknownStep(node.clone()))?;
     // An attempt whose outcome is unknown must not be retried or compensated blindly: it is
-    // reconciled when the activity says how, and otherwise waits for an operator if it is high risk.
+    // reconciled when the activity says how, and otherwise waits for an operator regardless of author-supplied risk metadata.
     if *def_node.origin() == NodeOrigin::Declared
         && matches!(def_node.kind(), NodeKind::Activity { .. })
         && is_ambiguous(&code)
@@ -785,18 +814,28 @@ fn end_attempt(
                 },
             );
         }
-        if def_node.effect().high_risk {
-            return apply_then_settle(
-                def,
-                state,
-                now,
-                RunEvent::StepNeedsReview {
-                    node: node.clone(),
-                    code,
-                    fence: Some(fence),
-                },
-            );
-        }
+        return apply_then_settle(
+            def,
+            state,
+            now,
+            RunEvent::StepNeedsReview {
+                node: node.clone(),
+                code,
+                fence: Some(fence),
+            },
+        );
+    }
+    if matches!(def_node.origin(), NodeOrigin::Compensation(_)) && is_ambiguous(&code) {
+        return apply_then_settle(
+            def,
+            state,
+            now,
+            RunEvent::StepNeedsReview {
+                node: node.clone(),
+                code,
+                fence: Some(fence),
+            },
+        );
     }
     if step.cancel_requested() {
         // The run asked this attempt to stop; the retry budget is irrelevant.
@@ -891,23 +930,32 @@ pub fn fail_step(
     end_attempt(def, state, node, failure, now)
 }
 
-/// Whether the scope around `path` still goes forward: the collection admits iterations, the loop
-/// runs or waits to run its next one. A step of a scope that is draining or compensating is not
-/// retried by a lookup or by a person: the iteration drain would cancel it the moment it was granted.
+/// A forward retry needs the run and every admitted ancestor to remain open. Checking only the
+/// nearest owner would release work while an outer scope's native drain is still catching up.
 fn scope_goes_forward(state: &RunState, path: &super::instance::InstancePath) -> bool {
-    let Some(owner) = path.scope_owner() else {
-        return true;
-    };
-    if let Some(collection) = state.collection(&owner) {
-        return collection.phase() == super::state::CollectionPhase::Open;
+    if state.stop_reason().is_some() {
+        return false;
     }
-    if let Some(scope) = state.loop_state(&owner) {
-        return matches!(
-            scope.phase(),
-            super::state::LoopPhase::Ready
-                | super::state::LoopPhase::Running
-                | super::state::LoopPhase::Delaying
-        );
+    let mut parent = super::InstancePath::root();
+    for segment in path.segments() {
+        let owner = ExecutionInstanceId::in_path(parent.clone(), segment.scope_node().clone());
+        let index = segment.iteration_index();
+        let forward = if let Some(collection) = state.collection(&owner) {
+            collection.phase() == super::CollectionPhase::Open
+                && collection.active_iterations().any(|active| active == index)
+        } else {
+            state.loop_state(&owner).is_some_and(|scope| {
+                scope.phase() == super::LoopPhase::Running
+                    && scope.active_iteration() == Some(index)
+            })
+        };
+        if !forward {
+            return false;
+        }
+        let Ok(child) = parent.child(segment.scope_node().clone(), index) else {
+            return false;
+        };
+        parent = child;
     }
     true
 }
@@ -1005,20 +1053,12 @@ impl ScopedAttemptState for PathExecutionState {
         settle_path(def, self, events)
     }
     fn scope_goes_forward(&self, path: &super::InstancePath) -> bool {
-        if path != self.path() {
-            return false;
-        }
-        self.ancestors().last().is_some_and(|owner| {
-            owner.collection_phase() == Some(super::CollectionPhase::Open)
-                || matches!(
-                    owner.loop_phase(),
-                    Some(
-                        super::LoopPhase::Ready
-                            | super::LoopPhase::Running
-                            | super::LoopPhase::Delaying
-                    )
-                )
-        })
+        path == self.path()
+            && self.global().stop_reason().is_none()
+            && self
+                .ancestors()
+                .iter()
+                .all(super::AncestorExecutionFence::allows_forward_progress)
     }
 }
 
@@ -1097,7 +1137,7 @@ fn fail_scoped_attempt<S: ScopedAttemptState>(
     let mut events = Vec::new();
 
     // An attempt whose outcome is unknown must not be retried or compensated blindly: it is
-    // reconciled when the activity says how, and otherwise waits for an operator if it is high risk.
+    // reconciled when the activity says how, and otherwise waits for an operator regardless of author-supplied risk metadata.
     if is_forward_activity && is_ambiguous(&code) {
         if def.node_for_instance(&reconciliation).is_some() {
             emit(
@@ -1112,19 +1152,30 @@ fn fail_scoped_attempt<S: ScopedAttemptState>(
             )?;
             return state.settle_scoped(def, path, events);
         }
-        if declared.effect().high_risk {
-            emit(
-                state,
-                &mut events,
-                path,
-                RunEvent::StepNeedsReview {
-                    node: node.clone(),
-                    code,
-                    fence: Some(fence),
-                },
-            )?;
-            return state.settle_scoped(def, path, events);
-        }
+        emit(
+            state,
+            &mut events,
+            path,
+            RunEvent::StepNeedsReview {
+                node: node.clone(),
+                code,
+                fence: Some(fence),
+            },
+        )?;
+        return state.settle_scoped(def, path, events);
+    }
+    if matches!(declared.origin(), NodeOrigin::Compensation(_)) && is_ambiguous(&code) {
+        emit(
+            state,
+            &mut events,
+            path,
+            RunEvent::StepNeedsReview {
+                node: node.clone(),
+                code,
+                fence: Some(fence),
+            },
+        )?;
+        return state.settle_scoped(def, path, events);
     }
     if cancel_requested {
         // The run asked this attempt to stop; the retry budget is irrelevant. If the attempt ended
@@ -1267,8 +1318,8 @@ fn complete_scoped_reconciliation<S: ScopedAttemptState>(
     instance: &ExecutionInstanceId,
     fence: Fence,
     verdict: ReconcileVerdict,
-    jitter_sample: f64,
-    now: OffsetDateTime,
+    _jitter_sample: f64,
+    _now: OffsetDateTime,
 ) -> Result<AddressedProgress, ExecutionError> {
     let Some(forward) = instance
         .node()
@@ -1302,23 +1353,11 @@ fn complete_scoped_reconciliation<S: ScopedAttemptState>(
         s.status() == StepStatus::Waiting
             && matches!(s.waiting_on(), Some(WaitingOn::Reconciliation))
     });
-    if let Some(step) = waiting {
-        let policy = def
-            .node_for_instance(&forward)
-            .ok_or_else(|| ExecutionError::UnknownInstance(forward.clone()))?
-            .retry_policy();
+    if waiting.is_some() {
         let result = match verdict {
             ReconcileVerdict::Applied => ReconcileResult::Succeeded,
-            ReconcileVerdict::NotApplied
-                if state.scope_goes_forward(path) && policy.has_attempts_left(step.attempt()) =>
-            {
-                ReconcileResult::RetryAt(after(
-                    now,
-                    policy.delay_after(step.attempt(), jitter_sample),
-                )?)
-            }
             ReconcileVerdict::NotApplied => {
-                ReconcileResult::Failed(FailureCode::reconciled_not_applied())
+                ReconcileResult::Review(FailureCode::reconciliation_not_final())
             }
             ReconcileVerdict::Unknown => {
                 ReconcileResult::Review(FailureCode::reconciliation_unknown())
@@ -1422,7 +1461,11 @@ fn retry_scoped_review<S: ScopedAttemptState>(
     let forward = def
         .node_for_instance(instance)
         .is_some_and(|n| *n.origin() == NodeOrigin::Declared);
-    if forward && !state.scope_goes_forward(instance.path()) {
+    if step
+        .failure()
+        .is_some_and(FailureCode::leaves_outcome_unknown)
+        || (forward && !state.scope_goes_forward(instance.path()))
+    {
         return Err(ExecutionError::IllegalInstanceTransition {
             instance: instance.clone(),
             status: step.status(),
@@ -1606,6 +1649,7 @@ pub fn fail_step_for_storage_quota(
         node,
         fence,
         FailureCode::storage_quota_exceeded(),
+        true,
         now,
     )
 }
@@ -1626,7 +1670,7 @@ pub fn fail_report_for_storage_quota(
     code: FailureCode,
     now: OffsetDateTime,
 ) -> Result<Progress, ExecutionError> {
-    fail_step_after_storage_quota(def, state, node, fence, code, now)
+    fail_step_after_storage_quota(def, state, node, fence, code, false, now)
 }
 
 fn fail_step_after_storage_quota(
@@ -1635,8 +1679,10 @@ fn fail_step_after_storage_quota(
     node: &NodeId,
     fence: Fence,
     code: FailureCode,
+    successful_report: bool,
     now: OffsetDateTime,
 ) -> Result<Progress, ExecutionError> {
+    require_lease(state, node, fence)?;
     let stop = (state.stop_reason().is_none() && !node.is_reconciliation()).then(|| {
         RunEvent::RunStopRequested {
             reason: StopReason::Failed,
@@ -1646,26 +1692,41 @@ fn fail_step_after_storage_quota(
     if let Some(event) = stop.as_ref() {
         state.apply(event)?;
     }
-    let mut progress = end_attempt(
-        def,
-        state,
-        node,
-        Failure {
-            fence,
-            code,
-            retryable: false,
-            jitter_sample: 0.0,
-        },
-        now,
-    )?;
+    // The root report could not retain successful output. It is not evidence of failure,
+    // nor permission to undo an unknown effect. Scoped known-success retention has its own path.
+    let mut progress = if successful_report && !node.is_reconciliation() {
+        apply_then_settle(
+            def,
+            state,
+            now,
+            RunEvent::StepNeedsReview {
+                node: node.clone(),
+                code,
+                fence: Some(fence),
+            },
+        )?
+    } else {
+        end_attempt(
+            def,
+            state,
+            node,
+            Failure {
+                fence,
+                code,
+                retryable: false,
+                jitter_sample: 0.0,
+            },
+            now,
+        )?
+    };
     if let Some(event) = stop {
         progress.events.insert(0, event);
     }
     Ok(progress)
 }
 
-/// The attempt ended without a report (lease expiry or attempt timeout). Both consume an attempt
-/// and are retryable: the side effect may have happened, so the retry uses the same idempotency key.
+/// The attempt ended without a report (lease expiry or attempt timeout). Both consume an attempt;
+/// external-capable work consults or reviews because the effect may have happened.
 ///
 /// # Errors
 /// As [`complete_step`].
@@ -2136,18 +2197,6 @@ pub fn finish_child(
     )
 }
 
-/// Whether the step may be tried again after a reconciliation found that its effect did not happen:
-/// not when the run is being stopped, and not when a saga around it has stopped its forward work.
-fn may_retry_forward(def: &WorkflowDefinition, state: &RunState, forward: &NodeId) -> bool {
-    state.stop_reason().is_none()
-        && def.scope_chain(forward).all(|scope| match scope {
-            Scope::Saga(saga) => state
-                .saga(saga)
-                .is_none_or(|s| s.phase() == SagaPhase::Forward),
-            Scope::Parallel(_) => true,
-        })
-}
-
 /// The reconciliation of a step answered. `node` is the reconciliation (`<id>~r`) and holds the lease
 /// that `fence` names; the step it is about is concluded in the same commit.
 ///
@@ -2159,7 +2208,7 @@ pub fn complete_reconciliation(
     node: &NodeId,
     fence: Fence,
     verdict: ReconcileVerdict,
-    jitter_sample: f64,
+    _jitter_sample: f64,
     now: OffsetDateTime,
 ) -> Result<Progress, ExecutionError> {
     let Some(forward) = node.forward().filter(|_| node.is_reconciliation()) else {
@@ -2179,24 +2228,11 @@ pub fn complete_reconciliation(
         s.status() == StepStatus::Waiting
             && matches!(s.waiting_on(), Some(WaitingOn::Reconciliation))
     });
-    if let Some(step) = waiting {
-        let policy = def
-            .node(&forward)
-            .ok_or_else(|| ExecutionError::UnknownStep(forward.clone()))?
-            .retry_policy();
+    if waiting.is_some() {
         let result = match verdict {
             ReconcileVerdict::Applied => ReconcileResult::Succeeded,
-            ReconcileVerdict::NotApplied
-                if may_retry_forward(def, state, &forward)
-                    && policy.has_attempts_left(step.attempt()) =>
-            {
-                ReconcileResult::RetryAt(after(
-                    now,
-                    policy.delay_after(step.attempt(), jitter_sample),
-                )?)
-            }
             ReconcileVerdict::NotApplied => {
-                ReconcileResult::Failed(FailureCode::reconciled_not_applied())
+                ReconcileResult::Review(FailureCode::reconciliation_not_final())
             }
             ReconcileVerdict::Unknown => {
                 ReconcileResult::Review(FailureCode::reconciliation_unknown())
@@ -2227,10 +2263,14 @@ pub fn retry_review(
     let step = require_step(state, node)?;
     // The body of a saga that stopped going forward will not run it again: it would be cancelled the
     // moment it was granted, and the decision that matters there is whether the step happened.
-    if def
-        .node(node)
-        .is_some_and(|n| *n.origin() == NodeOrigin::Declared)
-        && super::plan::in_abandoned_region(def, state, node)
+    if step
+        .failure()
+        .is_some_and(FailureCode::leaves_outcome_unknown)
+        || (def
+            .node(node)
+            .is_some_and(|n| *n.origin() == NodeOrigin::Declared)
+            && (state.stop_reason().is_some()
+                || super::plan::in_abandoned_region(def, state, node)))
     {
         return Err(ExecutionError::IllegalTransition {
             node: node.clone(),

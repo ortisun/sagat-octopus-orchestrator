@@ -4,6 +4,20 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-01 — Compensation safety (B02)
+
+The owner answered **“Sim aprovo”** to the two recommended directions below. This authorizes
+recording the decisions and preparing their specification/dependent diffs; it does not authorize
+implementation, a final wire contract, constitutional adoption, provider qualification or release.
+
+| Item | Approved direction | Record / remaining work |
+|---|---|---|
+| S1-B; feature 014 O381 | Human review by default; explicit published `fail` for explicit sagas. Terminal `COMPENSATION_FAILED` plus retained journal/step evidence is the platform's post-terminal tracking, with no active review queue promised. Cancellation/deadline preserves pending review in explicit sagas and scopes. | [Feature 037](../specs/037-compensation-safety/spec.md), [research](../specs/037-compensation-safety/research.md). O381 direction answered; runtime correction pending. O380 scope policy fields remain deferred. |
+| S2-B | Consultation/review for unknown external effects, regardless of `highRisk`. Defensive compensation requires pinned, authorized qualification with authoritative provider evidence and adapter tests for applied/absent/late effects. Compensation success requires business finality; safe repeat of an unknown compensation outcome needs its own provider guarantee and stable identity. | Feature 037; contract design, adoption diff and real acceptance evidence pending. SDK integrations and plugins follow identical rules; no provider is qualified by this approval. |
+
+Fresh installation/no legacy upgrade was already approved for the engineering reset. This entry
+introduces no regulatory retention period, financial policy or exactly-once promise.
+
 ## 2026-10-29 — ChildRoot capacity coordination
 
 | # | Item | Decision | Recorded in | Status |
@@ -84,3 +98,35 @@ retaining PostgreSQL authority, worker gRPC, NATS compatibility and existing HTT
 [Specification](../specs/033-redis-streams/spec.md); [ADR-0069](adr/ADR-0069-redis-streams-share-outbox-and-delivery-authority.md).
 Implementation/tests remain required; no production deployment, automatic release or inbound Redis
 connector is inferred. This explicitly approves dependencies on the existing004/009/017 services.
+
+## 2026-11-01 — Feature 037 planning boundary
+
+The approved B02 normative wording was applied locally after owner approval; formal PR adoption
+remains pending. The subsequent [technical plan](../specs/037-compensation-safety/plan.md) proposes
+US01–US03 conservative defaults first, with all qualification exceptions disabled and US04 held
+for provider evidence and exact contract design. This is a proposal awaiting detailed implementation
+approval, not a new owner decision. The revised proposal explicitly removes the current privileged
+Retry shortcut for an unknown original effect: an outcome-bearing resolution is required first.
+Known-failure retry remains; no new in-place retry-after-resolution is proposed. This stricter
+interpretation is part of the design awaiting approval. Existing approvals for S1-B/S2-B and fresh
+installation remain.
+
+## 2026-11-01 — Feature 037 delivery 1 approved
+
+The owner answered “Aprovo” to the reviewed implementation plan: preserve review after stop,
+refuse direct retry of unknown original/compensation until explicit outcome resolution, and keep
+qualification exceptions disabled. This approves T037-001..031 and T037-034. US04, real provider
+qualification, deployment, merge and release remain outside this implementation approval.
+Implementation uses feature/037-compensation-safety derived from develop, with the approved
+uncommitted documentation copied and byte-verified. The original develop checkout remains intact.
+
+
+## 2026-11-01 — Feature 037 delivery 1 preserves the feature-009 secret-output contract
+
+Asked whether to retain feature-009's final `SECRET_IN_OUTPUT` behavior or extend 037 to preserve
+human review for that rejection too, the owner answered: “Manter a regra da 009 e registrar a
+limitação nesta entrega”. Delivery 1 therefore changes successful-result **storage refusal** only;
+ordinary secret-bearing output keeps the existing feature-009 final-failure behavior. Do not claim
+that every output rejection preserves an external-effect recovery obligation. The secret remains
+absent from retained output/logs; a source-aware recovery change for this case requires a later
+approved cross-feature contract change. Managed-database protections already present are retained.

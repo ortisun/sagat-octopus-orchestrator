@@ -1,0 +1,198 @@
+    Blocking waiting for file lock on build directory
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:291:9
+    |
+278 | pub struct CreateTopicsResponse {
+    |            -------------------- field in this struct
+...
+291 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `name`, `value`, `read_only`, `config_source`, `is_sensitive`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:321:9
+    |
+319 | pub struct CreateTopicResponseConfig {
+    |            ------------------------- fields in this struct
+320 |     /// The configuration name.
+321 |     pub name: CompactString,
+    |         ^^^^
+...
+324 |     pub value: CompactNullableString,
+    |         ^^^^^
+...
+327 |     pub read_only: Boolean,
+    |         ^^^^^^^^^
+...
+330 |     pub config_source: Int8,
+    |         ^^^^^^^^^^^^^
+...
+333 |     pub is_sensitive: Boolean,
+    |         ^^^^^^^^^^^^
+...
+336 |     pub tagged_fields: TaggedFields,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponseConfig` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `num_partitions`, `replication_factor`, `configs`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:374:9
+    |
+359 | pub struct CreateTopicResponse {
+    |            ------------------- fields in this struct
+...
+374 |     pub num_partitions: Option<Int32>,
+    |         ^^^^^^^^^^^^^^
+...
+379 |     pub replication_factor: Option<Int16>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+384 |     pub configs: Vec<CreateTopicResponseConfig>,
+    |         ^^^^^^^
+...
+389 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `low_watermark` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:182:9
+    |
+177 | pub struct DeleteResponsePartition {
+    |            ----------------------- fields in this struct
+...
+182 |     pub low_watermark: Int64,
+    |         ^^^^^^^^^^^^^
+...
+190 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:226:9
+    |
+216 | pub struct DeleteResponseTopic {
+    |            ------------------- field in this struct
+...
+226 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:269:9
+    |
+258 | pub struct DeleteRecordsResponse {
+    |            --------------------- field in this struct
+...
+269 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteRecordsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:101:9
+    |
+ 88 | pub struct DeleteTopicsResponse {
+    |            -------------------- field in this struct
+...
+101 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:144:9
+    |
+129 | pub struct DeleteTopicsResponseTopic {
+    |            ------------------------- field in this struct
+...
+144 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `producer_id` and `first_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:170:9
+    |
+168 | pub struct FetchResponseAbortedTransaction {
+    |            ------------------------------- fields in this struct
+169 |     /// The producer id associated with the aborted transaction.
+170 |     pub producer_id: Int64,
+    |         ^^^^^^^^^^^
+...
+173 |     pub first_offset: Int64,
+    |         ^^^^^^^^^^^^
+    |
+    = note: `FetchResponseAbortedTransaction` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `aborted_transactions` is never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:213:9
+    |
+192 | pub struct FetchResponsePartition {
+    |            ---------------------- field in this struct
+...
+213 |     pub aborted_transactions: Vec<FetchResponseAbortedTransaction>,
+    |         ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `FetchResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `timestamp` is never read
+   --> vendor/rskafka/src/protocol/messages/list_offsets.rs:184:9
+    |
+169 | pub struct ListOffsetsResponsePartition {
+    |            ---------------------------- field in this struct
+...
+184 |     pub timestamp: Option<Int64>,
+    |         ^^^^^^^^^
+    |
+    = note: `ListOffsetsResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `log_append_time_ms` and `log_start_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/produce.rs:148:9
+    |
+132 | pub struct ProduceResponsePartitionResponse {
+    |            -------------------------------- fields in this struct
+...
+148 |     pub log_append_time_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+153 |     pub log_start_offset: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^
+    |
+    = note: `ProduceResponsePartitionResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `session_lifetime_ms` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/sasl_msg.rs:198:9
+    |
+181 | pub struct SaslAuthenticateResponse {
+    |            ------------------------ fields in this struct
+...
+198 |     pub session_lifetime_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^^
+...
+203 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `SaslAuthenticateResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: struct `CompactArray` is never constructed
+   --> vendor/rskafka/src/protocol/primitives.rs:725:12
+    |
+725 | pub struct CompactArray<T>(pub Option<Vec<T>>);
+    |            ^^^^^^^^^^^^
+
+warning: `rskafka` (lib) generated 14 warnings
+   Compiling sagat-tests v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/tests)
+    Finished `test` profile [unoptimized] target(s) in 58.68s
+     Running integration/sagas-compensations/main.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/integration_sagas_compensations-9e5e3427efe63851)
+
+running 1 test
+{"t037029_unknown_review_scale":{"environment":{"postgres_version":"16.15","scales":[1,100,1000]},"interpretation":"observations on this fixture only; no latency or capacity SLO is asserted","measurements":[{"idle_tick_and_poll":{"elapsed_ms":21.085375,"journal_events":4,"leases":0,"polled_tasks":0,"retry_obligations":0,"review_rows":1,"scheduler_report":{"approval_routes_released":0,"approvals_expired":0,"approvals_opened":0,"children_cancelled":0,"children_finished":0,"children_started":0,"collections_advanced":0,"continuations_advanced":0,"continuations_waiting":0,"deadlines_enforced":0,"did_work":false,"failed":0,"fenced":0,"hints_renewed":0,"leases_expired":0,"loops_advanced":0,"quota_stops":0,"retries_released":0,"skipped":0,"stopped_runs_settled":0,"timers_fired":0,"waits_timed_out":0},"statement_delta":{"buffers":1589,"calls":16,"rows":3},"task_ready_hints":1},"list_first_100":{"elapsed_ms":1.838084,"query_plan":[{"Execution Time":0.046,"Plan":{"Actual Loops":1,"Actual Rows":1,"Actual Startup Time":0.014,"Actual Total Time":0.014,"Async Capable":false,"Local Dirtied Blocks":0,"Local Hit Blocks":0,"Local Read Blocks":0,"Local Written Blocks":0,"Node Type":"Limit","Parallel Aware":false,"Plan Rows":1,"Plan Width":527,"Plans":[{"Actual Loops":1,"Actual Rows":1,"Actual Startup Time":0.014,"Actual Total Time":0.014,"Async Capable":false,"Inner Unique":true,"Join Type":"Left","Local Dirtied Blocks":0,"Local Hit Blocks":0,"Local Read Blocks":0,"Local Written Blocks":0,"Node Type":"Nested Loop","Parallel Aware":false,"Parent Relationship":"Outer","Plan Rows":1,"Plan Width":527,"Plans":[{"Actual Loops":1,"Actual Rows":1,"Actual Startup Time":0.008,"Actual Total Time":0.009,"Alias":"runs","Async Capable":false,"Filter":"((workflow_id = '01a197df-ce74-70d3-97f8-471fa3cfa4a5'::uuid) AND (status = 'MANUAL_REVIEW'::text))","Index Cond":"((tenant_id = '01a197df-cdea-7306-8ce4-96be8931fff3'::uuid) AND (namespace_id = '01a197df-ce18-711a-ad5f-8a0cc91ae635'::uuid))","Index Name":"runs_database_scope_unique","Local Dirtied Blocks":0,"Local Hit Blocks":0,"Local Read Blocks":0,"Local Written Blocks":0,"Node Type":"Index Scan","Parallel Aware":false,"Parent Relationship":"Outer","Plan Rows":1,"Plan Width":459,"Relation Name":"runs","Rows Removed by Filter":0,"Rows Removed by Index Recheck":0,"Scan Direction":"Backward","Shared Dirtied Blocks":0,"Shared Hit Blocks":3,"Shared Read Blocks":0,"Shared Written Blocks":0,"Startup Cost":0.14,"Temp Read Blocks":0,"Temp Written Blocks":0,"Total Cost":8.17},{"Actual Loops":1,"Actual Rows":0,"Actual Startup Time":0.004,"Actual Total Time":0.004,"Alias":"chain_segments","Async Capable":false,"Index Cond":"((tenant_id = '01a197df-cdea-7306-8ce4-96be8931fff3'::uuid) AND (run_id = runs.id))","Index Name":"chain_segments_run_unique","Local Dirtied Blocks":0,"Local Hit Blocks":0,"Local Read Blocks":0,"Local Written Blocks":0,"Node Type":"Index Scan","Parallel Aware":false,"Parent Relationship":"Inner","Plan Rows":1,"Plan Width":100,"Relation Name":"chain_segments","Rows Removed by Index Recheck":0,"Scan Direction":"Forward","Shared Dirtied Blocks":0,"Shared Hit Blocks":2,"Shared Read Blocks":0,"Shared Written Blocks":0,"Startup Cost":0.15,"Temp Read Blocks":0,"Temp Written Blocks":0,"Total Cost":8.17}],"Shared Dirtied Blocks":0,"Shared Hit Blocks":5,"Shared Read Blocks":0,"Shared Written Blocks":0,"Startup Cost":0.29,"Temp Read Blocks":0,"Temp Written Blocks":0,"Total Cost":16.35}],"Shared Dirtied Blocks":0,"Shared Hit Blocks":5,"Shared Read Blocks":0,"Shared Written Blocks":0,"Startup Cost":0.29,"Temp Read Blocks":0,"Temp Written Blocks":0,"Total Cost":16.35},"Planning":{"Local Dirtied Blocks":0,"Local Hit Blocks":0,"Local Read Blocks":0,"Local Written Blocks":0,"Shared Dirtied Blocks":0,"Shared Hit Blocks":33,"Shared Read Blocks":0,"Shared Written Blocks":0,"Temp Read Blocks":0,"Temp Written Blocks":0},"Planning Time":0.215,"Triggers":[]}],"returned":1,"statement_delta":{"buffers":7,"calls":2,"rows":2}},"scale":1,"setup_increment":{"elapsed_ms":83.51925,"reviews_added":1,"statement_delta":{"buffers":3328,"calls":184,"rows":136}},"storage":{"index_bytes":737280,"table_bytes":90112}},{"idle_tick_and_poll":{"elapsed_ms":18.38925,"journal_events":400,"leases":0,"polled_tasks":0,"retry_obligations":0,"review_rows":100,"scheduler_report":{"approval_routes_released":0,"approvals_expired":0,"approvals_opened":0,"children_cancelled":0,"children_finished":0,"children_started":0,"collections_advanced":0,"continuations_advanced":0,"continuations_waiting":0,"deadlines_enforced":0,"did_work":false,"failed":0,"fenced":0,"hints_renewed":0,"leases_expired":0,"loops_advanced":0,"quota_stops":0,"retries_released":0,"skipped":0,"stopped_runs_settled":0,"timers_fired":0,"waits_timed_out":0},"statement_delta":{"buffers":2446,"calls":16,"rows":3},"task_ready_hints":100},"list_first_100":{"elapsed_ms":2.105083,"query_plan":[{"Execution Time":0.11,"Plan":{"Actual Loops":1,"Actual Rows":100,"Actual Startup Time":0.021,"Actual Total Time":0.079,"Async Capable":false,"Local Dirtied Blocks":0,"Local Hit Blocks":0,"Local Read Blocks":0,"Local Written Blocks":0,"Node Type":"Limit","Parallel Aware":false,"Plan Rows":1,"Plan Width":527,"Plans":[{"Actual Loops":1,"Actual Rows":100,"Actual Startup Time":0.021,"Actual Total Time":0.074,"Async Capable":false,"Inner Unique":true,"Join Type":"Left","Local Dirtied Blocks":0,"Local Hit Blocks":0,"Local Read Blocks":0,"Local Written Blocks":0,"Node Type":"Nested Loop","Parallel Aware":false,"Parent Relationship":"Outer","Plan Rows":1,"Plan Width":527,"Plans":[{"Actual Loops":1,"Actual Rows":100,"Actual Startup Time":0.014,"Actual Total Time":0.031,"Alias":"runs","Async Capable":false,"Filter":"((workflow_id = '01a197df-ce74-70d3-97f8-471fa3cfa4a5'::uuid) AND (status = 'MANUAL_REVIEW'::text))","Index Cond":"((tenant_id = '01a197df-cdea-7306-8ce4-96be8931fff3'::uuid) AND (namespace_id = '01a197df-ce18-711a-ad5f-8a0cc91ae635'::uuid))","Index Name":"runs_database_scope_unique","Local Dirtied Blocks":0,"Local Hit Blocks":0,"Local Read Blocks":0,"Local Written Blocks":0,"Node Type":"Index Scan","Parallel Aware":false,"Parent Relationship":"Outer","Plan Rows":1,"Plan Width":459,"Relation Name":"runs","Rows Removed by Filter":0,"Rows Removed by Index Recheck":0,"Scan Direction":"Backward","Shared Dirtied Blocks":0,"Shared Hit Blocks":72,"Shared Read Blocks":0,"Shared Written Blocks":0,"Startup Cost":0.14,"Temp Read Blocks":0,"Temp Written Blocks":0,"Total Cost":8.17},{"Actual Loops":100,"Actual Rows":0,"Actual Startup Time":0.0,"Actual Total Time":0.0,"Alias":"chain_segments","Async Capable":false,"Index Cond":"((tenant_id = '01a197df-cdea-7306-8ce4-96be8931fff3'::uuid) AND (run_id = runs.id))","Index Name":"chain_segments_run_unique","Local Dirtied Blocks":0,"Local Hit Blocks":0,"Local Read Blocks":0,"Local Written Blocks":0,"Node Type":"Index Scan","Parallel Aware":false,"Parent Relationship":"Inner","Plan Rows":1,"Plan Width":100,"Relation Name":"chain_segments","Rows Removed by Index Recheck":0,"Scan Direction":"Forward","Shared Dirtied Blocks":0,"Shared Hit Blocks":200,"Shared Read Blocks":0,"Shared Written Blocks":0,"Startup Cost":0.15,"Temp Read Blocks":0,"Temp Written Blocks":0,"Total Cost":8.17}],"Shared Dirtied Blocks":0,"Shared Hit Blocks":272,"Shared Read Blocks":0,"Shared Written Blocks":0,"Startup Cost":0.29,"Temp Read Blocks":0,"Temp Written Blocks":0,"Total Cost":16.35}],"Shared Dirtied Blocks":0,"Shared Hit Blocks":272,"Shared Read Blocks":0,"Shared Written Blocks":0,"Startup Cost":0.29,"Temp Read Blocks":0,"Temp Written Blocks":0,"Total Cost":16.35},"Planning":{"Local Dirtied Blocks":0,"Local Hit Blocks":0,"Local Read Blocks":0,"Local Written Blocks":0,"Shared Dirtied Blocks":0,"Shared Hit Blocks":15,"Shared Read Blocks":0,"Shared Written Blocks":0,"Temp Read Blocks":0,"Temp Written Blocks":0},"Planning Time":0.154,"Triggers":[]}],"returned":100,"statement_delta":{"buffers":274,"calls":2,"rows":101}},"scale":100,"setup_increment":{"elapsed_ms":2565.457041,"reviews_added":99,"statement_delta":{"buffers":132313,"calls":16545,"rows":12183}},"storage":{"index_bytes":851968,"table_bytes":483328}},{"idle_tick_and_poll":{"elapsed_ms":25.275083,"journal_events":4000,"leases":0,"polled_tasks":0,"retry_obligations":0,"review_rows":1000,"scheduler_report":{"approval_routes_released":0,"approvals_expired":0,"approvals_opened":0,"children_cancelled":0,"children_finished":0,"children_started":0,"collections_advanced":0,"continuations_advanced":0,"continuations_waiting":0,"deadlines_enforced":0,"did_work":false,"failed":0,"fenced":0,"hints_renewed":0,"leases_expired":0,"loops_advanced":0,"quota_stops":0,"retries_released":0,"skipped":0,"stopped_runs_settled":0,"timers_fired":0,"waits_timed_out":0},"statement_delta":{"buffers":6238,"calls":16,"rows":3},"task_ready_hints":1000},"list_first_100":{"elapsed_ms":2.246,"query_plan":[{"Execution Time":0.143,"Plan":{"Actual Loops":1,"Actual Rows":101,"Actual Startup Time":0.035,"Actual Total Time":0.105,"Async Capable":false,"Local Dirtied Blocks":0,"Local Hit Blocks":0,"Local Read Blocks":0,"Local Written Blocks":0,"Node Type":"Limit","Parallel Aware":false,"Plan Rows":1,"Plan Width":527,"Plans":[{"Actual Loops":1,"Actual Rows":101,"Actual Startup Time":0.034,"Actual Total Time":0.1,"Async Capable":false,"Inner Unique":true,"Join Type":"Left","Local Dirtied Blocks":0,"Local Hit Blocks":0,"Local Read Blocks":0,"Local Written Blocks":0,"Node Type":"Nested Loop","Parallel Aware":false,"Parent Relationship":"Outer","Plan Rows":1,"Plan Width":527,"Plans":[{"Actual Loops":1,"Actual Rows":101,"Actual Startup Time":0.027,"Actual Total Time":0.049,"Alias":"runs","Async Capable":false,"Filter":"((workflow_id = '01a197df-ce74-70d3-97f8-471fa3cfa4a5'::uuid) AND (status = 'MANUAL_REVIEW'::text))","Index Cond":"((tenant_id = '01a197df-cdea-7306-8ce4-96be8931fff3'::uuid) AND (namespace_id = '01a197df-ce18-711a-ad5f-8a0cc91ae635'::uuid))","Index Name":"runs_database_scope_unique","Local Dirtied Blocks":0,"Local Hit Blocks":0,"Local Read Blocks":0,"Local Written Blocks":0,"Node Type":"Index Scan","Parallel Aware":false,"Parent Relationship":"Outer","Plan Rows":1,"Plan Width":459,"Relation Name":"runs","Rows Removed by Filter":0,"Rows Removed by Index Recheck":0,"Scan Direction":"Backward","Shared Dirtied Blocks":0,"Shared Hit Blocks":105,"Shared Read Blocks":0,"Shared Written Blocks":0,"Startup Cost":0.27,"Temp Read Blocks":0,"Temp Written Blocks":0,"Total Cost":8.3},{"Actual Loops":101,"Actual Rows":0,"Actual Startup Time":0.0,"Actual Total Time":0.0,"Alias":"chain_segments","Async Capable":false,"Index Cond":"((tenant_id = '01a197df-cdea-7306-8ce4-96be8931fff3'::uuid) AND (run_id = runs.id))","Index Name":"chain_segments_run_unique","Local Dirtied Blocks":0,"Local Hit Blocks":0,"Local Read Blocks":0,"Local Written Blocks":0,"Node Type":"Index Scan","Parallel Aware":false,"Parent Relationship":"Inner","Plan Rows":1,"Plan Width":100,"Relation Name":"chain_segments","Rows Removed by Index Recheck":0,"Scan Direction":"Forward","Shared Dirtied Blocks":0,"Shared Hit Blocks":202,"Shared Read Blocks":0,"Shared Written Blocks":0,"Startup Cost":0.15,"Temp Read Blocks":0,"Temp Written Blocks":0,"Total Cost":8.17}],"Shared Dirtied Blocks":0,"Shared Hit Blocks":307,"Shared Read Blocks":0,"Shared Written Blocks":0,"Startup Cost":0.42,"Temp Read Blocks":0,"Temp Written Blocks":0,"Total Cost":16.48}],"Shared Dirtied Blocks":0,"Shared Hit Blocks":307,"Shared Read Blocks":0,"Shared Written Blocks":0,"Startup Cost":0.42,"Temp Read Blocks":0,"Temp Written Blocks":0,"Total Cost":16.48},"Planning":{"Local Dirtied Blocks":0,"Local Hit Blocks":0,"Local Read Blocks":0,"Local Written Blocks":0,"Shared Dirtied Blocks":0,"Shared Hit Blocks":15,"Shared Read Blocks":0,"Shared Written Blocks":0,"Temp Read Blocks":0,"Temp Written Blocks":0},"Planning Time":0.164,"Triggers":[]}],"returned":100,"statement_delta":{"buffers":309,"calls":2,"rows":102}},"scale":1000,"setup_increment":{"elapsed_ms":22757.184709,"reviews_added":900,"statement_delta":{"buffers":4791706,"calls":150408,"rows":110754}},"storage":{"index_bytes":3342336,"table_bytes":2678784}}],"resource_guards":{"max_reviews":1000,"namespace_active_run_default":10000,"observation_seconds":60,"poll_batch":100,"setup_seconds_per_scale":600,"tenant_active_run_default":50000}}}
+test review::ordinary_unknown_reviews_remain_idle_at_one_one_hundred_and_one_thousand ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 81 filtered out; finished in 28.38s
+

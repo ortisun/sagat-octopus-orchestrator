@@ -1,0 +1,2 @@
+python3 scripts/check-capacity-activation.py
+capacity activation/source inventory check passed

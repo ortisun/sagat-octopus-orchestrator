@@ -1,0 +1,109 @@
+python3 -m unittest discover -s scripts/tests -v
+test_a_new_lease_producer_requires_inventory_review (test_capacity_activation.CapacityActivation.test_a_new_lease_producer_requires_inventory_review) ... ok
+test_current_producers_and_native_method_definitions_are_allowed (test_capacity_activation.CapacityActivation.test_current_producers_and_native_method_definitions_are_allowed) ... ok
+test_each_native_operation_remains_dormant (test_capacity_activation.CapacityActivation.test_each_native_operation_remains_dormant) ... ok
+test_production_cannot_enable_the_incomplete_guard (test_capacity_activation.CapacityActivation.test_production_cannot_enable_the_incomplete_guard) ... ok
+test_test_harnesses_may_exercise_opt_in_and_native_operations (test_capacity_activation.CapacityActivation.test_test_harnesses_may_exercise_opt_in_and_native_operations) ... ok
+test_a_broken_link_fails (test_check_agent_config.CheckAgentConfig.test_a_broken_link_fails) ... ok
+test_a_gap_in_the_rule_numbers_fails (test_check_agent_config.CheckAgentConfig.test_a_gap_in_the_rule_numbers_fails) ... ok
+test_a_missing_or_non_executable_hook_fails (test_check_agent_config.CheckAgentConfig.test_a_missing_or_non_executable_hook_fails) ... ok
+test_a_nested_agents_without_the_claude_stub_fails (test_check_agent_config.CheckAgentConfig.test_a_nested_agents_without_the_claude_stub_fails) ... ok
+test_a_quoted_value_that_is_several_strings_is_not_valid_yaml (test_check_agent_config.CheckAgentConfig.test_a_quoted_value_that_is_several_strings_is_not_valid_yaml) ... ok
+test_a_reviewer_with_write_tools_fails (test_check_agent_config.CheckAgentConfig.test_a_reviewer_with_write_tools_fails) ... ok
+test_a_reviewer_without_an_allowlist_fails (test_check_agent_config.CheckAgentConfig.test_a_reviewer_without_an_allowlist_fails) ... ok
+test_a_sound_configuration_passes (test_check_agent_config.CheckAgentConfig.test_a_sound_configuration_passes) ... ok
+test_adr_dash_style_and_plain_status_are_accepted (test_check_agent_config.CheckAgentConfig.test_adr_dash_style_and_plain_status_are_accepted) ... ok
+test_adr_without_title_or_with_duplicate_number_fails (test_check_agent_config.CheckAgentConfig.test_adr_without_title_or_with_duplicate_number_fails) ... ok
+test_claude_md_must_import_agents (test_check_agent_config.CheckAgentConfig.test_claude_md_must_import_agents) ... ok
+test_nested_claude_must_be_only_the_import_and_have_a_sibling (test_check_agent_config.CheckAgentConfig.test_nested_claude_must_be_only_the_import_and_have_a_sibling) ... ok
+test_root_agents_over_budget_fails (test_check_agent_config.CheckAgentConfig.test_root_agents_over_budget_fails) ... ok
+test_settings_must_deny_env_files (test_check_agent_config.CheckAgentConfig.test_settings_must_deny_env_files) ... ok
+test_skill_name_must_match_its_directory (test_check_agent_config.CheckAgentConfig.test_skill_name_must_match_its_directory) ... ok
+test_skill_without_description_fails (test_check_agent_config.CheckAgentConfig.test_skill_without_description_fails) ... ok
+test_adapters_may_not_be_depended_on_by_the_application_layer_through_the_scheduler (test_check_architecture.ArchitectureRules.test_adapters_may_not_be_depended_on_by_the_application_layer_through_the_scheduler) ... ok
+test_application_must_not_depend_on_adapters (test_check_architecture.ArchitectureRules.test_application_must_not_depend_on_adapters) ... ok
+test_cycles_are_reported (test_check_architecture.ArchitectureRules.test_cycles_are_reported) ... ok
+test_domain_must_not_depend_on_infrastructure_crates (test_check_architecture.ArchitectureRules.test_domain_must_not_depend_on_infrastructure_crates) ... ok
+test_domain_rejects_unlisted_crates (test_check_architecture.ArchitectureRules.test_domain_rejects_unlisted_crates) ... ok
+test_the_scheduler_is_an_application_service_not_an_adapter (test_check_architecture.ArchitectureRules.test_the_scheduler_is_an_application_service_not_an_adapter) ... ok
+test_the_scheduler_must_not_know_the_adapters (test_check_architecture.ArchitectureRules.test_the_scheduler_must_not_know_the_adapters) ... ok
+test_valid_layering_passes (test_check_architecture.ArchitectureRules.test_valid_layering_passes) ... ok
+test_ambiguous_unknown_and_oversized_errors_are_unclassified (test_compose_diagnostics.SafeComposeDiagnostics.test_ambiguous_unknown_and_oversized_errors_are_unclassified) ... ok
+test_cleanup_failure_does_not_mask_an_active_failure (test_compose_diagnostics.SafeComposeDiagnostics.test_cleanup_failure_does_not_mask_an_active_failure) ... ok
+test_cleanup_failure_is_not_hidden_without_an_active_failure (test_compose_diagnostics.SafeComposeDiagnostics.test_cleanup_failure_is_not_hidden_without_an_active_failure) ... ok
+test_completion_after_overall_deadline_is_rejected (test_compose_diagnostics.SafeComposeDiagnostics.test_completion_after_overall_deadline_is_rejected) ... ok
+test_default_deadline_is_five_seconds_and_expired_budget_does_not_spawn (test_compose_diagnostics.SafeComposeDiagnostics.test_default_deadline_is_five_seconds_and_expired_budget_does_not_spawn) ... ok
+test_each_known_error_class_is_static (test_compose_diagnostics.SafeComposeDiagnostics.test_each_known_error_class_is_static) ... ok
+test_failure_reports_only_classification_and_allowlisted_state (test_compose_diagnostics.SafeComposeDiagnostics.test_failure_reports_only_classification_and_allowlisted_state) ... ok
+test_initial_start_failure_carries_safe_evidence (test_compose_diagnostics.SafeComposeDiagnostics.test_initial_start_failure_carries_safe_evidence) ... ok
+test_internal_diagnostic_failure_uses_a_static_fallback (test_compose_diagnostics.SafeComposeDiagnostics.test_internal_diagnostic_failure_uses_a_static_fallback) ... ok
+test_invalid_exit_code_invalidates_the_whole_snapshot (test_compose_diagnostics.SafeComposeDiagnostics.test_invalid_exit_code_invalidates_the_whole_snapshot) ... ok
+test_malformed_ids_and_probe_exceptions_emit_only_unavailable (test_compose_diagnostics.SafeComposeDiagnostics.test_malformed_ids_and_probe_exceptions_emit_only_unavailable) ... Traceback (most recent call last):
+  File "<frozen runpy>", line 201, in _run_module_as_main
+  File "<frozen runpy>", line 87, in _run_code
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/unittest/__main__.py", line 18, in <module>
+    main(module=None)
+    ~~~~^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/unittest/main.py", line 104, in __init__
+    self.runTests()
+    ~~~~~~~~~~~~~^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/unittest/main.py", line 270, in runTests
+    self.result = testRunner.run(self.test)
+                  ~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/unittest/runner.py", line 256, in run
+    test(result)
+    ~~~~^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/unittest/suite.py", line 84, in __call__
+    return self.run(*args, **kwds)
+           ~~~~~~~~^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/unittest/suite.py", line 122, in run
+    test(result)
+    ~~~~^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/unittest/suite.py", line 84, in __call__
+    return self.run(*args, **kwds)
+           ~~~~~~~~^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/unittest/suite.py", line 122, in run
+    test(result)
+    ~~~~^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/unittest/suite.py", line 84, in __call__
+    return self.run(*args, **kwds)
+           ~~~~~~~~^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/unittest/suite.py", line 122, in run
+    test(result)
+    ~~~~^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/unittest/case.py", line 747, in __call__
+    return self.run(*args, **kwds)
+           ~~~~~~~~^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/unittest/case.py", line 691, in run
+    self._callTestMethod(testMethod)
+    ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/unittest/case.py", line 637, in _callTestMethod
+    result = method()
+  File "/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/scripts/tests/test_compose_diagnostics.py", line 255, in test_malformed_ids_and_probe_exceptions_emit_only_unavailable
+    message = diagnostics.initial_start_failure_diagnostic(
+        CANARY.encode(),
+    ...<3 lines>...
+        popen_factory=PopenQueue(result),
+    )
+  File "/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/tests/e2e/database-connections/compose_diagnostics.py", line 265, in initial_start_failure_diagnostic
+    states = _service_states(
+        project, env, cwd, deadline, popen_factory or subprocess.Popen, selector_factory, monotonic
+    )
+  File "/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/tests/e2e/database-connections/compose_diagnostics.py", line 210, in _service_states
+    raw_ids = _run_probe(
+        [
+    ...<3 lines>...
+        popen_factory, selector_factory, monotonic,
+    )
+  File "/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/tests/e2e/database-connections/compose_diagnostics.py", line 116, in _run_probe
+    process = popen_factory(
+        argv,
+    ...<4 lines>...
+        stdin=subprocess.DEVNULL,
+    )
+  File "/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/scripts/tests/test_compose_diagnostics.py", line 84, in __call__
+    return PipeProcess(result)
+  File "/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/scripts/tests/test_compose_diagnostics.py", line 42, in __init__
+    os.write(write_fd, result.stdout)
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+KeyboardInterrupt

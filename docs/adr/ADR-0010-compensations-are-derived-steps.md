@@ -30,3 +30,9 @@ ADR-0005 decides that a compensation plan is persisted per saga, in reverse topo
 ## Review criteria
 
 Open a new ADR with benchmark data (`tests/performance/reports/sagas-compensations.md`), failure tests, operational cost and compatibility with runs in flight if compensations ever need to run outside the step machinery (for example as a bulk operation over many runs), or if the breaker needs a key finer than an activity name (G55).
+
+## Proposed refinement — 2026-11-01
+
+[ADR-0076](ADR-0076-compensation-failure-and-uncertain-effects.md) records owner-approved direction for compensation review, truthful terminal
+failure and qualified uncertain-effect recovery. It is PROPOSED pending coordinated adoption;
+this record is not fully superseded and its historical rationale remains unchanged.

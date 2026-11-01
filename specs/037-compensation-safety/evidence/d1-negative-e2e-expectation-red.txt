@@ -1,0 +1,20 @@
+
+running 1 test
+test us03::us03_when_the_provider_says_it_did_not_happen_the_payment_is_retried_with_the_same_key ... FAILED
+
+failures:
+
+---- us03::us03_when_the_provider_says_it_did_not_happen_the_payment_is_retried_with_the_same_key stdout ----
+
+thread 'us03::us03_when_the_provider_says_it_did_not_happen_the_payment_is_retried_with_the_same_key' (788414644) panicked at tests/e2e/sagas-compensations/../../support/worker.rs:406:9:
+assertion `left == right` failed: expected exactly one task
+  left: 0
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    us03::us03_when_the_provider_says_it_did_not_happen_the_payment_is_retried_with_the_same_key
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 19 filtered out; finished in 2.86s
+

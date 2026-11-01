@@ -1,0 +1,80 @@
+
+> test:tooling
+> node --test tools/minimatch.test.mjs
+
+TAP version 13
+# Subtest: @eslint/config-array resolves the reviewed bridge and patched matcher
+ok 1 - @eslint/config-array resolves the reviewed bridge and patched matcher
+  ---
+  duration_ms: 10.69875
+  type: 'test'
+  ...
+# Subtest: @eslint/eslintrc resolves the reviewed bridge and patched matcher
+ok 2 - @eslint/eslintrc resolves the reviewed bridge and patched matcher
+  ---
+  duration_ms: 1.134125
+  type: 'test'
+  ...
+# Subtest: eslint resolves the reviewed bridge and patched matcher
+ok 3 - eslint resolves the reviewed bridge and patched matcher
+  ---
+  duration_ms: 0.527375
+  type: 'test'
+  ...
+# Subtest: eslint-plugin-jsx-a11y resolves the reviewed bridge and patched matcher
+ok 4 - eslint-plugin-jsx-a11y resolves the reviewed bridge and patched matcher
+  ---
+  duration_ms: 0.899833
+  type: 'test'
+  ...
+# Subtest: @redocly/openapi-core resolves the reviewed bridge and patched matcher
+ok 5 - @redocly/openapi-core resolves the reviewed bridge and patched matcher
+  ---
+  duration_ms: 0.671208
+  type: 'test'
+  ...
+# Subtest: @typescript-eslint/typescript-estree resolves the reviewed bridge and patched matcher
+ok 6 - @typescript-eslint/typescript-estree resolves the reviewed bridge and patched matcher
+  ---
+  duration_ms: 0.6815
+  type: 'test'
+  ...
+# Subtest: native ESM has both default and named imports required by tooling
+ok 7 - native ESM has both default and named imports required by tooling
+  ---
+  duration_ms: 1.375
+  type: 'test'
+  ...
+# Subtest: optimization level 2 bounds globparts amplification in the actual installed matcher
+ok 8 - optimization level 2 bounds globparts amplification in the actual installed matcher
+  ---
+  duration_ms: 29.468917
+  type: 'test'
+  ...
+# Subtest: ESLint matching retains directory traversal, basename and negated-pattern options
+ok 9 - ESLint matching retains directory traversal, basename and negated-pattern options
+  ---
+  duration_ms: 0.870708
+  type: 'test'
+  ...
+# Subtest: jsx-a11y wildcard custom controls exercise the legacy callable matcher
+ok 10 - jsx-a11y wildcard custom controls exercise the legacy callable matcher
+  ---
+  duration_ms: 19.326833
+  type: 'test'
+  ...
+# Subtest: Redocly URL-header rules include only matching hosts and paths
+ok 11 - Redocly URL-header rules include only matching hosts and paths
+  ---
+  duration_ms: 19.497792
+  type: 'test'
+  ...
+1..11
+# tests 11
+# suites 0
+# pass 11
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 123.490084

@@ -87,9 +87,9 @@ Gaps and decisions: `specs/003-sagas-compensations/research.md` (G51–G65, D59�
 | FR-003-002 the compensation plan persisted as a reverse DAG, respecting branch independence | Done | `saga_plans` / `saga_plan_entries` (immutable, tenant-bound) written at publish, read at `GET …/compensation-plans`; `plan::*`, `us01`, `the_plan_is_the_same_as_the_one_worked_out_the_long_way`, `what_ran_after_a_join_is_undone_before_the_branches_that_fed_it`; the plan a run follows (`run_saga_entries`) is decided from what completed |
 | FR-003-003 compensation with its own retries, idempotency, limits, timeout and provider circuit breaker | Done | default five attempts / `compensationRetry` / `compensationTimeoutMs`; `compensation:{id}:{run}` keys (`us02`, `crashes`, `provider`); the breaker per tenant, namespace and activity (`breaker::*`, mutation-checked); limits are the quotas and bindings of 009 applied to the derived steps. Lookups are not behind the breaker (G56); the breaker is per activity name (G55) |
 | FR-003-004 distinguish COMPENSATED, PARTIAL, COMPENSATION_FAILED, MANUAL_REVIEW and irreversible | Done | the five statuses in the OpenAPI (and a test that none is missing), `run.finished` with all terminal ones (AsyncAPI, tested), `saga` state in the graph; `an_irreversible_effect_makes_the_outcome_partial...`, `a_sibling_saga_whose_compensation_failed_is_not_hidden...`, `us04` |
-| FR-003-005 pause, retry compensation and skip, skip only with explicit permission and an audited justification | Done | `RETRY_STEP` / `RETRY_COMPENSATION` (`run:operate`), `SKIP_COMPENSATION` / `RESOLVE_STEP` (`saga:override`, administrators), justification after trimming, audit with the reason; `review::*`, `us04`, `contract_rest_sagas_compensations`. Feature 008 subsequently implements `MARK_MANUAL_REVIEW` and `RERUN_AS_NEW` with contract/E2E coverage. |
+| FR-003-005 pause, retry compensation and skip, skip only with explicit permission and an audited justification | Done; recovery refined by 037 delivery 1 | `RETRY_STEP` / `RETRY_COMPENSATION` (`run:operate`) remain for known-failed eligible work; unknown originals and compensations are refused even with `saga:override`. `SKIP_COMPENSATION` / `RESOLVE_STEP` need `run:operate` plus `saga:override`; accepted decisions retain actor/reason. `review::*`, `us04`, `contract_rest_sagas_compensations`. Feature 008 subsequently implements `MARK_MANUAL_REVIEW` and `RERUN_AS_NEW` with contract/E2E coverage. |
 | FR-003-006 propagate cancellation / deadline to sub-workflows under a configured policy | Done | `cancelPolicy` of the `child` node (002) carries a cancellation into a child whose saga then undoes its work, and the parent waits (`request_cancel`) or not (`propagate`, `detach`); a child that ends in a saga status fails its parent's step with its own code. `children::*` (8 tests) |
-| FR-003-007 reconcile or mark manual for an ambiguous high-risk result | Done | `LEASE_EXPIRED` / `ATTEMPT_TIMEOUT` / `OUTCOME_UNKNOWN` look the step up (`reconcileWith`) or, if `highRisk` without a lookup, wait for a person; retrying such a step needs an administrator; `reconcile::*`, `us03`, `provider::*` |
+| FR-003-007 reconcile or mark manual for an ambiguous high-risk result | Done for the feature-003 baseline; recovery refined by 037 delivery 1 | Every leased Activity is external-capable. `LEASE_EXPIRED` / `ATTEMPT_TIMEOUT` / `OUTCOME_UNKNOWN` reconcile or review regardless of `highRisk`; `NotApplied` reviews as `RECONCILIATION_NOT_FINAL`, and direct unknown retry is refused. Earlier feature-003 evidence remains historical; delivery-1 acceptance must be recorded separately. |
 | NFR-003-SEC tenant isolation, RBAC, least privilege, no secret in logs or in the journal | Done | tenant in every key, foreign key and statement of the new tables; breaker per namespace; `saga:override` only for administrators; no label, audit record or error carries a payload; the lookup's output goes through the secret scan; two independent reviews (D71) |
 | NFR-003-DUR a transition is not lost after commit; lease and fencing | Done | `fault_sagas_compensations` (13 tests: crash before commit, restart, effect before checkpoint, duplicates, three races, a real HTTP provider, connections killed under load), the domain property tests extended with sagas, `verify_run` after every scenario |
 | NFR-003-OBS logs, correlated traces, essential metrics, auditability per Run/Step | Done | Six counters taken after commit with closed labels (D69), journal events, audit records and the graph; feature 008 subsequently supplied the shared dashboards and alerts (G60 resolved). |
@@ -1104,3 +1104,19 @@ root/exact-path guard and two bounded membership indexes → `worker.capacity.ch
 and [actual evidence/open gates](../specs/014-workflow-primitives/capacity-coordinator.md).
 The source inventory gate has negative controls and documented text-scan limitations.
 Runtime activation, sweeper, admission and full canonical acceptance remain open.
+
+## 037 compensation safety — delivery 1 locally validated (2026-11-01)
+
+[Specification](../specs/037-compensation-safety/spec.md): FR-037-001..021, NFR-037-001..006,
+SC-037-001..007 and four user stories map in its acceptance table. S1-B/S2-B and delivery 1 are
+approved; delivery-1 implementation and local validation are complete. Formal adoption, release
+and whole-feature acceptance remain unclaimed. The
+preceding feature-003 delivery claims describe historical behavior and do not prove this changed
+contract.
+
+Existing domain suites (`crates/domain/tests/sagas.rs`, `scoped_compensation.rs`) passed 60+34
+cases during the B02 baseline assessment; they are characterization, not feature-037 acceptance.
+Delivery-1 tests, contracts, metrics and demos have recorded evidence through the
+[plan](../specs/037-compensation-safety/plan.md), [tasks](../specs/037-compensation-safety/tasks.md)
+and [34-requirement coverage](../specs/037-compensation-safety/analysis.md). Only the
+[validation report](../specs/037-compensation-safety/validation-report.md) records results. US04 remains open.

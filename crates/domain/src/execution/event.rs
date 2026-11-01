@@ -106,6 +106,7 @@ impl FailureCode {
             Self::storage_quota_exceeded(),
             Self::reconciliation_failed(),
             Self::reconciliation_unknown(),
+            Self::reconciliation_not_final(),
         ]
         .contains(self)
     }
@@ -168,6 +169,12 @@ impl FailureCode {
     }
 
     /// The provider cannot say whether the effect happened.
+    /// A negative lookup is an observation, not proof that a late effect cannot happen.
+    #[must_use]
+    pub fn reconciliation_not_final() -> Self {
+        Self::system("RECONCILIATION_NOT_FINAL")
+    }
+
     #[must_use]
     pub fn reconciliation_unknown() -> Self {
         Self::system("RECONCILIATION_UNKNOWN")

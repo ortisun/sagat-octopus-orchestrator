@@ -9,6 +9,7 @@ use sagat_application::scripts::{
 };
 use sagat_application::worker::ClaimedTask;
 use sagat_domain::audit::AuditAction;
+use sagat_domain::execution::{RunStatus, StepStatus};
 use sagat_domain::identity::{Principal, Role, Slug};
 use sagat_domain::scripts::{Failure, Language, Source, activity_of, digest_of_activity};
 use serde_json::json;
@@ -374,68 +375,105 @@ async fn an_incident_on_one_node_does_not_suppress_another_nodes_terminal_audit(
 }
 
 #[tokio::test]
-async fn a_delayed_terminal_report_finds_incident_evidence_after_the_lease_advances() {
-    let (w, _old_session, old_task) = leased_production().await;
-    w.runner
-        .record_incident(
-            &w.runner_identity,
-            &production(&w, &old_task),
-            IncidentCategory::ForbiddenAddress,
-            &ctx(),
-        )
-        .await
-        .expect("incident committed before the old lease ended");
+async fn a_delayed_terminal_report_keeps_its_incident_after_review_or_a_known_retry() {
+    for expired in [true, false] {
+        let (w, old_session, old_task) = leased_production().await;
+        w.runner
+            .record_incident(
+                &w.runner_identity,
+                &production(&w, &old_task),
+                IncidentCategory::ForbiddenAddress,
+                &ctx(),
+            )
+            .await
+            .expect("incident committed before the old lease ended");
 
-    w.age_lease(old_task.run_id, old_task.instance.node().as_str())
-        .await;
-    assert_eq!(w.scheduler.tick().await.leases_expired, 1);
-    w.age_retry(old_task.run_id, old_task.instance.node().as_str())
-        .await;
-    assert_eq!(w.scheduler.tick().await.retries_released, 1);
-    let replacement_session = w
-        .session_as(&w.runner_identity, &[old_task.activity.as_str()], 1)
-        .await;
-    let replacement = w.one_task(&replacement_session).await;
-    assert_eq!(
-        replacement.step_id, old_task.step_id,
-        "step identity is stable"
-    );
-    assert!(replacement.fence.attempt > old_task.fence.attempt);
-    assert!(replacement.fence.generation > old_task.fence.generation);
+        if expired {
+            w.age_lease(old_task.run_id, old_task.instance.node().as_str())
+                .await;
+            assert_eq!(w.scheduler.tick().await.leases_expired, 1);
+            assert_eq!(w.scheduler.tick().await.retries_released, 0);
+            assert_eq!(w.run_status(old_task.run_id).await, RunStatus::ManualReview);
+            assert_eq!(
+                w.step_status(old_task.run_id, old_task.instance.node().as_str())
+                    .await,
+                Some(StepStatus::Waiting)
+            );
+        } else {
+            // A reported known failure still permits the original next-generation control.
+            w.fail_with(&old_session, &old_task, "TRANSIENT_FAILURE", true)
+                .await
+                .expect("known retryable failure");
+            w.age_retry(old_task.run_id, old_task.instance.node().as_str())
+                .await;
+            assert_eq!(w.scheduler.tick().await.retries_released, 1);
+        }
+        let replacement_session = w
+            .session_as(&w.runner_identity, &[old_task.activity.as_str()], 1)
+            .await;
+        let replacement = if expired {
+            assert!(
+                w.poll(&replacement_session, 1).await.is_empty(),
+                "lease expiry cannot authorize repeating the unresolved effect"
+            );
+            None
+        } else {
+            let replacement = w.one_task(&replacement_session).await;
+            assert_eq!(
+                replacement.step_id, old_task.step_id,
+                "step identity is stable"
+            );
+            assert!(replacement.fence.attempt > old_task.fence.attempt);
+            assert!(replacement.fence.generation > old_task.fence.generation);
+            Some(replacement)
+        };
 
-    let destination = "fetch https://late-old-attempt.example/secret-canary";
-    w.runner
-        .record_execution(
-            &w.runner_identity,
-            NewExecution {
-                namespace_id: w.namespace.id(),
-                digest: digest_of_activity(old_task.activity.as_str()).expect("script activity"),
-                run_id: Some(old_task.run_id.as_uuid()),
-                node: Some(old_task.instance.node().as_str().to_owned()),
-                attempt: Some(old_task.fence.attempt),
-                status: ExecutionStatus::Failed,
-                failure: Some(Failure::Denied),
-                exit_code: None,
-                log: String::new(),
-                log_truncated: false,
-                denied: vec![destination.to_owned()],
-                wall_ms: 1,
-                start_ms: 1,
-                memory_peak_bytes: None,
-                trace_id: None,
-            },
-            &ctx(),
-        )
-        .await
-        .expect("delayed terminal diagnostic");
+        let journal_before = w.journal(old_task.run_id).await;
+        let destination = "fetch https://late-old-attempt.example/secret-canary";
+        w.runner
+            .record_execution(
+                &w.runner_identity,
+                NewExecution {
+                    namespace_id: w.namespace.id(),
+                    digest: digest_of_activity(old_task.activity.as_str())
+                        .expect("script activity"),
+                    run_id: Some(old_task.run_id.as_uuid()),
+                    node: Some(old_task.instance.node().as_str().to_owned()),
+                    attempt: Some(old_task.fence.attempt),
+                    status: ExecutionStatus::Failed,
+                    failure: Some(Failure::Denied),
+                    exit_code: None,
+                    log: String::new(),
+                    log_truncated: false,
+                    denied: vec![destination.to_owned()],
+                    wall_ms: 1,
+                    start_ms: 1,
+                    memory_peak_bytes: None,
+                    trace_id: None,
+                },
+                &ctx(),
+            )
+            .await
+            .expect("delayed terminal diagnostic");
 
-    let reasons: Vec<String> = incident_rows(&w)
-        .await
-        .into_iter()
-        .map(|row| row.3)
-        .collect();
-    assert_eq!(reasons, vec!["FORBIDDEN_ADDRESS"]);
-    assert!(!format!("{reasons:?}").contains("late-old-attempt"));
+        let reasons: Vec<String> = incident_rows(&w)
+            .await
+            .into_iter()
+            .map(|row| row.3)
+            .collect();
+        assert_eq!(reasons, vec!["FORBIDDEN_ADDRESS"]);
+        assert!(!format!("{reasons:?}").contains("late-old-attempt"));
+        assert_eq!(w.journal(old_task.run_id).await, journal_before);
+        if let Some(replacement) = replacement {
+            w.complete(&replacement_session, &replacement, &json!({}))
+                .await
+                .expect("a known retry can finish");
+            assert_eq!(w.run_status(old_task.run_id).await, RunStatus::Succeeded);
+        } else {
+            assert_eq!(w.run_status(old_task.run_id).await, RunStatus::ManualReview);
+        }
+        w.assert_consistent(old_task.run_id).await;
+    }
 }
 
 #[tokio::test]

@@ -126,9 +126,6 @@ pub fn plan_addressed(
             },
         );
     }
-    if !forward {
-        return Ok(AddressedPlan::Idle);
-    }
     for (instance, step) in state
         .instances()
         .filter(|(instance, _)| instance.path() == path)
@@ -137,6 +134,17 @@ pub fn plan_addressed(
             let declared = def
                 .node_for_instance(instance)
                 .ok_or_else(|| ExecutionError::UnknownStep(instance.node().clone()))?;
+            let recovery = instance.node().is_reconciliation()
+                && (!state.is_paused() || state.stop_reason().is_some())
+                && instance.node().forward().is_some_and(|node| {
+                    let original = super::ExecutionInstanceId::in_path(path.clone(), node);
+                    state.instance(&original).is_some_and(|step| {
+                        matches!(step.waiting_on(), Some(WaitingOn::Reconciliation))
+                    })
+                });
+            if !forward && !recovery {
+                continue;
+            }
             // A compensation is released by its scope, when everything it waits for has finished.
             if matches!(declared.origin(), NodeOrigin::Compensation(_)) {
                 continue;
@@ -212,9 +220,6 @@ pub fn plan_path(
             },
         );
     }
-    if !forward {
-        return Ok(AddressedPlan::Idle);
-    }
     for (node, step) in state.local_instances() {
         if step.status() != StepStatus::Pending {
             continue;
@@ -223,6 +228,16 @@ pub fn plan_path(
         let declared = def
             .node_for_instance(&instance)
             .ok_or_else(|| ExecutionError::UnknownStep(node.clone()))?;
+        let recovery = node.is_reconciliation()
+            && (!state.global().is_paused() || state.global().stop_reason().is_some())
+            && node.forward().is_some_and(|forward| {
+                state.local_instance(&forward).is_some_and(|step| {
+                    matches!(step.waiting_on(), Some(WaitingOn::Reconciliation))
+                })
+            });
+        if !forward && !recovery {
+            continue;
+        }
         if matches!(declared.origin(), NodeOrigin::Compensation(_)) {
             continue;
         }
@@ -331,6 +346,12 @@ fn drain(
     for (node, step) in state.steps() {
         // A saga that is compensating winds down its own body, and its compensations must run to
         // the end whatever stopped the run.
+        if recovery_obligation(state, node, step) {
+            if node.is_reconciliation() && step.status() == StepStatus::Pending {
+                return Ok(Plan::Emit(RunEvent::StepReleased { node: node.clone() }));
+            }
+            continue;
+        }
         if sagas::owned(def, state, node, true) {
             continue;
         }
@@ -415,6 +436,30 @@ fn drain(
             Plan::Idle
         },
     )
+}
+
+/// Work whose external outcome must survive an ordinary stop or a lost join.
+/// A lookup companion remains runnable until its original receives a durable answer.
+pub(super) fn recovery_obligation(state: &RunState, node: &NodeId, step: &StepState) -> bool {
+    if matches!(step.waiting_on(), Some(WaitingOn::Reconciliation)) {
+        return true;
+    }
+    if matches!(step.waiting_on(), Some(WaitingOn::Operator { .. }))
+        && (node.is_compensation()
+            || step
+                .failure()
+                .is_some_and(FailureCode::leaves_outcome_unknown))
+    {
+        return true;
+    }
+    node.is_reconciliation()
+        && !step.status().is_terminal()
+        && node
+            .forward()
+            .and_then(|forward| state.step(&forward))
+            .is_some_and(|original| {
+                matches!(original.waiting_on(), Some(WaitingOn::Reconciliation))
+            })
 }
 
 /// Whether `step` is parked on a child run whose node says the parent must wait for the child to
@@ -608,7 +653,7 @@ fn cancel_joined_leftovers(def: &WorkflowDefinition, state: &RunState) -> Option
                 continue;
             };
             // A saga in a branch that lost compensates what it did; it winds its own body down.
-            if sagas::owned(def, state, member, false) {
+            if sagas::owned(def, state, member, false) || recovery_obligation(state, member, step) {
                 continue;
             }
             match step.status() {

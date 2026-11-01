@@ -4116,6 +4116,33 @@ impl RunState {
                         "a compensation plan names an entry twice or waits for one that is not in it",
                     ));
                 }
+                // The reducer has no workflow definition, so it cannot independently prove that a
+                // declared id belongs to this saga's region; the definition-aware planner owns that
+                // check. It can still reject derived companions, which are never original effects.
+                if entries
+                    .iter()
+                    .map(|entry| &entry.node)
+                    .chain(irreversible.iter())
+                    .any(NodeId::is_derived)
+                {
+                    return Err(ExecutionError::Invariant(
+                        "a compensation plan requires original effects",
+                    ));
+                }
+                if entries
+                    .iter()
+                    .map(|entry| &entry.node)
+                    .chain(irreversible.iter())
+                    .any(|forward| {
+                        !self
+                            .step(forward)
+                            .is_some_and(|step| step.status == StepStatus::Succeeded)
+                    })
+                {
+                    return Err(ExecutionError::Invariant(
+                        "a compensation plan requires succeeded original effects",
+                    ));
+                }
                 let companions: Vec<NodeId> =
                     entries.iter().map(|e| e.node.compensation()).collect();
                 self.activate(&companions)?;
@@ -4479,8 +4506,22 @@ impl RunState {
                         "a scope plan names an instance twice or waits for one that is not in it",
                     ));
                 }
+                // The reducer has no workflow definition, so it cannot independently distinguish
+                // declared body nodes from foreign declared ids at the same path; the planner owns
+                // that check. Derived companions are structurally identifiable and are never
+                // original effects.
+                if entries
+                    .iter()
+                    .map(|entry| &entry.instance)
+                    .chain(irreversible.iter())
+                    .any(|instance| instance.node().is_derived())
+                {
+                    return Err(ExecutionError::Invariant(
+                        "a scope plan requires original effects",
+                    ));
+                }
                 // Every entry and every irreversible instance is a member of an iteration of this
-                // scope that finished its effect, or may have: nothing else can be undone.
+                // scope that finished its effect: nothing else can be undone.
                 for instance in entries
                     .iter()
                     .map(|entry| &entry.instance)
@@ -4495,12 +4536,7 @@ impl RunState {
                         .steps
                         .get(instance)
                         .ok_or_else(|| ExecutionError::UnknownInstance(instance.clone()))?;
-                    let unknown = matches!(step.status, StepStatus::Cancelled | StepStatus::Failed)
-                        && step
-                            .failure
-                            .as_ref()
-                            .is_some_and(FailureCode::leaves_outcome_unknown);
-                    if step.status != StepStatus::Succeeded && !unknown {
+                    if step.status != StepStatus::Succeeded {
                         return Err(ExecutionError::Invariant(
                             "a scope plan names an instance that has no effect to undo",
                         ));

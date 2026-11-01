@@ -1,6 +1,6 @@
-# Runbook: sagas, compensations and reconciliation (feature 003)
+# Runbook: sagas, compensations and reconciliation
 
-For the people who run workflows that undo their own work. It covers what a saga does when something fails, what a person is asked to decide, and how to tell a provider that is down from a run that is stuck. Design: [`docs/architecture/sagas.md`](../architecture/sagas.md); decisions: [`specs/003-sagas-compensations/research.md`](../../specs/003-sagas-compensations/research.md); the engine's own runbook: [`execution-engine.md`](execution-engine.md).
+For the people who run workflows that undo their own work. It covers what a saga does when something fails, what a person is asked to decide, and how to tell a provider that is down from a run that is stuck. The feature-037 delivery-1 behavior below is implementation in verification; the linked validation report, not this runbook, records acceptance. Design: [`docs/architecture/sagas.md`](../architecture/sagas.md); historical decisions: [`specs/003-sagas-compensations/research.md`](../../specs/003-sagas-compensations/research.md); the engine's own runbook: [`execution-engine.md`](execution-engine.md).
 
 ## 1. What happens when a step fails
 
@@ -13,18 +13,21 @@ A `saga` node wraps a part of the workflow. If a step inside it fails for good (
 | Run status | Meaning |
 |---|---|
 | `COMPENSATED` | Everything that had to be undone was. |
-| `PARTIAL` | Something could not be: a step marked `irreversible`, a compensation an operator **skipped**, or an effect of unknown outcome that nothing can undo. The run must be handled by a person afterwards. |
-| `COMPENSATION_FAILED` | A compensation failed for good and the saga is configured `onCompensationFailure: fail`, or the run was cancelled while a person was being waited for. |
+| `PARTIAL` | Something known could not be undone: a step marked `irreversible` or a compensation an operator **skipped**. An unresolved unknown stays in review instead of being converted to `PARTIAL`. |
+| `COMPENSATION_FAILED` | A known permanent/non-retryable compensation failed under explicit `onCompensationFailure: fail`; eligible independent compensations settled and blocked dependants were suppressed first. This is terminal retained evidence, not an active review queue. |
 | `CANCELLED` / `TIMED_OUT` | The run was stopped and what it had done was undone first (the status is final only when the undoing is). |
 
-A cancellation does **not** cancel a compensation that is already running: undoing is not work to abandon. What a stop does to the rest depends on the saga's `cancelPolicy`: `compensate_completed` (default: stop what is in flight, undo what completed), `wait_in_flight_then_compensate` (let the attempts in flight finish, then undo everything), `abort_no_compensation` (just stop).
+A cancellation does **not** cancel a compensation that is already running or discard a review obligation: undoing and determining an uncertain effect are not work to abandon. What a stop does to known work depends on the saga's `cancelPolicy`: `compensate_completed` (default: stop what is in flight, undo what completed), `wait_in_flight_then_compensate` (let the attempts in flight finish, then undo everything known to have completed), `abort_no_compensation` (do not start compensation). None of these policies converts an unknown outcome into known failure.
 
 ## 2. A step whose outcome is unknown
 
-If an attempt ends without anyone knowing whether the effect happened — the worker died holding the lease (`LEASE_EXPIRED`), the attempt timed out (`ATTEMPT_TIMEOUT`), or the worker reported the reserved code `OUTCOME_UNKNOWN` — the platform does **not** retry blindly:
+Every leased `Activity` is external-capable, independently of `highRisk`. If an attempt ends without anyone knowing whether the effect happened — the worker died holding the lease (`LEASE_EXPIRED`), the attempt timed out (`ATTEMPT_TIMEOUT`), or the worker reported the reserved code `OUTCOME_UNKNOWN` — uncertainty takes precedence over retry, cancellation and explicit failure:
 
-- With `reconcileWith`, the step waits (`waitingOn: reconciliation`) and a lookup `<id>~r` is handed to a worker with the forward step's idempotency key. The worker answers `{"effect": "applied" | "not_applied" | "unknown", "output": …}`. *Applied*: the step succeeded, with that output, and nothing is submitted again. *Not applied*: the step is retried (same key) or, with no attempt left, failed and the saga compensates. *Unknown*, an answer of another shape, or ten failed lookups: the step goes to a person.
-- Without `reconcileWith`, an ordinary step is retried as always; a step marked `highRisk` waits for a person instead.
+- An unknown original with `reconcileWith` waits (`waitingOn: reconciliation`) while lookup `<id>~r` receives the original idempotency key. `Applied` completes the original with the reported output. `NotApplied` is not proof of permanent absence: it holds review with `RECONCILIATION_NOT_FINAL`. `Unknown`, an invalid answer or exhausted lookup attempts also holds review. The platform does not issue a second original lease while this recovery is unresolved.
+- An unknown original without `reconcileWith` goes directly to review. It is not defensively compensated; only an original known to have succeeded is a normal compensation candidate.
+- An unknown compensation goes directly to review. It is not repeated automatically and explicit `fail` cannot terminalize it as though its outcome were known.
+
+`CompleteStep` is the worker's assertion that the domain operation reached a final result. It is not provider proof created by the platform. A handler that receives accepted, queued or pending status reports `OUTCOME_UNKNOWN`, including for compensation.
 
 ## 3. Runs that wait for a person
 
@@ -34,13 +37,13 @@ Decide with `POST /runs/{id}/operations` (an `Idempotency-Key` header, a `reason
 
 | Action | Body | Who | Effect |
 |---|---|---|---|
-| `RETRY_COMPENSATION` / `RETRY_STEP` | `stepId` | Operator or Admin (`run:operate`); **Admin only** (`saga:override`) for a step whose outcome may have happened (`waitingOn: operator` with `LEASE_EXPIRED`, `ATTEMPT_TIMEOUT`, `OUTCOME_UNKNOWN`, `RECONCILIATION_FAILED` or `RECONCILIATION_UNKNOWN`) | Another attempt of the same step, with the same idempotency key. The old attempts stay in the journal. Refused (409) on a step of a saga that stopped going forward: decide whether it happened instead. |
-| `SKIP_COMPENSATION` | `stepId` of a `…~c` | Admin only (`saga:override`) | Give up on that compensation. The ones behind it go on. The saga ends `PARTIAL`. |
-| `RESOLVE_STEP` | `stepId`, `outcome: SUCCEEDED` or `FAILED`, `errorCode` for `FAILED` | Admin only (`saga:override`) | Declare that the step happened (it is complete, later steps go on) or did not (it failed and the saga compensates). Use it after checking with the provider. |
+| `RETRY_COMPENSATION` / `RETRY_STEP` | `stepId` | Operator or Admin with `run:operate` | Another attempt only when the previous outcome is known failed and the state remains retry-eligible, with the same idempotency key. An unknown original or compensation is refused with `409` even when the caller also has `saga:override`; resolve its outcome instead. |
+| `SKIP_COMPENSATION` | `stepId` of a `…~c` | Admin with `run:operate` and `saga:override` | Give up on that compensation. The ones behind it go on. The saga ends `PARTIAL`. |
+| `RESOLVE_STEP` | `stepId`, `outcome: SUCCEEDED` or `FAILED`, `errorCode` for `FAILED` | Admin with `run:operate` and `saga:override` | Record the authorized human conclusion after checking external evidence. The transaction retains actor, reason and declared outcome. Human `SUCCEEDED` may let compensation finish, but is not provider confirmation and does not qualify the integration. Resolution does not promise a new in-place attempt. |
 
-A decision on a step that does not wait for a person, or that someone else already decided, is `409` and changes nothing. Every decision is audited (`saga.step_retried`, `saga.step_skipped`, `saga.step_resolved`) with who, which step and why, and a run that waits for a person is not forgotten by a restart: it is a row.
+A decision on a step that does not wait for a person, or that someone else already decided, is `409` and changes nothing. Every accepted decision is audited (`saga.step_retried`, `saga.step_skipped`, `saga.step_resolved`) with who, which step and why, and a run that waits for a person is not forgotten by a restart: it is a row.
 
-Cancelling a run that waits for a person gives up on the waiting: a forward step is cancelled and compensated like what completed; a compensation that was waiting is cancelled, and the run ends `COMPENSATION_FAILED` because an effect was left in place.
+Cancelling or timing out a run that waits for a person preserves the waiting step, its evidence and its decision authority across restart. It does not create a second lease, schedule defensive compensation for an unknown original, or turn an unknown compensation into terminal known failure.
 
 ## 4. The circuit breaker
 
@@ -62,10 +65,10 @@ A compensation that reports "already released" as a **failure** counts toward th
 | A run ended `PARTIAL` | Something could not be undone (see the graph: the saga node's `irreversible`, a `SKIPPED` compensation) | Handle it outside the platform; the audit trail has the decisions |
 | A step is `WAITING` on `reconciliation` for long | No worker serves the lookup activity (`reconcileWith`), or its bindings do not cover it | Bind and start a worker for it; the lookup is retried ten times and then goes to a person |
 | `RECONCILIATION_ANSWER_INVALID` on a `…~r` | The lookup answered something that is not `{"effect": …}` | Fix the activity; decide the step by hand meanwhile |
-| `403` on `SKIP_COMPENSATION`, `RESOLVE_STEP` or a retry of a step whose outcome may have happened | Only administrators hold `saga:override` | An administrator decides; operators may `RETRY_COMPENSATION` |
+| `403` on `SKIP_COMPENSATION` or `RESOLVE_STEP` | The caller lacks `saga:override` (and operation authority) | Use an authorized administrator; do not widen a worker/operator token |
 | A run ends `CHILD_COMPENSATED` / `CHILD_PARTIAL` / `CHILD_COMPENSATION_FAILED` | Its child run ended in a saga outcome | Route on the code with an error edge, or look at the child run (its id is `child_run_id(parent, node)`) |
 | A cancelled run is not `CANCELLED` yet | A compensation is running or waits for a person, or (when the run ended because *another branch* failed) a saga waits for one | Section 3 |
-| `409` on a decision | Someone decided first, or the step does not wait for a person | Read the run again |
+| `409` on retry or a decision | Someone decided first, the step is not eligible, or the effect remains unknown | Read the run again; resolve an unknown outcome before choosing any later action. A refused operation creates no success audit, idempotency success or scheduling outbox. |
 | `422` on `RETRY_COMPENSATION` | `stepId` is not a compensation (it does not end in `~c`) | Use the id shown by the graph |
 
 ## 6. Metrics
@@ -81,10 +84,45 @@ A compensation that reports "already released" as a **failure** counts toward th
 
 They are counted after the transaction commits, and no label names a tenant, run, node or payment. A dashboard and alerts on them belong to feature 008.
 
-## 7. Upgrading
+## 7. Installation, rollback and retained evidence
 
-The migration of this feature adds constraints to `steps` and `runs` as `NOT VALID` (they apply to every new row and do not scan the table under its lock), and replaces the ready index of `steps` by two partial ones. On a database with a very large `steps` table apply it in a quiet period, or create the two indexes by hand first with `CREATE INDEX CONCURRENTLY` and the same definitions (`steps_ready_idx` for forward work and lookups, `steps_ready_compensation_idx` for compensations; see the migration). `ALTER TABLE … VALIDATE CONSTRAINT` can mark the new constraints validated at leisure; it does not block writes.
+Feature 037 delivery 1 is a fresh coordinated installation only. Use a new isolated database and
+matching server/SDK artifacts. Do not mix old and new engine versions, reinterpret legacy live runs,
+or roll an older engine back onto a database that has processed delivery-1 work. Before the first
+external effect, rollback may remove only the unexercised deployment. Afterwards, stop new admission,
+preserve the database and journal, keep operator ownership, and fix forward or perform an explicitly
+reviewed reconciliation. Reverting code cannot undo a provider effect; replaying or re-triggering an
+original request is not a rollback procedure.
+
+The platform currently has no retention/partitioning control for the run journal (G28) and no
+automatic retention or export for the audit trail (G182). Delivered outbox messages and some
+ephemeral coordination records have their own cleanup, but that does not protect saga evidence.
+Operators must size and monitor PostgreSQL, take and restore-test approved backups/PITR, and—when
+policy requires external custody—page authorized records into an access-controlled archive and
+document the transfer of responsibility. The platform does not claim that this satisfies a
+regulator or supply an automatic evidence-export job.
+
+For explicit `fail`, retained steps, journal and audit are the follow-up evidence. The terminal run
+has no runnable or review-waiting compensation and there is no post-terminal queue; the integration
+operator owns any external remediation and the retention period needed for it.
 
 ## 8. Not covered
 
-Listed with the reason in [`specs/003-sagas-compensations/research.md`](../../specs/003-sagas-compensations/research.md) (G51–G61): the platform cannot check that a compensation is idempotent (it is the author's contract, and the key helps); the breaker is per activity name and does not cover lookups; Studio screens and dashboards are features 007 and 008; the SDK DSL is feature 006; compensations written as inline scripts wait for the sandbox (005).
+The platform cannot prove a provider's finality, a compensation's idempotence or regulatory
+retention from declarations and stable keys. No provider/capability is qualified in delivery 1;
+US04 remains open and there is no qualification registry or exception path. Synthetic fixtures and
+contract tests exercise engine behavior only. Historical design rationale remains in
+[`specs/003`](../../specs/003-sagas-compensations/spec.md),
+[`specs/014`](../../specs/014-workflow-primitives/spec.md), and
+[ADR-0076](../adr/ADR-0076-compensation-failure-and-uncertain-effects.md), which remains **PROPOSED**.
+The feature-037 delivery is implementation in verification: consult its
+[validation report](../../specs/037-compensation-safety/validation-report.md) before claiming any gate
+passed or using this runbook as evidence of provider safety.
+
+
+Delivery-1 compatibility limit (037, owner decision 2026-11-01): ordinary `SECRET_IN_OUTPUT`
+retains feature-009 final-failure behavior. Successful-result storage refusal now holds recovery,
+but secret-bearing output can still take the existing failure/onError path without a review
+queue. Follow up from safe retained evidence; never persist the prohibited secret for that
+purpose. Existing managed-database safeguards are unchanged. See
+[owner decisions](../owner-decisions.md).

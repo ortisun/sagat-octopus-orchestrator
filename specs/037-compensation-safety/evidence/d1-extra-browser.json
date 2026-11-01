@@ -1,0 +1,33 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--locked",
+      "--offline",
+      "--test",
+      "e2e_database_connections",
+      "--",
+      "--ignored"
+    ],
+    "exit": 0,
+    "log": "d1-database-browser.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--locked",
+      "--offline",
+      "--test",
+      "e2e_developer_experience",
+      "--",
+      "--ignored",
+      "onboarding_browser::"
+    ],
+    "exit": 0,
+    "log": "d1-onboarding-browser.txt"
+  }
+]

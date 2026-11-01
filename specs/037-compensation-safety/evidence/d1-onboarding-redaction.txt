@@ -1,0 +1,11 @@
+✔ compose browser disabled field keeps the token out of output and artifacts (1447.996958ms)
+✔ compose browser rejected sign-in keeps the token out of output and artifacts (1085.295ms)
+✔ compose browser failure after sign-in keeps the token out of output and artifacts (6116.31ms)
+ℹ tests 3
+ℹ suites 0
+ℹ pass 3
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 8731.35025

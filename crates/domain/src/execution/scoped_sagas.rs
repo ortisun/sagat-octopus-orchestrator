@@ -7,8 +7,8 @@
 //! 1. **Plan** — once every iteration has settled, one event records which completed members are
 //!    to be undone and which compensations each of them waits for: reverse topological inside an
 //!    iteration, nothing across the iterations of a collection, last iteration first across the
-//!    iterations of a loop. A member whose last attempt ended with an unknown outcome is undone
-//!    defensively; a member that cannot be undone is recorded, so the scope cannot end
+//!    iterations of a loop. Unknown outcomes retain lookup/review until resolved; only succeeded
+//!    members enter the plan. A completed member that cannot be undone is recorded, so the scope cannot end
 //!    `COMPENSATED`.
 //! 2. **Compensate** — each compensation is released when everything it waits for has finished.
 //!    A collection releases at most `maxConcurrency` iterations at a time. A compensation that
@@ -35,10 +35,8 @@ use crate::workflow::{NodeId, WorkflowDefinition};
 /// Whether a settled step can contribute an effect to a scope's compensation plan.
 /// A declared compensation and current scope authority are separate checks.
 #[must_use]
-pub fn scope_compensation_candidate(status: StepStatus, failure: Option<&FailureCode>) -> bool {
+pub fn scope_compensation_candidate(status: StepStatus, _failure: Option<&FailureCode>) -> bool {
     status == StepStatus::Succeeded
-        || (matches!(status, StepStatus::Cancelled | StepStatus::Failed)
-            && failure.is_some_and(FailureCode::leaves_outcome_unknown))
 }
 
 /// The next thing the compensating scopes of the run need, if there is one.
@@ -125,7 +123,7 @@ fn addressed(path: &InstancePath, event: RunEvent) -> Result<AddressedRunEvent, 
 /// What one iteration contributes to the plan, keyed by the iteration index.
 #[derive(Default)]
 struct Iteration {
-    /// Completed members, or members whose outcome is unknown, that have a compensation.
+    /// Succeeded members that have a compensation, including authorized human resolution.
     compensable: BTreeSet<NodeId>,
     /// Members that completed and cannot be undone.
     irreversible: Vec<NodeId>,
@@ -157,10 +155,6 @@ fn plan_compensation(
         let entry = iterations
             .entry(index)
             .or_insert_with(|| (instance.path().clone(), Iteration::default()));
-        let unknown = matches!(step.status(), StepStatus::Cancelled | StepStatus::Failed)
-            && step
-                .failure()
-                .is_some_and(FailureCode::leaves_outcome_unknown);
         if !scope_compensation_candidate(step.status(), step.failure()) {
             continue;
         }
@@ -169,7 +163,7 @@ fn plan_compensation(
         if compensable {
             entry.1.compensable.insert(instance.node().clone());
         }
-        if node.effect().irreversible || (unknown && !compensable && node.effect().high_risk) {
+        if node.effect().irreversible {
             entry.1.irreversible.push(instance.node().clone());
         }
     }
