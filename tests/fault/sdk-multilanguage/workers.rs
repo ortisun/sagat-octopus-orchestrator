@@ -16,7 +16,7 @@ fn assert_human_resolution_precedes_successor(
     assert!(review["finishedAt"].is_null(), "{language}");
     let refused = &observation(doc, "retry-refused")["error"];
     assert_eq!(refused["code"], "CONFLICT", "{language}");
-    assert_eq!(refused["reason"], "STATE_CONFLICT", "{language}");
+    assert_eq!(refused["reason"], "OUTCOME_UNRESOLVED", "{language}");
     assert_eq!(refused["retryable"], false, "{language}");
     let waiting = journal(doc, "review-journal");
     assert!(
