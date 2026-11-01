@@ -481,20 +481,12 @@ fn bounded_reconciliation_and_review_reduce_like_the_full_run() {
             let actual = bounded.apply_addressed(&addressed);
             assert_eq!(actual, expected, "decision {decision}");
             if matches!(addressed.event(), RunEvent::StepRetryRequested { .. }) {
-                assert!(
-                    matches!(
-                        expected,
-                        Err(
-                            sagat_domain::execution::ExecutionError::IllegalInstanceTransition { .. }
-                        )
-                    ),
-                    "an unresolved lookup cannot authorize a repeat"
-                );
-                assert_eq!(full, before_full, "the full reducer changed on refusal");
-                assert_eq!(
-                    bounded, before_bounded,
-                    "the bounded reducer changed on refusal"
-                );
+                // Refusing this retry is the command's decision (`retry_scoped_review`, covered by
+                // `unknown_effect_retry_requires_resolution`); a committed v0.2 retry still replays,
+                // and both reducers must agree on it.
+                let _ = (&before_full, &before_bounded);
+                expected.expect("full reducer replays a committed retry");
+                actual.expect("bounded reducer replays a committed retry");
             } else {
                 expected.expect("full reducer");
                 actual.expect("bounded effect reducer");
@@ -509,7 +501,7 @@ fn bounded_reconciliation_and_review_reduce_like_the_full_run() {
 }
 
 #[test]
-fn bounded_reducer_rejects_forged_negative_lookup_outcomes_like_the_full_oracle() {
+fn bounded_reducer_matches_the_full_oracle_on_negative_lookup_outcomes() {
     use sagat_domain::execution::{ExecutionError, FailureCode, ReconcileResult};
     use sagat_domain::saga::ReconcileVerdict;
     use time::OffsetDateTime;
@@ -520,6 +512,7 @@ fn bounded_reducer_rejects_forged_negative_lookup_outcomes_like_the_full_oracle(
         ReconcileResult::Review(FailureCode::parse("MANUAL_REVIEW").expect("code")),
     ];
     for result in forged {
+        let legacy = !matches!(result, ReconcileResult::Review(_));
         let mut full = state(2);
         let work = member(0, "work");
         let lookup = work.node().reconciliation();
@@ -578,15 +571,21 @@ fn bounded_reducer_rejects_forged_negative_lookup_outcomes_like_the_full_oracle(
             actual, expected,
             "bounded refusal must match the full reducer"
         );
-        assert!(
-            matches!(expected, Err(ExecutionError::Invariant(_))),
-            "a negative observation authorizes only RECONCILIATION_NOT_FINAL review"
-        );
-        assert_eq!(full, before_full, "the full refusal changes no state");
-        assert_eq!(
-            bounded, before_bounded,
-            "the bounded refusal changes no state"
-        );
+        if legacy {
+            // v0.2 retried or failed the original after a negative lookup; that committed
+            // history still replays (owner decision 2026-11-01, item 3).
+            expected.expect("a v0.2 negative-lookup conclusion replays");
+        } else {
+            assert!(
+                matches!(expected, Err(ExecutionError::Invariant(_))),
+                "a negative observation authorizes only RECONCILIATION_NOT_FINAL review"
+            );
+            assert_eq!(full, before_full, "the full refusal changes no state");
+            assert_eq!(
+                bounded, before_bounded,
+                "the bounded refusal changes no state"
+            );
+        }
         assert_eq!(
             bounded,
             PathExecutionState::from_run(&full, path(0)).expect("oracle after refusal")

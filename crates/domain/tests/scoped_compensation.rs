@@ -2180,7 +2180,9 @@ fn a_plan_must_name_real_completed_members_and_be_made_after_the_drain() {
 }
 
 #[test]
-fn a_forged_scope_compensation_plan_rejects_an_unknown_effect() {
+fn a_v02_defensive_scope_plan_still_replays_but_the_current_planner_never_emits_one() {
+    // The prefix is the journal v0.2.0 wrote for a lease lost while the collection was cancelled
+    // (generated from the v0.2.0 domain); `LEASE_EXPIRED` leaves the outcome unknown.
     let mut scope = Scope::start(
         collection_definition(vec![step("reserve", true, false)], 1),
         "lines",
@@ -2202,7 +2204,7 @@ fn a_forged_scope_compensation_plan_rejects_an_unknown_effect() {
             node: reserve.node().clone(),
             attempt: fence.attempt,
             generation: fence.generation,
-            code: FailureCode::outcome_unknown(),
+            code: FailureCode::parse("LEASE_EXPIRED").expect("code"),
             not_before: T0,
         },
     );
@@ -2214,15 +2216,85 @@ fn a_forged_scope_compensation_plan_rejects_an_unknown_effect() {
     );
     scope.drain_collection(0);
     assert_eq!(scope.step_status(&reserve), StepStatus::Cancelled);
-    assert_eq!(
-        scope
-            .state
-            .instance(&reserve)
-            .and_then(|step| step.failure())
-            .map(FailureCode::as_str),
-        Some("OUTCOME_UNKNOWN")
+
+    // The current planner does not compensate an unresolved original effect.
+    let mut planner = Scope {
+        def: scope.def.clone(),
+        state: scope.state.clone(),
+        journal: scope.journal.clone(),
+        owner: scope.owner.clone(),
+    };
+    assert!(
+        planner.advance().iter().all(|event| match event.event() {
+            RunEvent::ScopeCompensationPlanned {
+                entries,
+                irreversible,
+                ..
+            } => {
+                entries.iter().all(|entry| entry.instance != reserve)
+                    && !irreversible.contains(&reserve)
+            }
+            _ => true,
+        }),
+        "feature 037: an unknown effect is not a compensation candidate"
     );
 
+    // The plan v0.2 committed for the same state still replays (owner decision 2026-11-01).
+    let legacy = RunEvent::ScopeCompensationPlanned {
+        node: scope.owner.node().clone(),
+        cause: FailureCode::run_cancelled(),
+        entries: vec![sagat_domain::execution::ScopedPlannedEntry {
+            instance: reserve.clone(),
+            after: Vec::new(),
+        }],
+        irreversible: Vec::new(),
+    };
+    let mut replayed = scope.state.clone();
+    replayed
+        .apply(&legacy)
+        .expect("a committed v0.2 defensive scope plan replays");
+    let mut journal = scope.journal.clone();
+    journal.push(AddressedRunEvent::root(legacy));
+    assert_eq!(
+        RunState::replay_addressed(scope.state.run_id(), &journal).expect("journal replays"),
+        replayed
+    );
+}
+
+#[test]
+fn a_scope_plan_still_refuses_a_known_failure() {
+    let mut scope = Scope::start(
+        collection_definition(vec![step("reserve", true, false)], 1),
+        "lines",
+    );
+    scope.enter_collection(1, 1);
+    scope.admit_collection(0, "reserve");
+    let reserve = scope.at(0, "reserve");
+    let fence = scope.lease(&reserve);
+    scope.cancel_collection();
+    scope.addressed(
+        reserve.path(),
+        RunEvent::StepCancelRequested {
+            node: reserve.node().clone(),
+        },
+    );
+    scope.addressed(
+        reserve.path(),
+        RunEvent::StepRetryScheduled {
+            node: reserve.node().clone(),
+            attempt: fence.attempt,
+            generation: fence.generation,
+            code: FailureCode::parse("DECLINED").expect("code"),
+            not_before: T0,
+        },
+    );
+    scope.addressed(
+        reserve.path(),
+        RunEvent::StepCancelled {
+            node: reserve.node().clone(),
+        },
+    );
+    scope.drain_collection(0);
     let forged = RunEvent::ScopeCompensationPlanned {
         node: scope.owner.node().clone(),
         cause: FailureCode::run_cancelled(),
@@ -2232,16 +2304,13 @@ fn a_forged_scope_compensation_plan_rejects_an_unknown_effect() {
         }],
         irreversible: Vec::new(),
     };
-    let mut replay_candidate = scope.state.clone();
-    let before = replay_candidate.clone();
+    let mut candidate = scope.state.clone();
+    let before = candidate.clone();
     assert!(
-        replay_candidate.apply(&forged).is_err(),
-        "replay must reject defensive compensation of an unresolved original effect"
+        candidate.apply(&forged).is_err(),
+        "a known failure had no effect to undo in any version"
     );
-    assert_eq!(
-        replay_candidate, before,
-        "the rejected forged event changes no state"
-    );
+    assert_eq!(candidate, before, "a rejected plan changes no state");
     scope.assert_replays();
 }
 

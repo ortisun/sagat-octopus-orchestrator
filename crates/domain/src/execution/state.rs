@@ -4129,15 +4129,15 @@ impl RunState {
                         "a compensation plan requires original effects",
                     ));
                 }
+                // The current planner names only succeeded originals (feature 037). v0.1/v0.2 also
+                // planned a *defensive* compensation of an original whose last attempt ended with
+                // an unknown outcome; such a committed plan still replays. Anything else (a known
+                // failure, a step that never ran) was never a candidate and is refused.
                 if entries
                     .iter()
                     .map(|entry| &entry.node)
                     .chain(irreversible.iter())
-                    .any(|forward| {
-                        !self
-                            .step(forward)
-                            .is_some_and(|step| step.status == StepStatus::Succeeded)
-                    })
+                    .any(|forward| !self.step(forward).is_some_and(planned_effect))
                 {
                     return Err(ExecutionError::Invariant(
                         "a compensation plan requires succeeded original effects",
@@ -4536,7 +4536,9 @@ impl RunState {
                         .steps
                         .get(instance)
                         .ok_or_else(|| ExecutionError::UnknownInstance(instance.clone()))?;
-                    if step.status != StepStatus::Succeeded {
+                    // As for root plans: succeeded, or a v0.1/v0.2 defensive entry whose outcome
+                    // was unknown. The current scope planner names succeeded instances only.
+                    if !planned_effect(step) {
                         return Err(ExecutionError::Invariant(
                             "a scope plan names an instance that has no effect to undo",
                         ));
@@ -4689,4 +4691,16 @@ impl RunState {
                 .values()
                 .any(|saga| saga.phase == SagaPhase::Compensating)
     }
+}
+
+/// Whether a committed compensation plan may name this original step: it succeeded, or (in a
+/// journal written by v0.1/v0.2) its last attempt ended with an unknown outcome and the old
+/// planner compensated it defensively. The current planners only ever emit the first case.
+fn planned_effect(step: &StepState) -> bool {
+    step.status == StepStatus::Succeeded
+        || (matches!(step.status, StepStatus::Cancelled | StepStatus::Failed)
+            && step
+                .failure
+                .as_ref()
+                .is_some_and(FailureCode::leaves_outcome_unknown))
 }
