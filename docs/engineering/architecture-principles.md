@@ -16,7 +16,7 @@ An architectural rule that nothing checks is a wish. Each row is a rule and what
 | Every store statement is within the runtime role's privileges | `tests/integration/platform-foundation/runtime_privileges`; [supported static SQL forms](sql-privilege-audit.md) |
 | Every service works as the least-privilege role | `SAGAT_TEST_AS_RUNTIME_ROLE=1` over the suites |
 | Every variable-size column is classified | `storage-classification.json` + `integration_security_multitenancy` |
-| Journal is the authority; projections equal a replay | `verify_run` / `assert_consistent` at the end of the fault tests |
+| Journal is the authority; projections equal a replay | `verify_run` / `assert_consistent` in the fault tests that compare a replay (54 of 92 in `fault_workflow_primitives` on 2026-11-01; the others assert persisted rows directly — inventory in `specs/014-workflow-primitives/validation-report.md`) |
 | One transaction per transition (state, scheduling, timers, outbox) | fault tests with an injected failure per statement |
 | Contracts only grow | `*.baseline.json` + compatibility tests; OpenAPI/AsyncAPI/proto/IR schema lint in CI `contracts` |
 | Five SDKs, one semantics | `tests/contract/sdk-conformance` (every scenario, five languages) |
