@@ -15,10 +15,11 @@ flowchart TB
   DB --> SC[Execution Plane: Planner / Scheduler / Saga]
   SC --> DB
   SC --> OB[Outbox Publisher]
-  OB --> N[(Selected NATS / Redis transport)]
+  OB --> N[(NATS JetStream)]
   N --> WR[Worker Supervisor / SDK Workers]
   WR --> RT[Language sandboxes / Activities]
   WR --> CP
+  WR --> DB
   CP --> O[OpenTelemetry pipeline]
   SC --> O
   WR --> O
@@ -26,7 +27,7 @@ flowchart TB
   DB --> UI
 ```
 
-The diagram is **logical**: workers claim and report through the worker API, whose application services own persistence in the orchestration database. No implemented privileged worker adapter for direct orchestration-database writes was identified. A managed database-runner connects to a configured business database under a separate capability; that is not permission to access the orchestration store.
+The diagram is **logical**: workers confirm results via the Command API; they must not receive direct database credentials in the default deployment. The `WR → DB` arrow represents an effect persisted via API in the default case (or via a privileged worker adapter in an internal deployment).
 
 ## Bounded contexts
 
@@ -48,31 +49,44 @@ The diagram is **logical**: workers claim and report through the worker API, who
 1. A published `WorkflowVersion` is immutable and every Run references a single version.
 2. A step command (`step_id`, `attempt`) is accepted once per generation/fencing token.
 3. A RUNNING→WAITING transition persists the subscription/timer in the same transaction.
-4. The selected NATS/Redis transport carries hints/references, never the sole record of a task. Redelivery is normal; the worker API grants execution authority (ADR-0069).
+4. NATS carries `task_ref`, never the sole record of a task. Redelivery is normal.
 5. A reconciliation loop re-emits outbox and detects READY tasks without delivery.
 6. Runtime DAG is event-projected; the definition graph is a blueprint and may omit branches not taken.
 
-## Current repository map
+## Monorepo decomposition (planned)
 
-[`Cargo.toml`](../../Cargo.toml) is the authority for server workspace membership: 17 crates,
-six applications and the test crate at this revision. The applications are `control-plane`,
-`execution-engine`, `sandbox-runner`, `database-runner`, `cli` and development-only `dev-idp`.
+```text
+Cargo.toml                         # workspace Rust
+apps/control-plane/
+apps/execution-engine/
+apps/worker-supervisor/
+crates/domain/
+crates/application/
+crates/infra-postgres/
+crates/infra-nats/
+crates/scheduler/
+crates/saga/
+crates/events/
+crates/script-registry/
+crates/sandbox/
+crates/connectors/
+crates/telemetry/
+crates/api-http/
+crates/api-grpc/
+proto/sagat_octopus_orchestrator/v1/
+frontend/apps/studio/
+frontend/packages/ui/
+sdks/typescript/
+sdks/go/
+sdks/python/
+sdks/dotnet/
+sdks/java/
+infra/docker/
+infra/helm/
+tests/{contract,integration,fault,performance,e2e}/
+```
 
-Domain rules live in `crates/domain`, use cases in `crates/application`, scheduling in
-`crates/scheduler`, and adapters in the `api-*`, `infra-*` and `telemetry` crates. The adapters
-include PostgreSQL, managed databases, blobs, NATS/Redis transports, connectors, egress, secrets, expressions, IR,
-sandbox and schema validation. Saga coordination and event rules remain domain/application
-code, not separate `saga` or `events` crates (ADR-0010, ADR-0012).
-
-`frontend/apps/studio` contains the UI. The six SDKs live under `sdks/{typescript,go,python,dotnet,java,rust}`;
-the Rust SDK has its own manifest and is not one of the server workspace members.
-The gRPC build consumes [worker.proto](../../specs/001-platform-foundation/contracts/worker.proto).
-Infrastructure lives in `infra/docker` and `infra/helm`; validation suites live under `tests`.
-
-Earlier plans used `apps/worker-supervisor`, separate saga/event/script-registry crates and a
-root `proto/` tree. Those names describe historical decomposition ideas, not missing modules
-that must be created. The sandbox runner and adapters implement those responsibilities where
-needed. Git history preserves the earlier layout proposal.
+**As built so far.** `crates/saga` and `crates/events` were not made: the saga coordinator is a function of the run state in the domain (ADR-0010), and the inbox, the matcher and the delivery rules are domain and application code with their SQL in `infra-postgres` and their loops in `scheduler` (ADR-0012). `crates/connectors` is `crates/infra-connectors`, an adapter crate: the broker libraries and the guarded outbound sender (feature 004). `crates/script-registry` and `crates/sandbox` are the script rules in `crates/domain/src/scripts.rs`, the services in `crates/application/src/{scripts,sandbox,script_signing}.rs`, the SQL in `infra-postgres`, the container driver `crates/infra-sandbox` and the JSON Schema adapter `crates/infra-schema`; `apps/worker-supervisor` is `apps/sandbox-runner` (feature 005, ADR-0013). Also present: `crates/infra-expr`, `crates/infra-ir`, `crates/infra-egress`, `crates/infra-secrets` and `crates/infra-nats`; 19 packages in all (15 crates, three apps and the test crate), checked by `scripts/check-architecture.py`.
 
 ## V1 vertical slice
 

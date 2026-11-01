@@ -4,22 +4,6 @@
 
 - PostgreSQL 1 instance, NATS JetStream single-node, engine 1 replica, API 1 replica, TS/Python worker 1 pool, local S3-compatible object storage, Studio 1 replica. Development only.
 
-## Available deployment components
-
-The profiles above and below describe the original NATS-based topology. Current deployment
-configuration selects the internal hint publisher with `eventTransport` / `SAGAT_EVENT_TRANSPORT`:
-NATS, Redis or none. PostgreSQL remains the execution authority; workers still claim through the
-worker API. Disabling publication is not a broker-backed HA profile and can leave outbox work
-accumulating. The Helm values also expose opt-in OpenBao Agent integration and a dedicated
-database-runner for managed database activities. These are capability-dependent components, not
-requirements of every installation. See [Helm values](../../infra/helm/values.yaml) and
-[engine settings](../../apps/execution-engine/src/settings.rs).
-
-Constitution 2.0.0 recognizes the NATS/Redis alternative governed by ADR-0069. This inventory
-does not certify topology availability or authorize `none` as a production HA profile. Other
-baseline changes still require the governance process; transport configuration alone is not
-deployment or release evidence.
-
 ## V1 production HA topology
 
 - PostgreSQL HA/PITR in an available zone, separate poolers for writes and reads, read replicas for the read model if useful.
@@ -52,12 +36,12 @@ Numbers are load targets, **not proven throughput goals**. Feature 010's harness
 - Quarterly restore test in an isolated environment, with replay execution and hash verification: `infra/dr/drill.sh` and [`runbooks/disaster-recovery.md`](../runbooks/disaster-recovery.md).
 - RPO/RTO can only be published with replication and restore drills executed; no default numeric SLA in the package.
 
-## Scaling signals and proposed measurements
+## Scaling triggers (feature 010: each one has a metric)
 
 1. Queue lag per pool/capability: `pool_queue_lag_seconds{pool}`, `pool_ready_steps{pool}` (the pools the operator names); the scheduler's own: `scheduler_lag_seconds{pass}`.
 2. DB writes p95 and hot shard contention: `db_pool_connections`, the benchmark's starts per second and transitions per second, `scheduler_fenced_total`.
 3. Event matcher delays / wait resume latency.
 4. Outbox delivery age and consumer lag: `outbox_oldest_age_seconds` (the consumers' lag is the broker's, G253).
-5. Sandbox build/start/run duration is instrumented in the sandbox runner. Build queue depth/age and explicit artifact-cache hit/miss instrumentation were not located in the static audit; treat these as proposed measurements, not available scaling triggers. Build duration alone does not measure backlog.
+5. Sandbox startup, build queue and artifact cache hit rate.
 
 The decision to extract a microservice must demonstrate scaling, latency or fault domain isolation with benchmark data and a consistency plan.

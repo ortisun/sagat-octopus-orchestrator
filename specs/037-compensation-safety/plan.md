@@ -46,7 +46,7 @@ eventual qualification capability. Feature 037 cannot be marked complete while U
 
 ## Constitution Check
 
-This checks the proposed design against the working Constitution 3.0.0 candidate, not runtime compliance.
+This checks the proposed design against the Constitution 2.0.0 adopted with this delivery (B01 transport/secret amendment split out, owner decision 2026-11-01), not runtime compliance.
 The approved B02 text is applied locally; formal PR adoption of Constitution/ADR-0076 remains pending.
 
 | Principle | Design response and required evidence |

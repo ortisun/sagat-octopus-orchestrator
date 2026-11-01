@@ -82,35 +82,11 @@ promised a round trip. Toolchains and dependencies are pinned (`rust-toolchain.t
 
 Untrusted code MUST NOT run inline in the control plane or scheduler process: it runs isolated,
 under quotas, with no scheduler credentials, no database access and only the secrets and egress
-its lease allows. No language or compiler counts as a sandbox by itself. Credentials, SQL,
-messages and audit retain tenant scope. Tenant and namespace identifiers MUST NOT be metric
-labels; authorized logs, spans and durable queries provide tenant-specific diagnosis. Another
-tenant's resource is indistinguishable from a missing one and the attempt is audited.
-
-Secrets in workflow definitions are logical references, resolved at execution time under current
-authorization and a current task-scoped capability. Secret values MUST NOT reach workflow state,
-the journal, logs, audit records, telemetry or ordinary management/read API responses. The
-executor-read exception is limited to two declared sets:
-
-- Ordinary task execution receives only the secrets declared by its immutable task definition,
-  all or nothing. The authenticated caller's current membership, worker/activity binding,
-  pool-delivery policy and the workflow
-  publisher's permission to use every declared secret MUST authorize that disclosure.
-- A managed database capability may disclose only the selected credential of its pinned
-  connection revision to the lease-owning `database-runner` with `database:execute`, under the
-  current publisher/initiator and secret-access rules of that capability. This disclosure
-  exception does not itself authorize database execution or relax the isolation rule above.
-
-Both paths MUST validate current tenant/namespace scope, exact task/instance/attempt identity,
-generation, matching capability token and unexpired lease. Ordinary delivery uses that token as
-a bearer capability together with the current caller's authorities above; it does not additionally
-bind disclosure to the original lease-owning worker session. Managed database delivery MUST also
-verify the recorded lease-owning executor subject and live session. Revalidate those
-authorities and the selected input/secret revision after provider I/O; stale authority or a
-selection that no longer matches its capability refuses disclosure. A value-free disclosure audit
-MUST commit before returning values. A failed required check or audit refuses disclosure.
-This exception grants neither general secret reads nor permission to reveal classified-secret
-payload fields. Authentication and authorization fail closed.
+its lease allows. No language or compiler counts as a sandbox by itself. The tenant is a
+mandatory dimension of credentials, SQL, messages, metrics and audit; another tenant's resource
+is indistinguishable from a missing one and the attempt is audited. Secrets are references,
+resolved at execution time under a capability, and never reach the journal, a log, an audit
+record or an API response. Authentication and authorization fail closed.
 
 *Release-blocking if violated:* cross-tenant read or write, sandbox escape, unauthorized script
 execution, secret exposure, quota bypass, incorrect webhook signature, replay of a financial
@@ -133,10 +109,8 @@ written in the same transaction as the decision. Sources: ADR-0008,
 
 Every message can arrive twice, late or out of order. Outgoing messages are written to the outbox
 in the transaction that caused them; incoming messages are deduplicated through the inbox before
-they act. The selected internal notification transport carries hints/references, never the only
-record of a task. NATS JetStream and the Redis Streams alternative in ADR-0069 remain subordinate
-to PostgreSQL; transport acceptance does not grant a worker lease or prove an external effect.
-A reconciliation loop re-emits the outbox and finds ready tasks that were never delivered. A
+they act. NATS JetStream carries a reference (`task_ref`), never the only record of a task, and a
+reconciliation loop re-emits the outbox and finds ready tasks that were never delivered. A
 consumer MUST tolerate duplicates, and backpressure and a dead-letter path are part of the design
 of every integration (Kafka, NATS, SQS, webhooks).
 
@@ -158,11 +132,8 @@ Sources: `docs/test-strategy.md`, AGENTS.md rules 9, 11 and 12.
 ## Delivery Constraints
 
 - **Technology baseline (V1):** Rust (Tokio, Axum, tonic, SQLx) with a pinned stable toolchain;
-  PostgreSQL as authority; NATS JetStream notifications with the configurable Redis Streams
-  alternative governed by ADR-0069; graph-native declarative IR; single region with high
-  availability. NATS remains supported. This does not approve arbitrary transports, changes to
-  delivery authority or removal of the broker from a production profile. Other baseline changes
-  require a new ADR (Governance).
+  PostgreSQL as authority; NATS JetStream as transport and notification; graph-native declarative
+  IR; single region with high availability. Changing any of these requires a new ADR (Governance).
 - **Out of scope for V1:** multi-region active-active, exactly-once physical execution of external
   effects, a connector marketplace, WASM as a mandatory runtime, reimplementing Temporal or
   Restate, and automatic migration of arbitrary code.
@@ -220,8 +191,6 @@ design, and every pull request is reviewed against it. A check marks the *design
 it is not approval of the implementation. A violation that cannot be avoided MUST be justified in
 the plan's Complexity Tracking table with the simpler alternative that was rejected.
 
-**Version**: 3.0.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-11-01
+**Version**: 2.0.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-11-01
 
-Amendment scope and preserved obligations: [2.0.0 Sync Impact Report](../../docs/governance/constitution-2.0.0-sync-impact.md).
-
-Proposed compensation amendment and enforcement gaps: [Sync Impact Report](../../docs/governance/compensation-safety-sync-impact.md).
+Amendment scope, preserved obligations and enforcement: [compensation safety Sync Impact Report](../../docs/governance/compensation-safety-sync-impact.md).

@@ -4,6 +4,18 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-01 — Feature 037 delivery, B01 split and upgrade compatibility
+
+The owner answered three questions in the Claude session that took over Codex's work. The answers
+were "Sim, autorizo", "Separar a B01 num PR próprio (Recomendado)" and "Manter upgrade da v0.2
+(Recomendado)".
+
+| # | Item | Decision | Recorded in | Status |
+|---|---|---|---|---|
+| 1 | Feature 037 US01–US03 implementation | **Authorized to merge** once the independent review blockers are fixed and CI is green. This also adopts Constitution 2.0.0, which changes Principle III only, and accepts ADR-0076. US04 (provider qualification, T037-032/033) stays open. | PR #75, [ADR-0076](adr/ADR-0076-compensation-failure-and-uncertain-effects.md), [sync report](governance/compensation-safety-sync-impact.md) | Authorized; fixes in progress |
+| 2 | B01 amendment (Principle V secret disclosure to executors, no tenant metric labels, Redis transport baseline) | **Split into its own pull request.** It is not adopted with 037, and its text needs its own owner approval. Because 037 takes 2.0.0, it is renumbered 3.0.0. | Separate B01 PR | Waiting for the owner's approval of the text |
+| 3 | Upgrade from released v0.2 | **Keep in-place upgrade.** The new rules apply to new commands and planning. Replay MUST still accept journals written by v0.1/v0.2: legacy negative-lookup pairings, privileged unknown retries and defensive compensation plans. The "fresh installation only" wording in the 037 runbook and plan is withdrawn. | PR #75, `docs/runbooks/sagas.md`, 037 `plan.md` | Decided; implementation in progress |
+
 ## 2026-11-01 — Compensation safety (B02)
 
 The owner answered **“Sim aprovo”** to the two recommended directions below. This authorizes
@@ -15,7 +27,7 @@ implementation, a final wire contract, constitutional adoption, provider qualifi
 | S1-B; feature 014 O381 | Human review by default; explicit published `fail` for explicit sagas. Terminal `COMPENSATION_FAILED` plus retained journal/step evidence is the platform's post-terminal tracking, with no active review queue promised. Cancellation/deadline preserves pending review in explicit sagas and scopes. | [Feature 037](../specs/037-compensation-safety/spec.md), [research](../specs/037-compensation-safety/research.md). O381 direction answered; runtime correction pending. O380 scope policy fields remain deferred. |
 | S2-B | Consultation/review for unknown external effects, regardless of `highRisk`. Defensive compensation requires pinned, authorized qualification with authoritative provider evidence and adapter tests for applied/absent/late effects. Compensation success requires business finality; safe repeat of an unknown compensation outcome needs its own provider guarantee and stable identity. | Feature 037; contract design, adoption diff and real acceptance evidence pending. SDK integrations and plugins follow identical rules; no provider is qualified by this approval. |
 
-Fresh installation/no legacy upgrade was already approved for the engineering reset. This entry
+*Superseded 2026-11-01 (item 3 above): in-place upgrade from v0.2 is kept.* Fresh installation/no legacy upgrade was said to be already approved for the engineering reset, but no such entry exists in this file. This entry
 introduces no regulatory retention period, financial policy or exactly-once promise.
 
 ## 2026-10-29 — ChildRoot capacity coordination
