@@ -361,7 +361,24 @@ async fn uncertain_effect_operations_fail_closed_and_read_through_the_rest_contr
         .await;
     assert_eq!(status, 409, "{body}");
     assert_eq!(body["code"], "CONFLICT");
+    assert_eq!(
+        body["details"]["reason"], "OUTCOME_UNRESOLVED",
+        "the refusal says why, so a client need not copy the code list: {body}"
+    );
     assert_eq!(p.status(&unknown_original).await, "MANUAL_REVIEW");
+    let (status, body) = p
+        .rest_as(
+            "alice",
+            reqwest::Method::POST,
+            &compensation_ops,
+            Some(
+                &json!({"action": "RETRY_COMPENSATION", "stepId": "reserve~c",
+                         "reason": "admin still cannot repeat an uncertain release"}),
+            ),
+        )
+        .await;
+    assert_eq!(status, 409, "{body}");
+    assert_eq!(body["details"]["reason"], "OUTCOME_UNRESOLVED", "{body}");
 
     // Node extension properties are accepted by the existing IR contract. They must never
     // authorize a qualification or purity exception: prove the published runtime stays safe.

@@ -84,6 +84,14 @@ A compensation that reports "already released" as a **failure** counts toward th
 
 They are counted after the transaction commits, and no label names a tenant, run, node or payment. A dashboard and alerts on them belong to feature 008.
 
+### Stopping outbound work during an incident
+
+Since feature 037, cancelling a run (or reaching its deadline) does not stop its pending
+reconciliation lookups. A lookup is how an unknown effect gets resolved, so it survives the stop,
+even when the run is also paused. To stop outbound calls to a provider you no longer trust, revoke
+the worker binding for that activity, or the secret's access list. Both are checked when a lease
+is granted. Then settle the waiting steps by hand.
+
 ## 7. Installation, rollback and retained evidence
 
 Feature 037 delivery 1 upgrades **in place** from v0.2 (owner decision 2026-11-01, D1810). It adds no

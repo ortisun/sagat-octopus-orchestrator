@@ -474,18 +474,20 @@ async fn held_run_lock_makes_two_decisions_and_cancel_leave_one_durable_human_ou
             ),
         )
     });
-    let blocked = tokio::time::timeout(Duration::from_secs(2), async {
+    // Release the row only once all three commands wait on it (directly behind the guard, or
+    // behind each other in its lock queue), so they really contend instead of running in turn.
+    let blocked = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            let blocked: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity waiter \
-                 WHERE waiter.datname=current_database() \
-                   AND $1=ANY(pg_blocking_pids(waiter.pid)))",
+            let waiting: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_stat_activity waiter \
+                 WHERE waiter.datname=current_database() AND waiter.pid<>$1 \
+                   AND cardinality(pg_blocking_pids(waiter.pid))>0",
             )
             .bind(guard_pid)
             .fetch_one(&w.db.pool)
             .await
-            .expect("observe blocked decision");
-            if blocked {
+            .expect("observe blocked commands");
+            if waiting >= 3 {
                 break;
             }
             tokio::task::yield_now().await;
@@ -493,7 +495,7 @@ async fn held_run_lock_makes_two_decisions_and_cancel_leave_one_durable_human_ou
     });
     tokio::select! {
         result = &mut race => panic!("a command bypassed the held run row: {result:?}"),
-        result = blocked => result.expect("a decision reaches the held run row"),
+        result = blocked => result.expect("all three commands reach the held run row"),
     }
     guard.commit().await.expect("release run row");
 
@@ -527,6 +529,73 @@ async fn held_run_lock_makes_two_decisions_and_cancel_leave_one_durable_human_ou
         .verify_run(w.admin.tenant_id(), run)
         .await
         .expect("cold replay agrees with the projection");
+}
+
+/// The deterministic order the race above cannot force: cancellation commits first, then both
+/// decisions. Cancellation must keep the compensation review, so a decision still wins.
+#[tokio::test]
+async fn a_cancel_committed_before_both_decisions_keeps_the_review_for_them() {
+    let w = world().await;
+    let (_, run) = stuck(&w, one_shot(None)).await;
+    let node = sagat_domain::workflow::NodeId::parse_stored("reserve~c").expect("node");
+    let cancel = w
+        .runs
+        .operate(
+            &w.admin,
+            run,
+            RunOperation::Cancel,
+            "cancel before anyone decides",
+            None,
+            "cancel-first",
+            &crate::support::engine::ctx(),
+        )
+        .await;
+    assert!(cancel.is_ok(), "{cancel:?}");
+    assert_eq!(
+        w.step_status(run, "reserve~c").await,
+        Some(StepStatus::Waiting),
+        "the cancellation kept the review"
+    );
+    let a = w
+        .runs
+        .review(
+            &w.admin,
+            run,
+            &node,
+            &ReviewAction::Skip,
+            "operator A chose partial",
+            None,
+            "cancel-first-a",
+            &crate::support::engine::ctx(),
+        )
+        .await;
+    let b = w
+        .runs
+        .review(
+            &w.admin,
+            run,
+            &node,
+            &ReviewAction::Resolve(ReviewOutcome::Succeeded),
+            "operator B confirmed undo",
+            None,
+            "cancel-first-b",
+            &crate::support::engine::ctx(),
+        )
+        .await;
+    assert!(a.is_ok(), "the first decision after the cancel wins: {a:?}");
+    assert!(
+        matches!(b, Err(AppError::StateConflict(_))),
+        "the second finds it decided: {b:?}"
+    );
+    assert_eq!(
+        w.step_status(run, "reserve~c").await,
+        Some(StepStatus::Skipped)
+    );
+    assert_eq!(audit_actions(&w, run).await.len(), 1);
+    w.store
+        .verify_run(w.admin.tenant_id(), run)
+        .await
+        .expect("replay agrees with the projection");
 }
 
 #[tokio::test]

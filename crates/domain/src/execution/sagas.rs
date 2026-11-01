@@ -128,8 +128,8 @@ fn body_done(def: &WorkflowDefinition, state: &RunState, saga: &NodeId) -> bool 
 }
 
 /// What winding down one step of an aborting body asks for. A step that waits for an answer the
-/// saga needs (a reconciliation, a nested saga) is left alone; one that waits for an operator is
-/// given up on when the run is being stopped.
+/// saga needs (a reconciliation, a nested saga) is left alone, and so is one that waits for an
+/// operator, even when the run is being stopped: its review is a recovery obligation (feature 037).
 fn wind_down(
     def: &WorkflowDefinition,
     state: &RunState,

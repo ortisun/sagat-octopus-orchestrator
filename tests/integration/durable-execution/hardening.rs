@@ -101,7 +101,7 @@ async fn a_run_cannot_retain_more_output_than_its_budget_and_the_unknown_effect_
     .fetch_one(&w.db.pool)
     .await
     .expect("step");
-    assert_eq!(code.as_deref(), Some("OUTCOME_UNKNOWN"));
+    assert_eq!(code.as_deref(), Some("STORAGE_QUOTA_EXCEEDED"));
     assert_eq!(waiting.as_deref(), Some("OPERATOR"));
     assert_eq!(attempts, 1, "the step was not retried");
     assert!(no_output, "the refused result was not attached to the step");

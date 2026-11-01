@@ -286,7 +286,10 @@ where
                     effects,
                     execution::Failure {
                         fence: task.fence,
-                        code: FailureCode::outcome_unknown(),
+                        // The worker reported success; the platform could not retain the output.
+                        // `STORAGE_QUOTA_EXCEEDED` says so and still leaves the outcome unknown,
+                        // while `OUTCOME_UNKNOWN` stays the worker's own answer (SPEC.md).
+                        code: FailureCode::storage_quota_exceeded(),
                         retryable: false,
                         jitter_sample: 0.0,
                     },
@@ -424,8 +427,8 @@ where
             self.engine
                 .run(&mut tx, effects, move |def, state, now| {
                     let progress = if managed_write {
-                        // A stop request would discard an operator wait during settlement. Preserve
-                        // the ambiguous write for review; it has no automatic retry/onError route.
+                        // Preserve the ambiguous write for review: a stop keeps an operator wait
+                        // (feature 037), and an ambiguous write has no retry or onError route.
                         execution::fail_step(
                             def,
                             state,

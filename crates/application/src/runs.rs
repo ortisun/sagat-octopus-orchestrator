@@ -1608,6 +1608,7 @@ pub fn execution_error(error: &ExecutionError) -> AppError {
         ExecutionError::RunNotRunnable(_) => {
             AppError::StateConflict("the run does not accept new work")
         }
+        ExecutionError::OutcomeUnresolved(_) => AppError::OutcomeUnresolved,
         ExecutionError::StaleAttempt { .. }
         | ExecutionError::IllegalTransition { .. }
         | ExecutionError::IllegalInstanceTransition { .. } => {

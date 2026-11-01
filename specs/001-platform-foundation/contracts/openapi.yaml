@@ -4122,6 +4122,8 @@ components:
             `UPDATE_REJECTED`;
             payload classification refines existing codes with `PII_REVEAL_NOT_GRANTED`,
             `CLASSIFICATION`, `UNKNOWN_SUBJECT`, `ROLE_CANNOT_REVEAL` and `GRANT_LIMIT`;
+            compensation safety (feature 037) refines `CONFLICT` with `OUTCOME_UNRESOLVED` (another
+            attempt was asked of a step whose last outcome is unknown);
             they do not add a new `Error.code` value. An `UNSUPPORTED_NODE` for a combination the design accepts
             but whose prerequisite is not built yet also carries `dependency`, a closed name of what has to exist
             first (`SCOPED_COMPENSATION`: an approval inside a collection or loop body), next to `node` and `kind`.

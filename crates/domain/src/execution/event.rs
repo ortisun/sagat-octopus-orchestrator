@@ -94,9 +94,10 @@ impl FailureCode {
     }
 
     /// Whether a step that ended with this code may have had its effect: the attempt was lost, timed
-    /// out, said it did not know, its successful report could not be retained, or its lookup could
-    /// not say. (A worker that answered with an ordinary failure knows the effect did not happen; a
-    /// lookup that said so is `RECONCILED_NOT_APPLIED`.)
+    /// out, said it did not know, its successful report could not be retained, its lookup failed or
+    /// could not say, or its lookup said `not_applied` (an observation, not proof: feature 037). A
+    /// worker that answered with an ordinary failure knows the effect did not happen.
+    /// `RECONCILED_NOT_APPLIED` is only found in journals written by v0.1/v0.2.
     #[must_use]
     pub fn leaves_outcome_unknown(&self) -> bool {
         Self::outcome_unknown_codes().contains(self)
@@ -175,20 +176,22 @@ impl FailureCode {
         Self::system("RECONCILIATION_FAILED")
     }
 
-    /// The provider cannot say whether the effect happened.
-    /// A negative lookup is an observation, not proof that a late effect cannot happen.
+    /// The lookup said the effect did not happen. A negative lookup is an observation, not proof
+    /// that a late effect cannot happen, so the step waits for a person (feature 037).
     #[must_use]
     pub fn reconciliation_not_final() -> Self {
         Self::system("RECONCILIATION_NOT_FINAL")
     }
 
+    /// The provider cannot say whether the effect happened.
     #[must_use]
     pub fn reconciliation_unknown() -> Self {
         Self::system("RECONCILIATION_UNKNOWN")
     }
 
-    /// The reconciliation found that the effect did not happen, and the step has no attempt left.
-    /// Unlike the code of the lost attempt it is *not* an unknown outcome: nothing is compensated.
+    /// v0.1/v0.2 only: the reconciliation found that the effect did not happen and the step had no
+    /// attempt left. Current engines answer a negative lookup with `RECONCILIATION_NOT_FINAL`; this
+    /// code remains so that committed journals replay (D1810).
     #[must_use]
     pub fn reconciled_not_applied() -> Self {
         Self::system("RECONCILED_NOT_APPLIED")

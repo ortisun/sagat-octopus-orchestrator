@@ -1098,7 +1098,7 @@ async fn rejected_blob_completion_replays_after_unused_blob_collection() {
             .fetch_one(&p.api.db.pool)
             .await
             .expect("review source");
-    assert_eq!(failure.as_deref(), Some("OUTCOME_UNKNOWN"));
+    assert_eq!(failure.as_deref(), Some("STORAGE_QUOTA_EXCEEDED"));
     let events_before_gc = count(&p, "SELECT count(*) FROM run_events").await;
     sqlx::query("UPDATE blobs SET uploaded_at = uploaded_at - interval '2 days'")
         .execute(&p.api.db.pool)

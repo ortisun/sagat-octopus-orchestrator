@@ -858,25 +858,8 @@ fn end_attempt(
     if step.cancel_requested() {
         // The run asked this attempt to stop; the retry budget is irrelevant.
         let cancelled = RunEvent::StepCancelled { node: node.clone() };
-        // If the attempt ended without anyone knowing whether the effect happened, the step keeps
-        // saying so: it is recorded as the attempt that was lost, which is what it was, and then
-        // cancelled. A saga that compensates later still undoes an effect that may have happened,
-        // whichever came first, the cancellation or the lost lease.
-        if *def_node.origin() == NodeOrigin::Declared
-            && matches!(def_node.kind(), NodeKind::Activity { .. })
-            && (is_ambiguous(&code) || code == FailureCode::storage_quota_exceeded())
-        {
-            let lost = RunEvent::StepRetryScheduled {
-                node: node.clone(),
-                attempt: fence.attempt,
-                generation: fence.generation,
-                code,
-                not_before: now,
-            };
-            state.apply(&lost)?;
-            state.apply(&cancelled)?;
-            return settle(def, state, now, vec![lost, cancelled]);
-        }
+        // A declared activity whose outcome is unknown never reaches this point: it was sent to
+        // reconciliation or review above, whether or not the run asked it to stop (feature 037).
         return apply_then_settle(def, state, now, cancelled);
     }
     let policy = def_node.retry_policy();
@@ -1479,6 +1462,13 @@ fn retry_scoped_review<S: ScopedAttemptState>(
     let forward = def
         .node_for_instance(instance)
         .is_some_and(|n| *n.origin() == NodeOrigin::Declared);
+    if step
+        .failure()
+        .is_some_and(FailureCode::leaves_outcome_unknown)
+        && matches!(step.waiting_on(), Some(WaitingOn::Operator { .. }))
+    {
+        return Err(ExecutionError::OutcomeUnresolved(instance.clone()));
+    }
     if step
         .failure()
         .is_some_and(FailureCode::leaves_outcome_unknown)
@@ -2218,6 +2208,9 @@ pub fn finish_child(
 /// The reconciliation of a step answered. `node` is the reconciliation (`<id>~r`) and holds the lease
 /// that `fence` names; the step it is about is concluded in the same commit.
 ///
+/// `_jitter_sample` is unused since feature 037 (a negative lookup no longer schedules a retry);
+/// it is kept so that callers and the qualified safe-repeat path of US04 keep one signature.
+///
 /// # Errors
 /// As [`complete_step`]; [`ExecutionError::Invariant`] when `node` is not a reconciliation.
 pub fn complete_reconciliation(
@@ -2279,6 +2272,15 @@ pub fn retry_review(
     now: OffsetDateTime,
 ) -> Result<Progress, ExecutionError> {
     let step = require_step(state, node)?;
+    if step
+        .failure()
+        .is_some_and(FailureCode::leaves_outcome_unknown)
+        && matches!(step.waiting_on(), Some(WaitingOn::Operator { .. }))
+    {
+        return Err(ExecutionError::OutcomeUnresolved(
+            ExecutionInstanceId::root(node.clone()),
+        ));
+    }
     // The body of a saga that stopped going forward will not run it again: it would be cancelled the
     // moment it was granted, and the decision that matters there is whether the step happened.
     if step

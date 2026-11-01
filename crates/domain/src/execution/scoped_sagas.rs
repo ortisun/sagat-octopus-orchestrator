@@ -34,6 +34,10 @@ use crate::workflow::{NodeId, WorkflowDefinition};
 
 /// Whether a settled step can contribute an effect to a scope's compensation plan.
 /// A declared compensation and current scope authority are separate checks.
+///
+/// Since feature 037 only a succeeded step can. `_failure` no longer decides anything (an unknown
+/// failure used to admit a defensive compensation); it stays for the qualified exception of US04
+/// and for the store caller that passes it.
 #[must_use]
 pub fn scope_compensation_candidate(status: StepStatus, _failure: Option<&FailureCode>) -> bool {
     status == StepStatus::Succeeded

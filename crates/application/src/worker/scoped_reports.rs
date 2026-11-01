@@ -367,8 +367,9 @@ where
                 }
                 outputs.clear();
                 // Outside the atomic known-success refusal path, lost output cannot establish
-                // that an external effect failed. Preserve recovery instead of routing onError.
-                failure = Some((FailureCode::outcome_unknown(), false));
+                // that an external effect failed. Preserve recovery instead of routing onError;
+                // the code names the platform's refusal, not a worker's `OUTCOME_UNKNOWN`.
+                failure = Some((FailureCode::storage_quota_exceeded(), false));
             }
         }
         let now = tx.now();

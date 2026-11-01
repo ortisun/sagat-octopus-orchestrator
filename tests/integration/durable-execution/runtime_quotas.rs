@@ -410,7 +410,7 @@ async fn assert_run_output_limit_preserves_review(content_quota_closed: bool) {
     .expect("storage failure code");
     // The payload-free review fits even when tenant content is full; there is no error-route
     // allocation to fail and no artificial tenant-quota fallback.
-    assert_eq!(code.as_deref(), Some("OUTCOME_UNKNOWN"));
+    assert_eq!(code.as_deref(), Some("STORAGE_QUOTA_EXCEEDED"));
     assert!(w.poll(&session, 4).await.is_empty());
     let journal = w.journal(run).await;
     assert!(matches!(

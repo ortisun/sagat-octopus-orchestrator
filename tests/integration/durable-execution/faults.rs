@@ -435,8 +435,12 @@ async fn resolve_unknown_effects(
     bank: &ExternalSystem,
     deadline: std::time::Instant,
 ) -> bool {
+    // The database is being killed under this loop, so a review can fail transiently; the last
+    // refusal is kept and printed when the deadline passes, instead of being discarded.
+    let mut last_refusal: Option<String> = None;
     loop {
         if std::time::Instant::now() > deadline {
+            eprintln!("unknown effects still open at the deadline; last refusal: {last_refusal:?}");
             return false;
         }
         for run in runs {
@@ -459,14 +463,17 @@ async fn resolve_unknown_effects(
                         .expect("valid review failure code"),
                 )
             };
-            let _ = w
+            if let Err(error) = w
                 .review(
                     *run,
                     &node,
                     ReviewAction::Resolve(outcome),
                     "the synthetic provider ledger supplies the final outcome",
                 )
-                .await;
+                .await
+            {
+                last_refusal = Some(format!("{run}/{node}: {error:?}"));
+            }
         }
         let open: Result<i64, _> =
             sqlx::query_scalar("SELECT count(*) FROM runs WHERE finished_at IS NULL")

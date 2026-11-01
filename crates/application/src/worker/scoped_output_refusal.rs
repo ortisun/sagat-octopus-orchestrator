@@ -293,7 +293,11 @@ where
             )
             .await
             .map_err(engine_error)?;
-        self.finish(tx, task, idempotency).await
+        let ack = self.finish(tx, task, idempotency).await?;
+        // Counted once the refusal committed; a replay was answered above and is not counted.
+        metrics::counter!("worker_scoped_output_refused_total", "reason" => "content_quota")
+            .increment(1);
+        Ok(ack)
     }
 
     async fn strict_refusal_fence<Tx: RunTx>(

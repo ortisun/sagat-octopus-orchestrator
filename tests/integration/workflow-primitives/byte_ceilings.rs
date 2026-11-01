@@ -2950,7 +2950,7 @@ async fn loop_successful_output_over_run_limit_preserves_review() {
         let retained: (i64, i64, i64, i64) = sqlx::query_as(
             "SELECT \
               (SELECT count(*) FROM steps WHERE tenant_id=$1 AND run_id=$2 \
-                 AND status='WAITING' AND waiting_kind='OPERATOR' AND failure_code='OUTCOME_UNKNOWN'), \
+                 AND status='WAITING' AND waiting_kind='OPERATOR' AND failure_code='STORAGE_QUOTA_EXCEEDED'), \
               (SELECT count(*) FROM steps WHERE tenant_id=$1 AND run_id=$2 \
                  AND (node='error-route' OR kind='COMPENSATION')), \
               (SELECT count(*) FROM run_events WHERE tenant_id=$1 AND run_id=$2 \

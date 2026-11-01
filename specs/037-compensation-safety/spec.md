@@ -245,7 +245,7 @@ adapter does not qualify a real provider.
 - Installed Spec Kit 1.1.2 templates shaped this specification; the isolated implementation checkout points to 037. The original develop checkout remains untouched.
 - Feature 003/014 behavior is the baseline. Six SDKs share semantics; no new infrastructure is assumed.
 - No provider is qualified by this specification. If qualification cannot be demonstrated, consultation/review remains available.
-- Fresh installation/no legacy upgrade is already approved. Runtime and schema cutover still require a design.
+- *Superseded 2026-11-01 (D1810):* in-place upgrade from v0.2 is kept. Committed journals keep their meaning on replay; delivery 1 has no schema change and no wire change.
 
 ## Dependencies, risks and migration boundaries
 

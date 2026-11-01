@@ -12,6 +12,11 @@ by version. A global override would conflict with npm's direct workspace link; a
 produce a single canonical workspace link and preserve the other tools' locked versions.
 
 The npm lockfile separately records the unmodified upstream registry package and its integrity.
+Because the bridge is a workspace, npm records `minimatch-upstream`, `brace-expansion`,
+`balanced-match` and `@isaacs/nonrecursive-glob-match` (a dependency of minimatch 11.0.1, published
+by its maintainer) without `"dev": true`. They are still tooling only: the Studio image ships
+`apps/studio/dist` alone (`infra/docker/Dockerfile`). An SBOM or `npm audit --omit=dev` lists them
+as runtime dependencies for that reason, not because the Studio loads them.
 Install with `npm ci --ignore-scripts`; the Docker Studio build copies this workspace before
 its filtered install and runs the same compatibility tests before building.
 
