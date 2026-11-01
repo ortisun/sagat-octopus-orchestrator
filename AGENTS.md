@@ -1,6 +1,6 @@
 # Instructions for implementation agents — Sagat Octopus Orchestrator
 
-A durable workflow platform built **from specifications** (Spec Kit): a Rust modular monolith with PostgreSQL as the authority, NATS as a hint, six SDKs and a React Studio. The constitution (`.specify/memory/constitution.md`) outranks this file; this file is the single source of runtime guidance for every agent (Claude Code, Codex, Copilot, Cursor). It holds what an agent cannot infer from the code. Details live in `docs/engineering/`, in the nested `AGENTS.md` of the directory you work in, and in `.claude/skills/`.
+A durable workflow platform built **from specifications** (Spec Kit): a Rust modular monolith with PostgreSQL as the authority, NATS or Redis as a hint, six SDKs and a React Studio. The constitution (`.specify/memory/constitution.md`) outranks this file; this file is the single source of runtime guidance for every agent (Claude Code, Codex, Copilot, Cursor). It holds what an agent cannot infer from the code. Details live in `docs/engineering/`, in the nested `AGENTS.md` of the directory you work in, and in `.claude/skills/`.
 
 ## Start here
 

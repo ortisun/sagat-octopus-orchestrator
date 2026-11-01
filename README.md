@@ -8,7 +8,8 @@ A self-hosted platform for durable workflows, sagas and event-driven automation.
 Studio or with TypeScript, Go, Python, C#, Java and Rust SDKs; run activities in your workers and inline
 scripts in isolated containers. Inspect execution history, retries and compensations in the same UI.
 
-PostgreSQL is the source of truth. NATS JetStream transports notifications; Kafka, NATS and SQS
+PostgreSQL is the source of truth. Notifications use NATS JetStream by default or the configured
+Redis Streams alternative ([transport setup](docs/runbooks/events.md#redis-streams-v03)); Kafka, NATS and SQS
 connectors integrate external systems. External effects are **at-least-once**: use idempotency keys
 and reconciliation for operations such as payments.
 
@@ -154,7 +155,7 @@ arbitrary variable to `.env` does not automatically inject it into a container.
 | Script artifacts | `SAGAT_SCRIPT_SIGNING_KEY` | Persistent Ed25519 signing key on every control-plane replica |
 | Trace links | `SAGAT_STUDIO_TRACE_URL` | Public URL template, e.g. `http://127.0.0.1:16686/trace/{traceId}`; HTTPS required outside loopback |
 | Studio files | `SAGAT_STUDIO_DIR` | `/srv/studio` in the image; an absolute path to `frontend/apps/studio/dist` natively |
-| Internal broker | `SAGAT_NATS_URL`, `SAGAT_NATS_REQUIRE_TLS`, `SAGAT_NATS_CREDENTIALS_FILE` | Native/deployment configuration; Compose uses its local `nats` service |
+| Internal broker | `SAGAT_EVENT_TRANSPORT`; NATS: `SAGAT_NATS_URL`, `SAGAT_NATS_REQUIRE_TLS`, `SAGAT_NATS_CREDENTIALS_FILE`; Redis: `SAGAT_REDIS_URL` and bounded stream settings | Compose defaults to NATS; explicit Redis selection, credentials/TLS and cutover are in the [events runbook](docs/runbooks/events.md#redis-streams-v03) |
 | Telemetry | `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`, `SAGAT_LOG_FORMAT` | Point each process at the collector it can reach |
 | Sandbox | `SAGAT_RUNNER_*`, container engine access | Separate runner identity, token, namespace bindings and language images |
 
@@ -275,7 +276,7 @@ configuration state, not proof of connectivity.** Check runtime errors and messa
 credential rotation, pause and resume the connector so its reader reloads the credentials.
 
 This menu manages **inbound connectors**. Outbound broker subscriptions use the separate API
-explained in [the events runbook](docs/runbooks/events.md). The platform's **internal NATS** is a
+explained in [the events runbook](docs/runbooks/events.md). The platform's **selected internal NATS/Redis transport** is a
 deployment setting, separate from customer integrations. Custom broker CA/client-certificate upload
 is not part of the current form or adapter contract.
 
@@ -401,7 +402,7 @@ backend, database, worker or runner.
 ### What the chart installs
 
 [infra/helm](infra/helm) installs the control plane/Studio, execution engine and optional SDK worker
-pools, with services, disruption budgets and NetworkPolicies. PostgreSQL, NATS, OIDC, certificates,
+pools, with services, disruption budgets and NetworkPolicies. PostgreSQL, the selected NATS/Redis service, OIDC, certificates,
 Prometheus, KEDA and the sandbox runner's container-engine infrastructure are **not installed by the
 chart**. Database migrations are also an explicit operator step.
 
@@ -446,14 +447,15 @@ have the owner/runtime roles and runtime grants; the development initialization 
 | `database.existingSecret` | `DATABASE_URL` | Runtime `sagat_app` database URL; provision the role and grants separately |
 | Migration Job secret, operator-managed | `DATABASE_URL` | Database owner URL, used only for migrations |
 | `secrets.existingSecret`, if enabled | `SAGAT_SECRETS_KEYS` | Shared API/engine encryption key ring |
-| `nats.credentialsSecret`, if used | `nats.creds` | Internal NATS authentication |
+| `nats.credentialsSecret`, if used | `nats.creds` | Selected internal NATS authentication |
+| `redis.urlSecret`, when Redis is selected | `redis.urlKey` (default `url`) | Internal `rediss://` connection URL; keep credentials out of values files |
 | `engine.grpc.tlsSecret`, if native TLS | `tls.crt`, `tls.key` | Worker API TLS |
 | `controlPlane.nativeTls.tlsSecret` and `.clientCaSecret`, if native TLS | `tls.crt`, `tls.key`; `ca.crt` | Public API TLS and verified webhook client identity |
 
 The HA example names an ingress TLS-termination setup, an engine TLS Secret and a sample worker
 image/token. Supply those dependencies or adapt/remove the corresponding settings. Configure
 `oidc.*`, database URLs, image registry/tag, worker activity bindings and all network peers for your
-actual installation. NetworkPolicies fail closed: DNS, PostgreSQL, OIDC and configured NATS peers
+actual installation. NetworkPolicies fail closed: DNS, PostgreSQL, OIDC and selected NATS/Redis peers
 must be explicit. Global allow-all peers are refused. An application-level egress rule does not
 replace Kubernetes network authorization.
 
@@ -718,80 +720,3 @@ evidence. Read the [constitution](.specify/memory/constitution.md) and the activ
 and tasks before implementation. Spec Kit resolves the active feature through `.specify/feature.json`
 or `SPECIFY_FEATURE_DIRECTORY`; feature numbers are shared by every branch, so check `git branch -a` before taking the next one.
 How the project uses specification-driven development, records architecture decisions and directs coding agents is in the [engineering guide](docs/engineering/README.md).
-
-<!-- EGM repository blueprint -->
-
-## System Overview
-
-The source contracts below describe the platform's application processes, domain and application
-ports, infrastructure adapters, six SDKs, Studio and isolated language hosts. They document inspected
-source boundaries. Feature acceptance remains defined by the specifications and their recorded evidence.
-
-## Interface
-
-The public server boundaries are the HTTP API and worker gRPC protocol; SDK clients, activity hosts,
-workflow builders and Studio consume those boundaries. The application and crate contracts identify
-actual Rust APIs and process commands. [apps/control-plane/src/lib.rs:serve_with_admin]
-[apps/execution-engine/src/lib.rs:serve] [specs/001-platform-foundation/contracts/worker.proto:WorkerService]
-
-## Subdirectories & System Boundaries
-
-- [apps](./apps/README.md) — CLI, control plane, execution engine, development identity and separate script/database runners.
-- [crates](./crates/README.md) — Domain, use cases, ports, storage/transport/provider adapters, scheduling and telemetry.
-- [examples](./examples/README.md) — Executable SDK demonstrations and their preparation/launch boundaries.
-- [frontend](./frontend/README.md) — Studio application, API/authentication adapters, workflow models and feature screens.
-- [infra](./infra/README.md) — Local Compose initialization, credential-provider bootstrap and recovery procedures.
-- [runners](./runners/README.md) — Trusted language build/runtime hosts and mediated script-call contracts.
-- [scripts](./scripts/README.md) — Repository fitness checks, packaging, version consistency and stack smoke verification.
-- [sdks](./sdks/README.md) — Six language clients, worker hosts, workflow builders and shared wire contracts.
-- [specs](./specs/README.md) — Source-bearing design schema/protocol index within the wider Spec Kit feature tree.
-- [templates](./templates/README.md) — Source-bearing script starter; declarative starters retain their existing directories.
-- [vendor](./vendor/README.md) — Reviewed immutable dependency snapshot and separately mirrored documentation contracts.
-
-## Global Invariants
-
-- Domain dependencies and inward layer boundaries are checked by the existing architecture fitness function.
-  [scripts/check-architecture.py:DOMAIN_ALLOWED] [scripts/check-architecture.py:ALLOWED_LAYER_DEPS]
-- Durable execution uses application storage ports and PostgreSQL transaction commits; the relevant child
-  contracts describe lease, scheduling, journal and outbox checks. Messaging adapters publish hints and
-  external deliveries through their own documented boundaries. [crates/infra-postgres/src/execution.rs:PgRunTx]
-  [crates/scheduler/src/passes.rs:Scheduler] [crates/infra-nats/src/lib.rs:NatsPublisher]
-- SDK workflow construction is local; server execution and activity-host lease reporting remain separate
-  interfaces. External effects retain their idempotency/reconciliation requirements.
-  [sdks/typescript/src/workflow.ts:WorkflowBuilder] [sdks/go/worker/task.go:complete]
-- Script and managed-database execution belong to their separate runners and capability boundaries.
-  Compiler/runtime selection alone is not an isolation guarantee. [apps/sandbox-runner/src/lib.rs:Runner]
-  [apps/database-runner/src/runner.rs:Runner]
-- Dormant capacity/certification machinery, declared bounds and historical measurements do not establish
-  acceptance of general nesting or production ceilings; those distinctions remain explicit in the crate
-  and feature contracts. [crates/README.md:Invariants] [specs/014-workflow-primitives/tasks.md:T014-042]
-- The reviewed vendor snapshot keeps its exact upstream file set and hashes, with the allowed manifest
-  substitution. Its new contracts live under `vendor/contracts/`. [scripts/check-vendor.py:verify]
-
-## Global Side Effects
-
-- Executed application processes may bind listeners, read configuration/credentials, persist PostgreSQL
-  state, invoke worker handlers and contact configured brokers/providers; their source contracts identify
-  the conditional paths and lifecycle. [apps/README.md:Side Effects]
-- Runner hosts build or execute submitted code through their documented isolation/capability contracts.
-  Packaging, deployment and recovery commands can write artifacts or create their own services; their
-  child contracts state those effects. [runners/README.md:Side Effects] [infra/README.md:Side Effects]
-- Telemetry emits diagnostic records through configured providers. It is distinct from persisted execution
-  evidence, and application-authored handler logs remain the caller's responsibility.
-  [crates/telemetry/src/logging.rs:Telemetry] [sdks/java/sdk/src/main/java/dev/sagatoctopusorchestrator/sdk/worker/ActivityLogger.java:ActivityLogger]
-
-## System Verification
-
-The child contracts provide manifest-derived commands. For the integrated Rust suite, follow the
-resource profile in [AGENTS.md](./AGENTS.md), including an external private Cargo target directory:
-
-```sh
-RUST_TEST_THREADS=2 cargo test --workspace --locked --no-fail-fast
-python3 scripts/check-architecture.py
-python3 scripts/check-agent-config.py
-python3 scripts/check-vendor.py
-```
-
-Contract-document checks validate section structure, local references, cited source paths/symbols and
-configured verification targets. Runtime tests, service drills and performance acceptance must be run
-and recorded separately; this blueprint does not claim those results.
