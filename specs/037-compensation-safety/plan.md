@@ -54,7 +54,7 @@ The approved B02 text is applied locally; formal PR adoption of Constitution/ADR
 | I durability | Keep commands/reducers pure; existing RunTx/PathExecutionTx persist state, next work, journal/outbox and required audit together. Crash/duplicate and rollback tests are required. |
 | II boundaries | Change existing domain policy and adapters only; no new service, mapper layer or qualification framework. Architecture check remains mandatory. |
 | III effects | Unknown precedes retry/cancel/fail; no exception is enabled without qualification. Explicit known failure drains independent compensation; human success retains provenance. US04 remains open. |
-| IV compatibility | Fresh coordinated installation, unchanged wire shape but deliberately changed semantics. No mixed old/new engine deployment or in-place reinterpretation of live runs. All six clients tested. |
+| IV compatibility | In-place upgrade from v0.2 (owner decision 2026-11-01, D1810): committed v0.1/v0.2 journals replay with their original meaning and in-flight runs continue (`crates/domain/tests/legacy_replay.rs`); only new decisions follow the new rules. Unchanged wire shape, deliberately changed semantics, declared as breaking in `docs/releases/unreleased.md`. Rollback to v0.2 only before the first new decision is journaled. All six clients tested. |
 | V isolation | Existing permission and exact-instance checks remain; review/cancel races cannot grant SagaOverride or cross tenants. No new secret use. |
 | VI evidence | Typed existing review/error surface plus proposed bounded failure code; journal/audit and bounded trace/metric reasons tested. No tenant or run metric labels. |
 | VII delivery | PostgreSQL remains authority; no broker dependency added. Lost hints and duplicate reports cannot schedule a second decided action. |
@@ -219,7 +219,7 @@ silently added requirements. No table, API, permission or use-begin RPC is appro
 | Generic worker failure falsely implies no effect | Unsafe retry despite new policy | Contract states known failure versus uncertainty; all SDKs preserve reserved code; real adapter acceptance remains separate |
 | Output storage rejection after provider effect | Success lost then repeated | Exercise storage refusal, quota, lease loss and reconciliation failure through shared uncertainty rules; feature-009 secret rejection remains a recorded delivery-1 limitation |
 | Root/path divergence or continuation escape | Review disappears or effect repeats | Same semantic matrix across root, scoped/path-local and continuation; held-lock races and replay |
-| Old engine reads new journal semantics | Review lost or reducer rejects new failure/result pairing | Fresh coordinated install; do not roll back into live 037 data or mix engine versions |
+| Old engine reads new journal semantics | A v0.2 reducer rejects the new failure/result pairing | Upgrade in place; roll back to v0.2 only before the first new decision is journaled; do not mix engine versions |
 | Provider acceptance mistaken for finality | False compensated result | CompleteStep contract, pending-as-unknown cases, truthful manual provenance; no provider guarantee inferred |
 
 Fresh installation is authorized, deletion of existing developer data is not. Use a new isolated

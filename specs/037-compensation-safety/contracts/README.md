@@ -1,10 +1,10 @@
-# Compensation safety — proposed contract delta
+# Compensation safety — contract delta
 
 This is a design delta, not another canonical wire contract. Canonical sources remain
 [worker.proto](../../001-platform-foundation/contracts/worker.proto),
 [OpenAPI](../../001-platform-foundation/contracts/openapi.yaml),
 [workflow schema](../../001-platform-foundation/contracts/workflow.schema.json) and
-[SDK SPEC](../../../sdks/SPEC.md). Implementation has not changed them yet.
+[SDK SPEC](../../../sdks/SPEC.md). The delivery-1 behavior is now described in the OpenAPI `operateRun` description and the workflow schema (`compensateWith`, `reconcileWith`, `highRisk`, `onCompensationFailure`); no shape changed.
 
 ## Delivery 1
 
@@ -32,9 +32,9 @@ This is a design delta, not another canonical wire contract. Canonical sources r
 - Existing operator views must display retained state/failure code and allow inspection of current
   resolution evidence. No manual-provenance UI redesign or new terminal status is required.
 
-This is a breaking behavioral contract despite unchanged message shape. Fresh coordinated installation
-with matching tested clients is the proposed cutover. Do not run mixed server generations or silently
-reinterpret in-flight data. Any discovered need for a wire shape/negotiation change returns to design
+This is a breaking behavioral contract despite unchanged message shape, declared in
+`docs/releases/unreleased.md`. It upgrades in place from v0.2: committed journals keep their meaning
+and in-flight runs continue (D1810). Do not run mixed server generations. Any discovered need for a wire shape/negotiation change returns to design
 review; do not take a protocol number from another feature.
 
 ## US04 boundary

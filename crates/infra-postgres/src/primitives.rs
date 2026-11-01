@@ -22,7 +22,7 @@ use sagat_domain::audit::{AuditAction, ResourceType};
 use sagat_domain::definition::WorkflowVersionId;
 use sagat_domain::execution::{
     CollectionDrainReason, CollectionOutcome, Evaluation, ExecutionInstanceId, FailureCode,
-    InstancePath, Resolution, RunEvent,
+    InstancePath, Resolution, RunEvent, StepStatus,
 };
 use sagat_domain::identity::{NamespaceId, Subject, TenantId};
 use sagat_domain::outbound::OutboundKind;
@@ -3032,6 +3032,15 @@ impl CollectionStore for PgCollectionStore {
             "collection drain path",
         )
         .map_err(PrimitiveStoreError::Storage)?;
+        let member_status: std::collections::HashMap<String, String> = member_steps
+            .iter()
+            .map(|step| {
+                (
+                    step.get::<String, _>("node"),
+                    step.get::<String, _>("status"),
+                )
+            })
+            .collect();
         let mut event_waits = Vec::new();
         for step in &member_steps {
             let node = NodeId::parse_stored(&step.get::<String, _>("node"))
@@ -3041,6 +3050,15 @@ impl CollectionStore for PgCollectionStore {
                 status.as_str(),
                 "SUCCEEDED" | "FAILED" | "CANCELLED" | "SKIPPED"
             );
+            let derived_settled = status.parse::<StepStatus>().is_ok_and(|parsed| {
+                sagat_domain::execution::derived_settles_drain(
+                    &ExecutionInstanceId::in_path(member_path.clone(), node.clone()),
+                    parsed,
+                    node.forward()
+                        .and_then(|forward| member_status.get(forward.as_str()))
+                        .and_then(|original| original.parse::<StepStatus>().ok()),
+                )
+            });
             // Nothing is in flight: a step that has not started, or that waits to retry or is
             // ready to retry in a run that is stopping (it can no longer be leased). One whose last
             // attempt was lost keeps saying so when it is cancelled, and is compensated.
@@ -3079,7 +3097,7 @@ impl CollectionStore for PgCollectionStore {
             } else {
                 false
             };
-            if (node.is_derived() && !matches!(status.as_str(), "SUCCEEDED" | "SKIPPED"))
+            if (node.is_derived() && !derived_settled)
                 || (!terminal && !safe_unstarted && !waiting_suspension)
             {
                 return Err(PrimitiveStoreError::InvalidTransition);

@@ -34,5 +34,5 @@ Open a new ADR with benchmark data (`tests/performance/reports/sagas-compensatio
 ## Proposed refinement — 2026-11-01
 
 [ADR-0076](ADR-0076-compensation-failure-and-uncertain-effects.md) records owner-approved direction for compensation review, truthful terminal
-failure and qualified uncertain-effect recovery. It is PROPOSED pending coordinated adoption;
+failure and qualified uncertain-effect recovery. It was accepted on 2026-11-01 for delivery 1 (qualification stays proposed);
 this record is not fully superseded and its historical rationale remains unchanged.

@@ -647,10 +647,12 @@ pub fn prepare_scoped_output_refusal(
 
 /// Retains a content-quota stop before the caller records the original scoped outcome without
 /// outputs in the same transaction. Structured owners drain later; root settlement cannot own it.
-/// A previous cancellation, timeout or failure remains authoritative.
+/// A previous cancellation, timeout or failure remains authoritative. A scope compensation adds no
+/// stop: its authority is the scope's plan and its outcome routes nowhere.
 ///
 /// # Errors
-/// Refuses a root instance, stale lease, unknown definition node or inactive ancestry.
+/// Refuses a root instance, stale lease, unknown definition node, inactive ancestry, or a
+/// compensation the scope did not plan.
 pub fn prepare_scoped_content_refusal(
     def: &WorkflowDefinition,
     state: &mut RunState,
@@ -663,7 +665,23 @@ pub fn prepare_scoped_content_refusal(
         ));
     }
     require_instance_lease(state, instance, fence)?;
-    if def.node_for_instance(instance).is_none() || !has_live_ancestry(def, state, instance) {
+    if def.node_for_instance(instance).is_none() {
+        return Err(ExecutionError::UnknownInstance(instance.clone()));
+    }
+    // A scope compensation runs after its iteration was drained, so it has no live ancestry; its
+    // authority is the scope's durable plan. Its outcome routes nowhere, so nothing needs closing:
+    // the outcome is recorded without its output and the run is not stopped.
+    if instance.node().is_compensation() {
+        let path = PathExecutionState::from_run(state, instance.path().clone())?;
+        if !path.authorizes_scope_compensation(instance) {
+            return Err(ExecutionError::UnknownInstance(instance.clone()));
+        }
+        return Ok(Progress {
+            events: Vec::new(),
+            pending: None,
+        });
+    }
+    if !has_live_ancestry(def, state, instance) {
         return Err(ExecutionError::UnknownInstance(instance.clone()));
     }
     prepare_scoped_report_stop(state, FailureCode::storage_quota_exceeded())

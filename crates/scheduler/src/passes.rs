@@ -1376,6 +1376,25 @@ where
                 .as_ref()
                 .filter(|(_, code)| state.stop_code() == Some(code))
             else {
+                // A scoped report refused at the content quota stops the run with
+                // `STORAGE_QUOTA_EXCEEDED` and records its own outcome (feature 037); no member
+                // failed with that code, so the collection drains for the storage stop.
+                if state
+                    .stop_code()
+                    .is_some_and(|code| code == &FailureCode::storage_quota_exceeded())
+                {
+                    let version = state.version();
+                    drop(tx);
+                    let scope_id = self
+                        .store
+                        .collection_scope(tenant, run, owner)
+                        .await?
+                        .ok_or(CollectionAdvanceError::InvalidProgress)?
+                        .scope_id;
+                    return self
+                        .drain_collection_for_storage_quota(transition(version), scope_id)
+                        .await;
+                }
                 drop(tx);
                 return Err(CollectionAdvanceError::InvalidProgress);
             };
@@ -1789,9 +1808,14 @@ where
                 .filter(|(instance, _)| instance.path() == path)
                 .all(|(instance, step)| {
                     let settled_derived = instance.node().is_derived()
-                        && matches!(
+                        && execution::derived_settles_drain(
+                            instance,
                             step.status(),
-                            execution::StepStatus::Succeeded | execution::StepStatus::Skipped
+                            instance.node().forward().and_then(|forward| {
+                                state
+                                    .instance(&ExecutionInstanceId::in_path(path.clone(), forward))
+                                    .map(execution::StepState::status)
+                            }),
                         );
                     // Nothing is in flight: a step that has not started, or that waits to retry (or
                     // is ready to) in a run that is stopping and cannot lease it.
@@ -2015,6 +2039,19 @@ where
                     let Some((index, code)) = active_failure
                         .filter(|(_, code)| frontier.run.stop_code.as_ref() == Some(*code))
                     else {
+                        // As in the whole-run path: a content-refused scoped report stopped the
+                        // run for storage without failing a member.
+                        if frontier
+                            .run
+                            .stop_code
+                            .as_ref()
+                            .is_some_and(|code| code == &FailureCode::storage_quota_exceeded())
+                        {
+                            return self
+                                .drain_collection_for_storage_quota(transition(), scope_id)
+                                .await
+                                .map(Some);
+                        }
                         return Err(CollectionAdvanceError::InvalidProgress);
                     };
                     return self
@@ -2716,9 +2753,17 @@ where
                     .filter(|(instance, _)| instance.path() == &path)
                     .all(|(instance, step)| {
                         let settled_derived = instance.node().is_derived()
-                            && matches!(
+                            && execution::derived_settles_drain(
+                                instance,
                                 step.status(),
-                                execution::StepStatus::Succeeded | execution::StepStatus::Skipped
+                                instance.node().forward().and_then(|forward| {
+                                    state
+                                        .instance(&ExecutionInstanceId::in_path(
+                                            path.clone(),
+                                            forward,
+                                        ))
+                                        .map(execution::StepState::status)
+                                }),
                             );
                         // Nothing is in flight: a step that has not started, or one that waits
                         // to retry.
@@ -2799,6 +2844,26 @@ where
                 .start_drain(&LoopDrainCommand::new(
                     transition(state.version()),
                     execution::LoopDrainReason::Cancelled,
+                    uuid::Uuid::now_v7(),
+                )?)
+                .await?;
+            return Ok(LoopAdvance::DrainStarted);
+        }
+        // A scoped report refused at the content quota stopped the run for storage (feature 037).
+        // No member failed with that code, so the active iteration drains for the storage stop.
+        if state.stop_reason() == Some(StopReason::Failed)
+            && state
+                .stop_code()
+                .is_some_and(|code| code == &FailureCode::storage_quota_exceeded())
+            && let Some(iteration) = loop_state.active_iteration()
+        {
+            self.store
+                .start_drain(&LoopDrainCommand::new(
+                    transition(state.version()),
+                    execution::LoopDrainReason::Failed {
+                        iteration,
+                        code: FailureCode::storage_quota_exceeded(),
+                    },
                     uuid::Uuid::now_v7(),
                 )?)
                 .await?;
@@ -3030,6 +3095,28 @@ where
                 .start_drain(&LoopDrainCommand::new(
                     ctx.transition(version),
                     execution::LoopDrainReason::Cancelled,
+                    uuid::Uuid::now_v7(),
+                )?)
+                .await?;
+            return Ok(Some(LoopAdvance::DrainStarted));
+        }
+        // As in the whole-run path: a content-refused scoped report stopped the run for storage.
+        if frontier.run.stop_reason == Some(StopReason::Failed)
+            && frontier
+                .run
+                .stop_code
+                .as_ref()
+                .is_some_and(|code| code == &FailureCode::storage_quota_exceeded())
+            && frontier.phase == LoopPhase::Running
+            && let Some(member) = &frontier.member
+        {
+            self.store
+                .start_drain(&LoopDrainCommand::new(
+                    ctx.transition(version),
+                    execution::LoopDrainReason::Failed {
+                        iteration: member.index,
+                        code: FailureCode::storage_quota_exceeded(),
+                    },
                     uuid::Uuid::now_v7(),
                 )?)
                 .await?;
@@ -5470,9 +5557,18 @@ fn member_is_safe_to_drain(
 ) -> bool {
     member.steps.iter().all(|(instance, step)| {
         let settled_derived = instance.node().is_derived()
-            && matches!(
+            && execution::derived_settles_drain(
+                instance,
                 step.status(),
-                execution::StepStatus::Succeeded | execution::StepStatus::Skipped
+                instance.node().forward().and_then(|forward| {
+                    member
+                        .steps
+                        .get(&ExecutionInstanceId::in_path(
+                            instance.path().clone(),
+                            forward,
+                        ))
+                        .map(execution::StepState::status)
+                }),
             );
         // Nothing is in flight: a step that has not started, or that waits to retry.
         let safe_unstarted = (step.attempt() == 0

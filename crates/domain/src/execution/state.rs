@@ -2157,18 +2157,26 @@ impl RunState {
                 let mut scoped = self.steps.iter().filter(|(instance, _)| {
                     instance.path() == path && !instance.node().is_compensation()
                 });
+                let original_of = |instance: &ExecutionInstanceId| {
+                    instance.node().forward().and_then(|forward| {
+                        self.steps
+                            .get(&ExecutionInstanceId::in_path(path.clone(), forward))
+                            .map(|original| original.status)
+                    })
+                };
                 if !scoped.any(|(instance, step)| {
                     step.status.is_terminal()
                         && (!instance.node().is_derived()
-                            || matches!(step.status, StepStatus::Succeeded | StepStatus::Skipped))
+                            || derived_settles_drain(instance, step.status, original_of(instance)))
                 }) || self.steps.iter().any(|(instance, step)| {
                     instance.path() == path
                         && !instance.node().is_compensation()
                         && (!step.status.is_terminal()
                             || (instance.node().is_derived()
-                                && !matches!(
+                                && !derived_settles_drain(
+                                    instance,
                                     step.status,
-                                    StepStatus::Succeeded | StepStatus::Skipped
+                                    original_of(instance),
                                 )))
                 }) {
                     return Err(ExecutionError::IllegalCollectionTransition {
@@ -3054,8 +3062,13 @@ impl RunState {
                 let mut found = false;
                 for (instance, step) in self.steps.iter().filter(|(id, _)| id.path() == &path) {
                     found = true;
+                    let original = instance.node().forward().and_then(|forward| {
+                        self.steps
+                            .get(&ExecutionInstanceId::in_path(path.clone(), forward))
+                            .map(|original| original.status)
+                    });
                     let unresolved_derived = instance.node().is_derived()
-                        && !matches!(step.status, StepStatus::Succeeded | StepStatus::Skipped);
+                        && !derived_settles_drain(instance, step.status, original);
                     // Nothing is in flight: a step that has not started, or one that waits to retry
                     // (or is ready to) in a run that is stopping and can no longer lease it.
                     let safe_to_stop = (step.attempt == 0
@@ -4703,4 +4716,21 @@ fn planned_effect(step: &StepState) -> bool {
                 .failure
                 .as_ref()
                 .is_some_and(FailureCode::leaves_outcome_unknown))
+}
+
+/// Whether a derived step (a compensation `x~c` or a lookup `x~r`) no longer holds back the drain of
+/// the iteration it belongs to. A derived step is settled when it succeeded or was skipped. A lookup
+/// is also settled when it FAILED (it ran out of attempts or could not answer) and its original is
+/// terminal: that failure sent the original to review, and a person has settled the original since
+/// (feature 037, FR-037-007). Every drain check (domain, scheduler, SQL) uses this one rule.
+#[must_use]
+pub fn derived_settles_drain(
+    instance: &ExecutionInstanceId,
+    status: StepStatus,
+    original: Option<StepStatus>,
+) -> bool {
+    matches!(status, StepStatus::Succeeded | StepStatus::Skipped)
+        || (instance.node().is_reconciliation()
+            && status == StepStatus::Failed
+            && original.is_some_and(StepStatus::is_terminal))
 }

@@ -1,9 +1,9 @@
 # ADR-0076: Compensation failure and uncertain effects require explicit recovery authority
 
-**Status:** PROPOSED — product direction approved 2026-11-01; delivery-1 implementation in verification
-**Decided by:** Owner approved S1-B/S2-B; this wording is an agent-prepared adoption proposal
+**Status:** ACCEPTED 2026-11-01 for decisions 1–3, 5 and 7 (delivery 1). Decisions 4 and 6 (qualification) stay proposed until US04.
+**Decided by:** The product owner: S1-B/S2-B direction, then implementation and adoption authorized on 2026-11-01 (`docs/owner-decisions.md`, items 1 and 3).
 **Refines / supersedes:** Refines ADR-0004, ADR-0005, ADR-0010 and ADR-0030; no complete supersession
-**Enforced by:** Delivery-1 implementation and tests are in verification. Conformity requires recorded feature-037 acceptance; US04 remains open and no provider is qualified.
+**Enforced by:** `crates/domain/tests/execution_properties.rs` (only succeeded originals enter a plan; no terminal run with an open compensation); `crates/domain/tests/sagas.rs` and `scoped_compensation.rs` (unknown-effect retry refused, `RECONCILIATION_NOT_FINAL`, stop/deadline keep review); `crates/domain/tests/legacy_replay.rs` (committed v0.1/v0.2 journals keep their meaning); `contract_rest_sagas_compensations` (409 `OUTCOME_UNRESOLVED` for every role); `integration_sagas_compensations` `stopping::*` and `review::*`; the six-SDK `compensation-safety` scenario; `crates/domain/tests/outcome_unknown_parity.rs` (domain, SQL and Studio code lists agree).
 
 ## Context
 
@@ -46,8 +46,13 @@ The owner approved the product direction, not runtime correctness or a financial
    authority; they do not establish truth of provider guarantees. Invalid qualification MUST
    preserve consultation/review. SDK integrations and plugins have identical obligations.
 7. Current atomicity, tenant boundary, fencing, retained evidence and immutable versions MUST remain.
-   Exact contract, effect classification, publication/use authorization and revocation design remain
-   required before implementation approval; this decision invents no already-implemented gate.
+   Delivery 1 changes no wire shape (the behavior is documented in the canonical OpenAPI and workflow
+   schema). Qualification contract, effect classification, publication/use authorization and
+   revocation design remain required before US04 is implemented; this decision invents no gate.
+8. Committed history keeps its meaning (ADR-0030 §15). Journals written by v0.1/v0.2 replay
+   unchanged, including the shapes the new rules no longer produce. The new rules are enforced
+   where decisions are made (commands and planners), so an in-place upgrade from v0.2 continues
+   in-flight runs. Rolling back to v0.2 is safe only before the first new decision is journaled.
 
 ## Considered options
 
@@ -68,16 +73,19 @@ responsibility and configured retention; operators determine adequacy/external o
 use case. This is not a new automatic activation gate or critical-integration product taxonomy. No throughput or cost measurements exist.
 No new broker/database/certification service is proposed.
 
-Fresh installation/no legacy upgrade is approved, but cutover cannot reinterpret live definitions
-or replay effects. Plans must enumerate schema/protocol/client impacts and rollback boundaries.
+In-place upgrade from v0.2 is kept (owner decision 2026-11-01): cutover cannot reinterpret live
+definitions or replay effects, and committed journals replay with their original meaning. Plans must enumerate schema/protocol/client impacts and rollback boundaries.
 Code rollback cannot undo provider effects. Keep previous ADR rationale and dated research evidence;
 this is a refinement of safety conditions, not a rewrite of historical implementation claims.
 
 ## Evidence
 
-[Baseline report](../../specs/037-compensation-safety/validation-report.md): 60 saga and 34 scoped
-compensation domain tests passed on 2026-11-01, before this target was implemented. No provider,
-SQL/API/SDK/fault evidence or performance benchmark was produced. Named characterization tests
+Delivery-1 evidence (domain, REST/gRPC contract, PostgreSQL integration and fault, six-SDK
+conformance, Studio) is recorded in the
+[validation report](../../specs/037-compensation-safety/validation-report.md); the legacy-replay
+tests were seen failing against the stricter reducer before it was relaxed. No provider evidence or
+performance benchmark exists. *Historical baseline:* 60 saga and 34 scoped
+compensation domain tests passed on 2026-11-01, before this target was implemented. Named characterization tests
 include cancellation giving up on root review, scoped hold, defensive compensation and explicit fail.
 Those passing tests do not enforce this new decision; required acceptance is in feature 037.
 

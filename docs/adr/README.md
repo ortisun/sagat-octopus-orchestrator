@@ -14,4 +14,4 @@ Rules:
 
 Release checkpoints: [ADR-0040](ADR-0040-release-checkpoints-preserve-incomplete-feature-boundaries.md) preserves incomplete-feature boundaries and all technical release gates.
 
-Proposed recovery refinement: [ADR-0076](ADR-0076-compensation-failure-and-uncertain-effects.md) — S1-B/S2-B owner direction approved; delivery-1 implementation in verification, acceptance evidence pending, US04 open.
+Recovery refinement: [ADR-0076](ADR-0076-compensation-failure-and-uncertain-effects.md) — accepted 2026-11-01 for delivery 1 (Constitution 2.0.0, principle III); provider qualification (US04) stays proposed.

@@ -204,8 +204,10 @@ adapter does not qualify a real provider.
   references and unresolved state. No exactly-once external execution guarantee is introduced.
 - **NFR-037-005**: Recovery MUST respect admission/resource limits without using forward exhaustion
   to erase a previously admitted compensation obligation. No unsupported throughput/SLO is promised.
-- **NFR-037-006**: Definitions and in-flight identities remain immutable; fresh-install cutover is
-  allowed, but rollback MUST NOT replay an external effect or reinterpret a live version silently.
+- **NFR-037-006**: Definitions and in-flight identities remain immutable. Committed journals keep
+  their meaning on replay, so an in-place upgrade from v0.2 continues in-flight runs (owner decision
+  2026-11-01, D1810). Rollback MUST NOT replay an external effect or reinterpret a live version
+  silently.
 
 ### Key Entities
 

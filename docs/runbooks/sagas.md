@@ -86,10 +86,16 @@ They are counted after the transaction commits, and no label names a tenant, run
 
 ## 7. Installation, rollback and retained evidence
 
-Feature 037 delivery 1 is a fresh coordinated installation only. Use a new isolated database and
-matching server/SDK artifacts. Do not mix old and new engine versions, reinterpret legacy live runs,
-or roll an older engine back onto a database that has processed delivery-1 work. Before the first
-external effect, rollback may remove only the unexercised deployment. Afterwards, stop new admission,
+Feature 037 delivery 1 upgrades **in place** from v0.2 (owner decision 2026-11-01, D1810). It adds no
+migration and no wire change. Journals written by v0.1/v0.2 replay with their original meaning,
+including a negative lookup that retried, an operator retry of an unknown outcome and a defensive
+compensation plan. In-flight runs continue, and only new decisions follow the new rules
+(`crates/domain/tests/legacy_replay.rs`). Upgrade as for any release (scaling runbook §3); do not
+run old and new engines side by side.
+
+**Rolling back to v0.2 is safe only before the new engine journals its first decision.** A v0.2
+reducer refuses the new pairings (`not_applied` → review, `RECONCILIATION_NOT_FINAL`) with an
+invariant error. After that point, stop new admission,
 preserve the database and journal, keep operator ownership, and fix forward or perform an explicitly
 reviewed reconciliation. Reverting code cannot undo a provider effect; replaying or re-triggering an
 original request is not a rollback procedure.

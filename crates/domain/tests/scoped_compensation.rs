@@ -2353,6 +2353,47 @@ fn scoped_compensation_plan_rejects_succeeded_derived_lookup_ids_without_mutatio
 }
 
 #[test]
+fn a_content_refused_scope_compensation_report_keeps_its_outcome_without_stopping_the_run() {
+    // Iteration 1 failed and was drained; the scope now compensates what completed. A compensation
+    // report whose retention hits the content quota must still be recorded (its outcome is not
+    // routed anywhere), and must not stop the run: the drained iteration has no live ancestry.
+    let mut scope = failed_after_a_completed_iteration();
+    scope.advance();
+    let undo = scope.at(1, "charge").compensation();
+    assert_eq!(scope.step_status(&undo), StepStatus::Ready);
+    let fence = scope.lease(&undo);
+    let stop_before = scope.state.stop_reason();
+    let progress = sagat_domain::execution::prepare_scoped_content_refusal(
+        &scope.def,
+        &mut scope.state,
+        &undo,
+        fence,
+    )
+    .expect("an authorized scope compensation keeps its outcome at the content limit");
+    assert!(
+        progress.events.is_empty(),
+        "no run stop is added for a compensation report"
+    );
+    assert_eq!(scope.state.stop_reason(), stop_before);
+    // The caller then records the source outcome in the same transaction, as it does for forward
+    // work (`refuse_scoped_content`).
+    complete_instance(&scope.def, &mut scope.state, &undo, fence)
+        .expect("the compensation's success is recorded without its output");
+    assert_eq!(scope.step_status(&undo), StepStatus::Succeeded);
+    let unrelated = scope.at(1, "ship").compensation();
+    assert!(
+        sagat_domain::execution::prepare_scoped_content_refusal(
+            &scope.def,
+            &mut scope.state.clone(),
+            &unrelated,
+            fence,
+        )
+        .is_err(),
+        "a compensation the scope did not plan is refused"
+    );
+}
+
+#[test]
 fn a_collection_cannot_finish_while_its_compensation_is_open() {
     let mut scope = failed_after_a_completed_iteration();
     scope.advance();

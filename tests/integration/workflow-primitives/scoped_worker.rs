@@ -13,7 +13,7 @@ use sagat_application::primitives::{
     CollectionIterationDrain, CollectionLimits, CollectionScopeId, CollectionStore,
     CollectionTransition, PrimitiveStoreError, SchedulerAuthority,
 };
-use sagat_application::runs::{RunOperation, RunService, RunStore};
+use sagat_application::runs::{ReviewAction, RunOperation, RunService, RunStore};
 use sagat_application::shards::Lease;
 use sagat_application::telemetry::all_attempts;
 use sagat_application::worker::{
@@ -21,7 +21,9 @@ use sagat_application::worker::{
 };
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::definition::WorkflowVersionId;
-use sagat_domain::execution::{CollectionDrainReason, ExecutionInstanceId, InstancePath, RunId};
+use sagat_domain::execution::{
+    CollectionDrainReason, ExecutionInstanceId, InstancePath, ReviewOutcome, RunId,
+};
 use sagat_domain::identity::Subject;
 use sagat_domain::sharding::Shard;
 use sagat_domain::workflow::{Digest, NodeId};
@@ -2340,8 +2342,86 @@ async fn scoped_content_quota_fallback_preserves_success_or_unknown_before_any_e
                 .verify_run(fixture.world.admin.tenant_id(), fixture.run)
                 .await
                 .expect("source-aware scoped quota fallback replays");
+
+            // The run must still be able to finish: the scheduler drains the collection for the
+            // storage stop, and an unknown outcome is settled by a person first.
+            if source == "unknown" {
+                try_review(
+                    &fixture,
+                    &task.instance,
+                    &ReviewAction::Resolve(ReviewOutcome::Succeeded),
+                    &format!("resolve-{source}-{stop_before}"),
+                )
+                .await
+                .expect("an authorized person settles the unknown outcome");
+            }
+            let status = tick_until_terminal(&fixture, 8).await;
+            assert_eq!(
+                status,
+                if stop_before { "CANCELLED" } else { "FAILED" },
+                "{source}, stop_before={stop_before}: the quota-stopped collection drains and the run ends"
+            );
+            fixture
+                .store
+                .verify_run(fixture.world.admin.tenant_id(), fixture.run)
+                .await
+                .expect("the drained run replays");
         }
     }
+}
+
+async fn try_review(
+    fixture: &Fixture,
+    instance: &ExecutionInstanceId,
+    action: &ReviewAction,
+    key: &str,
+) -> Result<(), AppError> {
+    let cache = DefinitionCache::new(Arc::new(StructuredJsonIrCodec), 8);
+    RunService::new(
+        PgRunStore::new(fixture.world.db.pool.clone(), cache.clone()).with_scoped_worker_protocol(),
+        SystemClock,
+        Engine::new(JsonEvaluator),
+        cache,
+    )
+    .review_instance(
+        &fixture.world.admin,
+        fixture.run,
+        instance,
+        action,
+        "verified with the provider",
+        None,
+        key,
+        &ctx(),
+    )
+    .await
+    .map(|_| ())
+}
+
+/// Ticks the scheduler until the run is terminal, or panics naming the last status.
+async fn tick_until_terminal(fixture: &Fixture, ticks: usize) -> String {
+    let mut status = String::new();
+    for _ in 0..ticks {
+        scheduler(fixture).tick().await;
+        status = sqlx::query_scalar("SELECT status FROM runs WHERE tenant_id=$1 AND id=$2")
+            .bind(fixture.world.admin.tenant_id().as_uuid())
+            .bind(fixture.run.as_uuid())
+            .fetch_one(&fixture.world.db.pool)
+            .await
+            .expect("run status");
+        if matches!(
+            status.as_str(),
+            "SUCCEEDED"
+                | "FAILED"
+                | "CANCELLED"
+                | "COMPENSATED"
+                | "PARTIAL"
+                | "TIMED_OUT"
+                | "COMPENSATION_FAILED"
+        ) {
+            return status;
+        }
+    }
+    panic!("the run is still {status} after {ticks} scheduler ticks");
 }
 
 #[tokio::test]

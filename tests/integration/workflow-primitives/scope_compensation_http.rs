@@ -928,6 +928,158 @@ async fn a_loop_unknown_report_and_negative_lookup_after_cancel_wait_for_resolut
     flow.verify().await;
 }
 
+/// Feature 037, correctness review finding 3: a lookup that cannot complete (here a
+/// non-retryable failure, as when it runs out of attempts) is FAILED and sends its original to review. After a person
+/// settled the original, the failed lookup must not keep the cancelled iteration from draining.
+#[tokio::test]
+async fn a_failed_lookup_in_a_cancelled_collection_drains_after_resolution() {
+    let name = format!("scope-col-failed-lookup-{}", Uuid::now_v7());
+    let mut document = reserve_and_charge(&name, 1);
+    let reserve = document["bodies"]["line"]["nodes"]
+        .as_array_mut()
+        .and_then(|nodes| nodes.iter_mut().find(|node| node["id"] == "reserve"))
+        .expect("collection reserve node");
+    reserve["reconcileWith"] = json!("line.lookup");
+    reserve["retry"] = retry();
+    let flow = Flow::start(&name, document, json!([{"sku": "a"}])).await;
+    flow.drive().await;
+    let leased = flow.poll().await;
+    let (status, body) = flow
+        .operate(json!({"action": "CANCEL", "reason": "cancel before the worker can answer"}))
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    flow.drive().await;
+    flow.fail(&leased[0], "OUTCOME_UNKNOWN", false).await;
+    flow.drive().await;
+    let lookups = flow.poll().await;
+    assert_eq!(
+        summary(&lookups),
+        vec![row(0, "reserve~r", "RECONCILIATION", "line.lookup")]
+    );
+    flow.fail(&lookups[0], "LOOKUP_UNAVAILABLE", false).await;
+    flow.drive().await;
+    let lookup_status: String = sqlx::query_scalar(
+        "SELECT status FROM steps WHERE run_id=$1 AND node='reserve~r' \
+         AND instance_path_indices=ARRAY[0]",
+    )
+    .bind(flow.run.as_uuid())
+    .fetch_one(&flow.api.db.pool)
+    .await
+    .expect("lookup projection");
+    assert_eq!(
+        lookup_status, "FAILED",
+        "a lookup that cannot complete fails"
+    );
+    assert_eq!(flow.run_status().await, "MANUAL_REVIEW");
+
+    let (status, body) = flow
+        .operate(json!({
+            "action": "RESOLVE_STEP", "stepId": "reserve", "outcome": "FAILED",
+            "errorCode": "OPERATOR_CONFIRMED_NOT_APPLIED",
+            "instancePath": [{"scopeNodeId": "lines", "iterationIndex": 0}],
+            "reason": "the provider confirmed the request never applied"
+        }))
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    for _ in 0..4 {
+        flow.drive().await;
+    }
+    assert_eq!(flow.run_status().await, "CANCELLED");
+    flow.verify().await;
+}
+
+/// The loop counterpart of `a_failed_lookup_in_a_cancelled_collection_drains_after_resolution`.
+#[tokio::test]
+async fn a_failed_lookup_in_a_cancelled_loop_drains_after_resolution() {
+    let name = format!("scope-loop-failed-lookup-{}", Uuid::now_v7());
+    let mut document = compensating_loop(&name, false, false);
+    let reserve = document["bodies"]["pass"]["nodes"]
+        .as_array_mut()
+        .and_then(|nodes| nodes.iter_mut().find(|node| node["id"] == "reserve"))
+        .expect("loop reserve node");
+    reserve["reconcileWith"] = json!("line.lookup");
+    reserve["retry"] = retry();
+    let flow = Flow::start(&name, document, json!([])).await;
+    flow.drive().await;
+    let leased = flow.poll().await;
+    let (status, body) = flow
+        .operate(json!({"action": "CANCEL", "reason": "cancel before the worker can answer"}))
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    flow.drive().await;
+    flow.fail(&leased[0], "OUTCOME_UNKNOWN", false).await;
+    flow.drive().await;
+    let lookups = flow.poll().await;
+    assert_eq!(
+        summary(&lookups),
+        vec![row(0, "reserve~r", "RECONCILIATION", "line.lookup")]
+    );
+    flow.fail(&lookups[0], "LOOKUP_UNAVAILABLE", false).await;
+    flow.drive().await;
+    assert_eq!(flow.run_status().await, "MANUAL_REVIEW");
+
+    let (status, body) = flow
+        .operate(json!({
+            "action": "RESOLVE_STEP", "stepId": "reserve", "outcome": "FAILED",
+            "errorCode": "OPERATOR_CONFIRMED_NOT_APPLIED",
+            "instancePath": [{"scopeNodeId": "poll", "iterationIndex": 0}],
+            "reason": "the provider confirmed the request never applied"
+        }))
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    for _ in 0..4 {
+        flow.drive().await;
+    }
+    assert_eq!(flow.run_status().await, "CANCELLED");
+    flow.verify().await;
+}
+
+/// Feature 037, correctness review finding 1, loop counterpart of the collection case in
+/// `scoped_worker`: a loop member's successful report refused at the content quota stops the run
+/// for storage; the loop must still drain and the run end.
+#[tokio::test]
+async fn a_content_refused_loop_report_still_lets_the_run_end() {
+    let name = format!("scope-loop-quota-{}", Uuid::now_v7());
+    let flow = Flow::start(&name, compensating_loop(&name, false, false), json!([])).await;
+    flow.drive().await;
+    let leased = flow.poll().await;
+    assert_eq!(
+        summary(&leased),
+        vec![row(0, "reserve", "FORWARD", "line.reserve")]
+    );
+    close_content_quota(&flow).await;
+    flow.complete(&leased[0], json!({"hold": "x".repeat(4096)}))
+        .await;
+    let mut status = String::new();
+    for _ in 0..8 {
+        flow.drive().await;
+        for task in flow.poll().await {
+            flow.complete(&task, json!({"undone": true})).await;
+        }
+        status = flow.run_status().await;
+        if !matches!(
+            status.as_str(),
+            "RUNNING" | "WAITING" | "CANCELLING" | "COMPENSATING"
+        ) {
+            break;
+        }
+    }
+    assert_eq!(
+        status, "COMPENSATED",
+        "the quota-stopped loop drains and undoes the reservation it knows succeeded"
+    );
+    let undone: String = sqlx::query_scalar(
+        "SELECT status FROM steps WHERE run_id=$1 AND node='reserve~c' \
+         AND instance_path_indices=ARRAY[0]",
+    )
+    .bind(flow.run.as_uuid())
+    .fetch_one(&flow.api.db.pool)
+    .await
+    .expect("compensation projection");
+    assert_eq!(undone, "SUCCEEDED");
+    flow.verify().await;
+}
+
 #[tokio::test]
 async fn a_failed_loop_undoes_its_completed_iterations_last_first() {
     let name = format!("scope-loop-{}", Uuid::now_v7());

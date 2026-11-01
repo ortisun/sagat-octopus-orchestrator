@@ -99,6 +99,14 @@ impl FailureCode {
     /// lookup that said so is `RECONCILED_NOT_APPLIED`.)
     #[must_use]
     pub fn leaves_outcome_unknown(&self) -> bool {
+        Self::outcome_unknown_codes().contains(self)
+    }
+
+    /// Every code for which [`Self::leaves_outcome_unknown`] holds. Other layers keep their own
+    /// copy of this list (a SQL literal in the chain-progress store, the Studio's operation
+    /// guards); `crates/domain/tests/outcome_unknown_parity.rs` fails when they drift.
+    #[must_use]
+    pub fn outcome_unknown_codes() -> [Self; 7] {
         [
             Self::lease_expired(),
             Self::attempt_timeout(),
@@ -108,7 +116,6 @@ impl FailureCode {
             Self::reconciliation_unknown(),
             Self::reconciliation_not_final(),
         ]
-        .contains(self)
     }
 
     /// The child run failed and its saga undid what it had done (feature 003).
