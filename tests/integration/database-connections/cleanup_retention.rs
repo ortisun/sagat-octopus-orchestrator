@@ -317,6 +317,7 @@ async fn rerun_source_and_cleanup_barrier(
     info.root = info.run_id;
     info.rerun_of = Some(RunId::generate());
     let new = NewRun {
+        schedule: None,
         retained: None,
         limits: RunLimits::of(store, tenant, namespace).await.unwrap(),
         definition: w.cache.get(info.version_id).unwrap(),

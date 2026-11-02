@@ -235,6 +235,53 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
 - **D1039** Reset, rerun-by-batch and batch actions refuse 022 test-tree runs (`test_tree = true`):
   reset/preview `RESET_SOURCE_TEST_RUN`, batch item `SKIPPED` `TEST_RUN`. (The earlier refusal of a start
   delay with run-level concurrency is replaced by D1608.)
+- **D1040** (2026-10-29) The Rust SDK is an official SDK since constitution 1.1.0 (feature 034, ADR-0070),
+  after this draft was written for five SDKs. FR-018-048 and the SDK scenarios of
+  `contracts/sdk-conformance.md` therefore cover **six** SDKs: task T018-081 adds the Rust client in
+  `sdks/rust/` and T018-068 runs all six. The published task ids are not renumbered; the text of
+  FR-018-048 and SC-018-013 says "five" and is read as six.
+- **D1041** (2026-10-29, T018-003) `CANCEL_OTHER` keeps **one** action waiting, whatever the buffer limit:
+  the open runs are being cancelled, so a second waiting action would only queue behind the first; a
+  further due time while one waits is `DROPPED_BUFFER_FULL`. FR-018-006 does not say; one is the smallest
+  reading that keeps the "buffered until they are terminal" promise.
+- **D1042** (2026-10-29, T018-003) With `remainingActions`, every waiting action **holds one remaining
+  action** from the moment it is buffered. A due time with no unreserved remaining action is `Exhausted`
+  (no row, no next action, the schedule acts as paused), so a buffered action can always start later.
+  FR-018-012 says the count is decremented by `SCHEDULED` actions that start a run; the decrement still
+  happens at the start, the reservation only stops over-buffering.
+- **D1043** (2026-10-29, T018-003, found by a property test) An action that is waiting goes before any new
+  time under every policy but `ALLOW_ALL`. `SKIP` never buffers, but an update can change a schedule from
+  `BUFFER_ALL` to `SKIP` with actions still waiting; a new time is then `SKIPPED_OVERLAP`, not a start
+  ahead of them. The pass releases waiting actions (`release`) before it decides a new time.
+- **D1044** (2026-10-29, T018-003) The domain has no hash. `jitter_seed(schedule_id, nominal)` returns the
+  24 bytes to hash (id, then the nominal time in whole milliseconds, big-endian) and
+  `jitter_offset_ms(digest, jitter, gap)` reads the first eight bytes of the SHA-256 digest modulo the
+  bound; the layer that owns `sha2` (application) hashes. This keeps D1003 (SHA-256, no random source)
+  without a new domain dependency (`crates/domain/AGENTS.md`).
+- **D1045** (2026-10-29, T018-005) A refused batch item (quota, rate, lock wait, full 022 queue) waits 5 s,
+  doubling to 5 min, and fails after 10 refusals or 1 hour since its first (hard 50 within 24 hours), the same
+  bounded backoff as a refused schedule action (plan, transaction 4). FR-018-031 says "bounded backoff" and
+  the plan gives the ceilings but not the curve. The next rate slot is `max(slot, now) + interval`, so a late
+  job never catches up in a burst.
+- **D1800** (2026-10-30, T018-024) Trigger-now starts its run as the schedule (`startedBy` is
+  `system:schedule:<id>`, FR-018-016) under the **role of the caller**, who must hold `schedule:operate` and
+  `run:start` themselves, so triggering never lends the authority of `authorizedBy` (which may be a person
+  with more rights, or none left) and a caller who cannot start runs cannot make the schedule start one. Its
+  nominal time is the application clock to the microsecond (the same clock the firing uses), not a separate
+  database read: the identity of the action is `(schedule, MANUAL, µs)`, a collision of two requests in the
+  same microsecond is a `STATE_CONFLICT` for the later one, and the stored times are what a replay returns.
+  The `Idempotency-Key` is recorded in `command_dedupe` (scope `schedule-trigger:<id>`) in the transaction
+  that records the action, so a request and its key commit together or not at all. Numbered above the
+  reserved blocks because 018's own (D1000..D1039) is full (G1016).
+- **D1801** (2026-10-30, T018-025) A backfill is a state machine of the schedule: each step is one transaction
+  that takes the first nominal time of its range after the cursor and commits the action (or the decision) together
+  with the new cursor, the counters and the state of the backfill, under the same lock order as any other action
+  (shard fence, schedule row, backfill row). It runs under the role of its requester, checked again at every step
+  (a requester who lost `run:start` stops it), and it works while the schedule is paused, because it is the
+  operator's explicit request and not one of the schedule's own times. A backfill never drops a time: when the
+  overlap rule would drop one (`DROPPED_BUFFER_FULL`) the step waits instead and tries the same time again, so the
+  cursor never passes a time that was neither acted on nor found acted on. Its times take no remaining action. The
+  range holds at most 1,000 times (hard ceiling 10,000, T018-022) and a schedule runs one backfill at a time.
 - **D1605** Reset-rule registry (coordinator C1): every journal event type has one rule (`COPY`,
   `REMATERIALIZE`, `EXCLUDE`, `REFUSE` — a window until a named closing event) in
   `contracts/journal-and-events.md`; existing types are owned by 018 for this purpose; drafts 019, 020,
@@ -289,11 +336,22 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
 | G1009 | Start delay with run-level concurrency was refused. | Closed by D1608: 022 FR-022-018 defines acquire-or-enqueue at release. | Closed |
 | G1010 | 020's `RunSelector` section was missing. | Closed: `specs/020-visibility-analytics-archival/contracts/list-query.md` § `RunSelector` (co-owned with 018) now defines it. | Closed |
 | G1011 | After the handover, rolling back to an engine without schedules re-enables the legacy cron pass, which ignores pause (the shared key still prevents duplicates); a registry-aware engine without `schedules-v1` refuses to run instead, so this applies only below the registry release (G1607). | Rollback runbook states it. | Accepted |
+| G1012 | Shared files and numbers with the other open branches (checked 2026-10-29): the 014 Vacate branch (`feature/014-capacity-vacate`, PR #59) appends three audit actions to `crates/domain/src/audit.rs` and two lines to `crates/domain/src/execution/mod.rs`, as this feature does (a trivial textual conflict at the end of `AuditAction` and of `mod.rs`); migration `20261226000000` is taken by 014 (`capacity_transfer_receipts`) and reserved by 036, so this feature's migration takes a later timestamp chosen after a fresh grep of every branch (T018-008). | Resolve the conflicts on merge, keeping both sets; T018-008 re-greps `origin/*` and the sibling worktrees. | Open |
+| G1013 | The `dst` policy of a spec (gap `SKIP`/`SHIFT_FORWARD`, ambiguous `ONCE_EARLIER`/`TWICE`) applies to its structured calendars. Cron strings keep the daylight-saving behaviour feature 004 gave them (the cron library's own rules), whatever the policy says, so moving a trigger to a schedule never changes when it fires. FR-018-002 reads as if `dst` covered every entry; the cron library does not expose its handling, and re-implementing the five-field grammar to apply the policy would risk the 004 behaviour. | Tested by `a_cron_string_keeps_the_feature_004_daylight_saving_behaviour`; the Studio form and the docs say the policy is for calendars. | Open (owner) |
+| G1014 | `createSchedule`, `updateSchedule`, `deleteSchedule`, `pauseSchedule` and `resumeSchedule` require an `Idempotency-Key` (8 to 160 printable characters, like every operation that changes something) but do not replay by it: a request sent again after a lost answer is not answered with the original result. It is refused by what the first one did (409 for a name in use or a stale `expectedRevision`, 404 for a schedule that is gone; pause and resume are idempotent by their nature). Nothing is applied twice. | The spec asks for replay by key only for trigger-now and the with-start operations (FR-018-024, FR-018-026); a replay store for schedule writes needs its own table and retention (ADR-0050 decision 4). | Accepted |
+| G1016 | D1040..D1045 (the Rust SDK, `CANCEL_OTHER`, the waiting reservation, the waiting order, the jitter seed, the item backoff) were written on this branch on 2026-10-29 in the numbers the parity branch gives feature 019 (its D1040..D1079). 018's own block (D1000..D1039) is full, and the check of that day looked at files and migrations but not at the decision blocks. Both sets are published, so neither is renumbered here. | The owner decides which side moves (suggested: 018's six become D1800..D1805 when PR #53 and PR #63 meet, with the references in code and tasks updated in the same change); new 018 decisions use D1800 and up meanwhile. | Open (owner) |
+| G1017 | A waiting trigger-now counts as one of the remaining actions a scheduled time must leave (the reservation of D1042 counts every waiting action), though it never uses one up; with `remainingActions` set and a trigger-now waiting, a scheduled time can find the schedule exhausted a time early. | Rare (a limit, an open run, a buffering rule and a manual action at once); the fix is to count waiting scheduled actions only, which needs the waiting count by kind in `Standing`. | Open |
+| G1015 | `listSchedules` takes `cursor` and `limit` only. The draft fragment also listed the filters `origin`, `state`, `workflowId` and `name`; they are not built, so the canonical contract does not name them, and the response `action` carries `inputDigest` but not `inputBytes`. | A filter needs an index per column (`schedules_by_workflow`, `schedules_by_state`) and a keyset that follows the filter; the store lists by id only. | Open |
 | G1607 | A binary older than the instance-capability registry release does not register, so no activation can see it; activations therefore require the registry release deployed fleet-wide first (operator precondition, checked by nothing but the runbook), and rollback below a recorded requirement is unsupported. | Inherent to introducing the registry; 029's prerequisite release (T029-003) is the vehicle. | Accepted |
 | G1605 | Draft lock orders that deviated from ADR-0050 decision 7 on 2026-10-27 (026 T2 membership and rate buckets after the link row; 030 endpoint head before memberships; 021 asset heads after secrets and the variable fence as an "authority slot"). Resolved the same day: 021 and 026 now follow decision 7 exactly (021 D1624, 026 D1337 revised); 030 follows it with one listed exception, a caller transaction locking its own `START` row after its run (030 D1660), recorded in decision 7. | Owners 021, 026, 030. | Resolved |
 | G1606 | `REMATERIALIZE` checks of other features (retired version, paused resource, retired snapshot, busy permit) are evaluated at reset time; a preview reports them as provisional and a reset can still fail on them. | Inherent to reset at a later time. | Accepted |
 
 ## 5. Owner questions (the plan implements the recommended defaults)
+
+**Answered 2026-10-29** by the owner, who approved this feature and accepted the recommended default of
+each question (`docs/owner-decisions.md`): **O1000 (a)** pause with an audited system note; **O1001** 30 days,
+namespace-configurable up to 366; **O1002 (a)** `run:batch` for admin and operator only. The three
+paragraphs below are kept as the question that was put.
 
 - **O1000 — Schedule authority after its authorizing subject loses access.** (a) Pause with an audited
   system note at the next action; (b) keep firing under a namespace service identity.

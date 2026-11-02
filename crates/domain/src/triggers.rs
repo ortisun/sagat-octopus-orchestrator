@@ -70,6 +70,17 @@ impl std::str::FromStr for TriggerKind {
     }
 }
 
+/// Whether `value` has the shape of an IANA time-zone name (`UTC`, `America/Sao_Paulo`). The domain
+/// checks the shape only; the adapter with the time-zone database checks that the zone exists.
+#[must_use]
+pub fn is_timezone_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '+' | '-'))
+}
+
 /// A schedule: five fields (minute, hour, day of month, month, day of week) in a time zone.
 ///
 /// The domain keeps the text and checks its shape; the adapter that computes the next occurrence
@@ -95,12 +106,7 @@ impl CronSpec {
                 "a cron expression has five fields: minute hour day-of-month month day-of-week",
             ));
         }
-        if timezone.is_empty()
-            || timezone.len() > 64
-            || !timezone
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '+' | '-'))
-        {
+        if !is_timezone_name(timezone) {
             return Err(WorkflowError::InvalidTrigger(
                 "a time zone is an IANA name such as UTC or America/Sao_Paulo",
             ));

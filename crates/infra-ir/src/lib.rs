@@ -16,6 +16,7 @@ pub mod cron;
 mod database;
 mod database_result;
 mod declared_state;
+pub mod schedule_calendar;
 pub use database_result::JsonDatabaseResultValidator;
 mod diff;
 mod evaluator;

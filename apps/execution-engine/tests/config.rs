@@ -47,6 +47,41 @@ fn defaults_listen_on_loopback_and_publish_nothing() {
 }
 
 #[test]
+fn schedules_are_stored_but_fire_nowhere_until_the_flag_is_set() {
+    let config = parse(&[]).expect("config");
+    assert!(!config.schedules_enabled, "off by default");
+    assert_eq!(config.schedules.batch, 100);
+    assert_eq!(config.schedule_poll, Duration::from_secs(1));
+
+    let on = parse(&[
+        ("SAGAT_SCHEDULES_ENABLED", "true"),
+        ("SAGAT_SCHEDULES_BATCH", "250"),
+        ("SAGAT_SCHEDULES_POLL_MS", "400"),
+    ])
+    .expect("config");
+    assert!(on.schedules_enabled);
+    assert_eq!(on.schedules.batch, 250);
+    assert_eq!(on.schedule_poll, Duration::from_millis(400));
+}
+
+#[test]
+fn a_mistyped_schedule_setting_is_refused_not_guessed() {
+    for (name, value) in [
+        ("SAGAT_SCHEDULES_ENABLED", "maybe"),
+        ("SAGAT_SCHEDULES_BATCH", "0"),
+        ("SAGAT_SCHEDULES_BATCH", "5001"),
+        ("SAGAT_SCHEDULES_POLL_MS", "0"),
+        ("SAGAT_SCHEDULES_POLL_MS", "soon"),
+    ] {
+        let error = parse(&[(name, value)]).expect_err("refused");
+        assert!(
+            error.to_string().contains(name),
+            "{name}={value} was refused without naming the variable: {error}"
+        );
+    }
+}
+
+#[test]
 fn worker_budgets_are_larger_than_the_rest_api_s_but_finite() {
     let config = parse(&[]).expect("config");
     assert!(config.rate_limit.per_second >= 1000.0 && config.rate_limit.per_second.is_finite());

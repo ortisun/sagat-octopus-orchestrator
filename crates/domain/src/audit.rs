@@ -197,6 +197,32 @@ pub enum AuditAction {
     BlobUploaded,
     BlobRead,
     BlobDeleted,
+    /// A schedule (feature 018) was created, changed or deleted.
+    ScheduleCreated,
+    ScheduleUpdated,
+    ScheduleDeleted,
+    /// An operator paused or resumed a schedule, with a note.
+    SchedulePaused,
+    ScheduleResumed,
+    /// The platform paused a schedule: its authorizing subject lost access, or a run failed and the
+    /// schedule asks to pause on failure.
+    ScheduleAutoPaused,
+    /// A schedule was run by hand, outside its spec.
+    ScheduleTriggered,
+    ScheduleBackfillRequested,
+    ScheduleBackfillCancelled,
+    /// The input of a schedule was shown to a reader, at the level their grants allow.
+    ScheduleInputDisclosed,
+    /// An operator handed the cron triggers over to the schedule pass (`FR-018-017`).
+    ScheduleTriggerHandover,
+    /// A batch job was created, cancelled, or finished by itself.
+    BatchCreated,
+    BatchCancelled,
+    BatchFinished,
+    /// A new run was built from the journal prefix of another, or such a reset was requested and is
+    /// waiting for its source to end.
+    RunReset,
+    RunResetRequested,
 }
 
 impl AuditAction {
@@ -230,6 +256,7 @@ impl AuditAction {
                 | Self::PayloadRevealDenied
                 | Self::RunQueried
                 | Self::ApprovalDenied
+                | Self::ScheduleInputDisclosed
         )
     }
 
@@ -247,7 +274,8 @@ impl AuditAction {
             | Self::PayloadInspectionDenied
             | Self::PayloadDisclosed
             | Self::PayloadRevealDenied
-            | Self::RunQueried => Some(std::time::Duration::from_secs(300)),
+            | Self::RunQueried
+            | Self::ScheduleInputDisclosed => Some(std::time::Duration::from_secs(300)),
             Self::ApprovalDenied => Some(std::time::Duration::from_secs(300)),
             _ => None,
         }
@@ -370,6 +398,22 @@ impl AuditAction {
             Self::BlobUploaded => "blob.uploaded",
             Self::BlobRead => "blob.read",
             Self::BlobDeleted => "blob.deleted",
+            Self::ScheduleCreated => "schedule.created",
+            Self::ScheduleUpdated => "schedule.updated",
+            Self::ScheduleDeleted => "schedule.deleted",
+            Self::SchedulePaused => "schedule.paused",
+            Self::ScheduleResumed => "schedule.resumed",
+            Self::ScheduleAutoPaused => "schedule.auto_paused",
+            Self::ScheduleTriggered => "schedule.triggered",
+            Self::ScheduleBackfillRequested => "schedule.backfill_requested",
+            Self::ScheduleBackfillCancelled => "schedule.backfill_cancelled",
+            Self::ScheduleInputDisclosed => "schedule.input_disclosed",
+            Self::ScheduleTriggerHandover => "schedule.trigger_handover",
+            Self::BatchCreated => "batch.created",
+            Self::BatchCancelled => "batch.cancelled",
+            Self::BatchFinished => "batch.finished",
+            Self::RunReset => "run.reset",
+            Self::RunResetRequested => "run.reset_requested",
         }
     }
 }
@@ -443,6 +487,10 @@ pub enum ResourceType {
     WebhookSubscription,
     BrokerSubscription,
     Connector,
+    /// A schedule of feature 018.
+    Schedule,
+    /// A batch job of feature 018.
+    BatchJob,
     Script,
     /// A version of a script, as `script-id/number`.
     ScriptVersion,
@@ -482,6 +530,8 @@ impl ResourceType {
             Self::WebhookSubscription => "webhook_subscription",
             Self::BrokerSubscription => "broker_subscription",
             Self::Connector => "connector",
+            Self::Schedule => "schedule",
+            Self::BatchJob => "batch_job",
             Self::Script => "script",
             Self::ScriptVersion => "script_version",
             Self::PublicationRequest => "publication_request",

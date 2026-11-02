@@ -7,14 +7,18 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use sagat_application::clock::SystemClock;
 use sagat_application::entropy::{Entropy, SystemEntropy};
+use sagat_application::runs::RunService;
 use sagat_control_plane::stopped;
 use sagat_infra_ir::JsonEvaluator;
+use sagat_infra_ir::schedule_calendar::SpecCalendar;
 use sagat_infra_nats::NatsPublisher;
-use sagat_infra_postgres::PgRunStore;
+use sagat_infra_postgres::{PgIdentityStore, PgRunStore, PgScheduleStore};
 use sagat_scheduler::{
     DeliveryRound, DeliveryWorker, Dispatched, EventDispatcher, EventRound, Keeper, Monitor,
-    MonitorRound, OutboxDispatcher, ProjectionRound, Report, Round, Scheduler, TelemetryProjector,
+    MonitorRound, OutboxDispatcher, ProjectionRound, Report, Round, SchedulePass, ScheduleRound,
+    Scheduler, TelemetryProjector,
 };
 use tokio::sync::watch;
 
@@ -38,6 +42,13 @@ impl sagat_application::maintenance::EventPublisher for HintPublisher {
 }
 pub type EngineDispatcher = OutboxDispatcher<PgRunStore, HintPublisher, SystemEntropy>;
 pub type EngineEvents = EventDispatcher<PgRunStore, JsonEvaluator, SystemEntropy>;
+pub type EngineSchedules = SchedulePass<
+    PgScheduleStore,
+    SpecCalendar,
+    SystemClock,
+    PgIdentityStore,
+    RunService<PgRunStore, SystemClock, JsonEvaluator>,
+>;
 pub type EngineProjector = TelemetryProjector<PgRunStore>;
 pub type EngineMonitor = Monitor<PgRunStore>;
 pub type EngineKeeper = Keeper<PgRunStore>;
@@ -270,6 +281,24 @@ where
         }
     }
     tracing::info!("event dispatcher stopped");
+}
+
+/// Fires the schedules that are due until stopped: the same rhythm as the event dispatcher.
+pub async fn run_schedules<F, Fut>(mut round: F, poll: Duration, stop: watch::Receiver<bool>)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = ScheduleRound>,
+{
+    while !*stop.borrow() {
+        if round().await.did_work() {
+            tokio::task::yield_now().await;
+            continue;
+        }
+        if stop_during(jittered(poll, &SystemEntropy), &stop).await {
+            break;
+        }
+    }
+    tracing::info!("schedule pass stopped");
 }
 
 /// Sends outbound webhooks until stopped: the same rhythm as the event dispatcher.

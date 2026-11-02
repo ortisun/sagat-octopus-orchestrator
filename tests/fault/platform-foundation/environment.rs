@@ -28,6 +28,7 @@ fn cfg(url: &str) -> (Config, ServeConfig) {
         },
         ServeConfig {
             redis_callbacks: false,
+            schedules_enabled: false,
             openbao: Default::default(),
             bind_addr: "127.0.0.1:0".parse().expect("addr"),
             tls: None,

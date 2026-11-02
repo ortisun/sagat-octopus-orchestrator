@@ -21,18 +21,24 @@ use sagat_application::clock::SystemClock;
 use sagat_application::entropy::SystemEntropy;
 use sagat_application::execution::{DefinitionCache, Engine};
 use sagat_application::identity::IdentityService;
+use sagat_application::runs::RunService;
+use sagat_application::schedule_firing::ScheduleFiring;
 use sagat_application::worker::WorkerService;
 use sagat_control_plane::config::{self, Config, Environment};
 use sagat_control_plane::{
     METRICS_UPKEEP_INTERVAL, RunError, admin_router_with, open_pool, spawn_metrics_upkeep, stopped,
 };
+use sagat_domain::schedules::Ceilings;
 use sagat_infra_blobstore::build_backend;
+use sagat_infra_ir::schedule_calendar::SpecCalendar;
 use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
 use sagat_infra_nats::NatsPublisher;
-use sagat_infra_postgres::{PgBlobCatalog, PgIdentityStore, PgRunStore, spawn_pool_metrics};
+use sagat_infra_postgres::{
+    PgBlobCatalog, PgIdentityStore, PgRunStore, PgScheduleStore, spawn_pool_metrics,
+};
 use sagat_scheduler::{
     DeliveryWorker, EventDispatcher, Keeper, Monitor, OutboxDispatcher, Placement,
-    ProjectorSettings, Scheduler, TelemetryProjector,
+    ProjectorSettings, SchedulePass, Scheduler, TelemetryProjector,
 };
 use sagat_telemetry::Metrics;
 use tokio::net::TcpListener;
@@ -48,7 +54,7 @@ pub use settings::EngineConfig;
 
 use loops::{
     EngineDeliveries, EngineDispatcher, EngineEvents, EngineKeeper, EngineMonitor, EngineProjector,
-    EngineScheduler, Health,
+    EngineScheduler, EngineSchedules, Health,
 };
 use supervision::CriticalTasks;
 
@@ -198,7 +204,7 @@ pub async fn serve(
             store.clone(),
             Engine::new(JsonEvaluator),
             SystemEntropy,
-            cache,
+            cache.clone(),
             engine.events,
         )
         .with_cron(Arc::new(sagat_infra_ir::cron::CronCalendar)),
@@ -374,6 +380,43 @@ pub async fn serve(
             stop_rx.clone(),
         ),
     );
+    if engine.schedules_enabled {
+        // A schedule's run is admitted as the schedule's own subject, so the pass needs the same
+        // run service the API has; it holds a store of its own over the shared pool.
+        let schedules: Arc<EngineSchedules> = Arc::new(SchedulePass::new(
+            ScheduleFiring::new(
+                PgScheduleStore::new(pool.clone()),
+                SpecCalendar,
+                SystemClock,
+                PgIdentityStore::new(pool.clone()),
+                RunService::new(
+                    store.clone(),
+                    SystemClock,
+                    Engine::new(JsonEvaluator),
+                    cache.clone(),
+                ),
+                Ceilings::default(),
+            ),
+            placement.clone(),
+            engine.schedules,
+        ));
+        tasks.spawn_loop(
+            "schedule pass",
+            loops::run_schedules(
+                {
+                    let schedules = Arc::clone(&schedules);
+                    move || {
+                        let schedules = Arc::clone(&schedules);
+                        async move { schedules.round().await }
+                    }
+                },
+                engine.schedule_poll,
+                stop_rx.clone(),
+            ),
+        );
+    } else {
+        tracing::info!("SAGAT_SCHEDULES_ENABLED is not set: schedules are stored but none fires");
+    }
     tasks.spawn_loop(
         "event dispatcher",
         loops::run_events(

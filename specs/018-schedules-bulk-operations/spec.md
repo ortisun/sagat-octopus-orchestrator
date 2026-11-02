@@ -4,7 +4,7 @@
 
 **Created**: 2026-10-26
 
-**Status**: Draft — specification, plan and tasks proposed; not implemented; pending owner review
+**Status**: Approved for implementation by the owner on 2026-10-29 (this feature only; ADR-0050 accepted; O1000–O1002 answered with the recommended defaults). Implementation in progress, see `tasks.md`
 
 **Input**: Bring Temporal's operational features for many runs: a first-class Schedule that
 generalizes today's five-field cron trigger without breaking it (calendar, interval and cron specs,
@@ -44,7 +44,7 @@ Every part of this feature keeps:
   rows and marks restored history.
 
 Hard-to-reverse rules: [ADR-0050](../../docs/adr/ADR-0050-many-run-operations-admit-under-stable-keys-and-never-buffer-or-reopen.md)
-(Proposed). Decisions, gaps and owner questions: [research.md](research.md).
+(Accepted 2026-10-29). Decisions, gaps and owner questions: [research.md](research.md).
 
 ## User Scenarios & Testing *(mandatory)*
 

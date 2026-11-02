@@ -446,6 +446,7 @@ where
         );
         let limits = RunLimits::of(&self.store, tenant, trigger.namespace_id).await?;
         let new = NewRun {
+            schedule: None,
             retained: None,
             limits,
             info,

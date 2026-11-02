@@ -95,6 +95,10 @@ pub enum QuotaResource {
     TenantDatabaseConcurrency,
     /// Pending secret provider operations in the namespace (feature 017).
     SecretProviderOperations,
+    /// Schedules in the namespace, active and paused (feature 018).
+    Schedules,
+    /// Backfills of the namespace that have not finished (feature 018).
+    ScheduleBackfills,
 }
 
 /// At which level a resource is counted.
@@ -129,7 +133,7 @@ pub enum QuotaUnit {
 }
 
 impl QuotaResource {
-    pub const ALL: [Self; 32] = [
+    pub const ALL: [Self; 34] = [
         Self::ActiveRuns,
         Self::TenantActiveRuns,
         Self::Workflows,
@@ -162,6 +166,8 @@ impl QuotaResource {
         Self::DatabaseConcurrency,
         Self::TenantDatabaseConcurrency,
         Self::SecretProviderOperations,
+        Self::Schedules,
+        Self::ScheduleBackfills,
     ];
 
     #[must_use]
@@ -199,6 +205,8 @@ impl QuotaResource {
             Self::DatabaseConcurrency => "database_concurrency",
             Self::TenantDatabaseConcurrency => "tenant_database_concurrency",
             Self::SecretProviderOperations => "secret_provider_operations",
+            Self::Schedules => "schedules",
+            Self::ScheduleBackfills => "schedule_backfills",
         }
     }
 
@@ -230,7 +238,9 @@ impl QuotaResource {
             | Self::DatabaseIdleTimeoutMs
             | Self::DatabaseConnections
             | Self::DatabaseConcurrency
-            | Self::SecretProviderOperations => QuotaScope::Namespace,
+            | Self::SecretProviderOperations
+            | Self::Schedules
+            | Self::ScheduleBackfills => QuotaScope::Namespace,
             Self::TenantActiveRuns
             | Self::WorkerSessions
             | Self::IterationConcurrency
@@ -327,6 +337,8 @@ impl QuotaResource {
             Self::DatabaseConcurrency => 64,
             Self::TenantDatabaseConcurrency => 256,
             Self::SecretProviderOperations => 128,
+            Self::Schedules => 10_000,
+            Self::ScheduleBackfills => 16,
             _ => MAX_LIMIT,
         }
     }
@@ -370,6 +382,8 @@ impl QuotaResource {
             Self::DatabaseConcurrency => 16,
             Self::TenantDatabaseConcurrency => 64,
             Self::SecretProviderOperations => 32,
+            Self::Schedules => 200,
+            Self::ScheduleBackfills => 4,
         }
     }
 
@@ -409,6 +423,8 @@ impl QuotaResource {
             Self::DatabaseConcurrency => "concurrent database operations in the namespace",
             Self::TenantDatabaseConcurrency => "concurrent database operations of the tenant",
             Self::SecretProviderOperations => "pending secret provider operations in the namespace",
+            Self::Schedules => "schedules in the namespace",
+            Self::ScheduleBackfills => "schedule backfills in progress in the namespace",
         }
     }
 
@@ -739,7 +755,7 @@ mod tests {
 
     #[test]
     fn durable_resources_have_explicit_scope_kind_unit_range_and_usage_semantics() {
-        assert_eq!(QuotaResource::ALL.len(), 32);
+        assert_eq!(QuotaResource::ALL.len(), 34);
         for (resource, scope, kind, unit, maximum, default, has_usage) in [
             (
                 QuotaResource::TenantContentBytes,

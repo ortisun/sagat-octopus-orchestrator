@@ -199,10 +199,11 @@ fn expected(role: Role) -> Vec<Permission> {
     use Permission::{
         ApprovalDecide, ApprovalRead, DatabaseAdHoc, DatabaseUse, DefinitionPublish,
         DefinitionRead, DefinitionWrite, EventManage, EventPublish, EventRead, NamespaceRead,
-        OpsRead, PayloadReadInternal, PublicationApprove, QuotaRead, RunOperate, RunPayloadInspect,
-        RunQuery, RunRead, RunSignal, RunStart, RunUpdate, ScriptBuild, ScriptExecute,
-        ScriptPublish, ScriptRead, ScriptWrite, SecretRead, SecretUse, VersionActivate,
-        WorkerExecute, WorkerManage, WorkspaceRead,
+        OpsRead, PayloadReadInternal, PublicationApprove, QuotaRead, RunBatch, RunOperate,
+        RunPayloadInspect, RunQuery, RunRead, RunSignal, RunStart, RunUpdate, ScheduleOperate,
+        ScheduleRead, ScheduleWrite, ScriptBuild, ScriptExecute, ScriptPublish, ScriptRead,
+        ScriptWrite, SecretRead, SecretUse, VersionActivate, WorkerExecute, WorkerManage,
+        WorkspaceRead,
     };
     match role {
         Role::Admin => Role::ADMIN_PERMISSIONS.to_vec(),
@@ -233,6 +234,9 @@ fn expected(role: Role) -> Vec<Permission> {
                 ScriptPublish,
                 OpsRead,
                 PublicationApprove,
+                ScheduleRead,
+                ScheduleWrite,
+                ScheduleOperate,
             ]
         }
         Role::Operator => vec![
@@ -257,6 +261,9 @@ fn expected(role: Role) -> Vec<Permission> {
             WorkerManage,
             PublicationApprove,
             VersionActivate,
+            ScheduleRead,
+            ScheduleOperate,
+            RunBatch,
         ],
         Role::Viewer => vec![
             WorkspaceRead,
@@ -268,6 +275,7 @@ fn expected(role: Role) -> Vec<Permission> {
             EventRead,
             ScriptRead,
             OpsRead,
+            ScheduleRead,
         ],
         Role::Worker => vec![WorkerExecute],
         Role::Runner => vec![WorkerExecute, ScriptBuild, ScriptExecute],
@@ -277,7 +285,7 @@ fn expected(role: Role) -> Vec<Permission> {
 
 #[test]
 fn payload_permissions_are_fail_closed_for_builtin_roles() {
-    assert_eq!(Permission::ALL.len(), 48);
+    assert_eq!(Permission::ALL.len(), 52);
     assert_eq!(
         Permission::PayloadReadInternal.as_str(),
         "payload:read-internal"

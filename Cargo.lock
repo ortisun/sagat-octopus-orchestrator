@@ -4600,6 +4600,7 @@ dependencies = [
  "sagat-api-http",
  "sagat-application",
  "sagat-control-plane",
+ "sagat-domain",
  "sagat-infra-blobstore",
  "sagat-infra-connectors",
  "sagat-infra-ir",

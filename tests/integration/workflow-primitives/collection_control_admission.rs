@@ -359,13 +359,16 @@ async fn retained_scheduler_memberships_refuse_downgrade_even_after_completion()
                 .contains("scheduler-owned collection admission evidence is retained"),
             "{error}"
         );
+        // SQLx undoes the newer migrations one at a time before it reaches the one that refuses,
+        // so the schema is briefly behind (a column added later is gone). What must survive is
+        // the data: apply the migrations again, then compare.
+        migrate(&flow.api.db.pool)
+            .await
+            .expect("failed downgrade preserves profile");
         assert_eq!(
             snapshot(&flow.api.db.pool, flow.tenant.as_uuid(), flow.run).await,
             before
         );
-        migrate(&flow.api.db.pool)
-            .await
-            .expect("failed downgrade preserves profile");
     }
 }
 

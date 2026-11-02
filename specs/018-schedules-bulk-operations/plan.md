@@ -4,7 +4,7 @@
 
 **Input**: Feature specification from `specs/018-schedules-bulk-operations/spec.md`
 
-Status: Proposed — not started.
+Status: Approved 2026-10-29 — in implementation (see `tasks.md` for what is ticked).
 
 ## Summary
 

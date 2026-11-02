@@ -1,7 +1,7 @@
 # ADR-0050: Many-run operations admit runs under stable keys in one lock-ordered transaction, and never buffer a signal or reopen a run
 
-**Status:** Proposed
-**Decided by:** agent proposal, pending owner acceptance (2026-10-26)
+**Status:** Accepted (2026-10-29). Decisions that rely on the run permit of proposed ADR-0056 (feature 022) stay gated until that ADR is accepted.
+**Decided by:** owner, accepting the agent proposal of 2026-10-26 (`docs/owner-decisions.md`, 2026-10-29)
 **Refines / supersedes:** refines ADR-0020 (shard fence reused for schedules, batch jobs and pending resets), ADR-0039 (rerun source guard reused by reset) and ADR-0030 decision 17 (kept unchanged for Signal-with-Start); depends on proposed ADR-0056 (022 run permits); supersedes none.
 **Enforced by:** pending tests of feature 018 — the exhaustive reset-rule table test (every `RunEvent::name()` has a rule, T018-052), the slot-order barrier tests of T018-012 extended to the drafts' admission paths, `fault_schedules_bulk_operations` (crash per statement of a firing, stale fence, duplicate pass), the lock-order interleaving harness (T018-012), the run-driven barrier test against every aggregate table (T018-076), the lock monitor of T018-049, the reset replay-equals-projection corpus including a 022 permit holder and 020 search attributes (T018-055, T018-077), the no-buffer assertions of T018-040, and the contract baselines (worker protocol unchanged; IR grows only by `reapplyOnReset`). Until they exist the rules are review-only.
 

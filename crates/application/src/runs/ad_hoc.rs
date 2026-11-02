@@ -340,6 +340,7 @@ impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService
             )
             .await?;
         let new = NewRun {
+            schedule: None,
             limits: RunLimits::of(&self.store, principal.tenant_id(), request.namespace).await?,
             info,
             definition: Arc::new(parsed.definition),
@@ -355,7 +356,10 @@ impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService
             }),
         };
         let result = match self.store.create(new).await {
-            Ok(created) => self.finish_start(principal, run_id, created, ctx).await,
+            Ok(created) => {
+                self.finish_start(principal, run_id, created, false, ctx)
+                    .await
+            }
             Err(error) => {
                 if matches!(
                     error,
