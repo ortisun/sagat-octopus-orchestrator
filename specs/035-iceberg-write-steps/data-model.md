@@ -161,7 +161,8 @@ load ─► compatible? ─no─► ICEBERG_UNSUPPORTED_TABLE
 ## 5. Permissions, quotas, audit (D035-066)
 
 **Permissions.** One new permission, `database:browse`, for developers and admins. The catalog grows
-from 48 to 49 entries, a change ADR-0071 records against ADR-0036 decision 5. The other permissions
+by one entry (52 to 53 on develop at D035-071; it was written as 48 to 49), a change ADR-0071 records
+against ADR-0036 decision 5. The other permissions
 reuse the code's existing grants:
 
 | Action | Permission | Roles |

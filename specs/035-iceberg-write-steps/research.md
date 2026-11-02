@@ -144,12 +144,14 @@ questions after the clarification session; recorded in `docs/owner-decisions.md`
   2026-10-27 (D035-016):** the owner added the workflow name and version.
 - **O035-002** — Priority of ORC/Avro (G035-002) and Kerberos Hive (G035-001) for a later delivery.
 - **O035-003** — Default and maximum limits per step (records, bytes, files) and the reference
-  environment of SC-035-009; the plan proposes values, the owner approves them.
+  environment of SC-035-009; the plan proposes values, the owner approves them. **Answered
+  2026-11-02 (D035-070):** the plan's table is approved as written.
 - **O035-004** — Confirm `hold` as the default failure policy of synchronous destinations (D035-023).
+  **Answered 2026-11-02 (D035-070):** confirmed.
 - **O035-005** — Should 020's `OBJECT_STORAGE` and `CLICKHOUSE` sinks reference the new 017 connection
   kinds (`object_storage`, `clickhouse`) instead of carrying their own settings and secret, so a
   destination is configured once for both modes? Recommendation: yes (020's `POSTGRESQL` sink already
-  uses a 017 connection, and its `ICEBERG` sink will).
+  uses a 017 connection, and its `ICEBERG` sink will). **Answered 2026-11-02 (D035-070):** yes.
 
 ## Sources to consult during planning
 
@@ -502,7 +504,7 @@ same change.
   are admin-only, as 017 writes are. Developers browse (`database:browse`, new) and probe
   (`database:use`). Broker destinations need `event:manage`. Retrying a destination needs
   `run:operate`; skipping it needs `saga:override`. ADR-0071 records the permission-catalog change
-  (ADR-0036 decision 5: 48 → 49).
+  (ADR-0036 decision 5: 48 → 49 as written; 52 → 53 on develop, amended by D035-071).
 
 ### New gaps (review round 1)
 
@@ -542,3 +544,24 @@ The other fixes were wording:
 - The quickstart's list of admin-published destinations is complete.
 - The new columns are classified `protected_system`.
 - `docs/architecture/security-and-sandbox.md` joins the files the feature updates.
+
+## Implementation start (2026-11-02)
+
+- **D035-070 — Owner gates of T035-001.** On 2026-11-02 the owner accepted ADR-0071, approved the
+  "Finite ceilings" table of plan.md as written (answers O035-003; the values are now D035-045 as
+  approved, not proposed), confirmed `hold` as the default failure policy of synchronous destinations
+  (answers O035-004, confirms D035-023) and decided that 020's `OBJECT_STORAGE` and `CLICKHOUSE` sinks
+  reference the new 017 connection kinds (answers O035-005). The record is
+  `docs/owner-decisions.md`, 2026-11-02, items 1–4. O035-002 stays open and does not block I0–I1.
+  Developers may not publish writes: D035-066 and ADR-0036 decision 5 stand.
+- **D035-071 — Reserved numbers re-checked against `origin/develop` `df59eb0e` (T035-002).**
+  - Migration `20270115000000_lake_destinations` still sorts after every branch's latest migration;
+    the latest is now `20261231000000_capacity_worker_membership_indexes` (D035-044 named
+    `20261225000000`).
+  - ADR-0071 is still the only ADR with this number. ADR-0072..0076 are taken by features 036, 033,
+    034, the capacity work and 037.
+  - The permission catalog has **52** entries on develop (`crates/domain/tests/identity.rs`,
+    `Permission::ALL.len()`), not 48. `database:browse` makes it **53**. Every "48 → 49" in this
+    feature (D035-066, plan.md, data-model.md, T035-011) now reads "52 → 53"; the grants do not change.
+  - `PROTOCOL_MINOR` is 6 in `crates/application/src/worker.rs`, as the plan assumed. The 035 fields
+    still take the next free minor when the feature merges (D035-043).

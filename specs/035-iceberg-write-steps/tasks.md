@@ -3,7 +3,8 @@
 **Input**: [spec.md](spec.md), [plan.md](plan.md), [research.md](research.md),
 [data-model.md](data-model.md), [contracts/](contracts/README.md), [quickstart.md](quickstart.md).
 
-**Status**: Not started (generated 2026-10-28). Nothing below is built. A task is ticked only with
+**Status**: In progress (generated 2026-10-28; ADR-0071 accepted and implementation started
+2026-11-02). Only the tasks ticked below are done; nothing else is built. A task is ticked only with
 the evidence that closes it: a named test and its result, or a command and its output (AGENTS.md).
 
 **Tests**: required. Constitution VIII and AGENTS.md rule 18 make tests come first: every test task
@@ -54,16 +55,28 @@ contracts, so every later task has a place to put its failing test.
 
   No code task starts before ADR-0071 is accepted (plan.md, Constitution Check, technology-baseline
   row). Refs: D035-045, D035-047, D035-066, O035-002..005.
-- [ ] T035-002 Before the first code commit, check every number the plan reserved:
+
+  *2026-11-02, partly done, left unticked:* ADR-0071 is Accepted; O035-003, O035-004 and O035-005 are
+  answered (D035-070, `docs/owner-decisions.md` 2026-11-02 items 1–4). Not done: O035-002 (ORC/Avro
+  and Kerberos priority, a later delivery, does not block I0–I1) and the developer-publication
+  question, which keeps the plan's answer "no" (D035-066) until the owner says otherwise.
+- [x] T035-002 Before the first code commit, check every number the plan reserved:
   1. Rebase `feature/035-iceberg-write-steps` on `origin/develop`.
   2. Check every open branch and worktree (`git branch -a`, `git worktree list`) for:
      - migration `20270115000000` still sorting after every branch's latest migration;
      - ADR-0071 still free;
-     - 48 permissions before this feature;
+     - 52 permissions before this feature (written as 48; amended by D035-071);
      - protocol minor 6 on develop.
   3. Record any change as a new D035 decision in research.md.
 
   Refs: D035-043, D035-044.
+
+  *Evidence, 2026-11-02:* `git merge --ff-only origin/develop` took the branch to `df59eb0e` (0 ahead,
+  0 behind). `git log --all` over `crates/infra-postgres/migrations/` shows the newest migration on any
+  branch is `20261231000000`, so `20270115000000` still sorts last. `git log --all` over `docs/adr/`
+  shows ADR-0071 only here, with 0072..0076 taken by other features. `Permission::ALL.len()` is 52 in
+  `crates/domain/tests/identity.rs:288`. `PROTOCOL_MINOR` is 6 in `crates/application/src/worker.rs:59`.
+  Recorded as D035-071.
 - [ ] T035-003 Register the targets in `tests/Cargo.toml` and create each harness `main.rs`:
 
   | Target | Harness |
@@ -174,7 +187,7 @@ three conditions pass.
   Refs: FR-035-025, D035-051.
 - [ ] T035-011 [P] Write the failing tests in `crates/domain/tests/identity.rs` and
   `crates/domain/tests/audit.rs`:
-  - the catalog has 49 permissions;
+  - the catalog has 53 permissions (written as 49; develop held 52 before this feature, D035-071);
   - `database:browse` is held by developer and admin only;
   - a permission added to `ALL` without a role decision fails a test;
   - the audit actions `DatabaseCatalogBrowsed`, `DestinationDecided` and `IcebergRevertRequested`
