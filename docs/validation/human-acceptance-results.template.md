@@ -52,8 +52,10 @@ success criterion to done.
 
 **Session status:** `NOT RUN`
 
-**Interaction threshold:** `N = PENDING OWNER DECISION`. Until the owner defines `N` in the feature
-specification, record the count but set the criterion verdict to `NOT EVALUABLE — N UNSET`.
+**Interaction threshold:** `N = 10`, set by the owner on 2026-10-16
+([owner decisions](../owner-decisions.md), item 3). The diagnosis passes with **at most 9** counted
+interactions (`count < N`). Record the raw count as well as the verdict; `N` is neither a sample size
+nor the onboarding timing target.
 
 ### Preflight
 
@@ -108,7 +110,7 @@ If any box is unchecked, record `NOT RUN — PRECONDITION FAILED` and stop.
 | Outcome | Value |
 |---|---|
 | Diagnosis | `NOT RUN` |
-| Interaction comparison | `NOT EVALUABLE — N UNSET` |
+| Interaction comparison | `<count> < 10: PASS / FAIL`, or `NOT RUN` |
 | SC-008-001 verdict | `NOT RUN` |
 | Observer notes | `<none>` |
 

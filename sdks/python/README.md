@@ -1,5 +1,7 @@
 # Sagat Octopus Orchestrator: Python SDK
 
+> Documentation status: the contract sections below describe the inspected source. Existing runtime, test-count and advisory records are historical developer notes; this documentation update did not rerun or revalidate those records.
+
 `sagat-octopus-orchestrator` 0.2.0 is the Python SDK of the Sagat Octopus Orchestrator, a durable workflow
 platform. It is three things in one package and nothing else (`sdks/SPEC.md`):
 
@@ -51,7 +53,7 @@ asyncio.run(main())
 ```
 
 `start` takes a workflow id or name. Without an `idempotency_key` it makes one per call and reuses it for every
-retry of that call, so a lost answer never starts a second run. Amounts of money are strings (`"19.99"`): the
+retry of that call, so a retry of that call sends the same key; server acceptance follows the platform contract. Amounts of money are strings (`"19.99"`): the
 SDK never converts a string to a number, and `600000` is never sent as `600000.0`.
 
 For a large run input, use `await client.upload_run_input(one_pass_iterable, ...)`, then pass the returned
@@ -191,17 +193,17 @@ document = (
 
 `build()` reads every `flow()` when it is called, not when it is joined: a step added to a branch or a saga body
 after `parallel(...)` or `saga(...)` is part of the document. `build()` links node *i* to node *i + 1*, writes nested flows after the top flow and raises
-`SagatError(VALIDATION_FAILED)` for what the server would refuse and the builder can see (a duplicate id, an empty
+`SagatError(VALIDATION_FAILED)` for locally visible constraints (a duplicate id, an empty
 saga, a dangling reference, an `irreversible` step with a compensation...). The canonical text (`to_json()`, RFC 8785: keys
 sorted at every depth by UTF-16 code units, not code points, so U+1F600 sorts before U+FF5E; numbers as ECMAScript
-prints them; no whitespace) is byte-identical across the five SDKs.
+prints them; no whitespace) is byte-identical across the six SDKs.
 
 ## Errors
 
 Every failure is one `SagatError` with `code`, `message` (safe to log: never a payload, a token or a secret),
 `status` (HTTP status, or the gRPC status name), `retryable`, `trace_id`, `reason`, `retry_after_ms` and
 `remediation`. The catalog (`sdks/error-catalog.json`) is embedded and a test proves the copy is current. The SDK
-retries only when repeating a call cannot do harm (`sdks/SPEC.md` section 5); never a 4xx other than 429. An HTTP
+retries only when repeating a call cannot do harm (`sdks/SPEC.md` section 5); HTTP 408 maps to UNAVAILABLE; other non-rate-limit 4xx failures do not become retriable merely because a body says so. An HTTP
 redirect is never followed (it could carry the token to another host): a 3xx is a `PROTOCOL` error with the status
 kept. Certificate verification is never switched off (a test reads the source for it).
 
@@ -307,3 +309,31 @@ Use the database builder with a logical connection created in Sagat. See the
 [five-language guide](../../docs/guides/managed-database-sdk.md) for typed parameters,
 result consumption, permissions and the shared real-service scenario. Credentials
 are resolved by the separate managed executor.
+
+<!-- EGM directory contract -->
+
+## Interface
+
+- Distribution sagat-octopus-orchestrator 0.2.0 declares Python >=3.10, httpx/grpcio/protobuf dependencies and an optional OpenTelemetry extra. Setuptools includes the SDK package, py.typed and generated typing metadata. [pyproject.toml:requires-python] [pyproject.toml:dependencies] [pyproject.toml:optional-dependencies] [pyproject.toml:package-data]
+
+- [proto](./proto/README.md) — component contract.
+- [sagat_octopus_orchestrator](./sagat_octopus_orchestrator/README.md) — component contract.
+- [scripts](./scripts/README.md) — component contract.
+
+## Invariants
+
+- None
+
+## Side Effects
+
+- None
+
+## Verification
+
+Run from the repository root:
+
+```sh
+cd sdks/python && .venv/bin/python -m pytest && .venv/bin/mypy && .venv/bin/ruff check .
+```
+
+These commands are documented from the existing build configuration; they were not executed during this documentation update.

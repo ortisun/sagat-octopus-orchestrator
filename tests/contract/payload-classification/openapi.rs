@@ -367,8 +367,13 @@ fn operations_outside_the_approved_additions_and_event_extensions_are_byte_stabl
     // this digest; the baseline update does not exclude the changed operation.
     // Approved feature 037 (owner decision of 2026-11-01) changes only operateRun: the
     // OUTCOME_UNRESOLVED refusal and the MARK_MANUAL_REVIEW wording. No other operation changed.
+    // EGM drift report DRIFT-001 rewrites only the createScript availability text (all five
+    // languages are accepted for authoring; the old text said only TypeScript and Python were
+    // built). The digest was recomputed from the reviewed one-operation text diff.
+    // The digest below covers both reviewed text changes together; it was recomputed on the merged
+    // document (the two operations differ, so neither earlier value remains valid).
     assert_eq!(
-        digest, "cc2921b68f4501fc43bcc8f5f50fc3afde290659b2ad9d08bc36aa04845ffe87",
+        digest, "ad2c46c519e0bcbccd37712fa84cef4b0b5c1f7c8b98161cdca0ae341396af56",
         "an existing operation outside feature 016 changed"
     );
 }

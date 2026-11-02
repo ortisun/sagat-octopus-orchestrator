@@ -1,0 +1,35 @@
+# Draft AsyncAPI addition for feature 020 (not implemented). Merged into
+# specs/001-platform-foundation/contracts/events.asyncapi.yaml by T020-038 as a new message (the document
+# only grows: docs/event-schema-evolution.md); events.baseline.json is regenerated on purpose.
+# Sent only to the destination of a STREAM analytics sink, through the ADR-0025 delivery pipeline:
+# same headers, same stable delivery id, same at-least-once semantics, same DEAD and redrive.
+components:
+  messages:
+    AnalyticsBatchPart:
+      name: AnalyticsBatchPart
+      title: A part of an acknowledged analytics batch
+      summary: >-
+        One part (at most the 64 KiB delivery payload bound) of a frozen analytics batch. Consumers must
+        deduplicate records by (key, version); a redelivered part carries the same deliveryId and identical
+        records. Parts of one batch may arrive in any order; `part`/`parts` let a consumer know when it has
+        all of them.
+      headers:
+        type: object
+        properties:
+          eventId: {type: string, description: '<sinkId>:<regionEpoch>:<shard>:<batchSeq>:<part>'}
+          eventType: {const: analytics.batch}
+          deliveryId: {type: string, format: uuid}
+          attempt: {type: integer}
+          schemaVersion: {const: '1'}
+          traceparent: {type: string}
+      payload:
+        type: object
+        required: [schemaVersion, batch, part, parts, records]
+        properties:
+          schemaVersion: {const: sagat.analytics.v1}
+          batch: {type: string}
+          part: {type: integer, minimum: 1}
+          parts: {type: integer, minimum: 1}
+          records:
+            type: array
+            items: {$ref: 'https://sagat-octopus-orchestrator.example/schemas/analytics/sagat.analytics.v1.json'}

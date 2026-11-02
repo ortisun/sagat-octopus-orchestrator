@@ -1,0 +1,186 @@
+{
+  "scope": "Frozen 203 bootstrap READMEs, including their referenced current local contracts.",
+  "head": "888074e6237b2a1ce9c85f83ec5703b081c65dd6",
+  "review_complete": true,
+  "counts": {
+    "documents": 203,
+    "distinct_findings": 4,
+    "Major": 2,
+    "Nit": 2,
+    "affected_readmes": 6,
+    "no_drift_detected_readmes": 197
+  },
+  "findings": [
+    {
+      "id": "DRIFT-001",
+      "priority": "Major",
+      "status": "Open",
+      "title": "Script language entry points disagree with the root guide",
+      "documents": [
+        {
+          "path": "README.md",
+          "line": 320
+        }
+      ],
+      "evidence": [
+        {
+          "path": "README.md",
+          "line": 320,
+          "sha256": "f70b40f1f8c571498069edc7ca9ebe3cb7afb21473842453879268d727e5b642"
+        },
+        {
+          "path": "frontend/apps/studio/src/features/scripts/languages.ts",
+          "line": 40,
+          "sha256": "5d6cf98be3bd60078663eecccdca16ef43f39ba0023bd29f9898f6ca6e76f2b5"
+        },
+        {
+          "path": "frontend/apps/studio/src/features/scripts/CreateScriptDialog.tsx",
+          "line": 67,
+          "sha256": "2d339dcd7b677f35f2611a667d698de24e32f4b5a6e118117638701652284cfa"
+        },
+        {
+          "path": "crates/domain/src/scripts.rs",
+          "line": 109,
+          "sha256": "9e88a0b48ebb5e8746f98656ecb3083ed53404c7e35d7095d4db32470dec9e37"
+        },
+        {
+          "path": "crates/application/src/scripts.rs",
+          "line": 958,
+          "sha256": "c3d835e7fe5e88f90231758a92d344867ecfd8f3e343dc93e1498f42f29cc3fe"
+        },
+        {
+          "path": "apps/cli/src/script.rs",
+          "line": 61,
+          "sha256": "337d4c232cffd6a8395d44ca96c21649b3abd2f2db9f06f83633dda049441d42"
+        },
+        {
+          "path": "specs/001-platform-foundation/contracts/openapi.yaml",
+          "line": 3138,
+          "sha256": "302f0901904eed82329de0a5906a49b2c76865ffbcabfe72af0510e1cd9d0687"
+        },
+        {
+          "path": "frontend/apps/studio/src/api/schema.d.ts",
+          "line": 2207,
+          "sha256": "9af10e5fb2c26909496e4c099efcd17e6c393eb1bcc65bde4726e3e0553259b4"
+        }
+      ],
+      "difference": "The root guide directs C#/Go/Java authors to Studio/the script API after the TypeScript/Python-only CLI. Studio disables Go and Java, while server authoring validation accepts all five. The referenced OpenAPI createScript description and its generated TypeScript comment still say only TypeScript/Python are built and reject the other three.",
+      "correction": "State the current entry-point matrix explicitly: CLI TypeScript/Python; Studio TypeScript/Python/C#; API authoring accepts all five subject to configured runner/toolchain capabilities. Align canonical OpenAPI availability text and regenerate derived declarations. Track any Studio expansion as implementation work rather than imply it already exists.",
+      "closure": "Root instructions and contract availability text agree with the actual selectors/validators; genuine execution acceptance remains a separate gate."
+    },
+    {
+      "id": "DRIFT-002",
+      "priority": "Nit",
+      "status": "Open",
+      "title": "Java installation notes deny an existing release pipeline",
+      "documents": [
+        {
+          "path": "sdks/java/README.md",
+          "line": 25
+        }
+      ],
+      "evidence": [
+        {
+          "path": "sdks/java/README.md",
+          "line": 25,
+          "sha256": "f8461b68e0711c7e5712498e3ae0c66c924e9303a207f46dd1f9dedb68b89a1e"
+        },
+        {
+          "path": ".github/workflows/release.yml",
+          "line": 99,
+          "sha256": "7fb33ce3f170714bfe5c361416c58788d92a13405b5c030c996cd4a1a9d32ab0"
+        },
+        {
+          "path": ".github/workflows/release.yml",
+          "line": 159,
+          "sha256": "7fb33ce3f170714bfe5c361416c58788d92a13405b5c030c996cd4a1a9d32ab0"
+        },
+        {
+          "path": "scripts/package-sdks.sh",
+          "line": 364,
+          "sha256": "bde6126a20e20f9e9f5a552a9e53d8a4af04d47c2e8a72f996afc010d1717b42"
+        }
+      ],
+      "difference": "The installation section says no signing or release pipeline exists. The current workflow packages SDKs, collects artifacts, attests provenance and conditionally publishes GitHub Releases, including Java artifacts produced by package-sdks.sh.",
+      "correction": "Describe the existing GitHub packaging/attestation/release path and distinguish it from deferred external Maven repository publication and Maven-specific signing. Retain local-install instructions.",
+      "closure": "The README describes the existing local source pipeline without claiming Maven Central publication, a successful remote workflow, a published tag or a signing mechanism not inspected here."
+    },
+    {
+      "id": "DRIFT-003",
+      "priority": "Major",
+      "status": "Open",
+      "title": "Java mediated calls are assigned to the wrong output channel",
+      "documents": [
+        {
+          "path": "runners/java/host/README.md",
+          "line": 22
+        },
+        {
+          "path": "runners/java/host/sagat/README.md",
+          "line": 22
+        },
+        {
+          "path": "runners/java/host/sagat/host/README.md",
+          "line": 23
+        }
+      ],
+      "evidence": [
+        {
+          "path": "runners/java/host/sagat/host/RuntimeHost.java",
+          "line": 29,
+          "sha256": "350ea31dbb2906ec593677424a1391fc23a1af45ea3fa158c17ec369c91fda86"
+        },
+        {
+          "path": "runners/java/host/sagat/host/RuntimeHost.java",
+          "line": 105,
+          "sha256": "350ea31dbb2906ec593677424a1391fc23a1af45ea3fa158c17ec369c91fda86"
+        },
+        {
+          "path": "runners/java/host/sagat/host/RuntimeHost.java",
+          "line": 159,
+          "sha256": "350ea31dbb2906ec593677424a1391fc23a1af45ea3fa158c17ec369c91fda86"
+        },
+        {
+          "path": "runners/java/host/sagat/host/RuntimeHost.java",
+          "line": 163,
+          "sha256": "350ea31dbb2906ec593677424a1391fc23a1af45ea3fa158c17ec369c91fda86"
+        }
+      ],
+      "difference": "Three contracts say mediated fetch/secret requests and script logs go to stderr. RuntimeHost preserves the original System.out as its JSON protocol channel; OctopusHost.call sends requests through that preserved channel. Only ordinary script stdout and log values are directed to stderr.",
+      "correction": "In all three contracts, document fetch/secret requests on the preserved stdout JSON channel, replies on stdin, and ordinary script output/logs on stderr.",
+      "closure": "All three Side Effects sections describe the actual channel split without changing the runner protocol."
+    },
+    {
+      "id": "DRIFT-004",
+      "priority": "Nit",
+      "status": "Open",
+      "title": "C# reporting uses five attempts, not a five-retry budget",
+      "documents": [
+        {
+          "path": "sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/Workers/README.md",
+          "line": 16
+        }
+      ],
+      "evidence": [
+        {
+          "path": "sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/Workers/README.md",
+          "line": 16,
+          "sha256": "3d01fdf3faf5be59414e1fb5e2eed0beeb1b168390e6188c9aff97420079061b"
+        },
+        {
+          "path": "sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/Workers/WorkerHost.cs",
+          "line": 21,
+          "sha256": "f4949b32dfb4eedf929018687fc37b3d9fa867cefaf0d084ad7151f484680006"
+        },
+        {
+          "path": "sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/Workers/WorkerHost.cs",
+          "line": 1136,
+          "sha256": "f4949b32dfb4eedf929018687fc37b3d9fa867cefaf0d084ad7151f484680006"
+        }
+      ],
+      "difference": "The contract calls the report budget five safe retries. ReportAttempts is 5 and WithRetriesAsync permits another call only while n + 1 < ReportAttempts: at most five total attempts, comprising an initial call and four retries. Stale/non-retryable failures stop sooner.",
+      "correction": "Use \u201cat most five total attempts (up to four retries), with a stable task-derived key.\u201d",
+      "closure": "The documented terminology distinguishes the initial attempt from retries; no runtime failure is inferred."
+    }
+  ]
+}

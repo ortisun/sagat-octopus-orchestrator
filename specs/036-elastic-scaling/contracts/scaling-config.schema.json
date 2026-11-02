@@ -1,0 +1,211 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "scaling-config.schema.json",
+  "title": "Sagat scaling configuration (feature 036)",
+  "description": "The document named by SAGAT_SCALING_CONFIG_FILE. The evaluator validates it, mirrors the signals, sources and policies into versioned rows with owner CONFIG, and keeps the last valid version when a new one is invalid or unreadable. Ceilings, the destination allowlist, the database budget and the pool names live only here: the management interface cannot change them.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version"],
+  "properties": {
+    "version": { "const": 1 },
+    "enabled": { "type": "boolean", "default": true, "description": "The global switch. false: nothing is applied or published as authoritative; decisions are still evaluated in observe mode." },
+    "samplingIntervalSeconds": { "type": "integer", "minimum": 5, "maximum": 300, "default": 10 },
+    "evaluationIntervalSeconds": { "type": "integer", "minimum": 5, "maximum": 300, "default": 15 },
+    "decisionRetentionDays": { "type": "integer", "minimum": 1, "maximum": 90, "default": 14 },
+    "units": {
+      "type": "object",
+      "description": "Per deployment unit: availability floor and hard ceilings. Units not listed take the defaults of the platform.",
+      "propertyNames": { "$ref": "#/$defs/unit" },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "minReplicas": { "type": "integer", "minimum": 1, "maximum": 64, "description": "Availability floor. Default 2 for engine and control-plane." },
+          "maxReplicas": { "type": "integer", "minimum": 1, "maximum": 64, "description": "Hard ceiling. The engine can never exceed 64 (one replica per scheduler shard)." },
+          "costCeiling": { "type": "integer", "minimum": 1, "maximum": 64 },
+          "perReplicaConnections": { "type": "integer", "minimum": 1, "maximum": 500 },
+          "connectionWeight": { "type": "integer", "minimum": 1, "maximum": 16, "default": 1 },
+          "changeWindowSeconds": { "type": "integer", "minimum": 5, "maximum": 3600, "default": 60, "description": "The published desired capacity of the unit changes at most once per window, however many policies target it. Never below the evaluation interval." }
+        }
+      }
+    },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["serverMaxConnections"],
+      "properties": {
+        "serverMaxConnections": { "type": "integer", "minimum": 10, "maximum": 10000 },
+        "reserveConnections": { "type": "integer", "minimum": 0, "maximum": 1000, "default": 10, "description": "Kept free for the migrations, the administration and the connection pooler." }
+      }
+    },
+    "pools": {
+      "type": "array",
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/poolName" }
+    },
+    "egress": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The destinations a pulled source may reach. Anything not listed is refused at declaration and at every query. An entry matches a host and a port exactly; no wildcard.",
+      "properties": {
+        "allow": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["host", "port"],
+            "properties": {
+              "host": { "type": "string", "minLength": 1, "maxLength": 253, "pattern": "^[A-Za-z0-9.-]+$" },
+              "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+              "tls": { "type": "boolean", "default": true },
+              "allowPrivate": { "type": "boolean", "default": false, "description": "Permit the host to resolve to a private or loopback address, as an in-cluster monitoring service does. The address is still checked on every connection." }
+            }
+          }
+        }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "maxItems": 32,
+      "items": { "$ref": "#/$defs/source" }
+    },
+    "signals": {
+      "type": "array",
+      "maxItems": 32,
+      "description": "Custom signals an operator publishes samples for.",
+      "items": { "$ref": "#/$defs/customSignal" }
+    },
+    "policies": {
+      "type": "array",
+      "maxItems": 32,
+      "items": { "$ref": "#/$defs/policy" }
+    }
+  },
+  "$defs": {
+    "unit": { "type": "string", "pattern": "^(engine|control-plane|ingestion|pool:[a-z0-9][a-z0-9-]{0,39})$" },
+    "poolName": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,39}$" },
+    "name": { "type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,62}$" },
+    "signalName": { "type": "string", "pattern": "^[a-z][a-z0-9_.]{0,62}$" },
+    "unitOfMeasure": { "enum": ["messages", "seconds", "count", "ratio", "percent", "cores", "bytes", "replicas"] },
+    "range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min", "max"],
+      "properties": { "min": { "type": "number" }, "max": { "type": "number" } }
+    },
+    "customSignal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "unit", "range", "freshnessSeconds"],
+      "properties": {
+        "name": { "$ref": "#/$defs/signalName" },
+        "unit": { "$ref": "#/$defs/unitOfMeasure" },
+        "range": { "$ref": "#/$defs/range" },
+        "freshnessSeconds": { "type": "integer", "minimum": 5, "maximum": 3600 },
+        "exported": { "type": "boolean", "default": false }
+      }
+    },
+    "source": {
+      "type": "object",
+      "required": ["name", "kind", "unit", "range", "intervalSeconds", "freshnessSeconds"],
+      "properties": {
+        "name": { "$ref": "#/$defs/name" },
+        "kind": { "enum": ["METRICS_QUERY", "BROKER_QUEUE"] },
+        "unit": { "$ref": "#/$defs/unitOfMeasure" },
+        "range": { "$ref": "#/$defs/range" },
+        "intervalSeconds": { "type": "integer", "minimum": 5, "maximum": 3600 },
+        "freshnessSeconds": { "type": "integer", "minimum": 5, "maximum": 3600 },
+        "exported": { "type": "boolean", "default": false },
+        "credentialFile": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,62}$", "description": "The name of a file under the mounted secrets directory. Never a path, never the secret. With a credential the destination must use TLS." }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "kind": { "const": "METRICS_QUERY" },
+            "destination": { "type": "string", "format": "uri", "maxLength": 512 },
+            "query": { "type": "string", "minLength": 1, "maxLength": 2048, "description": "An instant query. It must reduce to one finite number; anything else makes the signal unavailable." }
+          },
+          "required": ["destination", "query"]
+        },
+        {
+          "properties": {
+            "kind": { "const": "BROKER_QUEUE" },
+            "broker": {
+              "type": "object",
+              "required": ["kind"],
+              "properties": {
+                "kind": { "enum": ["KAFKA", "NATS", "SQS"] },
+                "servers": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "type": "string", "maxLength": 253 } },
+                "topic": { "type": "string", "maxLength": 249 },
+                "stream": { "type": "string", "maxLength": 255 },
+                "consumer": { "type": "string", "maxLength": 255 },
+                "queueUrl": { "type": "string", "format": "uri", "maxLength": 1024 },
+                "region": { "type": "string", "maxLength": 32 }
+              },
+              "additionalProperties": false
+            }
+          },
+          "required": ["broker"]
+        }
+      ]
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxChange"],
+      "properties": {
+        "maxChange": { "type": "integer", "minimum": 1, "maximum": 64 },
+        "everySeconds": { "type": "integer", "minimum": 0, "maximum": 3600, "default": 0 }
+      }
+    },
+    "direction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["step"],
+      "properties": {
+        "step": { "$ref": "#/$defs/step" },
+        "stabilizationSeconds": { "type": "integer", "minimum": 0, "maximum": 3600, "default": 0 }
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["signal", "interpretation", "target"],
+      "properties": {
+        "signal": { "type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,62}$" },
+        "interpretation": { "enum": ["DEMAND", "UTILISATION"] },
+        "target": { "type": "number", "exclusiveMinimum": 0 },
+        "tolerance": { "type": "number", "minimum": 0, "maximum": 0.5, "default": 0.1, "description": "Utilisation only." }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "target", "bindings", "min", "max", "mode"],
+      "properties": {
+        "name": { "$ref": "#/$defs/name" },
+        "target": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["unit", "role"],
+          "properties": {
+            "unit": { "$ref": "#/$defs/unit" },
+            "role": { "enum": ["INGEST", "SCHEDULER", "EVENT_DISPATCH", "DELIVERY", "WORKER_POOL", "WORKER_API", "INGRESS"] },
+            "kind": { "enum": ["REPLICAS"], "default": "REPLICAS", "description": "Slice 1. TUNABLE and RESOURCE arrive with slice 3." }
+          }
+        },
+        "bindings": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "$ref": "#/$defs/binding" } },
+        "min": { "type": "integer", "minimum": 1, "maximum": 64 },
+        "max": { "type": "integer", "minimum": 1, "maximum": 64 },
+        "costCeiling": { "type": "integer", "minimum": 1, "maximum": 64 },
+        "scaleOut": { "$ref": "#/$defs/direction" },
+        "scaleIn": { "$ref": "#/$defs/direction" },
+        "cooldownSeconds": { "type": "integer", "minimum": 0, "maximum": 3600, "default": 0 },
+        "combine": { "enum": ["MAX"], "default": "MAX" },
+        "mode": { "enum": ["OBSERVE", "RECOMMEND", "ENFORCE"], "default": "OBSERVE" }
+      }
+    }
+  }
+}

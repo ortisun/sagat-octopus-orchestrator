@@ -1511,8 +1511,9 @@ above. Races use held locks and `pg_stat_activity`, barriers or in-transaction h
 | Tenant boundary | `approvals.rs::current_membership_and_tenant_boundary_are_checked_before_receipt_replay`, `a_revoked_approver_cannot_replay_a_receipt_it_committed`; `chains.rs` tenant-claim tests; `integration_security_multitenancy` (123) |
 | Secrets | `operations/redaction.rs::a_resolved_secret_and_secret_shaped_text_never_leave_the_operation_boundary`; `operations.rs::undeclared_input_canary_never_crosses_…`; `integration_security_multitenancy::secrets` and the G48 pool tests |
 
-Independently inspected persistence: every fault test ends with `verify_run` / `assert_consistent`
-(the stored projection equals a replay of the journal) and the tests read the rows the claim is about
+Independently inspected persistence (*corrected 2026-11-01*: not every fault test ends with
+`verify_run` / `assert_consistent`; see "Fault-oracle inventory" at the end of this report). The tests
+read the rows the claim is about
 (`run_instance_usage`, `tenant_iteration_usage`, `loop_timers`, `chain_links`, `event_outbox`,
 `audit_records`) rather than only the API response.
 
@@ -4307,3 +4308,78 @@ rollback still has its own empty/retained native coverage and makes no online gu
 Migration error assertions now include the original database error if the version differs,
 so a later regression will not hide its cause behind only two migration numbers. New CI
 verification is required; no canonical task closes.
+
+
+## Saga/certification fixture lifetime checkpoint — 2026-10-30
+
+PR #68 CI at `2497115b` failed the saga/certification ordering proof; the panic discarded the actual planner result. A new real-Run-lock regression independently demonstrated the fixture's ten-second SQL budget expiring before its allowed observations completed. The isolated RED returned PostgreSQL statement timeout; explicit pool configuration and fresh scheduler authority made both saga tests pass (2/2, 13.94 s), retaining the original concurrency, compensation, CAS and replay assertions. This does not establish the discarded historical error. Commands, failure evidence, limits and follow-up gates: [EGM CI follow-up](../../tasks/reviews/2026-10-30-egm-ci-follow-up.md). Full new-head CI is required; no canonical task closes.
+
+## Fault-oracle inventory — 2026-11-01 (corrects the 2026-10-18 statement above)
+
+The release-gate checkpoint above said that *every* fault test ends with `verify_run` /
+`assert_consistent`. That is false, and it was already false at the cited head `7d7868ff`: the
+EGM open-task review (REV-004, `tasks/reviews/2026-10-30-open-tasks/readiness_codebase_report.md`,
+CODE-002) found counterexamples in `collection_sources.rs` there. The 87 recorded passes are not
+disproved; only the description of their oracle was wrong.
+
+A static inventory of the fault target at `develop@1f2e6278` (script: a test function counts as a
+replay oracle when it, or a test helper it calls up to four levels deep, calls `verify_run` or
+`assert_consistent`) gives **92 test functions: 54 end in a replay comparison, 38 assert persisted
+state directly** (rows, counters, statuses, typed errors, receipts) without comparing a replay.
+Static analysis can misattribute a helper call; it is an inventory, not a test result.
+
+| Fault file / module | Replay oracle | Persisted-state assertions only | Tests |
+|---|---:|---:|---:|
+| `approval_combinations` | 8 | 0 | 8 |
+| `approvals` | 0 | 13 | 13 |
+| `chains` | 15 | 8 | 23 |
+| `collection_sources` | 0 | 5 | 5 |
+| `collections` | 1 | 1 | 2 |
+| `loops` | 11 | 5 | 16 |
+| `operations` | 8 | 6 | 14 |
+| `scope_compensation` | 8 | 0 | 8 |
+| `switch` | 3 | 0 | 3 |
+
+Tests without a replay comparison:
+
+- `approvals.rs::stale_scheduler_fence_cannot_open_or_expire_an_approval`
+- `approvals.rs::settlement_outbox_failures_roll_back_decision_and_expiry`
+- `approvals.rs::restart_and_identical_replay_return_the_original_authorized_receipt`
+- `approvals.rs::decision_and_expiry_race_has_one_first_commit_winner`
+- `approvals.rs::expiry_then_decision_and_decision_then_expiry_keep_the_first_outcome`
+- `approvals.rs::current_membership_and_tenant_boundary_are_checked_before_receipt_replay`
+- `approvals.rs::outbox_failure_rolls_back_request_timer_journal_projection_and_audit`
+- `approvals.rs::a_used_decision_key_with_another_body_is_refused_after_restart_and_changes_nothing`
+- `approvals.rs::a_revoked_approver_cannot_replay_a_receipt_it_committed`
+- `approvals.rs::an_audit_failure_rolls_back_a_decision_and_the_retry_commits_it_once`
+- `approvals.rs::an_audit_failure_rolls_back_an_expiry_and_the_retry_expires_it_once`
+- `approvals.rs::an_audit_failure_rolls_back_opening_and_the_retry_opens_one_request`
+- `approvals.rs::a_raw_signal_never_settles_an_approval_before_during_or_after_its_outcome`
+- `chains.rs::restart_recovers_the_successor_when_the_handoff_hint_is_lost`
+- `chains.rs::chain_limit_outbox_failure_rolls_back_and_retry_finalizes_once`
+- `chains.rs::continuation_expression_failure_rolls_back_and_retry_finalizes_once`
+- `chains.rs::handoff_keeps_the_started_definition_version_after_a_new_publish`
+- `chains.rs::a_chain_signal_is_never_held_for_the_successor_in_either_order`
+- `chains.rs::a_quota_lowered_while_the_hand_off_waits_is_honoured_by_the_write`
+- `chains.rs::parent_cancellation_and_a_child_hand_off_commit_in_either_order_and_the_latch_never_gets_lost`
+- `chains.rs::a_chain_update_and_a_hand_off_commit_in_either_order_without_losing_or_repeating_the_update`
+- `collection_sources.rs::a_failure_after_the_read_and_before_the_commit_leaves_nothing_and_the_retry_enters_once`
+- `collection_sources.rs::a_scheduler_that_loses_its_shard_after_reading_commits_nothing`
+- `collection_sources.rs::a_replica_without_a_current_lease_does_not_even_read_the_blob`
+- `collection_sources.rs::two_attempts_to_enter_the_same_collection_leave_one_membership`
+- `collection_sources.rs::a_run_cancelled_before_entry_never_reads_the_blob`
+- `collections.rs::a_result_expression_reads_the_item_and_index_of_every_iteration`
+- `loops.rs::delay_checkpoint_restart_and_duplicate_timer_fire_are_atomic`
+- `loops.rs::stale_fence_capacity_and_instance_budget_fail_without_timer_side_effects`
+- `loops.rs::outbox_and_audit_failures_roll_back_the_whole_checkpoint`
+- `loops.rs::timer_delivery_fails_closed_after_cancel_signal_or_update_commit` — asserts through `assert_timer_fails_closed_after_competing_commit` (typed error and unchanged rows)
+- `loops.rs::terminal_routing_replays_and_destructive_down_migration_fails_closed`
+- `operations.rs::lost_update_response_replays_the_committed_receipt_without_a_second_mutation`
+- `operations.rs::update_and_signal_race_serialize_without_losing_either_transition`
+- `operations.rs::undeclared_input_canary_never_crosses_the_operation_response_or_evidence_boundary`
+- `operations/mutability.rs::every_status_but_running_and_waiting_refuses_an_update_and_still_serves_the_query`
+- `operations/query_invariance.rs::the_detectors_see_a_touched_timestamp_and_an_extra_event`
+- `operations/redaction.rs::a_resolved_secret_and_secret_shaped_text_never_leave_the_operation_boundary`
+
+These still read the rows their claim is about. Whether each one also needs a replay comparison is
+decided case by case under T014-040; none is added or credited by this inventory alone.

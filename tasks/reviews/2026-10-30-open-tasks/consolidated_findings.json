@@ -1,0 +1,472 @@
+{
+  "snapshot": "888074e6237b2a1ce9c85f83ec5703b081c65dd6",
+  "scope": "12 captured entries, 3 source task files, 18 canonical inventories",
+  "review_complete": true,
+  "runtime_acceptance": false,
+  "canonical_tasks_changed": false,
+  "raw_findings": [
+    {
+      "id": "ZO-001",
+      "stage": 5,
+      "severity": "Major",
+      "report": "zoom_out_report.md",
+      "actions": [
+        "REV-001"
+      ]
+    },
+    {
+      "id": "ZO-002",
+      "stage": 5,
+      "severity": "Major",
+      "report": "zoom_out_report.md",
+      "actions": [
+        "REV-002"
+      ]
+    },
+    {
+      "id": "ZO-003",
+      "stage": 5,
+      "severity": "Major",
+      "report": "zoom_out_report.md",
+      "actions": [
+        "REV-006"
+      ]
+    },
+    {
+      "id": "ZO-004",
+      "stage": 5,
+      "severity": "Major",
+      "report": "zoom_out_report.md",
+      "actions": [
+        "REV-005"
+      ]
+    },
+    {
+      "id": "COMP-001",
+      "stage": 6,
+      "severity": "Major",
+      "report": "comprehension_report.md",
+      "actions": [
+        "REV-001"
+      ]
+    },
+    {
+      "id": "COMP-002",
+      "stage": 6,
+      "severity": "Major",
+      "report": "comprehension_report.md",
+      "actions": [
+        "REV-002"
+      ]
+    },
+    {
+      "id": "DESIGN-001",
+      "stage": 7,
+      "severity": "Major",
+      "report": "critic_design_report.md",
+      "actions": [
+        "REV-001"
+      ]
+    },
+    {
+      "id": "DESIGN-002",
+      "stage": 7,
+      "severity": "Major",
+      "report": "critic_design_report.md",
+      "actions": [
+        "REV-002"
+      ]
+    },
+    {
+      "id": "DESIGN-003",
+      "stage": 7,
+      "severity": "Nit",
+      "report": "critic_design_report.md",
+      "actions": [
+        "REV-006"
+      ]
+    },
+    {
+      "id": "STRUCT-001",
+      "stage": 7,
+      "severity": "Major",
+      "report": "critic_structural_report.md",
+      "actions": [
+        "REV-002"
+      ]
+    },
+    {
+      "id": "STRUCT-002",
+      "stage": 7,
+      "severity": "Nit",
+      "report": "critic_structural_report.md",
+      "actions": [
+        "REV-001"
+      ]
+    },
+    {
+      "id": "STYLE7-001",
+      "stage": 7,
+      "severity": "Nit",
+      "report": "critic_style_report.md",
+      "actions": [
+        "REV-007"
+      ]
+    },
+    {
+      "id": "STYLE7-002",
+      "stage": 7,
+      "severity": "Nit",
+      "report": "critic_style_report.md",
+      "actions": [
+        "REV-001"
+      ]
+    },
+    {
+      "id": "IZO-001",
+      "stage": 8,
+      "severity": "Major",
+      "report": "intermediate_zoom_out_report.md",
+      "actions": [
+        "REV-001"
+      ]
+    },
+    {
+      "id": "IZO-002",
+      "stage": 8,
+      "severity": "Major",
+      "report": "intermediate_zoom_out_report.md",
+      "actions": [
+        "REV-002"
+      ]
+    },
+    {
+      "id": "IZO-003",
+      "stage": 8,
+      "severity": "Nit",
+      "report": "intermediate_zoom_out_report.md",
+      "actions": [
+        "REV-006"
+      ]
+    },
+    {
+      "id": "IZO-004",
+      "stage": 8,
+      "severity": "Nit",
+      "report": "intermediate_zoom_out_report.md",
+      "actions": [
+        "REV-005"
+      ]
+    },
+    {
+      "id": "IZO-005",
+      "stage": 8,
+      "severity": "Nit",
+      "report": "intermediate_zoom_out_report.md",
+      "actions": [
+        "REV-007"
+      ]
+    },
+    {
+      "id": "READINESS-001",
+      "stage": 9,
+      "severity": "Major",
+      "report": "readiness_plan_report.md",
+      "actions": [
+        "REV-001"
+      ]
+    },
+    {
+      "id": "READINESS-002",
+      "stage": 9,
+      "severity": "Major",
+      "report": "readiness_plan_report.md",
+      "actions": [
+        "REV-002"
+      ]
+    },
+    {
+      "id": "READINESS-003",
+      "stage": 9,
+      "severity": "Nit",
+      "report": "readiness_plan_report.md",
+      "actions": [
+        "REV-003",
+        "REV-005"
+      ]
+    },
+    {
+      "id": "CODE-001",
+      "stage": 9,
+      "severity": "Major",
+      "report": "readiness_codebase_report.md",
+      "actions": [
+        "REV-003"
+      ]
+    },
+    {
+      "id": "CODE-002",
+      "stage": 9,
+      "severity": "Major",
+      "report": "readiness_codebase_report.md",
+      "actions": [
+        "REV-004"
+      ]
+    },
+    {
+      "id": "CODE-003",
+      "stage": 9,
+      "severity": "Major",
+      "report": "readiness_codebase_report.md",
+      "actions": [
+        "REV-005"
+      ]
+    },
+    {
+      "id": "CODE-004",
+      "stage": 9,
+      "severity": "Major",
+      "report": "readiness_codebase_report.md",
+      "actions": [
+        "REV-006"
+      ]
+    },
+    {
+      "id": "CODE-005",
+      "stage": 9,
+      "severity": "Major",
+      "report": "readiness_codebase_report.md",
+      "actions": [
+        "REV-002"
+      ]
+    },
+    {
+      "id": "CODE-006",
+      "stage": 9,
+      "severity": "Major",
+      "report": "readiness_codebase_report.md",
+      "actions": [
+        "REV-001"
+      ]
+    },
+    {
+      "id": "STYLE9-001",
+      "stage": 9,
+      "severity": "Major",
+      "report": "readiness_style_report.md",
+      "actions": [
+        "REV-002"
+      ]
+    },
+    {
+      "id": "STYLE9-002",
+      "stage": 9,
+      "severity": "Major",
+      "report": "readiness_style_report.md",
+      "actions": [
+        "REV-001"
+      ]
+    },
+    {
+      "id": "STYLE9-003",
+      "stage": 9,
+      "severity": "Major",
+      "report": "readiness_style_report.md",
+      "actions": [
+        "REV-005"
+      ]
+    },
+    {
+      "id": "STYLE9-004",
+      "stage": 9,
+      "severity": "Major",
+      "report": "readiness_style_report.md",
+      "actions": [
+        "REV-005"
+      ]
+    },
+    {
+      "id": "STYLE9-005",
+      "stage": 9,
+      "severity": "Nit",
+      "report": "readiness_style_report.md",
+      "actions": [
+        "REV-008"
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "id": "REV-001",
+      "priority": "Major",
+      "title": "Reconcile registry wording with the GitHub Releases-only decision",
+      "status": "Open",
+      "entries": [
+        "OT-011"
+      ],
+      "raw_findings": [
+        "ZO-001",
+        "COMP-001",
+        "DESIGN-001",
+        "STRUCT-002",
+        "STYLE7-002",
+        "IZO-001",
+        "READINESS-001",
+        "CODE-006",
+        "STYLE9-002"
+      ],
+      "closure": "Operative task/overview/traceability identify the authorized channel and actual remaining artifact/consumer checks; registries stay deferred without a new decision. Historical source and FR-006-008 remain traceable."
+    },
+    {
+      "id": "REV-002",
+      "priority": "Major",
+      "title": "Align human acceptance wording and the result template with N = 10",
+      "status": "Open",
+      "entries": [
+        "OT-010",
+        "OT-012"
+      ],
+      "raw_findings": [
+        "ZO-002",
+        "COMP-002",
+        "DESIGN-002",
+        "STRUCT-001",
+        "IZO-002",
+        "READINESS-002",
+        "CODE-005",
+        "STYLE9-001"
+      ],
+      "closure": "The SC-008-001 form uses fewer than 10 interactions (at most 9), preserving NOT RUN until genuine sessions. Shared source aliases retain distinct diagnosis/onboarding criteria and one evidence index; no duplicate study or new threshold decision."
+    },
+    {
+      "id": "REV-003",
+      "priority": "Major",
+      "title": "Publish the current remaining-change map and proof-frontier routes",
+      "status": "Open",
+      "entries": [
+        "OT-001",
+        "OT-002",
+        "OT-003",
+        "OT-004",
+        "OT-005",
+        "OT-006",
+        "OT-007",
+        "OT-008",
+        "OT-009"
+      ],
+      "raw_findings": [
+        "CODE-001",
+        "READINESS-003"
+      ],
+      "closure": "For each remaining bounded increment list existing behavior, required delta, Create/Modify/Delete or verification-only path:symbol, pinned source, prerequisite, named test/oracle and closure condition. Link existing plans rather than recreate unmerged work."
+    },
+    {
+      "id": "REV-004",
+      "priority": "Major",
+      "title": "Correct the universal fault replay-oracle claim",
+      "status": "Open",
+      "entries": [
+        "OT-005"
+      ],
+      "raw_findings": [
+        "CODE-002"
+      ],
+      "closure": "Replace the disproven universal description with case-to-oracle evidence at its source revision. Credit existing persisted-state checks and add only required remaining replay/accounting coverage; preserve the historical 87 passes and all failure records."
+    },
+    {
+      "id": "REV-005",
+      "priority": "Major",
+      "title": "Separate historical performance, remaining acceptance and per-wait ownership",
+      "status": "Open",
+      "entries": [
+        "OT-006",
+        "OT-008"
+      ],
+      "raw_findings": [
+        "ZO-004",
+        "IZO-004",
+        "READINESS-003",
+        "CODE-003",
+        "STYLE9-003",
+        "STYLE9-004"
+      ],
+      "closure": "Date the old scale failure, link later source-bound measurements, identify current/nested 100k prerequisites and distinguish zero dedicated resources per wait from shared process/pool/scheduler cost. Production ceilings remain unaccepted."
+    },
+    {
+      "id": "REV-006",
+      "priority": "Major",
+      "title": "Make forward-looking collection acceptance explicitly six-language",
+      "status": "Open",
+      "entries": [
+        "OT-003",
+        "OT-004",
+        "OT-007",
+        "OT-008"
+      ],
+      "raw_findings": [
+        "ZO-003",
+        "DESIGN-003",
+        "IZO-003",
+        "CODE-004"
+      ],
+      "closure": "Current instructions use all six official SDKs and shared scenarios/goldens, recording source/scenario/language filters. Historical five-language receipts stay unchanged; focused runs do not replace the integrated full gate."
+    },
+    {
+      "id": "REV-007",
+      "priority": "Nit",
+      "title": "Bind the purpose sentence to the canonical inventory snapshot",
+      "status": "Open",
+      "entries": [
+        "OT-001",
+        "OT-002",
+        "OT-003",
+        "OT-004",
+        "OT-005",
+        "OT-006",
+        "OT-007",
+        "OT-008",
+        "OT-009",
+        "OT-010",
+        "OT-011",
+        "OT-012"
+      ],
+      "raw_findings": [
+        "STYLE7-001",
+        "IZO-005"
+      ],
+      "closure": "State the 12 captured unchecked entries from specs/*/tasks.md and tasks/todo.md at the recorded revision; retain source locations and exclusions."
+    },
+    {
+      "id": "REV-008",
+      "priority": "Nit",
+      "title": "Expand compressed counts and separate phase timings",
+      "status": "Open",
+      "entries": [
+        "OT-004",
+        "OT-009"
+      ],
+      "raw_findings": [
+        "STYLE9-005"
+      ],
+      "closure": "Label passed/failed/ignored results and coordinator/nested/whole-command times with normal spacing, preserving every original number, source identity and failure."
+    }
+  ],
+  "counts": {
+    "raw": 32,
+    "raw_by_severity": {
+      "Blocker": 0,
+      "Major": 23,
+      "Nit": 9
+    },
+    "consolidated": 8,
+    "consolidated_by_severity": {
+      "Blocker": 0,
+      "Major": 6,
+      "Nit": 2
+    }
+  },
+  "severity_reconciliation": {
+    "REV-005": "The older summary alone was Nit in Stage8; Stage9 adds an overstrong quantitative ownership claim and missing current workload guidance, so the combined action is Major. No fresh benchmark defect is inferred.",
+    "REV-006": "Stage8/Design treat wording as Nit because the six-language infrastructure exists. Stage9 identifies forward closure instructions that still exclude Rust; action is Major for acceptance precision, not missing SDK implementation."
+  }
+}
