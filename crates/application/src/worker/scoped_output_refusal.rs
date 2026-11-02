@@ -266,7 +266,13 @@ where
         // compensation adds no stop (`prepare_scoped_content_refusal`): its own failure policy
         // applies, so a retryable failure keeps its retry, with the usual jitter.
         let retryable = task.instance.node().is_compensation()
-            && matches!(report, PathReport::Failure { retryable: true, .. });
+            && matches!(
+                report,
+                PathReport::Failure {
+                    retryable: true,
+                    ..
+                }
+            );
         let jitter_sample = self.entropy.unit();
         self.engine
             .run_addressed(
