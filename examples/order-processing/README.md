@@ -2,7 +2,7 @@
 
 Three workflows, the same activities and five SDK implementations. These examples use the
 **implemented v1 workflow IR**. The [additional primitives](../../specs/014-workflow-primitives/spec.md)
-are a separate proposal; none is needed to run this directory.
+belong to a separate feature with its own publication gates; none is needed to run these examples.
 
 | Use case | Workflow | What to observe |
 |---|---|---|
@@ -99,3 +99,30 @@ same five cases in every SDK. It checks persisted status, journal ordering and t
 activities, failure handling, invalid configuration and token redaction. Set
 `SAGAT_EXAMPLE_LANGS=typescript,python` to run a subset; a subset does not establish five-language
 parity. This suite does not replace the engine's crash/restart, tenant isolation or fault suites.
+
+## Interface
+
+- [dotnet](dotnet/README.md) — .NET order-processing command with Release build and launch wrappers.
+- [go](go/README.md) — Go order-processing command with build and launch wrappers.
+- [java](java/README.md) — Maven preparation and launch commands for the Java order-processing example.
+- [python](python/README.md) — Python order-processing command with virtualenv preparation and launch wrappers.
+- [typescript](typescript/README.md) — Preparation and launch commands for the TypeScript order-processing example.
+
+## Invariants
+
+- Commands require the four platform connection settings and use bounded client waits. [examples/order-processing/typescript/src/main.ts:setting] [examples/order-processing/typescript/src/main.ts:run]
+- Scenarios select routing, fulfillment, or reminder; reserve and notify are simulated activities, and notification rejection is permanent. [examples/order-processing/typescript/src/main.ts:scenarioSetting] [examples/order-processing/typescript/src/main.ts:run]
+
+## Side Effects
+
+- Preparation installs/builds the local SDK and example; execution starts a worker and a durable workflow run, then prints the outcome. [examples/order-processing/typescript/prepare.sh:npm_install] [examples/order-processing/typescript/src/main.ts:run]
+
+## Verification
+
+From the repository root, with Docker, the selected example toolchains, and a private `CARGO_TARGET_DIR` outside the checkout:
+
+```sh
+cargo test -p sagat-tests --test e2e_developer_experience --locked -- --ignored order_processing::
+```
+
+The shared real-platform suite is declared in `tests/Cargo.toml`; language preparation and run commands remain in the example READMEs. [tests/Cargo.toml:e2e_developer_experience]

@@ -1060,3 +1060,9 @@ mod discovery;
 
 #[path = "capacity_vacate.rs"]
 mod vacate;
+
+#[path = "capacity_acquire.rs"]
+mod acquire;
+
+#[path = "capacity_worker_leases.rs"]
+mod worker_leases;

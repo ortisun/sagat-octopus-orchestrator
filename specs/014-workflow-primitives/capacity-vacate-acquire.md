@@ -1,6 +1,6 @@
 # Vacate and Acquire for ChildRoot capacity members (B1d.2 / B2) — proposal D706–D715, revision 2
 
-Status: **Vacate implemented, dormant; CI validation pending. Acquire and the sweeper remain proposals.**
+Status: **Native Vacate and Acquire implemented and validated, still dormant. Owner approved a scheduler-tick sweeper and worker-lease-only possession gates on 2026-10-29; production coordination remains to be implemented.**
 Revision 2 followed correctness and architecture reviews; the native Vacate increment has separate
 transaction and storage/contract reviews (2026-10-28). Refs: T014-014..017/040/042, ADR-0030 §§13–19, ADR-0037, A0/A1 (`capacity.rs`), B0 lock inventory, B1a
 entry decision, `capacity-eligibility.md` D703–D705, `capacity-discovery.md` (B1d.1, read-only, another branch).
@@ -8,7 +8,7 @@ Ids: D706–D715, G714–G723, O705–O706 (range D701–D799 / G701–G799 / O7
 
 The pure transitions `CapacityGroup::vacate` and `acquire` exist and are tested. The transactional
 `PgCapacityVacateStore` now uses Vacate for **ChildRoot members only**, dormant, with no production caller.
-The native Acquire command remains unimplemented. Possession is not a permit: neither command leases, releases, cancels or changes a run, a
+The native Acquire command is implemented; [its evidence](./capacity-acquire.md) is bound to merged PR65 and CI40868186605 (all12 jobs passed, workspace4028/0/82 existing ignored; native Acquire17/0/0 and Vacate18/0/0). Possession is not a permit: neither command leases, releases, cancels or changes a run, a
 step or a chain. Items marked *(review)* come from a reviewer's reading of the code; re-verify them when the
 test is written, they are not yet evidence.
 

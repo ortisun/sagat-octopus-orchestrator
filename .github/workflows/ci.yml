@@ -34,6 +34,33 @@ jobs:
           # A failed test must not discard the dependencies already compiled.
           cache-on-failure: true
       - run: cargo fmt --all -- --check
+      - name: bounded ChildRoot holder discovery
+        env:
+          SAGAT_TEST_AS_RUNTIME_ROLE: "1"
+          RUST_TEST_THREADS: "2"
+        run: |
+          # Report both the pure shard table and the real PostgreSQL cases on a failure.
+          proof_failed=0
+          cargo test -p sagat-infra-postgres --lib --locked capacity_discovery::tests:: || proof_failed=1
+          cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::discovery::holders:: --nocapture || proof_failed=1
+          exit "$proof_failed"
+      - name: scoped event quota rollback boundary
+        env:
+          SAGAT_TEST_AS_RUNTIME_ROLE: "1"
+          RUST_TEST_THREADS: "2"
+        run: cargo test -p sagat-tests --test integration_workflow_primitives --locked -- scoped_event_storage::receiver::a_dispatcher_quota_refusal --nocapture
+      - name: worker capacity lease boundary
+        env:
+          SAGAT_TEST_AS_RUNTIME_ROLE: "1"
+          RUST_TEST_THREADS: "2"
+        run: |
+          cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::worker_leases:: --nocapture
+      - name: capacity transfer command regression
+        run: cargo test -p sagat-application --lib --locked capacity_
+      - name: capacity transfer adapter and audit regression
+        run: |
+          cargo test -p sagat-infra-postgres --lib --locked capacity_transfer::tests
+          cargo test -p sagat-domain --test capacity_acquire_audit --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: isolated C# compiler and runtime images
         run: |
@@ -52,6 +79,9 @@ jobs:
           SAGAT_TEST_AS_RUNTIME_ROLE: "1"
           RUST_TEST_THREADS: "2"
         run: |
+          cargo test -p sagat-tests --test contract_asyncapi_events_webhooks_messaging --locked
+          cargo test -p sagat-tests --test integration_workflow_primitives --locked -- hint_contract::capacity_acquire_hint_is_closed_control_metadata_without_execution_authority --exact --nocapture
+          cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::acquire:: --nocapture
           cargo test -p sagat-tests --test integration_workflow_primitives --locked -- loop_progress::expression_failure_drains_once_restarts_and_finishes_from_the_journal --exact --nocapture
           cargo test -p sagat-tests --test integration_security_multitenancy --locked -- bindings::releasing_the_leases_of_closed_sessions_is_an_index_lookup_and_not_a_scan_of_every_lease --exact --nocapture
           cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::downgrade_waits_for_writer_before_deciding_whether_storage_is_empty --exact --nocapture
@@ -75,6 +105,8 @@ jobs:
           # The producer is the immutable v0.2.0 tree, not a current-source imitation.
           fetch-depth: 0
       - run: rustup show active-toolchain
+      - name: current upgrade schema boundary before producer build
+        run: python3 scripts/check-upgrade-boundary.py
       - name: released producer, migration, current progress and released reader
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/sagat-upgrade-current-target
@@ -138,6 +170,8 @@ jobs:
       - run: rustup show active-toolchain
       - run: python3 -m unittest discover -s scripts/tests -v
       - run: python3 scripts/check-architecture.py
+      - run: python3 scripts/check-capacity-activation.py
+      - run: python3 scripts/check-upgrade-boundary.py
       - run: python3 scripts/check-vendor.py
       - run: python3 scripts/check-agent-config.py
 

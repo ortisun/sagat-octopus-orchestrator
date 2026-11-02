@@ -1082,3 +1082,25 @@ metrics → [operator guidance](runbooks/workflow-primitives.md). Source invento
 new or changed literal SQL step-status writers; actual worker-claim races use held database locks.
 [Evidence and limits](../specs/014-workflow-primitives/capacity-vacate-acquire.md) explicitly retain
 the interrupted local run and CI obligations. No task or public nested capability closes here.
+
+## Dormant native ChildRoot Acquire — 2026-10-29
+
+T014-014–017/040/042–044, FR-014-014/015 → `capacity_finish::acquire` native apply/refusal/replay,
+held-lock contention and COMMIT recovery tests → distinct internal typed `CurrentChildRootAcquireStore`
+port and additive reference-only `capacity.member.acquired` AsyncAPI hint → closed
+`workflow.capacity.acquire` span, transfer operation/outcome metrics and acquired transition counter
+→ [contract, proof plan and actual evidence](../specs/014-workflow-primitives/capacity-acquire.md).
+Command and adapter/audit unit steps passed CI40866588862; complete native/integrated CI remains
+pending. This checkpoint enables no production caller, nested admission, sweeper or claim guard.
+
+## Opt-in ChildRoot worker possession — 2026-10-29
+
+O705/O706, T014-014/040, FR-014-014/015 → `capacity_worker_possession` (domain examples/property),
+`capacity_finish::worker_leases` (runtime PostgreSQL grants/refusals, lock lifetime, continuation,
+legacy/default compatibility, reports/heartbeat and internal failure) → shared transactional
+root/exact-path guard and two bounded membership indexes → `worker.capacity.check` and closed
+`worker_claim_skipped_total` capacity reasons → [contract](../specs/014-workflow-primitives/contracts/README.md),
+[operator guidance](runbooks/workflow-primitives.md), [ADR-0075](adr/ADR-0075-worker-leases-retain-child-root-possession.md)
+and [actual evidence/open gates](../specs/014-workflow-primitives/capacity-coordinator.md).
+The source inventory gate has negative controls and documented text-scan limitations.
+Runtime activation, sweeper, admission and full canonical acceptance remain open.

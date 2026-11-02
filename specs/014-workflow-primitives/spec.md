@@ -683,3 +683,11 @@ genuine old uncertain forward to its real reconciliation lookup, preserve the Ap
 substituted output and exact report receipt/accounting, and prove released terminal reading
 after current finalization. This compatibility proof does not accept quota-refusal/drain or
 original-forward compensation under a stop; those remain separately required.
+
+### Dormant ChildRoot Acquire checkpoint — 2026-10-29
+
+An exact command may acquire a vacant group for its selected active, current, non-final ChildRoot
+when the head status is movable. Possession alone does not prove runnable work or permit a worker
+lease. Reconciliation returns the original immutable receipt after later transfers, continuation
+or Finish, while requiring current scheduler authority. The bounded contract, explicit exclusions
+and actual validation status are in [capacity-acquire.md](./capacity-acquire.md).

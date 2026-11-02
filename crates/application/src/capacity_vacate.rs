@@ -7,7 +7,6 @@ use crate::{
 };
 use sagat_domain::audit::AuditId;
 use sagat_domain::execution::{CapacityGroupId, CapacityMemberId, CapacityPossession, RunId};
-use sha2::{Digest as _, Sha256};
 use std::future::Future;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -23,28 +22,11 @@ impl CapacityVacateCommand {
     /// Domain-separated fixed-width identity; renewable authority and operation key are excluded.
     #[must_use]
     pub fn fingerprint(&self) -> [u8; 32] {
-        let mut hash = Sha256::new();
-        hash.update(b"sagat.capacity.transfer.child-root.v1\0");
-        hash.update([0_u8]); // VACATE. ACQUIRE has no native implementation in this slice.
-        for id in [
-            self.identity.scope.tenant_id().as_uuid(),
-            self.identity.scope.namespace_id().as_uuid(),
-            self.identity.group_id.as_uuid(),
-            self.identity.member_id.as_uuid(),
-            self.identity.chain_id.as_uuid(),
-            self.identity.head_run_id.as_uuid(),
-        ] {
-            hash.update(id.as_bytes());
-        }
-        for value in [
-            self.expected.group_revision,
-            self.expected.group_epoch,
-            self.expected.chain_revision,
-            self.expected.run_revision,
-        ] {
-            hash.update(value.to_be_bytes());
-        }
-        hash.finalize().into()
+        crate::capacity_transfer::fingerprint(
+            crate::capacity_transfer::TransferKind::Vacate,
+            self.identity,
+            self.expected,
+        )
     }
 }
 

@@ -19,7 +19,8 @@ mod span;
 mod trace;
 
 pub use capacity::{
-    CAPACITY_FINISH_SPAN, CAPACITY_VACATE_SPAN, CapacityFinishOutcome, CapacityVacateOutcome,
+    CAPACITY_ACQUIRE_SPAN, CAPACITY_FINISH_SPAN, CAPACITY_VACATE_SPAN, CapacityAcquireOutcome,
+    CapacityFinishOutcome, CapacityVacateOutcome,
 };
 pub use json_log::{LogLayer, Style};
 pub use leaf_certification::{LEAF_CERTIFICATION_SPAN, LeafCertificationOutcome};

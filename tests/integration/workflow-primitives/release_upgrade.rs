@@ -202,7 +202,7 @@ async fn release_upgrade_active_rows_upgrade_progress_and_remain_readable_by_the
         assert_eq!(before,20261220000000);
         sagat_infra_postgres::migrate(&db.pool).await.expect("normal current migration of actual released data");
         let after:i64=sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations WHERE success").fetch_one(&db.pool).await.expect("new schema identity");
-        assert_eq!(after,20261226000000);
+        assert_eq!(after,20261231000000);
         let wait_state:Value=sqlx::query_scalar(include_str!("../../fixtures/release-upgrade/wait-state.sql")).bind(tenant.as_uuid()).bind(wait.as_uuid()).fetch_one(&db.pool).await.expect("unchanged legacy wait metadata after migration");
         let wait_state_hash:String=Sha256::digest(serde_json::to_vec(&wait_state).expect("wait metadata")).iter().map(|byte|format!("{byte:02x}")).collect();
         assert_eq!(wait_state_hash,witness["waitStateSha256"]);

@@ -718,3 +718,12 @@ CAS and the lease probe precede the atomic header/audit/outbox/receipt write. Th
 and released-source compatibility profiles are pending CI validation; the interrupted local run
 is not a passing gate. Acquire, the caller, claim guards, creation and quota/backfill remain
 prerequisites to activation. No canonical task closes in this increment.
+
+### Dormant native ChildRoot Acquire — 2026-10-29
+
+[The Acquire increment](./capacity-acquire.md) reuses the private Vacate transaction protocol,
+existing transfer storage and exact identity/CAS types, preserving the distinct public port errors
+and receipt fields. It branches only operation-specific evidence/gates, transition, audit/outbox
+vocabulary and result projection. Native recovery and contention tests precede any production
+caller. No new migration/grant, scheduler caller, runnable predicate or nested execution is enabled.
+Canonical tasks remain open until their full acceptance is proven.

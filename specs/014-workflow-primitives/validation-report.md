@@ -4307,3 +4307,8 @@ rollback still has its own empty/retained native coverage and makes no online gu
 Migration error assertions now include the original database error if the version differs,
 so a later regression will not hide its cause behind only two migration numbers. New CI
 verification is required; no canonical task closes.
+
+
+## Saga/certification fixture lifetime checkpoint — 2026-10-30
+
+PR #68 CI at `2497115b` failed the saga/certification ordering proof; the panic discarded the actual planner result. A new real-Run-lock regression independently demonstrated the fixture's ten-second SQL budget expiring before its allowed observations completed. The isolated RED returned PostgreSQL statement timeout; explicit pool configuration and fresh scheduler authority made both saga tests pass (2/2, 13.94 s), retaining the original concurrency, compensation, CAS and replay assertions. This does not establish the discarded historical error. Commands, failure evidence, limits and follow-up gates: [EGM CI follow-up](../../tasks/reviews/2026-10-30-egm-ci-follow-up.md). Full new-head CI is required; no canonical task closes.

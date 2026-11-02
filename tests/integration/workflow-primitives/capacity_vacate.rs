@@ -14,7 +14,7 @@ async fn command(n: &NativeFixture) -> CapacityVacateCommand {
         scheduler: c.scheduler,
     }
 }
-async fn untouched(f: &Fixture) -> Vec<(String, String, String)> {
+pub(super) async fn untouched(f: &Fixture) -> Vec<(String, String, String)> {
     sqlx::query_as("SELECT 'runs',id::text,xmin::text FROM runs WHERE tenant_id=$1 UNION ALL SELECT 'steps',md5(to_jsonb(s)::text),xmin::text FROM steps s WHERE tenant_id=$1 UNION ALL SELECT 'chains',chain_id::text,xmin::text FROM execution_chains WHERE tenant_id=$1 UNION ALL SELECT 'members',member_id::text,xmin::text FROM capacity_group_members WHERE tenant_id=$1 UNION ALL SELECT 'tenant_usage',tenant_id::text,xmin::text FROM tenant_iteration_usage WHERE tenant_id=$1 UNION ALL SELECT 'retained_usage',tenant_id::text,xmin::text FROM tenant_retained_usage WHERE tenant_id=$1 ORDER BY 1,2")
         .bind(f.w.admin.tenant_id().as_uuid()).fetch_all(&f.w.db.pool).await.expect("untouched row versions")
 }

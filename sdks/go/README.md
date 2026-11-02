@@ -1,7 +1,9 @@
 # Sagat Octopus Orchestrator: Go SDK
 
-The Go SDK of the Sagat Octopus Orchestrator, a durable workflow platform. It is three things in one
-module and nothing else:
+> Documentation status: the contract sections below describe the inspected source. Existing runtime, test-count and advisory records are historical developer notes; this documentation update did not rerun or revalidate those records.
+
+The Go SDK of the Sagat Octopus Orchestrator, a durable workflow platform. Its three core surfaces share one
+module, alongside the optional `otelbridge` adapter:
 
 | Package | What it is |
 |---|---|
@@ -12,7 +14,7 @@ module and nothing else:
 
 The SDK is not a workflow runtime. It does not execute workflow code, replay anything or decide a
 transition: the server owns every state and every retry decision. The behaviour every SDK shares is in
-[`sdks/SPEC.md`](../SPEC.md); the five SDKs (TypeScript, Go, Python, C#, Java) are held to it by one
+[`sdks/SPEC.md`](../SPEC.md); the six SDKs (TypeScript, Go, Python, C#, Java, Rust) are held to it by one
 conformance suite ([`tests/contract/sdk-conformance`](../../tests/contract/sdk-conformance/README.md)).
 
 Package metadata: module `github.com/ortisun/sagat-octopus-orchestrator/sdks/go`, version `0.2.0`,
@@ -63,8 +65,7 @@ done, err := c.WaitForCompletion(ctx, run.RunID, client.WaitTimeout(30*time.Seco
 ```
 
 `Start` takes a workflow id or the name of a workflow of the namespace. With no key the SDK generates a
-random `Idempotency-Key` per call and reuses it for every retry of that call, so a lost answer never
-starts two runs. `List` returns a page; `ListAll` is a Go iterator (`for run, err := range c.ListAll(...)`).
+random `Idempotency-Key` per call and reuses it for every retry of that call, so a retry of that call sends the same key; server acceptance follows the platform contract. `List` returns a page; `ListAll` is a Go iterator (`for run, err := range c.ListAll(...)`).
 
 For a large run input, call `UploadRunInput(ctx, onePassReader, options)`, then pass its verified
 `client.BlobDescriptor` to `StartWithBlob`. The upload is streamed once and never retried; the descriptor
@@ -82,7 +83,7 @@ host, err := worker.New("https://workers.example.com:443", "payments", "payments
 
 host.RegisterActivity("payments.charge", worker.Typed(func(ctx context.Context, in ChargeInput) (Receipt, error) {
 	task := worker.TaskFrom(ctx)           // run, node, attempt, idempotency key, trace, steps, deadline...
-	// send task.IdempotencyKey to the provider: the effect happens once however often this is repeated
+	// send task.IdempotencyKey to a provider that supports deduplication; reconcile uncertain outcomes
 	if in.Amount == "" {
 		return Receipt{}, worker.Permanent("INVALID_AMOUNT", "the order has no amount")
 	}
@@ -305,3 +306,37 @@ Use the database builder with a logical connection created in Sagat. See the
 [five-language guide](../../docs/guides/managed-database-sdk.md) for typed parameters,
 result consumption, permissions and the shared real-service scenario. Credentials
 are resolved by the separate managed executor.
+
+<!-- EGM directory contract -->
+
+## Interface
+
+- Error/catalog APIs: Code, Error, NewError, Errorf, IsCode, Invalid, Remediation, RetryableByDefault and CodeOfHTTPStatus. [error.go:Code] [error.go:Error] [error.go:NewError] [error.go:Errorf] [error.go:IsCode] [error.go:Invalid] [catalog.go:Remediation] [catalog.go:RetryableByDefault] [catalog.go:CodeOfHTTPStatus]
+- TokenSource, TokenFunc, StaticToken, BearerToken and CanRefresh provide token acquisition; RetryPolicy, DefaultRetry and WithDefaults configure retries; ValidTraceparent, CheckTraceparent, TraceIDOf and NewTraceparent support trace context. Version, ProtocolVersion and Language identify the SDK. [token.go:TokenSource] [token.go:TokenFunc] [token.go:StaticToken] [token.go:BearerToken] [token.go:CanRefresh] [retry.go:RetryPolicy] [retry.go:DefaultRetry] [retry.go:WithDefaults] [traceparent.go:ValidTraceparent] [traceparent.go:CheckTraceparent] [traceparent.go:TraceIDOf] [traceparent.go:NewTraceparent] [version.go:Version]
+
+- [client](./client/README.md) — component contract.
+- [internal](./internal/README.md) — component contract.
+- [otelbridge](./otelbridge/README.md) — component contract.
+- [proto](./proto/README.md) — component contract.
+- [scripts](./scripts/README.md) — component contract.
+- [worker](./worker/README.md) — component contract.
+- [workflow](./workflow/README.md) — component contract.
+
+## Invariants
+
+- Token failures are privately marked before-I/O UNAUTHENTICATED failures; provider panic payloads are dropped. Error text excludes causes while Unwrap preserves inspectable causes. [token.go:BearerToken] [token.go:ask] [error.go:Unwrap]
+- The host advertises protocol 1.5; the copied schema also declares additive 1.6 database-runner messages. [version.go:ProtocolVersion] [proto/sagat_octopus_orchestrator/v1/worker.proto:ResolveDatabase]
+
+## Side Effects
+
+- Loads the embedded catalog lazily, invokes token providers per request and reads cryptographic randomness for new trace contexts. [catalog.go:loadCatalog] [token.go:BearerToken] [traceparent.go:NewTraceparent]
+
+## Verification
+
+Run from the repository root:
+
+```sh
+cd sdks/go && go test -race ./... && go vet ./...
+```
+
+These commands are documented from the existing build configuration; they were not executed during this documentation update.

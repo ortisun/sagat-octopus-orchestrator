@@ -329,6 +329,10 @@ impl PathExecutionTx for PgPathExecutionTx {
         Ok(Some(document))
     }
 
+    async fn worker_capacity_available(&mut self) -> Result<bool, StoreError> {
+        worker_capacity::available(&mut self.tx, &self.snapshot.info).await
+    }
+
     async fn commit(self) -> Result<(), StoreError> {
         if self.scoped_event_delivery_attempted && self.scoped_event_persistence_failed {
             return Err(corrupt(
