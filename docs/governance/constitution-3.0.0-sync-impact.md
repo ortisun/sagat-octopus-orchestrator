@@ -3,8 +3,8 @@
 This record accompanies the dedicated PR adopting the B01 amendment. It was prepared as 2.0.0 on
 top of 1.1.0. On 2026-11-01 the owner split it out of feature 037, which adopts 2.0.0 (Principle III
 only, compensation safety), so B01 is renumbered **3.0.0**. #75 merged first (`a76a3ac3`,
-2026-11-02) and this text is rebased onto 2.0.0. **Status: PROPOSED.** The owner has not yet approved this text
-(`docs/owner-decisions.md`, 2026-11-01 item 2).
+2026-11-02) and this text is rebased onto 2.0.0. **Status: ADOPTED on 2026-11-01.** The owner approved the text by instructing that this pull
+request be merged into `develop` (`docs/owner-decisions.md`, 2026-11-01 item 2).
 The adopting PR's normal approval and merge process is the adoption evidence; a prepared diff
 or passing check is not ratification. Owner approval is required for this reset by the owner's
 task instructions, not introduced as a new project-wide ratification authority by B01. The

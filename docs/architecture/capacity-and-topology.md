@@ -15,7 +15,7 @@ database-runner for managed database activities. These are capability-dependent 
 requirements of every installation. See [Helm values](../../infra/helm/values.yaml) and
 [engine settings](../../apps/execution-engine/src/settings.rs).
 
-Constitution 3.0.0 (B01, proposed) recognizes the NATS/Redis alternative governed by ADR-0069. This inventory
+Constitution 3.0.0 (B01, adopted 2026-11-01) recognizes the NATS/Redis alternative governed by ADR-0069. This inventory
 does not certify topology availability or authorize `none` as a production HA profile. Other
 baseline changes still require the governance process; transport configuration alone is not
 deployment or release evidence.

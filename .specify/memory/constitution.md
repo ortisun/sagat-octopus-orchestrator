@@ -222,4 +222,4 @@ the plan's Complexity Tracking table with the simpler alternative that was rejec
 
 **Version**: 3.0.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-11-01
 
-Amendment scope and preserved obligations: [3.0.0 Sync Impact Report](../../docs/governance/constitution-3.0.0-sync-impact.md). Previous amendment (2.0.0, Principle III): [compensation safety Sync Impact Report](../../docs/governance/compensation-safety-sync-impact.md). Proposed: adopted only when the owner approves this text and its pull request merges.
+Amendment scope and preserved obligations: [3.0.0 Sync Impact Report](../../docs/governance/constitution-3.0.0-sync-impact.md). Previous amendment (2.0.0, Principle III): [compensation safety Sync Impact Report](../../docs/governance/compensation-safety-sync-impact.md). Adopted on 2026-11-01 by the owner's instruction to merge the pull request that carries this text.
