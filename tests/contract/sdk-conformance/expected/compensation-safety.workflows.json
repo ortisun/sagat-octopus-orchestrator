@@ -1,0 +1,114 @@
+{
+  "canonical": {
+    "known-compensation-failure": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"known-saga\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"compensation-safety-known-failure\"},\"nodes\":[{\"begin\":\"known-reserve\",\"id\":\"known-saga\",\"onCompensationFailure\":\"fail\",\"type\":\"saga\"},{\"activity\":\"safety.known-reserve\",\"compensateWith\":\"safety.known-release\",\"compensationRetry\":{\"maxAttempts\":1},\"id\":\"known-reserve\",\"next\":\"known-stop\",\"type\":\"activity\"},{\"activity\":\"safety.known-stop\",\"id\":\"known-stop\",\"retry\":{\"maxAttempts\":1},\"type\":\"activity\"}]}",
+    "negative-lookup": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"lookup-pay\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"compensation-safety-negative-lookup\"},\"nodes\":[{\"activity\":\"safety.lookup-pay\",\"id\":\"lookup-pay\",\"reconcileWith\":\"safety.lookup-none\",\"retry\":{\"maxAttempts\":3},\"type\":\"activity\"}]}",
+    "unknown-compensation": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"unknown-saga\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"compensation-safety-unknown-compensation\"},\"nodes\":[{\"begin\":\"unknown-reserve\",\"id\":\"unknown-saga\",\"type\":\"saga\"},{\"activity\":\"safety.unknown-reserve\",\"compensateWith\":\"safety.unknown-release\",\"compensationRetry\":{\"maxAttempts\":1},\"id\":\"unknown-reserve\",\"next\":\"unknown-stop\",\"type\":\"activity\"},{\"activity\":\"safety.unknown-stop\",\"id\":\"unknown-stop\",\"retry\":{\"maxAttempts\":1},\"type\":\"activity\"}]}",
+    "unknown-forward": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"pay\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"compensation-safety-unknown-forward\"},\"nodes\":[{\"activity\":\"safety.pay\",\"id\":\"pay\",\"retry\":{\"maxAttempts\":3},\"type\":\"activity\"}]}"
+  },
+  "workflows": {
+    "known-compensation-failure": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "known-saga",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "compensation-safety-known-failure"
+      },
+      "nodes": [
+        {
+          "begin": "known-reserve",
+          "id": "known-saga",
+          "onCompensationFailure": "fail",
+          "type": "saga"
+        },
+        {
+          "activity": "safety.known-reserve",
+          "compensateWith": "safety.known-release",
+          "compensationRetry": {
+            "maxAttempts": 1
+          },
+          "id": "known-reserve",
+          "next": "known-stop",
+          "type": "activity"
+        },
+        {
+          "activity": "safety.known-stop",
+          "id": "known-stop",
+          "retry": {
+            "maxAttempts": 1
+          },
+          "type": "activity"
+        }
+      ]
+    },
+    "negative-lookup": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "lookup-pay",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "compensation-safety-negative-lookup"
+      },
+      "nodes": [
+        {
+          "activity": "safety.lookup-pay",
+          "id": "lookup-pay",
+          "reconcileWith": "safety.lookup-none",
+          "retry": {
+            "maxAttempts": 3
+          },
+          "type": "activity"
+        }
+      ]
+    },
+    "unknown-compensation": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "unknown-saga",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "compensation-safety-unknown-compensation"
+      },
+      "nodes": [
+        {
+          "begin": "unknown-reserve",
+          "id": "unknown-saga",
+          "type": "saga"
+        },
+        {
+          "activity": "safety.unknown-reserve",
+          "compensateWith": "safety.unknown-release",
+          "compensationRetry": {
+            "maxAttempts": 1
+          },
+          "id": "unknown-reserve",
+          "next": "unknown-stop",
+          "type": "activity"
+        },
+        {
+          "activity": "safety.unknown-stop",
+          "id": "unknown-stop",
+          "retry": {
+            "maxAttempts": 1
+          },
+          "type": "activity"
+        }
+      ]
+    },
+    "unknown-forward": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "pay",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "compensation-safety-unknown-forward"
+      },
+      "nodes": [
+        {
+          "activity": "safety.pay",
+          "id": "pay",
+          "retry": {
+            "maxAttempts": 3
+          },
+          "type": "activity"
+        }
+      ]
+    }
+  }
+}

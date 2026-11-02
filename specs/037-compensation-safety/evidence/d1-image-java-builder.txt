@@ -1,0 +1,136 @@
+#0 building with "default" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile.builder
+#1 transferring dockerfile: 1.89kB done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/eclipse-temurin:17.0.16_8-jdk-jammy@sha256:47d330891da01c4b17fb6af5018d9a7bad33f7a252a91dde890c10d4de5ebd33
+#2 ...
+
+#3 [auth] library/eclipse-temurin:pull token for registry-1.docker.io
+#3 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/eclipse-temurin:17.0.16_8-jdk-jammy@sha256:47d330891da01c4b17fb6af5018d9a7bad33f7a252a91dde890c10d4de5ebd33
+#2 DONE 1.8s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 411B done
+#4 DONE 0.0s
+
+#5 [internal] load build context
+#5 transferring context: 5.80kB done
+#5 DONE 0.0s
+
+#6 [compile 2/7] ADD --checksum=sha256:873a606e23507969f9bbbea939d5e19274a88775ea5a169ba7e2d795aa5156e1 https://repo1.maven.org/maven2/com/fasterxml/jackson/core/jackson-annotations/2.17.2/jackson-annotations-2.17.2.jar /opt/sagat/lib/jackson-annotations.jar
+#6 DONE 0.2s
+
+#7 [compile 1/7] FROM docker.io/library/eclipse-temurin:17.0.16_8-jdk-jammy@sha256:47d330891da01c4b17fb6af5018d9a7bad33f7a252a91dde890c10d4de5ebd33
+#7 resolve docker.io/library/eclipse-temurin:17.0.16_8-jdk-jammy@sha256:47d330891da01c4b17fb6af5018d9a7bad33f7a252a91dde890c10d4de5ebd33 done
+#7 sha256:709644d6a90ce830acdafadc19cca22af78d1a354f4572cdf9fce33f006eed51 2.28kB / 2.28kB 0.2s done
+#7 sha256:6b1d35396ac9bf100ceac99dee6b2b90bdbebf883ccdc014e23b1820c3b2b67f 0B / 158B 0.3s
+#7 sha256:1770528d7cc885ee03adb8564012d5818f73df6f98b42a92c710863bf282bbb9 0B / 143.55MB 0.2s
+#7 sha256:6b1d35396ac9bf100ceac99dee6b2b90bdbebf883ccdc014e23b1820c3b2b67f 158B / 158B 0.4s done
+#7 sha256:ae9e3b5c46cb782f51083cefe683a8b1730bc7c91e3a32ccdf998b3e421279f6 0B / 22.08MB 0.2s
+#7 sha256:f85691aa4b9092cbb48212c835b78068e3321656ba2c306dae491e1a02d1b4d3 0B / 27.38MB 0.2s
+#7 ...
+
+#8 [compile 3/7] ADD --checksum=sha256:721a189241dab0525d9e858e5cb604d3ecc0ede081e2de77d6f34fa5779a5b46 https://repo1.maven.org/maven2/com/fasterxml/jackson/core/jackson-core/2.17.2/jackson-core-2.17.2.jar /opt/sagat/lib/jackson-core.jar
+#8 DONE 0.7s
+
+#9 [compile 4/7] ADD --checksum=sha256:c04993f33c0f845342653784f14f38373d005280e6359db5f808701cfae73c0c https://repo1.maven.org/maven2/com/fasterxml/jackson/core/jackson-databind/2.17.2/jackson-databind-2.17.2.jar /opt/sagat/lib/jackson-databind.jar
+#9 DONE 0.7s
+
+#7 [compile 1/7] FROM docker.io/library/eclipse-temurin:17.0.16_8-jdk-jammy@sha256:47d330891da01c4b17fb6af5018d9a7bad33f7a252a91dde890c10d4de5ebd33
+#7 sha256:f85691aa4b9092cbb48212c835b78068e3321656ba2c306dae491e1a02d1b4d3 2.10MB / 27.38MB 1.2s
+#7 sha256:f85691aa4b9092cbb48212c835b78068e3321656ba2c306dae491e1a02d1b4d3 4.19MB / 27.38MB 1.5s
+#7 sha256:ae9e3b5c46cb782f51083cefe683a8b1730bc7c91e3a32ccdf998b3e421279f6 2.10MB / 22.08MB 1.8s
+#7 sha256:f85691aa4b9092cbb48212c835b78068e3321656ba2c306dae491e1a02d1b4d3 7.34MB / 27.38MB 2.0s
+#7 sha256:ae9e3b5c46cb782f51083cefe683a8b1730bc7c91e3a32ccdf998b3e421279f6 4.19MB / 22.08MB 2.3s
+#7 sha256:1770528d7cc885ee03adb8564012d5818f73df6f98b42a92c710863bf282bbb9 7.34MB / 143.55MB 2.7s
+#7 sha256:f85691aa4b9092cbb48212c835b78068e3321656ba2c306dae491e1a02d1b4d3 9.44MB / 27.38MB 2.3s
+#7 sha256:ae9e3b5c46cb782f51083cefe683a8b1730bc7c91e3a32ccdf998b3e421279f6 6.29MB / 22.08MB 2.6s
+#7 sha256:f85691aa4b9092cbb48212c835b78068e3321656ba2c306dae491e1a02d1b4d3 11.53MB / 27.38MB 2.4s
+#7 sha256:ae9e3b5c46cb782f51083cefe683a8b1730bc7c91e3a32ccdf998b3e421279f6 8.39MB / 22.08MB 2.9s
+#7 sha256:f85691aa4b9092cbb48212c835b78068e3321656ba2c306dae491e1a02d1b4d3 14.68MB / 27.38MB 2.7s
+#7 sha256:f85691aa4b9092cbb48212c835b78068e3321656ba2c306dae491e1a02d1b4d3 16.78MB / 27.38MB 2.9s
+#7 sha256:ae9e3b5c46cb782f51083cefe683a8b1730bc7c91e3a32ccdf998b3e421279f6 10.49MB / 22.08MB 3.2s
+#7 sha256:1770528d7cc885ee03adb8564012d5818f73df6f98b42a92c710863bf282bbb9 14.68MB / 143.55MB 3.6s
+#7 sha256:f85691aa4b9092cbb48212c835b78068e3321656ba2c306dae491e1a02d1b4d3 19.92MB / 27.38MB 3.2s
+#7 sha256:ae9e3b5c46cb782f51083cefe683a8b1730bc7c91e3a32ccdf998b3e421279f6 12.58MB / 22.08MB 3.5s
+#7 sha256:f85691aa4b9092cbb48212c835b78068e3321656ba2c306dae491e1a02d1b4d3 22.02MB / 27.38MB 3.5s
+#7 sha256:ae9e3b5c46cb782f51083cefe683a8b1730bc7c91e3a32ccdf998b3e421279f6 14.68MB / 22.08MB 3.8s
+#7 sha256:f85691aa4b9092cbb48212c835b78068e3321656ba2c306dae491e1a02d1b4d3 24.12MB / 27.38MB 3.6s
+#7 sha256:ae9e3b5c46cb782f51083cefe683a8b1730bc7c91e3a32ccdf998b3e421279f6 16.78MB / 22.08MB 4.1s
+#7 sha256:f85691aa4b9092cbb48212c835b78068e3321656ba2c306dae491e1a02d1b4d3 26.21MB / 27.38MB 3.9s
+#7 sha256:1770528d7cc885ee03adb8564012d5818f73df6f98b42a92c710863bf282bbb9 23.07MB / 143.55MB 4.5s
+#7 sha256:ae9e3b5c46cb782f51083cefe683a8b1730bc7c91e3a32ccdf998b3e421279f6 19.92MB / 22.08MB 4.4s
+#7 sha256:ae9e3b5c46cb782f51083cefe683a8b1730bc7c91e3a32ccdf998b3e421279f6 22.08MB / 22.08MB 4.5s
+#7 sha256:1770528d7cc885ee03adb8564012d5818f73df6f98b42a92c710863bf282bbb9 30.41MB / 143.55MB 5.0s
+#7 sha256:ae9e3b5c46cb782f51083cefe683a8b1730bc7c91e3a32ccdf998b3e421279f6 22.08MB / 22.08MB 4.6s done
+#7 sha256:f85691aa4b9092cbb48212c835b78068e3321656ba2c306dae491e1a02d1b4d3 27.38MB / 27.38MB 4.4s done
+#7 extracting sha256:f85691aa4b9092cbb48212c835b78068e3321656ba2c306dae491e1a02d1b4d3
+#7 sha256:1770528d7cc885ee03adb8564012d5818f73df6f98b42a92c710863bf282bbb9 39.85MB / 143.55MB 5.4s
+#7 extracting sha256:f85691aa4b9092cbb48212c835b78068e3321656ba2c306dae491e1a02d1b4d3 0.5s done
+#7 extracting sha256:ae9e3b5c46cb782f51083cefe683a8b1730bc7c91e3a32ccdf998b3e421279f6
+#7 sha256:1770528d7cc885ee03adb8564012d5818f73df6f98b42a92c710863bf282bbb9 47.19MB / 143.55MB 5.7s
+#7 extracting sha256:ae9e3b5c46cb782f51083cefe683a8b1730bc7c91e3a32ccdf998b3e421279f6 0.4s done
+#7 sha256:1770528d7cc885ee03adb8564012d5818f73df6f98b42a92c710863bf282bbb9 54.53MB / 143.55MB 6.0s
+#7 sha256:1770528d7cc885ee03adb8564012d5818f73df6f98b42a92c710863bf282bbb9 62.91MB / 143.55MB 6.3s
+#7 sha256:1770528d7cc885ee03adb8564012d5818f73df6f98b42a92c710863bf282bbb9 70.25MB / 143.55MB 6.6s
+#7 sha256:1770528d7cc885ee03adb8564012d5818f73df6f98b42a92c710863bf282bbb9 78.64MB / 143.55MB 6.9s
+#7 sha256:1770528d7cc885ee03adb8564012d5818f73df6f98b42a92c710863bf282bbb9 87.03MB / 143.55MB 7.2s
+#7 sha256:1770528d7cc885ee03adb8564012d5818f73df6f98b42a92c710863bf282bbb9 95.42MB / 143.55MB 7.5s
+#7 sha256:1770528d7cc885ee03adb8564012d5818f73df6f98b42a92c710863bf282bbb9 103.81MB / 143.55MB 7.8s
+#7 sha256:1770528d7cc885ee03adb8564012d5818f73df6f98b42a92c710863bf282bbb9 116.39MB / 143.55MB 8.3s
+#7 sha256:1770528d7cc885ee03adb8564012d5818f73df6f98b42a92c710863bf282bbb9 125.83MB / 143.55MB 8.6s
+#7 sha256:1770528d7cc885ee03adb8564012d5818f73df6f98b42a92c710863bf282bbb9 134.22MB / 143.55MB 8.9s
+#7 sha256:1770528d7cc885ee03adb8564012d5818f73df6f98b42a92c710863bf282bbb9 142.61MB / 143.55MB 9.2s
+#7 sha256:1770528d7cc885ee03adb8564012d5818f73df6f98b42a92c710863bf282bbb9 143.55MB / 143.55MB 9.3s done
+#7 extracting sha256:1770528d7cc885ee03adb8564012d5818f73df6f98b42a92c710863bf282bbb9
+#7 extracting sha256:1770528d7cc885ee03adb8564012d5818f73df6f98b42a92c710863bf282bbb9 1.1s done
+#7 DONE 10.4s
+
+#7 [compile 1/7] FROM docker.io/library/eclipse-temurin:17.0.16_8-jdk-jammy@sha256:47d330891da01c4b17fb6af5018d9a7bad33f7a252a91dde890c10d4de5ebd33
+#7 extracting sha256:6b1d35396ac9bf100ceac99dee6b2b90bdbebf883ccdc014e23b1820c3b2b67f done
+#7 extracting sha256:709644d6a90ce830acdafadc19cca22af78d1a354f4572cdf9fce33f006eed51 done
+#7 DONE 10.4s
+
+#10 [compile 2/7] ADD --checksum=sha256:873a606e23507969f9bbbea939d5e19274a88775ea5a169ba7e2d795aa5156e1 https://repo1.maven.org/maven2/com/fasterxml/jackson/core/jackson-annotations/2.17.2/jackson-annotations-2.17.2.jar /opt/sagat/lib/jackson-annotations.jar
+#10 DONE 0.4s
+
+#11 [compile 3/7] ADD --checksum=sha256:721a189241dab0525d9e858e5cb604d3ecc0ede081e2de77d6f34fa5779a5b46 https://repo1.maven.org/maven2/com/fasterxml/jackson/core/jackson-core/2.17.2/jackson-core-2.17.2.jar /opt/sagat/lib/jackson-core.jar
+#11 DONE 0.3s
+
+#12 [compile 4/7] ADD --checksum=sha256:c04993f33c0f845342653784f14f38373d005280e6359db5f808701cfae73c0c https://repo1.maven.org/maven2/com/fasterxml/jackson/core/jackson-databind/2.17.2/jackson-databind-2.17.2.jar /opt/sagat/lib/jackson-databind.jar
+#12 DONE 0.0s
+
+#13 [compile 5/7] COPY runners/java/api/ /src/api/
+#13 DONE 0.0s
+
+#14 [compile 6/7] COPY runners/java/host/sagat/host/BuildHost.java /src/host/sagat/host/BuildHost.java
+#14 DONE 0.0s
+
+#15 [compile 7/7] RUN chmod 0444 /opt/sagat/lib/*.jar     && mkdir -p /out/api /out/host     && javac --release 17 -proc:none -d /out/api $(find /src/api -name '*.java' -type f | sort)     && jar --create --file /out/sagat-inline-api.jar -C /out/api .     && javac --release 17 -proc:none -classpath '/opt/sagat/lib/*:/out/sagat-inline-api.jar'        -d /out/host /src/host/sagat/host/BuildHost.java
+#15 DONE 1.0s
+
+#16 [stage-1 2/4] COPY --from=compile /opt/sagat/lib/ /opt/sagat/lib/
+#16 DONE 0.0s
+
+#17 [stage-1 3/4] COPY --from=compile /out/sagat-inline-api.jar /opt/sagat/api/sagat-inline-api.jar
+#17 DONE 0.0s
+
+#18 [stage-1 4/4] COPY --from=compile /out/host/ /opt/sagat/host/
+#18 DONE 0.0s
+
+#19 exporting to image
+#19 exporting layers 0.1s done
+#19 exporting manifest sha256:d11f7b90d83a4f9cd658e22e0917c4244ed809302b7e39325180b0ab505fab42 done
+#19 exporting config sha256:93cf2c8d85ab52ca6c194bfe8f289ccc1df5c2d0ab5ec1c4376197e2f012cdf4 done
+#19 exporting attestation manifest sha256:3489cc412325e75fd5491de30dce5d051bdadfbd0658dd384e7c613074fc00f5 done
+#19 exporting manifest list sha256:b3e550f92a70596e66515b45fc53d532d032d572f73f4d2ae701eb1da70102d3 done
+#19 naming to docker.io/sagat/java-builder:17.0.16 done
+#19 unpacking to docker.io/sagat/java-builder:17.0.16
+#19 unpacking to docker.io/sagat/java-builder:17.0.16 1.9s done
+#19 DONE 2.1s
+
+View build details: docker-desktop://dashboard/build/default/default/irbtqlrs0m8agmuxqi3s5v8zu

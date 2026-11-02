@@ -1,0 +1,63 @@
+   Compiling libc v0.2.190
+   Compiling cfg-if v1.0.5
+   Compiling getrandom v0.3.4
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.26
+   Compiling quote v1.0.47
+   Compiling zerocopy v0.8.61
+   Compiling rand_core v0.9.5
+   Compiling autocfg v1.5.1
+   Compiling getrandom v0.4.3
+   Compiling num-traits v0.2.19
+   Compiling syn v3.0.6
+   Compiling thiserror v2.0.21
+   Compiling thiserror-impl v2.0.21
+   Compiling ppv-lite86 v0.2.21
+   Compiling num-conv v0.2.2
+   Compiling powerfmt v0.2.1
+   Compiling deranged v0.5.8
+   Compiling time-core v0.1.9
+   Compiling time v0.3.55
+   Compiling uuid v1.27.0
+   Compiling rand_chacha v0.9.0
+   Compiling rand_xorshift v0.4.0
+   Compiling rand v0.9.5
+   Compiling regex-syntax v0.8.11
+   Compiling unarray v0.1.4
+   Compiling bitflags v2.13.2
+   Compiling zeroize v1.9.1
+   Compiling sagat-domain v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/crates/domain)
+   Compiling proptest v1.11.0
+    Finished `test` profile [unoptimized] target(s) in 9.20s
+     Running tests/sagas.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/sagas-8c257bc5dfd4d1ac)
+
+running 8 tests
+test a_high_risk_step_with_an_unknown_outcome_waits_for_an_operator_instead_of_retrying ... ok
+test an_attempt_whose_outcome_became_unknown_while_the_run_was_being_cancelled_is_still_undone ... ok
+test an_attempt_with_an_unknown_outcome_is_reconciled_before_anything_else ... ok
+test an_unknown_outcome_is_reconciled_before_a_saga_that_is_being_stopped_compensates ... ok
+test an_unknown_outcome_only_makes_the_saga_partial_when_nothing_can_undo_what_may_have_happened ... ok
+
+thread 'unknown_activity_defaults_to_review' (781308332) panicked at crates/domain/tests/sagas.rs:2005:9:
+assertion `left == right` failed
+  left: RetryWait
+ right: Waiting
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test every_way_an_outcome_can_be_unknown_makes_the_effect_compensated_defensively ... ok
+test unknown_activity_defaults_to_review ... FAILED
+
+thread 'unknown_compensation_overrides_fail' (781308333) panicked at crates/domain/tests/sagas.rs:2034:13:
+assertion `left == right` failed
+  left: RetryWait
+ right: Waiting
+test unknown_compensation_overrides_fail ... FAILED
+
+failures:
+
+failures:
+    unknown_activity_defaults_to_review
+    unknown_compensation_overrides_fail
+
+test result: FAILED. 6 passed; 2 failed; 0 ignored; 0 measured; 55 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p sagat-domain --test sagas`

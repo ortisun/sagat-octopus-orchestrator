@@ -1,0 +1,1038 @@
+{
+  "faultsApplied": [],
+  "observations": [
+    {
+      "id": "unknown-forward",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "unknown-forward-review",
+      "ok": true,
+      "op": "awaitJournal"
+    },
+    {
+      "id": "unknown-forward-before-cancel",
+      "ok": true,
+      "op": "get",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "MANUAL_REVIEW",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "unknown-forward-cancel",
+      "ok": true,
+      "op": "cancel",
+      "result": {
+        "accepted": true,
+        "runStatus": "MANUAL_REVIEW"
+      }
+    },
+    {
+      "id": "unknown-forward-after-cancel",
+      "ok": true,
+      "op": "get",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "MANUAL_REVIEW",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "OUTCOME_UNRESOLVED",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:2>"
+      },
+      "id": "unknown-forward-retry-refused",
+      "ok": false,
+      "op": "operate"
+    },
+    {
+      "id": "unknown-forward-resolved",
+      "ok": true,
+      "op": "operate",
+      "result": {
+        "accepted": true,
+        "runStatus": "CANCELLED"
+      }
+    },
+    {
+      "id": "unknown-forward-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "CANCELLED",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "unknown-forward-journal",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": "pay",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "pay",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "pay",
+            "type": "step.needs_review"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.stop_requested"
+          },
+          {
+            "attempt": null,
+            "stepId": "pay",
+            "type": "step.resolved"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    },
+    {
+      "id": "negative",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:3>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:5>",
+        "workflowId": "<uuid:6>"
+      }
+    },
+    {
+      "id": "negative-concluded",
+      "ok": true,
+      "op": "awaitJournal"
+    },
+    {
+      "id": "negative-state",
+      "ok": true,
+      "op": "get",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "MANUAL_REVIEW",
+        "traceId": "<trace:3>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:5>",
+        "workflowId": "<uuid:6>"
+      }
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "OUTCOME_UNRESOLVED",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:4>"
+      },
+      "id": "negative-retry-refused",
+      "ok": false,
+      "op": "operate"
+    },
+    {
+      "id": "negative-resolved",
+      "ok": true,
+      "op": "operate",
+      "result": {
+        "accepted": true,
+        "runStatus": "FAILED"
+      }
+    },
+    {
+      "id": "negative-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "FAILED",
+        "traceId": "<trace:3>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:5>",
+        "workflowId": "<uuid:6>"
+      }
+    },
+    {
+      "id": "negative-journal",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": "lookup-pay",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "lookup-pay",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "lookup-pay",
+            "type": "reconciliation.requested"
+          },
+          {
+            "attempt": null,
+            "stepId": "lookup-pay~r",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "lookup-pay~r",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "lookup-pay~r",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "lookup-pay",
+            "type": "reconciliation.concluded"
+          },
+          {
+            "attempt": null,
+            "stepId": "lookup-pay~r",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "lookup-pay",
+            "type": "step.resolved"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.stop_requested"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    },
+    {
+      "id": "known",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:7>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:5>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:8>",
+        "workflowId": "<uuid:9>"
+      }
+    },
+    {
+      "id": "known-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:7>",
+        "startedBy": "alice",
+        "status": "COMPENSATION_FAILED",
+        "traceId": "<trace:5>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:8>",
+        "workflowId": "<uuid:9>"
+      }
+    },
+    {
+      "id": "known-journal",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": "known-saga",
+            "type": "saga.entered"
+          },
+          {
+            "attempt": null,
+            "stepId": "known-reserve",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "known-reserve",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "known-reserve",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "known-reserve",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "known-stop",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "known-stop",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "known-stop",
+            "type": "step.failed"
+          },
+          {
+            "attempt": null,
+            "stepId": "known-saga",
+            "type": "saga.aborting"
+          },
+          {
+            "attempt": null,
+            "stepId": "known-saga",
+            "type": "compensation.planned"
+          },
+          {
+            "attempt": null,
+            "stepId": "known-reserve~c",
+            "type": "step.released"
+          },
+          {
+            "attempt": null,
+            "stepId": "known-stop",
+            "type": "step.routed"
+          },
+          {
+            "attempt": 1,
+            "stepId": "known-reserve~c",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "known-reserve~c",
+            "type": "step.failed"
+          },
+          {
+            "attempt": null,
+            "stepId": "known-saga",
+            "type": "saga.compensated"
+          },
+          {
+            "attempt": null,
+            "stepId": "known-reserve~c",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.stop_requested"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    },
+    {
+      "id": "unknown-compensation",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:10>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:6>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:11>",
+        "workflowId": "<uuid:12>"
+      }
+    },
+    {
+      "id": "unknown-compensation-review",
+      "ok": true,
+      "op": "awaitJournal"
+    },
+    {
+      "id": "unknown-compensation-state",
+      "ok": true,
+      "op": "get",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:10>",
+        "startedBy": "alice",
+        "status": "MANUAL_REVIEW",
+        "traceId": "<trace:6>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:11>",
+        "workflowId": "<uuid:12>"
+      }
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "OUTCOME_UNRESOLVED",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:7>"
+      },
+      "id": "unknown-compensation-retry-refused",
+      "ok": false,
+      "op": "operate"
+    },
+    {
+      "id": "unknown-compensation-resolved",
+      "ok": true,
+      "op": "operate",
+      "result": {
+        "accepted": true,
+        "runStatus": "COMPENSATED"
+      }
+    },
+    {
+      "id": "unknown-compensation-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:10>",
+        "startedBy": "alice",
+        "status": "COMPENSATED",
+        "traceId": "<trace:6>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:11>",
+        "workflowId": "<uuid:12>"
+      }
+    },
+    {
+      "id": "unknown-compensation-journal",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": "unknown-saga",
+            "type": "saga.entered"
+          },
+          {
+            "attempt": null,
+            "stepId": "unknown-reserve",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "unknown-reserve",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "unknown-reserve",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "unknown-reserve",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "unknown-stop",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "unknown-stop",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "unknown-stop",
+            "type": "step.failed"
+          },
+          {
+            "attempt": null,
+            "stepId": "unknown-saga",
+            "type": "saga.aborting"
+          },
+          {
+            "attempt": null,
+            "stepId": "unknown-saga",
+            "type": "compensation.planned"
+          },
+          {
+            "attempt": null,
+            "stepId": "unknown-reserve~c",
+            "type": "step.released"
+          },
+          {
+            "attempt": null,
+            "stepId": "unknown-stop",
+            "type": "step.routed"
+          },
+          {
+            "attempt": 1,
+            "stepId": "unknown-reserve~c",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "unknown-reserve~c",
+            "type": "step.needs_review"
+          },
+          {
+            "attempt": null,
+            "stepId": "unknown-reserve~c",
+            "type": "step.resolved"
+          },
+          {
+            "attempt": null,
+            "stepId": "unknown-saga",
+            "type": "saga.compensated"
+          },
+          {
+            "attempt": null,
+            "stepId": "unknown-reserve~c",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.stop_requested"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    }
+  ],
+  "reviewEvidence": [
+    {
+      "action": "saga.step_resolved",
+      "actor": "alice",
+      "reason": "declared SUCCEEDED: provider receipt confirms payment p-unknown"
+    },
+    {
+      "action": "saga.step_resolved",
+      "actor": "alice",
+      "reason": "declared FAILED(PAYMENT_NOT_FOUND): authoritative provider record confirms absence"
+    },
+    {
+      "action": "saga.step_resolved",
+      "actor": "alice",
+      "reason": "declared SUCCEEDED: provider evidence confirms release completed"
+    }
+  ],
+  "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "unknown-reserve",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": "unknown-reserve",
+          "id": "unknown-reserve~c",
+          "kind": "COMPENSATION",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": "BUSINESS_REJECTED",
+          "forward": null,
+          "id": "unknown-saga",
+          "kind": "FORWARD",
+          "status": "FAILED",
+          "type": "saga",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": "BUSINESS_REJECTED",
+          "forward": null,
+          "id": "unknown-stop",
+          "kind": "FORWARD",
+          "status": "FAILED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:10>",
+      "status": "COMPENSATED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "known-reserve",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": "PROVIDER_DOWN",
+          "forward": "known-reserve",
+          "id": "known-reserve~c",
+          "kind": "COMPENSATION",
+          "status": "FAILED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": "BUSINESS_REJECTED",
+          "forward": null,
+          "id": "known-saga",
+          "kind": "FORWARD",
+          "status": "FAILED",
+          "type": "saga",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": "BUSINESS_REJECTED",
+          "forward": null,
+          "id": "known-stop",
+          "kind": "FORWARD",
+          "status": "FAILED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:7>",
+      "status": "COMPENSATION_FAILED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": "PAYMENT_NOT_FOUND",
+          "forward": null,
+          "id": "lookup-pay",
+          "kind": "FORWARD",
+          "status": "FAILED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": "lookup-pay",
+          "id": "lookup-pay~r",
+          "kind": "RECONCILIATION",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:4>",
+      "status": "FAILED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "pay",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:1>",
+      "status": "CANCELLED"
+    }
+  ],
+  "workerLog": {
+    "w1": [
+      {
+        "abortedReason": null,
+        "activity": "safety.pay",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:pay",
+        "input": {
+          "payment": "p-unknown"
+        },
+        "kind": "activity",
+        "node": "pay",
+        "outcome": "failed",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "safety.lookup-pay",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:4>:lookup-pay",
+        "input": {
+          "payment": "p-negative"
+        },
+        "kind": "activity",
+        "node": "lookup-pay",
+        "outcome": "failed",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:3>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "safety.lookup-none",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "reconciliation:<uuid:4>:lookup-pay",
+        "input": {
+          "payment": "p-negative"
+        },
+        "kind": "reconciler",
+        "node": "lookup-pay~r",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "<uuid:4>:lookup-pay",
+        "targetNode": "lookup-pay",
+        "taskKind": "RECONCILIATION",
+        "traceId": "<trace:3>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "safety.known-reserve",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:7>:known-reserve",
+        "input": {},
+        "kind": "activity",
+        "node": "known-reserve",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:5>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "safety.known-stop",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:7>:known-stop",
+        "input": {},
+        "kind": "activity",
+        "node": "known-stop",
+        "outcome": "failed",
+        "steps": {
+          "known-reserve": {
+            "reservation": "known-r1"
+          }
+        },
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:5>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "safety.known-release",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "compensation:<uuid:13>:<uuid:7>",
+        "input": {},
+        "kind": "compensation",
+        "node": "known-reserve~c",
+        "outcome": "failed",
+        "steps": {
+          "known-reserve": {
+            "reservation": "known-r1"
+          }
+        },
+        "targetIdempotencyKey": "<uuid:7>:known-reserve",
+        "targetNode": "known-reserve",
+        "taskKind": "COMPENSATION",
+        "traceId": "<trace:5>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "safety.unknown-reserve",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:10>:unknown-reserve",
+        "input": {},
+        "kind": "activity",
+        "node": "unknown-reserve",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:6>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "safety.unknown-stop",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:10>:unknown-stop",
+        "input": {},
+        "kind": "activity",
+        "node": "unknown-stop",
+        "outcome": "failed",
+        "steps": {
+          "unknown-reserve": {
+            "reservation": "unknown-r1"
+          }
+        },
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:6>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "safety.unknown-release",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "compensation:<uuid:14>:<uuid:10>",
+        "input": {},
+        "kind": "compensation",
+        "node": "unknown-reserve~c",
+        "outcome": "failed",
+        "steps": {
+          "unknown-reserve": {
+            "reservation": "unknown-r1"
+          }
+        },
+        "targetIdempotencyKey": "<uuid:10>:unknown-reserve",
+        "targetNode": "unknown-reserve",
+        "taskKind": "COMPENSATION",
+        "traceId": "<trace:6>",
+        "traceparentPresent": true
+      }
+    ]
+  }
+}

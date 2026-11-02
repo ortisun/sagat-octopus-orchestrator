@@ -3,6 +3,29 @@
 These changes are on the project completion feature branch. This is not a published release.
 Final compatibility, fault, canary, performance and workspace gates remain in the feature tasks.
 
+## Breaking: uncertain external effects wait for a person (feature 037)
+
+New decisions follow Constitution 2.0.0, principle III. Journals written by v0.1 and v0.2 still
+replay unchanged, and in-flight runs continue after an in-place upgrade. Only what the engine
+decides from now on changes:
+
+- An attempt whose outcome is unknown (lost lease, `ATTEMPT_TIMEOUT`, `OUTCOME_UNKNOWN`) waits for
+  review in **any** activity. `highRisk` no longer changes this behavior.
+- A lookup that answers `not_applied` no longer retries the original. The step waits with
+  `RECONCILIATION_NOT_FINAL` until a person settles it.
+- `RETRY_STEP` on a step whose outcome is unknown returns 409 with `details.reason`
+  `OUTCOME_UNRESOLVED` for every role, administrators included. Use `RESOLVE_STEP` after checking
+  with the provider.
+- A compensation is planned only for an effect that succeeded. Defensive compensation of an
+  unknown effect is gone; provider qualification for it is future work (US04).
+- Cancellation and deadlines keep a pending review instead of giving it up.
+  `COMPENSATION_FAILED` waits for independent compensations to settle.
+- A successful scoped report whose output cannot be stored is kept as `STORAGE_QUOTA_EXCEEDED`
+  instead of `RUN_DATA_LIMIT`.
+
+Workers that are stopped before their in-flight activities end now create review items. Drain
+workers before a restart ([scaling runbook](../runbooks/scaling.md#draining-workers-before-a-restart)).
+
 ## Breaking: event detail values require an explicit reveal
 
 `getInboxEvent` omits `data` by default. `getConnectorDeadLetter` omits `body` and `headers` by

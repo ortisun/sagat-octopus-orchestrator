@@ -3,6 +3,7 @@
 
 use std::time::{Duration, Instant};
 
+use reqwest::Method;
 use sagat_control_plane::RunError;
 use sagat_control_plane::config::{Config, Environment};
 use sagat_execution_engine::EngineConfig;
@@ -96,12 +97,12 @@ async fn the_engine_fires_timers_announces_work_and_serves_workers_with_nobody_d
 }
 
 #[tokio::test]
-async fn the_engine_takes_a_dead_workers_step_back_by_itself() {
+async fn the_engine_preserves_a_dead_workers_step_for_review_by_itself() {
     let p = platform().await;
     let engine = RunningEngine::start(engine_env(
         &p.api.db,
         &p.api.idp,
-        &[("SAGAT_LEASE_TTL_SECS", "1")],
+        &[("SAGAT_LEASE_TTL_SECS", "120")],
     ))
     .await;
     let wf = p
@@ -113,22 +114,53 @@ async fn the_engine_takes_a_dead_workers_step_back_by_itself() {
     doomed.register(&["act.a"]).await;
     let stale = eventually_task(&mut doomed, Duration::from_secs(5)).await;
 
-    // The worker never heartbeats. The engine expires the lease, backs off and releases the retry;
-    // another worker picks it up with a newer generation.
+    // Age the abandoned lease explicitly; only the running engine drives expiry and review.
+    p.expire_lease(&run, "a").await;
+    eventually(
+        "the engine retains the expired effect for review",
+        || async { (p.status(&run).await == "MANUAL_REVIEW").then_some(()) },
+    )
+    .await;
     let mut rescuer = p.worker_at(&engine.grpc_url, "rhea").await;
     rescuer.register(&["act.a"]).await;
-    let fresh = eventually_task(&mut rescuer, Duration::from_secs(20)).await;
-    assert_eq!(fresh.run_id, run);
-    assert!(fresh.generation > stale.generation);
-    assert_eq!(fresh.attempt, stale.attempt + 1);
+    assert!(
+        rescuer.poll(8).await.is_empty(),
+        "no automatic original repeat"
+    );
 
     let late = doomed
         .complete(&stale, &json!({}))
         .await
         .expect_err("stale");
     assert_eq!(machine_code(&late), "STALE_ATTEMPT");
-    rescuer.complete(&fresh, &json!({})).await.expect("rescued");
+    let (status, body) = p
+        .rest(
+            Method::POST,
+            &format!("/runs/{run}/operations"),
+            Some(
+                &json!({"action": "RESOLVE_STEP", "stepId": "a", "outcome": "SUCCEEDED",
+                         "reason": "provider evidence confirms the original effect completed"}),
+            ),
+        )
+        .await;
+    assert_eq!(status, 202, "{body}");
     assert_eq!(p.status(&run).await, "SUCCEEDED");
+    assert!(rescuer.poll(8).await.is_empty());
+    let events: (i64, i64, i64) = sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE event_type='step.leased'), \
+         count(*) FILTER (WHERE event_type='step.completed'), \
+         count(*) FILTER (WHERE event_type='step.resolved') \
+         FROM run_events WHERE run_id::text=$1 AND node='a'",
+    )
+    .bind(&run)
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("expired effect history");
+    assert_eq!(
+        events,
+        (1, 0, 1),
+        "one lease and a human decision, no repeat"
+    );
 }
 
 #[tokio::test]

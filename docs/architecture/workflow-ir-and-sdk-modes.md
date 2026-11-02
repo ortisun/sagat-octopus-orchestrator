@@ -20,6 +20,7 @@ flowchart LR
   PY[Python Builder] --> V
   CS[C# Builder] --> V
   JV[Java Builder] --> V
+  RS[Rust Builder] --> V
   V --> X[Canonical JSON normalize + hash]
   X --> R[Immutable Registry]
   R --> E[Durable Engine Reducer]
@@ -36,15 +37,25 @@ The SDK pipeline may run client-side and publish IR to the server. It must not e
 | `script` | artifact digest | sandbox via worker | build version / quotas |
 | `condition` | safe CEL expression | decides edge | expression without side effects |
 | `parallel` | branches, join policy | fanout with barrier | concurrency/fairness |
-| `foreach` | collection, iteration key | repeats subgraph | item limit |
+| `forEach` | collection expression, named body, result | executes a bounded collection body | maxItems/maxConcurrency and publication-shape limits |
+| `while` / `repeatUntil` | condition, body, initial/carry state | bounded sequential iteration | maxIterations and publication-shape limits |
 | `timer` | delay/until | creates temporal subscription | timezone when scheduled |
 | `waitEvent` | type/key/timeout | waits on subscription | race with deadline |
 | `child` | workflow id+version policy | starts child run | cancel propagation |
 | `saga` | start, compensation policy | compensation domain | irreversible actions |
-| `humanApproval` | form schema, assignee policy | waits for signal/authorization | SLA/escalation |
+| `approval` | eligible subjects/roles, outcome routes | one authorized committed decision | expiry and initiator-exclusion policy |
+| `database` | pinned connection revision, typed operation | dedicated managed PostgreSQL executor | root-only supported graph shape; one attempt, ambiguous writes need review |
 | `end` | output mapping | terminal closure | output validation |
 
-**Note:** schema v1 already describes these node kinds; validation of references, typing between nodes and security rules require an additional semantic validator on the server.
+**Acceptance layers:** schema recognition is not execution support. The legacy names `foreach`
+and `humanApproval` remain in the schema but the converter rejects them as non-executable
+placeholders. The structured parser can map more shapes than the production publication path
+accepts. Production parsing selects restricted collection/loop/continuation/state paths; the
+database node has additional root-only constraints. This table is an overview, not an exhaustive
+capability matrix. Consult the [schema](../../specs/001-platform-foundation/contracts/workflow.schema.json),
+[parser gates](../../crates/infra-ir/src/lib.rs) and [converter](../../crates/infra-ir/src/convert.rs)
+before treating a graph as publishable. Do not enable a placeholder merely because it appears in
+the schema.
 
 ## TypeScript builder model (design API)
 
@@ -92,7 +103,7 @@ await client.PublishAsync(flow.Compile(), cancellationToken);
 
 1. Parse schema and resolve typed inputs/outputs.
 2. Verify existing `entrypoint`, unique IDs, valid targets, no dangling edges.
-3. Validate cycles only inside a declared `foreach`/loop with an iteration limit and stable checkpoint.
+3. Validate cycles only inside a declared `forEach`/loop with an iteration limit and stable checkpoint.
 4. Verify Saga compensations/reconcile for operations marked `external_effect`.
 5. Define capability/secret/egress and validate RBAC of dependencies.
 6. Normalize IR, compute digest, sign the version and publish atomically.

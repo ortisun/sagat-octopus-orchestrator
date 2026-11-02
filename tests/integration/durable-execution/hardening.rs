@@ -52,7 +52,7 @@ fn refs(names: &[String]) -> Vec<&str> {
 // ------------------------------------------------------------- what a run may retain
 
 #[tokio::test]
-async fn a_run_cannot_retain_more_output_than_its_budget_and_the_step_fails_for_good() {
+async fn a_run_cannot_retain_more_output_than_its_budget_and_the_unknown_effect_waits_for_review() {
     let w = world().await;
     let (doc, activities) = long_chain("hoarder", 20);
     let (wf, _) = w.publish(doc).await;
@@ -74,27 +74,72 @@ async fn a_run_cannot_retain_more_output_than_its_budget_and_the_step_fails_for_
         assert_ne!(w.run_status(run).await, RunStatus::Failed, "after {n}");
     }
 
-    // The next one would push what the run retains over the budget: it is accepted as a *failure*
-    // of the step, with a code of its own and no retry (a retry would only exceed it again).
+    // Refusing to retain a successful worker report does not establish that its external effect
+    // failed. Keep the output ceiling and retain the unknown outcome for review, without retry.
     let task = w.one_task(&session).await;
     let node = task.instance.node().as_str().to_owned();
-    w.complete(&session, &task, &output)
+    let ack = w
+        .complete(&session, &task, &output)
         .await
         .expect("the report itself is accepted");
-    assert_eq!(w.step_status(run, &node).await, Some(StepStatus::Failed));
-    assert_eq!(w.run_status(run).await, RunStatus::Failed);
-    let (code, attempts): (Option<String>, i32) =
-        sqlx::query_as("SELECT failure_code, attempt FROM steps WHERE run_id = $1 AND node = $2")
-            .bind(run.as_uuid())
-            .bind(&node)
-            .fetch_one(&w.db.pool)
-            .await
-            .expect("step");
-    assert_eq!(code.as_deref(), Some("RUN_DATA_LIMIT"));
+    assert_eq!(ack.step_status, StepStatus::Waiting);
+    assert_eq!(ack.run_status, RunStatus::ManualReview);
+    assert_eq!(w.step_status(run, &node).await, Some(StepStatus::Waiting));
+    assert_eq!(w.run_status(run).await, RunStatus::ManualReview);
+    let (code, waiting, attempts, no_output, no_retry): (
+        Option<String>,
+        Option<String>,
+        i32,
+        bool,
+        bool,
+    ) = sqlx::query_as(
+        "SELECT failure_code, waiting_kind, attempt, output_digest IS NULL, \
+                next_attempt_at IS NULL FROM steps WHERE run_id = $1 AND node = $2",
+    )
+    .bind(run.as_uuid())
+    .bind(&node)
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("step");
+    assert_eq!(code.as_deref(), Some("STORAGE_QUOTA_EXCEEDED"));
+    assert_eq!(waiting.as_deref(), Some("OPERATOR"));
     assert_eq!(attempts, 1, "the step was not retried");
+    assert!(no_output, "the refused result was not attached to the step");
+    assert!(no_retry, "unknown effects have no automatic retry timer");
+    let retained: (i64, i64) = sqlx::query_as(
+        "SELECT count(*), coalesce(sum(octet_length(p.content)),0)::bigint \
+         FROM steps s JOIN payloads p ON p.tenant_id=s.tenant_id AND p.digest=s.output_digest \
+         WHERE s.run_id=$1",
+    )
+    .bind(run.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("retained logical output bytes");
+    assert_eq!(
+        retained,
+        (
+            i64::try_from(fits).expect("output count"),
+            i64::try_from(fits * len_of(&output)).expect("retained bytes"),
+        ),
+        "only outputs that fit the budget remain, with none lost or added"
+    );
+    let before = w.journal(run).await;
+    let replay = w
+        .complete(&session, &task, &output)
+        .await
+        .expect("the duplicate report returns its retained review outcome");
+    assert!(replay.already_applied);
+    assert_eq!(replay.step_status, StepStatus::Waiting);
+    assert_eq!(replay.run_status, RunStatus::ManualReview);
+    w.scheduler.tick().await;
+    assert_eq!(
+        w.journal(run).await,
+        before,
+        "no repeated effect or progress"
+    );
     assert!(
         w.poll(&session, 4).await.is_empty(),
-        "nothing is left to hand out"
+        "neither another attempt nor a successor can be leased before review"
     );
     w.assert_consistent(run).await;
 }

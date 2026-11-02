@@ -1,0 +1,239 @@
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:291:9
+    |
+278 | pub struct CreateTopicsResponse {
+    |            -------------------- field in this struct
+...
+291 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `name`, `value`, `read_only`, `config_source`, `is_sensitive`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:321:9
+    |
+319 | pub struct CreateTopicResponseConfig {
+    |            ------------------------- fields in this struct
+320 |     /// The configuration name.
+321 |     pub name: CompactString,
+    |         ^^^^
+...
+324 |     pub value: CompactNullableString,
+    |         ^^^^^
+...
+327 |     pub read_only: Boolean,
+    |         ^^^^^^^^^
+...
+330 |     pub config_source: Int8,
+    |         ^^^^^^^^^^^^^
+...
+333 |     pub is_sensitive: Boolean,
+    |         ^^^^^^^^^^^^
+...
+336 |     pub tagged_fields: TaggedFields,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponseConfig` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `num_partitions`, `replication_factor`, `configs`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:374:9
+    |
+359 | pub struct CreateTopicResponse {
+    |            ------------------- fields in this struct
+...
+374 |     pub num_partitions: Option<Int32>,
+    |         ^^^^^^^^^^^^^^
+...
+379 |     pub replication_factor: Option<Int16>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+384 |     pub configs: Vec<CreateTopicResponseConfig>,
+    |         ^^^^^^^
+...
+389 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `low_watermark` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:182:9
+    |
+177 | pub struct DeleteResponsePartition {
+    |            ----------------------- fields in this struct
+...
+182 |     pub low_watermark: Int64,
+    |         ^^^^^^^^^^^^^
+...
+190 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:226:9
+    |
+216 | pub struct DeleteResponseTopic {
+    |            ------------------- field in this struct
+...
+226 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:269:9
+    |
+258 | pub struct DeleteRecordsResponse {
+    |            --------------------- field in this struct
+...
+269 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteRecordsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:101:9
+    |
+ 88 | pub struct DeleteTopicsResponse {
+    |            -------------------- field in this struct
+...
+101 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:144:9
+    |
+129 | pub struct DeleteTopicsResponseTopic {
+    |            ------------------------- field in this struct
+...
+144 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `producer_id` and `first_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:170:9
+    |
+168 | pub struct FetchResponseAbortedTransaction {
+    |            ------------------------------- fields in this struct
+169 |     /// The producer id associated with the aborted transaction.
+170 |     pub producer_id: Int64,
+    |         ^^^^^^^^^^^
+...
+173 |     pub first_offset: Int64,
+    |         ^^^^^^^^^^^^
+    |
+    = note: `FetchResponseAbortedTransaction` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `aborted_transactions` is never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:213:9
+    |
+192 | pub struct FetchResponsePartition {
+    |            ---------------------- field in this struct
+...
+213 |     pub aborted_transactions: Vec<FetchResponseAbortedTransaction>,
+    |         ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `FetchResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `timestamp` is never read
+   --> vendor/rskafka/src/protocol/messages/list_offsets.rs:184:9
+    |
+169 | pub struct ListOffsetsResponsePartition {
+    |            ---------------------------- field in this struct
+...
+184 |     pub timestamp: Option<Int64>,
+    |         ^^^^^^^^^
+    |
+    = note: `ListOffsetsResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `log_append_time_ms` and `log_start_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/produce.rs:148:9
+    |
+132 | pub struct ProduceResponsePartitionResponse {
+    |            -------------------------------- fields in this struct
+...
+148 |     pub log_append_time_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+153 |     pub log_start_offset: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^
+    |
+    = note: `ProduceResponsePartitionResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `session_lifetime_ms` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/sasl_msg.rs:198:9
+    |
+181 | pub struct SaslAuthenticateResponse {
+    |            ------------------------ fields in this struct
+...
+198 |     pub session_lifetime_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^^
+...
+203 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `SaslAuthenticateResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: struct `CompactArray` is never constructed
+   --> vendor/rskafka/src/protocol/primitives.rs:725:12
+    |
+725 | pub struct CompactArray<T>(pub Option<Vec<T>>);
+    |            ^^^^^^^^^^^^
+
+warning: `rskafka` (lib) generated 14 warnings
+   Compiling sagat-tests v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/tests)
+    Finished `test` profile [unoptimized] target(s) in 23.00s
+     Running integration/scalability-ha/main.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/integration_scalability_ha-1c3f776190e20e5a)
+
+running 44 tests
+test counts::deleting_an_unfinished_run_and_opening_a_finished_one_keep_the_count ... ok
+test counts::a_temporary_table_cannot_stand_in_for_the_counters_or_borrow_the_function ... ok
+test counts::the_quota_is_still_exact_when_starts_race_for_the_last_places ... ok
+test counts::the_runtime_role_keeps_the_counters_by_writing_runs_and_cannot_write_them_itself ... ok
+test counts::the_counters_are_the_count_through_starts_cancels_deadlines_and_completions ... ok
+test fairness::a_burst_of_one_tenant_does_not_hold_another_back ... ok
+test fairness::a_tenant_never_reaches_another_tenants_runs ... ok
+test fairness::a_search_that_found_nobody_rests_and_a_tenant_behind_the_burst_is_found_when_it_is_over ... ok
+test fairness::equal_weights_split_a_pass_equally_and_a_lone_tenant_still_gets_all_of_it ... ok
+test fairness::the_operator_sets_and_withdraws_a_weight_and_each_change_is_audited ... ok
+test lag::a_sample_that_fails_zeroes_the_gauges_the_autoscalers_read_and_the_backlog_is_the_monitors ... ok
+test lag::the_lag_of_a_pass_is_how_long_its_oldest_item_has_been_overdue ... ok
+test fairness::weights_decide_the_split_when_both_tenants_have_more_than_a_pass_takes ... ok
+test lag::the_queue_of_a_pool_is_what_is_ready_for_the_activities_it_serves_across_tenants ... ok
+test outbox::a_dispatcher_that_holds_no_shard_publishes_nothing ... ok
+test outbox::a_burst_of_messages_of_one_tenant_does_not_hold_back_another_tenants ... ok
+test outbox::each_dispatcher_publishes_the_messages_of_its_own_shards_and_between_them_all_of_them ... ok
+test outbox::a_message_claimed_by_a_dispatcher_that_died_is_published_by_the_next_owner_after_the_visibility ... ok
+test passes::a_replica_that_holds_no_shard_does_nothing ... ok
+test passes::a_replica_that_leaves_cleanly_hands_its_shards_over_without_waiting ... ok
+test passes::a_replica_that_lost_its_shards_is_refused_by_the_fence_and_changes_nothing ... ok
+test passes::children_and_parents_are_worked_by_the_owner_of_the_parent ... ok
+test passes::two_replicas_split_the_shards_and_each_works_on_its_own ... ok
+test passes::the_shards_of_a_stopped_replica_are_taken_within_the_lease_and_not_before ... ok
+test shards::a_free_shard_is_taken_and_the_generation_counts_the_takeovers ... ok
+test passes::when_a_replica_dies_the_other_takes_its_shards_and_its_work ... ok
+test shards::a_lease_cannot_be_made_to_last_for_ever ... ok
+test shards::a_lease_given_back_can_be_taken_at_once ... ok
+test shards::a_lease_is_renewed_by_its_owner_at_its_generation_and_only_while_it_lasts ... ok
+test shards::a_renewal_does_not_wait_for_a_shard_an_orphan_holds_and_renews_the_others ... ok
+test shards::an_action_cut_off_in_the_middle_does_not_hold_its_shard_for_longer_than_the_server_lets_it_idle ... ok
+test shards::replicas_racing_for_every_shard_never_both_win_one ... ok
+test shards::a_takeover_never_overtakes_the_transaction_that_found_the_lease_good ... ok
+test shards::the_fence_is_good_for_the_current_lease_and_for_nothing_else ... ok
+test shards::the_migration_seeds_sixty_four_free_shards ... ok
+test shards::the_replicas_alive_are_counted_whether_or_not_they_hold_a_shard ... ok
+test shards::the_shard_of_an_id_is_the_same_in_the_database_and_in_the_domain ... ok
+test shards::the_weights_of_the_tenants_are_read_and_bounded ... ok
+test splits::deadlines_and_hints_are_divided_by_the_shard_of_the_run ... ok
+test splits::a_child_that_ended_is_told_to_its_parent_by_the_replica_that_holds_the_parents_shard ... ok
+test splits::lost_leases_are_divided_by_the_shard_of_the_run ... ok
+test splits::retries_are_divided_by_the_shard_of_the_run ... ok
+test splits::the_children_of_a_stopped_parent_are_stopped_by_the_replica_that_holds_their_own_shard ... ok
+test splits::the_deadlines_of_event_waits_are_divided_by_the_shard_of_the_run ... ok
+
+test result: ok. 44 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 50.28s
+

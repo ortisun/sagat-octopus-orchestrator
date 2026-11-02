@@ -1,0 +1,42 @@
+[
+  {
+    "command": "python3 -m unittest discover -s scripts/tests -v",
+    "exit": -2,
+    "log": "d1-static-0.txt"
+  },
+  {
+    "command": "python3 scripts/check-architecture.py",
+    "exit": 0,
+    "log": "d1-static-1.txt"
+  },
+  {
+    "command": "python3 scripts/check-capacity-activation.py",
+    "exit": 0,
+    "log": "d1-static-2.txt"
+  },
+  {
+    "command": "python3 scripts/check-upgrade-boundary.py",
+    "exit": 0,
+    "log": "d1-static-3.txt"
+  },
+  {
+    "command": "python3 scripts/check-vendor.py",
+    "exit": 0,
+    "log": "d1-static-4.txt"
+  },
+  {
+    "command": "python3 scripts/check-agent-config.py",
+    "exit": 0,
+    "log": "d1-static-5.txt"
+  },
+  {
+    "command": "cargo audit --deny warnings",
+    "exit": 0,
+    "log": "d1-static-6.txt"
+  },
+  {
+    "command": "cargo audit --deny warnings --file sdks/rust/Cargo.lock",
+    "exit": 0,
+    "log": "d1-static-7.txt"
+  }
+]

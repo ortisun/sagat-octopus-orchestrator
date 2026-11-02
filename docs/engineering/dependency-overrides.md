@@ -45,3 +45,18 @@ Remove this override, its snapshot and guard when a published compatible rskafka
 on a patched Zstandard version. Resolve normally, inspect the lock diff, run the same audit and
 broker regressions, and keep this removal condition in the review. Do not alter vendored Rust
 source as an incidental fix; any further override needs its own source verification and review.
+
+
+## Frontend minimatch import bridge (2026-11-01)
+
+The locked ESLint/JSX accessibility/Redocly tools still require different minimatch import shapes.
+The private `frontend/tools/minimatch-compat` workspace delegates to unmodified pinned upstream
+11.0.1 while exposing their required imports. Its local version `11.0.1+sagat.1` and six
+consumer-scoped overrides keep all other tool versions unchanged. No audit exception or
+install-time patch is used. See the [bridge contract and removal trigger](../../frontend/tools/minimatch-compat/README.md).
+
+`npm ci`, `npm audit --audit-level=moderate`, `npm run test:tooling`, lint, type checks, unit tests,
+build and API generation checks validate the locked tools. The Studio Dockerfile runs the
+compatibility regressions after its Node 22 workspace-filtered install, guarding against the
+broken nested links produced by relative global overrides. Actual results are in the
+[037 validation report](../../specs/037-compensation-safety/validation-report.md).

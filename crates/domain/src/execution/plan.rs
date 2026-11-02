@@ -126,9 +126,6 @@ pub fn plan_addressed(
             },
         );
     }
-    if !forward {
-        return Ok(AddressedPlan::Idle);
-    }
     for (instance, step) in state
         .instances()
         .filter(|(instance, _)| instance.path() == path)
@@ -137,6 +134,17 @@ pub fn plan_addressed(
             let declared = def
                 .node_for_instance(instance)
                 .ok_or_else(|| ExecutionError::UnknownStep(instance.node().clone()))?;
+            let recovery = instance.node().is_reconciliation()
+                && (!state.is_paused() || state.stop_reason().is_some())
+                && instance.node().forward().is_some_and(|node| {
+                    let original = super::ExecutionInstanceId::in_path(path.clone(), node);
+                    state.instance(&original).is_some_and(|step| {
+                        matches!(step.waiting_on(), Some(WaitingOn::Reconciliation))
+                    })
+                });
+            if !forward && !recovery {
+                continue;
+            }
             // A compensation is released by its scope, when everything it waits for has finished.
             if matches!(declared.origin(), NodeOrigin::Compensation(_)) {
                 continue;
@@ -212,9 +220,6 @@ pub fn plan_path(
             },
         );
     }
-    if !forward {
-        return Ok(AddressedPlan::Idle);
-    }
     for (node, step) in state.local_instances() {
         if step.status() != StepStatus::Pending {
             continue;
@@ -223,6 +228,16 @@ pub fn plan_path(
         let declared = def
             .node_for_instance(&instance)
             .ok_or_else(|| ExecutionError::UnknownStep(node.clone()))?;
+        let recovery = node.is_reconciliation()
+            && (!state.global().is_paused() || state.global().stop_reason().is_some())
+            && node.forward().is_some_and(|forward| {
+                state.local_instance(&forward).is_some_and(|step| {
+                    matches!(step.waiting_on(), Some(WaitingOn::Reconciliation))
+                })
+            });
+        if !forward && !recovery {
+            continue;
+        }
         if matches!(declared.origin(), NodeOrigin::Compensation(_)) {
             continue;
         }
@@ -331,6 +346,12 @@ fn drain(
     for (node, step) in state.steps() {
         // A saga that is compensating winds down its own body, and its compensations must run to
         // the end whatever stopped the run.
+        if recovery_obligation(state, node, step) {
+            if node.is_reconciliation() && step.status() == StepStatus::Pending {
+                return Ok(Plan::Emit(RunEvent::StepReleased { node: node.clone() }));
+            }
+            continue;
+        }
         if sagas::owned(def, state, node, true) {
             continue;
         }
@@ -382,6 +403,9 @@ fn drain(
                 | super::LoopPhase::Cancelled => {}
             }
         }
+        if let Some(review) = unresolved_legacy_retry(node, step) {
+            return Ok(Plan::Emit(review));
+        }
         match step.status() {
             // A step parked on a child that the policy asks to be cancelled *and awaited* is asked
             // to stop like an attempt in flight, then left alone until the child has settled.
@@ -415,6 +439,47 @@ fn drain(
             Plan::Idle
         },
     )
+}
+
+/// Work whose external outcome must survive an ordinary stop or a lost join.
+/// A lookup companion remains runnable until its original receives a durable answer.
+/// A step waiting to retry after an attempt whose outcome is unknown. Only a journal written by
+/// v0.1/v0.2 holds one (current engines send such an attempt to reconciliation or review). Feature
+/// 037 repeats nothing whose outcome is unknown and drops nothing that may have happened: the next
+/// decision about it is a person's. Returns the review event that replaces the retry or the cancel.
+///
+/// Derived steps are excluded: a lookup (`~r`) is a read and may be retried, and a compensation
+/// with an unknown outcome already waits for review in every version.
+pub(super) fn unresolved_legacy_retry(node: &NodeId, step: &StepState) -> Option<RunEvent> {
+    let code = step.failure()?;
+    (!node.is_derived() && step.status() == StepStatus::RetryWait && code.leaves_outcome_unknown())
+        .then(|| RunEvent::StepNeedsReview {
+            node: node.clone(),
+            code: code.clone(),
+            fence: None,
+        })
+}
+
+pub(super) fn recovery_obligation(state: &RunState, node: &NodeId, step: &StepState) -> bool {
+    if matches!(step.waiting_on(), Some(WaitingOn::Reconciliation)) {
+        return true;
+    }
+    if matches!(step.waiting_on(), Some(WaitingOn::Operator { .. }))
+        && (node.is_compensation()
+            || step
+                .failure()
+                .is_some_and(FailureCode::leaves_outcome_unknown))
+    {
+        return true;
+    }
+    node.is_reconciliation()
+        && !step.status().is_terminal()
+        && node
+            .forward()
+            .and_then(|forward| state.step(&forward))
+            .is_some_and(|original| {
+                matches!(original.waiting_on(), Some(WaitingOn::Reconciliation))
+            })
 }
 
 /// Whether `step` is parked on a child run whose node says the parent must wait for the child to
@@ -608,8 +673,11 @@ fn cancel_joined_leftovers(def: &WorkflowDefinition, state: &RunState) -> Option
                 continue;
             };
             // A saga in a branch that lost compensates what it did; it winds its own body down.
-            if sagas::owned(def, state, member, false) {
+            if sagas::owned(def, state, member, false) || recovery_obligation(state, member, step) {
                 continue;
+            }
+            if let Some(review) = unresolved_legacy_retry(member, step) {
+                return Some(review);
             }
             match step.status() {
                 StepStatus::Pending

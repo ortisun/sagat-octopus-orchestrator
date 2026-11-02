@@ -234,6 +234,107 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
             .contains(&"step.needs_review".to_owned())
     );
     w.assert_consistent(write_run).await;
+    // An execute may already have changed the provider before cancellation or a run deadline wins.
+    // Neither stop proves absence, authorizes another SQL execution, or creates a defensive undo.
+    for stop in ["cancel", "deadline"] {
+        let run = if stop == "deadline" {
+            w.start_with(
+                write,
+                &json!({}),
+                &format!("database-uncertainty-deadline-{}", Uuid::now_v7()),
+                Some(time::OffsetDateTime::now_utc() + time::Duration::hours(1)),
+            )
+            .await
+            .unwrap()
+        } else {
+            w.start(write, &json!({})).await
+        };
+        let tasks = w.poll(&session, 1).await;
+        assert_eq!(tasks.len(), 1, "{stop}: one managed execute");
+        let task = &tasks[0];
+        w.workers
+            .resolve_database(&machine, &task_ref(task), None)
+            .await
+            .unwrap();
+        if stop == "deadline" {
+            w.age_run_deadline(run).await;
+            assert_eq!(w.scheduler.tick().await.deadlines_enforced, 1);
+        } else {
+            w.operate(run, sagat_application::runs::RunOperation::Cancel)
+                .await
+                .unwrap();
+        }
+
+        let ack = w
+            .fail_with(&session, task, "OUTCOME_UNKNOWN", false)
+            .await
+            .unwrap();
+        assert_eq!(ack.step_status.as_str(), "WAITING", "{stop}");
+        assert_eq!(ack.run_status.as_str(), "MANUAL_REVIEW", "{stop}");
+        let projection: (String, Option<String>, Option<String>, i32, Option<Vec<u8>>) =
+            sqlx::query_as(
+                "SELECT status,waiting_kind,failure_code,attempt,output_digest FROM steps \
+             WHERE run_id=$1 AND node='database'",
+            )
+            .bind(run.as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            projection,
+            (
+                "WAITING".into(),
+                Some("OPERATOR".into()),
+                Some("OUTCOME_UNKNOWN".into()),
+                1,
+                None,
+            ),
+            "{stop}: exact unresolved execute projection"
+        );
+        let stop_reason: Option<String> =
+            sqlx::query_scalar("SELECT stop_reason FROM runs WHERE id=$1")
+                .bind(run.as_uuid())
+                .fetch_one(&w.db.pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            stop_reason.as_deref(),
+            Some(if stop == "deadline" {
+                "TIMED_OUT"
+            } else {
+                "CANCELLED"
+            })
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM steps WHERE run_id=$1 AND kind='COMPENSATION'",
+            )
+            .bind(run.as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .unwrap(),
+            0,
+            "{stop}: unknown execute has no defensive compensation"
+        );
+        w.scheduler.tick().await;
+        assert!(
+            w.poll(&session, 4).await.is_empty(),
+            "{stop}: unresolved SQL is not leased a second time"
+        );
+        let leaked_evidence: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM run_events WHERE run_id=$1 AND \
+             (detail::text LIKE '%result-password%' OR detail::text LIKE '%managed_reader%')",
+        )
+        .bind(run.as_uuid())
+        .fetch_one(&w.db.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            leaked_evidence, 0,
+            "{stop}: journal evidence is secret-free"
+        );
+        w.assert_consistent(run).await;
+    }
     // Cancellation commits while output scanning waits on OpenBao; the subsequent fence rejects it.
     let cancelled_run = w.start(query, &json!({})).await;
     let tasks = w.poll(&session, 1).await;

@@ -18,8 +18,8 @@ use std::time::Duration;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::execution::{
-    self, ExecutionError, ExecutionInstanceId, FailureCode, Progress, ReviewOutcome, RunEvent,
-    RunId, RunStatus, StepStatus, StopReason, WaitingOn,
+    self, ExecutionError, ExecutionInstanceId, Progress, ReviewOutcome, RunEvent, RunId, RunStatus,
+    StepStatus, StopReason, WaitingOn,
 };
 use sagat_domain::identity::{Namespace, NamespaceId, Permission, Principal, TenantId};
 use sagat_domain::workflow::{NodeId, NodeKind, WorkflowDefinition};
@@ -1408,28 +1408,8 @@ where
         if expected_version.is_some_and(|expected| expected != version) {
             return Err(AppError::RevisionConflict { current: version });
         }
-        // Asking again for an effect that may already have happened is the decision the platform
-        // would not take by itself (a high risk step waits for a person for that reason), so it is
-        // an administrator's to take: an operator may retry a step that is known not to have
-        // happened, or a compensation (which is idempotent by contract).
-        // A step that is only waiting out the delay of a retry is not that decision: the platform
-        // had already decided to try again, and the operator is not waiting for the delay.
-        if *action == ReviewAction::Retry
-            && !node.is_compensation()
-            && tx
-                .parts()
-                .1
-                .instance(instance)
-                .is_some_and(|step| step.status() == StepStatus::Waiting)
-            && tx
-                .parts()
-                .1
-                .instance(instance)
-                .and_then(|step| step.failure())
-                .is_some_and(FailureCode::leaves_outcome_unknown)
-        {
-            principal.authorize(Permission::SagaOverride)?;
-        }
+        // The domain checks retry safety under this run lock for every role and task kind.
+        // SagaOverride authorizes outcome-bearing decisions, never a blind repeat.
         let now = self.clock.now();
         let mut effects = Effects::by(
             Actor::Principal(principal.subject().as_str().to_owned()),
@@ -1678,7 +1658,10 @@ pub fn execution_error(error: &ExecutionError) -> AppError {
         ExecutionError::RunNotRunnable(_) => {
             AppError::StateConflict("the run does not accept new work")
         }
-        ExecutionError::StaleAttempt { .. } | ExecutionError::IllegalTransition { .. } => {
+        ExecutionError::OutcomeUnresolved(_) => AppError::OutcomeUnresolved,
+        ExecutionError::StaleAttempt { .. }
+        | ExecutionError::IllegalTransition { .. }
+        | ExecutionError::IllegalInstanceTransition { .. } => {
             AppError::StateConflict("the step is not in a state that allows this")
         }
         other => {

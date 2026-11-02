@@ -731,9 +731,100 @@ fn drain_refuses_to_hide_an_attempt_that_is_still_in_flight() {
     assert_eq!(state, before);
 }
 
+/// Feature 037, FR-037-007: a lookup that fails sends its original to review. While the original
+/// waits for a person the iteration cannot drain; once the person settled it, the failed lookup is
+/// settled too and the iteration drains.
+#[test]
+fn a_failed_lookup_holds_the_drain_until_its_original_is_settled() {
+    let mut state = started(1, 1);
+    admit(&mut state, 0);
+    let path = body(0).path().clone();
+    let work = node("work");
+    let lookup = work.reconciliation();
+    let fence = Fence {
+        attempt: 1,
+        generation: 1,
+    };
+    let apply = |state: &mut RunState, event: RunEvent| {
+        state
+            .apply_addressed(&AddressedRunEvent::in_path(path.clone(), event).expect("scoped"))
+            .expect("prepare the lookup flow");
+    };
+    for event in [
+        RunEvent::StepReleased { node: work.clone() },
+        RunEvent::StepLeased {
+            node: work.clone(),
+            attempt: 1,
+            generation: 1,
+        },
+        RunEvent::ReconciliationRequested {
+            node: work.clone(),
+            fence,
+            cause: FailureCode::parse("LEASE_EXPIRED").expect("code"),
+        },
+        RunEvent::StepReleased {
+            node: lookup.clone(),
+        },
+        RunEvent::StepLeased {
+            node: lookup.clone(),
+            attempt: 1,
+            generation: 1,
+        },
+        RunEvent::StepFailed {
+            node: lookup.clone(),
+            code: FailureCode::worker_error(),
+            fence: Some(fence),
+        },
+        RunEvent::StepNeedsReview {
+            node: work.clone(),
+            code: FailureCode::reconciliation_failed(),
+            fence: None,
+        },
+    ] {
+        apply(&mut state, event);
+    }
+    state
+        .apply(&RunEvent::RunStopRequested {
+            reason: StopReason::Cancelled,
+            code: None,
+        })
+        .expect("cancel");
+    state
+        .apply(&RunEvent::CollectionDrainStarted {
+            node: node("items"),
+            reason: CollectionDrainReason::Cancelled,
+        })
+        .expect("collection begins draining");
+    let drained = RunEvent::CollectionIterationDrained {
+        node: node("items"),
+        index: 0,
+    };
+    let before = state.clone();
+    assert!(
+        state.clone().apply(&drained).is_err(),
+        "the original still waits for a person"
+    );
+    assert_eq!(state, before);
+
+    apply(
+        &mut state,
+        RunEvent::StepResolved {
+            node: work.clone(),
+            outcome: sagat_domain::execution::ReviewOutcome::Failed(
+                FailureCode::parse("OPERATOR_CONFIRMED_NOT_APPLIED").expect("code"),
+            ),
+        },
+    );
+    state
+        .apply(&drained)
+        .expect("a settled original releases its failed lookup");
+}
+
 #[test]
 fn drain_refuses_to_hide_failed_derived_obligations() {
-    for derived_node in [node("work").compensation(), node("work").reconciliation()] {
+    // A failed compensation always holds the drain back. (A failed lookup is covered by
+    // `a_failed_lookup_holds_the_drain_until_its_original_is_settled`.)
+    for derived_node in [node("work").compensation()] {
         let mut state = started(1, 1);
         admit(&mut state, 0);
         let path = body(0).path().clone();

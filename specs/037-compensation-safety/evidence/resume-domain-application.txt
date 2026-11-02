@@ -1,0 +1,1417 @@
+   Compiling sagat-application v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/crates/application)
+   Compiling sagat-domain v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/crates/domain)
+    Finished `test` profile [unoptimized] target(s) in 1.38s
+     Running unittests src/lib.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/sagat_application-213518361245b3ba)
+
+running 75 tests
+test api_admission::tests::approval_permission_denial_is_audited_without_charging ... ok
+test api_admission::tests::approval_permission_denial_fails_closed_when_audit_cannot_commit ... ok
+test api_admission::tests::denied_permission_does_not_consume_a_token ... ok
+test api_admission::tests::foreign_approval_is_not_disclosed_to_a_caller_without_permission ... ok
+test api_admission::tests::foreign_resource_is_opaque_audited_and_not_charged ... ok
+test api_admission::tests::promotion_charges_only_the_authorized_destination ... ok
+test api_admission::tests::refusal_and_storage_failure_are_closed_typed_errors ... ok
+test api_admission::tests::run_is_charged_once_to_its_stored_namespace ... ok
+test capacity_acquire::tests::canonical_acquire_fingerprint_is_independently_specified ... ok
+test capacity_acquire::tests::acquire_and_vacate_have_distinct_operation_domains ... ok
+test capacity_acquire::tests::renewal_and_receipt_key_do_not_change_logical_identity ... ok
+test capacity_acquire::tests::every_binding_and_cas_counter_changes_the_fingerprint ... ok
+test capacity_finish::tests::canonical_fingerprint_vector_survives_scheduler_renewal ... ok
+test capacity_vacate::tests::canonical_vacate_fingerprint_is_independently_specified ... ok
+test capacity_vacate::tests::renewal_and_receipt_key_do_not_change_logical_identity ... ok
+test capacity_vacate::tests::every_binding_and_cas_counter_changes_the_fingerprint ... ok
+test classification::tests::an_omitted_root_has_an_explicit_value_free_result ... ok
+test classification::tests::authoring_location_identity_keeps_literals_separate_from_applicators ... ok
+test classification::tests::exact_json_number_text_is_kept_without_a_float_conversion ... ok
+test classification::tests::finding_codes_have_closed_safe_messages_and_severities ... ok
+test classification::tests::reveal_facts_distinguish_an_omitted_request_from_a_missing_grant ... ok
+test classification::tests::payload_carrying_debug_output_never_contains_values_or_names ... ok
+test classification::tests::root_and_body_node_carriers_have_distinct_cache_identities ... ok
+test collection_source::tests::a_manifest_round_trips_and_an_inline_array_is_not_one ... ok
+test collection_source::tests::only_an_exact_descriptor_is_a_blob_reference ... ok
+test collection_source::tests::the_items_digest_pins_order_and_content ... ok
+test execution::collection_plan::tests::changed_snapshot_is_rejected_before_another_admission ... ok
+test execution::collection_plan::tests::collection_owner_waits_for_the_atomic_store_path ... ok
+test execution::collection_plan::tests::empty_collection_enters_and_finishes_without_body_work ... ok
+test execution::collection_plan::tests::entry_admits_only_the_window_and_keeps_more_work_explicit ... ok
+test execution::collection_plan::tests::return_checkpoint_and_next_admission_are_one_ordered_plan ... ok
+test execution::instance_port_tests::root_events_retain_their_existing_shape_for_legacy_adapters ... ok
+test execution::instance_port_tests::root_outputs_keep_the_existing_node_key ... ok
+test execution::instance_port_tests::scoped_events_fail_instead_of_becoming_root_events ... ok
+test execution::instance_port_tests::scoped_outputs_fail_instead_of_colliding_by_local_node_id ... ok
+test loop_progress::tests::continuation_requires_exactly_one_matching_durable_effect ... ok
+test loop_progress::tests::entry_requires_the_declared_predicate_phase_and_first_iteration ... ok
+test primitives::tests::admission_requires_the_exact_member_path_and_a_return_reservation ... ok
+test primitives::tests::empty_collection_is_valid_when_atomic_finish_is_available ... ok
+test primitives::tests::every_effective_limit_is_bounded ... ok
+test primitives::tests::runtime_commands_pin_the_digest_to_their_inline_content ... ok
+test sandbox::tests::a_build_is_the_same_build_only_if_everything_that_matters_is ... ok
+test sandbox::tests::a_digest_is_the_sha256_of_the_bytes ... ok
+test sandbox::tests::a_schema_is_part_of_the_build_and_cannot_be_shifted_into_the_other ... ok
+test sandbox::tests::the_fields_of_a_key_cannot_be_shifted_into_one_another ... ok
+test script_signing::tests::a_key_that_is_not_trusted_signs_nothing_the_verifier_accepts ... ok
+test script_signing::tests::a_signature_verifies_only_for_the_tenant_digest_and_language_it_was_made_for ... ok
+test script_signing::tests::the_key_id_follows_the_public_key ... ok
+test script_signing::tests::what_is_not_a_key_is_refused_and_a_key_is_never_printed ... ok
+test scripts::tests::a_ceiling_below_the_defaults_refuses_what_is_asked_not_what_is_left_out ... ok
+test scripts::tests::a_policy_request_fills_in_the_defaults_and_stops_at_the_ceiling ... ok
+test scripts::tests::a_text_is_cut_on_a_character ... ok
+test scripts::tests::two_drafts_are_one_version_only_if_every_field_is_the_same ... ok
+test signing::tests::a_header_is_bounded_before_a_single_hash_is_computed ... ok
+test signing::tests::a_malformed_header_is_refused_without_looking_at_the_secrets ... ok
+test signing::tests::a_secret_too_short_to_mean_anything_signs_and_verifies_nothing ... ok
+test signing::tests::a_signature_verifies_for_what_it_covers_and_nothing_else ... ok
+test signing::tests::a_timestamp_outside_the_window_is_stale_in_either_direction ... ok
+test signing::tests::during_a_rotation_any_signature_against_any_secret_in_force_is_enough ... ok
+test signing::tests::staleness_is_judged_before_the_signature_so_a_replay_costs_nothing ... ok
+test signing::tests::the_fields_cannot_be_shifted_into_one_another ... ok
+test signing::tests::the_known_vectors_stay_the_same ... ok
+test signing::tests::what_the_platform_sends_cannot_pass_for_what_a_provider_sent ... ok
+test telemetry::primitive_tests::collection_admission_and_continuation_have_stable_redacted_spans ... ok
+test telemetry::primitive_tests::switch_case_is_a_stable_span_and_bounded_observation ... ok
+test telemetry::primitive_tests::switch_default_has_no_case_identifier_and_is_not_reprojected ... ok
+test worker::tests::a_value_is_searched_for_as_it_would_be_written_in_json ... ok
+test worker::tests::anything_else_is_not_a_version_this_server_speaks ... ok
+test worker::tests::blob_report_identity_normalizes_sha256_hex_case ... ok
+test worker::tests::legacy_task_ids_and_worker_entry_points_are_root_only ... ok
+test worker::tests::managed_support_does_not_enable_scoped_protocol_for_ordinary_workers ... ok
+test worker::tests::report_identity_keeps_root_keys_and_separates_scoped_members ... ok
+test worker::tests::scoped_identity_negotiation_is_gated_by_storage_support ... ok
+test worker::tests::the_newest_version_both_sides_speak_is_agreed ... ok
+test collection_source::tests::items_are_canonical_ordered_and_bounded ... ok
+
+test result: ok. 75 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/blobs.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/blobs-23c65003b3f30cf6)
+
+running 22 tests
+test a_blob_whose_upload_never_finished_cannot_be_read ... ok
+test a_blob_is_read_back_whole_and_verified ... ok
+test a_body_exactly_at_the_limit_is_accepted ... ok
+test a_body_over_the_limit_is_refused_and_leaves_nothing_behind ... ok
+test a_declared_size_is_the_stream_bound_and_an_oversized_declaration_reserves_nothing ... ok
+test a_failed_backend_delete_retains_attempt_evidence_and_is_retried ... ok
+test a_producer_that_fails_half_way_leaves_nothing_behind ... ok
+test a_run_input_is_private_until_bound_and_only_its_creator_can_bind_it ... ok
+test a_put_finishing_after_cleanup_remains_tracked_and_is_deleted_again ... ok
+test a_stated_size_or_digest_that_does_not_match_the_bytes_is_refused_and_cleaned_up ... ok
+test a_store_that_is_down_is_unavailable_and_leaves_no_reservation ... ok
+test a_written_blob_is_measured_stored_under_its_tenant_and_described ... ok
+test an_abandoned_upload_is_swept_much_sooner_than_an_uploaded_blob_nobody_used ... ok
+test another_tenants_blob_is_exactly_as_missing_as_one_that_does_not_exist ... ok
+test bytes_that_changed_in_the_store_are_reported_not_served_as_good ... ok
+test completion_can_only_describe_the_exact_uploading_attempt_and_its_replay ... ok
+test the_key_in_the_store_is_scoped_by_tenant_and_namespace_and_made_only_of_ids ... ok
+test the_descriptor_a_workflow_carries_has_one_documented_shape ... ok
+test the_sweep_never_touches_a_blob_something_refers_to ... ok
+test the_sweep_is_bounded_per_pass ... ok
+test the_sweep_removes_uncommitted_blobs_that_are_old_enough_and_their_bytes ... ok
+test too_many_uncommitted_blobs_refuse_the_next_one_before_any_byte_is_stored ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/chain_handoff_preparation.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/chain_handoff_preparation-acb415356076daf6)
+
+running 2 tests
+test evaluated_handoff_binds_bytes_digests_and_state_revision ... ok
+test evaluated_handoff_rejects_changed_content_or_unpinned_state ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/clock.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/clock-5ff0951dfe5468fa)
+
+running 2 tests
+test a_time_is_cut_to_the_microsecond_the_store_keeps ... ok
+test the_system_clock_never_gives_a_nanosecond ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/collection_data_limit_evidence.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/collection_data_limit_evidence-8063db2ff68d0a7a)
+
+running 3 tests
+test data_limit_drain_requires_exact_run_audit_identity_action_and_reason ... ok
+test storage_fact_evidence_has_no_caller_supplied_total_or_stop_code ... ok
+test aggregate_evidence_is_derived_from_candidate_and_bounded_ordered_sources ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/definition_service.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/definition_service-9e3e2297659f435e)
+
+running 39 tests
+test a_bad_name_is_invalid_and_a_taken_name_conflicts ... ok
+test a_document_that_does_not_validate_is_an_answer_with_problems_and_stores_nothing ... ok
+test a_draft_must_be_a_json_object_of_bounded_size ... ok
+test a_retried_create_returns_the_same_workflow_and_audits_once ... ok
+test a_document_that_names_another_workflow_is_a_problem ... ok
+test a_retried_publish_replays_the_original_result ... ok
+test a_secret_the_author_may_not_use_is_a_problem_on_its_node_and_leaves_no_denial ... ok
+test a_stale_revision_is_reported_before_the_document_is_validated ... ok
+test a_valid_document_gets_its_digest_and_the_warnings_publish_would_return ... ok
+test a_workflow_with_no_version_compares_nothing_with_its_draft ... ok
+test a_workflow_without_a_saga_is_published_with_no_plan ... ok
+test a_workflow_without_secrets_never_asks_the_store_about_them ... ok
+test an_unknown_or_foreign_namespace_is_not_found ... ok
+test an_unpublishable_document_is_reported_and_nothing_is_stored ... ok
+test authorization_comes_before_any_storage_access ... ok
+test any_two_versions_and_the_draft_can_be_compared ... ok
+test creating_a_workflow_stores_the_draft_and_audits_it ... ok
+test by_default_the_active_version_is_compared_with_the_draft ... ok
+test diffing_needs_definition_read_and_a_workflow_of_the_callers_tenant ... ok
+test editing_is_compare_and_swap_on_the_revision ... ok
+test every_error_of_the_codec_maps_to_a_stable_code_that_says_where ... ok
+test listing_is_paginated_and_scoped_to_the_namespace_and_tenant ... ok
+test publishing_a_saga_hands_its_compensation_plan_to_the_store_with_the_version ... ok
+test publishing_a_stale_revision_conflicts_without_validating ... ok
+test publishing_a_workflow_that_declares_a_secret_needs_a_publisher_who_may_use_it ... ok
+test publishing_an_identical_document_reuses_the_version ... ok
+test publishing_freezes_the_draft_as_numbered_versions ... ok
+test publishing_needs_definition_publish ... ok
+test reading_another_tenants_workflow_is_not_found_and_audited_in_the_actors_tenant ... ok
+test reading_needs_definition_read ... ok
+test reading_plans_needs_definition_read_and_a_version_that_exists ... ok
+test release_notes_are_bounded ... ok
+test the_document_must_name_the_workflow_it_belongs_to ... ok
+test the_same_key_for_a_different_request_is_refused ... ok
+test the_workflow_quota_in_force_is_passed_to_the_store_and_refuses_the_next_workflow ... ok
+test validating_another_tenants_workflow_is_not_found ... ok
+test validating_needs_definition_write_and_asks_the_store_for_nothing_before ... ok
+test versions_of_another_tenant_are_invisible ... ok
+test eight_thousand_unknown_artifacts_are_found_in_one_pass ... ok
+
+test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/event_documents.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/event_documents-a66c9d2bb704c03e)
+
+running 2 tests
+test canonical_event_document_preserves_legacy_null_fallback_for_invalid_stored_json ... ok
+test canonical_event_document_has_the_existing_envelope_shape_and_exact_json_bytes ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/event_payloads.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/event_payloads-3978eb34bff73fa7)
+
+running 8 tests
+test a_cross_tenant_probe_of_each_event_read_is_audited ... ok
+test an_event_the_projector_cannot_shape_is_opaque_not_forbidden ... ok
+test an_unsupported_list_body_is_opaque_without_revealing_headers_or_auditing ... ok
+test default_event_read_is_structure_only_and_debug_redacts_values ... ok
+test event_and_letter_values_require_the_mandatory_audit_write_to_succeed ... ok
+test pii_reveal_requires_internal_role_and_namespace_grant ... ok
+test roles_without_event_read_are_refused_before_lookup ... ok
+test truncated_dead_letter_is_opaque_and_list_ignores_reveal ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/event_wait_identity.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/event_wait_identity-810acfdfca24b0b6)
+
+running 4 tests
+test root_wait_delivery_preserves_the_exact_existing_consumer_and_metadata ... ok
+test root_receiver_requires_the_exact_pinned_version_run_path_and_step_uuid ... ok
+test scoped_candidates_cannot_construct_a_legacy_root_delivery ... ok
+test trigger_delivery_preserves_its_independent_existing_consumer_namespace ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/identity_service.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/identity_service-60c7d995d59b548a)
+
+running 34 tests
+test a_denial_is_recorded_in_the_callers_tenant_with_the_permission_and_the_call ... ok
+test a_caller_without_permission_is_refused_before_any_storage_access ... ok
+test a_failed_write_is_reported_to_the_caller_of_the_use_case_and_leaves_nothing ... ok
+test a_failed_create_leaves_no_audit_record_behind ... ok
+test a_key_does_not_skip_authorization_or_validation ... ok
+test a_key_means_one_thing_per_tenant ... ok
+test a_token_cannot_authenticate_as_the_platform_actor_even_if_a_membership_exists ... ok
+test an_exact_multiple_of_the_page_size_has_no_phantom_next_page ... ok
+test any_role_with_workspace_read_can_get_a_workspace ... ok
+test authenticate_gives_the_same_answer_for_every_kind_of_failure ... ok
+test authenticate_reports_a_storage_outage_as_unavailable_not_as_a_denial ... ok
+test authenticate_resolves_tenant_and_role_from_membership ... ok
+test authorization_is_evaluated_before_input_validation ... ok
+test creating_a_namespace_binds_it_to_the_workspace_and_audits_it ... ok
+test creating_a_workspace_persists_it_with_an_audit_record_in_the_callers_tenant ... ok
+test developers_cannot_create_namespaces_and_learn_nothing_about_foreign_workspaces ... ok
+test duplicate_workspace_slug_conflicts_inside_a_tenant_but_not_across_tenants ... ok
+test getting_a_missing_workspace_is_not_found_and_not_audited ... ok
+test getting_another_tenants_namespace_is_not_found_and_audited ... ok
+test getting_another_tenants_workspace_is_not_found_and_audited_without_leaking_it ... ok
+test invalid_environment_and_duplicate_namespace_slug_are_reported_distinctly ... ok
+test invalid_slug_is_a_validation_error_and_stores_nothing ... ok
+test listing_namespaces_is_scoped_to_the_callers_tenant ... ok
+test listing_pages_through_all_items_in_order_and_only_for_the_callers_tenant ... ok
+test namespace_creation_in_a_foreign_workspace_is_not_found_and_audited ... ok
+test only_403_errors_carry_a_denial_and_a_hidden_foreign_resource_does_not ... ok
+test page_size_is_clamped_and_bad_cursors_are_rejected ... ok
+test ping_reflects_storage_health ... ok
+test repeating_a_namespace_creation_with_the_same_key_returns_the_first_one ... ok
+test repeating_a_workspace_creation_with_the_same_key_returns_the_first_one_and_audits_once ... ok
+test the_denial_stands_even_when_the_audit_write_fails ... ok
+test the_same_denial_twice_is_two_records ... ok
+test the_same_key_for_a_different_request_is_refused_and_changes_nothing ... ok
+test without_a_key_a_repeat_still_conflicts_on_the_slug ... ok
+
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/instance_identity.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/instance_identity-38dfcca0683834b1)
+
+running 4 tests
+test outputs_of_equal_local_nodes_in_separate_paths_remain_independent ... ok
+test repeated_nodes_have_distinct_stable_ids_and_derived_work_keeps_its_path ... ok
+test root_output_helpers_use_the_empty_instance_path ... ok
+test root_step_ids_remain_byte_identical_to_legacy_derivation ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/leaf_certification.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/leaf_certification-6627ff0c0b62591a)
+
+running 7 tests
+test a_return_from_another_path_cannot_satisfy_structural_record_binding ... ok
+test canonical_identity_never_drops_tenant_namespace_run_owner_or_index ... ok
+test creation_cas_bounds_are_checked_but_renewable_authority_does_not_change_identity ... ok
+test error_formatting_keeps_storage_diagnostics_and_path_text_private ... ok
+test identity_is_exactly_depth_one_and_preserves_shared_qualifiers ... ok
+test malformed_source_sequence_snapshots_fail_without_arithmetic_overflow ... ok
+test v1_record_uses_existing_distinct_reduction_and_checkpoint_references ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/payload_disclosure.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/payload_disclosure-fb79078ad4323457)
+
+running 13 tests
+test a_stored_grant_is_inert_when_the_current_role_cannot_read_internal_values ... ok
+test a_non_carrier_journal_event_never_borrows_another_nodes_schema ... ok
+test audit_failure_prevents_a_projected_internal_value_from_returning ... ok
+test current_role_and_namespace_grant_build_the_effective_audience ... ok
+test closed_projector_failures_never_authorize_values_or_emit_a_success_audit ... ok
+test forbidden_callers_never_lookup_and_missing_and_foreign_runs_stay_opaque ... ok
+test prepare_needs_only_run_read_and_binds_the_resolved_namespace ... ok
+test every_structure_answer_to_an_inspector_is_audited_as_an_inspection_and_only_those ... ok
+test reveal_without_an_effective_grant_is_refused_and_audited_without_projection ... ok
+test selected_payload_and_definition_debug_never_print_values_keys_or_schema_fragments ... ok
+test schema_mismatch_is_structure_only_for_inspector_and_opaque_for_developer ... ok
+test the_carrier_is_prepared_once_with_the_pinned_identity_and_never_for_a_legacy_version ... ok
+test the_stored_size_goes_only_to_a_caller_who_may_inspect ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/payloads.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/payloads-c65110a14ec3c00a)
+
+running 6 tests
+test an_audit_failure_returns_unavailable_before_projection_sees_bytes ... ok
+test an_oversized_inline_value_is_unavailable_without_reaching_the_projector ... ok
+test raw_byte_debug_never_contains_the_payload ... ok
+test only_admin_and_operator_prepare_an_inspection_and_denials_are_audited ... ok
+test the_dedicated_permission_is_never_implied_for_non_operator_roles ... ok
+test success_uses_the_server_selector_in_the_audit_and_returns_provenance ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/primitive_telemetry.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/primitive_telemetry-453b9afa6438b47a)
+
+running 6 tests
+test approval_span_covers_the_durable_wait_without_identity_or_reason ... ok
+test collection_lifecycle_projects_closed_outcomes_and_scoped_identity ... ok
+test continuation_links_predecessor_and_successor_without_transfer_values ... ok
+test data_limit_drain_span_and_observation_expose_no_candidate_evidence ... ok
+test failed_primitive_span_uses_a_closed_error_without_leaking_failure_data ... ok
+test loop_checkpoint_reports_only_closed_lifecycle_outcomes ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/reveal_grants.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/reveal_grants-7e223526060bbe66)
+
+running 6 tests
+test a_role_snapshot_cannot_authorize_after_the_store_sees_demotion ... ok
+test a_created_grant_uses_the_approved_audit_identity_and_fixed_reason ... ok
+test list_is_stable_and_returns_an_opaque_boundary_to_the_http_adapter ... ok
+test grant_maps_closed_store_outcomes_and_allows_self_grant ... ok
+test only_membership_managers_prepare_a_namespace ... ok
+test revoke_is_idempotent_for_an_absent_or_malformed_subject ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/scoped_leaf_finish.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/scoped_leaf_finish-d1a836c314a456be)
+
+running 6 tests
+test canonical_fingerprint_matches_the_independent_python_vector_and_domain ... ok
+test every_identity_and_expectation_field_changes_the_fingerprint ... ok
+test operation_key_and_scheduler_renewal_do_not_change_the_fingerprint ... ok
+test result_names_the_original_run_and_error_formatting_redacts_store_detail ... ok
+test revision_validation_preserves_invalid_then_exhausted_error_precedence ... ok
+test structural_validation_accepts_only_the_shared_depth_one_ordinary_path_bounds ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/telemetry_derive.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/telemetry_derive-86c32c1d76cb4707)
+
+running 21 tests
+test a_lost_lease_is_an_error_attempt_with_its_code ... ok
+test a_failed_run_is_an_error_span_and_a_cancelled_one_is_not ... ok
+test a_run_finished_is_counted_with_its_duration ... ok
+test a_run_with_three_attempts_has_three_attempt_spans_and_a_run_span ... ok
+test a_step_cancelled_while_it_held_the_lease_ends_its_attempt_as_cancelled ... ok
+test a_step_cancelled_between_attempts_does_not_close_an_attempt_that_already_ended ... ok
+test a_timer_that_starts_in_one_batch_and_fires_in_a_later_one_gets_its_span ... ok
+test a_wait_that_starts_in_one_batch_and_is_satisfied_in_a_later_one_gets_its_span ... ok
+test an_attempt_that_has_not_ended_is_not_exported_and_is_when_it_does ... ok
+test equal_local_nodes_in_two_iterations_have_distinct_attempt_spans ... ok
+test equal_local_timers_in_two_scopes_project_independently ... ok
+test review_telemetry_preserves_source_codes_without_inventing_a_negative_lookup_attempt ... ok
+test scoped_switch_selection_carries_its_instance_identity ... ok
+test deriving_in_two_batches_gives_the_same_spans_as_deriving_at_once_and_none_twice ... ok
+test the_attempts_of_two_steps_do_not_get_each_others_ends ... ok
+test the_duration_of_an_attempt_is_from_its_lease_to_its_end ... ok
+test the_run_span_hangs_from_the_request_the_parent_run_or_nothing ... ok
+test the_wait_between_ready_and_leased_is_the_schedule_latency_of_each_attempt ... ok
+test the_attempts_of_a_journal_longer_than_a_batch_are_all_there_and_all_closed ... ok
+test timers_and_waits_are_spans_of_the_time_a_run_spent_not_working ... ok
+test what_an_operator_did_is_on_the_run_span_without_saying_who ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/sagat_domain-cb305d4d209f236c)
+
+running 75 tests
+test binding::tests::a_pool_list_is_bounded_sorted_and_without_repeats_and_may_be_empty ... ok
+test binding::tests::a_list_is_bounded_sorted_and_without_repeats ... ok
+test binding::tests::a_pool_name_is_a_short_label_in_a_closed_alphabet ... ok
+test binding::tests::a_prefix_pattern_stops_at_the_dot ... ok
+test binding::tests::a_secret_without_a_pool_list_goes_to_anyone_and_with_one_only_to_its_pools ... ok
+test binding::tests::an_exact_pattern_matches_that_activity_and_nothing_else ... ok
+test binding::tests::patterns_round_trip_through_their_text ... ok
+test binding::tests::the_first_activity_nothing_covers_is_named ... ok
+test binding::tests::the_wildcard_matches_everything_and_only_when_it_stands_alone ... ok
+test binding::tests::what_is_not_an_activity_name_is_not_a_pattern ... ok
+test connectors::tests::a_server_is_a_host_and_a_port_and_says_whether_it_is_encrypted ... ok
+test connectors::tests::rates_and_reserved_names_are_bounded ... ok
+test connectors::tests::the_settings_of_each_kind_are_checked ... ok
+test egress::tests::a_literal_address_needs_a_network_rule_to_be_reached_by_literal ... ok
+test egress::tests::a_rule_prints_the_way_it_is_written_and_parses_back_to_itself ... ok
+test egress::tests::an_ipv4_address_hidden_inside_ipv6_is_judged_as_the_ipv4_address ... ok
+test egress::tests::denials_have_stable_codes_and_never_carry_the_address ... ok
+test egress::tests::exact_and_wildcard_rules_match_whole_labels_only ... ok
+test egress::tests::nothing_is_allowed_by_default ... ok
+test egress::tests::numbers_in_disguise_are_not_host_names ... ok
+test egress::tests::private_space_needs_an_explicit_network_rule_but_the_forbidden_space_never_does ... ok
+test egress::tests::scheme_and_port_are_part_of_the_policy ... ok
+test egress::tests::rules_are_validated_and_bounded ... ok
+test egress::tests::special_addresses_are_classified ... ok
+test events::profile_tests::identity_profiles_are_exact_and_bounded ... ok
+test events::tests::a_subject_has_no_control_characters ... ok
+test events::tests::an_event_id_is_graphic_ascii_without_spaces ... ok
+test events::tests::a_window_for_events_nobody_signs_only_has_to_be_a_window ... ok
+test events::tests::dispatch_backs_off_exponentially_to_a_ceiling_with_jitter ... ok
+test events::tests::the_limits_of_an_endpoint_are_checked_together ... ok
+test execution::capacity::tests::exhausted_membership_count_does_not_advance_revision ... ok
+test execution::capacity::tests::exhausted_revision_or_epoch_does_not_partially_vacate ... ok
+test execution::state::continuation_tests::continuation_closes_a_quiescent_segment_and_links_the_successor ... ok
+test execution::state::continuation_tests::continuation_refuses_an_active_step ... ok
+test execution::state::continuation_tests::typed_continuation_closes_its_pending_boundary ... ok
+test execution::state::continuation_tests::typed_continuation_refuses_an_unsettled_sibling_without_mutation ... ok
+test outbound::tests::a_2xx_is_delivered_and_a_server_error_or_a_request_for_patience_is_retried ... ok
+test outbound::tests::a_delivery_gets_a_fixed_number_of_attempts ... ok
+test outbound::tests::a_refusal_that_retrying_cannot_change_is_dead_and_so_is_a_redirect ... ok
+test outbound::tests::a_target_is_an_http_url_with_a_host_and_nothing_that_hides_another ... ok
+test outbound::tests::rates_timeouts_and_kinds_are_bounded ... ok
+test outbound::tests::the_backoff_grows_along_the_schedule_with_jitter_and_honours_retry_after ... ok
+test outbound::tests::what_the_receiver_asks_to_wait_is_capped ... ok
+test quota::tests::a_setting_above_a_lowered_ceiling_is_clamped_to_it ... ok
+test quota::tests::a_tenant_wide_resource_ignores_a_namespace_setting ... ok
+test quota::tests::database_policy_bounds_are_positive_but_zero_counts_disable_admission ... ok
+test quota::tests::durable_resources_have_explicit_scope_kind_unit_range_and_usage_semantics ... ok
+test quota::tests::every_default_is_inside_the_range_a_limit_may_take ... ok
+test quota::tests::iteration_capacity_stays_closed_until_the_tenant_sets_it ... ok
+test quota::tests::names_round_trip_and_unknown_names_are_refused ... ok
+test quota::tests::resource_specific_ranges_do_not_expand_legacy_count_limits ... ok
+test quota::tests::the_ceiling_is_what_an_operator_granted_or_the_default ... ok
+test quota::tests::the_namespace_wins_over_the_tenant_which_wins_over_the_ceiling ... ok
+test quota::tests::values_are_bounded_by_the_range_the_level_and_the_ceiling ... ok
+test quota::tests::zero_iteration_capacity_is_a_valid_tenant_admission_stop ... ok
+test scripts::tests::a_change_of_policy_is_a_change_of_its_text ... ok
+test scripts::tests::a_digest_is_sha256_in_lower_case_hex_and_round_trips ... ok
+test scripts::tests::a_language_round_trips_and_only_some_are_built ... ok
+test scripts::tests::a_policy_asked_for_under_a_ceiling_is_the_smaller_of_both ... ok
+test scripts::tests::a_policy_reads_back_exactly_what_it_wrote_and_nothing_else ... ok
+test scripts::tests::a_script_activity_carries_its_digest_and_only_a_digest ... ok
+test scripts::tests::a_secret_that_is_the_start_of_another_does_not_leave_the_rest_of_it_in_view ... ok
+test scripts::tests::a_version_only_goes_forward_once ... ok
+test scripts::tests::a_wall_time_in_fractions_of_a_second_is_the_whole_second_the_policy_will_say ... ok
+test scripts::tests::a_source_has_text_and_a_bound_and_never_prints_itself ... ok
+test scripts::tests::cpu_time_follows_the_wall_clock_and_the_share_of_a_core ... ok
+test scripts::tests::jobs_move_forward_and_a_lost_lease_puts_one_back ... ok
+test scripts::tests::limits_have_a_floor_and_a_ceiling_each ... ok
+test scripts::tests::the_secrets_a_run_was_given_do_not_reach_its_output ... ok
+test scripts::tests::what_a_script_cannot_do_twice_the_same_way_is_not_retried ... ok
+test scripts::tests::what_looks_like_a_credential_is_redacted_without_knowing_it ... ok
+test secrets::tests::a_value_is_bounded_redacted_and_compared_in_full ... ok
+test secrets::tests::associated_data_binds_every_coordinate_without_ambiguity ... ok
+test secrets::tests::names_are_lower_case_and_bounded ... ok
+test secrets::tests::using_a_secret_needs_the_role_and_the_secrets_own_list ... ok
+
+test result: ok. 75 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/approval.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/approval-987adcf1b48bf1a6)
+
+running 11 tests
+test a_response_after_the_deadline_wins_when_expiry_has_not_committed ... ok
+test an_eligible_subject_commits_one_approval_receipt ... ok
+test an_explicit_policy_may_allow_the_initiator_to_decide ... ok
+test cancellation_settles_pending_once_and_losing_internal_transitions_are_no_ops ... ok
+test committed_expiry_wins_over_a_later_response_and_early_expiry_is_refused ... ok
+test decision_keys_and_reason_codes_are_machine_values_with_finite_bounds ... ok
+test current_permission_tenant_eligibility_and_initiator_exclusion_are_checked_before_mutation ... ok
+test identical_retry_replays_the_receipt_but_changed_content_or_key_conflicts ... ok
+test replay_rechecks_current_authorization_and_policy_membership ... ok
+test policy_is_non_empty_unique_bounded_and_limited_to_human_decision_roles ... ok
+test restored_state_replays_the_winning_receipt_without_reevaluating_the_race ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/audit.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/audit-1d562172f9a6dea3)
+
+running 10 tests
+test capacity_vacate_audit_keeps_every_transition ... ok
+test capacity_settlement_audit_is_an_engine_transition_without_generic_repeat_collapse ... ok
+test each_record_gets_a_distinct_id ... ok
+test leaf_certification_audit_uses_noncollapsing_metadata_vocabulary ... ok
+test provisioning_records_are_attributed_to_the_system_and_cannot_be_mistaken_for_a_user ... ok
+test payload_disclosure_audits_have_the_decided_repeat_semantics ... ok
+test reason_is_optional_and_attached_on_request ... ok
+test run_data_limit_audit_has_closed_noncollapsing_reason_vocabulary ... ok
+test stored_names_are_a_stable_contract ... ok
+test tenant_and_actor_come_from_the_principal ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/blobs.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/blobs-190fae3b706fc709)
+
+running 8 tests
+test a_blob_goes_forward_only_and_only_an_uploaded_one_can_be_committed ... ok
+test a_blob_id_round_trips_through_its_text_form ... ok
+test a_content_type_is_a_normalized_media_type_without_parameters ... ok
+test a_descriptor_keeps_what_identifies_the_content ... ok
+test anything_that_is_not_a_media_type_is_refused ... ok
+test only_a_committed_blob_is_referenced_by_the_system ... ok
+test the_default_content_type_is_opaque_bytes ... ok
+test the_stored_form_of_a_state_is_stable ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/bounded_path_planning.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/bounded_path_planning-1688b02d6d24e6a9)
+
+running 14 tests
+test bounded_effect_events_preserve_stale_fences_and_rejected_state ... ok
+test bounded_failed_attempt_commands_match_full_replay_for_retry_cancel_and_unknown_effects ... ok
+test bounded_lookup_verdict_and_operator_commands_match_full_replay ... ok
+test bounded_planner_matches_the_full_run_oracle ... ok
+test bounded_expiry_matches_full_policy_for_ambiguity_cancellation_and_stale_fences ... ok
+test bounded_reconciliation_and_review_reduce_like_the_full_run ... ok
+test bounded_reducer_rejects_forged_negative_lookup_outcomes_like_the_full_oracle ... ok
+test bounded_status_keeps_reviews_and_live_work_in_other_paths ... ok
+test bounded_worker_lifecycle_matches_the_full_run_oracle ... ok
+test global_work_summary_rejects_contradictory_facts ... ok
+test global_pause_fences_both_bounded_and_oracle_planners ... ok
+test one_path_snapshot_excludes_every_unrelated_iteration ... ok
+test root_compensation_plan_rejects_succeeded_derived_lookup_ids_without_mutation ... ok
+test local_collection_is_a_scalar_projection_without_member_history ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/capacity_acquire_audit.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/capacity_acquire_audit-1f2b6b4d21f2e241)
+
+running 1 test
+test capacity_acquire_audit_keeps_every_transition ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/capacity_groups.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/capacity_groups-ea9d00c37726332b)
+
+running 9 tests
+test a_parked_child_can_yield_before_logical_completion ... ok
+test final_holder_leaves_a_vacancy_for_surviving_detached_members ... ok
+test finished_membership_facts_cannot_be_rejoined ... ok
+test intermediate_nonholder_finality_preserves_the_childs_possession_epoch ... ok
+test restoration_preserves_exhausted_counters_without_allocating_a_registry ... ok
+test restoration_preserves_transition_produced_headers ... ok
+test restoration_rejects_inconsistent_scalars_and_holder_facts ... ok
+test stale_and_foreign_commands_leave_the_header_unchanged ... ok
+test bounded_commands_match_an_independent_registry ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+     Running tests/capacity_transfer.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/capacity_transfer-c46c76528d783527)
+
+running 6 tests
+test a_terminal_head_is_final_even_with_a_contradictory_lease_fact ... ok
+test a_held_lease_never_allows_vacate ... ok
+test acquire_gate_matches_the_truth_table_for_every_status ... ok
+test both_gates_send_exactly_the_terminal_statuses_to_finish ... ok
+test the_status_list_covers_every_run_status_once ... ok
+test vacate_gate_matches_the_truth_table_for_every_status_and_lease_fact ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/capacity_worker_possession.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/capacity_worker_possession-3a14b871856a7c5e)
+
+running 6 tests
+test foreign_group_cannot_reuse_the_holder_identity ... ok
+test only_the_active_holder_passes_without_mutating_the_header ... ok
+test retired_group_refuses_even_a_stale_active_holder_fact ... ok
+test unknown_or_finished_holder_facts_do_not_grant_a_lease ... ok
+test vacancy_blocks_both_members_until_acquire_commits ... ok
+test arbitrary_identities_cannot_bypass_possession ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/classification.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/classification-f8140014d9e1aa01)
+
+running 6 tests
+test an_audience_cannot_reveal_pii_without_reading_internal ... ok
+test classification_rule_versions_are_stable_and_closed ... ok
+test level_order_and_unmarked_default_are_fail_closed ... ok
+test levels_parse_only_the_four_case_sensitive_contract_names ... ok
+test visibility_covers_every_valid_audience_cell ... ok
+test effective_level_never_decreases_down_a_path ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/collection_reducer.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/collection_reducer-70e2b1068266e5fa)
+
+running 17 tests
+test cancellation_drains_only_admitted_work_before_finishing ... ok
+test checkpoint_results_remain_in_input_order_after_reverse_completion ... ok
+test collection_finish_requires_a_digest_only_for_success ... ok
+test concurrency_one_requires_a_durable_checkpoint_before_next_admission ... ok
+test drain_refuses_to_hide_an_attempt_that_is_still_in_flight ... ok
+test duplicate_admission_is_rejected_without_changing_state ... ok
+test drain_refuses_to_hide_failed_derived_obligations ... ok
+test empty_collection_finishes_without_allocating_an_iteration ... ok
+test equal_body_nodes_at_separate_indices_have_distinct_instances ... ok
+test permanent_failure_stops_admission_and_finishes_only_after_drain ... ok
+test replay_rejects_a_return_without_its_admission_event ... ok
+test replay_uses_only_admitted_instances_and_recorded_checkpoints ... ok
+test run_data_limit_drains_an_empty_collection_without_inventing_an_iteration ... ok
+test run_cancellation_leaves_the_collection_owner_for_transactional_drain ... ok
+test run_data_limit_preserves_checkpointed_members_and_requires_its_exact_code ... ok
+test storage_quota_failure_drains_admitted_work_and_replays_without_an_iteration_cause ... ok
+test starting_a_collection_parks_the_owner_for_its_transactional_scheduler ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/collection_restore_state.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/collection_restore_state-aee4c2774e5dbcf5)
+
+running 6 tests
+test checkpointed_open_projection_equals_its_addressed_journal ... ok
+test cancelled_projection_equals_its_addressed_journal ... ok
+test draining_projection_equals_its_addressed_journal ... ok
+test checkpointed_run_data_limit_projection_equals_its_actual_event_state ... ok
+test failed_projection_equals_its_addressed_journal ... ok
+test succeeded_projection_equals_its_addressed_journal ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/collection_success_shape.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/collection_success_shape-82105608829453f6)
+
+running 8 tests
+test a_root_activity_after_a_collection_is_outside_the_frozen_chain_shape ... ok
+test accepts_one_and_eight_in_actual_route_order_without_version_or_run_authority ... ok
+test broader_body_controls_and_error_routes_fail_closed ... ok
+test activity_representation_does_not_hide_scripts_companions_or_effect_policy ... ok
+test equal_local_ids_and_another_scopes_effects_do_not_change_selected_body_qualification ... ok
+test ordinary_prefix_is_accepted_but_lowered_script_prefix_is_not ... ok
+test scoped_or_noncollection_owner_cannot_alias_the_root_owner ... ok
+test rejects_empty_and_over_eight_bodies ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/continuation.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/continuation-a87bdc897c2a9cc3)
+
+running 14 tests
+test an_existing_run_cannot_be_inserted_as_another_successor ... ok
+test cancellation_after_handoff_targets_the_new_head_and_latches_future_handoffs ... ok
+test cancellation_committed_before_handoff_prevents_a_successor ... ok
+test child_cancellation_latch_blocks_handoff_even_before_chain_cancel_is_applied ... ok
+test child_link_rejects_cross_tenant_and_cross_namespace_chains ... ok
+test child_link_waits_across_continued_segments_and_settles_final_once ... ok
+test current_head_and_revision_are_compare_and_swap_inputs ... ok
+test duplicate_handoff_replays_the_first_successor_and_conflicts_on_changed_content ... ok
+test finalization_is_first_commit_and_a_terminal_chain_never_reopens ... ok
+test every_unresolved_obligation_blocks_handoff_without_mutation ... ok
+test handoff_advances_one_head_and_retains_lineage_and_transfer ... ok
+test policy_and_segment_indices_are_bounded ... ok
+test scope_version_and_original_deadline_cannot_change_at_handoff ... ok
+test the_global_segment_ceiling_stops_before_index_ten_thousand ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+
+     Running tests/continuation_quiescence.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/continuation_quiescence-ff3ebf1ee32c2f56)
+
+running 8 tests
+test a_run_whose_other_steps_are_finished_and_routed_is_quiescent ... ok
+test a_saga_that_is_not_done_blocks_as_compensation_and_a_done_saga_does_not ... ok
+test an_unresolved_obligation_is_a_reason_to_wait_and_not_a_terminal_error ... ok
+test blocker_labels_are_distinct ... ok
+test compensation_outranks_other_work_so_the_reported_blocker_is_stable ... ok
+test operator_reviews_report_the_recovery_obligation_they_preserve ... ok
+test every_kind_of_open_work_maps_to_its_own_blocker ... ok
+test the_boundary_step_itself_never_blocks_its_own_handoff ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/continuation_workflow.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/continuation_workflow-5729630a181f1cdd)
+
+running 3 tests
+test continuation_policy_and_terminal_shape_are_bounded ... ok
+test continuation_is_forbidden_inside_parallel_and_saga_regions ... ok
+test ordinary_structured_definitions_and_named_bodies_reject_continuation ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/database_connections.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/database_connections-aba544b648d70641)
+
+running 4 tests
+test finite_limits_are_intersected_and_never_interpreted_as_unlimited ... ok
+test operation_content_is_bounded_and_never_in_debug_or_validation_errors ... ok
+test target_is_a_bare_host_and_never_a_credential_url_or_driver_options ... ok
+test managed_node_policies_and_cache_weight_cannot_be_bypassed ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/declared_operations.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/declared_operations-8b5c1287e28c0d68)
+
+running 11 tests
+test an_update_cannot_replace_the_pinned_state_schema ... ok
+test a_chain_key_replays_its_original_receipt_after_head_resolution_changes ... ok
+test applied_update_changes_state_once_and_lost_response_replays_the_receipt ... ok
+test disclosure_operation_names_keys_and_values_are_closed_and_bounded ... ok
+test equal_expected_revisions_allow_one_update_and_reject_the_later_one ... ok
+test evaluator_failure_leaves_no_state_or_receipt_to_fake_a_commit ... ok
+test new_updates_are_refused_outside_running_or_waiting_without_a_receipt ... ok
+test query_reads_one_snapshot_without_mutating_state_or_revision ... ok
+test revision_conflict_is_a_stable_rejected_receipt_and_does_not_evaluate ... ok
+test same_key_with_changed_content_or_operation_conflicts_without_mutation ... ok
+test validator_rejection_is_durable_without_changing_business_state ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/declared_operations_restore.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/declared_operations_restore-6f5e5c8bd09c4e51)
+
+running 4 tests
+test durable_rejection_keeps_the_current_run_version ... ok
+test exhausted_run_version_still_allows_rejection_and_replay_but_not_apply ... ok
+test restoration_rejects_inconsistent_receipts ... ok
+test restored_receipt_replays_without_evaluation ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/definition.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/definition-1611a068276fff64)
+
+running 8 tests
+test a_namespace_of_another_tenant_is_refused_as_a_tenant_mismatch ... ok
+test a_draft_starts_at_revision_one_in_the_principals_tenant_and_namespace ... ok
+test a_version_records_who_published_what ... ok
+test authorization_is_checked_before_the_tenant ... ok
+test only_roles_that_publish_can_publish_and_never_across_tenants ... ok
+test only_roles_that_write_definitions_can_create_one ... ok
+test the_new_audit_actions_have_stable_names ... ok
+test restoring_from_storage_keeps_every_field ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/event_cause.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/event_cause-e170bcab29bcd2ab)
+
+running 6 tests
+test a_reconciliation_says_what_the_provider_answered ... ok
+test a_failure_a_retry_and_a_review_say_which_code_caused_them ... ok
+test a_stop_says_the_code_when_there_is_one_and_the_reason_when_there_is_not ... ok
+test an_event_that_is_only_progress_has_no_cause ... ok
+test the_clock_a_child_and_a_branch_are_causes_too ... ok
+test what_an_operator_decided_is_a_decision_and_what_they_asked_is_a_request ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/execution.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/execution-64ccfe24761f4aad)
+
+running 68 tests
+test a_branch_can_handle_its_own_failure_and_still_join ... ok
+test a_condition_routes_by_its_resolved_outcome ... ok
+test a_correlation_error_can_be_routed_through_on_error ... ok
+test a_deadline_ends_the_run_as_timed_out ... ok
+test a_definition_without_a_lowered_limit_never_pays_for_the_check ... ok
+test a_finished_run_refuses_everything ... ok
+test a_late_report_after_the_lease_was_reclaimed_is_rejected_without_a_trace ... ok
+test a_join_waits_for_the_whole_chain_of_every_branch ... ok
+test a_non_retryable_failure_skips_the_remaining_attempts ... ok
+test a_paused_run_can_still_be_cancelled ... ok
+test a_paused_run_grants_no_leases ... ok
+test a_result_that_cannot_be_kept_fails_the_run_with_its_code ... ok
+test a_retryable_failure_backs_off_then_retries_until_the_budget_is_spent ... ok
+test a_run_can_be_stopped_only_once ... ok
+test a_run_cannot_finish_while_work_remains ... ok
+test a_run_id_round_trips_through_text ... ok
+test a_run_that_exactly_fits_the_limit_succeeds ... ok
+test a_second_heartbeat_does_not_journal_again ... ok
+test a_stale_generation_cannot_complete_a_step ... ok
+test a_stopping_run_cannot_be_paused ... ok
+test a_stopping_run_cannot_finish_while_an_attempt_is_still_in_flight ... ok
+test a_stopping_run_finishes_only_with_the_status_its_reason_implies ... ok
+test a_timer_can_fire_only_once ... ok
+test a_timer_parks_the_run_without_any_worker_until_it_is_due ... ok
+test a_two_step_chain_runs_to_success_and_the_journal_tells_the_story ... ok
+test a_wait_subscribes_under_the_evaluated_correlation_key ... ok
+test a_wait_that_times_out_takes_the_timeout_route ... ok
+test a_wait_that_times_out_without_a_route_fails_the_run ... ok
+test an_all_join_fails_fast_and_stops_the_siblings ... ok
+test an_all_join_waits_for_every_branch ... ok
+test an_any_join_does_not_wait_for_the_losing_chain ... ok
+test an_any_join_fails_only_when_every_branch_failed ... ok
+test an_attempt_that_vanishes_during_cancellation_requires_review ... ok
+test an_any_join_takes_the_first_winner_and_cancels_the_rest ... ok
+test an_end_node_closes_the_run ... ok
+test an_end_with_a_result_expression_finishes_the_run_only_after_evaluating_it ... ok
+test an_end_without_a_result_expression_finishes_without_an_evaluation ... ok
+test an_error_route_handles_a_failure_and_the_run_still_succeeds ... ok
+test an_event_cannot_satisfy_a_timer_and_a_timer_cannot_fire_a_wait ... ok
+test an_expression_error_fails_the_node_without_retrying ... ok
+test cancelling_a_run_lets_the_worker_acknowledge_before_it_ends ... ok
+test cancelling_a_run_with_nothing_in_flight_finishes_at_once ... ok
+test cancelling_drops_timers_and_waits_and_a_late_timer_is_refused ... ok
+test children::a_child_step_reserves_its_run_then_parks_the_parent_without_a_worker ... ok
+test children::a_child_that_cannot_be_reserved_fails_the_step_without_a_wait ... ok
+test children::a_child_that_ends_while_the_parent_is_paused_is_recorded_and_routed_on_resume ... ok
+test children::a_deadline_cancels_the_waiting_parent_like_any_other_stop ... ok
+test children::a_node_that_starts_its_own_workflow_is_flagged_but_accepted ... ok
+test children::a_failed_child_takes_the_error_route_or_fails_the_run_with_its_code ... ok
+test children::a_successful_child_resumes_the_parent_on_its_next_step ... ok
+test children::only_the_child_the_step_waits_for_can_end_the_wait ... ok
+test children::stopping_the_parent_waits_for_a_child_whose_policy_is_request_cancel ... ok
+test children::stopping_the_parent_cancels_a_propagating_or_detached_wait_at_once ... ok
+test failure_codes_and_keys_are_bounded_machine_values ... ok
+test heartbeats_and_reports_need_a_lease ... ok
+test lease_expiry_and_attempt_timeout_preserve_unknown_outcome_with_their_own_code ... ok
+test pausing_holds_back_new_work_and_resuming_catches_up ... ok
+test nested_parallels_join_inside_out ... ok
+test release_pending_continues_a_step_that_a_durable_transaction_activated ... ok
+test routing_cannot_activate_a_step_twice ... ok
+test replaying_a_prefix_rebuilds_every_intermediate_state ... ok
+test storage_quota_failure_preserves_an_existing_stop_and_owed_compensation ... ok
+test stopping_releases_the_lookup_for_an_ambiguous_ordinary_effect ... ok
+test storage_quota_failure_stops_before_on_error_can_release_more_work ... ok
+test the_first_commit_wins_the_race_between_an_event_and_its_timeout ... ok
+test the_instance_that_would_pass_the_authors_limit_stops_the_run_with_instance_limit ... ok
+test the_reducer_itself_refuses_a_stale_fence_even_if_a_command_did_not ... ok
+test the_reducer_rejects_illegal_events_and_leaves_the_state_alone ... ok
+
+test result: ok. 68 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/execution_properties.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/execution_properties-c03f285eb71421a9)
+
+running 3 tests
+test every_shape_succeeds_when_nothing_goes_wrong ... ok
+test no_sequence_of_commands_breaks_the_state_machine ... ok
+test the_chaos_reaches_every_event_type_and_every_final_status ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.90s
+
+     Running tests/identity.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/identity-fc816d79cb4fed2f)
+
+running 30 tests
+test a_worker_can_execute_tasks_and_do_nothing_else ... ok
+test a_reserved_subject_violation_explains_itself ... ok
+test admin_creates_namespace_inheriting_tenant_and_workspace ... ok
+test admin_creates_workspace_in_their_own_tenant ... ok
+test admin_grants_a_role_inside_their_own_tenant ... ok
+test admin_permissions_decide_every_catalog_entry_except_pii_reveal ... ok
+test bootstrap_admin_binds_the_first_admin_to_the_provisioned_tenant ... ok
+test authorize_reports_role_and_permission_on_denial ... ok
+test database_executor_is_a_separate_machine_identity ... ok
+test error_messages_never_disclose_identifiers ... ok
+test generated_ids_are_unique_uuid_v7 ... ok
+test ids_round_trip_through_text_and_reject_garbage ... ok
+test namespace_in_a_foreign_workspace_is_rejected_as_tenant_mismatch ... ok
+test non_admin_roles_cannot_create_workspaces ... ok
+test only_admin_can_create_scopes_manage_members_or_read_audit ... ok
+test only_admin_can_grant_memberships ... ok
+test only_operators_and_admins_can_operate_signal_or_inspect_run_payloads ... ok
+test only_the_runner_reads_the_source_of_every_script_or_fetches_artifacts ... ok
+test payload_permissions_are_fail_closed_for_builtin_roles ... ok
+test permission_is_checked_before_tenant_so_denied_roles_learn_nothing ... ok
+test rejected_values_are_clipped_in_error_messages ... ok
+test role_and_environment_round_trip_and_reject_unknown_values ... ok
+test slug_accepts_dns_label_like_names ... ok
+test role_permission_matrix_is_exactly_as_specified ... ok
+test slug_rejects_path_and_injection_shapes ... ok
+test slug_reports_the_violated_rule ... ok
+test subject_accepts_typical_oidc_subjects ... ok
+test subject_rejects_empty_oversized_and_control_characters ... ok
+test the_platform_actor_exists_but_cannot_be_parsed_back_into_a_subject ... ok
+test the_system_namespace_is_reserved_for_platform_actors ... ok
+
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/instance_identity.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/instance_identity-32bfed0d9a835a9a)
+
+running 6 tests
+test a_typed_segment_does_not_concatenate_user_node_names ... ok
+test old_journal_events_replay_as_empty_path_instances ... ok
+test a_live_scoped_instance_prevents_run_finalization ... ok
+test path_bounds_apply_at_each_nesting_boundary ... ok
+test projection_restore_keeps_equal_definition_nodes_in_distinct_scopes ... ok
+test repeated_definition_node_has_distinct_typed_instances ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/operator_actions.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/operator_actions-a827fb7e4848993b)
+
+running 11 tests
+test a_step_in_flight_or_done_cannot_be_retried_by_hand ... ok
+test a_lookup_cannot_be_held_only_the_step_it_is_for ... ok
+test a_step_that_is_in_flight_or_already_held_or_finished_cannot_be_held ... ok
+test a_step_waiting_out_a_retry_delay_can_be_held_and_then_settled_by_hand ... ok
+test an_operator_can_hold_a_step_that_has_not_started_and_the_run_waits_for_a_person ... ok
+test an_operator_does_not_have_to_wait_for_the_delay_of_a_retry ... ok
+test a_stopped_saga_preserves_unknown_review_and_compensates_only_succeeded_effects ... ok
+test the_cause_of_holding_and_retrying_is_in_the_journal ... ok
+test the_scheduler_and_the_operator_cannot_both_start_an_attempt_whichever_is_first ... ok
+test unknown_original_retry_requires_resolution ... ok
+test unknown_compensation_retry_requires_resolution ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/outbound_redis_properties.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/outbound_redis_properties-aba257f9bc1cc7da)
+
+running 2 tests
+test malformed_redis_authorities_are_refused_instead_of_normalized_into_another_host ... ok
+test redis_ipv6_settings_round_trip ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/primitive_collections.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/primitive_collections-7d10eb5a4041ddc8)
+
+running 3 tests
+test max_items_is_an_integer_from_one_to_ten_thousand ... ok
+test max_concurrency_is_an_integer_from_one_to_256 ... ok
+test max_iterations_is_an_integer_from_one_to_ten_thousand ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/primitive_loops.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/primitive_loops-02815bc289a124df)
+
+running 28 tests
+test a_checkpoint_after_the_deadline_loses_the_race_without_mutation ... ok
+test a_deadline_can_drain_a_suspended_loop_without_an_active_iteration ... ok
+test a_cancel_during_a_failure_drain_finishes_the_run_cancelled ... ok
+test a_failed_body_drains_and_retains_its_failure_code ... ok
+test a_loop_timeout_with_an_error_edge_retains_its_code_and_routes ... ok
+test a_failed_body_with_an_error_edge_drains_without_stopping_the_run ... ok
+test an_instance_budget_stop_is_a_distinct_durable_failure_that_replays ... ok
+test an_iteration_index_is_admitted_once_per_loop_instance ... ok
+test an_outer_cancel_before_the_loop_is_entered_cancels_its_owner ... ok
+test an_outer_cancel_over_a_delaying_loop_ends_the_run_cancelled ... ok
+test an_outer_cancel_over_an_iteration_in_flight_ends_the_run_cancelled ... ok
+test an_unreadable_entry_fails_the_unentered_owner_and_takes_the_error_edge ... ok
+test an_unreadable_entry_to_an_end_finishes_the_run_succeeded_and_replays ... ok
+test budget_exhaustion_fails_before_a_delay_can_be_scheduled ... ok
+test cancellation_leaves_an_active_loop_to_the_scheduler_that_drains_it ... ok
+test cancellation_stops_admission_and_finishes_after_active_work_drains ... ok
+test cancellation_still_cancels_a_loop_that_declares_an_error_edge ... ok
+test drain_refuses_to_hide_an_iteration_with_an_active_lease ... ok
+test checkpoints_replay_carry_and_delay_without_reevaluating ... ok
+test pre_and_post_test_entry_forms_are_not_interchangeable ... ok
+test repeat_until_executes_once_before_its_first_condition ... ok
+test only_a_pending_loop_with_an_error_edge_fails_before_entry ... ok
+test restart_rebuilds_the_last_committed_checkpoint_from_events ... ok
+test starting_a_loop_parks_its_owner_for_the_transactional_scheduler ... ok
+test the_error_edge_activates_a_recovery_activity_and_the_run_replays_exactly ... ok
+test the_error_edge_to_an_end_finishes_the_run_through_the_normal_terminal_path ... ok
+test while_false_at_entry_completes_without_a_body ... ok
+test the_run_deadline_over_an_active_loop_still_fails_closed ... ok
+
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/reveal_grants.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/reveal_grants-46a598db843ba5cb)
+
+running 2 tests
+test reveal_is_never_inherited_from_a_role_and_only_eligible_roles_read_internal_values ... ok
+test grant_audit_vocabulary_is_explicit_and_never_collapses ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/sagas.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/sagas-849b4e2a03a5b091)
+
+running 66 tests
+test a_compensation_and_a_reconciliation_are_derived_nodes_that_nothing_routes_to ... ok
+test a_cancellation_whose_compensation_fails_is_not_a_clean_cancellation ... ok
+test a_compensation_that_exhausts_its_retries_waits_for_an_operator ... ok
+test a_compensation_that_fails_is_retried_with_its_own_budget ... ok
+test a_deadline_compensates_and_the_run_times_out_only_when_that_is_done ... ok
+test a_decision_cannot_be_forced_on_a_step_that_waits_for_something_other_than_a_person ... ok
+test a_double_manual_command_is_refused_and_changes_nothing ... ok
+test a_failed_compensation_does_not_hold_back_an_independent_one ... ok
+test a_failure_that_something_inside_handles_does_not_start_a_compensation ... ok
+test a_high_risk_step_with_an_unknown_outcome_waits_for_an_operator_instead_of_retrying ... ok
+test a_negative_lookup_cannot_reopen_the_original_or_lookup_through_retry ... ok
+test a_negative_lookup_needs_human_resolution_instead_of_an_automatic_retry ... ok
+test a_negative_lookup_stays_unknown_when_the_run_is_cancelled ... ok
+test a_provider_that_cannot_say_is_never_assumed_either_way ... ok
+test a_reconciliation_is_completed_with_its_verdict_and_nothing_else ... ok
+test a_reconciliation_that_cannot_be_completed_sends_the_step_to_an_operator ... ok
+test a_saga_body_is_a_closed_region_without_an_end ... ok
+test a_retry_is_refused_on_a_step_of_a_saga_that_stopped_going_forward ... ok
+test a_saga_in_a_branch_that_loses_the_join_compensates_what_it_did ... ok
+test a_saga_that_completed_before_the_join_failed_is_not_compensated_by_it ... ok
+test a_saga_that_completes_just_continues ... ok
+test a_saga_that_could_not_undo_everything_does_not_let_its_error_route_end_the_run_successfully ... ok
+test a_worker_can_say_it_does_not_know_what_happened ... ok
+test aborting_without_compensation_just_stops ... ok
+test a_sibling_saga_whose_compensation_failed_is_not_hidden_by_the_one_that_ended_the_run ... ok
+test an_effect_cannot_be_both_irreversible_and_compensated_and_only_an_activity_has_one ... ok
+test an_attempt_with_an_unknown_outcome_is_reconciled_before_anything_else ... ok
+test an_effect_that_may_have_happened_requires_review_before_compensation ... ok
+test an_irreversible_effect_makes_the_outcome_partial_even_when_everything_else_is_undone ... ok
+test an_inner_saga_that_fails_is_compensated_and_then_the_outer_one_compensates_the_rest ... ok
+test an_operator_can_declare_a_compensation_done_outside_the_platform ... ok
+test an_operator_resolves_an_unknown_effect_without_repeating_it ... ok
+test an_ordinary_failure_is_not_reconciled ... ok
+test an_unhandled_failure_of_a_saga_goes_to_the_error_route_of_the_saga ... ok
+test an_unknown_outcome_after_cancel_is_still_held_for_review ... ok
+test an_unknown_outcome_is_reconciled_before_a_saga_that_is_being_stopped_compensates ... ok
+test branches_of_a_parallel_node_are_independent_in_the_plan ... ok
+test cancelling_a_paused_run_still_undoes_what_it_did ... ok
+test cancelling_a_forward_review_requires_resolution_before_compensation ... ok
+test cancelling_compensates_what_completed_and_ends_cancelled ... ok
+test cancelling_a_run_preserves_known_compensation_review ... ok
+test every_attempt_ambiguity_preserves_review_instead_of_defensive_compensation ... ok
+test compensations_run_in_reverse_order_and_each_waits_for_the_one_after_it ... ok
+test negative_lookup_requires_finality ... ok
+test negative_lookup_with_no_attempt_left_still_requires_resolution ... ok
+test independent_branches_are_compensated_at_the_same_time ... ok
+test neither_a_lookup_nor_a_compensation_in_flight_is_asked_to_stop_when_the_run_is_cancelled ... ok
+test nested_outcomes_are_not_hidden_by_the_outer_saga ... ok
+test only_a_compensation_can_be_skipped ... ok
+test scopes_nest_and_the_innermost_one_decides ... ok
+test reserve_completed_and_submit_failed_for_good_compensates_the_reservation ... ok
+test skipping_a_compensation_ends_the_saga_as_partial ... ok
+test skipping_a_compensation_lets_the_ones_that_waited_for_it_go_on ... ok
+test the_author_cannot_write_an_id_that_collides_with_a_derived_one ... ok
+test the_plan_is_the_reverse_of_the_forward_order ... ok
+test stop_preserves_recovery_obligation ... ok
+test the_provider_says_the_effect_happened_so_the_step_succeeds_without_a_second_attempt ... ok
+test unknown_activity_defaults_to_review ... ok
+test the_plan_is_the_same_as_the_one_worked_out_the_long_way ... ok
+test unknown_effect_is_not_a_compensation_candidate ... ok
+test unknown_effect_retry_requires_resolution ... ok
+test unknown_compensation_overrides_fail ... ok
+test waiting_for_what_is_in_flight_then_compensating_everything_that_completed ... ok
+test unknown_outcomes_never_become_partial_or_compensated_from_risk_metadata ... ok
+test what_ran_after_a_join_is_undone_before_the_branches_that_fed_it ... ok
+test when_the_saga_does_not_wait_for_a_human_a_failed_compensation_ends_it_and_the_run ... ok
+
+test result: ok. 66 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/scoped_compensation.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/scoped_compensation-480d17563a7f2400)
+
+running 42 tests
+test a_cancellation_that_lands_during_compensation_changes_nothing ... ok
+test a_bounded_path_derives_only_its_scope_compensation_authority_from_the_oracle ... ok
+test a_cancellation_whose_completed_iterations_were_all_undone_ends_cancelled ... ok
+test a_collection_cannot_finish_while_its_compensation_is_open ... ok
+test a_collection_stopped_by_the_storage_quota_still_undoes_its_completed_iterations ... ok
+test a_compensation_that_keeps_failing_waits_for_a_person_and_is_never_assumed_done ... ok
+test a_data_limited_collection_waits_for_its_checkpointed_members_actual_refund ... ok
+test a_forged_scope_compensation_plan_rejects_an_unknown_effect ... ok
+test a_lookup_that_cannot_say_waits_for_a_person ... ok
+test a_failure_whose_completed_iterations_were_all_undone_ends_compensated ... ok
+test a_lookup_that_found_the_effect_makes_the_step_compensable ... ok
+test a_negative_lookup_during_stop_waits_for_resolution_and_compensates_nothing ... ok
+test a_loop_that_timed_out_compensates_and_ends_timed_out_only_if_everything_was_undone ... ok
+test a_scope_that_declares_nothing_to_compensate_plans_nothing ... ok
+test a_plan_must_name_real_completed_members_and_be_made_after_the_drain ... ok
+test a_stop_from_outside_never_gives_up_on_a_compensation_that_waits_for_a_person ... ok
+test absent_or_false_high_risk_unknown_original_waits_for_review_in_exact_scope_path ... ok
+test an_attempt_with_an_unknown_outcome_is_looked_up_before_anything_is_repeated ... ok
+test an_iteration_whose_member_is_being_looked_up_cannot_be_drained ... ok
+test an_irreversible_effect_ends_the_scope_partial_after_the_rest_is_undone ... ok
+test an_operator_declaring_the_compensation_failed_ends_the_scope_compensation_failed ... ok
+test an_operator_retry_runs_the_same_compensation_again ... ok
+test an_operator_skip_leaves_the_scope_partial ... ok
+test an_unknown_outcome_during_stop_requires_resolution_before_compensation ... ok
+test bounded_operator_decisions_keep_failed_compensation_semantics ... ok
+test compensation_fan_out_is_bounded_by_the_scope_concurrency ... ok
+test bounded_derived_expiry_keeps_compensation_and_lookup_policy ... ok
+test compensation_in_one_iteration_runs_in_reverse_topological_order ... ok
+test completed_iterations_of_a_loop_compensate_in_reverse_iteration_order ... ok
+test draining_collection_and_loop_release_lookup_before_preserving_review ... ok
+test iterations_of_a_collection_are_independent_branches ... ok
+test not_applied_always_reviews_in_collection_and_loop_exact_paths ... ok
+test refusal_preparation_rejects_wrong_identity_kind_and_fence_without_mutation ... ok
+test refusal_preparation_preserves_an_existing_stop_exactly ... ok
+test refused_applied_reconciliation_stops_first_then_preserves_its_verdict ... ok
+test refused_forward_output_stops_first_then_records_a_compensable_success ... ok
+test scoped_compensation_plan_rejects_succeeded_derived_lookup_ids_without_mutation ... ok
+test the_branches_of_a_parallel_node_inside_a_body_are_independent_in_the_order ... ok
+test stopping_compensation_completion_retains_empty_routing_without_forward_work ... ok
+test unknown_compensation_retry_requires_resolution_in_exact_scope_path ... ok
+test unknown_original_retry_requires_resolution_in_exact_scope_path ... ok
+test unknown_compensation_reviews_before_retry_or_failure_in_exact_scope_path ... ok
+
+test result: ok. 42 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/scoped_control_routing.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/scoped_control_routing-73e4e4ad191b21f2)
+
+running 6 tests
+test a_scoped_condition_routes_only_its_recorded_branch ... ok
+test a_control_answer_cannot_consume_nonpristine_pending_metadata ... ok
+test a_scoped_switch_routes_only_its_recorded_case_or_default ... ok
+test an_expression_failure_records_an_unhandled_local_failure_in_both_models ... ok
+test resolving_a_scoped_control_records_and_releases_the_selected_branch ... ok
+test invalid_or_paused_control_answers_fail_without_a_partial_transition ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/scoped_event_wait_lifecycle.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/scoped_event_wait_lifecycle-e9067600f2aafe47)
+
+running 39 tests
+test a_pending_scoped_event_wait_is_owned_by_its_dedicated_start_action ... ok
+test a_recorded_handled_timeout_routes_the_local_timeout_edge_in_both_models ... ok
+test an_accepted_event_may_record_completion_while_paused_but_routing_waits_for_resume ... ok
+test cancellation::a_failed_drain_cannot_manufacture_a_failure_from_a_waiting_event_entry ... ok
+test cancellation::a_failed_drain_keeps_the_existing_pending_entry_failure_shape ... ok
+test cancellation::collection_drain_cancels_an_event_suspension_after_user_cancel_or_a_sibling_failure ... ok
+test cancelling_an_event_wait_prevents_late_satisfaction_and_timeout ... ok
+test cancellation::collection_drain_refuses_malformed_event_suspensions_without_partial_mutation ... ok
+test correlation_failure_records_one_local_expression_failure_without_starting_a_wait ... ok
+test correlation_failure_takes_only_the_local_error_edge_and_cannot_start_a_timer_as_a_wait ... ok
+test explicit_clock_start_records_only_its_member_key_and_deadline_in_both_models ... ok
+test every_recorded_outcome_preserves_qualified_identity_correlation_and_deadline ... ok
+test invalid_wait_source_states_and_duplicate_cancellation_are_inert_in_both_models ... ok
+test malformed_pending_event_projection_cannot_authorize_success_or_failure_start ... ok
+test overflowing_deadline_root_and_foreign_path_are_refused_before_recording ... ok
+test recorded_event_satisfaction_preserves_the_sibling_and_routes_next ... ok
+test satisfaction::a_matching_event_at_the_window_boundary_records_the_exact_member_and_normal_route ... ok
+test satisfaction::an_unrepresentable_window_or_a_non_event_declaration_never_authorizes_satisfaction ... ok
+test satisfaction::lookback_is_inclusive_and_events_can_win_after_the_deadline_until_timeout_commits ... ok
+test satisfaction::malformed_waiting_metadata_refuses_satisfaction_before_recording ... ok
+test satisfaction::paused_satisfaction_records_only_the_outcome_and_cold_resume_selects_normal_next_once ... ok
+test explicit_start_matches_journal_and_bounded_replay_for_varied_keys_and_clocks ... ok
+test satisfaction::reviewed_root_and_unadmitted_candidates_have_typed_full_path_error_parity ... ok
+test satisfaction::reviewed_routing_failure_does_not_partially_apply_either_satisfaction_command ... ok
+test satisfaction::stopped_draining_canceled_pending_and_foreign_satisfactions_do_not_mutate_either_model ... ok
+test satisfaction::the_scoped_window_uses_the_recorded_deadline_and_pinned_timeout ... ok
+test satisfaction::wrong_type_key_and_early_receipt_are_typed_refusals_without_mutation ... ok
+test start_refuses_duplicate_paused_stopped_or_draining_sources_without_mutation ... ok
+test timeout_or_event_records_one_outcome_and_an_unhandled_timeout_keeps_its_typed_failure ... ok
+test timeouts::event_lifecycle_projection_checks_the_pinned_timeout_policy_and_terminal_metadata ... ok
+test timeouts::malformed_waiting_metadata_cannot_authorize_a_timeout ... ok
+test timeouts::missing_timeout_route_records_typed_failure_and_only_its_declared_error_route ... ok
+test timeouts::paused_wait_records_timeout_but_routes_only_after_explicit_resume ... ok
+test timeouts::recorded_event_and_timeout_are_mutually_exclusive_in_either_pure_order ... ok
+test satisfaction::received_time_boundary_matches_in_full_and_path_models ... ok
+test timeouts::timeout_refuses_pending_canceled_stopped_draining_and_foreign_sources_without_mutation ... ok
+test timeouts::timeout_requires_the_declared_event_kind_and_recorded_event_binding ... ok
+test timeouts::timeout_uses_recorded_deadline_and_pinned_local_timeout_route ... ok
+test timeouts::timeout_boundary_and_recorded_route_match_for_varied_deadlines ... ok
+
+test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/scoped_reducer.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/scoped_reducer-6fe8e4aeb14fdd29)
+
+running 7 tests
+test addressed_cancellation_replays_only_for_the_leased_instance ... ok
+test a_scoped_condition_cannot_complete_a_ready_worker_step ... ok
+test addressed_events_keep_equal_definition_nodes_independent ... ok
+test addressed_transitions_preserve_paths_and_changed_instances ... ok
+test fence_validation_is_scoped_to_the_addressed_instance ... ok
+test run_level_events_reject_a_scoped_address ... ok
+test root_instance_commands_preserve_legacy_events ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/scoped_step_lifecycle.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/scoped_step_lifecycle-cb75d09c5468bc40)
+
+running 3 tests
+test a_fenced_failure_changes_only_its_addressed_iteration ... ok
+test completion_and_routing_keep_equal_local_nodes_in_separate_iterations ... ok
+test retry_schedule_and_due_are_isolated_by_path_and_fence ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/scoped_timer_lifecycle.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/scoped_timer_lifecycle-ce4bf7c8e54b5b47)
+
+running 8 tests
+test a_cancelled_scoped_timer_cannot_fire_and_a_fired_timer_cannot_fire_twice ... ok
+test a_paused_timer_records_its_due_fire_but_routes_only_after_resume ... ok
+test a_recorded_collection_drain_cancels_a_waiting_timer_without_touching_its_sibling ... ok
+test clocked_timer_commands_match_and_early_fire_leaves_both_models_unchanged ... ok
+test pending_scoped_timer_waits_for_its_clocked_scheduler_start_in_both_planners ... ok
+test recorded_scoped_timer_start_and_fire_preserve_the_sibling_and_route_the_return ... ok
+test timer_clock_overflow_and_stopped_ancestors_refuse_before_any_state_change ... ok
+test timer_deadline_replay_is_local_for_every_member_and_clock_offset ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/sharding.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/sharding-6b09548f938b7b6b)
+
+running 7 tests
+test a_set_of_shards_holds_what_was_put_in_it ... ok
+test a_shard_is_a_function_of_the_identifier_and_the_sql_function_is_the_same ... ok
+test a_lease_that_ran_out_is_free_whoever_the_owner_was ... ok
+test an_alone_replica_takes_everything_and_a_late_one_waits_for_what_is_given_back ... ok
+test the_ids_the_platform_makes_fill_the_shards_evenly ... ok
+test the_share_covers_every_shard_even_when_the_replicas_do_not_divide_them ... ok
+test replicas_that_come_and_go_always_settle_with_every_shard_owned_once ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+
+     Running tests/state_updated_event.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/state_updated_event-9002dded7a898605)
+
+running 2 tests
+test state_update_rejects_a_non_consecutive_revision_without_advancing ... ok
+test state_update_advances_only_the_journal_projection ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/structured_workflow.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/structured_workflow-8e080cb49d332c17)
+
+running 8 tests
+test an_author_can_lower_the_limits_of_a_built_definition_but_not_below_its_nesting ... ok
+test body_reference_graph_rejects_missing_duplicate_unused_and_recursive_bodies ... ok
+test body_rejects_missing_multiple_or_escaping_returns_and_workflow_end ... ok
+test closed_collection_body_keeps_definition_names_local ... ok
+test collection_limits_and_effective_expression_bytes_are_validated ... ok
+test instance_paths_resolve_nodes_in_their_declared_body ... ok
+test legacy_constructor_remains_root_only ... ok
+test shared_limits_bound_depth_and_total_definition_nodes ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/switch.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/switch-e4894437f4b2da9d)
+
+running 4 tests
+test a_switch_predicate_reports_its_effective_expression_byte_limit ... ok
+test a_switch_has_at_least_one_case_and_cannot_declare_an_error_route ... ok
+test duplicate_case_ids_and_an_undefined_target_are_rejected ... ok
+test switch_targets_are_ordered_and_part_of_the_graph ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/switch_execution.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/switch_execution-2c642cc6bb603ae0)
+
+running 3 tests
+test no_matching_case_uses_the_recorded_default ... ok
+test one_recorded_case_routes_once_and_replays_without_reevaluation ... ok
+test predicate_error_fails_instead_of_trying_another_case ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/versioning.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/versioning-3cb8f9a6da9b2748)
+
+running 12 tests
+test a_draft_that_moved_supersedes_an_open_request_and_nothing_else ... ok
+test a_namespace_that_asks_for_nothing_opens_requests_already_approved ... ok
+test a_policy_raised_after_the_approvals_asks_for_more_before_it_publishes ... ok
+test a_request_is_published_only_when_approved_and_only_once ... ok
+test a_switch_by_hand_is_a_rollback_going_back_and_an_activation_going_forward ... ok
+test names_survive_the_round_trip_through_storage ... ok
+test one_rejection_ends_the_request_whatever_the_others_said ... ok
+test only_the_author_withdraws_and_only_while_the_request_is_open ... ok
+test production_asks_for_one_approval_by_default_and_the_others_for_none ... ok
+test the_author_never_decides_their_own_request_and_nobody_decides_twice ... ok
+test the_request_is_approved_exactly_when_it_has_as_many_approvals_as_were_asked ... ok
+test whoever_saved_the_document_cannot_approve_it_even_when_somebody_else_asked ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/workflow.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/workflow-62d6763c0309a223)
+
+running 37 tests
+test a_branch_may_not_run_into_the_continuation_of_the_join ... ok
+test a_compensation_outside_a_saga_is_reported_because_it_will_never_run ... ok
+test a_fork_and_join_has_one_region_per_branch ... ok
+test a_parallel_needs_two_to_max_distinct_branches ... ok
+test a_workflow_end_cannot_sit_inside_a_branch ... ok
+test activity_and_event_names_allow_namespacing_but_not_separators ... ok
+test an_empty_or_oversized_graph_is_rejected ... ok
+test an_error_edge_inside_a_branch_must_stay_inside_it ... ok
+test attempts_left_counts_attempts_already_used ... ok
+test branches_may_not_share_nodes ... ok
+test conditions_route_to_two_existing_nodes ... ok
+test a_long_chain_is_validated_without_recursion ... ok
+test cost::a_workflow_may_not_hold_more_parallel_nodes_than_the_limit ... ok
+test cost::a_plain_chain_of_ten_thousand_nodes_is_valid_and_weighs_what_it_should ... ok
+test cycles_are_rejected_including_self_loops_and_error_edges ... ok
+test declared_secrets::a_workflow_may_not_declare_more_distinct_secrets_than_the_limit ... ok
+test declared_secrets::the_limit_counts_distinct_names_and_not_how_often_they_are_used ... ok
+test delays_and_timeouts_must_be_positive_and_bounded ... ok
+test digests_round_trip_through_hex ... ok
+test duplicate_ids_and_unknown_entrypoints_are_rejected ... ok
+test every_kind_of_dangling_reference_is_reported ... ok
+test exponential_backoff_cannot_overflow ... ok
+test exponential_backoff_doubles_and_is_capped ... ok
+test expressions_are_bounded_text ... ok
+test fixed_backoff_is_constant ... ok
+test jitter_ignores_a_nonsensical_sample ... ok
+test jitter_stays_between_half_and_the_whole_base_delay ... ok
+test node_ids_are_path_safe_and_bounded ... ok
+test nodes_that_cannot_be_reached_are_rejected ... ok
+test non_activities_never_retry ... ok
+test nothing_outside_may_jump_into_a_branch ... ok
+test parallels_can_nest_when_each_region_is_closed ... ok
+test rejected_names_are_clipped_in_the_error ... ok
+test retry_policy_enforces_its_bounds ... ok
+test successors_list_every_edge_in_a_stable_order ... ok
+test the_documented_payment_flow_is_valid_and_chains_may_end_without_an_end_node ... ok
+test cost::the_largest_allowed_shape_validates_in_bounded_time_and_reports_its_weight ... ok
+
+test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.19s
+
+     Running tests/workflow_permissions.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/workflow_permissions-ccb81f90672bba51)
+
+running 1 test
+test declared_operations_and_human_decisions_have_explicit_role_grants ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/sagat_telemetry-8d3207341c9d984e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/logs.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/logs-76ca32200e7a9f26)
+
+running 11 tests
+test a_credential_inside_the_message_or_an_error_is_scrubbed ... ok
+test a_field_cannot_forge_the_level_the_time_or_the_service ... ok
+test a_line_break_cannot_start_a_second_line_in_the_text_style_either ... ok
+test a_field_recorded_on_a_span_after_it_was_created_is_on_the_line ... ok
+test a_line_break_in_a_value_cannot_start_a_second_line ... ok
+test a_line_carries_the_fields_of_the_spans_it_happens_in_and_the_innermost_wins ... ok
+test a_line_is_one_json_object_with_the_service_the_level_and_the_message ... ok
+test a_value_under_a_sensitive_name_never_reaches_the_line ... ok
+test a_very_long_value_is_cut ... ok
+test postgres_driver_diagnostics_never_reach_either_log_format ... ok
+test the_text_style_is_one_line_per_event_with_the_same_redaction ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/metrics.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/metrics-e6fe7a7ab6d41447)
+
+running 5 tests
+test a_lag_can_be_measured_in_minutes_and_a_latency_in_milliseconds ... ok
+test a_series_that_stops_being_updated_disappears_from_the_page ... ok
+test every_seconds_histogram_is_a_histogram_with_buckets_not_a_summary ... ok
+test the_process_recorder_expires_idle_series_after_a_bounded_time ... ok
+test a_series_that_keeps_being_updated_is_kept ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.81s
+
+     Running tests/otlp.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/otlp-c176c0e0ed10dad0)
+
+running 19 tests
+test a_batch_the_collector_refuses_is_not_sent_again ... ok
+test a_collector_that_says_to_come_back_is_tried_again_and_the_batch_arrives_once ... ok
+test a_collector_that_wants_credentials_or_is_not_there_is_a_wait_and_not_a_verdict_on_the_batch ... ok
+test a_collector_that_stays_down_ends_in_an_error_after_the_retries ... ok
+test a_secret_in_an_attribute_or_a_name_does_not_leave_the_process ... ok
+test a_sensitive_field_of_a_span_is_exported_hidden ... ok
+test a_full_queue_drops_the_span_and_counts_it_instead_of_waiting ... ok
+test a_span_is_written_the_way_otlp_json_wants_it ... ok
+test a_span_may_continue_a_trace_under_a_parent_it_names ... ok
+test a_span_with_a_trace_is_exported_with_its_parent_and_the_status_it_ended_with ... ok
+test a_span_with_no_parent_has_no_parent_field_and_an_end_never_precedes_the_start ... ok
+test a_trace_only_credential_never_reaches_the_common_signal_collector ... ok
+test an_empty_batch_sends_nothing ... ok
+test correlated_log_and_bounded_gauge_use_the_otlp_json_signal_shapes ... ok
+test spans_of_other_libraries_and_spans_with_no_trace_never_leave_the_process ... ok
+test spans_queued_before_shutdown_are_sent_by_it ... ok
+test the_headers_of_the_configuration_are_sent_and_never_shown ... ok
+test the_ratio_decides_from_the_trace_id_and_a_dropped_trace_exports_none_of_its_spans ... ok
+test a_server_error_of_the_collector_is_tried_again ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.43s
+
+     Running tests/otlp_config.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/otlp_config-12ddb330e5a4ab3c)
+
+running 7 tests
+test a_base_endpoint_gets_the_traces_path_and_a_traces_endpoint_is_taken_as_it_is ... ok
+test a_setting_the_exporter_cannot_honour_is_an_error_and_never_a_silent_fallback ... ok
+test credentials_in_the_endpoint_are_refused_and_their_value_is_not_repeated ... ok
+test nothing_is_exported_unless_an_endpoint_is_set ... ok
+test the_sdk_can_be_switched_off_whatever_else_is_set ... ok
+test the_sampler_is_the_ratio_the_variables_say ... ok
+test the_service_name_headers_and_timeout_follow_the_variables ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/primitive_vocabulary.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/primitive_vocabulary-ba0bdf557f4e70fc)
+
+running 5 tests
+test metric_names_and_label_keys_match_the_contract ... ok
+test every_metric_label_value_comes_from_a_small_closed_set ... ok
+test secret_markers_are_redacted_from_telemetry_text ... ok
+test span_names_and_fields_are_fixed_and_carry_no_free_text ... ok
+test run_data_limit_is_a_finite_private_rejection_series ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+
+     Running tests/redact.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/redact-7ea0ca2a10206a85)
+
+running 9 tests
+test a_name_that_is_only_an_identifier_or_a_measure_is_not ... ok
+test a_long_value_is_cut_and_says_by_how_much ... ok
+test a_name_that_says_the_value_is_private_is_recognised ... ok
+test a_web_token_is_scrubbed_wherever_it_stands ... ok
+test keys_with_a_known_prefix_are_scrubbed ... ok
+test ordinary_text_and_identifiers_are_left_alone ... ok
+test text_with_multibyte_characters_is_scrubbed_without_panicking ... ok
+test the_credential_after_a_scheme_is_scrubbed_and_the_words_around_it_are_not ... ok
+test the_password_of_a_url_is_scrubbed_and_its_host_is_kept ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/span.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/span-943a22069f6551ce)
+
+running 8 tests
+test a_context_can_continue_a_stored_trace ... ok
+test a_traceparent_built_here_is_read_back_by_the_parser ... ok
+test every_attempt_of_a_step_has_a_span_of_its_own_and_the_run_has_another ... ok
+test no_span_id_is_ever_zero ... ok
+test the_decision_to_keep_a_trace_depends_on_its_id_alone ... ok
+test a_greater_ratio_never_keeps_less ... ok
+test the_span_of_a_run_is_the_same_wherever_it_is_computed ... ok
+test the_share_of_traces_kept_follows_the_ratio ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/trace.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/trace-ac1fbebe11fbc5c5)
+
+running 7 tests
+test a_missing_header_starts_a_new_trace ... ok
+test a_valid_traceparent_is_continued ... ok
+test an_enormous_header_is_handled ... ok
+test malformed_headers_never_fail_and_never_leak_into_the_trace_id ... ok
+test parse_rejects_what_it_should ... ok
+test the_sampled_flag_follows_the_low_bit ... ok
+test generated_ids_are_unique_lowercase_hex_that_round_trip ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sagat_application
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sagat_domain
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sagat_telemetry
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

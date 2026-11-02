@@ -367,11 +367,15 @@ fn operations_outside_the_approved_additions_and_event_extensions_are_byte_stabl
     // Approved 014 dependency 112f1e1d appends the pagination guidance to getChain
     // (the only operation diff from bc6b74c0 to 5f4f1c6b). Keep every operation in
     // this digest; the baseline update does not exclude the changed operation.
+    // Approved feature 037 (owner decision of 2026-11-01) changes only operateRun: the
+    // OUTCOME_UNRESOLVED refusal and the MARK_MANUAL_REVIEW wording. No other operation changed.
     // EGM drift report DRIFT-001 rewrites only the createScript availability text (all five
     // languages are accepted for authoring; the old text said only TypeScript and Python were
     // built). The digest was recomputed from the reviewed one-operation text diff.
+    // The digest below covers both reviewed text changes together; it was recomputed on the merged
+    // document (the two operations differ, so neither earlier value remains valid).
     assert_eq!(
-        digest, "b81c00184eb56cc5afcb87c5b23b9425ad1feeb2c2a0f74df6d0775c196bb9fa",
+        digest, "ad2c46c519e0bcbccd37712fa84cef4b0b5c1f7c8b98161cdca0ae341396af56",
         "an existing operation outside feature 016 changed"
     );
 }

@@ -1,0 +1,12 @@
+Diff in /Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/tests/contract/sagas-compensations/rest/conformance.rs:396:
+             .await
+             .expect("uncertainty overrides retryable and extension metadata");
+         assert_eq!(p.status(&run).await, "MANUAL_REVIEW");
+-        assert!(w.poll(8).await.is_empty(), "{field} grants no repeat or undo");
++        assert!(
++            w.poll(8).await.is_empty(),
++            "{field} grants no repeat or undo"
++        );
+         let (status, body) = p
+             .rest(
+                 reqwest::Method::POST,

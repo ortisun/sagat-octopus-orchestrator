@@ -1,6 +1,6 @@
 {
   "canonical": {
-    "work": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"lease-flow\"},\"nodes\":[{\"activity\":\"lease.work\",\"id\":\"work\",\"retry\":{\"initialDelayMs\":600000,\"jitter\":false,\"maxAttempts\":3,\"maxDelayMs\":600000,\"strategy\":\"fixed\"},\"type\":\"activity\"}]}"
+    "work": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"lease-flow\"},\"nodes\":[{\"activity\":\"lease.work\",\"id\":\"work\",\"next\":\"after\",\"retry\":{\"initialDelayMs\":600000,\"jitter\":false,\"maxAttempts\":3,\"maxDelayMs\":600000,\"strategy\":\"fixed\"},\"type\":\"activity\"},{\"activity\":\"lease.after\",\"id\":\"after\",\"type\":\"activity\"}]}"
   },
   "workflows": {
     "work": {
@@ -14,6 +14,7 @@
         {
           "activity": "lease.work",
           "id": "work",
+          "next": "after",
           "retry": {
             "initialDelayMs": 600000,
             "jitter": false,
@@ -21,6 +22,11 @@
             "maxDelayMs": 600000,
             "strategy": "fixed"
           },
+          "type": "activity"
+        },
+        {
+          "activity": "lease.after",
+          "id": "after",
           "type": "activity"
         }
       ]
