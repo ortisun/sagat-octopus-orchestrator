@@ -6818,7 +6818,7 @@ components:
       properties:
         workflowId: {type: string, format: uuid}
         versionPolicy: {type: string, enum: [ACTIVE, PINNED], default: ACTIVE}
-        versionId: {type: string, format: uuid, description: Required with PINNED, refused otherwise.}
+        versionId: {type: string, format: uuid, description: 'Required with PINNED, refused otherwise.'}
         input: {type: object, description: 'The input of every run, at most 64 KiB; never returned.'}
         nominalTimeField: {type: string, pattern: '^[A-Za-z_][A-Za-z0-9_]{0,63}$', description: 'A top-level input property set to the nominal time of the action (RFC 3339, UTC).'}
         runTimeoutMs: {type: integer, minimum: 1000, maximum: 31622400000}
