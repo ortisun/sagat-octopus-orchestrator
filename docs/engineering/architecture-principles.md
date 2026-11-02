@@ -4,7 +4,7 @@ Source of the principles: the constitution. This page says how a principle becom
 
 ## Shape
 
-A Rust **modular monolith**, a crate per bounded context, ports and adapters, dependencies pointing inwards: `domain ← application ← adapters ← apps`. A process is split out only after measurement. PostgreSQL is the authority; the transactional outbox and the inbox carry messages; NATS is a hint. Overview: `docs/architecture/overview.md`.
+A Rust **modular monolith**, a crate per bounded context, ports and adapters, dependencies pointing inwards: `domain ← application ← adapters ← apps`. A process is split out only after measurement. PostgreSQL is the authority; the transactional outbox and the inbox carry messages; the selected NATS/Redis transport is a hint (ADR-0069). Overview: `docs/architecture/overview.md`.
 
 ## Principles to checks (fitness functions)
 
