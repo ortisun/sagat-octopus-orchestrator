@@ -20,7 +20,7 @@ Trusted Java compilation and runtime hosts exchanging newline-delimited JSON ove
 
 - Creates `/tmp/sagat-build`, writes source and class files, launches fixed `javac`, and emits built/rejected messages. [runners/java/host/sagat/host/BuildHost.java:build]
 - Loads and executes submitted bytecode, redirects script stdout to stderr, and emits results/errors on the preserved JSON channel. [runners/java/host/sagat/host/RuntimeHost.java:RuntimeHost.main]
-- Emits mediated fetch/secret requests and script log values to stderr. [runners/java/host/sagat/host/RuntimeHost.java:OctopusHost]
+- Emits mediated fetch/secret requests on the preserved JSON channel (the original stdout) and only script log values to stderr. [runners/java/host/sagat/host/RuntimeHost.java:OctopusHost]
 
 ## Verification
 

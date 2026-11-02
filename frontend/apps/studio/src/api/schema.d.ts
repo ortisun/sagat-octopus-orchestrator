@@ -2204,7 +2204,7 @@ export interface paths {
         put?: never;
         /**
          * Write a script
-         * @description Needs `script:write`. A script is a draft that can be tried (`createScriptTestRun`) and published (`publishScriptVersion`). TypeScript (`typescript`) and Python (`python`) are built; `csharp`, `go` and `java` are named by the workflow schema and refused with `details.reason` `LANGUAGE_NOT_BUILT`.
+         * @description Needs `script:write`. A script is a draft that can be tried (`createScriptTestRun`) and published (`publishScriptVersion`). All five languages the workflow schema names (`typescript`, `python`, `csharp`, `go`, `java`) are accepted for authoring; a build or test run needs the matching runner image and toolchain to be configured (`docs/runbooks/scripts.md`). A language the platform has no builder for is refused with `details.reason` `LANGUAGE_NOT_BUILT`.
          *     A TypeScript script exports a default function `(input, octopus) => result`; a Python script defines `run(input, octopus)`. `octopus.fetch(url, init)` asks the platform for an HTTP request (under the egress policy of the namespace, and only if the script's `policy.egress` is `namespace`), `octopus.secret(name)` asks for a secret the step declared, `octopus.log(...)` writes to the log. The script has no network of its own, no filesystem but a small scratch area, and no secrets it was not given.
          *     In a workflow the script receives the step document (`{run, node, input, steps}`); a test run receives exactly the input it is given.
          *     `inputSchema` and `outputSchema` are JSON Schemas (no references outside the document): the input is checked before the script runs and the result after. They are part of the artifact. Limits that are left out are the platform's defaults; asking for more than the platform allows is refused with `details.reason` `ABOVE_CEILING`. A `lockfile` that pins a package is refused when the version is built (installing packages is not available yet); one that pins nothing is part of the build.
@@ -4752,7 +4752,7 @@ export interface components {
         };
         CreateScriptRequest: {
             name: string;
-            /** @description typescript or python; csharp, go and java are refused until they are built. */
+            /** @description typescript, python, csharp, go or java; a language without a builder is refused with LANGUAGE_NOT_BUILT. */
             language: string;
             source: string;
             lockfile?: string;

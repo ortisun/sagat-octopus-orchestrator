@@ -22,8 +22,9 @@ Coordinates: `dev.sagatoctopusorchestrator:sagat-octopus-orchestrator-sdk:0.2.0`
 </dependency>
 ```
 
-The artifact is **not published to a repository yet** (no signing or release pipeline exists). Build and install
-it into your local repository with `./mvnw install` from this directory. The library depends on Jackson
+The artifact is **not published to a Maven repository**. The release workflow packages it (jar, sources, javadoc and
+POMs), attests provenance and attaches it to the GitHub Release, which is the only distribution channel. Download it
+from there, or build and install it into your local repository with `./mvnw install` from this directory. The library depends on Jackson
 (`jackson-databind`), gRPC (`grpc-api`, `grpc-stub`, `grpc-protobuf`, `grpc-netty-shaded` at run time) and
 `protobuf-java`; it logs through `System.Logger`. The opt-in `OpenTelemetryBridge` uses the optional
 `opentelemetry-api` dependency; the application owns the provider and exporter. There is no logging-framework dependency.
