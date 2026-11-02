@@ -369,10 +369,6 @@ async fn killing_database_connections_while_workers_run_loses_nothing_and_duplic
         );
         let mut failed_steps = 0usize;
         for node in ["a", "b", "c"] {
-            let status = w
-                .step_status(*run, node)
-                .await
-                .unwrap_or_else(|| panic!("run {run} retained no {node} step"));
             let key = format!("{run}:{node}");
             let provider_calls = final_ledger.get(&key).copied().unwrap_or(0);
             let settlements: Vec<(String, serde_json::Value)> = sqlx::query_as(
@@ -384,6 +380,23 @@ async fn killing_database_connections_while_workers_run_loses_nothing_and_duplic
             .fetch_all(&w.db.pool)
             .await
             .expect("settlement events");
+
+            // A step row exists once its node is activated. A run that ended at an earlier step
+            // the operator resolved as not applied never reached the following nodes: they must
+            // leave no row, no provider call and no settlement. A missing row after only
+            // successful steps is still a lost step.
+            let Some(status) = w.step_status(*run, node).await else {
+                assert!(
+                    failed_steps > 0,
+                    "run {run} retained no {node} step although no earlier step failed"
+                );
+                assert_eq!(provider_calls, 0, "run {run} node {node} was never reached");
+                assert!(
+                    settlements.is_empty(),
+                    "run {run} node {node} settled without being reached"
+                );
+                continue;
+            };
 
             match status {
                 StepStatus::Succeeded => {
