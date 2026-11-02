@@ -1833,6 +1833,10 @@ pub fn retry_due(
     if step.status() == StepStatus::RetryWait && step.next_attempt_at().is_some_and(|at| at > now) {
         return Err(ExecutionError::NotYetDue(node.clone()));
     }
+    // A v0.1/v0.2 retry of an unknown outcome is not started: a person decides (feature 037).
+    if let Some(review) = super::plan::unresolved_legacy_retry(node, step) {
+        return apply_then_settle(def, state, now, review);
+    }
     apply_then_settle(
         def,
         state,
@@ -1885,13 +1889,14 @@ fn retry_scoped_due<S: ScopedAttemptState>(
     if step.status() == StepStatus::RetryWait && step.next_attempt_at().is_some_and(|at| at > now) {
         return Err(ExecutionError::NotYetDue(instance.node().clone()));
     }
-    let event = AddressedRunEvent::in_path(
-        instance.path().clone(),
+    // As for root steps: a v0.1/v0.2 retry of an unknown outcome waits for a person instead.
+    let due = super::plan::unresolved_legacy_retry(instance.node(), step).unwrap_or_else(|| {
         RunEvent::StepRetryDue {
             node: instance.node().clone(),
-        },
-    )
-    .map_err(|_| ExecutionError::Invariant("a retry lost its instance path"))?;
+        }
+    });
+    let event = AddressedRunEvent::in_path(instance.path().clone(), due)
+        .map_err(|_| ExecutionError::Invariant("a retry lost its instance path"))?;
     state.apply_addressed(&event)?;
     state.settle_scoped(def, instance.path(), vec![event])
 }

@@ -262,6 +262,12 @@ where
             .map_err(engine_error)?;
         let instance = task.instance.clone();
         let fence = task.fence;
+        // Forward work is retained under a run stop, so its retry budget no longer matters. A scope
+        // compensation adds no stop (`prepare_scoped_content_refusal`): its own failure policy
+        // applies, so a retryable failure keeps its retry, with the usual jitter.
+        let retryable = task.instance.node().is_compensation()
+            && matches!(report, PathReport::Failure { retryable: true, .. });
+        let jitter_sample = self.entropy.unit();
         self.engine
             .run_addressed(
                 &mut tx,
@@ -276,8 +282,8 @@ where
                             execution::Failure {
                                 fence,
                                 code,
-                                retryable: false,
-                                jitter_sample: 0.0,
+                                retryable,
+                                jitter_sample,
                             },
                             now,
                         )?

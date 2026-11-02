@@ -141,6 +141,9 @@ fn wind_down(
     if recovery_obligation(state, node, step) {
         return None;
     }
+    if let Some(review) = super::plan::unresolved_legacy_retry(node, step) {
+        return Some(review);
+    }
     match step.status() {
         StepStatus::Waiting if waits_for_cancelled_child(def, node, step) => {
             (!step.cancel_requested()).then(|| RunEvent::StepCancelRequested { node: node.clone() })

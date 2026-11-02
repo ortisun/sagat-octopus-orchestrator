@@ -489,3 +489,67 @@ fn an_in_flight_v02_retry_after_a_negative_lookup_finishes_under_the_current_eng
     assert_eq!(run.state.status(), RunStatus::Succeeded);
     run.assert_replays();
 }
+
+/// The v0.2 L3 prefix up to its committed retry of `submit` after a lost lease: the step waits to
+/// retry with an unknown outcome. Feature 037 repeats nothing whose outcome is unknown.
+fn upgraded_during_an_unknown_retry_wait() -> Harness {
+    let def = build(
+        "settlement",
+        vec![
+            saga("settlement", "reserve"),
+            effect("reserve", false).with_next(id("submit")),
+            effect("submit", false),
+        ],
+    );
+    let journal = l3();
+    let scheduled = journal
+        .iter()
+        .position(
+            |e| matches!(e, RunEvent::StepRetryScheduled { node, .. } if node.as_str() == "submit"),
+        )
+        .expect("v0.2 scheduled a retry of submit");
+    let run = resume(def, &journal[..=scheduled], T0 + Duration::from_secs(120));
+    assert_eq!(run.status("submit"), StepStatus::RetryWait);
+    run
+}
+
+#[test]
+fn a_due_v02_retry_of_an_unknown_outcome_waits_for_a_person_instead() {
+    let mut run = upgraded_during_an_unknown_retry_wait();
+    run.retry_due("submit").expect("the due retry is decided");
+    assert_eq!(
+        run.status("submit"),
+        StepStatus::Waiting,
+        "attempt two is not started"
+    );
+    assert!(run.try_lease("submit").is_err(), "nothing to lease");
+    assert_eq!(
+        run.state
+            .step(&id("submit"))
+            .and_then(|step| step.failure())
+            .map(FailureCode::as_str),
+        Some("LEASE_EXPIRED"),
+        "the review keeps the cause"
+    );
+    run.assert_replays();
+}
+
+#[test]
+fn cancelling_during_a_v02_unknown_retry_wait_keeps_the_effect_for_review() {
+    let mut run = upgraded_during_an_unknown_retry_wait();
+    run.stop(StopReason::Cancelled).expect("cancel");
+    assert_eq!(
+        run.status("submit"),
+        StepStatus::Waiting,
+        "the unknown effect is neither cancelled nor dropped"
+    );
+    assert!(!run.state.is_finished());
+    run.operator_resolve("submit", sagat_domain::execution::ReviewOutcome::Succeeded)
+        .expect("a person settles it");
+    for node in ["submit~c", "reserve~c"] {
+        let f = run.lease(node);
+        run.complete(node, f).expect("undo");
+    }
+    assert_eq!(run.state.status(), RunStatus::Cancelled);
+    run.assert_replays();
+}

@@ -403,6 +403,9 @@ fn drain(
                 | super::LoopPhase::Cancelled => {}
             }
         }
+        if let Some(review) = unresolved_legacy_retry(node, step) {
+            return Ok(Plan::Emit(review));
+        }
         match step.status() {
             // A step parked on a child that the policy asks to be cancelled *and awaited* is asked
             // to stop like an attempt in flight, then left alone until the child has settled.
@@ -440,6 +443,23 @@ fn drain(
 
 /// Work whose external outcome must survive an ordinary stop or a lost join.
 /// A lookup companion remains runnable until its original receives a durable answer.
+/// A step waiting to retry after an attempt whose outcome is unknown. Only a journal written by
+/// v0.1/v0.2 holds one (current engines send such an attempt to reconciliation or review). Feature
+/// 037 repeats nothing whose outcome is unknown and drops nothing that may have happened: the next
+/// decision about it is a person's. Returns the review event that replaces the retry or the cancel.
+///
+/// Derived steps are excluded: a lookup (`~r`) is a read and may be retried, and a compensation
+/// with an unknown outcome already waits for review in every version.
+pub(super) fn unresolved_legacy_retry(node: &NodeId, step: &StepState) -> Option<RunEvent> {
+    let code = step.failure()?;
+    (!node.is_derived() && step.status() == StepStatus::RetryWait && code.leaves_outcome_unknown())
+        .then(|| RunEvent::StepNeedsReview {
+            node: node.clone(),
+            code: code.clone(),
+            fence: None,
+        })
+}
+
 pub(super) fn recovery_obligation(state: &RunState, node: &NodeId, step: &StepState) -> bool {
     if matches!(step.waiting_on(), Some(WaitingOn::Reconciliation)) {
         return true;
@@ -655,6 +675,9 @@ fn cancel_joined_leftovers(def: &WorkflowDefinition, state: &RunState) -> Option
             // A saga in a branch that lost compensates what it did; it winds its own body down.
             if sagas::owned(def, state, member, false) || recovery_obligation(state, member, step) {
                 continue;
+            }
+            if let Some(review) = unresolved_legacy_retry(member, step) {
+                return Some(review);
             }
             match step.status() {
                 StepStatus::Pending

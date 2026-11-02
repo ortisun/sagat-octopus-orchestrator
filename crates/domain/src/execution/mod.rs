@@ -91,5 +91,5 @@ pub use state::{
     CollectionIterationRestore, CollectionPhase, CollectionResult, CollectionState, LoopCheckpoint,
     LoopIterationRestore, LoopPhase, LoopState, RunChainState, RunId, RunState, RunStatus,
     RunWorkSummary, SagaPhase, SagaState, ScopeSagaState, StepState, StepStatus, WaitingOn,
-    derived_settles_drain, scope_final_status,
+    derived_settles_drain, retry_wait_holds_drain, scope_final_status,
 };

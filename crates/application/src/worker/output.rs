@@ -287,8 +287,9 @@ where
                     execution::Failure {
                         fence: task.fence,
                         // The worker reported success; the platform could not retain the output.
-                        // `STORAGE_QUOTA_EXCEEDED` says so and still leaves the outcome unknown,
-                        // while `OUTCOME_UNKNOWN` stays the worker's own answer (SPEC.md).
+                        // `STORAGE_QUOTA_EXCEEDED` says so and still leaves the outcome unknown.
+                        // (Managed database writes below keep `OUTCOME_UNKNOWN` for a refused or
+                        // secret-bearing result; see D1812 in the 037 research register.)
                         code: FailureCode::storage_quota_exceeded(),
                         retryable: false,
                         jitter_sample: 0.0,

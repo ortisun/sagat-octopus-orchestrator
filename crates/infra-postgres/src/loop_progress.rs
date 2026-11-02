@@ -2940,7 +2940,7 @@ impl LoopProgressStore for PgLoopProgressStore {
             remaining,
         );
         let members = sqlx::query(
-            "SELECT node,status,attempt FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+            "SELECT node,status,attempt,failure_code FROM steps WHERE tenant_id=$1 AND run_id=$2 \
                AND instance_path_nodes=$3 AND instance_path_indices=$4 ORDER BY node FOR UPDATE",
         )
         .bind(command.transition.tenant_id().as_uuid())
@@ -2982,11 +2982,19 @@ impl LoopProgressStore for PgLoopProgressStore {
                 status.as_str(),
                 "SUCCEEDED" | "FAILED" | "CANCELLED" | "SKIPPED"
             );
-            // Nothing is in flight: a step that has not started, or one that waits to retry. One
-            // whose last attempt was lost keeps saying so when it is cancelled, and is compensated.
+            // Nothing is in flight: a step that has not started, or one that waits to retry. A
+            // v0.1/v0.2 retry of an unknown outcome holds the drain until its due retry turns it
+            // into a review (feature 037, `retry_wait_holds_drain`).
             let safe_unstarted = (matches!(status.as_str(), "PENDING" | "READY")
                 && member.get::<i32, _>("attempt") == 0)
-                || status == "RETRY_WAIT";
+                || (status == "RETRY_WAIT"
+                    && !sagat_domain::execution::retry_wait_holds_drain(
+                        StepStatus::RetryWait,
+                        member
+                            .get::<Option<String>, _>("failure_code")
+                            .and_then(|code| FailureCode::parse(&code).ok())
+                            .as_ref(),
+                    ));
             if (node.is_derived() && !derived_settled) || (!terminal && !safe_unstarted) {
                 return Err(LoopProgressError::InvalidTransition);
             }

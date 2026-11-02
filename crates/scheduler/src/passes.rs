@@ -1843,9 +1843,10 @@ where
                                     .map(sagat_domain::workflow::Node::kind),
                                 Some(NodeKind::WaitEvent { .. })
                             ));
-                    step.status().is_terminal() && !instance.node().is_derived()
+                    (step.status().is_terminal() && !instance.node().is_derived()
                         || settled_derived
-                        || safe_unstarted
+                        || safe_unstarted)
+                        && !execution::retry_wait_holds_drain(step.status(), step.failure())
                 });
             if !safe {
                 return Ok(CollectionAdvance::Waiting);
@@ -2773,9 +2774,10 @@ where
                                 execution::StepStatus::Pending | execution::StepStatus::Ready
                             ))
                             || step.status() == execution::StepStatus::RetryWait;
-                        step.status().is_terminal() && !instance.node().is_derived()
+                        (step.status().is_terminal() && !instance.node().is_derived()
                             || settled_derived
-                            || safe_unstarted
+                            || safe_unstarted)
+                            && !execution::retry_wait_holds_drain(step.status(), step.failure())
                     });
                 if !safe {
                     return Ok(LoopAdvance::Waiting);
@@ -5595,9 +5597,10 @@ fn member_is_safe_to_drain(
                         .map(sagat_domain::workflow::Node::kind),
                     Some(NodeKind::WaitEvent { .. })
                 ));
-        step.status().is_terminal() && !instance.node().is_derived()
+        (step.status().is_terminal() && !instance.node().is_derived()
             || settled_derived
-            || safe_unstarted
+            || safe_unstarted)
+            && !execution::retry_wait_holds_drain(step.status(), step.failure())
     })
 }
 

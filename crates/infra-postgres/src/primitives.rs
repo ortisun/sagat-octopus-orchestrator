@@ -3060,11 +3060,20 @@ impl CollectionStore for PgCollectionStore {
                 )
             });
             // Nothing is in flight: a step that has not started, or that waits to retry or is
-            // ready to retry in a run that is stopping (it can no longer be leased). One whose last
-            // attempt was lost keeps saying so when it is cancelled, and is compensated.
+            // ready to retry in a run that is stopping (it can no longer be leased). A v0.1/v0.2 retry
+            // of an unknown outcome is not safe: it holds the drain until its due retry turns it
+            // into a review (feature 037, `retry_wait_holds_drain`).
             let safe_unstarted = (matches!(status.as_str(), "PENDING" | "READY")
                 && step.get::<i32, _>("attempt") == 0)
-                || matches!(status.as_str(), "READY" | "RETRY_WAIT");
+                || (matches!(status.as_str(), "READY" | "RETRY_WAIT")
+                    && !status.parse::<StepStatus>().is_ok_and(|parsed| {
+                        sagat_domain::execution::retry_wait_holds_drain(
+                            parsed,
+                            step.get::<Option<String>, _>("failure_code")
+                                .and_then(|code| FailureCode::parse(&code).ok())
+                                .as_ref(),
+                        )
+                    }));
             let instance = ExecutionInstanceId::in_path(member_path.clone(), node.clone());
             let waiting_suspension = if matches!(
                 definition.node_for_instance(&instance).map(Node::kind),

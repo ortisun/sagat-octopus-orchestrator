@@ -3071,9 +3071,10 @@ impl RunState {
                         && !derived_settles_drain(instance, step.status, original);
                     // Nothing is in flight: a step that has not started, or one that waits to retry
                     // (or is ready to) in a run that is stopping and can no longer lease it.
-                    let safe_to_stop = (step.attempt == 0
+                    let safe_to_stop = ((step.attempt == 0
                         && matches!(step.status, StepStatus::Pending | StepStatus::Ready))
-                        || matches!(step.status, StepStatus::Ready | StepStatus::RetryWait)
+                        || matches!(step.status, StepStatus::Ready | StepStatus::RetryWait))
+                        && !retry_wait_holds_drain(step.status, step.failure.as_ref())
                         || (matches!(step.waiting_on(), Some(WaitingOn::Timer { .. }))
                             && step.is_valid_scoped_timer())
                         || step.is_valid_scoped_event_suspension();
@@ -4733,4 +4734,17 @@ pub fn derived_settles_drain(
         || (instance.node().is_reconciliation()
             && status == StepStatus::Failed
             && original.is_some_and(StepStatus::is_terminal))
+}
+
+/// Whether a step in `RETRY_WAIT` must hold back the drain of its iteration instead of being
+/// cancelled with it: its last attempt left the outcome unknown (a v0.1/v0.2 journal; current
+/// engines never schedule such a retry). Its due retry turns it into a review (`retry_due`), so the
+/// drain proceeds once a person has settled it. Domain, scheduler and SQL drains share this rule.
+///
+/// The scheduler and SQL callers pass only the step's status and code; a derived lookup in
+/// `RETRY_WAIT` therefore also holds the drain until its retry runs, which is the conservative
+/// reading (it is in flight in all but name).
+#[must_use]
+pub fn retry_wait_holds_drain(status: StepStatus, failure: Option<&FailureCode>) -> bool {
+    status == StepStatus::RetryWait && failure.is_some_and(FailureCode::leaves_outcome_unknown)
 }
