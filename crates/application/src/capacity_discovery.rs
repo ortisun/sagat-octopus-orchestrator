@@ -47,6 +47,15 @@ pub enum CapacityDiscoveryError {
 }
 
 pub trait CapacityDiscoveryStore: Send + Sync {
+    /// Bounded observations of current ChildRoot holders for a future independent sweeper.
+    /// Identical keyset/window contract; the selected member must be G's exact holder.
+    /// No candidate proves work eligibility, quiescence or native-command authority.
+    fn discover_child_root_holders(
+        &self,
+        window: &Window,
+        after: Option<CapacityDiscoveryCursor>,
+    ) -> impl Future<Output = Result<CapacityDiscoveryPage, CapacityDiscoveryError>> + Send;
+
     fn discover_vacant_child_roots(
         &self,
         window: &Window,

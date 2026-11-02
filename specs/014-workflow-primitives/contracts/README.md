@@ -711,7 +711,7 @@ The0.3 pure model records addressed wait.started/wait.satisfied/wait.timed_out a
 handled timeout to its local onTimeout edge. This is trusted recorded replay only. A contract
 fitness test retains public refusal for both WaitEvent entry and activity→WaitEvent bodies;
 qualified native dispatch/receipt/value authority and all-five runtime evidence remain required.
-See scoped-event-waits.md and implementation-0.3.md for exact pending boundaries and results.
+See scoped-event-waits.md and implementation-ledger.md for exact pending boundaries and results.
 
 
 ### Public collection event waits — 2026-10-27
@@ -732,3 +732,46 @@ remaining release limits. No public wire field, migration, grant or worker minor
 its native evidence. Observed ids/revisions are hints, never acquisition or execution permits.
 The common IR/worker wire contracts and public publication gates are unchanged. This internal
 port does not expose capacity-group management through REST or an SDK.
+
+### Dormant ChildRoot Vacate
+
+`CapacityVacateCommand` reuses Finish identity and expected counters, with a separate domain-separated
+fingerprint and immutable transfer receipt. A replay checks binding and current scheduler authority
+before returning the original receipt, ahead of head/CAS/quiescence checks; it is never current
+permission to execute. The first transition only updates the capacity header plus audit, outbox
+and receipt. `capacity.member.vacated` is an additive closed reference-only hint in the foundation
+AsyncAPI contract; consumers reconcile PostgreSQL authority.
+
+The engine audit action is `capacity.member.vacated`, resource `capacity_group`, without repeat
+collapse. Span `workflow.capacity.vacate`, attempt counter `workflow_capacity_transfer_attempts_total`
+and duration `workflow_capacity_transfer_duration_seconds` use a closed outcome vocabulary and
+fixed operation `vacate`; `workflow_capacity_member_vacated_total` counts acknowledged first
+transitions only. Metrics have no tenant, group or run labels.
+
+See [the protocol and evidence ledger](../capacity-vacate-acquire.md). The native adapter is dormant;
+Acquire, automatic recovery and worker claim gating are not activated. CI must validate the new
+tests and non-regeneration AsyncAPI baseline before merge.
+
+### Opt-in ChildRoot worker possession prerequisite (O706)
+
+The internal root and exact-path claim boundaries share `worker_capacity_available` under
+their existing chain/run transaction. A registered current head requires one unambiguous ACTIVE
+membership and HELD possession by that exact member. Group contention is skipped, with G
+retained through successful lease commit. No membership history preserves legacy behavior;
+FINISHED-only history and unsupported SCOPED_PATH registrations fail closed. There is no new
+public API, SDK parameter or environment setting in this increment.
+
+`WorkerService::new` keeps this guard off; only an explicit gated test/runtime builder opts in.
+Production activation remains prohibited by `check-capacity-activation.py` pending coordinator,
+creator, quota/backfill and rollout evidence. The text inventory is not a general call-graph proof.
+This guard runs after deterministic input preflight and before external lease admission; it
+does not authorize worker execution by itself. Reports and heartbeats keep existing lease/fence,
+binding and capability checks without requiring possession. It grants no larger publication set.
+
+Span `worker.capacity.check` and `worker_claim_skipped_total{reason=...}` distinguish closed
+capacity reasons: `capacity_scope_unsupported`, `capacity_membership_ambiguous`,
+`capacity_member_finished`, `capacity_head_changed`, `capacity_group_busy`, `capacity_not_holder`
+and `capacity_membership_changed`. IDs belong only in spans; metrics contain no resource IDs or
+payloads. Poll refusal consumes no attempt or admission quota; preceding refusal audits and
+synthetic input-limit failure progress may still commit. [ADR-0075](../../../docs/adr/ADR-0075-worker-leases-retain-child-root-possession.md)
+and [the coordinator ledger](../capacity-coordinator.md) retain evidence and open obligations.

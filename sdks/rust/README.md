@@ -1,5 +1,7 @@
 # Sagat Rust SDK (0.3 candidate)
 
+> Documentation status: the contract sections below describe the inspected source. Existing runtime, test-count and advisory records are historical developer notes; this documentation update did not rerun or revalidate those records.
+
 The native Tokio SDK uses the same public REST and worker gRPC contracts as the other official
 SDKs. It does not connect to PostgreSQL, NATS, Redis or OpenBao directly. The server owns durable
 workflow execution and scoped secret authorization. Rust 1.98 is the initially tested toolchain;
@@ -71,3 +73,33 @@ Methods retain the first local validation error; `build()` returns an owned docu
 build time. Root-only options on nested flows fail locally. Typed options cover activities,
 collections/loops, approvals, continuation/state, scripts, triggers and managed database nodes.
 The SDK generates IR; the server resolves connection references and executes managed SQL.
+
+<!-- EGM directory contract -->
+
+## Interface
+
+- Package sagat-octopus-orchestrator-sdk 0.3.0 declares Rust 1.98 and published source/proto/build/license/README contents. build.rs generates tonic client and test server bindings. [Cargo.toml:name] [Cargo.toml:version] [Cargo.toml:rust-version] [Cargo.toml:include] [build.rs:main]
+
+- [consumer](./consumer/README.md) — component contract.
+- [proto](./proto/README.md) — component contract.
+- [src](./src/README.md) — component contract.
+
+## Invariants
+
+- The SDK declares an independent workspace and Clippy warnings for unwrap/expect/panic/todo/unimplemented. [Cargo.toml:workspace] [Cargo.toml:lints.clippy]
+
+## Side Effects
+
+- Invoked Cargo builds watch the proto and write generated protobuf bindings. [build.rs:main]
+
+## Verification
+
+Run from the repository root:
+
+```sh
+cd sdks/rust && cargo test --locked
+```
+
+Use a private `CARGO_TARGET_DIR` outside the repository, as required by [`sdks/AGENTS.md`](../AGENTS.md).
+
+These commands are documented from the existing build configuration; they were not executed during this documentation update.

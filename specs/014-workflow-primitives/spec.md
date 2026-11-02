@@ -666,11 +666,11 @@ rollback, audit and bounded acceptance evidence; nested capacity remains separat
 Old admitted READY/unleased activity bodies and legacy root event waits must survive normal
 schema upgrade, current completion and released-reader replay without changing their immutable
 prefixes or physical identity. The bounded proof and exclusions are recorded in
-[released-v02-profile.md](./released-v02-profile.md). This checkpoint does not authorize new
+[release-upgrade-profile.md](./release-upgrade-profile.md). This checkpoint does not authorize new
 scoped-event bodies under old execution processes or substitute for their cutover barrier.
 
 
-A separate [released-worker in-flight checkpoint](./released-v02-inflight-profile.md) requires
+A separate [released-worker in-flight checkpoint](./release-upgrade-inflight-profile.md) requires
 the genuine old client to retain and report its original still-live scoped FORWARD capability
 to current services after upgrade. Exact replay, original capability/fence, durable output/
 receipt/accounting and current scheduler finalization must survive. Refreshed subject
@@ -678,8 +678,16 @@ authentication does not replace task authority. This does not cover Applied/reco
 or permit mixed old event dispatchers against new scoped waits.
 
 
-The separate [released Applied checkpoint](./released-v02-applied-profile.md) must bind the
+The separate [released Applied checkpoint](./release-upgrade-applied-profile.md) must bind the
 genuine old uncertain forward to its real reconciliation lookup, preserve the Applied
 substituted output and exact report receipt/accounting, and prove released terminal reading
 after current finalization. This compatibility proof does not accept quota-refusal/drain or
 original-forward compensation under a stop; those remain separately required.
+
+### Dormant ChildRoot Acquire checkpoint — 2026-10-29
+
+An exact command may acquire a vacant group for its selected active, current, non-final ChildRoot
+when the head status is movable. Possession alone does not prove runnable work or permit a worker
+lease. Reconciliation returns the original immutable receipt after later transfers, continuation
+or Finish, while requiring current scheduler authority. The bounded contract, explicit exclusions
+and actual validation status are in [capacity-acquire.md](./capacity-acquire.md).

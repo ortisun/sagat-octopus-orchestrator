@@ -134,7 +134,7 @@ impl PgCapacityFinishStore {
 
 // Conservatively recognize server-confirmed constraint/serialization/deadlock aborts only.
 // Transport/protocol/cancellation and transaction-resolution-unknown never imply rollback.
-fn confirmed_abort(error: &sqlx::Error) -> bool {
+pub(crate) fn confirmed_abort(error: &sqlx::Error) -> bool {
     error
         .as_database_error()
         .and_then(|db| db.code())

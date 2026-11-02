@@ -50,4 +50,4 @@ The corrected seven-case native gate passes7/0/0 (26.64s harness/81.05s command)
 later single-connection/cache-reset case proves actual durable candidate discovery and scheduler
 ticks start both pending waits without worker hints (1/0/0,2.46s/60.18s); it does not depend on
 a direct per-owner advancement to start the subscriptions. Production kinds are unchanged
-after the original two-case correction. Broader gate provenance is in implementation-0.3.md.
+after the original two-case correction. Broader gate provenance is in implementation-ledger.md.

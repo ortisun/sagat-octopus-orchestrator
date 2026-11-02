@@ -718,3 +718,80 @@ evidence. Read the [constitution](.specify/memory/constitution.md) and the activ
 and tasks before implementation. Spec Kit resolves the active feature through `.specify/feature.json`
 or `SPECIFY_FEATURE_DIRECTORY`; feature numbers are shared by every branch, so check `git branch -a` before taking the next one.
 How the project uses specification-driven development, records architecture decisions and directs coding agents is in the [engineering guide](docs/engineering/README.md).
+
+<!-- EGM repository blueprint -->
+
+## System Overview
+
+The source contracts below describe the platform's application processes, domain and application
+ports, infrastructure adapters, six SDKs, Studio and isolated language hosts. They document inspected
+source boundaries. Feature acceptance remains defined by the specifications and their recorded evidence.
+
+## Interface
+
+The public server boundaries are the HTTP API and worker gRPC protocol; SDK clients, activity hosts,
+workflow builders and Studio consume those boundaries. The application and crate contracts identify
+actual Rust APIs and process commands. [apps/control-plane/src/lib.rs:serve_with_admin]
+[apps/execution-engine/src/lib.rs:serve] [specs/001-platform-foundation/contracts/worker.proto:WorkerService]
+
+## Subdirectories & System Boundaries
+
+- [apps](./apps/README.md) — CLI, control plane, execution engine, development identity and separate script/database runners.
+- [crates](./crates/README.md) — Domain, use cases, ports, storage/transport/provider adapters, scheduling and telemetry.
+- [examples](./examples/README.md) — Executable SDK demonstrations and their preparation/launch boundaries.
+- [frontend](./frontend/README.md) — Studio application, API/authentication adapters, workflow models and feature screens.
+- [infra](./infra/README.md) — Local Compose initialization, credential-provider bootstrap and recovery procedures.
+- [runners](./runners/README.md) — Trusted language build/runtime hosts and mediated script-call contracts.
+- [scripts](./scripts/README.md) — Repository fitness checks, packaging, version consistency and stack smoke verification.
+- [sdks](./sdks/README.md) — Six language clients, worker hosts, workflow builders and shared wire contracts.
+- [specs](./specs/README.md) — Source-bearing design schema/protocol index within the wider Spec Kit feature tree.
+- [templates](./templates/README.md) — Source-bearing script starter; declarative starters retain their existing directories.
+- [vendor](./vendor/README.md) — Reviewed immutable dependency snapshot and separately mirrored documentation contracts.
+
+## Global Invariants
+
+- Domain dependencies and inward layer boundaries are checked by the existing architecture fitness function.
+  [scripts/check-architecture.py:DOMAIN_ALLOWED] [scripts/check-architecture.py:ALLOWED_LAYER_DEPS]
+- Durable execution uses application storage ports and PostgreSQL transaction commits; the relevant child
+  contracts describe lease, scheduling, journal and outbox checks. Messaging adapters publish hints and
+  external deliveries through their own documented boundaries. [crates/infra-postgres/src/execution.rs:PgRunTx]
+  [crates/scheduler/src/passes.rs:Scheduler] [crates/infra-nats/src/lib.rs:NatsPublisher]
+- SDK workflow construction is local; server execution and activity-host lease reporting remain separate
+  interfaces. External effects retain their idempotency/reconciliation requirements.
+  [sdks/typescript/src/workflow.ts:WorkflowBuilder] [sdks/go/worker/task.go:complete]
+- Script and managed-database execution belong to their separate runners and capability boundaries.
+  Compiler/runtime selection alone is not an isolation guarantee. [apps/sandbox-runner/src/lib.rs:Runner]
+  [apps/database-runner/src/runner.rs:Runner]
+- Dormant capacity/certification machinery, declared bounds and historical measurements do not establish
+  acceptance of general nesting or production ceilings; those distinctions remain explicit in the crate
+  and feature contracts. [crates/README.md:Invariants] [specs/014-workflow-primitives/tasks.md:T014-042]
+- The reviewed vendor snapshot keeps its exact upstream file set and hashes, with the allowed manifest
+  substitution. Its new contracts live under `vendor/contracts/`. [scripts/check-vendor.py:verify]
+
+## Global Side Effects
+
+- Executed application processes may bind listeners, read configuration/credentials, persist PostgreSQL
+  state, invoke worker handlers and contact configured brokers/providers; their source contracts identify
+  the conditional paths and lifecycle. [apps/README.md:Side Effects]
+- Runner hosts build or execute submitted code through their documented isolation/capability contracts.
+  Packaging, deployment and recovery commands can write artifacts or create their own services; their
+  child contracts state those effects. [runners/README.md:Side Effects] [infra/README.md:Side Effects]
+- Telemetry emits diagnostic records through configured providers. It is distinct from persisted execution
+  evidence, and application-authored handler logs remain the caller's responsibility.
+  [crates/telemetry/src/logging.rs:Telemetry] [sdks/java/sdk/src/main/java/dev/sagatoctopusorchestrator/sdk/worker/ActivityLogger.java:ActivityLogger]
+
+## System Verification
+
+The child contracts provide manifest-derived commands. For the integrated Rust suite, follow the
+resource profile in [AGENTS.md](./AGENTS.md), including an external private Cargo target directory:
+
+```sh
+RUST_TEST_THREADS=2 cargo test --workspace --locked --no-fail-fast
+python3 scripts/check-architecture.py
+python3 scripts/check-agent-config.py
+python3 scripts/check-vendor.py
+```
+
+Contract-document checks validate section structure, local references, cited source paths/symbols and
+configured verification targets. Runtime tests, service drills and performance acceptance must be run
+and recorded separately; this blueprint does not claim those results.

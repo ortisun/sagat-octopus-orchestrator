@@ -13,6 +13,7 @@ mod database;
 mod path;
 mod path_read;
 mod scoped_events;
+mod worker_capacity;
 use scoped_events::EventWaitReadState;
 pub(crate) use scoped_events::validate_scoped_event_identity;
 
@@ -4766,6 +4767,10 @@ impl RunTx for PgRunTx {
         .rows_affected()
             > 0;
         Ok(inserted)
+    }
+
+    async fn worker_capacity_available(&mut self) -> Result<bool, StoreError> {
+        worker_capacity::available(&mut self.tx, &self.info).await
     }
 
     async fn commit(mut self) -> Result<(), StoreError> {

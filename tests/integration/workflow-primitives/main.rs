@@ -66,13 +66,13 @@ mod projection;
 mod public_refusal_commit_loss;
 mod publication_rejections;
 mod refusal_secret_versions;
+mod release_upgrade;
 #[cfg(unix)]
-mod released_v02_callback_cutover;
+mod release_upgrade_callback_cutover;
 #[cfg(unix)]
-mod released_v02_cutover;
+mod release_upgrade_cutover;
 #[cfg(unix)]
-mod released_v02_inflight;
-mod released_v02_upgrade;
+mod release_upgrade_inflight;
 mod scope_compensation_http;
 mod scope_frontier;
 mod scoped_blob_completion;

@@ -5,6 +5,9 @@ use sagat_application::{
     maintenance::Window,
 };
 
+#[path = "capacity_holder_discovery.rs"]
+mod holders;
+
 #[tokio::test]
 async fn a_vacant_active_member_is_discovered_with_its_current_head() {
     let f = fixture().await;
