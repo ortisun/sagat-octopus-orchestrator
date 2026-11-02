@@ -15,6 +15,10 @@
 # Isolated worktrees created by agents
 /.claude/worktrees/
 
+# Python bytecode (the CI helper scripts and their tests are run with python3)
+__pycache__/
+*.pyc
+
 # SDK build output and toolchain state
 /sdks/*/node_modules/
 /sdks/*/dist/
