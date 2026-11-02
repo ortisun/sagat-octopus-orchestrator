@@ -365,8 +365,10 @@ fn operations_outside_the_approved_additions_and_event_extensions_are_byte_stabl
     // Approved 014 dependency 112f1e1d appends the pagination guidance to getChain
     // (the only operation diff from bc6b74c0 to 5f4f1c6b). Keep every operation in
     // this digest; the baseline update does not exclude the changed operation.
+    // Approved feature 037 (owner decision of 2026-11-01) changes only operateRun: the
+    // OUTCOME_UNRESOLVED refusal and the MARK_MANUAL_REVIEW wording. No other operation changed.
     assert_eq!(
-        digest, "60c58b37add3b597a3d94a25e000f25b04d6dd3505e076ed283eaf192a8ed614",
+        digest, "cc2921b68f4501fc43bcc8f5f50fc3afde290659b2ad9d08bc36aa04845ffe87",
         "an existing operation outside feature 016 changed"
     );
 }
