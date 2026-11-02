@@ -4,6 +4,32 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-01 — Feature 037 delivery, B01 split and upgrade compatibility
+
+The owner answered three questions in the Claude session that took over Codex's work. The answers
+were "Sim, autorizo", "Separar a B01 num PR próprio (Recomendado)" and "Manter upgrade da v0.2
+(Recomendado)".
+
+| # | Item | Decision | Recorded in | Status |
+|---|---|---|---|---|
+| 1 | Feature 037 US01–US03 implementation | **Authorized to merge** once the independent review blockers are fixed and CI is green. This also adopts Constitution 2.0.0, which changes Principle III only, and accepts ADR-0076. US04 (provider qualification, T037-032/033) stays open. | PR #75, [ADR-0076](adr/ADR-0076-compensation-failure-and-uncertain-effects.md), [sync report](governance/compensation-safety-sync-impact.md) | Authorized; fixes in progress |
+| 2 | B01 amendment (Principle V secret disclosure to executors, no tenant metric labels, Redis transport baseline) | **Split into its own pull request.** It is not adopted with 037, and its text needs its own owner approval. Because 037 takes 2.0.0, it is renumbered 3.0.0. | Separate B01 PR | Waiting for the owner's approval of the text |
+| 3 | Upgrade from released v0.2 | **Keep in-place upgrade.** The new rules apply to new commands and planning. Replay MUST still accept journals written by v0.1/v0.2: legacy negative-lookup pairings, privileged unknown retries and defensive compensation plans. The "fresh installation only" wording in the 037 runbook and plan is withdrawn. | PR #75, `docs/runbooks/sagas.md`, 037 `plan.md` | Decided; implementation in progress |
+
+## 2026-11-01 — Compensation safety (B02)
+
+The owner answered **“Sim aprovo”** to the two recommended directions below. This authorizes
+recording the decisions and preparing their specification/dependent diffs; it does not authorize
+implementation, a final wire contract, constitutional adoption, provider qualification or release.
+
+| Item | Approved direction | Record / remaining work |
+|---|---|---|
+| S1-B; feature 014 O381 | Human review by default; explicit published `fail` for explicit sagas. Terminal `COMPENSATION_FAILED` plus retained journal/step evidence is the platform's post-terminal tracking, with no active review queue promised. Cancellation/deadline preserves pending review in explicit sagas and scopes. | [Feature 037](../specs/037-compensation-safety/spec.md), [research](../specs/037-compensation-safety/research.md). O381 direction answered; runtime correction pending. O380 scope policy fields remain deferred. |
+| S2-B | Consultation/review for unknown external effects, regardless of `highRisk`. Defensive compensation requires pinned, authorized qualification with authoritative provider evidence and adapter tests for applied/absent/late effects. Compensation success requires business finality; safe repeat of an unknown compensation outcome needs its own provider guarantee and stable identity. | Feature 037; contract design, adoption diff and real acceptance evidence pending. SDK integrations and plugins follow identical rules; no provider is qualified by this approval. |
+
+*Superseded 2026-11-01 (item 3 above): in-place upgrade from v0.2 is kept.* Fresh installation/no legacy upgrade was said to be already approved for the engineering reset, but no such entry exists in this file. This entry
+introduces no regulatory retention period, financial policy or exactly-once promise.
+
 ## 2026-10-29 — ChildRoot capacity coordination
 
 | # | Item | Decision | Recorded in | Status |
@@ -17,6 +43,34 @@ The owner requested: “Nao quero ter esses arquivos v2 nem v3”. Active upgrad
 runner scripts and implementation/profile documents use version-neutral names (`release_upgrade`,
 `release-upgrade`, `implementation-ledger`). The tested release remains pinned explicitly in the
 fixture content. Immutable historical receipts retain their original recorded paths and hashes.
+
+## 2026-10-28 — elastic scaling (feature 036)
+
+| # | Item | Decision | Recorded in | Status |
+|---|---|---|---|---|
+| 1 | O1706, who applies replicas and resources when a scaling policy is enforced | Option B, chosen in `/speckit-clarify`: by default the environment's autoscaler or an external controller follows the platform's published desired capacity; in addition an **optional applier** (a separate component, off by default, with only the permissions to change the replicas and resources of the platform's own workloads) carries out enforced decisions in the supported orchestrator, for operators who want a closed loop. | [`specs/036-elastic-scaling/spec.md`](../specs/036-elastic-scaling/spec.md) (Clarifications, FR-036-051 to FR-036-055, US12, SC-036-015 and SC-036-016) | Specified; not built |
+| 2 | O1707, where outside data for scaling comes from | Option B, chosen in `/speckit-clarify`, with the owner's words: “O orquestrador deve consultar as métricas (mensagens enfileiradas, cpu, memoria, etc..). Ele dará os sinais ao keda ou outro provider fazer o scaling in ou out.” The platform queries external sources declared by configuration, evaluates, and hands the signals and the decisions to the autoscaling provider. Declaring a source is an operator action (destination allowlist, credentials by reference, bounded read-only queries); tenants publish custom signals instead. | [`specs/036-elastic-scaling/spec.md`](../specs/036-elastic-scaling/spec.md) (Clarifications, FR-036-056 to FR-036-061, US13, SC-036-017 to SC-036-019) | Specified; not built |
+| 3 | O1708, programmatic access to signals and policies and the SDKs | Option A, chosen in `/speckit-clarify`: the management interface is the documented, versioned REST contract plus the operator command line. The six official SDKs do not change in this feature (their client covers run operations only, and a new client operation must enter all six with a scenario and a golden). | [`specs/036-elastic-scaling/spec.md`](../specs/036-elastic-scaling/spec.md) (Clarifications, FR-036-019, Assumptions, Out of scope) | Specified; not built |
+| 4 | O1703, what a tenant may do about scaling | Option B, chosen in `/speckit-clarify`: a tenant reads the lag, state and decisions of its own connectors and adjusts their in-flight parallelism and rate limit by hand within its quota; every scaling policy is operator-only; a tenant never controls replicas or resources. Consequence recorded as O1704 (not yet confirmed): a custom signal published by a tenant has no automatic effect until an operator admits it to a policy. | [`specs/036-elastic-scaling/spec.md`](../specs/036-elastic-scaling/spec.md) (Clarifications, FR-036-023, FR-036-024, US05) | Specified; not built |
+| 5 | O1709, delivery order of feature 036 | Option B, chosen in `/speckit-clarify`: the first delivery is US01, US02, US03, US04, US05, US06, US10 and US13 (consumer lag, balanced Kafka partitions, scaling on lag, policies by configuration and through the management interface, explanation, safety, pulled sources, signals and desired capacity exported to the autoscaling provider). The other roles (US07), the dedicated ingestion role (US09), vertical scaling (US08), the optional applier (US12) and the benchmark on separate machines (US11) follow. | [`specs/036-elastic-scaling/spec.md`](../specs/036-elastic-scaling/spec.md) (Clarifications, Context "Delivery order") | Specified; not built |
+
+## 2026-10-27
+
+Answers to the scope questions of the feature 035 specification (Apache Iceberg write steps): items 1–3 were asked before it was written, items 4–8 at `/speckit-clarify`, items 9–11 when the owner extended the scope to step-output destinations. "Not built" means the decision is taken and the implementation is still to be done; it is not evidence.
+
+| # | Item | Decision | Recorded in | Status |
+|---|---|---|---|---|
+| 1 | 035 write modes | **Append, overwrite and upsert** (merge by key) in the first delivery; the recommendation was append + overwrite with upsert later. | `specs/035-iceberg-write-steps/research.md` (D035-001) | Decided; not built |
+| 2 | 035 catalogs and storage | **Broad set**: REST, AWS Glue, Hive Metastore and JDBC catalogs; S3-compatible, Google Cloud Storage and ADLS Gen2 storage; the recommendation was REST + S3-compatible first. | `specs/035-iceberg-write-steps/research.md` (D035-002) | Decided; not built |
+| 3 | 035 destination model | A **new connection kind of the feature-017 catalog** (revisions, OpenBao secrets, probe, managed executor, network policy, ad hoc admission); no dependency on the PR #53 drafts. | `specs/035-iceberg-write-steps/research.md` (D035-003) | Decided; not built |
+| 4 | 035 batch size | At most **2 GiB per step** in at most 32 record blobs of 64 MiB, streamed into files. | `specs/035-iceberg-write-steps/research.md` (D035-013) | Decided; not built |
+| 5 | 035 deletes in upsert | An upsert may declare a **delete marker** field; marked keys are removed in the same commit. | `specs/035-iceberg-write-steps/research.md` (D035-014) | Decided; not built |
+| 6 | 035 unknown record fields | **Refused by default**; a step may declare that they are ignored (dropped, counted, never written); the table schema is never changed. | `specs/035-iceberg-write-steps/research.md` (D035-015) | Decided; not built |
+| 7 | 035 snapshot summary identifiers | Effect key, run id, step id, **workflow name and version**; workflow names become visible to readers of the table's metadata. | `specs/035-iceberg-write-steps/research.md` (D035-016, O035-001) | Decided; not built |
+| 8 | 035 table creation | **No**: tables exist beforehand; a missing table fails the step. | `specs/035-iceberg-write-steps/research.md` (D035-017) | Decided; not built |
+| 9 | 035 step-output destinations | “Quero que o output dos steps também possam ser salvas no iceberg, postgres, etc...” (example: a finished payment flowing down to the lake). Outputs go to destinations **chosen per destination as synchronous** (inside the run) **or asynchronous** (batched export). | `specs/035-iceberg-write-steps/research.md` (D035-018) | Decided; not built |
+| 10 | 035 destination kinds | **Iceberg, customer PostgreSQL, object storage files, ClickHouse and broker streams, all five in both modes** (recommendation for synchronous: Iceberg and PostgreSQL only). | `specs/035-iceberg-write-steps/research.md` (D035-019) | Decided; not built |
+| 11 | 035/020 placement | Asynchronous export is **020's declared-record export**, which gains an `ICEBERG` sink reusing 035's connection; 035 specifies the Iceberg write step and the synchronous destinations. | `specs/035-iceberg-write-steps/research.md` (D035-020), 020 `research.md` | Decided; 020 is still a draft in PR #53 |
 
 ## 2026-10-26
 
@@ -84,3 +138,35 @@ retaining PostgreSQL authority, worker gRPC, NATS compatibility and existing HTT
 [Specification](../specs/033-redis-streams/spec.md); [ADR-0069](adr/ADR-0069-redis-streams-share-outbox-and-delivery-authority.md).
 Implementation/tests remain required; no production deployment, automatic release or inbound Redis
 connector is inferred. This explicitly approves dependencies on the existing004/009/017 services.
+
+## 2026-11-01 — Feature 037 planning boundary
+
+The approved B02 normative wording was applied locally after owner approval; formal PR adoption
+remains pending. The subsequent [technical plan](../specs/037-compensation-safety/plan.md) proposes
+US01–US03 conservative defaults first, with all qualification exceptions disabled and US04 held
+for provider evidence and exact contract design. This is a proposal awaiting detailed implementation
+approval, not a new owner decision. The revised proposal explicitly removes the current privileged
+Retry shortcut for an unknown original effect: an outcome-bearing resolution is required first.
+Known-failure retry remains; no new in-place retry-after-resolution is proposed. This stricter
+interpretation is part of the design awaiting approval. Existing approvals for S1-B/S2-B and fresh
+installation remain.
+
+## 2026-11-01 — Feature 037 delivery 1 approved
+
+The owner answered “Aprovo” to the reviewed implementation plan: preserve review after stop,
+refuse direct retry of unknown original/compensation until explicit outcome resolution, and keep
+qualification exceptions disabled. This approves T037-001..031 and T037-034. US04, real provider
+qualification, deployment, merge and release remain outside this implementation approval.
+Implementation uses feature/037-compensation-safety derived from develop, with the approved
+uncommitted documentation copied and byte-verified. The original develop checkout remains intact.
+
+
+## 2026-11-01 — Feature 037 delivery 1 preserves the feature-009 secret-output contract
+
+Asked whether to retain feature-009's final `SECRET_IN_OUTPUT` behavior or extend 037 to preserve
+human review for that rejection too, the owner answered: “Manter a regra da 009 e registrar a
+limitação nesta entrega”. Delivery 1 therefore changes successful-result **storage refusal** only;
+ordinary secret-bearing output keeps the existing feature-009 final-failure behavior. Do not claim
+that every output rejection preserves an external-effect recovery obligation. The secret remains
+absent from retained output/logs; a source-aware recovery change for this case requires a later
+approved cross-feature contract change. Managed-database protections already present are retained.

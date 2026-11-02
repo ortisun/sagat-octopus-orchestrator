@@ -8,6 +8,7 @@ use serde_json::json;
 use std::time::Duration;
 
 use crate::support::api::Options;
+use crate::support::bounded::within;
 use crate::support::scripts::{lab_configured, lab_with};
 
 #[tokio::test]
@@ -37,7 +38,7 @@ async fn cancelling_a_run_stops_its_script_and_leaves_no_container() {
         .script_with(
             "sleeper",
             "python",
-            "import time\ndef run(input, octopus):\n    time.sleep(120)\n    return {'woke': True}\n",
+            "import time\ndef run(input, octopus):\n    try:\n        octopus.fetch('https://cancel-barrier.example.test')\n    except Exception:\n        pass\n    time.sleep(120)\n    return {'woke': True}\n",
             json!({"policy": {"timeoutMs": 120000}}),
         )
         .await;
@@ -54,8 +55,26 @@ async fn cancelling_a_run_stops_its_script_and_leaves_no_container() {
         .remove(0);
     let runner = std::sync::Arc::clone(&lab.runner);
     let running = tokio::spawn(async move { runner.run_step(step).await });
-    // The script is asleep in its container.
-    tokio::time::sleep(Duration::from_millis(2500)).await;
+    // Egress is disabled: the first host call commits an audit record without contacting a
+    // provider. Observing it proves the script reached its body in the real container.
+    within(
+        "the script reaches its host-call barrier",
+        Duration::from_secs(20),
+        async {
+            loop {
+                assert!(
+                    !running.is_finished(),
+                    "the script ended before cancellation"
+                );
+                if lab.audited("script.violation").await == ["EGRESS_DISABLED"] {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        },
+    )
+    .await;
+    assert_eq!(lab.runner.sandbox().leftovers().await, 1);
     assert!(!running.is_finished());
 
     let (status, accepted) = lab
@@ -67,19 +86,28 @@ async fn cancelling_a_run_stops_its_script_and_leaves_no_container() {
         )
         .await;
     assert_eq!(status, 202, "{accepted}");
-    // The next heartbeat tells the runner; it stops the script and reports nothing.
-    let outcome = tokio::time::timeout(Duration::from_secs(20), running)
-        .await
-        .expect("the runner notices the cancellation")
-        .expect("no panic")
-        .expect("no error");
+    // The next heartbeat tells the runner; it stops the script and acknowledges the stop without output.
+    let outcome = within(
+        "the runner notices cancellation",
+        Duration::from_secs(20),
+        running,
+    )
+    .await
+    .expect("no panic")
+    .expect("no error");
     assert_eq!(outcome, StepOutcome::Abandoned);
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    assert_eq!(
-        lab.runner.sandbox().leftovers().await,
-        0,
-        "the container went with the step"
-    );
+    // Dropping Docker's run future schedules force-removal asynchronously. Abandonment is not
+    // its completion barrier: observe the containers owned by this sandbox until none remain.
+    within(
+        "the cancelled script container is removed",
+        Duration::from_secs(20),
+        async {
+            while lab.runner.sandbox().leftovers().await != 0 {
+                tokio::task::yield_now().await;
+            }
+        },
+    )
+    .await;
     // The engine finishes the cancellation when it has seen that nothing holds the step any more.
     for _ in 0..5 {
         lab.p.tick().await;

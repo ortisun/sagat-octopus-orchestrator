@@ -45,7 +45,7 @@ cargo test -p sagat-tests --test <kind>_<feature>            # e.g. integration_
 SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test -p sagat-tests ...   # every service as the least-privilege role sagat_app
 RUST_TEST_THREADS=2 cargo test --workspace --locked --no-fail-fast   # the local resource profile; see docs/test-strategy.md
 SAGAT_DOCS_BLESS=1 cargo test -p sagat-tests --test contract_developer_experience   # regenerate docs/reference after reading the diff
-SAGAT_SDK_SCENARIO=<name> cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture   # five-language conformance
+SAGAT_SDK_SCENARIO=<name> cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture   # six-language conformance
 (cd frontend/apps/studio && npm run api && npm run check:api)  # Studio types follow openapi.yaml
 ```
 

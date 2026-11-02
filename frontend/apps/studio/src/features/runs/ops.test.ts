@@ -9,6 +9,15 @@ const viewer = () => false;
 const node = (over: Partial<RuntimeNode> = {}): RuntimeNode => ({ id: 'pay', type: 'activity', status: 'WAITING', waitingOn: 'operator', ...over });
 const run = (over: Partial<RunFacts> = {}): RunFacts => ({ status: 'MANUAL_REVIEW', paused: false, ...over });
 const by = (ops: Operation[], action: Action): Operation => ops.find((o) => o.action === action)!;
+const unresolvedEffectCodes = [
+  'OUTCOME_UNKNOWN',
+  'LEASE_EXPIRED',
+  'ATTEMPT_TIMEOUT',
+  'RECONCILIATION_FAILED',
+  'RECONCILIATION_UNKNOWN',
+  'RECONCILIATION_NOT_FINAL',
+  'STORAGE_QUOTA_EXCEEDED',
+] as const;
 
 describe('runOperations', () => {
   it('offers pause and cancel on a running run, and not resume', () => {
@@ -113,13 +122,48 @@ describe('stepOperations', () => {
     expect(by(ops, 'RESOLVE_STEP')).toMatchObject({ enabled: false, reason: 'You need the saga:override permission to do this.' });
   });
 
-  it('asks for saga:override to retry a step whose effect may already have happened', () => {
-    const unknown = node({ failureCode: 'OUTCOME_UNKNOWN' });
-    expect(by(stepOperations(unknown, run(), operator), 'RETRY_STEP')).toMatchObject({ enabled: false });
-    expect(by(stepOperations(unknown, run(), operator), 'RETRY_STEP').reason).toMatch(/OUTCOME_UNKNOWN.*saga:override/);
-    expect(by(stepOperations(unknown, run(), admin), 'RETRY_STEP').enabled).toBe(true);
-    // A failure the platform knows left no effect is the operator's to retry.
-    expect(by(stepOperations(node({ failureCode: 'RECONCILED_NOT_APPLIED' }), run(), operator), 'RETRY_STEP').enabled).toBe(true);
+  it('disables direct retry of every unresolved original or compensation even for an admin', () => {
+    for (const failureCode of unresolvedEffectCodes) {
+      for (const compensation of [false, true]) {
+        for (const status of ['WAITING', 'RETRY_WAIT'] as const) {
+          const unresolved = node({
+            id: compensation ? 'pay~c' : 'pay',
+            status,
+            waitingOn: status === 'WAITING' ? 'operator' : null,
+            failureCode,
+          });
+          const facts = run({ status: status === 'WAITING' ? 'MANUAL_REVIEW' : 'RUNNING' });
+          const action = compensation ? 'RETRY_COMPENSATION' : 'RETRY_STEP';
+          const retry = by(stepOperations(unresolved, facts, admin), action);
+
+          expect(retry.enabled, `${failureCode} ${unresolved.id} ${status}`).toBe(false);
+          expect(retry.reason, `${failureCode} remains visible`).toContain(failureCode);
+          expect(retry.reason, `${failureCode} requires an outcome-bearing decision`).toMatch(/resolve|resolution/i);
+
+          if (status === 'WAITING') {
+            const decisions = stepOperations(unresolved, facts, admin);
+            expect(by(decisions, 'RESOLVE_STEP').enabled).toBe(true);
+            expect(by(decisions, 'SKIP_COMPENSATION').enabled).toBe(compensation);
+          }
+        }
+      }
+    }
+  });
+
+  it('retains retry for known failures without weakening compensation decisions', () => {
+    for (const compensation of [false, true]) {
+      for (const status of ['WAITING', 'RETRY_WAIT'] as const) {
+        const known = node({
+          id: compensation ? 'reserve~c' : 'pay',
+          status,
+          waitingOn: status === 'WAITING' ? 'operator' : null,
+          failureCode: 'PAYMENT_DECLINED',
+        });
+        const facts = run({ status: status === 'WAITING' ? 'MANUAL_REVIEW' : 'RUNNING' });
+        const action = compensation ? 'RETRY_COMPENSATION' : 'RETRY_STEP';
+        expect(by(stepOperations(known, facts, operator), action).enabled).toBe(true);
+      }
+    }
   });
 
   it('offers to retry a step that is waiting out its retry now, without waiting for the delay', () => {
@@ -127,9 +171,9 @@ describe('stepOperations', () => {
     const ops = stepOperations(waiting, run({ status: 'RUNNING' }), operator);
     expect(by(ops, 'RETRY_STEP').enabled).toBe(true);
     expect(by(ops, 'RESOLVE_STEP')).toMatchObject({ enabled: false });
-    // A failure that left it unknown whether it happened is judged by the platform's own retry, which is coming anyway.
+    // Even a stale RETRY_WAIT projection must fail closed when its failure code says the outcome is unknown.
     const unknown = node({ status: 'RETRY_WAIT', waitingOn: null, failureCode: 'LEASE_EXPIRED' });
-    expect(by(stepOperations(unknown, run({ status: 'RUNNING' }), operator), 'RETRY_STEP').enabled).toBe(true);
+    expect(by(stepOperations(unknown, run({ status: 'RUNNING' }), admin), 'RETRY_STEP')).toMatchObject({ enabled: false });
     expect(consequence('RETRY_STEP', 'pay', waiting)).toMatch(/Starts the next attempt of step pay now, without waiting for the delay/);
   });
 
@@ -161,17 +205,15 @@ describe('words', () => {
     expect(consequence('RETRY_STEP', 'pay')).toBe('Asks for another attempt of step pay; the earlier attempts stay in the journal.');
     expect(consequence('SKIP_COMPENSATION', 'pay~c')).toMatch(/partly undone and cannot be compensated again/);
     expect(consequence('RESOLVE_STEP', 'pay')).toMatch(/overrides what the platform knows/);
-    expect(consequence('CANCEL')).toMatch(/compensated according to its cancel policy/);
+    expect(consequence('CANCEL')).toMatch(/preserv.*review|review.*preserv/i);
+    expect(consequence('CANCEL')).toMatch(/unknown|unresolved/i);
   });
 
-  it('asks for the step id back only for the decisions that override or may repeat an effect', () => {
+  it('asks for the step id back only for available outcome-bearing override decisions', () => {
     expect(asksForStepId('SKIP_COMPENSATION')).toBe(true);
     expect(asksForStepId('RESOLVE_STEP')).toBe(true);
     for (const action of ['RETRY_STEP', 'RETRY_COMPENSATION', 'PAUSE', 'RESUME', 'CANCEL'] as const) expect(asksForStepId(action)).toBe(false);
-    // A retry of a step whose effect may already have happened is such a decision: the platform asks for saga:override, and so does the page for the id.
-    expect(asksForStepId('RETRY_STEP', node({ failureCode: 'OUTCOME_UNKNOWN' }))).toBe(true);
-    expect(asksForStepId('RETRY_STEP', node({ failureCode: 'RECONCILED_NOT_APPLIED' }))).toBe(false);
-    expect(consequence('RETRY_STEP', 'pay', node({ failureCode: 'LEASE_EXPIRED' }))).toMatch(/may already have happened \(LEASE_EXPIRED\).*twice/);
+
   });
 });
 

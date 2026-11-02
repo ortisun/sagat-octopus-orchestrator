@@ -32,15 +32,37 @@ Sources: ADR-0001, AGENTS.md rules 5 and 6.
 ### III. External Effects Are At-Least-Once; Sagas Compensate, They Do Not Roll Back
 
 The platform MUST NOT promise exactly-once for an external effect. A critical effect requires an
-idempotency key or a reconciliation lookup, and an attempt whose outcome is unknown MUST be looked
-up before it is repeated. A compensation asks the provider to undo what was done; it is a step of
-its own, planned in reverse order, and runs through the same machinery as forward work (lease,
-fencing, retry, deadline, audit). An effect that cannot be undone ends the run `PARTIAL`; a
-compensation that keeps failing waits for a person with an audited decision and is never assumed
-done.
+idempotency key or a reconciliation lookup. Unknown external outcomes default to consultation or
+human review, including compensation outcomes and stop/drain paths; absent or false risk metadata
+MUST NOT authorize repeat or defensive compensation. An unknown original effect MUST be resolved
+by consultation or an authorized, audited human decision before it is repeated.
+
+A compensation asks the provider to undo what was done; it is a step of its own, planned in reverse
+dependency order, using the same lease, fencing, retry, deadline and audit machinery. Defensive
+compensation of an unknown original effect, or safe repetition of an unknown compensation outcome,
+requires an explicit version-pinned integration qualification: authoritative provider guarantees,
+adapter tests, stable effect identity and current authorization. It MUST cover applied, absent and
+late original effects and pending, unknown or late compensation outcomes. Acceptance is not finality:
+only an authoritative final outcome can establish automatic compensation success. Existing
+authorized, audited human resolution may also conclude a workflow as compensated, retaining human
+provenance; it MUST NOT be presented as provider-confirmed settlement or qualify an integration.
+A missing or invalid qualification refuses the exception and preserves consultation/review; the platform validates the
+qualification reference and authority, not the truth of a third party's guarantee.
+
+An effect that cannot be undone ends the run `PARTIAL`. Compensation failure defaults to an
+authorized, audited human decision. Only an explicit saga's failure policy in its immutable
+published version may select `fail` to end the run
+`COMPENSATION_FAILED` for known permanent failure after its retry policy or known non-retryable
+failure. Unknown, accepted or pending compensation outcomes MUST instead follow consultation/review
+or the qualified safe-repeat rule; exhausting attempts MUST NOT discard that uncertainty. Terminal
+failure retains state and step/history evidence, without promising an active post-terminal review queue or declaring the effects resolved. Cancellation and deadlines
+MUST NOT replace a pending compensation review or discard unresolved-effect evidence. Independent
+compensations remain eligible and dependencies retain their order. Terminal failure MUST wait for
+all eligible independent planned compensations to settle and blocked dependents to be terminally
+suppressed; a terminal run MUST have no active, runnable or review-waiting compensation.
 
 *Rationale:* a provider that does not deduplicate can still do an effect twice, and the product
-must say so rather than hide it. Sources: ADR-0004, ADR-0005, ADR-0010, AGENTS.md rule 4.
+must say so rather than hide it. Sources: ADR-0004, ADR-0005, ADR-0010, ADR-0076, feature 037, AGENTS.md rule 4.
 
 ### IV. Compatibility Is Versioned and Pinned
 
@@ -200,4 +222,4 @@ the plan's Complexity Tracking table with the simpler alternative that was rejec
 
 **Version**: 3.0.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-11-01
 
-Amendment scope and preserved obligations: [3.0.0 Sync Impact Report](../../docs/governance/constitution-3.0.0-sync-impact.md). Proposed: adopted only when the owner approves this text and its pull request merges.
+Amendment scope and preserved obligations: [3.0.0 Sync Impact Report](../../docs/governance/constitution-3.0.0-sync-impact.md). Previous amendment (2.0.0, Principle III): [compensation safety Sync Impact Report](../../docs/governance/compensation-safety-sync-impact.md). Proposed: adopted only when the owner approves this text and its pull request merges.

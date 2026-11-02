@@ -1,0 +1,2 @@
+.venv/bin/ruff check .
+/bin/sh: .venv/bin/ruff: No such file or directory

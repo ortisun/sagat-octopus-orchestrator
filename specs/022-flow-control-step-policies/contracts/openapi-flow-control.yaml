@@ -1,0 +1,497 @@
+openapi: 3.1.0
+info:
+  title: Feature 022 flow control and step policies — draft REST fragment
+  version: 0.0.0-draft
+  description: |
+    DRAFT, not implemented. Additive fragment to be merged into
+    specs/001-platform-foundation/contracts/openapi.yaml at implementation (task T022-060). Paths are
+    relative to /v1. `$ref`s to `canon` point at the canonical document; nothing here changes an existing
+    operation's behaviour. Every response that carries execution metadata is `Cache-Control: no-store`.
+    Errors use the canonical `Error` envelope; `details.reason` values are listed in errors.md.
+paths:
+  /namespaces/{namespaceId}/step-executions:
+    post:
+      operationId: startStepExecution
+      summary: Start one activity, script or managed database step durably, without a published workflow
+      tags: [Runs]
+      x-proposed: '022'
+      description: |
+        Needs `run:start` and `step:standalone`; a script node also needs `script:read`; a database node
+        needs the permissions of feature 017 (`database:use`, `database:adhoc`, and `database:write` for
+        execute). Builds a private one-node definition (result = the node's output, `outputSchema` = the
+        node's `outputSchema`), retains or reuses it per tenant, namespace, actor and canonical digest, and
+        admits an ordinary run with origin `STANDALONE_STEP`. The same key and body return the same run after
+        current authorization; a changed body under the key is 409. `compensateWith` is refused (422).
+      parameters:
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/StartStepExecutionRequest'}
+      responses:
+        '201':
+          description: The admitted run (origin STANDALONE_STEP)
+          content:
+            application/json:
+              schema: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/schemas/Run'}
+        '400': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/BadRequest'}
+        '401': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Unauthorized'}
+        '403': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Forbidden'}
+        '404': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/NotFound'}
+        '409': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Conflict'}
+        '413': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/ValidationError'}
+        '429': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/TooManyRequests'}
+        '503': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Unavailable'}
+        default: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/InternalError'}
+  /workflows/{workflowId}/test-runs:
+    post:
+      operationId: startDraftTestRun
+      summary: Run the workflow's draft as a test, optionally from a chosen node with pinned or mocked outputs
+      tags: [Workflows]
+      x-proposed: '022'
+      description: |
+        Needs `definition:write` and `run:start`; a `fromRun` pin also needs `run:read` and the disclosure
+        rights of the pinned value under the source run's classification (a `secret` field refuses the pin,
+        `pii` needs the reveal grant and is audited as a reveal). Refused in a namespace whose environment
+        is `prod` (403, reason TEST_RUN_PRODUCTION_NAMESPACE). Validates the draft at `draftRevision` with
+        the publication rules (409 if the draft moved), retains a private definition (origin DRAFT_TEST,
+        publisher the actor) and admits a run. Nothing is published. A test run produces no outbound
+        delivery, fires no trigger and starts no namespace failure handler.
+      parameters:
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/WorkflowId'}
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/StartDraftTestRunRequest'}
+      responses:
+        '201':
+          description: The admitted test run (origin DRAFT_TEST)
+          content:
+            application/json:
+              schema: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/schemas/Run'}
+        '400': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/BadRequest'}
+        '401': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Unauthorized'}
+        '403': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Forbidden'}
+        '404': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/NotFound'}
+        '409': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Conflict'}
+        '413': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/ValidationError'}
+        '429': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/TooManyRequests'}
+        '503': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Unavailable'}
+        default: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/step-cache:
+    get:
+      operationId: listStepCacheEntries
+      summary: List cache entry metadata (never values or raw keys)
+      tags: [Governance]
+      x-proposed: '022'
+      description: Needs `ops:read`. Filters by workflow, node or shared cache name. Keys appear only as a 12-hex-character label of their keyed digest.
+      parameters:
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
+        - {name: workflowId, in: query, schema: {type: string, format: uuid}}
+        - {name: node, in: query, schema: {type: string, maxLength: 64}}
+        - {name: cacheName, in: query, schema: {type: string, pattern: '^[a-z][a-z0-9.-]{0,63}$'}}
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/Cursor'}
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/PageLimit'}
+      responses:
+        '200':
+          description: A page of entry metadata
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StepCacheEntryPage'}
+        '401': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Unauthorized'}
+        '403': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Forbidden'}
+        '404': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/NotFound'}
+        '429': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/TooManyRequests'}
+        '503': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Unavailable'}
+        default: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/step-cache/invalidations:
+    post:
+      operationId: invalidateStepCache
+      summary: Invalidate cache entries by scope and node, by key value, or by shared cache name
+      tags: [Governance]
+      x-proposed: '022'
+      description: |
+        Needs `cache:invalidate`. A key value, when given, is in the body, digested server-side and never
+        logged. Runs that already hit keep their journaled completion. Audited with the justification.
+      parameters:
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/StepCacheInvalidationRequest'}
+      responses:
+        '200':
+          description: What was invalidated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StepCacheInvalidationResult'}
+        '400': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/BadRequest'}
+        '401': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Unauthorized'}
+        '403': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Forbidden'}
+        '404': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/NotFound'}
+        '422': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/ValidationError'}
+        '429': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/TooManyRequests'}
+        '503': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Unavailable'}
+        default: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/concurrency-keys:
+    get:
+      operationId: listConcurrencyKeys
+      summary: List live concurrency keys with holders, waiters and oldest wait age
+      tags: [Governance]
+      x-proposed: '022'
+      description: Needs `ops:read`. Keys appear only as labels. Sorted by oldest wait first. `queuedRuns` in the page header counts the namespace's queued runs against its `queued_runs` ceiling.
+      parameters:
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
+        - {name: group, in: query, schema: {type: string, pattern: '^[a-z][a-z0-9.-]{0,63}$'}}
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/Cursor'}
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/PageLimit'}
+      responses:
+        '200':
+          description: A page of keys
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ConcurrencyKeyPage'}
+        '401': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Unauthorized'}
+        '403': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Forbidden'}
+        '404': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/NotFound'}
+        '429': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/TooManyRequests'}
+        '503': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Unavailable'}
+        default: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/failure-handler:
+    get:
+      operationId: getNamespaceFailureHandler
+      summary: Read the namespace default failure handler, or null
+      tags: [Governance]
+      x-proposed: '022'
+      description: Needs `ops:read`.
+      parameters:
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
+      responses:
+        '200':
+          description: The handler, or null when none is set
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - {$ref: '#/components/schemas/NamespaceFailureHandler'}
+                  - {type: 'null'}
+        '401': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Unauthorized'}
+        '403': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Forbidden'}
+        '404': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/NotFound'}
+        default: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/InternalError'}
+    put:
+      operationId: setNamespaceFailureHandler
+      summary: Set the namespace default failure handler
+      tags: [Governance]
+      x-proposed: '022'
+      description: |
+        Needs `failure-handler:manage` (administrators). `expectedRevision` is required when a handler
+        exists (409 otherwise). The workflow must exist in this namespace; a pinned version must be
+        published. Applies to failures committed after this change. Audited with `reason`.
+      parameters:
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SetNamespaceFailureHandler'}
+      responses:
+        '200':
+          description: The handler now in force
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NamespaceFailureHandler'}
+        '400': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/BadRequest'}
+        '401': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Unauthorized'}
+        '403': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Forbidden'}
+        '404': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/NotFound'}
+        '409': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Conflict'}
+        '422': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/ValidationError'}
+        default: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/InternalError'}
+    delete:
+      operationId: clearNamespaceFailureHandler
+      summary: Clear the namespace default failure handler
+      tags: [Governance]
+      x-proposed: '022'
+      description: Needs `failure-handler:manage`. Pending dispatches already recorded are still processed. Audited with the body's `reason` (a DELETE with a body, as `deleteDatabaseConnection`).
+      parameters:
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ClearNamespaceFailureHandler'}
+      responses:
+        '200': {description: Cleared}
+        '401': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Unauthorized'}
+        '403': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Forbidden'}
+        '404': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/NotFound'}
+        '409': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Conflict'}
+        default: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/failure-handler/dispatches:
+    get:
+      operationId: listFailureHandlerDispatches
+      summary: List handler dispatches (pending, admitted, dead), newest first
+      tags: [Governance]
+      x-proposed: '022'
+      description: Needs `ops:read`. Metadata only; the failure context is closed and payload-free.
+      parameters:
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
+        - {name: state, in: query, schema: {type: string, enum: [PENDING, ADMITTED, DEAD]}}
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/Cursor'}
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/PageLimit'}
+      responses:
+        '200':
+          description: A page of dispatches
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FailureHandlerDispatchPage'}
+        '401': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Unauthorized'}
+        '403': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Forbidden'}
+        '404': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/NotFound'}
+        default: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/failure-handler/dispatches/{sourceRunId}/redrive:
+    post:
+      operationId: redriveFailureHandlerDispatch
+      summary: Try a dead handler dispatch again
+      tags: [Governance]
+      x-proposed: '022'
+      description: Needs `run:operate` and `run:start`. Only a DEAD dispatch; resets attempts. Audited with `reason`.
+      parameters:
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
+        - {name: sourceRunId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason: {type: string, minLength: 8, maxLength: 2000}
+      responses:
+        '202': {description: Dispatch pending again}
+        '401': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Unauthorized'}
+        '403': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Forbidden'}
+        '404': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/NotFound'}
+        '409': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Conflict'}
+        default: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/InternalError'}
+components:
+  schemas:
+    StartStepExecutionRequest:
+      type: object
+      additionalProperties: false
+      required: [step]
+      properties:
+        step:
+          description: Exactly one canonical IR node of type activity, script or database (workflow.schema.json), with its own retry, timeoutMs, secrets, idempotencyTemplate, reconcileWith, outputSchema, cache and concurrency. No next, onError or compensateWith.
+          type: object
+        input: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/schemas/JsonObject'}
+        timeoutMs: {type: integer, minimum: 1, maximum: 3600000, default: 300000}
+        correlationId: {type: string, maxLength: 160}
+    StartDraftTestRunRequest:
+      type: object
+      additionalProperties: false
+      required: [draftRevision]
+      properties:
+        draftRevision: {type: integer, format: int64, minimum: 1}
+        input: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/schemas/JsonObject'}
+        startAt: {type: string, maxLength: 64, description: 'A root node outside saga bodies, parallel branches, bodies and handler regions; the entrypoint when absent.'}
+        pins:
+          type: object
+          maxProperties: 256
+          additionalProperties: {$ref: '#/components/schemas/TestPin'}
+          description: Keyed by node id. Mockable kinds are activity, script, child and waitEvent, plus 021 resourceOperation, 024 data, 025 agent and 030 serviceCall nodes when those features exist; an unpinned node of those four kinds reachable from startAt refuses the request (TEST_RUN_UNMOCKED_EFFECT).
+        deadline: {type: string, format: date-time, description: 'At most 24 hours ahead; 15 minutes when absent.'}
+    TestPin:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [mock]
+          properties:
+            mock: {description: 'The output the node completes with (any JSON, at most 256 KiB).'}
+        - type: object
+          additionalProperties: false
+          required: [fromRun]
+          properties:
+            fromRun: {type: string, format: uuid}
+            fromNode: {type: string, maxLength: 64, description: 'The source node; the pinned node id when absent.'}
+    StepCacheEntry:
+      type: object
+      additionalProperties: false
+      required: [entryId, scope, node, keyLabel, createdAt, expiresAt, sizeBytes, sourceRunId]
+      properties:
+        entryId: {type: string, format: uuid}
+        scope: {type: string, enum: [VERSION, WORKFLOW, NAMESPACE]}
+        workflowId: {type: [string, 'null'], format: uuid}
+        versionId: {type: [string, 'null'], format: uuid}
+        cacheName: {type: [string, 'null']}
+        node: {type: string}
+        keyLabel: {type: string, pattern: '^[0-9a-f]{12}$'}
+        createdAt: {type: string, format: date-time}
+        expiresAt: {type: string, format: date-time}
+        sizeBytes: {type: integer, minimum: 0, maximum: 262144}
+        sourceRunId: {type: string, format: uuid}
+    StepCacheEntryPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/StepCacheEntry'}}
+        nextCursor: {type: [string, 'null']}
+    StepCacheInvalidationRequest:
+      type: object
+      additionalProperties: false
+      required: [target, reason]
+      properties:
+        target:
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [workflowId, node]
+              properties:
+                workflowId: {type: string, format: uuid}
+                versionNumber: {type: integer, minimum: 1, description: 'Only VERSION-scope entries of this version; every scope of the node when absent.'}
+                node: {type: string, maxLength: 64}
+                keyValue: {description: 'Optional: only the entry of this key value (canonicalized and digested server-side, never stored or logged).'}
+            - type: object
+              additionalProperties: false
+              required: [cacheName]
+              properties:
+                cacheName: {type: string, pattern: '^[a-z][a-z0-9.-]{0,63}$'}
+                keyValue: {}
+        reason: {type: string, minLength: 8, maxLength: 2000}
+    StepCacheInvalidationResult:
+      type: object
+      required: [scopesInvalidated, entriesDeleted]
+      properties:
+        scopesInvalidated: {type: integer, minimum: 0}
+        entriesDeleted: {type: integer, minimum: 0, description: 'Entries deleted now; the rest of an invalidated scope is purged in the background and is already dead for lookups.'}
+    ConcurrencyKey:
+      type: object
+      additionalProperties: false
+      required: [pool, scope, group, keyLabel, holders, waiters]
+      properties:
+        pool: {type: string, enum: [ORDINARY, DRAFT_TEST], description: 'Draft test trees use their own pool and never share a key with ordinary runs.'}
+        scope: {type: string, enum: [RUN, STEP]}
+        group: {type: string}
+        keyLabel: {type: string, pattern: '^[0-9a-f]{12}$'}
+        holders: {type: integer, minimum: 0}
+        waiters: {type: integer, minimum: 0}
+        oldestWaitSince: {type: [string, 'null'], format: date-time}
+        oldestHolderSince: {type: [string, 'null'], format: date-time}
+    ConcurrencyKeyPage:
+      type: object
+      required: [items, queuedRuns]
+      properties:
+        queuedRuns: {type: integer, minimum: 0}
+        items: {type: array, items: {$ref: '#/components/schemas/ConcurrencyKey'}}
+        nextCursor: {type: [string, 'null']}
+    FailureHandlerStatus:
+      type: string
+      enum: [FAILED, TIMED_OUT, COMPENSATED, PARTIAL, COMPENSATION_FAILED]
+    NamespaceFailureHandler:
+      type: object
+      required: [namespaceId, workflowId, statuses, enabled, revision, updatedBy, updatedAt]
+      properties:
+        namespaceId: {type: string, format: uuid}
+        workflowId: {type: string, format: uuid}
+        versionNumber: {type: [integer, 'null'], minimum: 1, description: 'Null: the active version at dispatch.'}
+        statuses: {type: array, minItems: 1, uniqueItems: true, items: {$ref: '#/components/schemas/FailureHandlerStatus'}}
+        enabled: {type: boolean}
+        revision: {type: integer, format: int64, minimum: 1}
+        updatedBy: {type: string}
+        updatedAt: {type: string, format: date-time}
+    SetNamespaceFailureHandler:
+      type: object
+      additionalProperties: false
+      required: [workflowId, reason]
+      properties:
+        workflowId: {type: string, format: uuid}
+        versionNumber: {type: integer, minimum: 1}
+        statuses: {type: array, minItems: 1, uniqueItems: true, items: {$ref: '#/components/schemas/FailureHandlerStatus'}}
+        enabled: {type: boolean, default: true}
+        expectedRevision: {type: integer, format: int64, minimum: 1}
+        reason: {type: string, minLength: 8, maxLength: 2000}
+    ClearNamespaceFailureHandler:
+      type: object
+      additionalProperties: false
+      required: [expectedRevision, reason]
+      properties:
+        expectedRevision: {type: integer, format: int64, minimum: 1}
+        reason: {type: string, minLength: 8, maxLength: 2000}
+    FailureContext:
+      type: object
+      additionalProperties: false
+      description: Closed and payload-free. Also the `failure` value of handler expressions and the input `failure` of a handler run.
+      required: [status, code, kind, occurredAt]
+      properties:
+        status: {$ref: '#/components/schemas/FailureHandlerStatus'}
+        code: {type: string, pattern: '^[A-Z][A-Z0-9_]{0,63}$'}
+        node: {type: [string, 'null'], maxLength: 64}
+        attempt: {type: [integer, 'null'], minimum: 0}
+        kind: {type: string, enum: [STEP_FAILED, RUN_TIMEOUT, COMPENSATED, PARTIAL, COMPENSATION_FAILED, CONCURRENCY_WAIT_TIMEOUT, EXPRESSION_ERROR, STORAGE_QUOTA_EXCEEDED]}
+        occurredAt: {type: string, format: date-time}
+    FailureHandlerDispatch:
+      type: object
+      required: [sourceRunId, state, attempts, createdAt]
+      properties:
+        sourceRunId: {type: string, format: uuid}
+        state: {type: string, enum: [PENDING, ADMITTED, DEAD]}
+        attempts: {type: integer, minimum: 0, maximum: 12}
+        nextAttemptAt: {type: [string, 'null'], format: date-time}
+        handlerRunId: {type: [string, 'null'], format: uuid}
+        lastErrorCode: {type: [string, 'null'], pattern: '^[A-Z][A-Z0-9_]{0,63}$'}
+        failure: {$ref: '#/components/schemas/FailureContext'}
+        createdAt: {type: string, format: date-time}
+    FailureHandlerDispatchPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/FailureHandlerDispatch'}}
+        nextCursor: {type: [string, 'null']}
+    RunFlowControlFields:
+      description: |
+        Additive optional properties of the canonical `Run` schema (merge into it, do not reference this
+        name). Older clients ignore them.
+      type: object
+      properties:
+        resultSource: {type: [string, 'null'], enum: [EARLY_RETURN, END, null], description: 'Where the run result came from; null while there is none. An early result does not mean the run succeeded: read `status`.'}
+        resultAvailableAt: {type: [string, 'null'], format: date-time}
+        handlerFor: {type: string, format: uuid, description: 'The failed run this run handles (namespace default failure handler).'}
+        testTree: {type: boolean, description: 'True for a DRAFT_TEST run and every run it started.'}
+        failureHandler:
+          type: [object, 'null']
+          additionalProperties: false
+          required: [state, pendingStatus]
+          properties:
+            state: {type: string, enum: [RUNNING, SUCCEEDED, FAILED, TIMED_OUT, CANCELLED]}
+            pendingStatus: {$ref: '#/components/schemas/FailureHandlerStatus'}
+        concurrency:
+          type: [object, 'null']
+          additionalProperties: false
+          required: [state, pool, group, keyLabel]
+          properties:
+            state: {type: string, enum: [HOLDING, WAITING]}
+            pool: {type: string, enum: [ORDINARY, DRAFT_TEST]}
+            group: {type: string}
+            keyLabel: {type: string, pattern: '^[0-9a-f]{12}$'}
+            since: {type: string, format: date-time}
+            queueDeadline: {type: [string, 'null'], format: date-time}
+    RunOriginAdditions:
+      description: Values added to the canonical `DatabaseExecutionOrigin` enumeration (name kept for compatibility) used by `Run.origin` and `listRuns?origin=`.
+      type: string
+      enum: [STANDALONE_STEP, DRAFT_TEST]
+    SubscriptionEventAdditions:
+      description: Value added to the `events` enumerations of webhook and broker subscriptions.
+      type: string
+      enum: [run.result_returned]

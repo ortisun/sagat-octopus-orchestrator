@@ -45,7 +45,7 @@ Feature numbers are sequential and shared by every branch (a draft on another br
 
 ## Enforcement, not convention
 
-The usual criticism of spec-driven tooling is that the documents govern by convention. Here they are tied to checks: `scripts/check-architecture.py` (layering), the runtime-privilege audit, the storage-classification manifest, contract baselines and compatibility tests, the five-language conformance suite, the cross-tenant battery, `scripts/check-agent-config.py`, and CI gates on all of them. When you write a rule, write the check.
+The usual criticism of spec-driven tooling is that the documents govern by convention. Here they are tied to checks: `scripts/check-architecture.py` (layering), the runtime-privilege audit, the storage-classification manifest, contract baselines and compatibility tests, the six-language conformance suite, the cross-tenant battery, `scripts/check-agent-config.py`, and CI gates on all of them. When you write a rule, write the check.
 
 ## Anti-patterns seen here
 

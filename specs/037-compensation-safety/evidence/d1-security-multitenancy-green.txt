@@ -1,0 +1,321 @@
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:291:9
+    |
+278 | pub struct CreateTopicsResponse {
+    |            -------------------- field in this struct
+...
+291 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `name`, `value`, `read_only`, `config_source`, `is_sensitive`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:321:9
+    |
+319 | pub struct CreateTopicResponseConfig {
+    |            ------------------------- fields in this struct
+320 |     /// The configuration name.
+321 |     pub name: CompactString,
+    |         ^^^^
+...
+324 |     pub value: CompactNullableString,
+    |         ^^^^^
+...
+327 |     pub read_only: Boolean,
+    |         ^^^^^^^^^
+...
+330 |     pub config_source: Int8,
+    |         ^^^^^^^^^^^^^
+...
+333 |     pub is_sensitive: Boolean,
+    |         ^^^^^^^^^^^^
+...
+336 |     pub tagged_fields: TaggedFields,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponseConfig` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `num_partitions`, `replication_factor`, `configs`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:374:9
+    |
+359 | pub struct CreateTopicResponse {
+    |            ------------------- fields in this struct
+...
+374 |     pub num_partitions: Option<Int32>,
+    |         ^^^^^^^^^^^^^^
+...
+379 |     pub replication_factor: Option<Int16>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+384 |     pub configs: Vec<CreateTopicResponseConfig>,
+    |         ^^^^^^^
+...
+389 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `low_watermark` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:182:9
+    |
+177 | pub struct DeleteResponsePartition {
+    |            ----------------------- fields in this struct
+...
+182 |     pub low_watermark: Int64,
+    |         ^^^^^^^^^^^^^
+...
+190 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:226:9
+    |
+216 | pub struct DeleteResponseTopic {
+    |            ------------------- field in this struct
+...
+226 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:269:9
+    |
+258 | pub struct DeleteRecordsResponse {
+    |            --------------------- field in this struct
+...
+269 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteRecordsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:101:9
+    |
+ 88 | pub struct DeleteTopicsResponse {
+    |            -------------------- field in this struct
+...
+101 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:144:9
+    |
+129 | pub struct DeleteTopicsResponseTopic {
+    |            ------------------------- field in this struct
+...
+144 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `producer_id` and `first_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:170:9
+    |
+168 | pub struct FetchResponseAbortedTransaction {
+    |            ------------------------------- fields in this struct
+169 |     /// The producer id associated with the aborted transaction.
+170 |     pub producer_id: Int64,
+    |         ^^^^^^^^^^^
+...
+173 |     pub first_offset: Int64,
+    |         ^^^^^^^^^^^^
+    |
+    = note: `FetchResponseAbortedTransaction` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `aborted_transactions` is never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:213:9
+    |
+192 | pub struct FetchResponsePartition {
+    |            ---------------------- field in this struct
+...
+213 |     pub aborted_transactions: Vec<FetchResponseAbortedTransaction>,
+    |         ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `FetchResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `timestamp` is never read
+   --> vendor/rskafka/src/protocol/messages/list_offsets.rs:184:9
+    |
+169 | pub struct ListOffsetsResponsePartition {
+    |            ---------------------------- field in this struct
+...
+184 |     pub timestamp: Option<Int64>,
+    |         ^^^^^^^^^
+    |
+    = note: `ListOffsetsResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `log_append_time_ms` and `log_start_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/produce.rs:148:9
+    |
+132 | pub struct ProduceResponsePartitionResponse {
+    |            -------------------------------- fields in this struct
+...
+148 |     pub log_append_time_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+153 |     pub log_start_offset: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^
+    |
+    = note: `ProduceResponsePartitionResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `session_lifetime_ms` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/sasl_msg.rs:198:9
+    |
+181 | pub struct SaslAuthenticateResponse {
+    |            ------------------------ fields in this struct
+...
+198 |     pub session_lifetime_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^^
+...
+203 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `SaslAuthenticateResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: struct `CompactArray` is never constructed
+   --> vendor/rskafka/src/protocol/primitives.rs:725:12
+    |
+725 | pub struct CompactArray<T>(pub Option<Vec<T>>);
+    |            ^^^^^^^^^^^^
+
+warning: `rskafka` (lib) generated 14 warnings
+   Compiling sagat-tests v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/tests)
+    Finished `test` profile [unoptimized] target(s) in 26.62s
+     Running integration/security-multitenancy/main.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/integration_security_multitenancy-3fb9697d710245f8)
+
+running 126 tests
+test bindings::a_binding_change_is_audited_with_what_it_grants ... ok
+test bindings::a_binding_belongs_to_one_namespace ... ok
+test bindings::a_binding_covers_exactly_the_activities_it_names ... ok
+test bindings::a_binding_that_disappears_stops_a_lease_holder_even_without_a_session_event ... ok
+test bindings::a_worker_without_a_binding_is_refused_and_the_attempt_is_audited ... ok
+test bindings::a_call_that_holds_a_transaction_never_waits_for_a_second_connection ... ok
+test bindings::bindings_of_one_tenant_are_invisible_and_unchangeable_by_another ... ok
+test bindings::narrowing_a_binding_closes_only_the_sessions_it_no_longer_covers ... ok
+test bindings::only_an_administrator_manages_bindings ... ok
+test bindings::each_binding_operation_audits_a_probe_of_a_foreign_namespace_on_its_own ... ok
+test bindings::patterns_and_subjects_are_validated_and_nothing_is_stored_on_refusal ... ok
+test bindings::registering_while_a_binding_is_narrowed_never_leaves_a_session_it_does_not_cover ... ok
+test bindings::releasing_the_leases_of_closed_sessions_is_an_index_lookup_and_not_a_scan_of_every_lease ... ok
+test bindings::removing_a_binding_closes_the_session_and_preserves_the_revoked_effect_for_review ... ok
+test bindings::the_store_refuses_a_session_that_the_binding_no_longer_covers ... ok
+test bindings::unbinding_an_identity_that_has_no_binding_is_not_found_and_leaves_no_audit ... ok
+test denials::a_404_that_hides_a_foreign_resource_keeps_its_cross_tenant_record_and_is_not_a_403 ... ok
+test bindings::session_renewal_post_wait_cannot_revive_an_expired_worker_session ... ok
+test denials::a_permitted_request_leaves_no_denial_record ... ok
+test denials::a_viewer_calling_a_developer_endpoint_leaves_exactly_one_record_with_its_context ... ok
+test denials::a_worker_identity_without_the_permission_leaves_one_record_and_the_same_status ... ok
+test denials::a_worker_not_bound_to_the_activity_is_recorded_once_with_its_refusal_code ... ok
+test denials::a_worker_call_cancelled_by_its_deadline_does_not_cancel_the_record ... ok
+test denials::repeated_denials_are_bounded_by_the_per_subject_rate_limit ... ok
+test denials::the_answer_is_the_same_whether_or_not_the_record_could_be_written ... ok
+test denials::the_record_names_the_route_template_and_never_the_path_the_caller_chose ... ok
+test denials::the_trail_of_a_tenant_shows_its_own_denials_to_an_administrator ... ok
+test durable_quotas::a_waiter_samples_database_time_after_the_bucket_row_lock ... ok
+test durable_quotas::final_activation_enables_both_byte_guards_and_rolls_back_without_erasing_usage ... ok
+test durable_quotas::manifest_covers_every_variable_size_column_and_every_accounted_table_has_always_triggers ... ok
+test durable_quotas::migration_backfills_preexisting_rows_exactly ... ok
+test durable_quotas::migration_backfills_legacy_finalized_blobs_exactly_and_unknown_uploads_conservatively ... ok
+test durable_quotas::runtime_role_cannot_mutate_or_bypass_private_accounting ... ok
+test durable_quotas::retained_bytes_apply_net_transaction_delta_enforce_the_last_byte_and_rollback_refusals ... ok
+test egress::a_namespace_without_a_policy_may_reach_nothing ... ok
+test durable_quotas::two_stores_race_for_one_durable_rate_token_and_database_time_refills_it ... ok
+test egress::a_refused_request_is_audited_with_its_category_and_no_path_or_query ... ok
+test egress::changing_the_policy_is_audited_without_revealing_where_traffic_may_now_go ... ok
+test egress::no_policy_can_open_the_addresses_that_are_never_reachable ... ok
+test egress::one_tenants_policy_never_applies_to_another ... ok
+test egress::each_operation_audits_a_probe_of_a_foreign_namespace_on_its_own ... ok
+test egress::only_an_administrator_reads_or_changes_the_policy ... ok
+test egress::rules_ports_and_counts_are_validated_and_nothing_is_stored_on_refusal ... ok
+test egress::the_policy_allows_what_it_names_and_default_denies_the_rest ... ok
+test egress::the_policy_is_stored_in_canonical_text_and_replaced_as_a_whole ... ok
+test egress::the_policy_that_is_stored_is_the_policy_the_client_enforces ... ok
+test incidents::a_test_run_incident_uses_the_current_test_lease ... ok
+test incidents::a_delayed_terminal_report_keeps_its_incident_after_review_or_a_known_retry ... ok
+test incidents::an_incident_on_one_node_does_not_suppress_another_nodes_terminal_audit ... ok
+test incidents::cancelling_before_audit_commit_gives_no_ack_and_retry_commits_once ... ok
+test incidents::categories_are_bounded_per_attempt_and_never_store_destination_canaries ... ok
+test incidents::duplicate_concurrent_and_lost_ack_retries_commit_one_category ... ok
+test incidents::completion_and_incident_serialize_without_stale_attribution ... ok
+test incidents::incident_lock_order_matches_the_report_run_then_binding_prefix ... ok
+test incidents::expired_or_revoked_production_leases_cannot_be_attributed ... ok
+test incidents::incident_lock_order_takes_public_script_chain_before_its_run ... ok
+test quotas::a_ceiling_that_is_out_of_range_or_for_a_tenant_that_does_not_exist_changes_nothing ... ok
+test incidents::stale_wrong_and_cross_tenant_production_targets_write_nothing ... ok
+test quotas::a_namespace_holds_a_bounded_number_of_workflows ... ok
+test quotas::a_namespace_cannot_start_more_runs_than_its_quota_and_a_finished_run_gives_its_place_back ... ok
+test quotas::a_tenant_holds_a_bounded_number_of_worker_sessions_and_a_reconnect_is_not_one_more ... ok
+test quotas::a_tenant_administrator_cannot_raise_any_limit_above_the_ceiling_the_platform_grants ... ok
+test quotas::a_zero_quota_refuses_everything_and_removing_it_restores_the_default ... ok
+test quotas::activity_limits_are_authorized_ceiling_checked_tenant_bound_and_audited ... ok
+test quotas::an_operator_grants_a_ceiling_to_one_tenant_and_the_administrator_can_then_use_it ... ok
+test quotas::changing_a_quota_is_audited_and_a_foreign_namespace_looks_missing_and_is_audited ... ok
+test quotas::only_a_manager_changes_quotas_and_the_roles_that_see_the_tenant_read_them ... ok
+test quotas::child_runs_count_against_the_quota_and_the_step_that_wanted_one_fails ... ok
+test quotas::out_of_range_and_misplaced_values_are_refused_and_stored_nothing ... ok
+test quotas::replicas_racing_for_the_last_places_never_overshoot_the_quota ... ok
+test quotas::the_ceiling_command_grants_withdraws_and_refuses_the_nonsense ... ok
+test quotas::the_limit_in_force_is_the_namespaces_then_the_tenants_then_the_default ... ok
+test quotas::the_quota_of_one_tenant_never_affects_another ... ok
+test quotas::the_tenant_quota_counts_every_run_of_the_tenant ... ok
+test quotas::the_tenant_view_has_no_single_usage_for_a_per_namespace_resource ... ok
+test quotas::withdrawing_or_lowering_a_ceiling_clamps_what_is_enforced_at_once ... ok
+test quotas::worker_registration_reconnect_and_session_renewal_survive_a_full_content_quota ... ok
+test secret_pools::a_grant_in_one_namespace_does_not_reach_a_secret_of_another ... ok
+test secret_pools::a_lease_held_by_a_worker_that_left_the_pool_cannot_resolve_the_value ... ok
+test secret_pools::a_refusal_is_audited_once_per_worker_identity_and_attempt_however_often_it_polls ... ok
+test secret_pools::a_resolution_cannot_read_the_value_past_a_grant_that_is_being_taken_away ... ok
+test secret_pools::a_resolution_cannot_read_the_value_past_a_restriction_that_is_committing ... ok
+test secret_pools::a_retry_is_a_new_attempt_and_the_next_refusal_is_a_new_event_but_the_trail_stays_bounded ... ok
+test secret_pools::a_secret_created_with_pools_is_never_unrestricted_and_a_rotation_keeps_them ... ok
+test secret_pools::a_secret_without_a_pool_list_is_delivered_to_any_worker_bound_to_the_activity ... ok
+test secret_pools::a_step_created_before_its_secrets_were_recorded_is_still_refused_at_the_lease ... ok
+test secret_pools::a_worker_of_an_allowed_pool_gets_the_task_and_the_value ... ok
+test secret_pools::a_worker_outside_the_pools_is_not_handed_the_lease_and_an_allowed_one_is ... ok
+test secret_pools::only_those_who_manage_secrets_are_told_which_pools_may_receive_one ... ok
+test secret_pools::pool_grants_follow_the_binding_replacing_it_keeps_them_and_removing_it_removes_them ... ok
+test secret_pools::pool_names_belong_to_the_tenant_and_the_namespace_that_granted_them ... ok
+test secret_pools::pools_are_managed_by_whoever_manages_secrets_and_bindings_and_validated ... ok
+test secret_pools::restricting_a_secret_after_the_lease_was_handed_out_stops_the_next_resolution ... ok
+test secret_pools::refused_steps_ahead_of_the_window_do_not_starve_a_general_worker ... ok
+test secrets::a_ciphertext_moved_to_another_secret_does_not_open ... ok
+test secrets::a_developer_lists_only_the_secrets_they_may_use_so_the_names_cannot_be_probed ... ok
+test secrets::a_namespace_holds_a_bounded_number_of_secrets_but_rotation_and_deletion_are_free ... ok
+test secrets::a_secret_is_stored_sealed_and_shown_nowhere ... ok
+test secrets::a_secret_in_a_steps_output_fails_the_step_and_is_stored_nowhere ... ok
+test secrets::a_secret_reported_as_the_reason_for_failing_fails_the_step_for_good_and_is_stored_nowhere ... ok
+test secrets::a_step_that_declares_nothing_resolves_nothing ... ok
+test secrets::a_value_and_a_name_must_be_usable ... ok
+test secrets::a_value_handed_out_before_a_rotation_is_still_recognised_in_the_output ... ok
+test secrets::a_worker_receives_only_the_declared_secrets_for_the_length_of_its_lease ... ok
+test secrets::an_output_that_does_not_contain_the_secret_is_stored_as_usual ... ok
+test secrets::an_unbound_worker_is_refused_before_any_secret_is_read ... ok
+test secrets::asking_again_within_an_attempt_is_answered_but_written_down_once_and_a_new_attempt_is_a_new_event ... ok
+test secrets::deleting_a_secret_stops_resolution_and_removes_its_versions_and_list ... ok
+test secrets::every_resolution_is_audited_with_names_and_versions_and_never_values ... ok
+test secrets::granting_and_revoking_are_audited_and_listed ... ok
+test secrets::losing_access_after_publishing_stops_the_next_resolution_and_regaining_it_restores_it ... ok
+test secrets::managing_secrets_is_for_administrators_and_reading_their_names_for_developers ... ok
+test secrets::one_version_that_no_key_opens_does_not_stop_the_command_from_moving_the_others ... ok
+test secrets::each_secret_operation_audits_a_probe_of_a_foreign_namespace_on_its_own ... ok
+test secrets::publishing_needs_the_secret_to_exist_and_its_access_list_to_name_the_publisher ... ok
+test secrets::racing_creators_of_one_name_make_one_secret_with_every_version_kept_in_order ... ok
+test secrets::re_sealing_moves_every_version_to_the_active_key_so_the_old_one_can_be_retired ... ok
+test secrets::rotating_a_secret_adds_a_version_keeps_a_few_and_the_next_resolution_sees_the_newest ... ok
+test secrets::the_capability_ends_with_the_lease_and_not_when_the_scheduler_reclaims_it ... ok
+test secrets::the_cursor_steps_over_a_version_that_cannot_be_opened_and_goes_on_to_the_next ... ok
+test secrets::the_escaped_forms_of_a_secret_are_recognised_too ... ok
+test secrets::the_re_sealing_command_moves_everything_and_reports_how_many ... ok
+test secrets::the_secret_store_is_written_by_the_least_privilege_runtime_role ... ok
+test secrets::the_secrets_of_one_tenant_are_invisible_and_unchangeable_by_another ... ok
+test secrets::very_short_secrets_are_not_searched_for_because_they_would_match_ordinary_text ... ok
+test secrets::without_a_key_ring_no_secret_is_ever_resolved ... ok
+
+test result: ok. 126 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 104.57s
+

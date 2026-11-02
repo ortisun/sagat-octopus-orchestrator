@@ -13,7 +13,7 @@ Worker registration, lease reception, handler lifecycle, capabilities and authen
 ## Invariants
 
 - The host advertises 1.5; scoped identity requires minor 5, task kinds/secrets minor 2 and blobs minor 3. Stale/conflicting heartbeats cancel the handler and suppress reporting. [../SdkInfo.cs:ProtocolVersion] [WorkerHost.cs:ExecuteInAsync] [WorkerHost.cs:BeatAsync]
-- Reports use task-derived keys and at most five safe retries; stale attempts stop reporting. Secret bytes cache successful resolution, are copied to callers and wiped on handler completion. Blob reads require a matching initial header, bounded chunks, exact size and SHA-256 before clean exhaustion. [WorkerHost.cs:WithRetriesAsync] [WorkerHost.cs:SecretsLoader] [ActivitySecrets.cs:Dispose] [Blobs.cs:ReadAsync]
+- Reports use task-derived keys and at most five attempts in total (the first call plus four retries); stale attempts stop reporting. Secret bytes cache successful resolution, are copied to callers and wiped on handler completion. Blob reads require a matching initial header, bounded chunks, exact size and SHA-256 before clean exhaustion. [WorkerHost.cs:WithRetriesAsync] [WorkerHost.cs:SecretsLoader] [ActivitySecrets.cs:Dispose] [Blobs.cs:ReadAsync]
 
 ## Side Effects
 

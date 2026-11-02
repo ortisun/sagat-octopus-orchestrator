@@ -1,0 +1,60 @@
+$ node --version
+v26.12.0
+exit: 0
+$ npm --version
+11.20.0
+exit: 0
+$ npm ci --ignore-scripts --no-audit --no-fund
+npm warn deprecated eslint@9.39.5: This version is no longer supported. Please see https://eslint.org/version-support for other options.
+
+added 430 packages in 4s
+exit: 0
+$ npm run test:tooling
+
+> test:tooling
+> node --test tools/minimatch.test.mjs
+
+✔ @eslint/config-array resolves the reviewed bridge and patched matcher (8.548167ms)
+✔ @eslint/eslintrc resolves the reviewed bridge and patched matcher (0.879667ms)
+✔ eslint resolves the reviewed bridge and patched matcher (0.510833ms)
+✔ eslint-plugin-jsx-a11y resolves the reviewed bridge and patched matcher (0.554833ms)
+✔ @redocly/openapi-core resolves the reviewed bridge and patched matcher (0.539084ms)
+✔ @typescript-eslint/typescript-estree resolves the reviewed bridge and patched matcher (0.893792ms)
+✔ native ESM has both default and named imports required by tooling (0.907708ms)
+✔ optimization level 2 bounds globparts amplification in the actual installed matcher (67.463375ms)
+✔ ESLint matching retains directory traversal, basename and negated-pattern options (0.822458ms)
+✔ jsx-a11y wildcard custom controls exercise the legacy callable matcher (23.010458ms)
+✔ Redocly URL-header rules include only matching hosts and paths (20.2875ms)
+ℹ tests 11
+ℹ suites 0
+ℹ pass 11
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 204.412166
+exit: 0
+$ npm ls minimatch minimatch-upstream --all
+@sagat/frontend@ /Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/frontend
+├─┬ @sagat/studio@0.2.0 -> ./apps/studio
+│ ├─┬ eslint-plugin-jsx-a11y@6.10.2
+│ │ └── minimatch@11.0.1+sagat.1 deduped -> ./tools/minimatch-compat
+│ ├─┬ eslint@9.39.5
+│ │ ├─┬ @eslint/config-array@0.21.2
+│ │ │ └── minimatch@11.0.1+sagat.1 deduped -> ./tools/minimatch-compat
+│ │ ├─┬ @eslint/eslintrc@3.3.7
+│ │ │ └── minimatch@11.0.1+sagat.1 deduped -> ./tools/minimatch-compat
+│ │ └── minimatch@11.0.1+sagat.1 deduped -> ./tools/minimatch-compat
+│ ├─┬ openapi-typescript@7.13.0
+│ │ └─┬ @redocly/openapi-core@1.34.20
+│ │   └── minimatch@11.0.1+sagat.1 deduped -> ./tools/minimatch-compat
+│ └─┬ typescript-eslint@8.70.1
+│   └─┬ @typescript-eslint/typescript-estree@8.70.1
+│     └── minimatch@11.0.1+sagat.1 deduped -> ./tools/minimatch-compat
+└─┬ minimatch@11.0.1+sagat.1 -> ./tools/minimatch-compat
+  └── minimatch-upstream@npm:minimatch@11.0.1
+
+exit: 0
+$ npm audit --audit-level=moderate
+found 0 vulnerabilities
+exit: 0

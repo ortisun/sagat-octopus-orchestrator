@@ -1,0 +1,2 @@
+.venv/bin/python -m pytest
+/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/sdks/python/.venv/bin/python: No module named pytest

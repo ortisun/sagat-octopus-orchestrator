@@ -539,7 +539,8 @@ the wrong unit shows). It sorts nothing: **order is part of the result**. Where 
 run, a wait that nothing wakes, `control` to move time).
 
 **Audit evidence and values that must not appear.** `"auditEvidence": true` adds the approval rows of the audit
-trail (action, actor, resource type, reason and trace), read from the table. `"mustNotLeak"` lists texts that no
+trail (action, actor, resource type, reason and trace), read from the table. `"reviewEvidence": true` adds
+committed saga step decisions as `{action, actor, reason}`; a refused retry does not create one. `"mustNotLeak"` lists texts that no
 error may repeat; `"mustNotAppear"` lists texts (a secret-shaped value a scenario puts into a run's input) that
 no observation, server state or evidence may contain. The worker's log is not searched: a handler is meant to
 see its input.

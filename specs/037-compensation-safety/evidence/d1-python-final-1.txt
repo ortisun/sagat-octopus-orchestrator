@@ -1,0 +1,2 @@
+.venv/bin/mypy
+Success: no issues found in 38 source files

@@ -110,7 +110,8 @@ async fn a_compensation_reported_twice_is_applied_once_and_a_stale_report_is_ref
         "a second completion with another key is refused"
     );
 
-    // A stale attempt: the lease of the release is lost and granted again; the old holder is late.
+    // A stale attempt: the lease of the release is lost. Its outcome is unknown, so it waits for
+    // an outcome-bearing decision instead of being granted again; the old holder is still fenced.
     let release = &batch[1];
     sqlx::query(
         "UPDATE steps SET lease_expires_at = now() - interval '1 second' \
@@ -121,36 +122,69 @@ async fn a_compensation_reported_twice_is_applied_once_and_a_stale_report_is_ref
     .await
     .expect("lose the lease");
     flow.drive().await;
-    flow.elapse_backoff().await;
-    flow.drive().await;
-    let polled = flow.poll().await;
-    let again = pick(&polled, 1, "reserve~c");
-    assert_eq!(again.attempt, release.attempt + 1);
+    assert!(
+        matches!(
+            flow.run_status().await.as_str(),
+            "COMPENSATING" | "MANUAL_REVIEW"
+        ),
+        "independent compensation may remain runnable while this one waits"
+    );
+    let waiting: (String, Option<String>, Option<String>, i32) = sqlx::query_as(
+        "SELECT status, waiting_kind, failure_code, attempt FROM steps \
+         WHERE run_id = $1 AND node = 'reserve~c' AND instance_path_indices = ARRAY[1]",
+    )
+    .bind(flow.run.as_uuid())
+    .fetch_one(&flow.api.db.pool)
+    .await
+    .expect("retained uncertain compensation");
     assert_eq!(
-        again.idempotency_key, release.idempotency_key,
-        "the provider is asked again with the same key"
+        waiting,
+        (
+            "WAITING".into(),
+            Some("OPERATOR".into()),
+            Some("LEASE_EXPIRED".into()),
+            release.attempt,
+        )
+    );
+    let polled = flow.poll().await;
+    assert!(
+        polled
+            .iter()
+            .all(|task| iteration(task) != 1 || node(task) != "reserve~c"),
+        "the uncertain compensation was leased a second time"
     );
     let late = flow
         .try_complete(release, json!({"undone": true}), "late-report")
         .await;
     assert!(late.is_err(), "the holder of the old attempt cannot report");
-    flow.complete(again, json!({"undone": true})).await;
-    // The reservation of line 0 was released by the same pass; it is the other task of the poll.
-    for task in polled.iter().filter(|task| !std::ptr::eq(*task, again)) {
+    for task in &polled {
         flow.complete(task, json!({"undone": true})).await;
     }
+    let (status, body) = flow
+        .operate(json!({
+            "action": "RESOLVE_STEP", "stepId": "reserve~c", "outcome": "SUCCEEDED",
+            "instancePath": [{"scopeNodeId": "lines", "iterationIndex": 1}],
+            "reason": "provider confirms the release completed"
+        }))
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
     flow.drive().await;
 
     assert_eq!(flow.run_status().await, "COMPENSATED");
     assert_eq!(
         completions_of_compensations(&flow).await,
-        vec![
-            (0, "charge~c".into(), 1),
-            (0, "reserve~c".into(), 1),
-            (1, "reserve~c".into(), 1)
-        ],
-        "each compensation completed exactly once"
+        vec![(0, "charge~c".into(), 1), (0, "reserve~c".into(), 1),],
+        "worker-completed compensations were each recorded exactly once"
     );
+    let resolutions: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM run_events WHERE run_id = $1 AND event_type = 'step.resolved' \
+         AND node = 'reserve~c' AND instance_path_indices = ARRAY[1]",
+    )
+    .bind(flow.run.as_uuid())
+    .fetch_one(&flow.api.db.pool)
+    .await
+    .expect("resolution evidence");
+    assert_eq!(resolutions, 1);
     flow.verify().await;
 }
 

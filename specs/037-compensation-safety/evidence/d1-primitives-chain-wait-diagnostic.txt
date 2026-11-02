@@ -1,0 +1,6 @@
+
+running 1 test
+test chain_wait::a_chain_that_waits_in_every_segment_reaches_its_final_outcome ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 771 filtered out; finished in 3.18s
+

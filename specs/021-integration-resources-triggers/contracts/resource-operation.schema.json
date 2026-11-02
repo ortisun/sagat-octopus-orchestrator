@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "DRAFT excerpt for feature 021 (FR-021-007, FR-021-010..016, FR-021-019). To be merged additively into specs/001-platform-foundation/contracts/workflow.schema.json by T021-060: add {\"$ref\": \"#/$defs/resourceOperation\"} to $defs.node.oneOf and these $defs. Not implemented. Root graph only until G1120 closes; a body node refuses it at publication with UNSUPPORTED_NODE. Expressions may read vars.<name> (static names; pinned at admission).",
+  "$defs": {
+    "resourceValue": {
+      "description": "A dynamic value: a JSON literal, or an expression of the existing bounded evaluator (it may read input, steps.<id>.output, state and vars.<name>).",
+      "oneOf": [
+        {"type": "object", "required": ["literal"], "additionalProperties": false,
+         "properties": {"literal": {}}},
+        {"type": "object", "required": ["expression"], "additionalProperties": false,
+         "properties": {"expression": {"$ref": "#/$defs/expression"}}}
+      ]
+    },
+    "resourceRef": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,61}[a-z0-9]$"},
+        "revision": {"type": "integer", "minimum": 1, "maximum": 2147483647, "description": "Optional; otherwise the current revision is pinned at admission."}
+      }
+    },
+    "resourceHttpBody": {
+      "oneOf": [
+        {"type": "object", "required": ["json"], "additionalProperties": false, "properties": {"json": {"$ref": "#/$defs/resourceValue"}}},
+        {"type": "object", "required": ["text", "contentType"], "additionalProperties": false, "properties": {"text": {"$ref": "#/$defs/resourceValue"}, "contentType": {"type": "string", "maxLength": 128}}},
+        {"type": "object", "required": ["blob"], "additionalProperties": false, "properties": {"blob": {"$ref": "#/$defs/resourceValue", "description": "Evaluates to a $blob descriptor of this run."}}}
+      ]
+    },
+    "resourceHttp": {
+      "type": "object",
+      "required": ["method", "path"],
+      "additionalProperties": false,
+      "properties": {
+        "method": {"enum": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]},
+        "path": {"type": "string", "minLength": 1, "maxLength": 2048, "pattern": "^/", "description": "Relative to the resource baseUrl. {name} segments are taken from pathParams and percent-encoded; no '..', '//' or absolute URL."},
+        "pathParams": {"type": "object", "maxProperties": 16, "additionalProperties": {"$ref": "#/$defs/resourceValue"}},
+        "query": {"type": "object", "maxProperties": 128, "additionalProperties": {"$ref": "#/$defs/resourceValue"}},
+        "headers": {"type": "object", "maxProperties": 64, "propertyNames": {"pattern": "^[A-Za-z0-9-]{1,64}$"}, "additionalProperties": {"$ref": "#/$defs/resourceValue"}},
+        "body": {"$ref": "#/$defs/resourceHttpBody"},
+        "response": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": {"enum": ["json", "text", "blob", "none"], "default": "json"},
+            "successStatuses": {"type": "array", "maxItems": 32, "items": {"type": "integer", "minimum": 100, "maximum": 599}},
+            "maxBytes": {"type": "integer", "minimum": 1, "maximum": 67108864},
+            "captureHeaders": {"type": "array", "maxItems": 16, "items": {"type": "string", "pattern": "^[A-Za-z0-9-]{1,64}$"}}
+          }
+        }
+      }
+    },
+    "resourceGraphql": {
+      "type": "object",
+      "required": ["kind", "document"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"enum": ["query", "mutation"]},
+        "document": {"type": "string", "minLength": 1, "maxLength": 65536},
+        "operationName": {"type": "string", "maxLength": 128},
+        "variables": {"type": "object", "maxProperties": 128, "additionalProperties": {"$ref": "#/$defs/resourceValue"}},
+        "maxBytes": {"type": "integer", "minimum": 1, "maximum": 262144}
+      }
+    },
+    "resourceS3": {
+      "type": "object",
+      "required": ["key"],
+      "additionalProperties": false,
+      "properties": {
+        "key": {"$ref": "#/$defs/resourceValue"},
+        "prefix": {"$ref": "#/$defs/resourceValue"},
+        "continuationToken": {"$ref": "#/$defs/resourceValue"},
+        "maxKeys": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "body": {"$ref": "#/$defs/resourceHttpBody"},
+        "ifNoneMatch": {"const": "*"},
+        "versionId": {"$ref": "#/$defs/resourceValue"},
+        "maxBytes": {"type": "integer", "minimum": 1, "maximum": 67108864}
+      }
+    },
+    "resourceSmtp": {
+      "type": "object",
+      "required": ["from", "to", "subject"],
+      "additionalProperties": false,
+      "properties": {
+        "from": {"$ref": "#/$defs/resourceValue"},
+        "to": {"$ref": "#/$defs/resourceValue"},
+        "cc": {"$ref": "#/$defs/resourceValue"},
+        "bcc": {"$ref": "#/$defs/resourceValue"},
+        "replyTo": {"$ref": "#/$defs/resourceValue"},
+        "subject": {"$ref": "#/$defs/resourceValue"},
+        "text": {"$ref": "#/$defs/resourceValue"},
+        "html": {"$ref": "#/$defs/resourceValue"},
+        "attachments": {"type": "array", "maxItems": 10, "items": {
+          "type": "object", "required": ["blob", "filename"], "additionalProperties": false,
+          "properties": {"blob": {"$ref": "#/$defs/resourceValue"}, "filename": {"$ref": "#/$defs/resourceValue"}, "contentType": {"type": "string", "maxLength": 128}}}}
+      }
+    },
+    "resourceSlack": {
+      "type": "object",
+      "required": ["channel"],
+      "additionalProperties": false,
+      "properties": {
+        "channel": {"$ref": "#/$defs/resourceValue"},
+        "text": {"$ref": "#/$defs/resourceValue"},
+        "blocks": {"$ref": "#/$defs/resourceValue"},
+        "threadTs": {"$ref": "#/$defs/resourceValue"}
+      }
+    },
+    "resourceOperationBody": {
+      "description": "One operation on the same pinned resource; used for compensate and reconcile.",
+      "type": "object",
+      "required": ["operation"],
+      "additionalProperties": false,
+      "properties": {
+        "operation": {"enum": ["http.request", "graphql.execute", "s3.headObject", "s3.deleteObject"]},
+        "http": {"$ref": "#/$defs/resourceHttp"},
+        "graphql": {"$ref": "#/$defs/resourceGraphql"},
+        "s3": {"$ref": "#/$defs/resourceS3"},
+        "answer": {"type": "object", "additionalProperties": false, "required": ["applied", "notApplied"], "description": "reconcile only: boolean expressions over response; applied wins, then notApplied, otherwise the effect stays unknown.", "properties": {"applied": {"$ref": "#/$defs/expression"}, "notApplied": {"$ref": "#/$defs/expression"}}}
+      }
+    },
+    "resourceOperation": {
+      "type": "object",
+      "required": ["id", "type", "resource", "operation"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": 64},
+        "type": {"const": "resourceOperation"},
+        "next": {"type": "string"},
+        "onError": {"type": "string"},
+        "timeoutMs": {"type": "integer", "minimum": 1, "maximum": 120000},
+        "resource": {"$ref": "#/$defs/resourceRef"},
+        "operation": {"enum": ["http.request", "graphql.execute", "s3.getObject", "s3.putObject", "s3.headObject", "s3.listObjects", "s3.deleteObject", "smtp.send", "slack.postMessage"]},
+        "http": {"$ref": "#/$defs/resourceHttp"},
+        "graphql": {"$ref": "#/$defs/resourceGraphql"},
+        "s3": {"$ref": "#/$defs/resourceS3"},
+        "smtp": {"$ref": "#/$defs/resourceSmtp"},
+        "slack": {"$ref": "#/$defs/resourceSlack"},
+        "idempotency": {
+          "type": "object", "additionalProperties": false, "required": ["header"],
+          "properties": {"header": {"type": "string", "pattern": "^[A-Za-z0-9-]{1,64}$", "description": "Sends the effect key on every attempt. The author asserts the provider deduplicates by it; the platform does not verify that."}}
+        },
+        "idempotencyTemplate": {"type": "string", "maxLength": 1024},
+        "retry": {"$ref": "#/$defs/retry"},
+        "compensate": {"$ref": "#/$defs/resourceOperationBody"},
+        "reconcile": {"$ref": "#/$defs/resourceOperationBody"},
+        "irreversible": {"type": "boolean"},
+        "highRisk": {"type": "boolean"},
+        "outputSchema": {"type": "object", "maxProperties": 64, "description": "Classification carrier (feature 016 amendment). Undeclared fields are pii."}
+      },
+      "allOf": [
+        {"if": {"properties": {"operation": {"const": "http.request"}}}, "then": {"required": ["http"], "not": {"anyOf": [{"required": ["graphql"]}, {"required": ["s3"]}, {"required": ["smtp"]}, {"required": ["slack"]}]}}},
+        {"if": {"properties": {"operation": {"const": "graphql.execute"}}}, "then": {"required": ["graphql"], "not": {"anyOf": [{"required": ["http"]}, {"required": ["s3"]}, {"required": ["smtp"]}, {"required": ["slack"]}]}}},
+        {"if": {"properties": {"operation": {"enum": ["s3.getObject", "s3.putObject", "s3.headObject", "s3.listObjects", "s3.deleteObject"]}}}, "then": {"required": ["s3"], "not": {"anyOf": [{"required": ["http"]}, {"required": ["graphql"]}, {"required": ["smtp"]}, {"required": ["slack"]}]}}},
+        {"if": {"properties": {"operation": {"const": "smtp.send"}}}, "then": {"required": ["smtp"], "not": {"anyOf": [{"required": ["http"]}, {"required": ["graphql"]}, {"required": ["s3"]}, {"required": ["slack"]}, {"required": ["compensate"]}, {"required": ["idempotency"]}]}}},
+        {"if": {"properties": {"operation": {"const": "slack.postMessage"}}}, "then": {"required": ["slack"], "not": {"anyOf": [{"required": ["http"]}, {"required": ["graphql"]}, {"required": ["s3"]}, {"required": ["smtp"]}, {"required": ["compensate"]}, {"required": ["idempotency"]}]}}},
+        {"if": {"required": ["irreversible"], "properties": {"irreversible": {"const": true}}}, "then": {"not": {"required": ["compensate"]}}}
+      ]
+    }
+  },
+  "examples": [
+    {
+      "id": "create-invoice",
+      "type": "resourceOperation",
+      "resource": {"name": "billing-api"},
+      "operation": "http.request",
+      "http": {
+        "method": "POST",
+        "path": "/v1/regions/{region}/invoices",
+        "pathParams": {"region": {"expression": "vars.region"}},
+        "body": {"json": {"expression": "input.invoice"}},
+        "response": {"mode": "json", "successStatuses": [200, 201]}
+      },
+      "idempotency": {"header": "Idempotency-Key"},
+      "reconcile": {
+        "operation": "http.request",
+        "http": {"method": "GET", "path": "/v1/invoices/by-key/{key}", "pathParams": {"key": {"expression": "effect.targetKey"}}, "response": {"mode": "json", "successStatuses": [200, 404]}},
+        "answer": {"applied": "response.status == 200", "notApplied": "response.status == 404"}
+      },
+      "highRisk": true,
+      "next": "notify"
+    }
+  ]
+}

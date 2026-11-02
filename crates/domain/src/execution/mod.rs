@@ -42,9 +42,9 @@ pub use command::{
     fail_step, fail_step_for_storage_quota, fail_unentered_loop, finish_child, fire_timer,
     heartbeat, heartbeat_instance, heartbeat_path_instance, lease_instance, lease_path_instance,
     lease_step, mark_for_review, mark_for_review_instance, mark_for_review_path_instance,
-    pause_run, prepare_scoped_output_refusal, release_pending, resolve, resolve_review,
-    resolve_review_instance, resolve_review_path_instance, resume_run, retry_due,
-    retry_due_instance, retry_due_path_instance, retry_review, retry_review_instance,
+    pause_run, prepare_scoped_content_refusal, prepare_scoped_output_refusal, release_pending,
+    resolve, resolve_review, resolve_review_instance, resolve_review_path_instance, resume_run,
+    retry_due, retry_due_instance, retry_due_path_instance, retry_review, retry_review_instance,
     retry_review_path_instance, satisfy_wait, skip_review, skip_review_instance,
     skip_review_path_instance, start_run, stop_for_storage_quota, stop_run, time_out_wait,
 };
@@ -91,5 +91,5 @@ pub use state::{
     CollectionIterationRestore, CollectionPhase, CollectionResult, CollectionState, LoopCheckpoint,
     LoopIterationRestore, LoopPhase, LoopState, RunChainState, RunId, RunState, RunStatus,
     RunWorkSummary, SagaPhase, SagaState, ScopeSagaState, StepState, StepStatus, WaitingOn,
-    scope_final_status,
+    derived_settles_drain, retry_wait_holds_drain, scope_final_status,
 };

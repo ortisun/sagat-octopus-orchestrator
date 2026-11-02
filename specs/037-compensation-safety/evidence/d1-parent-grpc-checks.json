@@ -1,0 +1,10 @@
+[
+  {
+    "test": "rejected_blob_completion_replays_after_unused_blob_collection",
+    "exit": 0
+  },
+  {
+    "test": "a_heartbeat_of_a_lost_lease_stays_stale_after_human_resolution_without_another_lease",
+    "exit": 0
+  }
+]

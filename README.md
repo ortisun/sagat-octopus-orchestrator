@@ -318,8 +318,10 @@ source filename. A published workflow version is immutable.
 
 See [script operations](docs/runbooks/scripts.md), [C# runner](runners/dotnet/README.md),
 [Go runner](runners/go/README.md) and [Java runner](runners/java/README.md) for exact interfaces and
-supported imports. CLI `script test/publish` accepts TypeScript and Python; use Studio/the script
-API for the other language workflows. SDK language support does not imply arbitrary inline dependencies.
+supported imports. Entry points differ by language: the CLI `script test/publish` accepts TypeScript
+and Python; Studio creates TypeScript, Python and C# scripts (Go and Java are shown but disabled); the
+script API accepts all five languages, subject to the runner image and toolchain you have configured
+(`docs/runbooks/scripts.md`). SDK language support does not imply arbitrary inline dependencies.
 
 ### Start the sandbox runner
 

@@ -17,6 +17,20 @@ fn text<'a>(value: &'a Value, key: &str) -> &'a str {
 fn millis(value: &Value, key: &str, default: u64) -> Duration {
     Duration::from_millis(value.get(key).and_then(Value::as_u64).unwrap_or(default))
 }
+fn operation_options(step: &Value) -> OperationOptions {
+    let outcome = match step["outcome"].as_str() {
+        Some("SUCCEEDED") => Some(StepOutcome::Succeeded),
+        Some("FAILED") => Some(StepOutcome::Failed),
+        _ => None,
+    };
+    OperationOptions {
+        expected_run_version: step["expectedRunVersion"].as_u64(),
+        step_id: step["stepId"].as_str().map(str::to_owned),
+        outcome,
+        error_code: step["errorCode"].as_str().map(str::to_owned),
+        ..Default::default()
+    }
+}
 #[derive(Default)]
 struct Measurement {
     active: usize,
@@ -413,7 +427,7 @@ pub async fn run(scenario: &Value, config: &Value) -> Result<Value, Failure> {
                 for host in &mut worker.hosts{host.stop(millis(step,"timeoutMs",5000)).await?;}
                 if op=="restartWorker"{let host=worker.hosts.last_mut().ok_or_else(||SagatError::validation("worker was never started"))?;host.start().await?;Some(json!({"protocolVersion":host.protocol_version()}))}else{None}
             }
-            "cancel"|"operate"=>{let result=client.operate(&run_of(step,&results)?,if op=="cancel"{"CANCEL"}else{text(step,"action")},text(step,"reason"),OperationOptions{expected_run_version:step["expectedRunVersion"].as_u64(),step_id:step["stepId"].as_str().map(str::to_owned),..Default::default()}).await?;let mut value=json!({"accepted":result.accepted,"runStatus":result.run_status});if let Some(id)=result.new_run_id{value["newRunId"]=json!(id);}Some(value)}
+            "cancel"|"operate"=>{let result=client.operate(&run_of(step,&results)?,if op=="cancel"{"CANCEL"}else{text(step,"action")},text(step,"reason"),operation_options(step)).await?;let mut value=json!({"accepted":result.accepted,"runStatus":result.run_status});if let Some(id)=result.new_run_id{value["newRunId"]=json!(id);}Some(value)}
             "sleep"=>{tokio::time::sleep(millis(step,"ms",0)).await;None}
             "control"=>{let mut body=json!({"action":step["action"]});if step.get("run").is_some(){body["run"]=json!(run_of(step,&results)?);}
 if let Some(node)=step.get("node"){body["node"]=node.clone();}let response=control::client()?.post(format!("{}/control",text(config,"controlUrl"))).json(&body).send().await.map_err(|_|SagatError::validation("control transport failed"))?;if !response.status().is_success(){return Err(SagatError::validation("control request refused"));}None}
@@ -451,4 +465,30 @@ if tokio::time::Instant::now()>=end{return Err(SagatError::validation("the scena
     Ok(
         json!({"scenario":scenario["name"],"language":"rust","sdkVersion":VERSION,"observations":observations,"workerLog":log,"workerMeasurements":measurements,"faultsApplied":plan.applied()}),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn operation_options_preserve_manual_outcomes_and_failure_codes() {
+        let succeeded = operation_options(&json!({
+            "stepId": "pay",
+            "outcome": "SUCCEEDED",
+            "expectedRunVersion": 41
+        }));
+        assert_eq!(succeeded.step_id.as_deref(), Some("pay"));
+        assert!(matches!(succeeded.outcome, Some(StepOutcome::Succeeded)));
+        assert_eq!(succeeded.expected_run_version, Some(41));
+        assert!(succeeded.error_code.is_none());
+
+        let failed = operation_options(&json!({
+            "stepId": "pay",
+            "outcome": "FAILED",
+            "errorCode": "PAYMENT_NOT_FOUND"
+        }));
+        assert!(matches!(failed.outcome, Some(StepOutcome::Failed)));
+        assert_eq!(failed.error_code.as_deref(), Some("PAYMENT_NOT_FOUND"));
+    }
 }

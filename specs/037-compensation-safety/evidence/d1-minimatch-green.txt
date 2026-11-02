@@ -1,0 +1,16 @@
+✔ @eslint/config-array resolves the reviewed bridge and patched matcher (8.578792ms)
+✔ @eslint/eslintrc resolves the reviewed bridge and patched matcher (0.90475ms)
+✔ eslint resolves the reviewed bridge and patched matcher (0.79175ms)
+✔ eslint-plugin-jsx-a11y resolves the reviewed bridge and patched matcher (0.584958ms)
+✔ @redocly/openapi-core resolves the reviewed bridge and patched matcher (0.515709ms)
+✔ @typescript-eslint/typescript-estree resolves the reviewed bridge and patched matcher (0.587583ms)
+✔ native ESM has both default and named imports required by tooling (0.403625ms)
+✔ optimization level 2 bounds globparts amplification in the actual installed matcher (64.043583ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 150.666125

@@ -1,0 +1,21 @@
+   Compiling sagat-domain v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/crates/domain)
+    Finished `test` profile [unoptimized] target(s) in 2.95s
+     Running tests/execution.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/execution-5e8f09605a50e4f1)
+
+running 1 test
+
+thread 'stopping_releases_the_lookup_for_an_ambiguous_ordinary_effect' (782896548) panicked at crates/domain/tests/execution.rs:913:9:
+assertion `left == right` failed: stopping must retain the original but release its recovery lookup: Cancelled/false
+  left: Pending
+ right: Ready
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test stopping_releases_the_lookup_for_an_ambiguous_ordinary_effect ... FAILED
+
+failures:
+
+failures:
+    stopping_releases_the_lookup_for_an_ambiguous_ordinary_effect
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 67 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p sagat-domain --test execution`

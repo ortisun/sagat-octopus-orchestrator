@@ -18,7 +18,7 @@ use std::collections::BTreeSet;
 
 use super::error::ExecutionError;
 use super::event::{FailureCode, PlannedEntry, RunEvent, StopReason};
-use super::plan::{Plan, in_abandoned_region, waits_for_cancelled_child};
+use super::plan::{Plan, in_abandoned_region, recovery_obligation, waits_for_cancelled_child};
 use super::state::{RunState, SagaPhase, StepState, StepStatus, WaitingOn};
 use crate::saga::{OnCompensationFailure, SagaCancelPolicy, SagaOutcome, reverse_dependencies};
 use crate::workflow::{NodeId, NodeKind, Scope, WorkflowDefinition};
@@ -128,15 +128,22 @@ fn body_done(def: &WorkflowDefinition, state: &RunState, saga: &NodeId) -> bool 
 }
 
 /// What winding down one step of an aborting body asks for. A step that waits for an answer the
-/// saga needs (a reconciliation, a nested saga) is left alone; one that waits for an operator is
-/// given up on when the run is being stopped.
+/// saga needs (a reconciliation, a nested saga) is left alone, and so is one that waits for an
+/// operator, even when the run is being stopped: its review is a recovery obligation (feature 037).
 fn wind_down(
     def: &WorkflowDefinition,
+    state: &RunState,
     node: &NodeId,
     step: &StepState,
     policy: SagaCancelPolicy,
     stopping: bool,
 ) -> Option<RunEvent> {
+    if recovery_obligation(state, node, step) {
+        return None;
+    }
+    if let Some(review) = super::plan::unresolved_legacy_retry(node, step) {
+        return Some(review);
+    }
     match step.status() {
         StepStatus::Waiting if waits_for_cancelled_child(def, node, step) => {
             (!step.cancel_requested()).then(|| RunEvent::StepCancelRequested { node: node.clone() })
@@ -160,10 +167,8 @@ fn wind_down(
 
 /// The compensations to run for `saga` and the steps whose effect cannot be undone.
 ///
-/// A step is undone if it completed, and also if its last attempt ended with an unknown outcome:
-/// the compensation is asked to undo an effect that may never have happened, so it must tolerate
-/// that (it is idempotent by contract). An unknown outcome with nothing to compensate it with is
-/// flagged when the step is irreversible or high risk, so the saga cannot claim `COMPENSATED`.
+/// Only succeeded effects are eligible. An unresolved effect remains a recovery obligation;
+/// declaring a compensation does not qualify a defensive action (feature 037).
 pub(super) fn plan_entries(
     def: &WorkflowDefinition,
     state: &RunState,
@@ -181,12 +186,7 @@ pub(super) fn plan_entries(
         let Some(node) = def.node(member) else {
             continue;
         };
-        let completed = step.status() == StepStatus::Succeeded;
-        let unknown = matches!(step.status(), StepStatus::Cancelled | StepStatus::Failed)
-            && step
-                .failure()
-                .is_some_and(FailureCode::leaves_outcome_unknown);
-        if !(completed || unknown) {
+        if step.status() != StepStatus::Succeeded {
             continue;
         }
         let compensable = def.node(&member.compensation()).is_some()
@@ -194,9 +194,7 @@ pub(super) fn plan_entries(
         if compensable {
             entries.insert(member.clone());
         }
-        let cannot_undo =
-            node.effect().irreversible || (unknown && !compensable && node.effect().high_risk);
-        if cannot_undo {
+        if node.effect().irreversible {
             irreversible.push(member.clone());
         }
     }
@@ -212,18 +210,10 @@ pub(super) fn plan_entries(
 }
 
 /// Whether the run is being ended by somebody's decision or by the clock, and not by one of its own
-/// failures. Only then is a person who was asked to decide something given up on: when a run is
-/// cancelled nobody is going to decide a compensation, but when it ends because *another branch*
-/// failed, the people the sagas ask are still the only ones who can say what to do.
+/// failures. This controls cancellation of ordinary held forward work, never unresolved effects
+/// or compensation review.
 const fn ended_from_outside(stop: Option<StopReason>) -> bool {
     matches!(stop, Some(StopReason::Cancelled | StopReason::TimedOut))
-}
-
-/// Whether the operators who were asked to decide a *compensation* are given up on: the run is
-/// cancelled, or passes its deadline, *after* the saga started to compensate. A compensation that
-/// fails because of the stop itself waits for an operator like any other.
-fn give_up(stop: Option<StopReason>, saga: &super::state::SagaState) -> bool {
-    ended_from_outside(stop) && !saga.during_stop()
 }
 
 /// The next thing the sagas of the run need, if there is one. `stop` is why the run is being
@@ -273,16 +263,13 @@ pub(super) fn advance(
                 }
             }
             SagaPhase::Aborting => {
-                // Winding the body down gives up on an operator when the run is cancelled or times
-                // out: even when that is what started the abort, nobody is left to decide a forward
-                // step (it is compensated defensively if its outcome was unknown). A run that ends
-                // because of one of its own failures leaves the people the sagas ask to decide.
+                // Stop ordinary forward work, preserving unresolved external-effect recovery.
                 if let Some(plan) = abort(def, state, saga, policy, ended_from_outside(stop)) {
                     return Ok(Some(plan));
                 }
             }
             SagaPhase::Compensating => {
-                if let Some(plan) = compensate(state, saga, give_up(stop, current)) {
+                if let Some(plan) = compensate(state, saga) {
                     return Ok(Some(plan));
                 }
             }
@@ -319,7 +306,7 @@ fn abort(
         let Some(step) = state.step(member) else {
             continue;
         };
-        if let Some(event) = wind_down(def, member, step, policy, stopping) {
+        if let Some(event) = wind_down(def, state, member, step, policy, stopping) {
             return Some(Plan::Emit(event));
         }
         // The answer a reconciliation is looking for decides whether the step is compensated.
@@ -348,7 +335,7 @@ fn abort(
     }))
 }
 
-fn compensate(state: &RunState, saga: &NodeId, stopping: bool) -> Option<Plan> {
+fn compensate(state: &RunState, saga: &NodeId) -> Option<Plan> {
     let current = state.saga(saga)?;
     let status_of = |forward: &NodeId| state.step(&forward.compensation()).map(StepState::status);
     let broken = |forward: &NodeId| {
@@ -357,21 +344,6 @@ fn compensate(state: &RunState, saga: &NodeId, stopping: bool) -> Option<Plan> {
             Some(StepStatus::Failed | StepStatus::Cancelled)
         )
     };
-    // The run is being stopped: nobody is going to decide what a compensation that waits for an
-    // operator should do, so it is given up on and the saga ends as failed.
-    if stopping {
-        for forward in current.entries().keys() {
-            let step = state.step(&forward.compensation());
-            if step.is_some_and(|s| {
-                s.status() == StepStatus::Waiting
-                    && matches!(s.waiting_on(), Some(WaitingOn::Operator { .. }))
-            }) {
-                return Some(Plan::Emit(RunEvent::StepCancelled {
-                    node: forward.compensation(),
-                }));
-            }
-        }
-    }
     for (forward, after) in current.entries() {
         if status_of(forward) != Some(StepStatus::Pending) {
             continue;
@@ -379,7 +351,7 @@ fn compensate(state: &RunState, saga: &NodeId, stopping: bool) -> Option<Plan> {
         // Whatever waits for a compensation that will not happen cannot be released either, so it
         // is abandoned and the saga ends as failed. A compensation is only ever failed or cancelled
         // for good: because the saga does not wait for a human, because an operator declared it
-        // failed, or because the run was cancelled while it waited for one.
+        // failed. An ordinary stop cannot discard compensation review.
         if after.iter().any(&broken) {
             return Some(Plan::Emit(RunEvent::StepCancelled {
                 node: forward.compensation(),

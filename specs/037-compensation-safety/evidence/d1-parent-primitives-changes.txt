@@ -1,0 +1,284 @@
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:291:9
+    |
+278 | pub struct CreateTopicsResponse {
+    |            -------------------- field in this struct
+...
+291 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `name`, `value`, `read_only`, `config_source`, `is_sensitive`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:321:9
+    |
+319 | pub struct CreateTopicResponseConfig {
+    |            ------------------------- fields in this struct
+320 |     /// The configuration name.
+321 |     pub name: CompactString,
+    |         ^^^^
+...
+324 |     pub value: CompactNullableString,
+    |         ^^^^^
+...
+327 |     pub read_only: Boolean,
+    |         ^^^^^^^^^
+...
+330 |     pub config_source: Int8,
+    |         ^^^^^^^^^^^^^
+...
+333 |     pub is_sensitive: Boolean,
+    |         ^^^^^^^^^^^^
+...
+336 |     pub tagged_fields: TaggedFields,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponseConfig` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `num_partitions`, `replication_factor`, `configs`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:374:9
+    |
+359 | pub struct CreateTopicResponse {
+    |            ------------------- fields in this struct
+...
+374 |     pub num_partitions: Option<Int32>,
+    |         ^^^^^^^^^^^^^^
+...
+379 |     pub replication_factor: Option<Int16>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+384 |     pub configs: Vec<CreateTopicResponseConfig>,
+    |         ^^^^^^^
+...
+389 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `low_watermark` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:182:9
+    |
+177 | pub struct DeleteResponsePartition {
+    |            ----------------------- fields in this struct
+...
+182 |     pub low_watermark: Int64,
+    |         ^^^^^^^^^^^^^
+...
+190 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:226:9
+    |
+216 | pub struct DeleteResponseTopic {
+    |            ------------------- field in this struct
+...
+226 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:269:9
+    |
+258 | pub struct DeleteRecordsResponse {
+    |            --------------------- field in this struct
+...
+269 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteRecordsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:101:9
+    |
+ 88 | pub struct DeleteTopicsResponse {
+    |            -------------------- field in this struct
+...
+101 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:144:9
+    |
+129 | pub struct DeleteTopicsResponseTopic {
+    |            ------------------------- field in this struct
+...
+144 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `producer_id` and `first_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:170:9
+    |
+168 | pub struct FetchResponseAbortedTransaction {
+    |            ------------------------------- fields in this struct
+169 |     /// The producer id associated with the aborted transaction.
+170 |     pub producer_id: Int64,
+    |         ^^^^^^^^^^^
+...
+173 |     pub first_offset: Int64,
+    |         ^^^^^^^^^^^^
+    |
+    = note: `FetchResponseAbortedTransaction` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `aborted_transactions` is never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:213:9
+    |
+192 | pub struct FetchResponsePartition {
+    |            ---------------------- field in this struct
+...
+213 |     pub aborted_transactions: Vec<FetchResponseAbortedTransaction>,
+    |         ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `FetchResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `timestamp` is never read
+   --> vendor/rskafka/src/protocol/messages/list_offsets.rs:184:9
+    |
+169 | pub struct ListOffsetsResponsePartition {
+    |            ---------------------------- field in this struct
+...
+184 |     pub timestamp: Option<Int64>,
+    |         ^^^^^^^^^
+    |
+    = note: `ListOffsetsResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `log_append_time_ms` and `log_start_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/produce.rs:148:9
+    |
+132 | pub struct ProduceResponsePartitionResponse {
+    |            -------------------------------- fields in this struct
+...
+148 |     pub log_append_time_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+153 |     pub log_start_offset: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^
+    |
+    = note: `ProduceResponsePartitionResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `session_lifetime_ms` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/sasl_msg.rs:198:9
+    |
+181 | pub struct SaslAuthenticateResponse {
+    |            ------------------------ fields in this struct
+...
+198 |     pub session_lifetime_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^^
+...
+203 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `SaslAuthenticateResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: struct `CompactArray` is never constructed
+   --> vendor/rskafka/src/protocol/primitives.rs:725:12
+    |
+725 | pub struct CompactArray<T>(pub Option<Vec<T>>);
+    |            ^^^^^^^^^^^^
+
+warning: `rskafka` (lib) generated 14 warnings
+    Finished `test` profile [unoptimized] target(s) in 6.78s
+     Running integration/workflow-primitives/main.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/integration_workflow_primitives-93819aef1967810c)
+
+running 90 tests
+test byte_ceilings::a_bounded_completion_commits_without_reopening_the_run_history ... ok
+test byte_ceilings::a_bounded_path_loads_only_its_indexed_scope_saga_authority ... ok
+test byte_ceilings::a_bounded_path_read_does_not_wait_for_the_run_write_lock ... ok
+test byte_ceilings::a_between_persist_fault_rolls_back_the_whole_refusal_and_same_lease_retries ... ok
+test byte_ceilings::a_bounded_scheduler_fence_lasts_to_commit_and_deadlines_are_exact_path ... ok
+test byte_ceilings::a_bounded_reconciliation_persists_its_companion_and_manual_review_status ... ok
+test byte_ceilings::a_bounded_script_lease_pins_retention_and_zero_withholds_a_new_member ... ok
+test byte_ceilings::a_bounded_transaction_observes_database_time_after_waiting_for_the_run_lock ... ok
+test byte_ceilings::a_collection_snapshot_over_the_value_ceiling_fails_the_run_before_it_starts ... ok
+test byte_ceilings::a_full_transaction_observes_database_time_after_waiting_for_the_run_lock ... ok
+test byte_ceilings::a_drain_outbox_fault_preserves_the_committed_report_and_one_retry_compensates ... ok
+test byte_ceilings::a_known_successful_seventeenth_member_is_preserved_without_its_refused_output ... ok
+test byte_ceilings::a_loop_carry_over_the_value_ceiling_fails_the_loop_and_keeps_the_ceiling ... ok
+test byte_ceilings::a_late_receipt_fault_rolls_back_the_whole_successful_refusal_and_same_key_retries ... ok
+test byte_ceilings::a_loop_whose_initial_carry_is_over_the_value_ceiling_fails_before_it_starts ... ok
+test byte_ceilings::a_member_output_over_the_value_ceiling_is_refused_and_the_lease_survives ... ok
+test byte_ceilings::a_scoped_task_context_built_from_the_largest_values_stays_under_eight_mib ... ok
+test byte_ceilings::a_scoped_output_refusal_rechecks_binding_after_the_checked_path_is_dropped ... ok
+test byte_ceilings::an_aggregate_over_the_value_ceiling_fails_the_scope_instead_of_storing_it ... ok
+test byte_ceilings::an_aggregate_that_cannot_be_computed_fails_the_scope_with_expression_error ... ok
+test byte_ceilings::an_aggregate_that_fits_alone_but_not_beside_the_retained_outputs_fails_the_scope ... ok
+test byte_ceilings::an_end_output_created_with_the_report_is_charged_once_as_a_logical_output ... ok
+test byte_ceilings::an_applied_lookup_preserves_both_real_successes_without_the_substitute_output ... ok
+test byte_ceilings::loop_successful_output_over_run_limit_preserves_review ... ok
+test byte_ceilings::member_outputs_that_pass_four_mib_in_all_fail_the_run_with_run_data_limit ... ok
+test byte_ceilings::the_carry_that_ends_a_loop_must_fit_beside_the_outputs_the_run_retains ... ok
+test byte_ceilings::refused_output_compensation::a_refused_required_output_keeps_its_compensation_open_until_audited_resolution ... ok
+test chains::a_blocked_boundary_does_not_hold_back_the_boundaries_behind_it ... ok
+test chains::a_boundary_with_an_open_approval_waits_until_the_decision_settles_the_request ... ok
+test chains::a_boundary_with_open_work_waits_without_failing_and_hands_off_once_it_settles ... ok
+test chains::a_continuation_workflow_starts_as_a_child_with_a_durable_link ... ok
+test chains::a_continuation_never_outgrows_the_active_run_quota_and_waits_for_room ... ok
+test chains::a_detached_child_chain_outlives_a_cancelled_parent_and_nobody_is_told ... ok
+test chains::a_hand_off_claimed_for_another_tenant_or_namespace_moves_nothing ... ok
+test chains::a_latched_child_chain_never_hands_off_even_before_its_head_is_cancelled ... ok
+test chains::cancelling_the_parent_latches_the_child_chain_and_cancels_its_current_head ... ok
+test chains::finished_chains_links_and_payloads_survive_every_housekeeping_pass ... ok
+test chains::operating_on_a_continued_segment_is_refused_like_any_ended_run_and_never_reaches_the_chain ... ok
+test chains::post_wait_fence_rejects_an_expired_evaluated_handoff_without_effects ... ok
+test chains::request_cancel_makes_the_parent_wait_until_the_child_chain_has_settled ... ok
+test chains::rerun_as_new_of_a_segment_starts_an_unrelated_run_with_its_own_chain ... ok
+test chains::the_last_run_the_tree_budget_allows_is_a_successor_and_the_next_one_is_refused ... ok
+test chains::the_locked_handoff_cannot_bypass_unknown_or_compensation_review ... ok
+test chains::the_original_deadline_ends_a_waiting_boundary_as_timed_out_with_no_successor ... ok
+test chains::the_parent_hears_only_the_final_outcome_of_a_child_chain_and_hears_it_once ... ok
+test chains::the_store_itself_refuses_a_second_successor_a_second_predecessor_and_bad_bounds ... ok
+test chains::the_store_proves_an_open_approval_again_under_the_locks ... ok
+test chains::the_write_proves_quiescence_again_under_the_locks_and_names_the_blocker ... ok
+test chains::waiting_for_quiescence_never_records_a_durable_failure ... ok
+test scope_compensation_http::a_cancellation_never_gives_up_on_a_compensation_that_waits_for_a_person ... ok
+test scope_compensation_http::a_cancelled_collection_undoes_what_completed_and_ends_cancelled ... ok
+test scope_compensation_http::a_cancelled_loop_undoes_what_completed_and_ends_cancelled ... ok
+test scope_compensation_http::a_cancelled_run_whose_compensation_keeps_failing_ends_partial_not_cancelled ... ok
+test scope_compensation_http::a_closed_storage_quota_does_not_stop_the_compensation ... ok
+test scope_compensation_http::a_collection_undoes_no_more_iterations_at_once_than_it_may_run ... ok
+test scope_compensation_http::a_compensation_that_keeps_failing_waits_for_a_person_who_can_retry_it ... ok
+test scope_compensation_http::a_failed_collection_undoes_what_its_iterations_completed_in_reverse_order ... ok
+test scope_compensation_http::a_lookup_that_cannot_say_waits_for_a_person_who_declares_what_happened ... ok
+test scope_compensation_http::a_failed_loop_undoes_its_completed_iterations_last_first ... ok
+test scope_compensation_http::a_loop_error_edge_is_taken_only_after_its_failure_was_undone ... ok
+test scope_compensation_http::a_loop_failure_that_was_not_fully_undone_is_not_handled_by_its_error_edge ... ok
+test scope_compensation_http::a_loop_stopped_by_the_instance_budget_undoes_its_iterations_last_first ... ok
+test scope_compensation_http::a_loop_stopped_by_its_iteration_limit_undoes_its_iterations_last_first ... ok
+test scope_compensation_http::a_negative_lookup_requires_resolution_and_survives_collection_cancellation ... ok
+test scope_compensation_http::a_loop_unknown_report_and_negative_lookup_after_cancel_wait_for_resolution ... ok
+test scope_compensation_http::a_person_can_declare_a_compensation_failed_and_the_run_ends_compensation_failed ... ok
+test scope_compensation_http::a_person_can_skip_a_compensation_and_the_run_ends_partial ... ok
+test scope_compensation_http::an_effect_of_unknown_outcome_is_looked_up_and_found_applied_before_anything_repeats ... ok
+test scope_compensation_http::an_irreversible_effect_ends_the_run_partial_and_is_never_called_compensated ... ok
+test scoped_worker::a_late_journal_failure_rolls_back_the_whole_scoped_report ... ok
+test scope_compensation_http::collection_cancelled_before_unknown_report_still_leases_its_lookup ... ok
+test scoped_worker::a_scoped_failure_retries_after_restart_and_rejects_the_old_fence ... ok
+test scoped_worker::a_scoped_lease_observes_cancellation_and_acknowledges_it_before_restart ... ok
+test scoped_worker::a_scoped_lost_lease_rolls_back_then_reviews_after_restart ... ok
+test scoped_worker::an_uncertain_scoped_report_is_atomic_idempotent_and_keeps_its_path_after_restart ... ok
+test scoped_worker::aggregate_retention_quota_atomically_drains_and_replays_the_open_scope ... ok
+test scoped_worker::automatic_collection_progress_rechecks_the_tenant_capacity ... ok
+test scoped_worker::cancellation_drains_members_atomically_and_finishes_after_restart ... ok
+test scoped_worker::collection_discovery_filters_unrelated_pending_roots_before_pagination ... ok
+test scoped_worker::exhausted_member_failure_starts_fail_fast_drain_and_survives_restart ... ok
+test scoped_worker::scheduler_resumes_collection_through_checkpoint_and_finish ... ok
+test scoped_worker::failed_derived_obligations_keep_member_capacity_reserved ... ok
+test scoped_worker::scope_chain_prefix_collection_drain_precedes_own_run_and_replays ... ok
+test scoped_worker::scope_chain_prefix_collection_entry_precedes_own_run_and_replays ... ok
+test scoped_worker::scoped_lease_capabilities_reject_a_foreign_tenant_without_leaking_the_attempt ... ok
+test scoped_worker::scoped_maintenance_reviews_ambiguity_without_whole_run_iteration_history ... ok
+test scoped_worker::snapshot_retention_quota_stops_the_pending_owner_without_creating_a_scope ... ok
+test scoped_worker::scoped_content_quota_fallback_preserves_success_or_unknown_before_any_error_route ... ok
+test scoped_worker::stale_hints_are_renewed_for_each_scoped_instance ... ok
+test scoped_worker::two_equal_nodes_keep_distinct_leases_outputs_routes_and_replays ... ok
+
+test result: ok. 90 passed; 0 failed; 0 ignored; 0 measured; 682 filtered out; finished in 231.03s
+

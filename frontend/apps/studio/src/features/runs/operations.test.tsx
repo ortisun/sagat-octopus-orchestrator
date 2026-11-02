@@ -71,13 +71,13 @@ describe('which decisions are offered', () => {
     expect(list.getByText('Only a compensation (an id ending in ~c) can be retried this way: use Retry step.')).toBeInTheDocument();
   });
 
-  it('asks for saga:override to retry a step whose effect may already have happened', async () => {
+  it('blocks retry of an unresolved effect for both operator and administrator', async () => {
     const { panel, unmount } = await panelOf('charge', OPERATOR);
     expect(state(actions(panel, 'charge').getByRole('button', { name: 'Retry step' }))).toBe('disabled');
-    expect(actions(panel, 'charge').getByText(/may already have happened \(OUTCOME_UNKNOWN\)\. Retrying it needs the saga:override permission/)).toBeInTheDocument();
+    expect(actions(panel, 'charge').getByText(/outcome is unresolved \(OUTCOME_UNKNOWN\).*resolve the outcome/)).toBeInTheDocument();
     unmount();
     const admin = await panelOf('charge', ADMIN);
-    expect(state(actions(admin.panel, 'charge').getByRole('button', { name: 'Retry step' }))).toBe('enabled');
+    expect(state(actions(admin.panel, 'charge').getByRole('button', { name: 'Retry step' }))).toBe('disabled');
   });
 
   it('gives a viewer nothing to press on a step, with the permission each action lacks', async () => {
@@ -283,19 +283,14 @@ describe('deciding', () => {
     expect(platform.operations[0]?.body).toEqual({ action: 'SKIP_COMPENSATION', stepId: 'reserve~c', reason: REASON, expectedRunVersion: 10 });
   });
 
-  it('warns that a step whose effect may already have happened will happen twice, and asks for its id to retry it', async () => {
+  it('keeps an unresolved effect visible without opening a retry confirmation or sending a request', async () => {
     const { panel, platform, user } = await panelOf('charge', ADMIN);
-    await user.click(actions(panel, 'charge').getByRole('button', { name: 'Retry step' }));
-    const dialog = await screen.findByRole('dialog');
-    expect(dialog).toHaveTextContent(/may already have happened \(OUTCOME_UNKNOWN\): if it did, it will happen twice/);
-    await user.type(within(dialog).getByRole('textbox', { name: 'Reason' }), REASON);
-    await user.click(within(dialog).getByRole('button', { name: 'Confirm: Retry step' }));
-    expect(within(dialog).getByText('Type the step id exactly as shown to confirm.')).toBeInTheDocument();
+    const retry = actions(panel, 'charge').getByRole('button', { name: 'Retry step' });
+    expect(state(retry)).toBe('disabled');
+    await user.click(retry);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(platform.operations).toHaveLength(0);
-    await user.type(within(dialog).getByRole('textbox', { name: 'Type the step id to confirm' }), 'charge');
-    await user.click(within(dialog).getByRole('button', { name: 'Confirm: Retry step' }));
-    await waitFor(() => expect(platform.operations).toHaveLength(1));
-    expect(platform.operations[0]?.body).toMatchObject({ action: 'RETRY_STEP', stepId: 'charge' });
+    expect(state(actions(panel, 'charge').getByRole('button', { name: 'Resolve step' }))).toBe('enabled');
   });
 
   it('asks what happened to the step to resolve it, and the error code only if it did not happen', async () => {

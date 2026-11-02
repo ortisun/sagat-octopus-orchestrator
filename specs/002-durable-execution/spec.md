@@ -35,7 +35,7 @@ Ensure DAG progress, checkpoints, suspension, retries and failure recovery witho
 
 **Acceptance scenario US02-AC01**
 
-- **Given** a running step and a registered lease; **When** the worker dies and the lease expires; **Then** another worker resumes without reusing the stale generation.
+- **Given** a running step and a registered lease; **When** the worker dies and the lease expires; **Then** the expired generation is fenced and the unresolved external outcome is retained for consultation or authorized human review under feature 037; expiry alone cannot dispatch another original attempt.
 
 ### User Story 3 — Wait without consuming compute (P1)
 
@@ -66,7 +66,7 @@ Ensure DAG progress, checkpoints, suspension, retries and failure recovery witho
 - **FR-002-001**: The system MUST interpret versioned Workflow IR with Activity, Condition, Parallel, Join, Timer, WaitEvent and ChildWorkflow (the latter may be progressive).
 - **FR-002-002**: The system MUST maintain an append-only journal sequenced per Run with transitions verified by CAS.
 - **FR-002-003**: The system MUST write step result, journal, new state, ready tasks, timers/subscriptions and outbox in the same transaction.
-- **FR-002-004**: The system MUST use leases, heartbeat, generation/fencing and expiration with safe requeue.
+- **FR-002-004**: The system MUST use leases, heartbeat, generation/fencing and expiration with safe recovery. Under feature 037, an unknown external outcome requires consultation/review; only a known safe retry may requeue work.
 - **FR-002-005**: The system MUST implement exponential backoff with jitter, max attempts, timeouts, deadline and explicit cancellation.
 - **FR-002-006**: The system MUST add a reconciler for the outbox, orphaned READY tasks and expired leases.
 - **FR-002-007**: The system MUST allow Paused/Waiting without a dedicated process and without a fixed NATS consumer per Run.
@@ -142,3 +142,16 @@ feature-014 release gates; existing feature behavior stays supported.
 ## Approved dependent delivery: database connections
 
 Feature [017](../017-database-connections/spec.md) and [ADR-0035](../../docs/adr/ADR-0035-database-connections-and-managed-execution.md) were approved on 2026-10-16. Its [plan](../017-database-connections/plan.md) defines the bounded extension to shared contracts, admission/leases, effects, SDKs, Studio, telemetry, secret-provider/security and immutable revisions. Existing transactional, tenant and general payload-inspection guarantees remain binding. Track implementation and new runtime evidence in feature 017; this dependency note does not mark its requirements complete.
+
+
+## Compensation-safety dependency (feature 037, delivery 1)
+
+The approved [037 contract](../037-compensation-safety/spec.md) supersedes automatic replacement
+of an activity whose expired lease leaves an unknown external outcome. Recovery remains durable:
+lease capacity is released, stale reports stay fenced across restart, and lookup or authorized
+human resolution retains the obligation. Ordinary activities outside an explicit saga follow the
+same rule. Output storage refusal similarly preserves review when the successful result cannot
+be retained; the existing scoped atomic known-success path remains valid. This note introduces no
+provider qualification or exactly-once claim. The first delivery uses a fresh coordinated install;
+it does not reinterpret live runs from an older engine. See the
+[037 validation report](../037-compensation-safety/validation-report.md) for actual evidence.

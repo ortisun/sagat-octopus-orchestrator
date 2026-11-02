@@ -392,6 +392,13 @@ async fn a_scoped_blob_quota_recovery_rechecks_lease_expiry() {
     let (_scheduler, mut worker, run, tasks) = leases(&p, "scoped-blob-quota-expiry", 1).await;
     let task = &tasks[0];
     let blob = upload(&mut worker, task).await;
+    // Normal blob reports remain bounded under leases()'s history-read trap. The exceptional
+    // content-quota fallback restores the full run to stop routing and preserve the source
+    // outcome, so this expiry test uses the runtime role's real permissions for that path.
+    sqlx::query("GRANT SELECT ON iteration_checkpoints TO sagat_app")
+        .execute(&p.api.db.pool)
+        .await
+        .expect("exceptional quota recovery may restore full run history");
     sqlx::query(
         "INSERT INTO quota_limits (tenant_id,namespace_id,resource,max_value,updated_by) \
         SELECT tenant_id,NULL,'tenant_content_bytes',content_bytes+content_reserved_bytes,'test' \
@@ -456,10 +463,6 @@ async fn a_scoped_blob_quota_recovery_rechecks_lease_expiry() {
     .await
     .expect("valid scoped blob fixture");
     assert_eq!(status, "LEASED");
-    sqlx::query("GRANT SELECT ON iteration_checkpoints TO sagat_app")
-        .execute(&p.api.db.pool)
-        .await
-        .expect("valid scoped blob fixture");
     p.api
         .executions
         .verify_run(p.tenant, RunId::new(run))

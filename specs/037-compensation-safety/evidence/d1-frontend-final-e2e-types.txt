@@ -1,0 +1,5 @@
+npm run typecheck --workspace @sagat/e2e
+
+> @sagat/e2e@0.2.0 typecheck
+> tsc --noEmit
+

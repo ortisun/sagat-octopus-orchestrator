@@ -636,6 +636,15 @@ impl ApiError {
                 e.parts.details = Some(json!({ "reason": "STATE_CONFLICT" }));
                 e
             }
+            AppError::OutcomeUnresolved => {
+                let mut e = Self::new(
+                    StatusCode::CONFLICT,
+                    ErrorCode::Conflict,
+                    "the step's last outcome is unknown: settle it before it is repeated",
+                );
+                e.parts.details = Some(json!({ "reason": "OUTCOME_UNRESOLVED" }));
+                e
+            }
             AppError::Invalid(inner) => Self::validation(inner.to_string()),
             AppError::InvalidScript(inner) => {
                 let mut e = Self::validation(inner.to_string());
