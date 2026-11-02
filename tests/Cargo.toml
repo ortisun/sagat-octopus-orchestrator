@@ -23,6 +23,11 @@ axum.workspace = true
 base64 = "0.23"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 rskafka = { version = "0.6", default-features = false }
+# Feature 035 independent reader (D035-026, D035-072): test-only, enforced by scripts/check-architecture.py.
+# Writes run in the Python lake runtime, never through these crates. S3 only for now; the GCS and ADLS
+# features join with the tests that read those storages. Advisories: G035-024, .cargo/audit.toml.
+iceberg = "=0.10.1"
+iceberg-storage-opendal = { version = "=0.10.1", default-features = false, features = ["opendal-s3"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 jsonschema = { version = "0.58", default-features = false }
 hmac = "0.13"
@@ -399,3 +404,35 @@ path = "contract/schedules-bulk-operations/main.rs"
 [[test]]
 name = "e2e_schedules_bulk_operations"
 path = "e2e/schedules-bulk-operations/main.rs"
+
+[[test]]
+name = "contract_iceberg_writes"
+path = "contract/iceberg-writes/main.rs"
+
+[[test]]
+name = "integration_iceberg_writes"
+path = "integration/iceberg-writes/main.rs"
+
+[[test]]
+name = "fault_iceberg_writes"
+path = "fault/iceberg-writes/main.rs"
+
+[[test]]
+name = "e2e_iceberg_writes"
+path = "e2e/iceberg-writes/main.rs"
+
+[[test]]
+name = "perf_iceberg_writes"
+path = "performance/iceberg-writes/main.rs"
+
+[[test]]
+name = "integration_step_destinations"
+path = "integration/step-destinations/main.rs"
+
+[[test]]
+name = "fault_step_destinations"
+path = "fault/step-destinations/main.rs"
+
+[[test]]
+name = "e2e_step_destinations"
+path = "e2e/step-destinations/main.rs"

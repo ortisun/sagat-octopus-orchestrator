@@ -5,6 +5,7 @@ Reads `cargo metadata` and fails when:
   * the domain crate depends on a forbidden infrastructure/format crate, or on a
     non-allowlisted crate at all;
   * a layer depends on a layer it must not know about (application -> adapters, ...);
+  * a package other than the test package depends on the `iceberg` crates, whatever the kind;
   * the workspace dependency graph has a cycle.
 
 Usage: python3 scripts/check-architecture.py [--metadata FILE]
@@ -24,6 +25,10 @@ DOMAIN_FORBIDDEN = {
     "async-nats", "nats", "redis", "rdkafka", "aws-sdk-sqs", "kube", "k8s-openapi",
     "serde_json", "tokio", "tracing-opentelemetry", "opentelemetry",
 }
+
+# The `iceberg` crate and its `iceberg-*` siblings may be used by the test package only (any kind).
+ICEBERG_CRATE = "iceberg"
+ICEBERG_TEST_ONLY_PACKAGES = {"sagat-tests"}
 
 # Crates that are application services (they orchestrate ports) rather than adapters or utilities.
 APPLICATION_CRATES = {"scheduler", "saga"}
@@ -84,6 +89,18 @@ def main(argv):
     for p in pkgs.values():
         deps = [d for d in p["dependencies"] if d.get("kind") in (None, "normal")]
         graph[p["name"]] = sorted({d["name"] for d in deps})
+
+    # The Iceberg crates are the independent reader of feature 035 (D035-026): test-only. Writes run in the
+    # Python lake runtime (ADR-0071), so no shipped package may link them, whatever the dependency kind.
+    for p in pkgs.values():
+        if p["name"] in ICEBERG_TEST_ONLY_PACKAGES:
+            continue
+        for d in sorted({d["name"] for d in p["dependencies"]}):
+            if d == ICEBERG_CRATE or d.startswith(ICEBERG_CRATE + "-"):
+                errors.append(
+                    f"'{p['name']}' must not depend on '{d}': the Iceberg crates are test-only "
+                    f"(the independent reader lives in the tests package; writes use the Python lake runtime, ADR-0071)"
+                )
 
     for name, deps in graph.items():
         layer = layer_of(by_name[name]["manifest_path"], root)
