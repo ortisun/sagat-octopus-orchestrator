@@ -84,17 +84,68 @@ fn a_saga_that_fails_is_compensated_in_reverse_order_and_an_unknown_outcome_is_r
                 .expect("the lookup ran");
             assert_eq!(lookup["activity"], "saga.lookup", "{language}");
             assert_eq!(lookup["targetNode"], "pay", "{language}");
-            // A reconciler that finds the effect did NOT happen: the platform tries the step again, and it succeeds.
+            // A negative lookup is not finality. A simulated human assertion resolves the retained
+            // outcome; it is not provider verification and it never repeats the original activity.
+            assert_eq!(
+                observation(doc, "not-applied-state")["result"]["status"],
+                "MANUAL_REVIEW",
+                "{language}"
+            );
+            assert_eq!(
+                observation(doc, "not-applied-resolved")["result"]["accepted"],
+                true,
+                "{language}"
+            );
             assert_eq!(
                 observation(doc, "not-applied-done")["result"]["status"],
                 "SUCCEEDED",
                 "{language}"
             );
-            assert_eq!(node(doc, "pay2")["attempt"], json!(2), "{language}");
+            assert_eq!(node(doc, "pay2")["attempt"], json!(1), "{language}");
+            assert!(node(doc, "pay2")["failureCode"].is_null(), "{language}");
             assert_eq!(
-                node(doc, "pay2")["failureCode"],
-                "RECONCILED_NOT_APPLIED",
+                log.iter()
+                    .filter(|entry| entry["activity"] == "saga.pay2")
+                    .count(),
+                1,
+                "{language}: the original effect is not repeated"
+            );
+            let negative = journal(doc, "not-applied-journal");
+            assert!(
+                !negative.contains(&"step.retry_scheduled".to_owned()),
                 "{language}"
+            );
+            assert_eq!(
+                negative
+                    .iter()
+                    .filter(|event| *event == "step.resolved")
+                    .count(),
+                1
+            );
+            let lookup_done = negative
+                .iter()
+                .position(|event| event == "reconciliation.concluded")
+                .expect("negative lookup is recorded");
+            let resolved = negative
+                .iter()
+                .position(|event| event == "step.resolved")
+                .expect("human resolution is recorded");
+            let finished = negative
+                .iter()
+                .position(|event| event == "run.finished")
+                .expect("run finishes after resolution");
+            assert!(
+                lookup_done < resolved && resolved < finished,
+                "{language}: {negative:?}"
+            );
+            assert_eq!(
+                doc["reviewEvidence"],
+                json!([{
+                    "action": "saga.step_resolved",
+                    "actor": "alice",
+                    "reason": "declared SUCCEEDED: simulated human assertion of final success; no provider verification is claimed"
+                }]),
+                "{language}: finality retains human provenance"
             );
             // A reconciler that cannot say: nothing is retried blindly, a person has to decide.
             let undecided = observation(doc, "undecided-state")["result"].clone();
@@ -133,12 +184,37 @@ fn the_failures_of_an_activity_reach_the_run_as_the_same_canonical_codes_in_ever
                 ("flaky", 3, "PROVIDER_BUSY", "SUCCEEDED"),
                 ("permanent", 1, "INSUFFICIENT_FUNDS", "FAILED"),
                 ("throws", 2, "ACTIVITY_ERROR", "FAILED"),
-                ("unknown", 1, "OUTCOME_UNKNOWN", "FAILED"),
+                ("unknown", 1, "OUTCOME_UNKNOWN", "MANUAL_REVIEW"),
             ] {
                 let node = node(doc, id);
                 assert_eq!(node["attempt"], json!(attempts), "{language}/{id}: {node}");
                 assert_eq!(node["failureCode"], code, "{language}/{id}");
                 assert_eq!(harness::run_status(doc, id), run, "{language}/{id}");
+            }
+            assert_eq!(node(doc, "unknown")["status"], "WAITING", "{language}");
+            assert_eq!(node(doc, "unknown")["waitingOn"], "operator", "{language}");
+            assert!(observation(doc, "unknown-state")["result"]["finishedAt"].is_null());
+            assert_eq!(
+                worker_log(doc, "w1")
+                    .iter()
+                    .filter(|entry| entry["activity"] == "retry.unknown")
+                    .count(),
+                1,
+                "{language}: unknown is not retried"
+            );
+            let unknown = journal(doc, "unknown-journal");
+            assert_eq!(
+                unknown
+                    .iter()
+                    .filter(|event| *event == "step.needs_review")
+                    .count(),
+                1
+            );
+            for forbidden in ["step.failed", "step.retry_scheduled", "run.finished"] {
+                assert!(
+                    !unknown.iter().any(|event| event == forbidden),
+                    "{language}: {unknown:?}"
+                );
             }
         }
     });

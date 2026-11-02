@@ -51,14 +51,14 @@ Every node has the fields below; each kind adds its own. The kinds: [`activity`]
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `activity` | string | yes |  |
-| `compensateWith` | string |  | The activity that undoes this one. It runs when a saga around this node compensates, or, for a step in the body of a collection or loop, when that scope stops (a failed iteration, a cancellation) with iterations that completed: inside one iteration in reverse dependency order, between collection iterations in no order, and across loop iterations last iteration first. It must be idempotent and tolerate an effect that never happened. |
+| `compensateWith` | string |  | The activity that undoes this one. It runs when a saga around this node compensates, or, for a step in the body of a collection or loop, when that scope stops (a failed iteration, a cancellation) with iterations that completed: inside one iteration in reverse dependency order, between collection iterations in no order, and across loop iterations last iteration first. It must be idempotent. Feature 037: it is planned only for an effect that succeeded (or that a person settled as having happened); an effect whose outcome is unknown waits for review instead of being compensated defensively. |
 | `compensationRetry` | [`retry`](#retry) |  | The retry budget of the compensation (compensateWith). Five attempts, exponential from two seconds to five minutes, with jitter when absent. |
 | `compensationTimeoutMs` | integer (min 1) |  | Longest one attempt of the compensation may take. |
-| `highRisk` | boolean |  | An attempt whose outcome is unknown (lease lost, timeout, OUTCOME_UNKNOWN) is never retried or compensated blindly: it is reconciled when reconcileWith says how, and otherwise waits for an operator. |
+| `highRisk` | boolean |  | Informational since feature 037. Every activity's attempt whose outcome is unknown (lease lost, timeout, OUTCOME_UNKNOWN) is never retried or compensated blindly, whether or not it is high risk: it is reconciled when reconcileWith says how, and otherwise waits for an operator. |
 | `idempotencyTemplate` | string |  |  |
 | `irreversible` | boolean |  | The effect cannot be undone once it has happened. A saga, or the collection or loop that owns the body, that has to compensate past it ends PARTIAL. Cannot be combined with compensateWith. |
 | `outputSchema` | object |  | Classifies this activity's retained output for payload disclosure. |
-| `reconcileWith` | string |  | The activity that finds out whether this one happened, after an attempt with an unknown outcome. It answers {"effect": "applied"\|"not_applied"\|"unknown"} and, for applied, optionally {"output": ...}. |
+| `reconcileWith` | string |  | The activity that finds out whether this one happened, after an attempt with an unknown outcome. It answers {"effect": "applied"\|"not_applied"\|"unknown"} and, for applied, optionally {"output": ...}. Feature 037: `applied` completes the step; `not_applied` and `unknown` are not final, so the step waits for a person (`RECONCILIATION_NOT_FINAL`, `RECONCILIATION_UNKNOWN`) and is never retried automatically. |
 | `retry` | [`retry`](#retry) |  |  |
 | `secrets` | array of string (max items 16) |  | Names of the secrets of the namespace the worker may ask for while it holds a lease on this step. Names only: a value is never part of a definition. |
 | `type` | `"activity"` | yes |  |
@@ -134,7 +134,7 @@ Every node has the fields below; each kind adds its own. The kinds: [`activity`]
 |---|---|---|---|
 | `begin` | string | yes | The first node of the saga. Everything reachable from it is the body of the saga; the body is entered only from here and holds no end node. When it completes, control goes to next. |
 | `cancelPolicy` | one of `"compensate_completed"`, `"abort_no_compensation"`, `"wait_in_flight_then_compensate"` |  | What a cancellation or a deadline does to the saga. compensate_completed (default): stop what is in flight and compensate what completed. wait_in_flight_then_compensate: let the attempts in flight finish, then compensate everything that completed. abort_no_compensation: stop and compensate nothing. |
-| `onCompensationFailure` | one of `"manual_review"`, `"fail"` |  | manual_review (default): a compensation that fails after its retries waits for an operator. fail: the saga ends COMPENSATION_FAILED. |
+| `onCompensationFailure` | one of `"manual_review"`, `"fail"` |  | manual_review (default): a compensation that fails after its retries waits for an operator. fail: the saga ends COMPENSATION_FAILED, only for a known permanent failure after the retries, once every independent compensation has settled; an unknown, accepted or pending compensation outcome still waits for review (feature 037). |
 | `type` | `"saga"` | yes |  |
 
 ### script
@@ -277,10 +277,10 @@ Every node has the fields below; each kind adds its own. The kinds: [`activity`]
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `activity` | [`name`](#name) | yes |  |
-| `compensateWith` | [`name`](#name) |  | The activity that undoes this step when the collection or loop that owns the body stops with completed iterations (a failed iteration, a cancellation). Inside one iteration compensations run in reverse dependency order; collection iterations have no order between them; loop iterations compensate last first. It must be idempotent and tolerate an effect that never happened. |
+| `compensateWith` | [`name`](#name) |  | The activity that undoes this step when the collection or loop that owns the body stops with completed iterations (a failed iteration, a cancellation). Inside one iteration compensations run in reverse dependency order; collection iterations have no order between them; loop iterations compensate last first. It must be idempotent. Feature 037: it is planned only for an effect that succeeded (or that a person settled as having happened); an effect whose outcome is unknown waits for review instead of being compensated defensively. |
 | `compensationRetry` | [`bodyRetry`](#bodyRetry) |  | The retry budget of the compensation (compensateWith). Five attempts, exponential from two seconds to five minutes, with jitter when absent. |
 | `compensationTimeoutMs` | [`duration`](#duration) |  |  |
-| `highRisk` | boolean |  | An attempt whose outcome is unknown (lease lost, timeout, OUTCOME_UNKNOWN) is never retried or compensated blindly: it is reconciled when reconcileWith says how, and otherwise waits for an operator. |
+| `highRisk` | boolean |  | Informational since feature 037. Every activity's attempt whose outcome is unknown (lease lost, timeout, OUTCOME_UNKNOWN) is never retried or compensated blindly, whether or not it is high risk: it is reconciled when reconcileWith says how, and otherwise waits for an operator. |
 | `id` | [`nodeId`](#nodeId) | yes |  |
 | `idempotencyTemplate` | [`expression`](#expression) |  |  |
 | `irreversible` | boolean |  | The effect cannot be undone once it has happened. A saga, or the collection or loop that owns the body, that has to compensate past it ends PARTIAL. Cannot be combined with compensateWith. |
@@ -355,7 +355,7 @@ any
 | `cancelPolicy` | one of `"compensate_completed"`, `"abort_no_compensation"`, `"wait_in_flight_then_compensate"` |  | What a cancellation or a deadline does to the saga. compensate_completed (default): stop what is in flight and compensate what completed. wait_in_flight_then_compensate: let the attempts in flight finish, then compensate everything that completed. abort_no_compensation: stop and compensate nothing. |
 | `id` | [`nodeId`](#nodeId) | yes |  |
 | `next` | [`nodeId`](#nodeId) |  |  |
-| `onCompensationFailure` | one of `"manual_review"`, `"fail"` |  | manual_review (default): a compensation that fails after its retries waits for an operator. fail: the saga ends COMPENSATION_FAILED. |
+| `onCompensationFailure` | one of `"manual_review"`, `"fail"` |  | manual_review (default): a compensation that fails after its retries waits for an operator. fail: the saga ends COMPENSATION_FAILED, only for a known permanent failure after the retries, once every independent compensation has settled; an unknown, accepted or pending compensation outcome still waits for review (feature 037). |
 | `onError` | [`nodeId`](#nodeId) |  |  |
 | `timeoutMs` | [`duration`](#duration) |  |  |
 | `type` | `"saga"` | yes |  |
@@ -365,7 +365,7 @@ any
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `artifactDigest` | string (pattern `^sha256:[0-9a-f]{64}$`) | yes | The artifact a build made: the digest of a ready version of a script of the same tenant. The step runs exactly this code; publishing a newer version of the script changes nothing about a workflow that names this digest. Checked when the workflow is published. |
-| `compensateWith` | [`name`](#name) |  | The activity that undoes this step when the collection or loop that owns the body stops with completed iterations (a failed iteration, a cancellation). Inside one iteration compensations run in reverse dependency order; collection iterations have no order between them; loop iterations compensate last first. It must be idempotent and tolerate an effect that never happened. |
+| `compensateWith` | [`name`](#name) |  | The activity that undoes this step when the collection or loop that owns the body stops with completed iterations (a failed iteration, a cancellation). Inside one iteration compensations run in reverse dependency order; collection iterations have no order between them; loop iterations compensate last first. It must be idempotent. Feature 037: it is planned only for an effect that succeeded (or that a person settled as having happened); an effect whose outcome is unknown waits for review instead of being compensated defensively. |
 | `id` | [`nodeId`](#nodeId) | yes |  |
 | `language` | one of `"typescript"`, `"python"`, `"csharp"`, `"go"`, `"java"` |  | Informational: the runner takes the language from the artifact. |
 | `next` | [`nodeId`](#nodeId) |  |  |

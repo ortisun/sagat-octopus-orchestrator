@@ -274,16 +274,11 @@ where
                 .recover_success_storage_quota(principal, task, idempotency, None, result)
                 .await;
         }
-        // Every lease receives the outputs of the steps before it, so what a run retains is bounded:
-        // a completion that would exceed it fails the step (a retry would only exceed it again).
+        // The successful external result cannot be retained. A local output ceiling does not
+        // establish that the effect failed: retain consultation/review without an error route.
         let retained = tx.logical_output_bytes().await?;
         let output_bytes = u64::try_from(output.len()).unwrap_or(u64::MAX);
         if retained.saturating_add(output_bytes) > MAX_RUN_OUTPUT_BYTES as u64 {
-            let code = if Self::database_write(&mut tx, task) {
-                FailureCode::outcome_unknown()
-            } else {
-                FailureCode::run_data_limit()
-            };
             let completed = self
                 .apply_scoped_or_root_failure(
                     &mut tx,
@@ -291,7 +286,11 @@ where
                     effects,
                     execution::Failure {
                         fence: task.fence,
-                        code,
+                        // The worker reported success; the platform could not retain the output.
+                        // `STORAGE_QUOTA_EXCEEDED` says so and still leaves the outcome unknown.
+                        // (Managed database writes below keep `OUTCOME_UNKNOWN` for a refused or
+                        // secret-bearing result; see D1812 in the 037 research register.)
+                        code: FailureCode::storage_quota_exceeded(),
                         retryable: false,
                         jitter_sample: 0.0,
                     },
@@ -387,9 +386,9 @@ where
     }
 
     /// The success transaction was rolled back in full because its retained data did not fit.
-    /// Reopen the same fenced attempt, replay the original completion identity first, and commit a
-    /// terminal storage failure under that identity. Stopping before settling the step prevents an
-    /// `onError` route from allocating more retained data while preserving saga drain semantics.
+    /// Reopen the same fenced attempt and replay the original completion identity first. The
+    /// source-aware refusal retains the recovery obligation under that identity: rejected storage
+    /// does not establish that an external effect failed, and must not dispatch an `onError` route.
     async fn fail_success_for_storage_quota(
         &self,
         principal: &Principal,
@@ -429,8 +428,8 @@ where
             self.engine
                 .run(&mut tx, effects, move |def, state, now| {
                     let progress = if managed_write {
-                        // A stop request would discard an operator wait during settlement. Preserve
-                        // the ambiguous write for review; it has no automatic retry/onError route.
+                        // Preserve the ambiguous write for review: a stop keeps an operator wait
+                        // (feature 037), and an ambiguous write has no retry or onError route.
                         execution::fail_step(
                             def,
                             state,

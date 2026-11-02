@@ -85,6 +85,28 @@ After OpenBao cutover, application rollback alone does not restore credential au
 [coordinated database/provider recovery](database-recovery.md) procedure, preserving references,
 Raft state/tombstones and the intent-binding key, with cleanup stopped until references are checked.
 
+## Draining workers before a restart
+
+Since feature 037, a worker that stops while an activity is in flight leaves that activity's
+outcome unknown. This happens when its lease lapses, the attempt times out, or the activity reports
+`OUTCOME_UNKNOWN`. Without a `reconcileWith` lookup, such an activity **waits for a person**,
+whether it is high risk or not. A rolling deploy that kills workers mid-activity, or a lost node,
+therefore creates review items instead of retries. To avoid that:
+
+1. Drain the worker identity first: `POST /namespaces/{namespaceId}/workers/{subject}/drain` (or
+   Operations → Workers in the Studio). Polls then get no new work
+   (`worker_polls_drained_total`).
+2. Wait until the identity has no leased task left, then stop it. Give the process a stop timeout
+   (`terminationGracePeriodSeconds` in Kubernetes) at least as long as the longest activity it
+   runs. The SDKs report `shutdown` for work they hand back cleanly (`sdks/SPEC.md`). Work that is
+   still running when the process dies keeps its lease until the lease lapses.
+3. Start the new version, then undrain (`…/undrain`).
+
+Watch `operator_decisions_total{action="requested"}` and the runs in `MANUAL_REVIEW`
+([sagas runbook](sagas.md)). A jump right after a deploy means work was cut off mid-flight, not
+that providers failed. Give every effect that has one a `reconcileWith` lookup: a lookup that
+answers `applied` settles the step without a person.
+
 ## 4. On Kubernetes: the chart
 
 `infra/helm` installs the control plane, the engine and, if you list them, pools of your workers; PostgreSQL, NATS and the identity provider are yours. Start from [`infra/helm/examples/ha.yaml`](../../infra/helm/examples/ha.yaml).

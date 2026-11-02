@@ -123,7 +123,7 @@ async fn a_denial_before_the_script_times_out_is_still_recorded_and_the_containe
 }
 
 #[tokio::test]
-async fn a_runner_lost_before_start_is_replaced_and_only_the_fenced_attempt_records_the_denial() {
+async fn a_lost_run_waits_for_review_and_only_a_fresh_authorized_run_records_the_denial() {
     let options = Options {
         worker: WorkerSettings {
             lease_ttl: Duration::from_secs(5),
@@ -132,35 +132,103 @@ async fn a_runner_lost_before_start_is_replaced_and_only_the_fenced_attempt_reco
         ..Options::default()
     };
     let mut lab = egress_lab(options, &["api.example.test"]).await;
-    let retry = serde_json::from_str(FAST_RETRY).expect("retry json");
-    let (run, digest) = step(
-        &lab,
-        "denial-after-takeover",
-        "typescript",
-        "export default async function (_i: unknown, octopus: any) {\n\
-           await octopus.fetch('https://blocked.example.test/');\n\
-         }\n",
-        json!({"egress": "namespace"}),
-        Some(retry),
-    )
-    .await;
+    let script = lab
+        .script_with(
+            "denial-after-restart",
+            "typescript",
+            "export default async function (_i: unknown, octopus: any) {\n\
+               await octopus.fetch('https://blocked.example.test/');\n\
+             }\n",
+            json!({"policy": {"egress": "namespace"}}),
+        )
+        .await;
+    let digest = lab.ready(&script).await;
+    let workflow = lab
+        .workflow(
+            "wf-denial-after-restart",
+            &digest,
+            json!({"retry": serde_json::from_str::<Value>(FAST_RETRY).expect("retry json")}),
+        )
+        .await;
+    let run = lab.p.start(&workflow, &json!({})).await;
     lab.p.tick().await;
     let namespace = lab.runner.config().namespaces[0].clone();
-    let lost = lab.runner.poll_steps(&namespace).await.expect("poll");
+    let old_runner = std::sync::Arc::clone(&lab.runner);
+    let mut lost = lab.runner.poll_steps(&namespace).await.expect("poll");
     assert_eq!(lost.len(), 1, "the first runner leased the step");
-    drop(lost);
+    let stale = lost.remove(0);
     lab.restart().await;
     lab.p.expire_lease(&run, "s").await;
     lab.p.tick().await;
-    lab.p.elapse_retry_delay(&run, "s").await;
 
-    assert_eq!(lab.drive(&run).await, "FAILED");
+    assert_eq!(lab.p.status(&run).await, "MANUAL_REVIEW");
+    let waiting: (String, Option<String>, Option<String>, i32, bool) = sqlx::query_as(
+        "SELECT status,waiting_kind,failure_code,attempt,next_attempt_at IS NULL \
+         FROM steps WHERE run_id=$1 AND node='s'",
+    )
+    .bind(uuid::Uuid::parse_str(&run).expect("run id"))
+    .fetch_one(&lab.p.api.db.pool)
+    .await
+    .expect("lost script obligation");
     assert_eq!(
-        lab.failure(&run, "s").await.as_deref(),
+        waiting,
+        (
+            "WAITING".into(),
+            Some("OPERATOR".into()),
+            Some("LEASE_EXPIRED".into()),
+            1,
+            true,
+        )
+    );
+    assert!(
+        lab.runner
+            .poll_steps(&namespace)
+            .await
+            .expect("poll after restart")
+            .is_empty(),
+        "a runner restart does not authorize repeating an unknown effect"
+    );
+    assert!(lab.executions(&digest).await.is_empty());
+    assert!(lab.audited("script.violation").await.is_empty());
+    let journal_before: i64 = sqlx::query_scalar("SELECT count(*) FROM run_events WHERE run_id=$1")
+        .bind(uuid::Uuid::parse_str(&run).expect("run id"))
+        .fetch_one(&lab.p.api.db.pool)
+        .await
+        .expect("journal before the stale attempt");
+
+    // A separate run proves the allowlist still applies to currently authorized work. It is
+    // not a replacement attempt or a resolution of the original unknown outcome.
+    let fresh = lab.p.start(&workflow, &json!({})).await;
+    assert_eq!(lab.drive(&fresh).await, "FAILED");
+    assert_eq!(
+        lab.failure(&fresh, "s").await.as_deref(),
         Some("SCRIPT_DENIED")
     );
+
+    // The old runner returns after the new session has served its work. Its stale lease cannot
+    // acquire capabilities, append a denial audit, or settle the retained original obligation.
+    assert_eq!(
+        old_runner.run_step(stale).await.expect("stale runner"),
+        StepOutcome::Abandoned
+    );
+    lab.p.tick().await;
+    assert_eq!(lab.p.status(&run).await, "MANUAL_REVIEW");
+    assert_eq!(
+        lab.failure(&run, "s").await.as_deref(),
+        Some("LEASE_EXPIRED")
+    );
+    assert!(lab.output(&run, "s").await.is_none());
+    let journal_after: i64 = sqlx::query_scalar("SELECT count(*) FROM run_events WHERE run_id=$1")
+        .bind(uuid::Uuid::parse_str(&run).expect("run id"))
+        .fetch_one(&lab.p.api.db.pool)
+        .await
+        .expect("journal after the stale attempt");
+    assert_eq!(journal_after, journal_before);
     let executions = lab.executions(&digest).await;
-    assert_eq!(executions.len(), 1, "only the attempt that ran is recorded");
+    assert_eq!(executions.len(), 1, "only the fresh run is recorded");
+    assert_eq!(executions[0]["runId"], fresh);
+    assert_eq!(executions[0]["attempt"], 1);
+    assert_eq!(executions[0]["failure"], "SCRIPT_DENIED");
     assert_eq!(
         executions[0]["denied"],
         json!(["fetch https://blocked.example.test"])

@@ -377,8 +377,8 @@ async fn us02_a_lost_answer_is_reconciled_before_anything_is_repeated() {
     let engine = engine(&p).await;
     let dir = Dir::new();
     publish(&p, &dir, "compensation").await;
-    // The charge is taken by a worker that dies with it: its answer is lost. The platform asks
-    // the reconciler whether it happened; here it did not, so the charge is attempted again.
+    // The charge's answer is lost. A negative lookup cannot rule out a late charge, so the
+    // platform retains review until a person confirms its final outcome; it never charges again.
     let mocks = dir.read("compensation/mocks.yaml").replace(
         "    fail: { code: CARD_DECLINED, retryable: false, message: \"the card was declined\" }\n",
         "    sequence:\n      - lose: true\n      - output: { chargeId: ch-1 }\n",
@@ -386,42 +386,106 @@ async fn us02_a_lost_answer_is_reconciled_before_anything_is_repeated() {
     dir.write("compensation/mocks.yaml", &mocks);
     let input = r#"{"paymentId":"p-2","amount":10}"#;
 
-    let driver = async {
-        let started = cli(
-            &p,
-            &dir,
-            &["workflow", "run", "payment-saga", "--input", input],
-        )
-        .await;
-        started.expect(0);
-        let run = started.run_id();
-        // Once the worker holds the charge and says nothing, its lease is made to run out (the
-        // engine would wait out the real one).
-        within("the charge to be taken", 30, || async {
-            let (_, attempts) = rest(&p, Method::GET, &format!("/runs/{run}/attempts"), None).await;
-            attempts["items"]
-                .as_array()?
+    let driver =
+        async {
+            let started = cli(
+                &p,
+                &dir,
+                &["workflow", "run", "payment-saga", "--input", input],
+            )
+            .await;
+            started.expect(0);
+            let run = started.run_id();
+            // Once the worker holds the charge and says nothing, its lease is made to run out (the
+            // engine would wait out the real one).
+            within("the charge to be taken", 30, || async {
+                let (_, attempts) =
+                    rest(&p, Method::GET, &format!("/runs/{run}/attempts"), None).await;
+                attempts["items"]
+                    .as_array()?
+                    .iter()
+                    .any(|a| a["node"] == "charge" && a["outcome"] == "open")
+                    .then_some(())
+            })
+            .await;
+            p.expire_lease(&run, "charge").await;
+            within("the negative lookup to require review", 40, || async {
+                (status_of(&p, &run).await == "MANUAL_REVIEW").then_some(())
+            })
+            .await;
+            let (status, graph) = rest(&p, Method::GET, &format!("/runs/{run}/graph"), None).await;
+            assert_eq!(status, 200, "{graph}");
+            let charge = graph["nodes"]
+                .as_array()
+                .expect("nodes")
                 .iter()
-                .any(|a| a["node"] == "charge" && a["outcome"] == "open")
-                .then_some(())
-        })
-        .await;
-        p.expire_lease(&run, "charge").await;
-        within("the run to end", 40, || async {
-            let status = status_of(&p, &run).await;
-            ["SUCCEEDED", "FAILED", "COMPENSATED"]
-                .contains(&status.as_str())
-                .then_some(status)
-        })
-        .await;
-        run
-    };
-    let (served, run) = tokio::join!(worker(&p, &dir, &engine, "compensation", 5), driver);
+                .find(|node| node["id"] == "charge")
+                .expect("charge");
+            assert_eq!(charge["status"], "WAITING");
+            assert_eq!(charge["waitingOn"], "operator");
+            assert_eq!(charge["failureCode"], "RECONCILIATION_NOT_FINAL");
+            cli(&p, &dir, &["workflow", "inspect", &run])
+                .await
+                .expect(0)
+                .mentions("MANUAL_REVIEW");
+
+            let before = journal(&p, &run).await;
+            let (status, body) = rest(
+                &p,
+                Method::POST,
+                &format!("/runs/{run}/operations"),
+                Some(&json!({"action": "RETRY_STEP", "stepId": "charge",
+                "reason": "a negative observation does not prove final absence"})),
+            )
+            .await;
+            assert_eq!(status, 409, "{body}");
+            assert_eq!(journal(&p, &run).await, before, "no repeat was scheduled");
+
+            // This is a simulated human assertion of the final outcome after a negative lookup;
+            // no provider verification is claimed. Repeating the decision key is a no-op.
+            for _ in 0..2 {
+                let response = p
+                .api
+                .as_user(Method::POST, &format!("/runs/{run}/operations"), "alice", "acme")
+                .header("x-octopus-namespace", "payments")
+                .header("idempotency-key", "resolve-late-charge-p-2")
+                .json(&json!({"action": "RESOLVE_STEP", "stepId": "charge", "outcome": "SUCCEEDED",
+                    "reason": "mock provider operator confirms charge p-2 settled after lookup"}))
+                .send()
+                .await
+                .expect("resolve the observed charge");
+                assert_eq!(response.status().as_u16(), 202);
+            }
+            within("the run to end", 40, || async {
+                let status = status_of(&p, &run).await;
+                ["SUCCEEDED", "FAILED", "COMPENSATED"]
+                    .contains(&status.as_str())
+                    .then_some(status)
+            })
+            .await;
+            run
+        };
+    let (served, run) = tokio::join!(worker(&p, &dir, &engine, "compensation", 4), driver);
     served
         .expect(0)
         .mentions("payment.charge  takes the task and never answers")
-        .mentions("payment.find-charge (reconciliation)  answers: not_applied");
+        .mentions("payment.find-charge (reconciliation)  answers: not_applied")
+        .mentions("customer.notify  completes")
+        .mentions("served 4 tasks")
+        .omits("payment.charge  completes");
     assert_eq!(status_of(&p, &run).await, "SUCCEEDED");
+    let (status, attempts) = rest(&p, Method::GET, &format!("/runs/{run}/attempts"), None).await;
+    assert_eq!(status, 200, "{attempts}");
+    assert_eq!(
+        attempts["items"]
+            .as_array()
+            .expect("attempts")
+            .iter()
+            .filter(|attempt| attempt["node"] == "charge")
+            .count(),
+        1,
+        "the original charge was never repeated"
+    );
     let events = journal(&p, &run).await;
     let at = |kind: &str| {
         events
@@ -432,6 +496,18 @@ async fn us02_a_lost_answer_is_reconciled_before_anything_is_repeated() {
     assert!(
         at("reconciliation.requested") < at("reconciliation.concluded"),
         "{events:?}"
+    );
+    assert!(
+        at("reconciliation.concluded") < at("step.resolved"),
+        "{events:?}"
+    );
+    assert!(at("step.resolved") < at("run.finished"), "{events:?}");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| *event == "step.resolved")
+            .count(),
+        1
     );
 }
 

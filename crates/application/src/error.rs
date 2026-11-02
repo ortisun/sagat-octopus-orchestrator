@@ -129,6 +129,10 @@ pub enum AppError {
     /// A request the *current state* of the resource cannot accept (cancelling a finished run).
     #[error("conflict with the current state: {0}")]
     StateConflict(&'static str),
+    /// Another attempt was asked of a step whose last outcome is unknown; it must be settled
+    /// (`RESOLVE_STEP`) before anything is repeated, by any role (feature 037).
+    #[error("the step's last outcome is unknown and must be settled first")]
+    OutcomeUnresolved,
     /// The request was well-formed but violates a domain rule.
     #[error("invalid input: {0}")]
     Invalid(IdentityError),

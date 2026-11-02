@@ -1,0 +1,37 @@
+[
+  {
+    "command": "npm audit --audit-level=moderate",
+    "exit": 0,
+    "log": "d1-frontend-final-audit.txt"
+  },
+  {
+    "command": "npm run lint",
+    "exit": 0,
+    "log": "d1-frontend-final-lint.txt"
+  },
+  {
+    "command": "npm run typecheck",
+    "exit": 0,
+    "log": "d1-frontend-final-types.txt"
+  },
+  {
+    "command": "npm run typecheck --workspace @sagat/e2e",
+    "exit": 0,
+    "log": "d1-frontend-final-e2e-types.txt"
+  },
+  {
+    "command": "npm test",
+    "exit": 0,
+    "log": "d1-frontend-final-tests.txt"
+  },
+  {
+    "command": "npm run build",
+    "exit": 0,
+    "log": "d1-frontend-final-build.txt"
+  },
+  {
+    "command": "npm run check:api",
+    "exit": 0,
+    "log": "d1-frontend-final-api.txt"
+  }
+]

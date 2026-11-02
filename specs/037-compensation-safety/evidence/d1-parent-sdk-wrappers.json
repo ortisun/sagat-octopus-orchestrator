@@ -1,0 +1,1 @@
+{"command": ["cargo", "test", "--workspace", "--locked", "--offline", "--no-fail-fast", "--test", "e2e_sdk_multilanguage", "--test", "fault_sdk_multilanguage", "--", "--ignored"], "exit": 0, "sdk_reuse": "same unchanged prepared sources, all six languages"}

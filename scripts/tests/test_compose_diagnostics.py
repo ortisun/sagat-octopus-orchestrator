@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import uuid
@@ -39,13 +40,28 @@ class PipeProcess:
 
     def __init__(self, result):
         read_fd, write_fd = os.pipe()
-        os.write(write_fd, result.stdout)
-        os.close(write_fd)
+        # Drain and write concurrently: pipe capacity is platform/resource dependent,
+        # so preloading even a small fixture can block before the probe gets to read.
+        def write_output():
+            try:
+                with os.fdopen(write_fd, "wb", buffering=0) as output:
+                    remaining = memoryview(result.stdout)
+                    while remaining:
+                        written = output.write(remaining)
+                        remaining = remaining[written:]
+            except BrokenPipeError:
+                pass  # The bounded probe may close the reader on overflow/timeout.
+
+        self.writer = threading.Thread(target=write_output, daemon=True)
+        self.writer.start()
         self.stdout = os.fdopen(read_fd, "rb", buffering=0)
         self.pid = 99_999_999
         self.returncode = result.returncode
 
     def wait(self, timeout=None):
+        self.writer.join(timeout)
+        if self.writer.is_alive():
+            raise subprocess.TimeoutExpired("fixture writer", timeout)
         return self.returncode
 
     def kill(self):

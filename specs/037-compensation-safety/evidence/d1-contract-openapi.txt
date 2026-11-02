@@ -1,0 +1,12 @@
+npx --yes --ignore-scripts @redocly/cli@1 lint specs/001-platform-foundation/contracts/openapi.yaml
+npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory. Do not use it. Check out lru-cache if you want a good and tested way to coalesce async requests by a key value, which is much more comprehensive and powerful.
+npm warn deprecated @opentelemetry/sdk-trace-base@2.11.0: Use @opentelemetry/sdk-trace package
+npm warn deprecated glob@7.2.3: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
+npm warn deprecated @opentelemetry/sdk-trace-node@2.11.0: Use @opentelemetry/sdk-trace package
+No configurations were provided -- using built in recommended configuration by default.
+
+validating specs/001-platform-foundation/contracts/openapi.yaml...
+specs/001-platform-foundation/contracts/openapi.yaml: validated in 83ms
+
+Woohoo! Your API description is valid. 🎉
+

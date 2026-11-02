@@ -1,0 +1,9 @@
+npm run lint
+
+> lint
+> npm run lint --workspace @sagat/studio
+
+
+> @sagat/studio@0.2.0 lint
+> eslint .
+

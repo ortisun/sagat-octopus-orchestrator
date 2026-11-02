@@ -1,0 +1,230 @@
+✖ @eslint/config-array resolves the reviewed bridge and patched matcher (2.401792ms)
+✖ @eslint/eslintrc resolves the reviewed bridge and patched matcher (0.67625ms)
+✖ eslint resolves the reviewed bridge and patched matcher (0.313ms)
+✖ eslint-plugin-jsx-a11y resolves the reviewed bridge and patched matcher (0.31275ms)
+✖ @redocly/openapi-core resolves the reviewed bridge and patched matcher (0.659792ms)
+✖ @typescript-eslint/typescript-estree resolves the reviewed bridge and patched matcher (0.972917ms)
+✖ native ESM has both default and named imports required by tooling (2.938583ms)
+✖ optimization level 2 bounds globparts amplification in the actual installed matcher (71.630458ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 0
+ℹ fail 8
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 155.67475
+
+✖ failing tests:
+
+test at frontend/tools/minimatch.test.mjs:11:3
+✖ @eslint/config-array resolves the reviewed bridge and patched matcher (2.401792ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  
+  + 'minimatch'
+  - '@sagat/minimatch-compat'
+  
+      at TestContext.<anonymous> (file:///Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/frontend/tools/minimatch.test.mjs:15:12)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.start (node:internal/test_runner/test:1262:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:387:17) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'minimatch',
+    expected: '@sagat/minimatch-compat',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at frontend/tools/minimatch.test.mjs:11:3
+✖ @eslint/eslintrc resolves the reviewed bridge and patched matcher (0.67625ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  
+  + 'minimatch'
+  - '@sagat/minimatch-compat'
+  
+      at TestContext.<anonymous> (file:///Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/frontend/tools/minimatch.test.mjs:15:12)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'minimatch',
+    expected: '@sagat/minimatch-compat',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at frontend/tools/minimatch.test.mjs:11:3
+✖ eslint resolves the reviewed bridge and patched matcher (0.313ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  
+  + 'minimatch'
+  - '@sagat/minimatch-compat'
+  
+      at TestContext.<anonymous> (file:///Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/frontend/tools/minimatch.test.mjs:15:12)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'minimatch',
+    expected: '@sagat/minimatch-compat',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at frontend/tools/minimatch.test.mjs:11:3
+✖ eslint-plugin-jsx-a11y resolves the reviewed bridge and patched matcher (0.31275ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  
+  + 'minimatch'
+  - '@sagat/minimatch-compat'
+  
+      at TestContext.<anonymous> (file:///Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/frontend/tools/minimatch.test.mjs:15:12)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'minimatch',
+    expected: '@sagat/minimatch-compat',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at frontend/tools/minimatch.test.mjs:11:3
+✖ @redocly/openapi-core resolves the reviewed bridge and patched matcher (0.659792ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  
+  + 'minimatch'
+  - '@sagat/minimatch-compat'
+  
+      at TestContext.<anonymous> (file:///Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/frontend/tools/minimatch.test.mjs:15:12)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'minimatch',
+    expected: '@sagat/minimatch-compat',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at frontend/tools/minimatch.test.mjs:11:3
+✖ @typescript-eslint/typescript-estree resolves the reviewed bridge and patched matcher (0.972917ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  
+  + 'minimatch'
+  - '@sagat/minimatch-compat'
+  
+      at TestContext.<anonymous> (file:///Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/frontend/tools/minimatch.test.mjs:15:12)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'minimatch',
+    expected: '@sagat/minimatch-compat',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at frontend/tools/minimatch.test.mjs:33:1
+✖ native ESM has both default and named imports required by tooling (2.938583ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  
+  + [Function: minimatch] {
+  +   GLOBSTAR: {},
+  +   Minimatch: [Function: Minimatch] {
+  +     GLOBSTAR: {},
+  +     defaults: [Function (anonymous)]
+  +   },
+  +   braceExpand: [Function (anonymous)],
+  +   defaults: [Function (anonymous)],
+  +   filter: [Function: filter],
+  +   makeRe: [Function (anonymous)],
+  +   match: [Function (anonymous)],
+  +   sep: '/'
+  + }
+  - undefined
+  
+      at TestContext.<anonymous> (file:///Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/frontend/tools/minimatch.test.mjs:37:10)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    expected: undefined,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at frontend/tools/minimatch.test.mjs:41:1
+✖ optimization level 2 bounds globparts amplification in the actual installed matcher (71.630458ms)
+  AssertionError [ERR_ASSERTION]: node:internal/assert/utils:146
+    throw error;
+    ^
+  
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  256 !== 64
+  
+      at [eval]:6:12
+      at runScriptInThisContext (node:internal/vm:219:10)
+      at node:internal/process/execution:485:12
+      at [eval]-wrapper:6:24
+      at runScriptInContext (node:internal/process/execution:483:60)
+      at evalFunction (node:internal/process/execution:317:30)
+      at evalTypeScript (node:internal/process/execution:329:3)
+      at node:internal/main/eval_string:71:3 {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 256,
+    expected: 64,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+  
+  Node.js v26.12.0
+  
+  
+  1 !== 0
+  
+      at TestContext.<anonymous> (file:///Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/frontend/tools/minimatch.test.mjs:55:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

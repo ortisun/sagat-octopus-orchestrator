@@ -1,0 +1,20 @@
+
+running 1 test
+test us02::us02_a_worker_that_dies_while_releasing_is_replaced_and_the_provider_sees_one_key ... FAILED
+
+failures:
+
+---- us02::us02_a_worker_that_dies_while_releasing_is_replaced_and_the_provider_sees_one_key stdout ----
+
+thread 'us02::us02_a_worker_that_dies_while_releasing_is_replaced_and_the_provider_sees_one_key' (788420070) panicked at tests/e2e/sagas-compensations/../../support/worker.rs:406:9:
+assertion `left == right` failed: expected exactly one task
+  left: 0
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    us02::us02_a_worker_that_dies_while_releasing_is_replaced_and_the_provider_sees_one_key
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 19 filtered out; finished in 2.94s
+

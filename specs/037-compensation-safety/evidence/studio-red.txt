@@ -1,0 +1,107 @@
+
+> @sagat/studio@0.2.0 test
+> vitest run src/features/runs/ops.test.ts
+
+
+ RUN  v4.1.12 /Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/frontend/apps/studio
+
+ ❯ src/features/runs/ops.test.ts (24 tests | 4 failed) 9ms
+     × disables direct retry of every unresolved original or compensation even for an admin 3ms
+     × offers to retry a step that is waiting out its retry now, without waiting for the delay 1ms
+     × has a button label for every action and a consequence in plain words 0ms
+     × asks for the step id back only for available outcome-bearing override decisions 0ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/features/runs/ops.test.ts > stepOperations > disables direct retry of every unresolved original or compensation even for an admin
+AssertionError: OUTCOME_UNKNOWN pay WAITING: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ src/features/runs/ops.test.ts:139:78
+    137|           const retry = by(stepOperations(unresolved, facts, admin), a…
+    138|
+    139|           expect(retry.enabled, `${failureCode} ${unresolved.id} ${sta…
+       |                                                                              ^
+    140|           expect(retry.reason, `${failureCode} remains visible`).toCon…
+    141|           expect(retry.reason, `${failureCode} requires an outcome-bea…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+
+ FAIL  src/features/runs/ops.test.ts > stepOperations > offers to retry a step that is waiting out its retry now, without waiting for the delay
+AssertionError: expected { action: 'RETRY_STEP', …(4) } to match object { enabled: false }
+(4 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+-   "enabled": false,
++   "enabled": true,
+  }
+
+ ❯ src/features/runs/ops.test.ts:176:90
+    174|     // Even a stale RETRY_WAIT projection must fail closed when its fa…
+    175|     const unknown = node({ status: 'RETRY_WAIT', waitingOn: null, fail…
+    176|     expect(by(stepOperations(unknown, run({ status: 'RUNNING' }), admi…
+       |                                                                                          ^
+    177|     expect(consequence('RETRY_STEP', 'pay', waiting)).toMatch(/Starts …
+    178|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯
+
+ FAIL  src/features/runs/ops.test.ts > words > has a button label for every action and a consequence in plain words
+AssertionError: expected 'Stops the run. Completed steps of a s…' to match /preserv.*review|review.*preserv/i
+
+- Expected:
+/preserv.*review|review.*preserv/i
+
++ Received:
+"Stops the run. Completed steps of a saga are compensated according to its cancel policy; the steps still running are asked to stop."
+
+ ❯ src/features/runs/ops.test.ts:208:35
+    206|     expect(consequence('SKIP_COMPENSATION', 'pay~c')).toMatch(/partly …
+    207|     expect(consequence('RESOLVE_STEP', 'pay')).toMatch(/overrides what…
+    208|     expect(consequence('CANCEL')).toMatch(/preserv.*review|review.*pre…
+       |                                   ^
+    209|     expect(consequence('CANCEL')).toMatch(/unknown|unresolved/i);
+    210|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯
+
+ FAIL  src/features/runs/ops.test.ts > words > asks for the step id back only for available outcome-bearing override decisions
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ src/features/runs/ops.test.ts:218:66
+    216|     // Unknown effects must first be resolved; their disabled retry ne…
+    217|     for (const failureCode of unresolvedEffectCodes) {
+    218|       expect(asksForStepId('RETRY_STEP', node({ failureCode }))).toBe(…
+       |                                                                  ^
+    219|       expect(asksForStepId('RETRY_COMPENSATION', node({ id: 'pay~c', f…
+    220|     }
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/4]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  4 failed | 20 passed (24)
+   Start at  11:01:46
+   Duration  872ms (transform 50ms, setup 114ms, import 42ms, tests 9ms, environment 587ms)
+
+npm error Lifecycle script `test` failed with error:
+npm error code 1
+npm error path /Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/frontend/apps/studio
+npm error workspace @sagat/studio@0.2.0
+npm error location /Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/frontend/apps/studio
+npm error command failed
+npm error command sh -c vitest run src/features/runs/ops.test.ts

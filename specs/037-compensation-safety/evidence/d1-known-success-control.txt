@@ -1,0 +1,6 @@
+
+running 1 test
+test byte_ceilings::a_known_successful_seventeenth_member_is_preserved_without_its_refused_output ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 771 filtered out; finished in 6.24s
+
