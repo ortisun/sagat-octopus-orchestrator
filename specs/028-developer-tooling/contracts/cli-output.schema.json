@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sagat-octopus-orchestrator.io/schemas/cli-output/v1.json",
+  "title": "sagat --json output (draft, feature 028)",
+  "description": "What `sagat <command> --json` writes to standard output: one JSON document, or with `workflow inspect --follow --json` one `followLine` per line (NDJSON). Human messages go to standard error. Exit codes are unchanged. Values that come from the server are its own words (code, reason, remediation, trace id). Payload values appear only for `workflow inspect --values` under the server's disclosure, exactly as the human output shows them; tokens never appear. The schema version changes only by addition within v1.",
+  "oneOf": [{ "$ref": "#/$defs/document" }, { "$ref": "#/$defs/followLine" }],
+  "$defs": {
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "command", "ok", "exitCode"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "command": { "enum": ["validate", "workflow.validate", "workflow.publish", "workflow.run", "workflow.runs", "workflow.inspect", "diff", "publish", "history.replay", "history.answers", "history.compare", "test-server.start", "test-server.status", "test-server.stop", "test-server.advance", "template.list", "template.show", "template.import", "version", "doctor"] },
+        "ok": { "type": "boolean" },
+        "exitCode": { "type": "integer", "minimum": 0, "maximum": 6 },
+        "cli": { "type": "object", "properties": { "version": { "type": "string" }, "outputSchemaVersion": { "const": 1 }, "supports": { "type": "array", "items": { "type": "string" } } } },
+        "findings": { "type": "array", "maxItems": 10000, "items": { "$ref": "#/$defs/finding" } },
+        "documents": { "type": "array", "maxItems": 500, "items": { "type": "object", "required": ["name", "ok"], "properties": { "name": { "type": "string" }, "file": { "type": "string" }, "ok": { "type": "boolean" }, "findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } } } } },
+        "run": { "$ref": "#/$defs/run" },
+        "runs": { "type": "array", "maxItems": 200, "items": { "$ref": "#/$defs/run" } },
+        "published": { "type": "object", "properties": { "workflow": { "type": "string" }, "version": { "type": "integer" }, "digest": { "type": "string" }, "requestId": { "type": ["string", "null"] } } },
+        "replay": { "type": "object", "description": "The server's ReplayReport, unchanged." },
+        "testServer": { "type": "object", "properties": { "apiUrl": { "type": "string" }, "grpcUrl": { "type": "string" }, "adminTokenFile": { "type": "string" }, "workerTokenFile": { "type": "string" }, "namespace": { "type": "string" }, "pid": { "type": "integer" } } },
+        "error": { "$ref": "#/$defs/error" }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "severity", "message"],
+      "properties": {
+        "code": { "type": "string" },
+        "severity": { "enum": ["error", "warning"] },
+        "nodeId": { "type": ["string", "null"] },
+        "path": { "type": ["string", "null"], "description": "JSON pointer into the document, as the server's validate answer gives it." },
+        "message": { "type": "string", "maxLength": 512 },
+        "help": { "type": ["string", "null"] },
+        "docs": { "type": ["string", "null"], "description": "The page and anchor of docs/quickstarts/errors.md, or the configured SAGAT_DOCS_URL." },
+        "source": { "enum": ["local", "server"] }
+      }
+    },
+    "run": {
+      "type": "object",
+      "required": ["id", "status"],
+      "properties": {
+        "id": { "type": "string", "format": "uuid" },
+        "workflow": { "type": "string" },
+        "version": { "type": "integer" },
+        "status": { "type": "string" },
+        "traceId": { "type": ["string", "null"] },
+        "startedAt": { "type": ["string", "null"], "format": "date-time" },
+        "finishedAt": { "type": ["string", "null"], "format": "date-time" }
+      }
+    },
+    "followLine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "kind"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "kind": { "enum": ["event", "node", "status", "end", "error"] },
+        "seq": { "type": "integer" },
+        "eventType": { "type": "string" },
+        "nodeId": { "type": ["string", "null"] },
+        "nodeStatus": { "type": "string" },
+        "attempt": { "type": ["integer", "null"] },
+        "runStatus": { "type": "string" },
+        "occurredAt": { "type": "string", "format": "date-time" },
+        "cause": { "type": ["object", "null"], "properties": { "kind": { "type": "string" }, "code": { "type": "string" } } },
+        "error": { "$ref": "#/$defs/error" }
+      }
+    },
+    "error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "string" },
+        "reason": { "type": ["string", "null"] },
+        "message": { "type": "string", "maxLength": 512 },
+        "remediation": { "type": ["string", "null"] },
+        "traceId": { "type": ["string", "null"], "pattern": "^[0-9a-f]{32}$" }
+      }
+    }
+  }
+}
