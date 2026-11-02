@@ -20,15 +20,32 @@ use crate::support::engine::{
 #[derive(Default, Clone)]
 struct ExternalSystem {
     performed: Arc<Mutex<BTreeMap<String, u32>>>,
+    /// Keys an operator has closed at the provider after confirming no call arrived. A real
+    /// provider voids the idempotency key, so a worker whose lease was lost cannot apply it later.
+    voided: Arc<Mutex<std::collections::BTreeSet<String>>>,
 }
 
 impl ExternalSystem {
     /// Performs the side effect unless this key already did; returns whether it ran.
     fn charge(&self, key: &str) -> bool {
         let mut performed = self.performed.lock().expect("lock");
+        if self.voided.lock().expect("lock").contains(key) {
+            return false;
+        }
         let count = performed.entry(key.to_owned()).or_insert(0);
         *count += 1;
         *count == 1
+    }
+
+    /// Voids `key` at the provider if no call has used it, atomically with the check; returns
+    /// whether the effect is now known not to be applied.
+    fn void_if_unused(&self, key: &str) -> bool {
+        let performed = self.performed.lock().expect("lock");
+        if performed.get(key).copied().unwrap_or(0) > 0 {
+            return false;
+        }
+        self.voided.lock().expect("lock").insert(key.to_owned());
+        true
     }
 
     fn total_effects(&self) -> usize {
@@ -455,7 +472,9 @@ async fn resolve_unknown_effects(
                 continue;
             };
             let key = format!("{run}:{node}");
-            let outcome = if bank.calls(&key) > 0 {
+            // A worker whose lease expired may still hold the task. Reading the ledger alone
+            // races with its late call, so the operator voids the key at the provider first.
+            let outcome = if !bank.void_if_unused(&key) {
                 ReviewOutcome::Succeeded
             } else {
                 ReviewOutcome::Failed(
