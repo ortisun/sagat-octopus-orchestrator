@@ -77,7 +77,7 @@ contracts, so every later task has a place to put its failing test.
   shows ADR-0071 only here, with 0072..0076 taken by other features. `Permission::ALL.len()` is 52 in
   `crates/domain/tests/identity.rs:288`. `PROTOCOL_MINOR` is 6 in `crates/application/src/worker.rs:59`.
   Recorded as D035-071.
-- [ ] T035-003 Register the targets in `tests/Cargo.toml` and create each harness `main.rs`:
+- [x] T035-003 Register the targets in `tests/Cargo.toml` and create each harness `main.rs`:
 
   | Target | Harness |
   |---|---|
@@ -91,6 +91,14 @@ contracts, so every later task has a place to put its failing test.
   | `e2e_step_destinations` | `tests/e2e/step-destinations/main.rs` |
 
   A harness that cannot start its containers fails the test. Refs: NFR-035-DUR, SC-035-010.
+
+  *Evidence, 2026-11-02:* `cargo test -p sagat-tests --locked --no-run --test contract_iceberg_writes
+  --test integration_iceberg_writes --test fault_iceberg_writes --test e2e_iceberg_writes --test
+  perf_iceberg_writes --test integration_step_destinations --test fault_step_destinations --test
+  e2e_step_destinations` → `Finished test profile [unoptimized] target(s) in 1m 09s`, 8 executables, 0
+  errors (private `CARGO_TARGET_DIR`, `CARGO_PROFILE_DEV_DEBUG=0`); `cargo fmt --check` prints nothing.
+  The harnesses declare no case yet: each one gains its first failing case in the task named in its
+  doc comment, so a run of any of them today reports 0 tests and proves nothing about the feature.
 - [ ] T035-004 [P] Declare the fixtures in `infra/docker/compose.lake.yaml`: the D035-041 images, each
   pinned by digest, with a tag at least two weeks old when added; loopback-only ports; a healthcheck
   per service. Add `tests/support/lake.rs`, which:
@@ -99,6 +107,18 @@ contracts, so every later task has a place to put its failing test.
   - never uses a hand-started service or another project's container.
 
   Refs: FR-035-032, SC-035-010, D035-041, AGENTS.md rule 16.
+
+  *2026-11-02, partly done, left unticked:* `infra/docker/compose.lake.yaml` (ten services, digests
+  fetched from the registries, loopback-only ports, a healthcheck each) and
+  `infra/docker/lake-init/01-databases.sql` exist. `docker compose config -q` passes, and in three
+  groups every service reached `healthy`: postgres, rustfs, iceberg-rest and lakekeeper (the
+  `lakekeeper-migrate` job exited 0); azurite, clickhouse, fake-gcs and moto; hive-metastore. The first
+  RustFS start failed (`Permission denied`, a root-owned `tmpfs`) and was fixed with an anonymous
+  volume. Not done: `tests/support/lake.rs` (Testcontainers startup and the fixture admin client);
+  all ten at once were not started (the shared Docker Desktop VM has 7.7 GiB); the project's Colima
+  socket `sagat-remaining` refused connections while `colima list` said Running, so the default daemon
+  was used with a unique compose project and `down -v` of that project only; the ClickHouse fixture has
+  no TLS yet; the Azurite push date is not verifiable by API.
 - [ ] T035-005 [P] Add the independent reader:
   - `iceberg = "=0.10.1"` as a test-only dependency in `tests/Cargo.toml`;
   - `tests/support/lake_reader.rs`, returning rows, snapshots, snapshot summaries and refs;
@@ -106,6 +126,14 @@ contracts, so every later task has a place to put its failing test.
     package other than `tests`.
 
   Refs: NFR-035-INTEROP, D035-026.
+
+  *2026-11-02, partly done, left unticked:* the architecture rule and its negative tests are in
+  (`python3 -m unittest scripts.tests.test_check_architecture`: 10 tests, OK; they failed 18 times
+  before the rule). The task text was incomplete: `iceberg` 0.10.1 has no storage features, so
+  `tests/Cargo.toml` also declares `iceberg-storage-opendal` (D035-072). Both resolve and the three
+  resulting advisories are ignored by the owner's decision (G035-024); `cargo audit --deny warnings`
+  exits 0. Not done: `tests/support/lake_reader.rs` (rows, snapshots, snapshot summaries and refs), which
+  needs a table to read and so waits for the fixture admin client of T035-004.
 - [ ] T035-006 [P] Create the lake runtime skeleton in `runners/lake/`:
   - `pyproject.toml`, with mypy strict and ruff;
   - `requirements.in`;

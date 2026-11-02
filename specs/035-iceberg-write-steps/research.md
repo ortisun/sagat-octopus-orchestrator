@@ -565,3 +565,24 @@ The other fixes were wording:
     feature (D035-066, plan.md, data-model.md, T035-011) now reads "52 → 53"; the grants do not change.
   - `PROTOCOL_MINOR` is 6 in `crates/application/src/worker.rs`, as the plan assumed. The 035 fields
     still take the next free minor when the feature merges (D035-043).
+- **D035-072 — The independent reader needs two crates, and three advisories are ignored with a written
+  reason.** `iceberg` 0.10.1 has no storage features (`default = []`): S3 access lives in the sibling
+  crate `iceberg-storage-opendal` 0.10.1 (feature `opendal-s3`). T035-005 named only `iceberg`; the
+  reader therefore declares both, as dev-dependencies of `sagat-tests` only, and
+  `scripts/check-architecture.py` refuses any `iceberg*` dependency of another package, of any kind
+  (negative tests in `scripts/tests/test_check_architecture.py`). The two crates add 94 crates to
+  `Cargo.lock`; no existing crate changes version (18 crates gain a second, older version beside the
+  current one). They make `cargo audit --deny warnings` fail on three advisories, which the owner
+  decided on 2026-11-02 ("Ignorar os 3, documentados") to ignore until 2026-12-02: G035-024.
+- **G035-024 — Advisories reached only through the test-only Iceberg reader.**
+  RUSTSEC-2026-0194 and RUSTSEC-2026-0195 (`quick-xml` 0.39.4, severity 7.5: quadratic run time on
+  duplicate-attribute checks, and unbounded namespace allocation in `NsReader`), pulled in by
+  `opendal-core` 0.57.0 and `opendal-service-s3` 0.57.0 under `iceberg-storage-opendal`; both fixes
+  need `quick-xml` >= 0.41, a different 0.x series that `[patch]` cannot substitute. RUSTSEC-2024-0436
+  (`paste` 1.0.15, unmaintained), a compile-time macro pulled in by `parquet` 58.4.1 under `iceberg`.
+  The path is `sagat-tests` (dev) → `iceberg-storage-opendal` → `opendal`; the reader parses only the
+  responses of the disposable fixtures of `infra/docker/compose.lake.yaml`. Evidence: `cargo audit
+  --deny warnings` exits 0 with the three ignores in `.cargo/audit.toml` and failed with exit 1 and
+  "2 vulnerabilities found, 1 denied warning" without them; the lockfile before the change passed.
+  *Exit condition:* remove the ignores when opendal moves to `quick-xml` >= 0.41 and parquet drops
+  `paste`; re-evaluate on 2026-12-02.

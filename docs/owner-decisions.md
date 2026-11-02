@@ -16,6 +16,7 @@ nothing here is built.
 | 2 | O035-003 ceilings | **The plan's “Finite ceilings” table is approved as written** (D035-045), including the reference environment of SC-035-009. | `specs/035-iceberg-write-steps/research.md` (D035-070) | Decided; not built |
 | 3 | O035-004 failure policy | **`hold` is the default** for synchronous destinations (D035-023): an unproven outcome waits for a person. | `specs/035-iceberg-write-steps/research.md` (D035-070) | Decided; not built |
 | 4 | O035-005 020 sinks | **020's `OBJECT_STORAGE` and `CLICKHOUSE` sinks reference the new 017 connection kinds** `object_storage` and `clickhouse`; a destination is configured once for both modes. 020 is still a draft in PR #53's lineage. | `specs/035-iceberg-write-steps/research.md` (D035-070) | Decided; 020 not updated |
+| 5 | Audit gate for the independent reader | **Ignore RUSTSEC-2026-0194, RUSTSEC-2026-0195 and RUSTSEC-2024-0436, documented** (“Ignorar os 3, documentados”): the `iceberg` crates are test-only dev-dependencies of `sagat-tests`, enforced by `scripts/check-architecture.py`; re-evaluate on 2026-12-02. | `.cargo/audit.toml`; `specs/035-iceberg-write-steps/research.md` (G035-024, D035-072); `specs/001-platform-foundation/research.md` (G035-024) | Decided; ignores in place |
 
 Not asked, because neither blocks I0–I1: O035-002 (priority of ORC/Avro and Kerberos Hive) stays open
 for a later delivery; and developers may **not** publish writes, which keeps D035-066 (admin-only
