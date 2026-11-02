@@ -57,9 +57,11 @@ async fn connection_kills_while_sagas_succeed_and_compensate_lose_nothing_and_du
     )
     .await;
     storm.await.expect("storm");
+    let gave_up: Vec<&String> = done.iter().flatten().collect();
     assert!(
-        done.iter().all(|d| *d),
-        "a worker gave up before the work was done"
+        gave_up.is_empty(),
+        "a worker gave up before the work was done: {gave_up:?}\n{}",
+        describe_unfinished_work(&w).await
     );
 
     // Settled even runs paid; settled odd runs compensated. Lost effect outcomes may
@@ -120,16 +122,21 @@ async fn connection_kills_while_sagas_succeed_and_compensate_lose_nothing_and_du
 }
 
 /// Works for `session` until every run is over or awaiting operator review, retrying every call that fails because the
-/// database was killed under it. Returns false if the deadline passes first.
+/// database was killed under it. Returns `None` when the work is over and, if the deadline passes
+/// first, why it gave up (the last error of its poll), so a stalled run can be diagnosed.
 async fn worker_loop(
     w: &World,
     session: &Session,
     provider: &ExternalSystem,
     deadline: std::time::Instant,
-) -> bool {
+) -> Option<String> {
+    let mut last_poll_error: Option<String> = None;
     loop {
         if std::time::Instant::now() > deadline {
-            return false;
+            return Some(format!(
+                "worker {} passed the deadline; last poll error: {last_poll_error:?}",
+                session.worker_id
+            ));
         }
         w.scheduler.tick().await;
         let tasks = match w
@@ -144,7 +151,8 @@ async fn worker_loop(
             .await
         {
             Ok(tasks) => tasks,
-            Err(_) => {
+            Err(error) => {
+                last_poll_error = Some(format!("{error:?}"));
                 tokio::time::sleep(Duration::from_millis(20)).await;
                 continue;
             }
@@ -156,7 +164,7 @@ async fn worker_loop(
             .fetch_one(&w.db.pool)
             .await;
             if matches!(open, Ok(0)) {
-                return true;
+                return None;
             }
             tokio::time::sleep(Duration::from_millis(30)).await;
             continue;
@@ -199,6 +207,29 @@ async fn worker_loop(
             }
         }
     }
+}
+
+/// What is still open when the deadline passes: the runs that never finished and the steps of
+/// those runs that are not succeeded, so a stalled run names the state it stalled in.
+async fn describe_unfinished_work(w: &World) -> String {
+    let runs: Vec<(String, String)> = sqlx::query_as(
+        "SELECT id::text, status FROM runs WHERE finished_at IS NULL ORDER BY id LIMIT 20",
+    )
+    .fetch_all(&w.db.pool)
+    .await
+    .unwrap_or_default();
+    let steps: Vec<(String, String, String, String)> = sqlx::query_as(
+        "SELECT run_id::text, node, status, COALESCE(waiting_kind, '') FROM steps \
+         WHERE status <> 'SUCCEEDED' \
+           AND run_id IN (SELECT id FROM runs WHERE finished_at IS NULL) \
+         ORDER BY run_id, node LIMIT 40",
+    )
+    .fetch_all(&w.db.pool)
+    .await
+    .unwrap_or_default();
+    format!(
+        "unfinished runs (id, status): {runs:?}\nopen steps (run, node, status, waiting kind): {steps:?}"
+    )
 }
 
 async fn register_with_retry(w: &World, index: u32) -> Session {
