@@ -238,3 +238,12 @@ fn leaf_certification_audit_uses_noncollapsing_metadata_vocabulary() {
         "leaf_collection_success"
     );
 }
+
+#[test]
+fn capacity_vacate_audit_keeps_every_transition() {
+    let action = AuditAction::CapacityMemberVacated;
+    assert_eq!(action.as_str(), "capacity.member.vacated");
+    assert!(!action.collapses_repeats());
+    assert_eq!(action.repeat_window(), None);
+    assert_eq!(action.distinct_cap(), None);
+}

@@ -691,6 +691,10 @@ async fn releasing_the_leases_of_closed_sessions_is_an_index_lookup_and_not_a_sc
         .execute(&mut *tx)
         .await
         .expect("leave the lease index as the only candidate");
+    sqlx::query("DROP INDEX steps_run_capacity_lease_idx")
+        .execute(&mut *tx)
+        .await
+        .expect("withhold the capacity lease-probe index for this isolated availability check");
     let plan: Vec<String> = sqlx::query_scalar(
         "EXPLAIN UPDATE steps SET lease_expires_at = clock_timestamp() \
          WHERE tenant_id = $1 AND status IN ('LEASED', 'RUNNING') AND leased_by = ANY($2)",

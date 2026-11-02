@@ -1,0 +1,56 @@
+{
+  "readmes_checked": 203,
+  "readme_hashes_unchanged": true,
+  "input_hashes_checked": 1162,
+  "input_hashes_unchanged": true,
+  "report_sections": 203,
+  "distinct_findings": 4,
+  "affected_readmes": 6,
+  "no_drift_detected_sections": 197,
+  "report_local_links_checked": 33,
+  "prior_review_output_hashes_unchanged": true,
+  "authorized_change_scope_verified": true,
+  "output_hashes_checked": 7,
+  "commands": [
+    {
+      "command": "python3 tasks/reviews/2026-10-30-readme-drift/verify_static.py",
+      "exit_code": 0,
+      "output": {
+        "documents": 203,
+        "citations": 5257,
+        "local_links": 403,
+        "files_read_full_by_checker": 1159,
+        "unresolved_references": 0,
+        "missing_links": 0,
+        "missing_anchors": 0,
+        "lexical_candidates": 0
+      }
+    },
+    {
+      "command": "python3 scripts/check-architecture.py",
+      "exit_code": 0,
+      "output": "architecture check passed (24 workspace crates, layers respected, no cycles)"
+    },
+    {
+      "command": "python3 scripts/check-agent-config.py",
+      "exit_code": 0,
+      "output": "agent configuration ok"
+    },
+    {
+      "command": "python3 scripts/check-vendor.py",
+      "exit_code": 0,
+      "output": "vendor check passed (84 upstream files, one manifest-only override)"
+    },
+    {
+      "command": "git diff --check",
+      "exit_code": 0,
+      "output": ""
+    }
+  ],
+  "runtime_tests_or_builds_run": false,
+  "errors": [],
+  "finding_priorities": {
+    "Major": 2,
+    "Nit": 2
+  }
+}

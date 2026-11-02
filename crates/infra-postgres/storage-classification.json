@@ -7338,6 +7338,63 @@
       "owner_paths": [
         "crates/infra-postgres/src/declared_operations.rs"
       ]
+    },
+    {
+      "table": "capacity_group_transfer_receipts",
+      "column": "kind",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK constrains kind to VACATE or ACQUIRE (at most 7 ASCII bytes); ACQUIRE is reserved, no native caller in this slice. Retained control metadata, no content/log delta. Receipt-count retention remains a production activation obligation."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20261226000000_capacity_transfer_receipts.up.sql",
+        "crates/infra-postgres/src/capacity_vacate.rs"
+      ]
+    },
+    {
+      "table": "capacity_group_transfer_receipts",
+      "column": "fingerprint",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK requires exactly 32 bytes of domain-separated command fingerprint; no payload or secret. Retained control metadata, no content/log delta. Receipt-count retention remains a production activation obligation."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20261226000000_capacity_transfer_receipts.up.sql",
+        "crates/infra-postgres/src/capacity_vacate.rs"
+      ]
+    },
+    {
+      "table": "capacity_group_transfer_receipts",
+      "column": "resulting_possession",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK constrains kind/possession/holder jointly: VACATE to VACANT, ACQUIRE to HELD (at most 6 ASCII bytes). Retained control metadata, no content/log delta. Receipt-count retention remains a production activation obligation."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20261226000000_capacity_transfer_receipts.up.sql",
+        "crates/infra-postgres/src/capacity_vacate.rs"
+      ]
     }
   ],
   "external_content": [

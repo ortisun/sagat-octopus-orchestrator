@@ -65,3 +65,30 @@ SDK errors print their stable code, trace id, and remediation. Use the trace id 
 inspect the run with `sagat workflow inspect <run-id>`. The example never prints the bearer token,
 activity input, or step output. If waiting reaches 60 seconds, verify the four activity bindings,
 workflow publication, namespace, and gRPC address.
+
+## Interface
+
+- `main` and `run` drive the local command; `validate`, `reserve`, `quote`, and `notify` implement its activities. [examples/order-processing/python/main.py:run]
+
+## Invariants
+
+- The four Sagat connection settings are required; missing settings exit 2. [examples/order-processing/python/main.py:setting]
+- Scenario defaults to routing and is restricted to routing, fulfillment, or reminder. [examples/order-processing/python/main.py:scenario_setting]
+- Notification rejection raises permanent `NOTIFICATION_REJECTED`; completed success requires `SUCCEEDED`. [examples/order-processing/python/main.py:notify] [examples/order-processing/python/main.py:run]
+- Preparation installs hash-pinned dependencies, then the checkout SDK with `--no-deps`. [examples/order-processing/python/prepare.sh:--require-hashes]
+
+## Side Effects
+
+- Creates and populates `.venv` and verifies the SDK import. [examples/order-processing/python/prepare.sh:pip install]
+- Starts/stops a worker, starts/waits for the workflow, and prints activity/run/error diagnostics. [examples/order-processing/python/main.py:run]
+- Replaces the shell with the virtualenv Python process. [examples/order-processing/python/run.sh:exec]
+
+## Verification
+
+From the repository root, with Docker, the selected example toolchains, and a private `CARGO_TARGET_DIR` outside the checkout:
+
+```sh
+cargo test -p sagat-tests --test e2e_developer_experience --locked -- --ignored order_processing::
+```
+
+The shared real-platform suite is declared in `tests/Cargo.toml`; language preparation and run commands remain in the example READMEs. [tests/Cargo.toml:e2e_developer_experience]

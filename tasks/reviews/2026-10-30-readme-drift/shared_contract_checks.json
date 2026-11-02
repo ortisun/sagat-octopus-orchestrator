@@ -1,0 +1,91 @@
+[
+  {
+    "kind": "proto byte equality",
+    "path": "sdks/typescript/proto/worker.proto",
+    "passed": true
+  },
+  {
+    "kind": "proto byte equality",
+    "path": "sdks/python/proto/worker.proto",
+    "passed": true
+  },
+  {
+    "kind": "proto byte equality",
+    "path": "sdks/go/proto/sagat_octopus_orchestrator/v1/worker.proto",
+    "passed": true
+  },
+  {
+    "kind": "proto byte equality",
+    "path": "sdks/dotnet/proto/worker.proto",
+    "passed": true
+  },
+  {
+    "kind": "proto byte equality",
+    "path": "sdks/java/sdk/src/main/proto/worker.proto",
+    "passed": true
+  },
+  {
+    "kind": "proto byte equality",
+    "path": "sdks/rust/proto/worker.proto",
+    "passed": true
+  },
+  {
+    "kind": "catalog JSON equality",
+    "path": "sdks/go/error-catalog.json",
+    "passed": true
+  },
+  {
+    "kind": "catalog JSON equality",
+    "path": "sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/error-catalog.json",
+    "passed": true
+  },
+  {
+    "kind": "catalog JSON equality",
+    "path": "sdks/java/sdk/src/main/resources/dev/sagatoctopusorchestrator/sdk/error-catalog.json",
+    "passed": true
+  },
+  {
+    "kind": "catalog JSON equality",
+    "path": "sdks/rust/src/error-catalog.json",
+    "passed": true
+  },
+  {
+    "kind": "generated catalog entries equality",
+    "path": "sdks/typescript/src/catalog.ts",
+    "passed": true
+  },
+  {
+    "kind": "generated catalog entries equality",
+    "path": "sdks/python/sagat_octopus_orchestrator/_catalog.py",
+    "passed": true
+  },
+  {
+    "kind": "declared proto field names in decoded serialized descriptor",
+    "path": "sdks/python/sagat_octopus_orchestrator/_proto/worker_pb2.py",
+    "fields": 71,
+    "missing": [],
+    "passed": true,
+    "initial_lexical_screen_note": "Source-literal substring screening misses escaped ASCII; decoded the AST bytes literal before comparison."
+  },
+  {
+    "kind": "declared proto field-name screening",
+    "path": "sdks/go/internal/workerpb/worker.pb.go",
+    "fields": 71,
+    "missing": [],
+    "passed": true
+  },
+  {
+    "kind": "declared RPC-name screening",
+    "path": "sdks/python/sagat_octopus_orchestrator/_proto/worker_pb2_grpc.py",
+    "rpcs": 10,
+    "missing": [],
+    "passed": true
+  },
+  {
+    "kind": "declared RPC-name screening",
+    "path": "sdks/go/internal/workerpb/worker_grpc.pb.go",
+    "rpcs": 10,
+    "missing": [],
+    "passed": true
+  }
+]
