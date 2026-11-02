@@ -5359,7 +5359,7 @@ export interface components {
             versionPolicy: "ACTIVE" | "PINNED";
             /**
              * Format: uuid
-             * @description Required with PINNED
+             * @description Required with PINNED, refused otherwise.
              */
             versionId?: string;
             /** @description The input of every run, at most 64 KiB; never returned. */
