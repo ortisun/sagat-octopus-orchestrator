@@ -156,7 +156,9 @@ async fn collection_at_seventeenth_member_with_output(
         let tasks = flow.poll().await;
         assert_eq!(
             summary(&tasks),
-            vec![row(index, "reserve", "FORWARD", "line.reserve")]
+            vec![row(index, "reserve", "FORWARD", "line.reserve")],
+            "{}",
+            crate::support::scheduler_evidence(&flow.api.db.pool, flow.tenant, flow.run).await
         );
         flow.complete(&tasks[0], output.clone()).await;
     }
@@ -725,7 +727,13 @@ async fn drain_and_compensate_every_reservation(flow: &Flow) {
     for _ in 0..17 {
         flow.drive().await;
         let tasks = flow.poll().await;
-        assert_eq!(tasks.len(), 1, "{:?}", summary(&tasks));
+        assert_eq!(
+            tasks.len(),
+            1,
+            "{:?}\n{}",
+            summary(&tasks),
+            crate::support::scheduler_evidence(&flow.api.db.pool, flow.tenant, flow.run).await
+        );
         assert_eq!(
             summary(&tasks),
             vec![row(

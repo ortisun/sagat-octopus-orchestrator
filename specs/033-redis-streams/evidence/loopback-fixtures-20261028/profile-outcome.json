@@ -1,0 +1,7 @@
+{
+  "scenario": "redis-callback-cutover",
+  "resultPath": "outcome-cv7bvell/result.json",
+  "resultSha256": "dedbbfa0b22df4233e4ef7a6648f5fdf4879cccf306684166c663632e2eb340a",
+  "buildSha256": "3e0a5244640844117a59a8697f3428ccaf2d245ba4edacd8f7242a09bb64d6d4",
+  "transcriptSha256": "3e4895e49ac8e4eac0ca33f168dc12ae5bedac50732225b5b2df236231b22f20"
+}

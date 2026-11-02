@@ -44,7 +44,7 @@ class ArchitectureRules(unittest.TestCase):
         self.assertEqual(code, 0, out)
 
     def test_domain_must_not_depend_on_infrastructure_crates(self):
-        for forbidden in ("sqlx", "axum", "async-nats", "kube", "serde_json"):
+        for forbidden in ("sqlx", "axum", "async-nats", "redis", "kube", "serde_json"):
             with self.subTest(forbidden=forbidden):
                 code, out = run_check([pkg("d", "crates/domain", ["uuid", forbidden])])
                 self.assertEqual(code, 1)

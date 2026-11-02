@@ -1,0 +1,50 @@
+[package]
+name = "sagat-octopus-orchestrator-sdk"
+version = "0.3.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+repository = "https://github.com/ortisun/sagat-octopus-orchestrator"
+description = "Async Rust client, worker and declarative workflows for Sagat Octopus Orchestrator"
+readme = "README.md"
+include = ["src/**", "proto/**", "build.rs", "Cargo.toml", "LICENSE", "README.md"]
+[workspace]
+members = []
+[dependencies]
+reqwest = { version = "=0.13.5", default-features = false, features = ["rustls-no-provider", "json", "stream"] }
+rustls-platform-verifier = "=0.7.1"
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "=1.0.151", features = ["arbitrary_precision", "raw_value"] }
+tokio = { version = "=1.53.2", features = ["rt", "macros", "time", "sync", "io-util"] }
+tokio-util = { version = "=0.7.19", features = ["rt", "io"] }
+futures-util = "=0.3.34"
+url = "=2.5.8"
+uuid = { version = "=1.27.0", features = ["v4", "serde"] }
+zeroize = "=1.9.1"
+tracing = "0.1"
+time = { version = "=0.3.55", features = ["formatting", "parsing", "serde", "serde-well-known"] }
+tonic = { version = "=0.14.6", default-features = false, features = ["channel", "codegen", "tls-ring", "tls-native-roots"] }
+tonic-prost = "=0.14.6"
+prost = "=0.14.4"
+bytes = "=1.12.1"
+sha2 = "=0.10.9"
+ryu-js = "=0.2.2"
+[build-dependencies]
+protox = "=0.10.0"
+tonic-prost-build = "=0.14.6"
+[dev-dependencies]
+tonic = { version = "=0.14.6", default-features = false, features = ["transport", "router"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+rcgen = "=0.13.2"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring","tls12"] }
+tracing-subscriber = { version = "0.3", features = ["registry"] }
+axum = "0.8"
+tokio = { version = "=1.53.2", features = ["rt-multi-thread", "macros", "net", "io-util", "test-util"] }
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+unimplemented = "warn"

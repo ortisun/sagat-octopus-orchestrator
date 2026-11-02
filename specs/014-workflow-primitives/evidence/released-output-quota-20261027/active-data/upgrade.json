@@ -1,0 +1,11 @@
+{
+  "command": [
+    "/private/tmp/sagat-v03-20261026/released-v02-al_pw2ho/current-phase",
+    "released_v02_upgrade::released_v02_active_rows_upgrade_progress_and_remain_readable_by_the_release",
+    "--ignored",
+    "--exact",
+    "--nocapture"
+  ],
+  "exitCode": 0,
+  "seconds": 7.2
+}

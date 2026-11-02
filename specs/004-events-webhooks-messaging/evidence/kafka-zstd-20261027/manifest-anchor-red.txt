@@ -1,0 +1,14 @@
+....F.
+======================================================================
+FAIL: test_source_and_provenance_changed_together_are_refused (test_vendor_integrity.VendorIntegrity.test_source_and_provenance_changed_together_are_refused)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/marcelo/Documents/Projects/sagat-octopus-kafka-zstd/scripts/tests/test_vendor_integrity.py", line 43, in test_source_and_provenance_changed_together_are_refused
+    with self.assertRaises(ValueError):
+         ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+AssertionError: ValueError not raised
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.008s
+
+FAILED (failures=1)

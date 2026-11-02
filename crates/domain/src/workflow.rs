@@ -1931,7 +1931,7 @@ fn check_body_return(
     for node in nodes.values() {
         let explicit_route = matches!(
             node.kind(),
-            NodeKind::Condition { .. } | NodeKind::Return { .. }
+            NodeKind::Condition { .. } | NodeKind::Switch { .. } | NodeKind::Return { .. }
         ) || node.next().is_some();
         if !explicit_route && !scopes.contains_key(node.id()) {
             return Err(scope_error(

@@ -118,3 +118,12 @@ completion and another tenant’s streamed work progress while further same-subj
 Two engine-runtime restart/reclaim tests pass; they are
 not OS-process crash evidence. The 30-row comparative report and final five-consumer package checks are recorded in
 T006-042; the report explicitly preserves clock and claim-attribution measurement limitations. Registry publication and genuine human acceptance remain external gates.
+
+
+## C# credential test callback synchronization — 2026-10-27
+
+A real CI race observed the test's sentinel before the completion callback sampled secret
+release. The assertion now waits for the callback's TaskCompletionSource rather than the fake
+server's earlier RPC record. All secret-release/refusal checks remain. The full450-test suite
+and format gate pass; source identity, CI RED, setup failure and actual commands are retained in
+[evidence/dotnet-secret-wipe-20261027](./evidence/dotnet-secret-wipe-20261027/README.md).

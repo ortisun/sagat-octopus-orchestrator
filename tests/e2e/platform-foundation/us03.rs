@@ -37,6 +37,7 @@ fn serve_config(jwks_uri: &str) -> ServeConfig {
     let mut auth = AuthConfig::new(ISSUER, AUDIENCE, jwks_uri);
     auth.allow_insecure_jwks_http = true;
     ServeConfig {
+        redis_callbacks: false,
         openbao: Default::default(),
         bind_addr: "127.0.0.1:0".parse().expect("addr"),
         tls: None,

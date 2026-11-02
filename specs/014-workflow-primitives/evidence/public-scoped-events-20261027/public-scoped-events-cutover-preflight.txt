@@ -1,0 +1,10 @@
+Traceback (most recent call last):
+  File "/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/scripts/test-released-v02-profile.py", line 255, in <module>
+    main()
+    ~~~~^^
+  File "/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/scripts/test-released-v02-profile.py", line 248, in main
+    run([str(current_binary), case, '--ignored', '--exact', '--nocapture'], repo, gate_env, transcript, 360)
+    ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/scripts/test-released-v02-profile.py", line 116, in run
+    raise RuntimeError(f'phase failed with exit {code}; private diagnostics: {log}')
+RuntimeError: phase failed with exit 101; private diagnostics: /private/tmp/sagat-v03-20261026/released-v02-al_pw2ho/scoped-event-cutover.txt

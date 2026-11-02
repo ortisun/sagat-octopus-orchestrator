@@ -86,8 +86,10 @@ Resources: `active_runs` and `workflows` and `secrets` (per namespace), `tenant_
 `worker_sessions` (per tenant), and `iteration_concurrency` (active collection and loop iterations
 across the tenant). The limit in force is the namespace's setting, else the tenant-wide one, else
 the platform default, and never more than the ceiling. `iteration_concurrency` is the exception with
-a fail-closed default: it is zero until an administrator explicitly sets 1..1,000,000,000. Clearing
-it disables new iteration admission. Without an operator grant, the ceiling is 1,024 active
+a fail-closed default: it is zero until an administrator explicitly sets 0..1,000,000,000.
+An explicit zero policy or clearing the policy disables new iteration admission, while already
+admitted work continues. Explicit zero reports source=tenant; clearing reports source=default.
+Without an operator grant, the ceiling is 1,024 active
 iterations; the operator may grant a higher ceiling up to 1,000,000,000. A refused request is `429` with `code: QUOTA_EXCEEDED`, not
 retryable. Child runs count as runs. Counts are exact and taken under locks, so replicas racing for
 the last place cannot overshoot them.

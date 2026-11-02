@@ -13,7 +13,7 @@ An architectural rule that nothing checks is a wish. Each row is a rule and what
 | Rule | Check that fails |
 |---|---|
 | Domain has no framework, SQL driver or broker dependency; layers point inwards; no cycles | `scripts/check-architecture.py` (CI `architecture`), tests in `scripts/tests/` |
-| Every store statement is within the runtime role's privileges | `tests/integration/platform-foundation/runtime_privileges` |
+| Every store statement is within the runtime role's privileges | `tests/integration/platform-foundation/runtime_privileges`; [supported static SQL forms](sql-privilege-audit.md) |
 | Every service works as the least-privilege role | `SAGAT_TEST_AS_RUNTIME_ROLE=1` over the suites |
 | Every variable-size column is classified | `storage-classification.json` + `integration_security_multitenancy` |
 | Journal is the authority; projections equal a replay | `verify_run` / `assert_consistent` at the end of the fault tests |
@@ -24,6 +24,9 @@ An architectural rule that nothing checks is a wish. Each row is a rule and what
 | Observability vocabulary is closed and low-cardinality | telemetry tests (`observability.rs`, `approval_telemetry.rs`), metrics enums |
 | Docs and generated references match the code | `contract_developer_experience`, `npm run check:api` |
 | Agent guidance is bounded and consistent | `scripts/check-agent-config.py` |
+| Incomplete capacity coordination stays dormant; new lease producers need inventory review | `scripts/check-capacity-activation.py` and negative fixtures (source-text check, not a call-graph proof); runtime lock/race tests remain required |
+| Current-schema upgrade oracles follow the latest migration | `scripts/check-upgrade-boundary.py` and negative fixtures; runs before the released producer build; genuine released-source runtime checks remain required |
+| The temporary Kafka dependency snapshot matches its registry source except for the reviewed zstd version | `scripts/check-vendor.py` and its negative controls (CI `architecture`) |
 
 When you add a rule worth keeping, add its row and its check in the same change.
 

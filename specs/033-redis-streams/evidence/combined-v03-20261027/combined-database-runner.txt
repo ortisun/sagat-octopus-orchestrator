@@ -1,0 +1,115 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling getrandom v0.2.17
+   Compiling serde_core v1.0.229
+   Compiling tokio v1.53.2
+   Compiling futures-util v0.3.34
+   Compiling tracing v0.1.44
+   Compiling tokio-util v0.7.19
+   Compiling rand_core v0.6.4
+   Compiling serde v1.0.229
+   Compiling ring v0.17.14
+   Compiling h2 v0.4.20
+   Compiling rustls v0.23.46
+   Compiling hyper v1.12.0
+   Compiling serde_json v1.0.151
+   Compiling rustls-webpki v0.103.15
+   Compiling either v1.19.0
+   Compiling hyper-util v0.1.21
+   Compiling itertools v0.14.0
+   Compiling security-framework v3.7.0
+   Compiling icu_normalizer v2.3.0
+   Compiling prost-derive v0.14.4
+   Compiling tower v0.5.3
+   Compiling libc v0.2.190
+   Compiling prost v0.14.4
+   Compiling idna_adapter v1.2.2
+   Compiling tokio-rustls v0.26.6
+   Compiling deranged v0.5.8
+   Compiling time v0.3.55
+   Compiling num-traits v0.2.19
+   Compiling idna v1.1.0
+   Compiling signature v2.2.0
+   Compiling ff v0.13.1
+   Compiling regex-syntax v0.8.11
+   Compiling regex-automata v0.4.18
+   Compiling group v0.13.0
+   Compiling url v2.5.8
+   Compiling prost-types v0.14.4
+   Compiling crypto-bigint v0.5.5
+   Compiling elliptic-curve v0.13.8
+   Compiling tower-http v0.6.11
+   Compiling matchers v0.2.0
+   Compiling errno v0.3.14
+   Compiling hyper-rustls v0.27.10
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling uuid v1.27.0
+   Compiling tracing-serde v0.2.0
+   Compiling tracing-subscriber v0.3.23
+   Compiling sha2 v0.10.9
+   Compiling reqwest v0.13.5
+   Compiling rustix v1.1.5
+   Compiling psm v0.1.32
+   Compiling num-integer v0.1.47
+   Compiling getrandom v0.4.3
+   Compiling metrics-exporter-prometheus v0.18.3
+   Compiling rand_chacha v0.3.1
+   Compiling indexmap v2.14.2
+   Compiling once_cell v1.21.4
+   Compiling axum-core v0.5.6
+   Compiling tempfile v3.27.0
+   Compiling petgraph v0.8.3
+   Compiling serde_urlencoded v0.7.1
+   Compiling sagat-telemetry v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/crates/telemetry)
+   Compiling rand v0.8.8
+   Compiling ecdsa v0.16.9
+   Compiling num-iter v0.1.46
+   Compiling sagat-domain v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/crates/domain)
+   Compiling primeorder v0.13.6
+   Compiling regex v1.13.1
+   Compiling serde_path_to_error v0.1.20
+   Compiling stacker v0.1.25
+   Compiling axum v0.8.9
+   Compiling prost-build v0.14.4
+   Compiling rand v0.10.3
+   Compiling sagat-application v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/crates/application)
+   Compiling num-bigint-dig v0.8.6
+   Compiling prost-reflect v0.16.5
+   Compiling protox-parse v0.10.0
+   Compiling ed25519 v2.2.3
+   Compiling rustls-native-certs v0.8.4
+   Compiling md-5 v0.11.0
+   Compiling tokio-stream v0.1.19
+   Compiling objc2-core-foundation v0.3.2
+   Compiling byteorder v1.5.0
+   Compiling fallible-iterator v0.2.0
+   Compiling postgres-protocol v0.6.12
+   Compiling phf_shared v0.13.1
+   Compiling objc2-system-configuration v0.3.2
+   Compiling polyval v0.7.3
+   Compiling rsa v0.9.10
+   Compiling ed25519-dalek v2.2.0
+   Compiling protox v0.10.0
+   Compiling tonic-prost-build v0.14.6
+   Compiling p384 v0.13.1
+   Compiling p256 v0.13.2
+   Compiling hyper-timeout v0.5.2
+   Compiling recursive v0.1.1
+   Compiling tonic v0.14.6
+   Compiling jsonwebtoken v11.1.0
+   Compiling sagat-api-grpc v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/crates/api-grpc)
+   Compiling ghash v0.6.0
+   Compiling whoami v2.1.3
+   Compiling phf v0.13.1
+   Compiling postgres-types v0.2.14
+   Compiling aes v0.9.3
+   Compiling tower-http v0.7.1
+   Compiling sqlparser v0.63.0
+   Compiling sagat-api-http v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/crates/api-http)
+   Compiling aes-gcm v0.11.1
+   Compiling tokio-postgres v0.7.18
+   Compiling tonic-prost v0.14.6
+   Compiling sagat-infra-database v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/crates/infra-database)
+   Compiling sagat-infra-secrets v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/crates/infra-secrets)
+   Compiling sagat-database-runner v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/apps/database-runner)
+    Finished `dev` profile [unoptimized] target(s) in 1m 42s

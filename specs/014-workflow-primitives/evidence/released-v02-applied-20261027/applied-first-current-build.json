@@ -1,0 +1,15 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "--locked",
+    "--no-run",
+    "--message-format=json"
+  ],
+  "exitCode": 0,
+  "seconds": 52.14
+}

@@ -5218,9 +5218,10 @@ components:
         api_requests_per_second and events_per_second are requests/second (maximum 1,000,000,
         fixed two-second burst); event_retention_seconds is 0 or 60..2,592,000 seconds;
         script_retention_days is 0..365 days. iteration_concurrency is tenant-wide; its explicit
-        value is 1..1,000,000,000, its default operator ceiling is 1,024 and, while absent or
-        cleared, structured iteration admission is disabled. Zero disables new admission for
-        resources that accept it.
+        value is 0..1,000,000,000, its default operator ceiling is 1,024 and, while absent or
+        cleared, structured iteration admission is disabled. An explicit zero policy blocks
+        new iteration admissions without pausing already admitted work; its source is tenant.
+        Zero disables new admission for other resources that accept it.
         Database operation ceilings are positive:
         database_statement_bytes <= 65536, database_parameters <= 256,
         database_parameter_bytes <= 262144, database_rows <= 10000,
@@ -5494,7 +5495,7 @@ components:
         id: {type: string, format: uuid}
         namespaceId: {type: string, format: uuid}
         name: {type: string}
-        kind: {type: string, enum: [NATS, KAFKA, SQS]}
+        kind: {type: string, enum: [NATS, KAFKA, SQS, REDIS]}
         settings: {$ref: '#/components/schemas/OutboundBrokerSettings'}
         secretName: {type: string, description: 'Optional namespace secret containing the broker credentials JSON.'}
         events: {type: array, items: {type: string, enum: [run.finished, ops.alert.fired, ops.alert.resolved]}}
@@ -5516,7 +5517,7 @@ components:
       required: [name, kind, settings, events]
       properties:
         name: {type: string, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}
-        kind: {type: string, enum: [NATS, KAFKA, SQS]}
+        kind: {type: string, enum: [NATS, KAFKA, SQS, REDIS]}
         settings: {$ref: '#/components/schemas/OutboundBrokerSettings'}
         secretName: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$'}
         events: {type: array, minItems: 1, maxItems: 8, uniqueItems: true, items: {type: string, enum: [run.finished, ops.alert.fired, ops.alert.resolved]}}
@@ -5528,7 +5529,7 @@ components:
       additionalProperties: false
       required: [kind, settings, events]
       properties:
-        kind: {type: string, enum: [NATS, KAFKA, SQS], description: 'Must remain the subscription kind set at creation.'}
+        kind: {type: string, enum: [NATS, KAFKA, SQS, REDIS], description: 'Must remain the subscription kind set at creation.'}
         settings: {$ref: '#/components/schemas/OutboundBrokerSettings'}
         secretName: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$'}
         events: {type: array, minItems: 1, maxItems: 8, uniqueItems: true, items: {type: string, enum: [run.finished, ops.alert.fired, ops.alert.resolved]}}
@@ -5540,6 +5541,7 @@ components:
         - {$ref: '#/components/schemas/OutboundNatsSettings'}
         - {$ref: '#/components/schemas/OutboundKafkaSettings'}
         - {$ref: '#/components/schemas/OutboundSqsSettings'}
+        - {$ref: '#/components/schemas/OutboundRedisSettings'}
     OutboundNatsSettings:
       type: object
       additionalProperties: false
@@ -5561,6 +5563,15 @@ components:
       properties:
         queueUrl: {type: string, maxLength: 2048}
         region: {type: string}
+    OutboundRedisSettings:
+      type: object
+      additionalProperties: false
+      required: [server, stream]
+      description: 'Redis Streams outbound callback. Requires operator activation after a cold upgrade. Credentials belong in the namespace secret named by secretName; use TLS for authentication. No Cluster/Sentinel or automatic trimming.'
+      properties:
+        server: {type: string, maxLength: 280, pattern: '^rediss?://[^/@?#]+:[0-9]+$', description: 'Host and explicit port; no credentials or database path. rediss enables certificate and hostname verification.'}
+        stream: {type: string, minLength: 1, maxLength: 512, pattern: '^[a-zA-Z0-9:._{}-]+$'}
+        database: {type: integer, minimum: 0, maximum: 15, default: 0}
     OutboundSubscriptionHealth:
       type: object
       required: [consecutiveDead]

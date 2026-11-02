@@ -1,0 +1,18 @@
+
+running 1 test
+test released_v02_inflight::a_released_worker_reports_and_replays_its_old_lease_after_server_upgrade ...
+running 1 test
+test released_v02_phase::inflight::report_old_lease_to_current_server ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 561 filtered out; finished in 1.80s
+
+
+running 1 test
+test released_v02_phase::inflight::read_finished_inflight_profile_with_released_code ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 561 filtered out; finished in 0.18s
+
+released-v02 in-flight: actual released report/replay, current finalization and released terminal reader passed
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 698 filtered out; finished in 5.30s

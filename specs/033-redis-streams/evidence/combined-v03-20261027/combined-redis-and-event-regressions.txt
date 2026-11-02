@@ -1,0 +1,339 @@
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:291:9
+    |
+278 | pub struct CreateTopicsResponse {
+    |            -------------------- field in this struct
+...
+291 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `name`, `value`, `read_only`, `config_source`, `is_sensitive`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:321:9
+    |
+319 | pub struct CreateTopicResponseConfig {
+    |            ------------------------- fields in this struct
+320 |     /// The configuration name.
+321 |     pub name: CompactString,
+    |         ^^^^
+...
+324 |     pub value: CompactNullableString,
+    |         ^^^^^
+...
+327 |     pub read_only: Boolean,
+    |         ^^^^^^^^^
+...
+330 |     pub config_source: Int8,
+    |         ^^^^^^^^^^^^^
+...
+333 |     pub is_sensitive: Boolean,
+    |         ^^^^^^^^^^^^
+...
+336 |     pub tagged_fields: TaggedFields,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponseConfig` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `num_partitions`, `replication_factor`, `configs`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:374:9
+    |
+359 | pub struct CreateTopicResponse {
+    |            ------------------- fields in this struct
+...
+374 |     pub num_partitions: Option<Int32>,
+    |         ^^^^^^^^^^^^^^
+...
+379 |     pub replication_factor: Option<Int16>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+384 |     pub configs: Vec<CreateTopicResponseConfig>,
+    |         ^^^^^^^
+...
+389 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `low_watermark` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:182:9
+    |
+177 | pub struct DeleteResponsePartition {
+    |            ----------------------- fields in this struct
+...
+182 |     pub low_watermark: Int64,
+    |         ^^^^^^^^^^^^^
+...
+190 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:226:9
+    |
+216 | pub struct DeleteResponseTopic {
+    |            ------------------- field in this struct
+...
+226 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:269:9
+    |
+258 | pub struct DeleteRecordsResponse {
+    |            --------------------- field in this struct
+...
+269 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteRecordsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:101:9
+    |
+ 88 | pub struct DeleteTopicsResponse {
+    |            -------------------- field in this struct
+...
+101 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:144:9
+    |
+129 | pub struct DeleteTopicsResponseTopic {
+    |            ------------------------- field in this struct
+...
+144 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `producer_id` and `first_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:170:9
+    |
+168 | pub struct FetchResponseAbortedTransaction {
+    |            ------------------------------- fields in this struct
+169 |     /// The producer id associated with the aborted transaction.
+170 |     pub producer_id: Int64,
+    |         ^^^^^^^^^^^
+...
+173 |     pub first_offset: Int64,
+    |         ^^^^^^^^^^^^
+    |
+    = note: `FetchResponseAbortedTransaction` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `aborted_transactions` is never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:213:9
+    |
+192 | pub struct FetchResponsePartition {
+    |            ---------------------- field in this struct
+...
+213 |     pub aborted_transactions: Vec<FetchResponseAbortedTransaction>,
+    |         ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `FetchResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `timestamp` is never read
+   --> vendor/rskafka/src/protocol/messages/list_offsets.rs:184:9
+    |
+169 | pub struct ListOffsetsResponsePartition {
+    |            ---------------------------- field in this struct
+...
+184 |     pub timestamp: Option<Int64>,
+    |         ^^^^^^^^^
+    |
+    = note: `ListOffsetsResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `log_append_time_ms` and `log_start_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/produce.rs:148:9
+    |
+132 | pub struct ProduceResponsePartitionResponse {
+    |            -------------------------------- fields in this struct
+...
+148 |     pub log_append_time_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+153 |     pub log_start_offset: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^
+    |
+    = note: `ProduceResponsePartitionResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `session_lifetime_ms` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/sasl_msg.rs:198:9
+    |
+181 | pub struct SaslAuthenticateResponse {
+    |            ------------------------ fields in this struct
+...
+198 |     pub session_lifetime_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^^
+...
+203 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `SaslAuthenticateResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: struct `CompactArray` is never constructed
+   --> vendor/rskafka/src/protocol/primitives.rs:725:12
+    |
+725 | pub struct CompactArray<T>(pub Option<Vec<T>>);
+    |            ^^^^^^^^^^^^
+
+warning: `rskafka` (lib) generated 14 warnings
+   Compiling sagat-tests v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/tests)
+    Finished `test` profile [unoptimized] target(s) in 1m 17s
+     Running integration/events-webhooks-messaging/main.rs (/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs/debug/deps/integration_events_webhooks_messaging-fb74fbba15e921db)
+
+running 111 tests
+test connectors::a_connector_is_administered_within_the_egress_policy_the_quota_and_the_names_of_the_namespace ... ok
+test connectors::a_dead_letter_can_be_tried_again_when_the_connector_can_now_take_it_or_discarded ... ok
+test connectors::a_full_backlog_leaves_the_message_with_the_broker_and_the_position_where_it_was ... ok
+test connectors::a_full_log_budget_preserves_connector_progress_and_explicit_error_truncation ... ok
+test connectors::a_message_becomes_an_event_under_the_slug_of_the_connector_and_a_redelivery_is_a_duplicate ... ok
+test connectors::a_message_that_cannot_be_an_event_is_set_aside_with_why_and_never_blocks_the_ones_behind_it ... ok
+test connectors::a_password_is_not_sent_over_a_connection_without_tls ... ok
+test connectors::a_queue_reader_that_keeps_failing_gives_up_so_that_it_is_started_again_with_fresh_credentials ... ok
+test connectors::durable_source_rate_refusal_neither_debits_namespace_nor_acknowledges_or_moves_offset ... ok
+test connectors::only_one_replica_holds_the_lease_on_a_partition_until_it_runs_out ... ok
+test connectors::the_dead_letters_kept_are_the_first_ones_and_a_redelivered_one_is_not_counted_again ... ok
+test connectors::the_position_moves_with_the_event_and_a_consumer_that_lost_its_place_is_stopped ... ok
+test cron::a_dispatcher_that_died_between_firing_and_moving_the_schedule_starts_nothing_twice ... ok
+test cron::a_firing_that_cannot_start_is_tried_again_later_and_does_not_hammer ... ok
+test cron::a_published_schedule_is_planned_without_firing_and_then_fires_at_its_time_once ... ok
+test cron::a_replica_whose_clock_is_ahead_of_the_databases_does_not_skip_a_tick ... ok
+test cron::a_schedule_missed_while_nobody_was_looking_fires_once_and_not_for_every_time_it_missed ... ok
+test cron::a_schedule_that_means_nothing_is_refused_when_the_workflow_is_published ... ok
+test cron::a_tick_that_could_not_start_is_tried_again_under_the_same_key_so_it_can_never_start_twice ... ok
+test cron::only_the_dispatcher_that_still_sees_the_tick_moves_the_schedule_on ... ok
+test cron::republishing_keeps_the_schedule_and_a_new_one_is_planned ... ok
+test cron::two_dispatchers_that_find_a_trigger_due_together_start_one_run ... ok
+test dispatch::a_claimed_event_is_not_claimed_by_another_dispatcher_until_its_lease_ends ... ok
+test dispatch::a_failing_dispatch_is_retried_with_backoff_and_then_set_aside_where_it_can_be_seen ... ok
+test dispatch::a_filter_decides_which_events_start_a_run ... ok
+test dispatch::a_wait_that_began_before_the_events_migration_does_not_stop_the_search_for_the_others ... ok
+test dispatch::a_wait_that_timed_out_is_not_woken_by_a_late_event_and_the_event_is_not_recorded_as_delivered ... ok
+test dispatch::a_webhook_trigger_is_about_its_endpoint_and_an_event_trigger_about_a_type ... ok
+test dispatch::an_event_goes_to_every_wait_with_its_key_once_each ... ok
+test dispatch::an_event_starts_the_run_of_a_matching_trigger_once_and_gives_it_the_event ... ok
+test dispatch::an_event_that_arrives_while_the_matcher_is_looking_is_not_lost ... ok
+test dispatch::an_event_that_came_before_the_wait_is_delivered_only_within_its_lookback ... ok
+test dispatch::an_event_that_fails_for_another_reason_is_set_aside_after_its_attempts ... ok
+test dispatch::an_event_that_was_admitted_before_a_wait_began_does_not_wake_it_from_the_events_side ... ok
+test dispatch::an_event_waiting_for_room_is_patient_for_a_day_and_then_set_aside_with_its_payload ... ok
+test dispatch::an_event_wakes_the_step_that_waits_for_it_and_gives_it_the_event ... ok
+test dispatch::an_event_with_more_waits_than_a_page_reaches_all_of_them_in_one_dispatch ... ok
+test dispatch::an_id_admitted_again_after_its_window_is_a_new_event_and_starts_its_run_again ... ok
+test dispatch::dispatching_an_event_again_after_a_crash_starts_nothing_new ... ok
+test dispatch::events_never_cross_a_tenant_boundary ... ok
+test dispatch::expired_events_are_purged_but_one_still_waiting_to_be_dispatched_is_kept ... ok
+test dispatch::one_consumer_that_cannot_be_served_does_not_keep_the_others_waiting ... ok
+test dispatch::the_event_and_the_timeout_racing_resolve_to_exactly_one_of_them ... ok
+test dispatch::the_migration_gives_the_waits_it_finds_a_start_and_marks_them_searched ... ok
+test dispatch::the_triggers_in_force_are_those_of_the_active_version ... ok
+test dispatch::two_sources_may_use_the_same_event_id_at_the_same_instant_and_each_starts_its_run ... ok
+test ingress::a_body_over_the_endpoint_limit_is_refused_before_it_is_verified ... ok
+test ingress::a_database_failure_while_verifying_is_never_a_verdict_on_the_request ... ok
+test ingress::a_flood_of_requests_that_prove_nothing_is_turned_away_before_anything_is_read ... ok
+test ingress::a_full_backlog_refuses_new_events_and_still_answers_duplicates ... ok
+test ingress::a_paused_endpoint_refuses_and_a_resumed_one_takes_requests_again ... ok
+test ingress::a_request_that_cannot_be_genuine_is_refused_before_any_secret_is_read ... ok
+test ingress::a_request_without_a_type_uses_the_endpoint_default_and_without_either_is_refused ... ok
+test ingress::a_rotated_secret_keeps_working_for_the_previous_versions_and_not_for_older_ones ... ok
+test ingress::a_secret_too_short_to_mean_anything_verifies_nothing ... ok
+test ingress::a_signed_webhook_is_admitted_once_and_a_retry_is_a_duplicate ... ok
+test ingress::a_verified_body_that_is_not_a_json_object_is_refused_and_not_stored ... ok
+test ingress::an_endpoint_needs_a_signing_secret_its_creator_may_use_and_not_the_reserved_slug ... ok
+test ingress::an_endpoint_takes_its_rate_and_asks_the_sender_to_wait_beyond_it ... ok
+test ingress::an_event_id_reused_for_another_payload_is_a_conflict_and_the_first_is_kept ... ok
+test ingress::an_event_published_through_the_api_may_have_a_short_window_and_not_a_silly_one ... ok
+test ingress::an_event_that_was_never_dispatched_keeps_its_id_after_its_window_and_is_not_made_new ... ok
+test ingress::an_mtls_profile_requires_the_exact_verified_leaf_fingerprint ... ok
+test ingress::an_oidc_profile_is_persisted_and_matches_only_its_exact_verified_subject ... ok
+test ingress::deleting_an_endpoint_while_its_identity_verifies_prevents_admission ... ok
+test ingress::endpoints_are_scoped_to_their_tenant_and_to_a_namespace_quota ... ok
+test ingress::everything_that_does_not_verify_is_refused_alike_and_leaves_no_event ... ok
+test ingress::pausing_an_endpoint_while_its_identity_verifies_prevents_admission ... ok
+test ingress::publishing_through_the_api_dedupes_by_event_id_and_needs_the_permission ... ok
+test ingress::refusals_are_audited_once_per_endpoint_and_reason ... ok
+test ingress::replacing_an_endpoint_identity_while_the_old_one_verifies_prevents_admission ... ok
+test ingress::rollback_refuses_to_erase_a_non_hmac_profile ... ok
+test ingress::the_deduplication_window_ends_and_the_same_id_is_a_new_event ... ok
+test ingress::the_same_source_and_event_id_in_two_namespaces_are_two_events ... ok
+test ingress::what_the_sender_says_the_event_is_is_covered_by_the_signature ... ok
+test outbound::a_delivery_that_fails_every_attempt_is_set_aside_and_a_redrive_gives_it_a_full_set_again ... ok
+test outbound::a_finished_run_is_delivered_signed_to_every_subscription_that_asked ... ok
+test outbound::a_receiver_that_answers_with_a_page_has_still_been_delivered_to ... ok
+test outbound::a_receiver_that_asks_for_patience_is_obeyed ... ok
+test outbound::a_receiver_that_does_not_answer_in_time_is_a_timeout_and_is_retried ... ok
+test outbound::a_refusal_is_set_aside_at_once_and_a_redrive_delivers_it_with_its_history_kept ... ok
+test outbound::a_secret_that_is_gone_stops_deliveries_without_losing_them ... ok
+test outbound::a_subscription_that_cannot_keep_up_is_switched_off_instead_of_queueing_for_ever ... ok
+test outbound::a_subscription_whose_deliveries_keep_dying_is_switched_off_and_turning_it_on_redrives ... ok
+test outbound::a_temporary_503_is_retried_with_backoff_and_every_attempt_is_recorded ... ok
+test outbound::a_worker_whose_lease_ran_out_cannot_undo_what_another_one_recorded ... ok
+test outbound::after_a_rotation_a_delivery_carries_a_signature_for_each_of_the_two_newest_secrets ... ok
+test outbound::changing_the_settings_or_resuming_a_subscription_touches_nothing_that_was_set_aside ... ok
+test outbound::deleting_a_subscription_removes_what_was_queued_for_it_and_audits_it ... ok
+test outbound::subscriptions_belong_to_their_tenant_and_the_run_of_another_is_not_theirs ... ok
+test outbound::the_deliveries_of_a_subscription_are_listed_newest_first_and_paged_without_gaps ... ok
+test outbound::the_rate_of_a_subscription_is_enforced_across_claims ... ok
+test outbound::the_service_checks_the_destination_the_secret_the_kinds_the_name_and_the_quota ... ok
+test outbound::what_the_receiver_says_is_never_stored ... ok
+test outbound_brokers::ambiguous_broker_ack_retries_the_selected_destination_with_the_same_delivery_id ... ok
+test outbound_brokers::an_sqs_http_success_without_a_send_result_is_retried ... ok
+test outbound_brokers::broker_dead_letter_redrive_keeps_the_destination_and_delivery_identity ... ok
+test outbound_brokers::broker_management_is_tenant_scoped_denies_loopback_and_redacts_credentials ... ok
+test outbound_brokers::broker_timeout_covers_the_guard_and_cancels_it_before_effects ... ok
+test outbound_brokers::nats_kafka_and_sqs_acknowledge_real_publishes_with_stable_delivery_metadata ... ok
+test outbound_brokers::nats_puback_details_never_reach_logs_or_durable_failure_state ... ok
+test outbound_brokers::rollback_refuses_to_delete_broker_subscriptions ... ok
+test rate_quotas::a_failed_audit_rolls_back_the_event_and_its_durable_rate_debit ... ok
+test rate_quotas::concurrent_identical_events_consume_the_last_token_only_once ... ok
+test rate_quotas::disabling_event_admission_preserves_duplicate_acknowledgement ... ok
+test rate_quotas::independent_stores_race_for_exactly_one_remaining_event_token ... ok
+test rate_quotas::retention_lowering_refuses_new_choices_without_rewriting_prior_expiry ... ok
+test rate_quotas::zero_log_capacity_does_not_block_event_retry_or_dead_state ... ok
+test sender::a_receiver_that_is_slow_or_gone_is_a_timeout_or_a_network_failure ... ok
+test sender::the_answer_of_a_receiver_becomes_a_status_and_a_request_for_patience ... ok
+test sender::the_guarded_client_refuses_a_loopback_destination_and_the_refusal_is_audited ... ok
+
+test result: ok. 111 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 375.44s
+
+     Running integration/redis-streams/main.rs (/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs/debug/deps/integration_redis_streams-3a16ffb41b7de68c)
+
+running 28 tests
+test a_noncanonical_stream_acknowledgement_is_never_success ... ok
+test a_stalled_ack_is_bounded_and_drops_its_connection ... ok
+test api::public_redis_subscription_and_grpc_run_completion_reach_the_real_stream ... ok
+test api::redis_migration_down_refuses_retained_records_and_is_reversible_before_use ... ok
+test bootstrap::secret_references_require_tls_at_management_time ... ok
+test bootstrap::the_actual_control_plane_manages_anonymous_callbacks_without_a_secret_backend ... ok
+test bootstrap::the_actual_engine_attempts_anonymous_callbacks_without_a_secret_backend ... ok
+test callbacks::a_finished_run_reaches_redis_through_the_existing_durable_delivery_worker ... ok
+test callbacks::a_stale_redis_publisher_cannot_overwrite_the_new_workers_settlement ... ok
+test callbacks::crash_after_redis_append_replays_the_same_application_identity ... ok
+test callbacks::redis_callback_creation_is_disabled_until_explicit_activation_and_stays_tenant_scoped ... ok
+test callbacks::redis_outage_exhaustion_and_redrive_retain_the_same_delivery ... ok
+test callbacks::wrong_type_stream_retries_then_recovers_without_trimming_customer_entries ... ok
+test committed_postgres_outbox_is_published_and_confirmed_through_redis ... ok
+test configuration_bounds_tls_and_debug_redaction_are_fail_closed ... ok
+test internal_maxlen_is_exact_and_aof_survives_a_fixture_restart ... ok
+test internal_notifications_preserve_raw_payload_and_stable_application_identity ... ok
+test review_internal_configuration_refuses_unusable_endpoints_and_subsecond_deadlines ... ok
+test review_internal_rejection_and_unavailability_keep_distinct_outbox_codes ... ok
+test the_actual_runtime_engine_selects_redis_and_starts_while_the_broker_is_paused ... ok
+test tls::a_callback_cannot_omit_or_change_the_json_content_type ... ok
+test tls::a_real_redis_ack_lost_on_the_wire_retries_with_the_same_delivery_identity ... ok
+test tls::one_attempt_never_races_all_dns_candidates ... ok
+test tls::plaintext_auth_wrong_secret_types_and_reserved_fields_fail_without_an_append ... ok
+test tls::real_tls_authentication_checks_ca_hostname_acl_and_database_isolation ... ok
+test tls::redis_checks_and_resolves_the_destination_once_per_attempt ... ok
+test tls::resolver_outages_are_network_failures_instead_of_policy_denials ... ok
+test tls::the_connection_uses_only_the_addresses_returned_by_the_guard ... ok
+
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 56.82s

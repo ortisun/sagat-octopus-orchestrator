@@ -47,8 +47,8 @@ must say so rather than hide it. Sources: ADR-0004, ADR-0005, ADR-0010, AGENTS.m
 A published workflow version and its IR are immutable and every run references exactly one
 version; there is no automatic migration of a running workflow to a new version. Wire contracts
 (OpenAPI, Protobuf, AsyncAPI, the workflow IR schema) are versioned, and a change MUST NOT break
-runs in progress. The SDK protocol has one semantic contract: the five official SDKs
-(TypeScript, Go, Python, C#, Java) pass the same conformance suite and MUST NOT fork the server
+runs in progress. The SDK protocol has one semantic contract: the six official SDKs
+(TypeScript, Go, Python, C#, Java, Rust) pass the same conformance suite and MUST NOT fork the server
 semantics. The Studio draws the declarative IR; imperative code that cannot be converted is not
 promised a round trip. Toolchains and dependencies are pinned (`rust-toolchain.toml`,
 `Cargo.lock`, locked CI builds).
@@ -169,4 +169,4 @@ design, and every pull request is reviewed against it. A check marks the *design
 it is not approval of the implementation. A violation that cannot be avoided MUST be justified in
 the plan's Complexity Tracking table with the simpler alternative that was rejected.
 
-**Version**: 1.0.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-10-09
+**Version**: 1.1.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-10-27

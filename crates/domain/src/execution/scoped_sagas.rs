@@ -32,6 +32,15 @@ use super::state::{
 use crate::saga::{NodeOrigin, reverse_dependencies};
 use crate::workflow::{NodeId, WorkflowDefinition};
 
+/// Whether a settled step can contribute an effect to a scope's compensation plan.
+/// A declared compensation and current scope authority are separate checks.
+#[must_use]
+pub fn scope_compensation_candidate(status: StepStatus, failure: Option<&FailureCode>) -> bool {
+    status == StepStatus::Succeeded
+        || (matches!(status, StepStatus::Cancelled | StepStatus::Failed)
+            && failure.is_some_and(FailureCode::leaves_outcome_unknown))
+}
+
 /// The next thing the compensating scopes of the run need, if there is one.
 ///
 /// # Errors
@@ -148,12 +157,11 @@ fn plan_compensation(
         let entry = iterations
             .entry(index)
             .or_insert_with(|| (instance.path().clone(), Iteration::default()));
-        let completed = step.status() == StepStatus::Succeeded;
         let unknown = matches!(step.status(), StepStatus::Cancelled | StepStatus::Failed)
             && step
                 .failure()
                 .is_some_and(FailureCode::leaves_outcome_unknown);
-        if !(completed || unknown) {
+        if !scope_compensation_candidate(step.status(), step.failure()) {
             continue;
         }
         let compensable = body.node(&instance.node().compensation()).is_some()

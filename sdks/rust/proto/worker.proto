@@ -1,0 +1,246 @@
+syntax = "proto3";
+package sagat_octopus_orchestrator.v1;
+option csharp_namespace = "SagatOctopusOrchestrator.Protocol.V1";
+option go_package = "github.com/ortisun/sagat-octopus-orchestrator/proto/sagat_octopus_orchestrator/v1;sagatoctopusorchestratorv1";
+option java_package = "dev.sagatoctopusorchestrator.protocol.v1";
+
+// The worker protocol (feature 002), implemented by the execution engine and generated into the Rust
+// server (`sagat-api-grpc`). Every call carries `authorization: Bearer <jwt>` metadata (the worker's
+// OIDC identity, role `worker`).
+//
+// Errors (gRPC status; the stable machine code is in the `x-sagat-error` trailing metadata):
+//   UNAUTHENTICATED     no or invalid credentials, unknown or expired session
+//   PERMISSION_DENIED   the identity is not a worker
+//                       x-sagat-error: NOT_BOUND            the identity is not bound to the namespace and
+//                       activity it asked to serve (an administrator binds it, feature 009)
+//                       x-sagat-error: SECRET_NOT_USABLE    a secret the step declares does not exist or
+//                       its publisher may no longer use it
+//   INVALID_ARGUMENT    a malformed field, an unsupported protocol version, an invalid output
+//   ABORTED             x-sagat-error: STALE_ATTEMPT        the lease is no longer current (reclaimed,
+//                       cancelled or finished): stop, do not retry the report
+//                       x-sagat-error: IDEMPOTENCY_KEY_REUSED  the key was used for a different report
+//   RESOURCE_EXHAUSTED  rate limited; `retry-after-ms` metadata
+//   UNAVAILABLE         storage unavailable; retry with the same idempotency key
+// Delivery is at-least-once: a lost response is retried with the same idempotency key and answered
+// with the original result and `already_applied = true`.
+service WorkerService {
+  rpc RegisterWorker(RegisterWorkerRequest) returns (RegisterWorkerResponse);
+  rpc PollTasks(PollTasksRequest) returns (PollTasksResponse);
+  // Added in 1.4 (additive, ADR-0029). `max_tasks` is finite receive credit for this call, not a
+  // per-frame batch size: each delivered lease spends one credit. The server may emit several
+  // nonempty frames, then closes after spending the credit, the aggregate 8 MiB task-input budget,
+  // or the bounded receive window. An underfilled normal window ends with one empty response whose
+  // `retry_after_ms` is positive. Protocol 1.0-1.3 workers continue to use PollTasks.
+  rpc StreamTasks(PollTasksRequest) returns (stream PollTasksResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc CompleteStep(CompleteStepRequest) returns (StepCommandResponse);
+  rpc FailStep(FailStepRequest) returns (StepCommandResponse);
+  // Added in 1.2 (additive, feature 009). The values of the secrets the step's definition declares,
+  // for the length of the attempt the lease belongs to: the lease is the capability. All or nothing.
+  // The values are credentials: use this call only over TLS, never log or persist them, and drop them
+  // when the attempt ends. Every call is audited (names and versions, never values).
+  rpc ResolveSecrets(ResolveSecretsRequest) returns (ResolveSecretsResponse);
+  // Added in 1.6. Only the current database-runner machine that owns this managed lease may
+  // resolve it. The connection revision is pinned at run admission; current state/ACLs and the
+  // lease are checked before and after provider I/O. Expressions use server semantics and arrive
+  // as typed literals. SQL, parameters and credential bytes must never be logged or persisted by
+  // the executor. The response contains no provider routing, provider token or platform key.
+  rpc ResolveDatabase(ResolveSecretsRequest) returns (ResolvedDatabase);
+  // Added in 1.3 (additive, FR-002-008): payloads too large to travel in a message. The engine never
+  // carries them; a step's input holds a small descriptor `{"$blob": {"id", "size", "sha256",
+  // "contentType"}}` and the bytes are fetched here. Both calls need the lease of an attempt that is
+  // running (the lease is the capability, as for ResolveSecrets) and only reach blobs of the lease's
+  // own tenant and namespace; a blob outside that boundary looks exactly like a missing blob.
+  //
+  // WriteBlob: the first message is the header, every later one a chunk of at most 256 KiB. Reply: the
+  // blob id. Report it in CompleteStep.output_blob_ref (and leave output_json empty) to make it the
+  // step's output. A blob that is not used within the upload TTL is deleted.
+  // ReadBlob: the first message is the header, the rest are chunks of at most 256 KiB. The server
+  // checks size and digest as it reads: a stored object that is not what was recorded ends the stream
+  // with DATA_LOSS instead of ending it cleanly, so a cleanly ended stream is a verified one.
+  //   Errors: RESOURCE_EXHAUSTED (x-sagat-error QUOTA_EXCEEDED) too many unused blobs, or
+  //   (RATE_LIMITED, retry-after-ms) too many transfers at once; INVALID_ARGUMENT a blob over the
+  //   maximum size, a wrong stated size or digest, a malformed stream, or blobs not configured on
+  //   this instance; NOT_FOUND no such blob; DATA_LOSS the stored content is not what was recorded.
+  rpc WriteBlob(stream WriteBlobRequest) returns (WriteBlobResponse);
+  rpc ReadBlob(ReadBlobRequest) returns (stream ReadBlobResponse);
+}
+
+message WorkerCapabilities {
+  repeated string languages = 1;
+  repeated string activities = 2;
+  repeated string pools = 3;
+  int32 max_inflight = 4;
+  // The newest additive minor understood by the worker. The server accepts 1.5 only when its
+  // scoped claim and report storage path is enabled; otherwise negotiation remains at 1.4.
+  string protocol_version = 5;
+}
+message RegisterWorkerRequest { string worker_name = 1; string namespace = 2; WorkerCapabilities capabilities = 3; }
+message RegisterWorkerResponse { string worker_id = 1; string session_token = 2; string accepted_protocol_version = 3; }
+message PollTasksRequest { string worker_id = 1; string session_token = 2; int32 max_tasks = 3; }
+// One ordered scope in a logical execution path. The path is structural: node names are never
+// flattened together with indices, so equal definition nodes in different iterations stay distinct.
+message ScopePathSegment {
+  string scope_node_id = 1;
+  uint32 iteration_index = 2;
+}
+// Added in protocol 1.5. Tenant, namespace and run remain in the authenticated session and the
+// retained request fields. This message identifies the logical definition-node execution within
+// that run. Root work has an empty instance_path. Attempt and generation remain separate fences.
+message ExecutionInstanceIdentity {
+  repeated ScopePathSegment instance_path = 1;
+  string definition_node_id = 2;
+}
+message TaskLease {
+  string task_id = 1;
+  string run_id = 2;
+  string step_id = 3;
+  int32 attempt = 4;
+  int64 generation = 5;
+  string lease_token = 6;
+  int64 expires_at_epoch_ms = 7;
+  string activity_name = 8;
+  string input_json = 9;
+  // Catalog-backed run input, if started through REST inputBlobRef. Its descriptor also appears
+  // inside input_json; read the bytes through ReadBlob under this lease. Ordinary JSON that
+  // resembles a descriptor does not populate this field. Added semantics in protocol 1.3.
+  string input_blob_ref = 10;
+  string traceparent = 11;
+  string tenant_alias = 12;
+  string idempotency_key = 13;
+  // Added in 1.2 (additive; feature 003 sagas). A worker that ignores them keeps working: a
+  // compensation is an ordinary activity task whose `activity_name` is the one the workflow
+  // declared in `compensateWith`.
+  // FORWARD (empty is FORWARD), COMPENSATION or RECONCILIATION.
+  string task_kind = 14;
+  // For a COMPENSATION or a RECONCILIATION: the forward step it is about, and the idempotency key
+  // that step's own attempts carried, which is what identifies the effect at the provider.
+  // `idempotency_key` is then the key of this compensation (stable per run, step and action) or of
+  // this lookup, and must be sent to the provider so that asking again never repeats the effect.
+  string target_node = 15;
+  string target_idempotency_key = 16;
+  // A root lease may include it; older workers ignore the additive field. Scoped leases require 1.5.
+  ExecutionInstanceIdentity instance = 17;
+  // For compensation and reconciliation, the exact forward instance. Empty for ordinary work.
+  ExecutionInstanceIdentity target_instance = 18;
+}
+message PollTasksResponse { repeated TaskLease tasks = 1; int32 retry_after_ms = 2; }
+message HeartbeatRequest {
+  string task_id = 1; string worker_id = 2; int64 generation = 3; string lease_token = 4;
+  // Added in 1.1 (additive): identify the step exactly, as CompleteStep and FailStep do.
+  string run_id = 5; string step_id = 6; int32 attempt = 7;
+  ExecutionInstanceIdentity instance = 8;
+}
+message HeartbeatResponse { int64 lease_expires_at_epoch_ms = 1; bool cancel_requested = 2; }
+// Exactly one of `output_json` (at most 256 KiB) and `output_blob_ref` (the id WriteBlob returned,
+// for a larger output; `output_sha256`, if sent, must then be the blob's digest). The step's output
+// the run keeps is the blob's small descriptor.
+message CompleteStepRequest {
+  string task_id = 1; string run_id = 2; string step_id = 3;
+  int32 attempt = 4; int64 generation = 5; string lease_token = 6;
+  string idempotency_key = 7; string output_json = 8; string output_blob_ref = 9;
+  string output_sha256 = 10; string traceparent = 11;
+  ExecutionInstanceIdentity instance = 12;
+}
+message FailStepRequest {
+  string task_id = 1; string run_id = 2; string step_id = 3;
+  int32 attempt = 4; int64 generation = 5; string lease_token = 6;
+  string idempotency_key = 7; string error_code = 8; string safe_message = 9;
+  bool retryable = 10; string traceparent = 11;
+  ExecutionInstanceIdentity instance = 12;
+}
+message ResolveSecretsRequest {
+  string task_id = 1; string run_id = 2; string step_id = 3;
+  int32 attempt = 4; int64 generation = 5; string lease_token = 6;
+  string traceparent = 7;
+  ExecutionInstanceIdentity instance = 8;
+}
+message ResolvedSecret { string name = 1; bytes value = 2; uint32 version = 3; }
+message ResolveSecretsResponse { repeated ResolvedSecret secrets = 1; }
+// WriteBlob: `header` exactly once, first; then `chunk`s.
+message WriteBlobRequest {
+  oneof part {
+    WriteBlobHeader header = 1;
+    bytes chunk = 2;
+  }
+}
+message WriteBlobHeader {
+  string task_id = 1; string run_id = 2; string step_id = 3;
+  int32 attempt = 4; int64 generation = 5; string lease_token = 6;
+  // A media type such as application/json; parameters are dropped. Default application/octet-stream.
+  string content_type = 7;
+  // Optional (0 and empty mean "not stated"): the upload is refused unless the content has exactly
+  // this many bytes and this SHA-256 (lower-case hex).
+  int64 expected_size = 8;
+  string expected_sha256 = 9;
+  ExecutionInstanceIdentity instance = 10;
+}
+message WriteBlobResponse { string blob_id = 1; int64 size = 2; string sha256 = 3; string content_type = 4; }
+message ReadBlobRequest {
+  string task_id = 1; string run_id = 2; string step_id = 3;
+  int32 attempt = 4; int64 generation = 5; string lease_token = 6;
+  string blob_id = 7;
+  ExecutionInstanceIdentity instance = 8;
+}
+// ReadBlob: `header` first, then `chunk`s.
+message ReadBlobResponse {
+  oneof part {
+    ReadBlobHeader header = 1;
+    bytes chunk = 2;
+  }
+}
+message ReadBlobHeader { string blob_id = 1; int64 size = 2; string sha256 = 3; string content_type = 4; }
+message StepCommandResponse { string command_id = 1; bool already_applied = 2; string step_status = 3; string run_status = 4; }
+
+// Managed execution types, additive in 1.6. Integers and decimals are decimal strings, never
+// doubles. JSON contains one valid JSON value; timestamp is RFC3339 and date is YYYY-MM-DD.
+message DatabaseValue {
+  oneof value {
+    bool null_value = 1;
+    bool boolean_value = 2;
+    string integer_value = 3;
+    string decimal_value = 4;
+    double float_value = 5;
+    string text_value = 6;
+    string timestamp_value = 7;
+    string date_value = 8;
+    bytes binary_value = 9;
+    string json_value = 10;
+  }
+}
+enum DatabaseOperationKind { DATABASE_OPERATION_UNSPECIFIED = 0; DATABASE_QUERY = 1; DATABASE_EXECUTE = 2; }
+enum DatabaseTlsMode { DATABASE_TLS_UNSPECIFIED = 0; DATABASE_TLS_VERIFY_FULL = 1; DATABASE_TLS_DEVELOPMENT_PLAINTEXT = 2; }
+message PostgresConnection {
+  string host = 1;
+  uint32 port = 2;
+  string database = 3;
+  DatabaseTlsMode tls = 4;
+  string ca_pem = 5;
+}
+message DatabaseLimits {
+  uint32 max_statement_bytes = 1;
+  uint32 max_parameters = 2;
+  uint32 max_parameter_bytes = 3;
+  uint32 max_rows = 4;
+  uint32 max_result_bytes = 5;
+  uint32 timeout_ms = 6;
+  uint32 connect_timeout_ms = 7;
+  uint32 pool_size = 8;
+  uint32 idle_timeout_ms = 9;
+}
+message ResolvedDatabase {
+  string connection_id = 1;
+  uint32 connection_revision = 2;
+  PostgresConnection postgres = 3;
+  DatabaseOperationKind operation = 4;
+  string statement = 5;
+  repeated DatabaseValue parameters = 6;
+  DatabaseLimits limits = 7;
+  ResolvedSecret credential = 8;
+  int64 lease_expires_at_epoch_ms = 9;
+  // Verified scope and canonical reference for the runner's namespace destination policy.
+  string namespace_id = 10;
+  string connection_name = 11;
+  // Trusted identity scope for audit-correlated executor telemetry; not a metric label.
+  string tenant_id = 12;
+}

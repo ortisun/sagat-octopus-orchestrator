@@ -1,0 +1,135 @@
+{
+  "canonical": {
+    "condition": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"line\":{\"entrypoint\":\"reserve\",\"nodes\":[{\"activity\":\"control.reserve\",\"compensateWith\":\"control.release\",\"id\":\"reserve\",\"next\":\"choose\",\"type\":\"activity\"},{\"expression\":\"item > 0\",\"id\":\"choose\",\"ifFalse\":\"returned\",\"ifTrue\":\"selected\",\"type\":\"condition\"},{\"activity\":\"control.notify\",\"id\":\"selected\",\"next\":\"returned\",\"type\":\"activity\"},{\"id\":\"returned\",\"result\":\"item\",\"type\":\"return\"}]}},\"entrypoint\":\"lines\",\"kind\":\"Workflow\",\"limits\":{\"maxDepth\":1,\"maxInstances\":12},\"metadata\":{\"name\":\"collection-control-condition\"},\"nodes\":[{\"body\":\"line\",\"id\":\"lines\",\"items\":\"input.items\",\"maxConcurrency\":1,\"maxItems\":2,\"next\":\"done\",\"result\":\"bodyResult\",\"type\":\"forEach\"},{\"id\":\"done\",\"outputExpr\":\"steps.lines.output\",\"type\":\"end\"}]}",
+    "switch": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"line\":{\"entrypoint\":\"reserve\",\"nodes\":[{\"activity\":\"control.reserve\",\"compensateWith\":\"control.release\",\"id\":\"reserve\",\"next\":\"choose\",\"type\":\"activity\"},{\"cases\":[{\"id\":\"positive\",\"target\":\"selected\",\"when\":\"item > 0\"}],\"default\":\"returned\",\"id\":\"choose\",\"type\":\"switch\"},{\"activity\":\"control.notify\",\"id\":\"selected\",\"next\":\"returned\",\"type\":\"activity\"},{\"id\":\"returned\",\"result\":\"item\",\"type\":\"return\"}]}},\"entrypoint\":\"lines\",\"kind\":\"Workflow\",\"limits\":{\"maxDepth\":1,\"maxInstances\":12},\"metadata\":{\"name\":\"collection-control-switch\"},\"nodes\":[{\"body\":\"line\",\"id\":\"lines\",\"items\":\"input.items\",\"maxConcurrency\":1,\"maxItems\":2,\"next\":\"done\",\"result\":\"bodyResult\",\"type\":\"forEach\"},{\"id\":\"done\",\"outputExpr\":\"steps.lines.output\",\"type\":\"end\"}]}"
+  },
+  "workflows": {
+    "condition": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "line": {
+          "entrypoint": "reserve",
+          "nodes": [
+            {
+              "activity": "control.reserve",
+              "compensateWith": "control.release",
+              "id": "reserve",
+              "next": "choose",
+              "type": "activity"
+            },
+            {
+              "expression": "item > 0",
+              "id": "choose",
+              "ifFalse": "returned",
+              "ifTrue": "selected",
+              "type": "condition"
+            },
+            {
+              "activity": "control.notify",
+              "id": "selected",
+              "next": "returned",
+              "type": "activity"
+            },
+            {
+              "id": "returned",
+              "result": "item",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "lines",
+      "kind": "Workflow",
+      "limits": {
+        "maxDepth": 1,
+        "maxInstances": 12
+      },
+      "metadata": {
+        "name": "collection-control-condition"
+      },
+      "nodes": [
+        {
+          "body": "line",
+          "id": "lines",
+          "items": "input.items",
+          "maxConcurrency": 1,
+          "maxItems": 2,
+          "next": "done",
+          "result": "bodyResult",
+          "type": "forEach"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.lines.output",
+          "type": "end"
+        }
+      ]
+    },
+    "switch": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "line": {
+          "entrypoint": "reserve",
+          "nodes": [
+            {
+              "activity": "control.reserve",
+              "compensateWith": "control.release",
+              "id": "reserve",
+              "next": "choose",
+              "type": "activity"
+            },
+            {
+              "cases": [
+                {
+                  "id": "positive",
+                  "target": "selected",
+                  "when": "item > 0"
+                }
+              ],
+              "default": "returned",
+              "id": "choose",
+              "type": "switch"
+            },
+            {
+              "activity": "control.notify",
+              "id": "selected",
+              "next": "returned",
+              "type": "activity"
+            },
+            {
+              "id": "returned",
+              "result": "item",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "lines",
+      "kind": "Workflow",
+      "limits": {
+        "maxDepth": 1,
+        "maxInstances": 12
+      },
+      "metadata": {
+        "name": "collection-control-switch"
+      },
+      "nodes": [
+        {
+          "body": "line",
+          "id": "lines",
+          "items": "input.items",
+          "maxConcurrency": 1,
+          "maxItems": 2,
+          "next": "done",
+          "result": "bodyResult",
+          "type": "forEach"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.lines.output",
+          "type": "end"
+        }
+      ]
+    }
+  }
+}

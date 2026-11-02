@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "clippy",
+    "--workspace",
+    "--all-targets",
+    "--locked",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "exit_code": 0,
+  "seconds": 120.85,
+  "wall_seconds": 120.85,
+  "wall_minus_monotonic_seconds": 0.0,
+  "started_utc": "2026-10-28T12:15:18.681659+00:00",
+  "finished_utc": "2026-10-28T12:17:19.530154+00:00",
+  "log": "redis-loopback-reviewed-clippy.txt"
+}

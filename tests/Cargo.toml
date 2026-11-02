@@ -18,6 +18,7 @@ tokio-stream.workspace = true
 bytes.workspace = true
 sagat-infra-blobstore.workspace = true
 async-nats.workspace = true
+redis = {workspace = true, features = ["streams"]}
 axum.workspace = true
 base64 = "0.23"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
@@ -378,3 +379,7 @@ path = "integration/database-runner/main.rs"
 [[test]]
 name = "e2e_database_connections"
 path = "e2e/database-connections/main.rs"
+
+[[test]]
+name = "integration_redis_streams"
+path = "integration/redis-streams/main.rs"

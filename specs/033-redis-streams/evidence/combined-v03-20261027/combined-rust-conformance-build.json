@@ -1,0 +1,16 @@
+{
+  "command": [
+    "cargo",
+    "build",
+    "--manifest-path",
+    "sdks/rust/conformance/Cargo.toml",
+    "--locked"
+  ],
+  "exit_code": 0,
+  "seconds": 113.44,
+  "wall_seconds": 113.44,
+  "wall_minus_monotonic_seconds": 0.0,
+  "started_utc": "2026-10-28T00:43:02.160816+00:00",
+  "finished_utc": "2026-10-28T00:44:55.598998+00:00",
+  "log": "combined-rust-conformance-build.txt"
+}

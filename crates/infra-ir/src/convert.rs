@@ -673,6 +673,43 @@ fn is_activity_chain(body: &sagat_domain::workflow::BodyDefinition, limit: usize
     activities >= 1 && activities + 1 == declared
 }
 
+/// A validated body is already acyclic, reachable, closed and has exactly one terminal return.
+/// One local branch executes at a time. Entry dispatch distinguishes worker activities from
+/// scheduler-owned controls; conditions/switches use a revision-fenced exact-path snapshot.
+/// Event waits use the same scheduler-owned admission and exact-path receiver as timers.
+/// Children, approvals and nesting retain their separate admission gates.
+fn is_collection_body(body: &sagat_domain::workflow::BodyDefinition) -> bool {
+    if !body.node(body.entrypoint()).is_some_and(|node| {
+        matches!(
+            node.kind(),
+            NodeKind::Activity { .. }
+                | NodeKind::Condition { .. }
+                | NodeKind::Switch { .. }
+                | NodeKind::Timer { .. }
+                | NodeKind::WaitEvent { .. }
+        )
+    }) {
+        return false;
+    }
+    let mut steps = 0;
+    for node in body.nodes() {
+        match node.kind() {
+            NodeKind::Activity { .. } if node.next().is_some() => steps += 1,
+            NodeKind::Condition { .. } if node.next().is_none() && node.timeout().is_none() => {
+                steps += 1
+            }
+            NodeKind::Switch { .. } => steps += 1,
+            NodeKind::Timer { .. } if node.next().is_some() && node.timeout().is_none() => {
+                steps += 1
+            }
+            NodeKind::WaitEvent { .. } if node.next().is_some() => steps += 1,
+            NodeKind::Return { .. } => {}
+            _ => return false,
+        }
+    }
+    (1..=MAX_BODY_CHAIN).contains(&steps)
+}
+
 /// The first approval a document declares inside a named body, if any. An approval in an iteration
 /// needs the iteration's scoped compensation to settle (decision D295), so publication names that
 /// dependency before it looks at the body's shape.
@@ -781,11 +818,11 @@ pub(crate) fn published_collection_definition(
                 reason: "published collection bodies must be referenced by a collection owner",
             });
         }
-        if !is_activity_chain(body, MAX_BODY_CHAIN) {
+        if !is_collection_body(body) {
             return Err(IrError::Unsupported {
                 node: body.name().as_str().to_owned(),
                 kind: "body".to_owned(),
-                reason: "the runtime supports a collection body of one to eight activities in sequence followed by one return",
+                reason: "the runtime supports a collection body of one to eight activities/conditions/switches/timers/event waits with local routes and one return",
             });
         }
     }

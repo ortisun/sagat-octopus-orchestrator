@@ -224,6 +224,7 @@ impl IdentityStore for CountingStore {
 
 /// Settings tests may tighten before the API starts.
 pub struct Options {
+    pub redis_callbacks: bool,
     pub secret_provider: Option<Arc<dyn sagat_application::secret_provider::SecretProvider>>,
     pub http_tls: Option<sagat_api_http::HttpTlsConfig>,
     pub http_tls_ca: Option<Vec<u8>>,
@@ -263,6 +264,7 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
+            redis_callbacks: false,
             secret_provider: None,
             http_tls: None,
             http_tls_ca: None,
@@ -406,11 +408,14 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
                 .expect("webhook profiles"),
         )),
     )
-    .with_outbound(OutboundService::new(
-        executions.clone(),
-        SystemClock,
-        EgressService::new(executions.clone(), SystemClock),
-    ))
+    .with_outbound(
+        OutboundService::new(
+            executions.clone(),
+            SystemClock,
+            EgressService::new(executions.clone(), SystemClock),
+        )
+        .with_redis_callbacks(options.redis_callbacks),
+    )
     .with_connectors(ConnectorService::new(
         executions.clone(),
         SystemClock,

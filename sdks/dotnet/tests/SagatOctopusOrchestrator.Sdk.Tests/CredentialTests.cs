@@ -113,8 +113,8 @@ public sealed class CredentialTests
         {
             ActivitySecrets? kept = null;
             ActivityExecutionContext? context = null;
-            var namesWhenReported = -1;
-            fake.State.OnComplete = () => namesWhenReported = kept!.Names.Count;
+            var namesWhenReported = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+            fake.State.OnComplete = () => namesWhenReported.TrySetResult(kept!.Names.Count);
             host.RegisterActivity<JsonNode?, int>("pay", async (_, c, ct) =>
             {
                 context = c;
@@ -124,8 +124,9 @@ public sealed class CredentialTests
             });
             fake.State.Lease(Leases.Lease(l => l.ActivityName = "pay"));
             await host.StartAsync();
-            await Eventually.UntilAsync(() => fake.State.Of("CompleteStep").Count == 1, "the completion");
-            Assert.Equal(0, namesWhenReported);
+            // Recording the RPC precedes OnComplete; wait for the observation itself.
+            Assert.Equal(0, await namesWhenReported.Task.WaitAsync(TimeSpan.FromSeconds(10)));
+            Assert.Single(fake.State.Of("CompleteStep"));
             Assert.Empty(kept!.Names);
             Assert.Throws<SagatException>(() => kept.Get("k"));
             var error = await Assert.ThrowsAsync<SagatException>(() => context!.GetSecretsAsync());

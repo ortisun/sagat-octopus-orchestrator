@@ -16,6 +16,7 @@ WORKDIR /src
 # The whole workspace is needed to resolve member manifests; the lock file keeps the build exact.
 COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
 COPY crates crates
+COPY vendor vendor
 COPY apps apps
 COPY tests tests
 # The contracts are compiled into the binaries: the workflow IR schema is embedded by the codec and
@@ -27,7 +28,7 @@ COPY specs/001-platform-foundation/contracts specs/001-platform-foundation/contr
 # checkout left in the cache: the build would then reuse its generated code (a worker.proto of
 # another branch) or its compiled crates. Touching the sources makes the workspace crates rebuild;
 # dependencies are identified by checksum and stay cached.
-RUN find crates apps tests specs rust-toolchain.toml Cargo.toml Cargo.lock -type f -exec touch {} +
+RUN find crates apps tests specs vendor rust-toolchain.toml Cargo.toml Cargo.lock -type f -exec touch {} +
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release --locked --jobs "${CARGO_BUILD_JOBS}" \

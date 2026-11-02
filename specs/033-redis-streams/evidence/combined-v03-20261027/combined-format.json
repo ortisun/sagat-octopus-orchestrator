@@ -1,0 +1,16 @@
+{
+  "command": [
+    "cargo",
+    "fmt",
+    "--all",
+    "--",
+    "--check"
+  ],
+  "exit_code": 0,
+  "seconds": 4.99,
+  "wall_seconds": 4.99,
+  "wall_minus_monotonic_seconds": -0.0,
+  "started_utc": "2026-10-28T01:04:58.383718+00:00",
+  "finished_utc": "2026-10-28T01:05:03.370864+00:00",
+  "log": "combined-format.txt"
+}

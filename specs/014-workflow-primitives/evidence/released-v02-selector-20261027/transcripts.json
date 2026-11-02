@@ -1,0 +1,32 @@
+[
+  {
+    "path": "released-v02-zero-selector-green.txt",
+    "rawSha256": "34738ce63eecea46c4461924ec1d63dabbffebeb2777befe28cc2f8590fd2afd",
+    "normalizedSha256": "34738ce63eecea46c4461924ec1d63dabbffebeb2777befe28cc2f8590fd2afd",
+    "normalization": "strip trailing line whitespace and final empty lines only"
+  },
+  {
+    "path": "released-v02-verified-inflight-worker.txt",
+    "rawSha256": "6d67062582552cf88bf383c4b2b40d5ca2a28a98263ebc7ae0cd31a68521c0b1",
+    "normalizedSha256": "b9642c2c7ef6647d4597344ea2b2ffc6d45bb0c5c4ce7189c4a97b9dc324c496",
+    "normalization": "strip trailing line whitespace and final empty lines only"
+  },
+  {
+    "path": "released-v02-verified-applied-lookup.txt",
+    "rawSha256": "fa54a4bb2b305e0d0e766c1f289ef2728d8b22be2e5c39618f021833f577c513",
+    "normalizedSha256": "689e4428a887abd62889e317304d80701ea38543eb5c0cbc3b4d0bfc3d2539cb",
+    "normalization": "strip trailing line whitespace and final empty lines only"
+  },
+  {
+    "path": "released-v02-zero-selector-red.txt",
+    "rawSha256": "acce5b38dae6287ae67c3d361156d7071bed9dac8238c5e2a43af8871f08312f",
+    "normalizedSha256": "acce5b38dae6287ae67c3d361156d7071bed9dac8238c5e2a43af8871f08312f",
+    "normalization": "strip trailing line whitespace and final empty lines only"
+  },
+  {
+    "path": "released-v02-verified-active-data.txt",
+    "rawSha256": "b335ee39b08f9755d0cf6fdbf148df03a98ac24437a72f3e43bf31f86a9e306f",
+    "normalizedSha256": "21a19b448a5b1de631438a9724745c6764f4b1cf8db06f7ae0f5c35efc96b1df",
+    "normalization": "strip trailing line whitespace and final empty lines only"
+  }
+]

@@ -1,0 +1,21 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "sdk_conformance",
+    "--locked",
+    "--",
+    "--ignored",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "seconds": 70.15,
+  "wall_seconds": 70.15,
+  "wall_minus_monotonic_seconds": 0.0,
+  "started_utc": "2026-10-28T00:53:47.660202+00:00",
+  "finished_utc": "2026-10-28T00:54:57.808673+00:00",
+  "log": "combined-six-sdk-collection-control-entry.txt"
+}

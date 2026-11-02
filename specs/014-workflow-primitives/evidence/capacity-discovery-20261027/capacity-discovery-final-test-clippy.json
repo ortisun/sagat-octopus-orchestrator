@@ -1,0 +1,21 @@
+{
+  "command": [
+    "cargo",
+    "clippy",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "--locked",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "exit_code": 0,
+  "seconds": 45.09,
+  "wall_seconds": 45.09,
+  "wall_minus_monotonic_seconds": 0.0,
+  "started_utc": "2026-10-28T02:04:54.314534+00:00",
+  "finished_utc": "2026-10-28T02:05:39.404243+00:00",
+  "log": "capacity-discovery-final-test-clippy.txt"
+}

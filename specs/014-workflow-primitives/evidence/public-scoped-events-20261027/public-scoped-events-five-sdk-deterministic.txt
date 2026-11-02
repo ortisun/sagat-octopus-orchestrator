@@ -1,0 +1,23 @@
+    Finished `test` profile [unoptimized] target(s) in 0.26s
+     Running contract/sdk-conformance/main.rs (/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs/debug/deps/sdk_conformance-8294f626eed04892)
+
+running 1 test
+test every_sdk_conforms_to_every_scenario ... --- collection-events (5 languages)
+FAIL collection-events: /Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/tests/contract/sdk-conformance/expected/collection-events.workflows.json does not exist (SAGAT_SDK_BLESS=1 writes it)
+FAIL collection-events: /Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/tests/contract/sdk-conformance/expected/collection-events.json does not exist (SAGAT_SDK_BLESS=1 writes it)
+
+thread 'every_sdk_conforms_to_every_scenario' (473639325) panicked at tests/contract/sdk-conformance/harness.rs:1481:9:
+the SDKs do not conform:
+collection-events: /Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/tests/contract/sdk-conformance/expected/collection-events.workflows.json does not exist (SAGAT_SDK_BLESS=1 writes it)
+collection-events: /Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/tests/contract/sdk-conformance/expected/collection-events.json does not exist (SAGAT_SDK_BLESS=1 writes it)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    every_sdk_conforms_to_every_scenario
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 25.55s
+
+error: test failed, to rerun pass `-p sagat-tests --test sdk_conformance`

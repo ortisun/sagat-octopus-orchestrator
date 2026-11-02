@@ -1,0 +1,48 @@
+{
+  "source": "38d7b3f0748770d80229e559e159cc755377265b",
+  "source_status": "tracked clean at completion",
+  "scenarios": 64,
+  "languages": [
+    "typescript",
+    "go",
+    "python",
+    "dotnet",
+    "java"
+  ],
+  "build_only_scenarios": 6,
+  "normalized_scenarios": 58,
+  "independent_normalized_comparisons": 290,
+  "bless": false,
+  "sdk_reuse": true,
+  "sdk_preparation": "all five prepared in the preceding immutable-source invocation, then reused unchanged",
+  "scenario_filter": null,
+  "language_filter": null,
+  "database_runner_sha256": "6c32f3dc1d9150d1feaeccde3331bc7dd637a584b0041575f6d559bc274a7a07",
+  "test_executable_sha256": "a9f5df00128e7e9314679467e16188ece5b2cf4b27965737833ee8a960aa059f",
+  "comparisons_file_sha256": "f325991582864acea425e4f1ab4f7e571d2f011d84806acc17125673832b6bcd",
+  "initial_attempt": {
+    "exit_code": 101,
+    "command_seconds": 820.09,
+    "cause": "missing database-runner build prerequisite; no complete suite acceptance"
+  },
+  "focused_prerequisite_verification": {
+    "exit_code": 0,
+    "command_seconds": 56.3,
+    "scenario": "database-connections",
+    "languages": 5
+  },
+  "result": {
+    "exit_code": 0,
+    "aggregate_tests_passed": 1,
+    "harness_seconds": 1396.68,
+    "command_seconds": 1399.68,
+    "wall_seconds": 1399.69,
+    "wall_gap_seconds": 0.01
+  },
+  "limitations": [
+    "Does not cover later root-dispatch candidate or pure event commands.",
+    "Prepared SDK reuse differs from a fresh preparation in the same suite invocation.",
+    "Local Node 26 and Java 23 are not the pinned CI Node 22/Java 21 profile.",
+    "No native scoped event receiver, nested capacity or release acceptance follows."
+  ]
+}

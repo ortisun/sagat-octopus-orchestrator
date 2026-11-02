@@ -97,8 +97,12 @@ ENVIRONMENT (serve):
                                       (gauges pool_queue_lag_seconds and pool_ready_steps, by pool)
     SAGAT_HOUSEKEEPING_INTERVAL_SECS  purge expired records every     [300]
     SAGAT_LIVENESS_GRACE_SECS         /livez fails when no scheduler tick finished for this long [30]
-    SAGAT_NATS_URL                    JetStream URL; unset disables hint publishing (the outbox
-                                      then only accumulates, and workers must poll)
+    SAGAT_EVENT_TRANSPORT             nats, redis or none; unset preserves optional NATS URL
+    SAGAT_REDIS_URL                   redis(s):// endpoint, DB0-15; TLS outside dev (explicit redis)
+    SAGAT_REDIS_STREAM                internal stream key (1-512 chars) [sagat:v1:events]
+    SAGAT_REDIS_STREAM_MAXLEN         exact MAXLEN (1-10000000)         [100000]
+    SAGAT_REDIS_TIMEOUT_SECS          connect/publish deadline (1-30s) [5]
+    SAGAT_NATS_URL                    JetStream URL; required for explicit nats selection
     SAGAT_NATS_STREAM                 stream name                     [SAGAT]
     SAGAT_NATS_CREDENTIALS_FILE       .creds file for NATS authentication
     SAGAT_NATS_REQUIRE_TLS            refuse plaintext NATS           [true outside dev]

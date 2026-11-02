@@ -17,8 +17,8 @@ use super::sagas;
 use super::state::{RunState, SagaPhase, StepState, StepStatus, WaitingOn};
 use crate::saga::{NodeOrigin, SagaOutcome};
 use crate::workflow::{
-    CancelPolicy, Expression, JoinPolicy, NodeId, NodeKind, Scope, SwitchCase, WorkflowDefinition,
-    WorkflowLimits,
+    CancelPolicy, Expression, JoinPolicy, Node, NodeId, NodeKind, Scope, SwitchCase,
+    WorkflowDefinition, WorkflowLimits,
 };
 
 /// What the engine needs to know before it can continue.
@@ -113,6 +113,8 @@ pub fn plan_addressed(
             Vec::new()
         } else if step.status() == StepStatus::Failed {
             declared.on_error().cloned().into_iter().collect()
+        } else if let Some(targets) = recorded_successors(declared, step)? {
+            targets
         } else {
             declared.next().cloned().into_iter().collect()
         };
@@ -147,6 +149,10 @@ pub fn plan_addressed(
                     },
                 ),
                 NodeKind::ForEach { .. }
+                | NodeKind::Condition { .. }
+                | NodeKind::Switch { .. }
+                | NodeKind::Timer { .. }
+                | NodeKind::WaitEvent { .. }
                 | NodeKind::Approval { .. }
                 | NodeKind::While { .. }
                 | NodeKind::RepeatUntil { .. }
@@ -193,6 +199,8 @@ pub fn plan_path(
             Vec::new()
         } else if step.status() == StepStatus::Failed {
             declared.on_error().cloned().into_iter().collect()
+        } else if let Some(targets) = recorded_successors(declared, step)? {
+            targets
         } else {
             declared.next().cloned().into_iter().collect()
         };
@@ -223,6 +231,10 @@ pub fn plan_path(
                 addressed(path, RunEvent::StepReleased { node: node.clone() })
             }
             NodeKind::ForEach { .. }
+            | NodeKind::Condition { .. }
+            | NodeKind::Switch { .. }
+            | NodeKind::Timer { .. }
+            | NodeKind::WaitEvent { .. }
             | NodeKind::Approval { .. }
             | NodeKind::While { .. }
             | NodeKind::RepeatUntil { .. }
@@ -620,6 +632,42 @@ fn cancel_joined_leftovers(def: &WorkflowDefinition, state: &RunState) -> Option
     None
 }
 
+/// Routes a recorded branch outcome identically in root, full and exact-path planning.
+fn recorded_successors(
+    node: &Node,
+    step: &StepState,
+) -> Result<Option<Vec<NodeId>>, ExecutionError> {
+    Ok(Some(match node.kind() {
+        NodeKind::WaitEvent { on_timeout, .. } if step.timed_out() => {
+            on_timeout.iter().cloned().collect()
+        }
+        NodeKind::Condition {
+            if_true, if_false, ..
+        } => vec![if step.condition() == Some(true) {
+            if_true.clone()
+        } else {
+            if_false.clone()
+        }],
+        NodeKind::Switch { cases, default } => match step.switch_selection() {
+            Some(SwitchSelection::Case(id)) => vec![
+                cases
+                    .iter()
+                    .find(|case| case.id() == id)
+                    .ok_or(ExecutionError::Invariant("switch selected an unknown case"))?
+                    .target()
+                    .clone(),
+            ],
+            Some(SwitchSelection::Default) => vec![default.clone()],
+            None => {
+                return Err(ExecutionError::Invariant(
+                    "switch has no recorded selection",
+                ));
+            }
+        },
+        _ => return Ok(None),
+    }))
+}
+
 fn successors_after(
     def: &WorkflowDefinition,
     state: &RunState,
@@ -641,34 +689,10 @@ fn successors_after(
             Vec::new()
         });
     }
+    if let Some(targets) = recorded_successors(def_node, step)? {
+        return Ok(targets);
+    }
     Ok(match def_node.kind() {
-        NodeKind::Condition {
-            if_true, if_false, ..
-        } => vec![if step.condition() == Some(true) {
-            if_true.clone()
-        } else {
-            if_false.clone()
-        }],
-        NodeKind::Switch { cases, default } => match step.switch_selection() {
-            Some(SwitchSelection::Case(id)) => {
-                let target = cases
-                    .iter()
-                    .find(|case| case.id() == id)
-                    .ok_or(ExecutionError::Invariant("switch selected an unknown case"))?
-                    .target()
-                    .clone();
-                vec![target]
-            }
-            Some(SwitchSelection::Default) => vec![default.clone()],
-            None => {
-                return Err(ExecutionError::Invariant(
-                    "switch has no recorded selection",
-                ));
-            }
-        },
-        NodeKind::WaitEvent { on_timeout, .. } if step.timed_out() => {
-            on_timeout.iter().cloned().collect()
-        }
         NodeKind::End { .. } => Vec::new(),
         _ => def_node.next().cloned().into_iter().collect(),
     })

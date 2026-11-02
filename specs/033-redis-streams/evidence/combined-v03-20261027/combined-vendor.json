@@ -1,0 +1,13 @@
+{
+  "command": [
+    "python3",
+    "scripts/check-vendor.py"
+  ],
+  "exit_code": 0,
+  "seconds": 0.04,
+  "wall_seconds": 0.04,
+  "wall_minus_monotonic_seconds": -0.0,
+  "started_utc": "2026-10-28T01:05:04.820726+00:00",
+  "finished_utc": "2026-10-28T01:05:04.862650+00:00",
+  "log": "combined-vendor.txt"
+}

@@ -203,18 +203,16 @@ pub async fn serve(
         )
         .with_cron(Arc::new(sagat_infra_ir::cron::CronCalendar)),
     );
-    // Deliveries and connector consumers share the configured secret authorities.
-    let deliveries: Option<Arc<EngineDeliveries>> =
-        (engine.secrets.is_some() || provider.is_some()).then(|| {
-            Arc::new(DeliveryWorker::with_broker_reader(
-                store.clone(),
-                sagat_infra_connectors::webhook::GuardedSender::new(store.clone()),
-                sagat_infra_connectors::publish::Publisher::new(store.clone()),
-                SystemEntropy,
-                secret_reader.clone(),
-                engine.deliveries,
-            ))
-        });
+    // Anonymous broker destinations must run without a secret backend. The default reader
+    // fails closed only when an attempt actually requires unavailable signing/authentication.
+    let deliveries: Arc<EngineDeliveries> = Arc::new(DeliveryWorker::with_broker_reader(
+        store.clone(),
+        sagat_infra_connectors::webhook::GuardedSender::new(store.clone()),
+        sagat_infra_connectors::publish::Publisher::new(store.clone()),
+        SystemEntropy,
+        secret_reader.clone(),
+        engine.deliveries,
+    ));
     // Broker credentials are resolved through the same namespace-scoped reader.
     let connectors = (engine.secrets.is_some() || provider.is_some()).then(|| {
         Arc::new(sagat_infra_connectors::supervisor::Supervisor::with_reader(
@@ -227,27 +225,36 @@ pub async fn serve(
             engine.connector_refresh,
         ))
     });
-    let dispatcher: Option<Arc<EngineDispatcher>> = match &engine.nats {
-        Some(nats) => {
-            let publisher = NatsPublisher::connect(nats.clone()).await.map_err(|e| {
+    let publisher = match (&engine.nats, &engine.redis) {
+        (Some(nats), None) => Some(loops::HintPublisher::Nats(Box::new(
+            NatsPublisher::connect(nats.clone()).await.map_err(|e| {
                 RunError::Refused(match e {
                     sagat_infra_nats::NatsError::Config(reason) => reason,
                     sagat_infra_nats::NatsError::Connect => "could not set up the NATS client",
                 })
-            })?;
-            Some(Arc::new(
-                OutboxDispatcher::new(store.clone(), publisher, SystemEntropy, engine.dispatch)
-                    .with_placement(placement.clone()),
-            ))
-        }
-        None => {
+            })?,
+        ))),
+        (None, Some(redis)) => Some(loops::HintPublisher::Redis(
+            sagat_infra_connectors::redis::RedisPublisher::new(redis.clone()),
+        )),
+        (None, None) => {
             tracing::warn!(
-                "SAGAT_NATS_URL is not set: task hints are not published, workers must poll, \
-                 and the outbox accumulates until a dispatcher is configured"
+                "internal notifications are disabled; PostgreSQL outbox accumulates and workers continue through gRPC"
             );
             None
         }
+        (Some(_), Some(_)) => {
+            return Err(RunError::Refused(
+                "configure only one internal event transport",
+            ));
+        }
     };
+    let dispatcher: Option<Arc<EngineDispatcher>> = publisher.map(|publisher| {
+        Arc::new(
+            OutboxDispatcher::new(store.clone(), publisher, SystemEntropy, engine.dispatch)
+                .with_placement(placement.clone()),
+        )
+    });
 
     // The journal becomes spans and measurements here, off the path of every request and every
     // transition. With no collector configured the measurements are still made.
@@ -359,9 +366,7 @@ pub async fn serve(
                         {
                             tracing::warn!(%error, "could not purge the telemetry notes of finished runs");
                         }
-                        if let Some(deliveries) = deliveries {
-                            deliveries.housekeeping().await;
-                        }
+                        deliveries.housekeeping().await;
                     }
                 }
             },
@@ -414,19 +419,17 @@ pub async fn serve(
     if let Some(connectors) = connectors {
         tasks.spawn_loop("connector supervisor", connectors.run(stop_rx.clone()));
     }
-    if let Some(deliveries) = deliveries {
-        tasks.spawn_loop(
-            "delivery worker",
-            loops::run_deliveries(
-                move || {
-                    let deliveries = Arc::clone(&deliveries);
-                    async move { deliveries.tick().await }
-                },
-                engine.delivery_poll,
-                stop_rx.clone(),
-            ),
-        );
-    }
+    tasks.spawn_loop(
+        "delivery worker",
+        loops::run_deliveries(
+            move || {
+                let deliveries = Arc::clone(&deliveries);
+                async move { deliveries.tick().await }
+            },
+            engine.delivery_poll,
+            stop_rx.clone(),
+        ),
+    );
     if let Some(dispatcher) = dispatcher {
         tasks.spawn_loop(
             "outbox dispatcher",

@@ -114,3 +114,12 @@ offset; RSS covers the sampled runner process tree. No universal speedup or prod
 is claimed. Final packages from SDK source commit `517c657` passed all five clean-consumer checks
 (`target/sdk-packages-517c657`, 11 distributables plus checksums). G125 is closed within the
 report’s stated measurement limitations; public registry publication remains separate.
+
+
+## Approved dependent delivery: Rust SDK (2026-10-27)
+
+The owner requested an official Rust SDK during the active 0.3 delivery. Feature
+[034](../034-rust-sdk/spec.md) and [ADR-0070](../../docs/adr/ADR-0070-rust-sdk-shares-the-canonical-sdk-contract.md)
+extend the same SDK semantic contract, canonical protocol, errors, conformance and package gates to
+Rust. Existing five-language evidence stays intact. This authorizes the dependency; the new SDK's
+actual acceptance is tracked by T034 tasks and is not supplied by this note.

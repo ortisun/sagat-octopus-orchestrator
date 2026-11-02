@@ -57,7 +57,7 @@ set_version() {
   sed "s/@SDK_VERSION@/${SDK_VERSION}/g" "$1" >"$1.versioned" && mv "$1.versioned" "$1"
 }
 
-for command_name in git node npm "${python_bin}" go dotnet java jar; do
+for command_name in git node npm "${python_bin}" go dotnet java jar cargo; do
   command -v "${command_name}" >/dev/null || {
     echo "required command not found: ${command_name}" >&2
     exit 2
@@ -496,6 +496,9 @@ set_version "${work_dir}/java-consumer/src/main/java/example/PackageSmoke.java"
     -Dmaven.repo.local="${java_smoke_repo}" package
   java -cp "target/classes:${output_dir}/${java_artifact}.jar" example.PackageSmoke
 )
+
+echo "==> Rust: crate and clean artifact consumer"
+bash "${repo_root}/scripts/package-rust-sdk.sh" "${output_dir}"
 
 echo "==> Artifact checksums"
 (

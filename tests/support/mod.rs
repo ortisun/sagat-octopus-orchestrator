@@ -272,6 +272,24 @@ pub fn now() -> OffsetDateTime {
         .expect("valid nanosecond")
 }
 
+/// Failure evidence contains only execution metadata and clock/fence state, never payloads/tokens.
+pub async fn scheduler_evidence(
+    pool: &PgPool,
+    tenant: TenantId,
+    run: sagat_domain::execution::RunId,
+) -> serde_json::Value {
+    sqlx::query_scalar("SELECT jsonb_build_object('status',r.status,'paused',r.paused,'version',r.run_version, \
+        'databaseNow',clock_timestamp(),'shardOwner',sh.owner,'shardGeneration',sh.generation, \
+        'shardExpiresAt',sh.expires_at,'shardLive',sh.expires_at>clock_timestamp(), \
+        'steps',(SELECT coalesce(jsonb_agg(jsonb_build_object('node',s.node,'status',s.status, \
+            'path',s.instance_path_indices,'waitingKind',s.waiting_kind) ORDER BY s.instance_path_indices,s.node),'[]'::jsonb) \
+            FROM (SELECT node,status,instance_path_indices,waiting_kind FROM steps \
+                WHERE tenant_id=r.tenant_id AND run_id=r.id \
+                ORDER BY instance_path_indices,node LIMIT 64) s)) \
+        FROM runs r LEFT JOIN scheduler_shards sh ON sh.shard=run_shard(r.id) WHERE r.tenant_id=$1 AND r.id=$2")
+        .bind(tenant.as_uuid()).bind(run.as_uuid()).fetch_one(pool).await.expect("bounded execution failure metadata")
+}
+
 pub fn slug(value: &str) -> Slug {
     Slug::parse(value).expect("valid slug")
 }

@@ -1,0 +1,14 @@
+{
+  "command": [
+    "npm",
+    "run",
+    "typecheck"
+  ],
+  "exit_code": 0,
+  "seconds": 3.81,
+  "wall_seconds": 3.81,
+  "wall_minus_monotonic_seconds": -0.0,
+  "started_utc": "2026-10-28T01:03:46.324591+00:00",
+  "finished_utc": "2026-10-28T01:03:50.133024+00:00",
+  "log": "combined-studio-types.txt"
+}

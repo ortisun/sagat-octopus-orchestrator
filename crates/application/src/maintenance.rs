@@ -248,10 +248,10 @@ impl PublishError {
     }
 }
 
-/// The broker a dispatcher publishes to (NATS JetStream in production).
+/// The configured internal notification transport (NATS JetStream or Redis Streams).
 ///
-/// Publishing is at-least-once: `message_id` is stable across attempts so the broker can drop the
-/// duplicates a crash between publishing and confirming produces.
+/// Publishing is at-least-once: `message_id` is a stable application id across attempts.
+/// A transport may deduplicate within a window; consumers must tolerate physical duplicates.
 pub trait EventPublisher: Send + Sync {
     /// # Errors
     /// [`PublishError::Unavailable`] when the broker did not confirm; [`PublishError::Rejected`]

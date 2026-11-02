@@ -1,6 +1,6 @@
 # SDK packaging and clean-install verification
 
-This runbook covers FR-006-008 for the TypeScript, Python, Go, C# and Java SDKs. It builds local release artifacts at the pinned SDK version, installs each artifact into a temporary consumer, exercises a public SDK symbol, checks that the package carries the MIT license and writes SHA-256 checksums. It never publishes to an external registry.
+This runbook covers FR-006-008 for the TypeScript, Python, Go, C#, Java and Rust SDKs. It builds local release artifacts at the pinned SDK version, installs each artifact into a temporary consumer, exercises a public SDK symbol, checks that the package carries the MIT license and writes SHA-256 checksums. It never publishes to an external registry.
 
 ## Build and verify all packages
 
@@ -53,3 +53,17 @@ Before external publication, the release owner must review the checksums and rel
 - The Go module is released by signing and pushing the module tag `sdks/go/v0.2.0`; the public Go proxy fetches the module from Git rather than accepting this tarball.
 
 Registry uploads, release signing and long-term artifact retention are intentionally outside this credential-free workflow. The repository and all five package formats use the MIT license.
+
+## Rust crate candidate
+
+`bash scripts/package-rust-sdk.sh /tmp/sagat-rust-artifact` builds the committed Rust SDK source
+with the pinned Rust toolchain and Python 3.12 or newer. The helper refuses uncommitted SDK files,
+packages with `cargo package --locked`, checks the MIT license, extracts the actual `.crate`,
+and compiles/runs an independent consumer using only that extracted artifact. A fresh consumer
+lock is resolved once, then the run is repeated with `--locked`. It records the source commit,
+crate version and toolchain in `RUST_SDK_PROVENANCE.txt`. Its temporary workspace is removed; an
+explicit caller-owned external `CARGO_TARGET_DIR` is reused and left to its owner.
+
+The common packaging command also invokes this helper before checksums. The first Rust crate is
+a 0.3.0 candidate while the existing released packages remain at 0.2.0 until coordinated release
+preparation. GitHub Release assets include the `.crate`; crates.io publication is not enabled.

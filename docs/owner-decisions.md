@@ -4,6 +4,54 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-10-29 — ChildRoot capacity coordination
+
+| # | Item | Decision | Recorded in | Status |
+|---|---|---|---|---|
+| 1 | O705, idle-holder convergence | “Sweeper no tick do scheduler, em transação própria (recomendado)”. Release idle possession in a level-triggered scheduler sweep, one native transaction per command; worker reports and internal step transactions do not release possession inline. | [Coordinator plan](../specs/014-workflow-primitives/capacity-coordinator.md), `research.md` D714/O705 | Owner approved; implementation and recovery evidence required |
+| 2 | O706, possession enforcement | “Apenas concessão de leases aos workers (recomendado)”. Require possession when granting worker leases; internal scheduler transitions remain outside this gate. | [Coordinator plan](../specs/014-workflow-primitives/capacity-coordinator.md), `research.md` O706 | Owner approved; shared eligibility, claim guards and wiring still required |
+
+## 2026-10-28 — version-neutral source names
+
+The owner requested: “Nao quero ter esses arquivos v2 nem v3”. Active upgrade tests, fixtures,
+runner scripts and implementation/profile documents use version-neutral names (`release_upgrade`,
+`release-upgrade`, `implementation-ledger`). The tested release remains pinned explicitly in the
+fixture content. Immutable historical receipts retain their original recorded paths and hashes.
+
+## 2026-10-28 — elastic scaling (feature 036)
+
+| # | Item | Decision | Recorded in | Status |
+|---|---|---|---|---|
+| 1 | O1706, who applies replicas and resources when a scaling policy is enforced | Option B, chosen in `/speckit-clarify`: by default the environment's autoscaler or an external controller follows the platform's published desired capacity; in addition an **optional applier** (a separate component, off by default, with only the permissions to change the replicas and resources of the platform's own workloads) carries out enforced decisions in the supported orchestrator, for operators who want a closed loop. | [`specs/036-elastic-scaling/spec.md`](../specs/036-elastic-scaling/spec.md) (Clarifications, FR-036-051 to FR-036-055, US12, SC-036-015 and SC-036-016) | Specified; not built |
+| 2 | O1707, where outside data for scaling comes from | Option B, chosen in `/speckit-clarify`, with the owner's words: “O orquestrador deve consultar as métricas (mensagens enfileiradas, cpu, memoria, etc..). Ele dará os sinais ao keda ou outro provider fazer o scaling in ou out.” The platform queries external sources declared by configuration, evaluates, and hands the signals and the decisions to the autoscaling provider. Declaring a source is an operator action (destination allowlist, credentials by reference, bounded read-only queries); tenants publish custom signals instead. | [`specs/036-elastic-scaling/spec.md`](../specs/036-elastic-scaling/spec.md) (Clarifications, FR-036-056 to FR-036-061, US13, SC-036-017 to SC-036-019) | Specified; not built |
+| 3 | O1708, programmatic access to signals and policies and the SDKs | Option A, chosen in `/speckit-clarify`: the management interface is the documented, versioned REST contract plus the operator command line. The six official SDKs do not change in this feature (their client covers run operations only, and a new client operation must enter all six with a scenario and a golden). | [`specs/036-elastic-scaling/spec.md`](../specs/036-elastic-scaling/spec.md) (Clarifications, FR-036-019, Assumptions, Out of scope) | Specified; not built |
+| 4 | O1703, what a tenant may do about scaling | Option B, chosen in `/speckit-clarify`: a tenant reads the lag, state and decisions of its own connectors and adjusts their in-flight parallelism and rate limit by hand within its quota; every scaling policy is operator-only; a tenant never controls replicas or resources. Consequence recorded as O1704 (not yet confirmed): a custom signal published by a tenant has no automatic effect until an operator admits it to a policy. | [`specs/036-elastic-scaling/spec.md`](../specs/036-elastic-scaling/spec.md) (Clarifications, FR-036-023, FR-036-024, US05) | Specified; not built |
+| 5 | O1709, delivery order of feature 036 | Option B, chosen in `/speckit-clarify`: the first delivery is US01, US02, US03, US04, US05, US06, US10 and US13 (consumer lag, balanced Kafka partitions, scaling on lag, policies by configuration and through the management interface, explanation, safety, pulled sources, signals and desired capacity exported to the autoscaling provider). The other roles (US07), the dedicated ingestion role (US09), vertical scaling (US08), the optional applier (US12) and the benchmark on separate machines (US11) follow. | [`specs/036-elastic-scaling/spec.md`](../specs/036-elastic-scaling/spec.md) (Clarifications, Context "Delivery order") | Specified; not built |
+
+## 2026-10-27
+
+Answers to the scope questions of the feature 035 specification (Apache Iceberg write steps): items 1–3 were asked before it was written, items 4–8 at `/speckit-clarify`, items 9–11 when the owner extended the scope to step-output destinations. "Not built" means the decision is taken and the implementation is still to be done; it is not evidence.
+
+| # | Item | Decision | Recorded in | Status |
+|---|---|---|---|---|
+| 1 | 035 write modes | **Append, overwrite and upsert** (merge by key) in the first delivery; the recommendation was append + overwrite with upsert later. | `specs/035-iceberg-write-steps/research.md` (D035-001) | Decided; not built |
+| 2 | 035 catalogs and storage | **Broad set**: REST, AWS Glue, Hive Metastore and JDBC catalogs; S3-compatible, Google Cloud Storage and ADLS Gen2 storage; the recommendation was REST + S3-compatible first. | `specs/035-iceberg-write-steps/research.md` (D035-002) | Decided; not built |
+| 3 | 035 destination model | A **new connection kind of the feature-017 catalog** (revisions, OpenBao secrets, probe, managed executor, network policy, ad hoc admission); no dependency on the PR #53 drafts. | `specs/035-iceberg-write-steps/research.md` (D035-003) | Decided; not built |
+| 4 | 035 batch size | At most **2 GiB per step** in at most 32 record blobs of 64 MiB, streamed into files. | `specs/035-iceberg-write-steps/research.md` (D035-013) | Decided; not built |
+| 5 | 035 deletes in upsert | An upsert may declare a **delete marker** field; marked keys are removed in the same commit. | `specs/035-iceberg-write-steps/research.md` (D035-014) | Decided; not built |
+| 6 | 035 unknown record fields | **Refused by default**; a step may declare that they are ignored (dropped, counted, never written); the table schema is never changed. | `specs/035-iceberg-write-steps/research.md` (D035-015) | Decided; not built |
+| 7 | 035 snapshot summary identifiers | Effect key, run id, step id, **workflow name and version**; workflow names become visible to readers of the table's metadata. | `specs/035-iceberg-write-steps/research.md` (D035-016, O035-001) | Decided; not built |
+| 8 | 035 table creation | **No**: tables exist beforehand; a missing table fails the step. | `specs/035-iceberg-write-steps/research.md` (D035-017) | Decided; not built |
+| 9 | 035 step-output destinations | “Quero que o output dos steps também possam ser salvas no iceberg, postgres, etc...” (example: a finished payment flowing down to the lake). Outputs go to destinations **chosen per destination as synchronous** (inside the run) **or asynchronous** (batched export). | `specs/035-iceberg-write-steps/research.md` (D035-018) | Decided; not built |
+| 10 | 035 destination kinds | **Iceberg, customer PostgreSQL, object storage files, ClickHouse and broker streams, all five in both modes** (recommendation for synchronous: Iceberg and PostgreSQL only). | `specs/035-iceberg-write-steps/research.md` (D035-019) | Decided; not built |
+| 11 | 035/020 placement | Asynchronous export is **020's declared-record export**, which gains an `ICEBERG` sink reusing 035's connection; 035 specifies the Iceberg write step and the synchronous destinations. | `specs/035-iceberg-write-steps/research.md` (D035-020), 020 `research.md` | Decided; 020 is still a draft in PR #53 |
+
+## 2026-10-26
+
+| # | Item | Decision | Recorded in | Status |
+|---|---|---|---|---|
+| 1 | Remaining implementation and release target | “Continue com a implementacao do restante agora para a release v0.3”. Complete the eight remaining feature-014 tasks for release 0.3.0 with their original acceptance criteria and required gates. | [0.3.0 implementation ledger](../specs/014-workflow-primitives/implementation-ledger.md) | Implementation in progress; no capacity or release guarantee inferred |
+
 ## 2026-10-25
 
 | # | Item | Decision | Recorded in | Status |
@@ -11,6 +59,12 @@ means the decision is taken and the implementation is still to be done; it is no
 | 1 | Implemented-task integration and release | “Quero que mergeie todas as tasks já implementadas. Crie as versoes e releases necessárias”. Merge and release implemented work; no approval of pending feature-014 production ceilings, general nesting, unverified work or waived gates is inferred. | [ADR-0040](adr/ADR-0040-release-checkpoints-preserve-incomplete-feature-boundaries.md), [0.2.0 notes](releases/0.2.0.md) | Authorized; merge/publication require actual integrated-head gates |
 
 The implementation agent selected one coordinated **0.2.0** under the existing pre-1.0 breaking-minor policy and synchronized release tooling. The owner did not explicitly name this version. GitHub Releases remains the distribution channel; no environment deployment or registry publication is added.
+
+## 2026-10-26 — nested capacity (lane `feature/014-capacity-protocol`)
+
+| # | Item | Decision | Recorded in | Status |
+|---|---|---|---|---|
+| 1 | O701, reduction of `iteration_concurrency` | After a reduction (including to 0) already admitted work is **not paused**: it runs to completion and only new admissions are blocked, as the released contract and runbook say. A tenant may therefore exceed a reduced limit while its admitted work lasts. | [capacity-eligibility.md](../specs/014-workflow-primitives/capacity-eligibility.md), [zero policy](../specs/014-workflow-primitives/zero-iteration-policy.md), `research.md` D704/D705 | Explicit zero in the 0.3 working branch; nested group runtime remains pending. O702–O704 are consequences, open to correction |
 
 ## 2026-10-16
 
@@ -41,3 +95,20 @@ Answers to the four product questions of the feature 016 specification (per-fiel
 | 3 | 016 P3, readings of ADR-0033 | The **restrictive** reading: an undeclared field is at least `pii` even under a `public` parent; a schema with no annotation is `pii` throughout; a payload with no schema at all is structure only for everyone. | `specs/016-payload-classification/research.md` (D265, D269) | Decided; not built |
 | 4 | 016 P4, self-grant | An administrator **may grant reveal to themselves**, audited. | `specs/016-payload-classification/research.md` (D306) | Decided; not built |
 | 5 | Self-contained infrastructure | **Everything the platform needs to run or to be tested lives in this repository.** Local and CI infrastructure is declared in `infra/docker/compose.yaml` (and `compose.observability.yaml`), with pinned images, loopback-only ports and development credentials; nothing may depend on a container, volume or service that belongs to another project or has to be started by hand. When feature 015 adopts OpenBao it is added as a service of that compose file (dev mode, pinned image, healthcheck, initialised by a one-shot job), not borrowed from another stack. Integration tests start their own disposable containers. | `AGENTS.md` (infrastructure), 015 draft | Decided; the stack today needs no OpenBao (secrets use the sealed application vault in PostgreSQL) |
+
+## 2026-10-27 — Official Rust SDK
+
+The owner reported the missing Rust SDK during the active0.3 implementation. Add an official Rust
+SDK with the current SDK client/worker/builder semantics and shared conformance, tracked by
+[feature034](../specs/034-rust-sdk/spec.md) and [ADR-0070](adr/ADR-0070-rust-sdk-shares-the-canonical-sdk-contract.md).
+The active0.3 context is the release target; existing Redis033 and remaining014 work stays in scope.
+
+## 2026-10-27 — Redis Streams for release0.3
+
+The owner requested Redis Streams in communications/callbacks now in v0.3 and selected:
+“Alternativa ao NATS e transporte adicional para callbacks, selecionável por configuração”.
+Feature033 implements optional internal Redis outbox notifications and Redis callback destinations,
+retaining PostgreSQL authority, worker gRPC, NATS compatibility and existing HTTP callbacks.
+[Specification](../specs/033-redis-streams/spec.md); [ADR-0069](adr/ADR-0069-redis-streams-share-outbox-and-delivery-authority.md).
+Implementation/tests remain required; no production deployment, automatic release or inbound Redis
+connector is inferred. This explicitly approves dependencies on the existing004/009/017 services.

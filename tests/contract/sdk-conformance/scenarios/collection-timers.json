@@ -1,0 +1,244 @@
+{
+  "name": "collection-timers",
+  "description": "Qualified collection timers through five existing body builders: Timer entry and Condition to Timer complete before any worker; Activity to Timer leases only the real activities. Ordered results and addressed journals prove one lifecycle per selected member.",
+  "server": {
+    "iterationConcurrency": 4
+  },
+  "scopeEvidence": "ordered",
+  "workflows": {
+    "timer": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "collection-timers-timer",
+      "limits": {
+        "maxInstances": 6,
+        "maxDepth": 1
+      },
+      "bodies": {
+        "line": {
+          "program": [
+            {
+              "op": "sleep",
+              "id": "delay",
+              "durationMs": 1
+            },
+            {
+              "op": "return",
+              "id": "returned",
+              "result": "item"
+            }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "map",
+          "id": "lines",
+          "items": "input.items",
+          "body": "line",
+          "result": "bodyResult",
+          "maxItems": 2,
+          "maxConcurrency": 1
+        },
+        {
+          "op": "end",
+          "id": "done",
+          "options": {
+            "outputExpr": "steps.lines.output"
+          }
+        }
+      ]
+    },
+    "condition": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "collection-timers-condition",
+      "limits": {
+        "maxInstances": 8,
+        "maxDepth": 1
+      },
+      "bodies": {
+        "line": {
+          "program": [
+            {
+              "op": "condition",
+              "id": "choose",
+              "expression": "item > 0",
+              "ifTrue": "delay",
+              "ifFalse": "returned"
+            },
+            {
+              "op": "sleep",
+              "id": "delay",
+              "durationMs": 1
+            },
+            {
+              "op": "return",
+              "id": "returned",
+              "result": "item"
+            }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "map",
+          "id": "lines",
+          "items": "input.items",
+          "body": "line",
+          "result": "bodyResult",
+          "maxItems": 2,
+          "maxConcurrency": 1
+        },
+        {
+          "op": "end",
+          "id": "done",
+          "options": {
+            "outputExpr": "steps.lines.output"
+          }
+        }
+      ]
+    },
+    "activity": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "collection-timers-activity",
+      "limits": {
+        "maxInstances": 8,
+        "maxDepth": 1
+      },
+      "bodies": {
+        "line": {
+          "program": [
+            {
+              "op": "step",
+              "id": "selected",
+              "activity": "timer.notify"
+            },
+            {
+              "op": "sleep",
+              "id": "delay",
+              "durationMs": 1
+            },
+            {
+              "op": "return",
+              "id": "returned",
+              "result": "item"
+            }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "map",
+          "id": "lines",
+          "items": "input.items",
+          "body": "line",
+          "result": "bodyResult",
+          "maxItems": 2,
+          "maxConcurrency": 1
+        },
+        {
+          "op": "end",
+          "id": "done",
+          "options": {
+            "outputExpr": "steps.lines.output"
+          }
+        }
+      ]
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "collection-timers",
+      "protocolVersion": "1.5",
+      "transport": "poll",
+      "maxInflight": 1,
+      "autostart": false,
+      "activities": {
+        "timer.notify": {
+          "behavior": {
+            "returns": {
+              "selected": true
+            }
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "timer",
+      "op": "start",
+      "workflow": "timer",
+      "input": {
+        "items": [
+          1,
+          -1
+        ]
+      }
+    },
+    {
+      "id": "timer-done",
+      "op": "waitForCompletion",
+      "run": "timer",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "timer-journal",
+      "op": "events",
+      "run": "timer"
+    },
+    {
+      "id": "condition",
+      "op": "start",
+      "workflow": "condition",
+      "input": {
+        "items": [
+          1,
+          -1
+        ]
+      }
+    },
+    {
+      "id": "condition-done",
+      "op": "waitForCompletion",
+      "run": "condition",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "condition-journal",
+      "op": "events",
+      "run": "condition"
+    },
+    {
+      "id": "start-worker",
+      "op": "startWorker",
+      "worker": "w1"
+    },
+    {
+      "id": "activity",
+      "op": "start",
+      "workflow": "activity",
+      "input": {
+        "items": [
+          1,
+          -1
+        ]
+      }
+    },
+    {
+      "id": "activity-done",
+      "op": "waitForCompletion",
+      "run": "activity",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "activity-journal",
+      "op": "events",
+      "run": "activity"
+    },
+    {
+      "id": "stop-worker",
+      "op": "stopWorker",
+      "worker": "w1"
+    }
+  ]
+}

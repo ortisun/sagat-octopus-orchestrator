@@ -339,6 +339,14 @@ async fn downgrade_waits_on_original_run_then_observes_committed_scoped_member()
         )))
         .await;
     let original_run = f.w.start(workflow, &serde_json::json!({})).await.as_uuid();
+    // Isolate the scoped Finish down migration's Run-first protocol. Later independent
+    // index reversals may legitimately wait on their own relation before this migration starts.
+    MIGRATOR
+        .undo(&f.w.db.pool, SCOPED_FINISH_VERSION)
+        .await
+        .expect("remove later migrations before establishing this migration's writer barrier");
+    assert_eq!(migration_version(&f.w.db.pool).await, SCOPED_FINISH_VERSION);
+
     let runtime = f.w.db.runtime_pool().await;
     let member = Uuid::new_v4();
     let tenant = f.w.admin.tenant_id().as_uuid();

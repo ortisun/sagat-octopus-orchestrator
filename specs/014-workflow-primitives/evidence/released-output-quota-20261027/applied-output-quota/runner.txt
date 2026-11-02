@@ -1,0 +1,12 @@
+Released-source compatibility evidence: /private/tmp/sagat-v03-20261026/released-v02-al_pw2ho
+
+
+running 1 test
+test released_v02_phase::inflight::read_finished_inflight_profile_with_released_code ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 560 filtered out; finished in 0.20s
+
+released-v02 in-flight: actual released report/replay, current finalization and released terminal reader passed
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 697 filtered out; finished in 10.70s

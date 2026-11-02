@@ -61,8 +61,10 @@ switch integration target exercises these outcomes against PostgreSQL and checks
 The five SDKs can construct additive v1 collection, bounded-loop, approval and continuation
 documents. The server accepts a restricted collection graph with an optional ordinary source
 activity prefix followed by one or more root `forEach` nodes ending at `end`; each body contains a
-chain of one to eight activities followed
-by one `return`. Before starting work, an administrator must set the tenant-wide active iteration budget:
+bounded acyclic graph with an activity/condition/switch entry, one to eight executable nodes (activities,
+conditions, switches) and one `return`. The 0.3 increment adds local `onError` recovery and
+recorded local decisions. Control-node entry, timers, child workflows and nesting remain
+separately gated. Before starting work, an administrator must set the tenant-wide active iteration budget:
 
 ```sh
 curl -X PUT "$API/v1/quotas/iteration_concurrency" \
@@ -547,3 +549,103 @@ with real PostgreSQL, REST publication and gRPC workers:
 SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test --locked -p sagat-tests \
   --test integration_workflow_primitives collection_pipeline -- --test-threads=2 --nocapture
 ```
+
+
+## Local collection recovery (0.3 increment)
+
+An activity can declare `"onError": "recover"` while its ordinary `next` names a
+separate success route. Both routes must stay in the same acyclic activity-only body
+and reach its single `return`. A known failed attempt follows recovery once; an unknown
+effect still uses its declared reconciliation/operator policy first. A recovery failure
+stops admission, drains active work and compensates accepted effects with that failure code.
+The runtime graph retains the qualified error edge for the affected iteration.
+
+With Docker and a private `CARGO_TARGET_DIR` configured, the reproducible happy/failure,
+reservation, native-refusal and full/frontier cases are:
+
+```sh
+cargo test -p sagat-tests --test integration_workflow_primitives --locked collection_recovery::
+SAGAT_SDK_SCENARIO=collection-local-recovery cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+```
+
+The common SDK fixture uses existing `onError` options in all five builders. A successful
+recovery yields ordered results `[1, 2]`; a failed recovery reaches `COMPENSATED` with
+`RECOVERY_FAILED` after the original reservation's compensation. These simulated effects
+make no external-provider undo guarantee. This increment does not accept nested capacity
+or the remaining large-workload release gates.
+
+## Local collection decisions (0.3 increment)
+
+After an entry activity, a body can evaluate `condition` or ordered `switch` nodes.
+The predicate reads its exact `item`, `index` and local `steps` outputs. A control node
+never leases a worker; its recorded answer, route and selected activity commit together.
+For example, the following body notifies only positive items and returns every original item:
+
+```json
+{
+  "entrypoint": "reserve",
+  "nodes": [
+    {"id": "reserve", "type": "activity", "activity": "line.reserve", "compensateWith": "line.release", "next": "choose"},
+    {"id": "choose", "type": "condition", "expression": "item > 0", "ifTrue": "notify", "ifFalse": "returned"},
+    {"id": "notify", "type": "activity", "activity": "line.notify", "next": "returned"},
+    {"id": "returned", "type": "return", "result": "item"}
+  ]
+}
+```
+
+`collection-control-routing` constructs this shape with both condition and switch in all
+five SDKs. Input `[1, -1]` produces `[1, -1]` with no notification for index1. A missing
+predicate field records `EXPRESSION_ERROR`; the native failure demo drains and compensates
+the actual reservation. A condition may instead declare a local `onError` recovery.
+
+```sh
+RUST_TEST_THREADS=1 cargo test -p sagat-tests --test integration_workflow_primitives --locked -- collection_controls:: collection_control_transactions::
+SAGAT_SDK_SCENARIO=collection-control-routing cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+```
+
+Bodies accept activity/condition/switch/timer entry, at most eight executable declared nodes and one
+Return. Event waits, children, scoped approval and nesting have separate pending admission/runtime
+gates. A loop's body capability remains the existing linear activity/Return subset.
+
+
+A body may also begin at `choose`: a condition can route both outcomes directly to the
+Return, or a switch may select the actual activity. `collection-control-entry` proves the
+control-only Run finishes before a worker starts, then leases only the positive switch
+branch. The unchanged body builders emit entrypoint=`choose` in all five SDKs.
+
+```sh
+RUST_TEST_THREADS=1 cargo test -p sagat-tests --test integration_workflow_primitives --locked -- collection_control_entry:: collection_control_admission::
+SAGAT_SDK_SCENARIO=collection-control-entry cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+```
+
+This development capability requires 0.3 schedulers. Fence/drain older scheduler authority
+before admitting its definitions; release compatibility and rollout acceptance remain open.
+
+
+A collection body may start with a timer or reach it from a local activity/control:
+
+```json
+{"id":"delay","type":"timer","durationMs":1000,"next":"returned"}
+```
+
+This durable wait takes no worker. Existing SDK body.sleep("delay",1000) builders emit
+that timer in all five languages. `collection-timers` demonstrates pure Timer, Condition→Timer
+and Activity→Timer; only the last starts real activity tasks. Pause records an accepted due
+fire but holds its route until resume. Cancellation drains the wait without a timer effect.
+
+```sh
+RUST_TEST_THREADS=1 cargo test -p sagat-tests --test integration_workflow_primitives --locked -- collection_timers:: collection_timer_transactions::
+SAGAT_SDK_SCENARIO=collection-timers cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+```
+
+On the 0.3 branch the tenant may explicitly stop new iteration admission:
+
+```sh
+curl -X PUT "$API/v1/quotas/iteration_concurrency" -H "authorization: Bearer $ADMIN" -H 'content-type: application/json' -d '{"limit":0}'
+```
+
+Accepted members and their timers/compensation continue; the quota reports limit0, its exact
+current use and source=tenant. Set a positive limit to admit remaining captured members. DELETE
+clears the stored policy and reports source=default, whose default0 also blocks new admission.
+Local body maxConcurrency remains1..256. Schema-first upgrade and compatible-writer rollback
+requirements are described in [zero-iteration-policy.md](./zero-iteration-policy.md).

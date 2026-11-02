@@ -15,7 +15,7 @@
 | 11 | 011 GitOps & Versioning | versioning, promotion, diff, rollback | Old runs preserved |
 | 12 | 012 Developer Experience | CLI, local testing on the real engine (no emulator), docs and examples | End-to-end onboarding |
 | 13 | 013 Federated Login | Studio sign-in through each organization's OIDC or SAML provider | Draft specification only |
-| 14 | 014 Workflow Primitives | forEach/map, loops, approval, switch, Query/Update, Continue-As-New | In progress on `feature/workflow-primitives` |
+| 14 | 014 Workflow Primitives | forEach/map, loops, approval, switch, Query/Update, Continue-As-New | 0.3 work in progress on `feature/014-v0.3-completion`; eight tasks remain open; [increment evidence](../specs/014-workflow-primitives/implementation-ledger.md) |
 | 15 | 015 OpenTelemetry and OpenBao | all three signals through a Collector; OpenBao as the secret and key authority | Draft specification only (was the second 013; renumbered by the owner on 2026-10-16) |
 | 16 | 016 Payload Classification | per-field classification (`public`, `internal`, `pii`, `secret`) of run payloads, audited disclosure by level, `payload:reveal-pii` | Implemented and merged into 0.2.0; final integration gates passed on 2026-10-26 ([evidence](../specs/016-payload-classification/release-gates-2026-10-25.md)); includes the documented event-read break. Eight feature-014 tasks remain open under ADR-0040 |
 | 17 | 017 Database Connections | UI-managed PostgreSQL connections and OpenBao secrets shared by SDK, visual and ad hoc workflows/steps ([spec](../specs/017-database-connections/spec.md)) | Implemented and merged into 0.2.0; real PostgreSQL/OpenBao faults, five-SDK/UI parity, full Compose and recovery passed ([evidence](../specs/017-database-connections/verification.md)). Production installation remains operator-managed |
@@ -34,9 +34,31 @@
 | 30 | 030 Cross-namespace Services | Nexus-like service contracts and operations within one tenant ([spec](../specs/030-cross-namespace-services/spec.md)) | Draft; ADR-0065 proposed |
 | 31 | 031 Client-side Encryption | SDK payload codecs with customer-held keys, codec server, opacity checks at publication ([spec](../specs/031-client-side-encryption/spec.md)) | Draft; ADR-0066 proposed |
 | 32 | 032 Multi-region Failover | active-passive cells with fenced region epochs ([spec](../specs/032-multi-region-failover/spec.md)) | Draft; ADR-0067 proposed; needs a constitution amendment (owner decision O1560) |
+| 35 | 035 Iceberg Writes and Step-Output Destinations | managed workflow steps that append, overwrite or upsert records into customer Apache Iceberg tables (REST, Glue, Hive, JDBC catalogs; S3, GCS, ADLS storage) through a new 017 connection kind, recovered by an effect-key lookup in the table history; synchronous step-output destinations (Iceberg, PostgreSQL, object storage, ClickHouse, broker streams), with the asynchronous mode in 020 ([spec](../specs/035-iceberg-write-steps/spec.md)) | Draft specification only (2026-10-27) |
 
 **Realistic milestones:** M0=contracts and journal spike; M1=durable vertical slice; M2=sagas/events; M3=scripts and first SDK; M4=Studio; M5=enterprise hardening; M6=multi-SDK/HA. Avoid estimates without team composition and benchmark.
+
+Feature033 adds Redis Streams to the0.3 release scope: selectable internal notification transport
+and an additional callback destination. PostgreSQL/gRPC semantics stay unchanged. Track its
+[acceptance tasks](../specs/033-redis-streams/tasks.md) and actual validation evidence alongside the
+remaining feature014 gates; its implementation does not waive those release requirements.
+
+Feature036 (Elastic scaling driven by telemetry) is a draft, proposed 2026-10-28 as the follow-up of
+feature010: lag for Kafka, NATS and SQS consumers, balanced Kafka partition assignment, scaling signals and
+policies declared by configuration and through the management interface, pulled sources, and horizontal and
+vertical decisions with an explanation. It has a [spec](../specs/036-elastic-scaling/spec.md) with five
+clarifications, a [plan](../specs/036-elastic-scaling/plan.md), ADR-0072 to ADR-0074 (proposed) and
+[94 tasks](../specs/036-elastic-scaling/tasks.md) for the first delivery; nothing implemented. The owner decided O1703 and O1706–O1709 (first delivery: consumer lag, balanced
+partitions, policies by configuration and API, pulled sources, export to the autoscaling provider). Still
+open: O1700–O1702 and O1704 (recommended defaults) and O1710 (how an operator acts through the API).
 
 **Dependencies:** `001 → 002 → {003,004,009} → {005,006,007} → {008,011,012} → 010`, with cross-cutting security from 001; later phases can advance in parallel once contracts stabilize.
 
 **Parity drafts 018–032 (2026-10-26):** proposed to bring Temporal and Windmill capabilities into the platform's architecture; none is approved or implemented. Suggested order, for the owner to confirm: `{018, 019, 020, 022} → {021, 026, 028, 029} → {023, 024, 025, 027, 030, 031} → 032`, because 018 consumes 020's run selector, 025 and 027 consume 022's standalone steps and 026's Streams and forms, 031 uses 028's interceptors, 029's identity-provider groups wait for 013, and 032 needs a constitution amendment. The cross-feature notes are in [SPECIFICATION-INDEX.md](../SPECIFICATION-INDEX.md).
+
+### Capacity increment in progress — 2026-10-29
+
+Feature014's [dormant ChildRoot Acquire](../specs/014-workflow-primitives/capacity-acquire.md)
+adds fenced possession transfer and original-key reconciliation beside Vacate/Finish. Native and
+integrated acceptance is in progress; canonical tasks and the release remain open. Runnable work,
+sweeper/callers, claim guards, nested admission and quota/backfill remain required before activation.

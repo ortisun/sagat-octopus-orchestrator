@@ -1,0 +1,32 @@
+[
+  {
+    "path": "inflight-red-inflight-worker.txt",
+    "rawSha256": "b435b4bf19e73ee3346280ec185ce19bc89a51a928c91e0c19057b68daae54a7",
+    "normalizedSha256": "48ed0561ce0fc3a6a41a00753ae7c831ded099de266c28ee2c586a8df1e72d8d",
+    "normalization": "strip trailing line whitespace and final empty lines only"
+  },
+  {
+    "path": "inflight-first-inflight-worker.txt",
+    "rawSha256": "1715ca7a6921b6e661f6a4037b3210bdeb8cff4902d2623f0a244e339c29a5e5",
+    "normalizedSha256": "034a22f4ea4ba05444788d231efbd3ba58491f048d8015b48d2a3dea6159e5fa",
+    "normalization": "strip trailing line whitespace and final empty lines only"
+  },
+  {
+    "path": "inflight-preflight-inflight-worker.txt",
+    "rawSha256": "d56ad32a63ef5e01a1bcd28c008b5cfa9ea7007e70fc294c7960aba8ff97141a",
+    "normalizedSha256": "8c65bdcbc22a71d9da8fb6a3eb2bc8860750f0f6a285f9e0d55cc1644dc2c916",
+    "normalization": "strip trailing line whitespace and final empty lines only"
+  },
+  {
+    "path": "active-regression-upgrade.txt",
+    "rawSha256": "9fd94c590503359f13b62298effa4209cf2655a8d389d1e81f214dc280671d8d",
+    "normalizedSha256": "cd16e173ee78f09b37447de6cf23031e1aad765cbab3b12c8dd8d4d0d79c732e",
+    "normalization": "strip trailing line whitespace and final empty lines only"
+  },
+  {
+    "path": "inflight-worker.txt",
+    "rawSha256": "e1d7f5121aba1594d376433f84a68d0ca639b3ec0d36e80ecb43d7d414f7efcf",
+    "normalizedSha256": "263acb9a993f26f04343cb8ccbda618801b9c281ab34b4552a44aef26866b331",
+    "normalization": "strip trailing line whitespace and final empty lines only"
+  }
+]

@@ -1,0 +1,7 @@
+{
+  "scenario": "applied-output-quota",
+  "resultPath": "outcome-it4ldhu0/result.json",
+  "resultSha256": "5cef084c683b09736eb71d9b9e0c672f8fd73215628bd5eaab6c7dfba5be93fe",
+  "buildSha256": "ae1792297a28402c6895c5d34463520dedab4ea957273714f75e167e7b20b9bc",
+  "transcriptSha256": "958178f102136b733ddb4af075825412caec44c127a9ca59fcd572a8a7260663"
+}

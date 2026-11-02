@@ -38,6 +38,8 @@ pub enum ConnectorError {
     InvalidQueueUrl,
     #[error("a region is a short lower-case name such as us-east-1")]
     InvalidRegion,
+    #[error("the Redis database is between 0 and 15")]
+    InvalidDatabase,
     #[error("the ingest rate is between 1 and {MAX_INGEST_RATE} messages per second")]
     InvalidRate,
     #[error("the settings do not fit the kind of connector")]

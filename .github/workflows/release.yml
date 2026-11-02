@@ -1,7 +1,7 @@
 name: release
 
 # Owner decision 2026-10-16 (G123/G203/G216): the only distribution channel is GitHub Releases.
-# A tag `v<semver>` builds the `sagat` CLI for three targets and the five SDK packages, writes
+# A tag `v<semver>` builds the `sagat` CLI for three targets and the six SDK packages, writes
 # SHA256SUMS, attests the provenance of every file (Sigstore, through GitHub artifact attestations)
 # and publishes them as the release `v<semver>`. Nothing goes to npm, PyPI, NuGet or Maven; Go is
 # consumed from the module path in this repository. A pull request that touches this file or the
@@ -15,6 +15,7 @@ on:
     paths:
       - ".github/workflows/release.yml"
       - "scripts/package-sdks.sh"
+      - "scripts/package-rust-sdk.sh"
       - "scripts/release-version.sh"
       - "infra/dr/drill.sh"
   workflow_dispatch:
@@ -101,6 +102,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup show active-toolchain
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
@@ -120,6 +122,8 @@ jobs:
           distribution: temurin
           java-version: "21"
       - name: Build packages and run clean consumers
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/sagat-rust-packages
         run: bash scripts/package-sdks.sh "${RUNNER_TEMP}/sdk-packages"
       # The script writes its checksums last: their absence means it stopped early, whatever its status.
       - name: Every package was written

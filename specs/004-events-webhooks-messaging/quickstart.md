@@ -90,3 +90,12 @@ Two reviewers who had no part in writing it read the uncommitted change, one for
 ## What is not built
 
 The list, with the reason for each, is G73–G95 in [`research.md`](./research.md): OIDC and mTLS profiles for webhooks (G75), a shared or per-address ingress limit (G78), trace propagation from an event into a run (G79), a retained-bytes quota and field-level redaction for the inbox (G80), per-trigger ordering policies (G74), a `source` on waits (G87), fairness across tenants in the dispatcher (G88), SDK helpers (G86), Studio screens and dashboards (G85), use-time re-checks of secret bindings (G90).
+
+
+## Kafka codec security maintenance — 2026-10-27
+
+The root dependency audit's Zstandard findings are corrected without removing Kafka compression
+support. The verified temporary rskafka manifest-only override, pinned patched codec versions,
+real Zstd/uncompressed broker regression and snapshot integrity controls are documented in
+[evidence/kafka-zstd-20261027](./evidence/kafka-zstd-20261027/README.md). This focused maintenance
+pass does not claim completion of the separate v0.3 integration gates.

@@ -46,6 +46,33 @@ The SDK also logs on `System.Logger` (the JDK's default: standard error), for ex
   (here `Input`, bound by the SDK; the fields it does not name are ignored) and, in `ctx.steps()`, the outputs
   of the steps before it by step id; what it returns is its output.
 - A real effect (a payment, an e-mail) sends `ctx.idempotencyKey()` to its provider: it is the same for
-  every attempt of the step, so a repeat does not do it twice.
+  every attempt of the step; the provider must deduplicate that key to prevent duplicate effects.
 - The dependency in `pom.xml` (`dev.sagatoctopusorchestrator:sagat-octopus-orchestrator-sdk:0.2.0`) resolves
   to the copy `prepare.sh` installed; remove the install step from `prepare.sh` once the SDK is published.
+
+## Interface
+
+- `prepare.sh` installs the checkout SDK and builds this standalone example. [examples/hello-world/java/prepare.sh:mvnw]
+- `run.sh` launches `HelloWorld` using the generated runtime classpath. [examples/hello-world/java/run.sh:exec]
+- [src](src/README.md) — Java greeting command serving and starting the two-activity hello-world workflow.
+
+## Invariants
+
+- The project compiles for Java 17 and generates `target/classpath.txt` during package. [examples/hello-world/java/pom.xml:maven.compiler.release]
+- Preparation skips SDK tests, packages with strict checksums, and requires a nonempty runtime classpath. [examples/hello-world/java/prepare.sh:mvnw]
+- Launch requires both the runtime classpath file and compiled classes directory; absence exits 2. [examples/hello-world/java/run.sh:target/classpath.txt]
+
+## Side Effects
+
+- Writes SDK artifacts to the local Maven repository and build output under `target`. [examples/hello-world/java/prepare.sh:mvnw]
+- Reads the runtime classpath and replaces the shell with Java. [examples/hello-world/java/run.sh:exec]
+
+## Verification
+
+From the repository root, with Docker, the selected example toolchains, and a private `CARGO_TARGET_DIR` outside the checkout:
+
+```sh
+cargo test -p sagat-tests --test e2e_developer_experience --locked -- --ignored
+```
+
+The shared real-platform suite is declared in `tests/Cargo.toml`; language preparation and run commands remain in the example READMEs. [tests/Cargo.toml:e2e_developer_experience]

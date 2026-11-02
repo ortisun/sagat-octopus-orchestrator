@@ -3796,9 +3796,10 @@ export interface components {
          *     api_requests_per_second and events_per_second are requests/second (maximum 1,000,000,
          *     fixed two-second burst); event_retention_seconds is 0 or 60..2,592,000 seconds;
          *     script_retention_days is 0..365 days. iteration_concurrency is tenant-wide; its explicit
-         *     value is 1..1,000,000,000, its default operator ceiling is 1,024 and, while absent or
-         *     cleared, structured iteration admission is disabled. Zero disables new admission for
-         *     resources that accept it.
+         *     value is 0..1,000,000,000, its default operator ceiling is 1,024 and, while absent or
+         *     cleared, structured iteration admission is disabled. An explicit zero policy blocks
+         *     new iteration admissions without pausing already admitted work; its source is tenant.
+         *     Zero disables new admission for other resources that accept it.
          *     Database operation ceilings are positive:
          *     database_statement_bytes <= 65536, database_parameters <= 256,
          *     database_parameter_bytes <= 262144, database_rows <= 10000,
@@ -4089,7 +4090,7 @@ export interface components {
             namespaceId: string;
             name: string;
             /** @enum {string} */
-            kind: "NATS" | "KAFKA" | "SQS";
+            kind: "NATS" | "KAFKA" | "SQS" | "REDIS";
             settings: components["schemas"]["OutboundBrokerSettings"];
             /** @description Optional namespace secret containing the broker credentials JSON. */
             secretName?: string;
@@ -4111,7 +4112,7 @@ export interface components {
         CreateBrokerSubscriptionRequest: {
             name: string;
             /** @enum {string} */
-            kind: "NATS" | "KAFKA" | "SQS";
+            kind: "NATS" | "KAFKA" | "SQS" | "REDIS";
             settings: components["schemas"]["OutboundBrokerSettings"];
             secretName?: string;
             events: ("run.finished" | "ops.alert.fired" | "ops.alert.resolved")[];
@@ -4130,7 +4131,7 @@ export interface components {
              * @description Must remain the subscription kind set at creation.
              * @enum {string}
              */
-            kind: "NATS" | "KAFKA" | "SQS";
+            kind: "NATS" | "KAFKA" | "SQS" | "REDIS";
             settings: components["schemas"]["OutboundBrokerSettings"];
             secretName?: string;
             events: ("run.finished" | "ops.alert.fired" | "ops.alert.resolved")[];
@@ -4144,7 +4145,7 @@ export interface components {
              */
             status: "ACTIVE" | "PAUSED";
         };
-        OutboundBrokerSettings: components["schemas"]["OutboundNatsSettings"] | components["schemas"]["OutboundKafkaSettings"] | components["schemas"]["OutboundSqsSettings"];
+        OutboundBrokerSettings: components["schemas"]["OutboundNatsSettings"] | components["schemas"]["OutboundKafkaSettings"] | components["schemas"]["OutboundSqsSettings"] | components["schemas"]["OutboundRedisSettings"];
         OutboundNatsSettings: {
             servers: string[];
             subject: string;
@@ -4156,6 +4157,14 @@ export interface components {
         OutboundSqsSettings: {
             queueUrl: string;
             region: string;
+        };
+        /** @description Redis Streams outbound callback. Requires operator activation after a cold upgrade. Credentials belong in the namespace secret named by secretName; use TLS for authentication. No Cluster/Sentinel or automatic trimming. */
+        OutboundRedisSettings: {
+            /** @description Host and explicit port; no credentials or database path. rediss enables certificate and hostname verification. */
+            server: string;
+            stream: string;
+            /** @default 0 */
+            database: number;
         };
         OutboundSubscriptionHealth: {
             consecutiveDead: number;
