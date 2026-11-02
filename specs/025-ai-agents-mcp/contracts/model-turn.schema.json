@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sagat:draft:025:model-turn",
+  "title": "Draft: canonical model-call result and transcript entry",
+  "description": "What the agent runner reports in CompleteStep.output_json (or as a blob claim-check above 256 KiB) for a sagat.ai.model task, and the body of an ASSISTANT transcript entry. Adapters map every provider wire format to this form; the server validates it, checks tool names and inputs against the pinned declaration, scans it for the attempt's resolved secret values and only then commits it. Draft for feature 025; T025-002 publishes it as specs/001-platform-foundation/contracts/model-turn.schema.json.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "turn", "stopReason", "blocks", "usage"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "turn": {"type": "integer", "minimum": 1, "maximum": 64},
+    "stopReason": {"enum": ["end_turn", "tool_use", "max_tokens", "refusal", "other"]},
+    "reportedModel": {"type": "string", "maxLength": 128},
+    "providerRequestId": {"type": "string", "maxLength": 128, "description": "Provider correlation id (for example the request-id header); kept on spans and the turn row, never on metrics."},
+    "blocks": {
+      "type": "array",
+      "maxItems": 512,
+      "items": {
+        "oneOf": [
+          {"type": "object", "additionalProperties": false, "required": ["type", "text"],
+           "properties": {"type": {"const": "text"}, "text": {"type": "string", "maxLength": 1048576}}},
+          {"type": "object", "additionalProperties": false, "required": ["type", "callIndex", "name", "providerCallId", "input"],
+           "properties": {"type": {"const": "tool_request"},
+                          "callIndex": {"type": "integer", "minimum": 1, "maximum": 256},
+                          "name": {"type": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$"},
+                          "providerCallId": {"type": "string", "maxLength": 128},
+                          "input": {"description": "Bounded JSON value; validated against the tool's inputSchema by the server, never by the runner alone."},
+                          "inputComplete": {"type": "boolean", "default": true}}},
+          {"type": "object", "additionalProperties": false, "required": ["type", "providerKind", "blockType", "bytesBase64"],
+           "properties": {"type": {"const": "opaque"},
+                          "providerKind": {"enum": ["anthropic", "openai-compatible", "aws-bedrock", "azure-openai"]},
+                          "blockType": {"type": "string", "maxLength": 64, "description": "For example thinking or redacted_thinking."},
+                          "bytesBase64": {"type": "string", "contentEncoding": "base64", "maxLength": 1398104, "description": "Exact provider block bytes, replayed unchanged to the same provider kind within the same agent step; never interpreted, streamed or shown outside the transcript endpoint."}}}
+        ]
+      }
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["known"],
+      "properties": {
+        "known": {"type": "boolean", "description": "False when the provider did not report usage; the reservation is then kept."},
+        "inputTokens": {"type": "integer", "minimum": 0},
+        "outputTokens": {"type": "integer", "minimum": 0},
+        "cacheReadTokens": {"type": "integer", "minimum": 0},
+        "cacheWriteTokens": {"type": "integer", "minimum": 0}
+      }
+    },
+    "truncated": {"type": "boolean", "default": false}
+  },
+  "$defs": {
+    "toolResults": {
+      "description": "Body of a TOOL_RESULTS transcript entry, built by the server when the turn's last tool call settles; results are in request order.",
+      "type": "object", "additionalProperties": false, "required": ["turn", "results"],
+      "properties": {
+        "turn": {"type": "integer", "minimum": 1},
+        "results": {"type": "array", "maxItems": 256, "items": {
+          "type": "object", "additionalProperties": false, "required": ["callIndex", "status", "content"],
+          "properties": {
+            "callIndex": {"type": "integer", "minimum": 1},
+            "status": {"enum": ["ok", "error", "refused"]},
+            "reason": {"enum": ["UNKNOWN_TOOL", "INVALID_INPUT", "LIMIT_REACHED", "APPROVAL_REJECTED", "APPROVAL_EXPIRED", "TOOL_FAILED", "MCP_UNSUPPORTED_RESULT", "AI_TOOL_CHANGED"], "description": "Fixed, safe reason sent to the model; never a provider or executor message."},
+            "content": {"description": "Projected tool output (bounded JSON) or a fixed reason text."},
+            "truncated": {"type": "boolean"}
+          }}}
+      }
+    }
+  }
+}

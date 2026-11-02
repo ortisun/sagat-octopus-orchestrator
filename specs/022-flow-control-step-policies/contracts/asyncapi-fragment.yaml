@@ -1,0 +1,119 @@
+asyncapi: 3.0.0
+info:
+  title: Feature 022 — draft AsyncAPI fragment (not implemented)
+  version: 0.0.0-draft
+  description: |
+    Additive messages to merge into specs/001-platform-foundation/contracts/events.asyncapi.yaml at
+    implementation (task T022-060), following docs/event-schema-evolution.md: new messages, new optional
+    properties and new enumeration values only. The baseline (events.baseline.json) is regenerated on
+    purpose and its diff reviewed. Bodies are payload-free: identifiers, status and trace metadata only
+    (ADR-0027 protected outbox). Test-tree runs produce none of the outbound messages below.
+channels:
+  outboundWebhook:
+    address: '{subscriberUrl}'
+    parameters:
+      subscriberUrl:
+        description: The URL of a webhook subscription.
+    messages:
+      runResultReturnedWebhook:
+        $ref: '#/components/messages/RunResultReturnedWebhook'
+  outboundBroker:
+    address: '{subjectTopicOrQueue}'
+    parameters:
+      subjectTopicOrQueue:
+        description: The subject, topic or queue of a broker subscription.
+    messages:
+      runResultReturnedBroker:
+        $ref: '#/components/messages/RunResultReturnedBroker'
+  runResultReturnedHint:
+    address: 'sagat.v1.run.result_returned.{tenant}'
+    parameters:
+      tenant:
+        description: Tenant id. Internal hint for followers and for the 026 run-and-wait endpoint; a reader still reads the run through the API.
+    messages:
+      runResultReturned:
+        $ref: '#/components/messages/RunResultReturned'
+operations:
+  sendRunResultReturnedWebhook:
+    action: send
+    channel: {$ref: '#/channels/outboundWebhook'}
+    messages: [{$ref: '#/channels/outboundWebhook/messages/runResultReturnedWebhook'}]
+  sendRunResultReturnedBroker:
+    action: send
+    channel: {$ref: '#/channels/outboundBroker'}
+    messages: [{$ref: '#/channels/outboundBroker/messages/runResultReturnedBroker'}]
+  publishRunResultReturned:
+    action: send
+    channel: {$ref: '#/channels/runResultReturnedHint'}
+    messages: [{$ref: '#/channels/runResultReturnedHint/messages/runResultReturned'}]
+components:
+  messages:
+    RunResultReturned:
+      name: RunResultReturned
+      contentType: application/json
+      headers:
+        type: object
+        properties:
+          Nats-Msg-Id: {type: string, description: 'The outbox row id; stable across redeliveries.'}
+      payload:
+        type: object
+        required: [tenantId, namespaceId, runId, resultSource]
+        properties:
+          tenantId: {type: string, format: uuid}
+          namespaceId: {type: string, format: uuid}
+          runId: {type: string, format: uuid}
+          resultSource: {type: string, enum: [EARLY_RETURN]}
+          traceId: {type: [string, 'null']}
+    RunResultReturnedWebhook:
+      name: RunResultReturnedWebhook
+      contentType: application/json
+      headers:
+        type: object
+        required: [X-Octopus-Signature, X-Octopus-Timestamp, X-Octopus-Event-Id, X-Octopus-Event-Type, X-Octopus-Delivery-Id, X-Octopus-Attempt, X-Octopus-Schema-Version]
+        properties:
+          X-Octopus-Signature: {type: string, description: 'As for the delivery of a finished run.'}
+          X-Octopus-Timestamp: {type: string}
+          X-Octopus-Event-Id: {type: string}
+          X-Octopus-Event-Type: {type: string, enum: [run.result_returned]}
+          X-Octopus-Delivery-Id: {type: string, format: uuid}
+          X-Octopus-Attempt: {type: string, pattern: '^[0-9]+$'}
+          X-Octopus-Schema-Version: {type: string}
+          traceparent: {type: string}
+      payload:
+        type: object
+        required: [id, type, time, data]
+        properties:
+          id: {type: string}
+          type: {type: string, enum: [run.result_returned]}
+          time: {type: string, format: date-time}
+          data:
+            type: object
+            required: [tenantId, namespaceId, runId, workflow, status]
+            properties:
+              tenantId: {type: string, format: uuid}
+              namespaceId: {type: string, format: uuid}
+              runId: {type: string, format: uuid}
+              workflow: {type: string}
+              status: {type: string, enum: [RUNNING, WAITING], description: 'The live status when the result was returned; the outcome is announced later by run.finished.'}
+              traceId: {type: [string, 'null']}
+    RunResultReturnedBroker:
+      name: RunResultReturnedBroker
+      contentType: application/json
+      headers:
+        type: object
+        required: [event-id, event-type, delivery-id, attempt, schema-version]
+        properties:
+          event-id: {type: string}
+          event-type: {type: string, enum: [run.result_returned]}
+          delivery-id: {type: string, format: uuid}
+          attempt: {type: string, pattern: '^[0-9]+$'}
+          schema-version: {type: string}
+          traceparent: {type: string}
+          Nats-Msg-Id: {type: string}
+      payload: {$ref: '#/components/messages/RunResultReturnedWebhook/payload'}
+  x-additive-properties:
+    description: |
+      Optional properties added to existing messages (merge into them; not standalone messages):
+      RunFinishedWebhook.payload.data.resultSource ({type: [string, 'null'], enum: [EARLY_RETURN, END, null]})
+      and RunFinishedWebhook.payload.data.handlerFor ({type: string, format: uuid}). The subscription
+      `events` enumerations gain `run.result_returned`.

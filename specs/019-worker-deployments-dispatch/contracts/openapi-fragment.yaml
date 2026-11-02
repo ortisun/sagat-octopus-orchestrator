@@ -1,0 +1,508 @@
+# Draft fragment for specs/001-platform-foundation/contracts/openapi.yaml (feature 019). Not served.
+# Paths are relative to the /v1 server. Shared components ($ref '#/components/...') are those of the
+# canonical document (Error, NamespaceId, IdempotencyKey, Limit, Cursor, standard responses).
+openapi: 3.1.0
+info: {title: Sagat Octopus Orchestrator — feature 019 fragment, version: 0.0.0-draft}
+paths:
+  /namespaces/{namespaceId}/worker-deployments:
+    get:
+      operationId: listWorkerDeployments
+      tags: [Operations]
+      x-proposed: '019'
+      description: Needs `ops:read`. Deployments of the namespace with their routing and version counts. Counts and names only.
+      parameters: [{$ref: '#/components/parameters/NamespaceId'}, {$ref: '#/components/parameters/Limit'}, {$ref: '#/components/parameters/Cursor'}]
+      responses:
+        '200': {description: Deployments, content: {application/json: {schema: {$ref: '#/components/schemas/WorkerDeploymentPage'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      operationId: createWorkerDeployment
+      tags: [Operations]
+      x-proposed: '019'
+      description: >-
+        Needs `deployment:manage`. Creates a deployment owning activity patterns; its current version is
+        `UNVERSIONED`, so nothing changes for running work. Takes the namespace dispatch-catalog fence exclusively.
+        Refused with VALIDATION_FAILED and reason `DEPLOYMENT_OVERLAP` (patterns of another live deployment overlap),
+        `ACTIVITY_PUSHED` (a pattern covers an activity a push endpoint serves), `RESERVED_ACTIVITY` (script./sagat.),
+        or QUOTA_EXCEEDED (`worker_deployments`, per namespace). Audited.
+      parameters: [{$ref: '#/components/parameters/NamespaceId'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/WorkerDeploymentInput'}}}
+      responses:
+        '201': {description: Created, content: {application/json: {schema: {$ref: '#/components/schemas/WorkerDeployment'}}}}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /namespaces/{namespaceId}/worker-deployments/{deploymentName}:
+    parameters: [{$ref: '#/components/parameters/NamespaceId'}, {$ref: '#/components/parameters/DeploymentName'}]
+    get:
+      operationId: getWorkerDeployment
+      x-proposed: '019'
+      description: Needs `ops:read`. Routing, versions (state, manifest, drainage as sampled with `sampledAt`).
+      responses:
+        '200': {description: The deployment, content: {application/json: {schema: {$ref: '#/components/schemas/WorkerDeployment'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+    patch:
+      operationId: updateWorkerDeployment
+      x-proposed: '019'
+      description: Needs `deployment:manage`. Replaces patterns or the default behaviour with `expectedRevision`, under the exclusive namespace dispatch-catalog fence. Added patterns run the capability check of the current and ramping versions (`MISSING_CAPABILITIES` unless `acceptGaps`, audited); `DEPLOYMENT_OVERLAP` and `ACTIVITY_PUSHED` as for create. Removing a pattern that covers a ready or leased step of a non-UNVERSIONED pin is refused (`PATTERN_IN_USE`). Audited.
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/WorkerDeploymentUpdate'}}}
+      responses:
+        '200': {description: Updated, content: {application/json: {schema: {$ref: '#/components/schemas/WorkerDeployment'}}}}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+    delete:
+      operationId: deleteWorkerDeployment
+      x-proposed: '019'
+      description: Needs `deployment:manage`. Refused with CONFLICT `DEPLOYMENT_IN_USE` while a non-retired version other than UNVERSIONED or an open pin exists. Tombstone. Audited.
+      responses:
+        '204': {description: Deleted}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /namespaces/{namespaceId}/worker-deployments/{deploymentName}/routing:
+    post:
+      operationId: changeDeploymentRouting
+      x-proposed: '019'
+      description: >-
+        Needs `deployment:manage`. Sets the current version and/or the ramping version and ramp, under
+        `expectedRevision` (CONFLICT `ROUTING_REVISION_CONFLICT`). Refused with VALIDATION_FAILED
+        `MISSING_CAPABILITIES` (with `details.activities`) or `VERSION_HAS_NO_POLLERS` unless `acceptGaps` is true;
+        removing a ramp moves a version that was ever routed to DRAINING, never back to INACTIVE;
+        `VERSION_RETIRED`; `RAMP_EQUALS_CURRENT`. Reason 8..2000 characters. Audited in the same transaction.
+      parameters: [{$ref: '#/components/parameters/NamespaceId'}, {$ref: '#/components/parameters/DeploymentName'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/RoutingChange'}}}
+      responses:
+        '200': {description: New routing, content: {application/json: {schema: {$ref: '#/components/schemas/DeploymentRouting'}}}}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /namespaces/{namespaceId}/worker-deployments/{deploymentName}/versions/{buildId}/retire:
+    post:
+      operationId: retireDeploymentVersion
+      x-proposed: '019'
+      description: >-
+        Needs `deployment:manage`. Retires a DRAINED (or never routed) version; with `repinTo` (a VersionRef) first
+        repins at most 1000 open pinned runs, one run per transaction. CONFLICT `VERSION_NOT_DRAINED` with
+        `details.openPins` and `details.activeLeases`; `VERSION_IS_ROUTED` while current or ramping. Audited.
+      parameters: [{$ref: '#/components/parameters/NamespaceId'}, {$ref: '#/components/parameters/DeploymentName'}, {$ref: '#/components/parameters/BuildId'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason: {type: string, minLength: 8, maxLength: 2000}
+                repinTo: {$ref: '#/components/schemas/VersionRef'}
+      responses:
+        '200': {description: Retired, content: {application/json: {schema: {$ref: '#/components/schemas/DeploymentVersion'}}}}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /namespaces/{namespaceId}/runs/{runId}/deployment-pins:
+    put:
+      operationId: repinRun
+      x-proposed: '019'
+      description: Needs `deployment:manage` and `run:operate`. Moves one open run's pin for one deployment to another non-retired version (a VersionRef; there is no repin to auto-upgrade, because the next pinned claim would pin again). The attempt in flight finishes under its fence. Journaled and audited. CONFLICT `RUN_NOT_MUTABLE` for a terminal run.
+      parameters: [{$ref: '#/components/parameters/NamespaceId'}, {name: runId, in: path, required: true, schema: {type: string, format: uuid}}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [deployment, target, reason]
+              properties:
+                deployment: {type: string}
+                target: {$ref: '#/components/schemas/VersionRef'}
+                reason: {type: string, minLength: 8, maxLength: 2000}
+      responses:
+        '200': {description: The run's pins, content: {application/json: {schema: {$ref: '#/components/schemas/RunDeploymentPins'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /namespaces/{namespaceId}/worker-insights:
+    get:
+      operationId: getWorkerInsights
+      x-proposed: '019'
+      description: Needs `ops:read`. The last monitor sample of the namespace (counts and ages per subject), at most 500 subjects, with `sampledAt`. No payload, input, fairness key or secret.
+      parameters: [{$ref: '#/components/parameters/NamespaceId'}, {name: kind, in: query, schema: {type: string, enum: [activity, version, endpoint, pool]}}]
+      responses:
+        '200': {description: Insights, content: {application/json: {schema: {$ref: '#/components/schemas/WorkerInsights'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /namespaces/{namespaceId}/task-heartbeats:
+    post:
+      operationId: heartbeatTask
+      x-proposed: '019'
+      description: >-
+        Needs `task:complete` (a machine identity also needs a binding covering the step's activity). Renews a
+        detached attempt named by `taskToken` (in the body, never in a URL), or records progress for a push-held
+        attempt allowed to complete asynchronously, with optional checkpoint `details`. The token's secret is verified
+        first: NOT_FOUND for every token whose secret matches no lease of that step (forged, malformed, foreign,
+        unknown); only after a match, CONFLICT `STALE_ATTEMPT` (an ended attempt) or `NOT_DETACHED`. Answers whether
+        cancellation was requested.
+      parameters: [{$ref: '#/components/parameters/NamespaceId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [taskToken]
+              properties:
+                taskToken: {type: string, maxLength: 512, writeOnly: true}
+                details: {description: 'Checkpoint JSON, at most the effective heartbeat_detail_bytes.'}
+                detailsSequence: {type: integer, minimum: 1, description: 'Required with details; ordered within holder epoch 1 (after the detach), D1076.'}
+      responses:
+        '200':
+          description: Renewed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [expiresAt, cancelRequested, detailsStatus]
+                properties:
+                  expiresAt: {type: string, format: date-time}
+                  cancelRequested: {type: boolean}
+                  detailsStatus: {type: string, enum: [NONE, STORED, COALESCED, STALE, REFUSED_SIZE, REFUSED_SECRET, ENCODING_REQUIRED]}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /namespaces/{namespaceId}/task-completions:
+    post:
+      operationId: completeTask
+      x-proposed: '019'
+      description: >-
+        Needs `task:complete` (machine identities: plus a binding covering the step's activity). Completes or fails a
+        detached attempt, or a push-held attempt allowed to complete asynchronously before the invoker has recorded the
+        function's `202` (first commit wins). The token's secret is verified before anything else (NOT_FOUND on any
+        mismatch); receipts are keyed by principal, task and key and read only after that check. The same
+        Idempotency-Key and body replays the original answer (`alreadyApplied`); another body is CONFLICT
+        `IDEMPOTENCY_KEY_REUSED`. Output ≤ 256 KiB,
+        scanned for secret values handed to the attempt (`SECRET_IN_OUTPUT`). Audited with the principal.
+      parameters: [{$ref: '#/components/parameters/NamespaceId'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/TaskCompletion'}}}
+      responses:
+        '200':
+          description: Applied
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [alreadyApplied, stepStatus, runStatus]
+                properties:
+                  alreadyApplied: {type: boolean}
+                  stepStatus: {type: string}
+                  runStatus: {type: string}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+  /namespaces/{namespaceId}/push-endpoints:
+    get:
+      operationId: listPushEndpoints
+      x-proposed: '019'
+      description: Needs `ops:read`. Endpoints with current revision, state and health; never a credential.
+      parameters: [{$ref: '#/components/parameters/NamespaceId'}]
+      responses:
+        '200': {description: Endpoints, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: '#/components/schemas/PushEndpoint'}}}}}}}
+    post:
+      operationId: createPushEndpoint
+      x-proposed: '019'
+      description: >-
+        Needs `push:manage` and `secret:use` on `auth.secret`. Takes the namespace dispatch-catalog fence
+        exclusively. Validates the target against the namespace egress policy (VALIDATION_FAILED `PUSH_DESTINATION_DENIED`),
+        activity ownership (`ACTIVITY_IN_DEPLOYMENT`, `ACTIVITY_ALREADY_PUSHED`, `RESERVED_ACTIVITY`) and ceilings.
+        Mode `async` means the function must hold its own platform identity with `task:complete` to use the task
+        token (D1058). Audited.
+      parameters: [{$ref: '#/components/parameters/NamespaceId'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/PushEndpointInput'}}}
+      responses:
+        '201': {description: Created, content: {application/json: {schema: {$ref: '#/components/schemas/PushEndpoint'}}}}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /namespaces/{namespaceId}/push-endpoints/{endpointName}:
+    parameters: [{$ref: '#/components/parameters/NamespaceId'}, {name: endpointName, in: path, required: true, schema: {type: string}}]
+    put:
+      operationId: updatePushEndpoint
+      x-proposed: '019'
+      description: Needs `push:manage`. New immutable revision under `expectedRevision`; attempts already leased keep their revision.
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/PushEndpointInput'}}}
+      responses:
+        '200': {description: Updated, content: {application/json: {schema: {$ref: '#/components/schemas/PushEndpoint'}}}}
+    delete:
+      operationId: deletePushEndpoint
+      x-proposed: '019'
+      description: Needs `push:manage`. Tombstone; in-flight invocations finish under their leases.
+      responses:
+        '204': {description: Deleted}
+  /namespaces/{namespaceId}/push-endpoints/{endpointName}/pause:
+    post: {operationId: pausePushEndpoint, x-proposed: '019', description: 'Needs `push:manage`. No new claims; audited with a reason.', responses: {'200': {description: Paused}}}
+  /namespaces/{namespaceId}/push-endpoints/{endpointName}/resume:
+    post: {operationId: resumePushEndpoint, x-proposed: '019', description: 'Needs `push:manage`. Clears PAUSED; DENIED clears only after a successful egress check.', responses: {'200': {description: Resumed}}}
+  /push-signing-keys:
+    get:
+      operationId: listPushSigningKeys
+      x-proposed: '019'
+      description: Needs a token of a member of the tenant (`namespace:read`). Ed25519 public keys (current and retired, with `notAfter`) used to sign push envelopes. Cacheable for 1 hour.
+      responses:
+        '200':
+          description: Keys
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [keys]
+                properties:
+                  keys:
+                    type: array
+                    items:
+                      type: object
+                      required: [keyId, algorithm, publicKey]
+                      properties:
+                        keyId: {type: string}
+                        algorithm: {type: string, const: Ed25519}
+                        publicKey: {type: string, description: base64url, 32 bytes}
+                        notAfter: {type: [string, 'null'], format: date-time}
+  /namespaces/{namespaceId}/script-warm-policies/{artifactDigest}:
+    parameters: [{$ref: '#/components/parameters/NamespaceId'}, {name: artifactDigest, in: path, required: true, schema: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}}]
+    get: {operationId: getScriptWarmPolicies, x-proposed: '019', description: 'Needs `script:read`. Policies of the artifact, one per declared secret set.', responses: {'200': {description: Policies}}}
+    put:
+      operationId: putScriptWarmPolicy
+      x-proposed: '019'
+      description: >-
+        Needs `script:warm:manage`. Refused with VALIDATION_FAILED `WARM_RESIDUE_NOT_ACKNOWLEDGED` unless
+        `acknowledgeResidue` equals the current statement version; QUOTA_EXCEEDED when warm container quotas are
+        zero or exhausted. Audited with the acknowledgement.
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/WarmPolicyInput'}}}
+      responses:
+        '200': {description: Stored}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+components:
+  parameters:
+    DeploymentName: {name: deploymentName, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9-]{2,63}$'}}
+    BuildId: {name: buildId, in: path, required: true, schema: {type: string, pattern: '^[A-Za-z0-9._:+-]{1,128}$'}}
+  schemas:
+    DispatchOptions:
+      type: object
+      additionalProperties: false
+      description: Added to StartRunRequest as optional `dispatch` (sent only when PlatformVersion.features contains `dispatch-options`).
+      properties:
+        priority: {type: integer, minimum: 1, maximum: 5}
+        fairnessKey: {type: string, pattern: '^[A-Za-z0-9._:/-]{1,64}$'}
+        fairnessWeight: {type: integer, minimum: 1, maximum: 100}
+        versioningBehavior: {type: string, enum: [pinned, autoUpgrade]}
+    WorkerDeploymentInput:
+      type: object
+      additionalProperties: false
+      required: [name, patterns]
+      properties:
+        name: {type: string, pattern: '^[a-z][a-z0-9-]{2,63}$'}
+        patterns: {type: array, minItems: 1, maxItems: 256, items: {type: string, maxLength: 128}}
+        defaultBehavior: {type: [string, 'null'], enum: [pinned, autoUpgrade, null]}
+    WorkerDeploymentUpdate:
+      allOf: [{$ref: '#/components/schemas/WorkerDeploymentInput'}]
+      properties: {expectedRevision: {type: integer, minimum: 1}}
+      required: [expectedRevision]
+    VersionRef:
+      description: A tagged reference to a deployment version; a bare string is never accepted, so no build id can be mistaken for a keyword.
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [buildId]
+          properties: {buildId: {type: string, pattern: '^[A-Za-z0-9._:+-]{1,128}$'}}
+        - type: object
+          additionalProperties: false
+          required: [unversioned]
+          properties: {unversioned: {const: true}}
+    DeploymentRouting:
+      type: object
+      required: [revision, current, rampBasisPoints]
+      properties:
+        revision: {type: integer}
+        current: {$ref: '#/components/schemas/VersionRef'}
+        ramping: {oneOf: [{$ref: '#/components/schemas/VersionRef'}, {type: 'null'}]}
+        rampBasisPoints: {type: integer, minimum: 0, maximum: 10000}
+    RoutingChange:
+      type: object
+      additionalProperties: false
+      required: [expectedRevision, reason]
+      properties:
+        expectedRevision: {type: integer, minimum: 1}
+        current: {$ref: '#/components/schemas/VersionRef'}
+        ramping: {oneOf: [{$ref: '#/components/schemas/VersionRef'}, {type: 'null'}]}
+        rampBasisPoints: {type: integer, minimum: 0, maximum: 10000}
+        acceptGaps: {type: boolean, default: false}
+        reason: {type: string, minLength: 8, maxLength: 2000}
+    DeploymentVersion:
+      type: object
+      required: [buildId, state, manifest]
+      properties:
+        buildId: {type: string}
+        state: {type: string, enum: [INACTIVE, RAMPING, CURRENT, DRAINING, DRAINED, RETIRED]}
+        manifest:
+          type: object
+          properties:
+            activities: {type: array, items: {type: string}}
+            languages: {type: array, items: {type: string}}
+            protocolVersion: {type: string}
+        drainage:
+          type: object
+          properties:
+            openPins: {type: integer}
+            activeLeases: {type: integer}
+            detachedLeases: {type: integer}
+            liveSessions: {type: integer}
+            sampledAt: {type: string, format: date-time}
+    WorkerDeployment:
+      type: object
+      required: [name, patterns, routing, versions]
+      properties:
+        name: {type: string}
+        patterns: {type: array, items: {type: string}}
+        defaultBehavior: {type: [string, 'null']}
+        routing: {$ref: '#/components/schemas/DeploymentRouting'}
+        versions: {type: array, maxItems: 100, items: {$ref: '#/components/schemas/DeploymentVersion'}}
+    WorkerDeploymentPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/WorkerDeployment'}}
+        nextCursor: {type: [string, 'null']}
+    RunDeploymentPins:
+      type: object
+      required: [runId, pins]
+      properties:
+        runId: {type: string, format: uuid}
+        pins:
+          type: array
+          items:
+            type: object
+            required: [deployment, version, source]
+            properties:
+              deployment: {type: string}
+              version: {$ref: '#/components/schemas/VersionRef'}
+              source: {type: string, enum: [claim, inherited, chain, repin]}
+    WorkerInsights:
+      type: object
+      required: [sampledAt, items]
+      properties:
+        sampledAt: {type: [string, 'null'], format: date-time}
+        items:
+          type: array
+          maxItems: 500
+          items:
+            type: object
+            required: [kind, subject]
+            properties:
+              kind: {type: string, enum: [activity, version, endpoint, pool]}
+              subject: {type: string}
+              ready: {type: integer}
+              oldestReadySeconds: {type: [number, 'null']}
+              leased: {type: integer}
+              detached: {type: integer}
+              pollers: {type: integer}
+              lastPollSeconds: {type: [number, 'null']}
+              lastHeartbeatSeconds: {type: [number, 'null']}
+              pinnedOpenRuns: {type: integer}
+              flags: {type: array, items: {type: string, enum: [UNVERSIONED_IDLE, NO_POLLERS, PUSH_INELIGIBLE_BACKLOG]}}
+    TaskCompletion:
+      type: object
+      additionalProperties: false
+      required: [taskToken, outcome]
+      properties:
+        taskToken: {type: string, maxLength: 512, writeOnly: true}
+        outcome: {type: string, enum: [complete, fail]}
+        output: {description: 'JSON result for complete (at most 256 KiB).'}
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, retryable]
+          properties:
+            code: {type: string, pattern: '^[A-Z][A-Z0-9_]{0,63}$'}
+            retryable: {type: boolean}
+            safeMessage: {type: string, maxLength: 512}
+        details: {description: 'Final checkpoint (failure only).'}
+    PushEndpointInput:
+      type: object
+      additionalProperties: false
+      required: [name, kind, target, activities, auth, mode]
+      properties:
+        name: {type: string, pattern: '^[a-z][a-z0-9-]{2,63}$'}
+        kind: {type: string, enum: [https, aws-lambda]}
+        target: {type: string, maxLength: 2048, description: 'https URL, or Lambda function name/ARN with qualifier.'}
+        region: {type: string, pattern: '^[a-z]{2}(-[a-z]+)+-\d$', description: 'aws-lambda only; must equal the region of the function ARN; the derived host is checked against the egress policy (REGION_INVALID).'}
+        invocationType: {type: string, enum: [RequestResponse, Event], description: 'aws-lambda only; Event requires mode async.'}
+        activities: {type: array, minItems: 1, maxItems: 256, items: {type: string}}
+        auth:
+          type: object
+          additionalProperties: false
+          required: [mode]
+          properties:
+            mode: {type: string, enum: [signature-only, aws-sigv4, google-oidc]}
+            secret: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$', description: 'Logical secret name; never a value.'}
+            audience: {type: string, maxLength: 2048, description: 'google-oidc only and optional: if given it MUST equal the canonical origin of `target` (AUDIENCE_NOT_TARGET); the audience used is always derived from the target. ID tokens are minted against the pinned https://oauth2.googleapis.com/token, never a key file token_uri.'}
+        mode: {type: string, enum: [sync, async]}
+        requestTimeoutMs: {type: integer, minimum: 1000, maximum: 900000}
+        maxConcurrency: {type: integer, minimum: 1, maximum: 256}
+        maxEnvelopeBytes: {type: integer, minimum: 1024, maximum: 8388608}
+        codecCapable: {type: boolean, default: false, description: 'The function decodes and encodes 031 payload plans itself; without it, tasks with a non-empty payload plan are not push-eligible (FR-031-015).'}
+        expectedRevision: {type: integer, minimum: 1}
+    PushEndpoint:
+      type: object
+      required: [name, revision, state, health]
+      properties:
+        name: {type: string}
+        revision: {type: integer}
+        state: {type: string, enum: [ACTIVE, PAUSED, DELETED]}
+        health: {type: string, enum: [HEALTHY, FAILING, DENIED, PAUSED]}
+        healthReason: {type: [string, 'null'], enum: [BREAKER_OPEN, DESTINATION_DENIED, CREDENTIAL_UNAVAILABLE, null]}
+        boundBy: {type: [string, 'null'], description: 'The principal whose secret:use bound auth.secret in this revision; the access list is rechecked against it at every invocation (ADR-0025 precedent). Shown to push:manage holders only.'}
+        definition: {$ref: '#/components/schemas/PushEndpointInput'}
+    WarmPolicyInput:
+      type: object
+      additionalProperties: false
+      required: [declaredSecrets, enabled, acknowledgeResidue]
+      properties:
+        declaredSecrets: {type: array, maxItems: 16, uniqueItems: true, items: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$'}}
+        enabled: {type: boolean}
+        minWarm: {type: integer, minimum: 0, maximum: 8}
+        maxWarm: {type: integer, minimum: 1, maximum: 8}
+        maxUses: {type: integer, minimum: 1, maximum: 1000}
+        maxIdleMs: {type: integer, minimum: 1000, maximum: 600000}
+        maxLifetimeMs: {type: integer, minimum: 1000, maximum: 3600000}
+        acknowledgeResidue: {type: string, description: 'The version of the residue statement the administrator accepts (e.g. `warm-residue-v1`).'}
+    # Additive properties of existing schemas:
+    WorkerAdditions:
+      description: Added optional properties of `Worker` (listWorkers).
+      type: object
+      properties:
+        deployment: {type: [string, 'null']}
+        buildId: {type: [string, 'null']}
+        protocolVersion: {type: string}
+        lastPollAt: {type: [string, 'null'], format: date-time}
+        lastHeartbeatAt: {type: [string, 'null'], format: date-time}
+    PlatformVersionAdditions:
+      description: Added optional property of `PlatformVersion`.
+      type: object
+      properties:
+        features: {type: array, items: {type: string, enum: [dispatch-options, worker-deployments, async-completion, push-dispatch, warm-scripts]}}
+    AttemptAdditions:
+      description: Added optional properties of the run attempts listing entries.
+      type: object
+      properties:
+        dispatchMode: {type: string, enum: [pull, push]}
+        deploymentVersion: {type: [string, 'null']}
+        detached: {type: boolean}
+        checkpoint: {type: [object, 'null'], properties: {attempt: {type: integer}, size: {type: integer}}}
