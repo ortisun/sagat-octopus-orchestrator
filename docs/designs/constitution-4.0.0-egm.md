@@ -428,7 +428,7 @@ the review, so every field can be written by the author (Risks and Mitigations).
 `docs/engineering/egm-accepted-hashes.json`. It exits non-zero and prints one line per failure, in the form `<rule>
 <path>[:<line>]: <message>`. It never edits a file, never prints file content in a failure line, and never skips a rule it
 cannot run: a missing git history or base ref is a failure. All scanners work per line and ignore lines inside code
-fences (a fence opens and closes with a line that begins with three backticks or three tildes). It reads two environment
+fences (a fence opens and closes with a line that begins, after at most three spaces, with three backticks or three tildes). It reads two environment
 variables: `GITHUB_EVENT_NAME` (the check is **strict** when it equals `pull_request`; unset or any other value is not
 strict) and `GITHUB_BASE_REF`. The **base ref** is `origin/$GITHUB_BASE_REF` on a pull request and `origin/develop`
 otherwise.
@@ -465,7 +465,7 @@ strict run fails and a run that is not strict prints a warning and skips those c
     `Previous-source: <40 hex blob id>` and a table `| Principle | Disposition | sha256 (previous) | sha256 (this version) |`
     with one row for each Roman numeral I to VIII. A **principle block** is the text from the `### ` heading line through
     the line before the next line that begins with `## ` or `### `, with trailing blank lines removed, LF line endings and
-    UTF-8. The check recomputes the block of the new constitution and of the blob named by `Previous-source`
+    UTF-8, hashed as the SHA-256 of its lines joined by LF with no trailing newline. The check recomputes the block of the new constitution and of the blob named by `Previous-source`
     (`git cat-file blob`), and requires both to equal the table, and the two columns to be equal on every row whose
     disposition is `KEEP`.
 *   **R9 status.** `Status` is exactly one of `Draft`, `Proposed`, `In Review` or `Approved`; any other value fails. A task
@@ -625,13 +625,14 @@ exits 2. It scans the files that `check-agent-config.py` scans today plus `READM
 `specs/README.md`, `docs/constitution.md`, `.claude/agents` and `.claude/skills`. It skips fenced code blocks and reads
 single-backtick spans. A **path token** is a backticked string with no space that contains a `/` or ends in `.md`, `.py`,
 `.rs`, `.toml`, `.json`, `.yaml`, `.yml` or `.sh`. It is not a path token if it contains `<`, `>`, `*`, `{`, `NNN`, `...`
-or `://`, if it ends in `:<digits>`, if it is only `/`, if it begins with `http`, `-`, `$`, `~` or `origin/`, or if it is a
-slash command (it fully matches `/[a-z][a-z0-9:-]*`). A token with a `/` exists if a tracked file has it as a path, as a
+or `://`, if it ends in `:<digits>`, or if it begins with `http`, `-`, `$`, `~`, `origin/`, `/` or `@` (an absolute path, a
+route, a slash command or an import directive is not a path of this repository). A token with a `/` exists if a tracked file has it as a path, as a
 directory prefix or as a path suffix after a `/`, resolved against the repository root first and then against the
 directory of the file that contains it. A token with no `/` exists if any tracked file has it as a basename (so a stale
-bare name is not caught; a stale path is). Exceptions are in `scripts/paths-allowlist.txt`: a path may be listed only if it
-is produced or ignored outside git (a build output, a local file); the list never names `.specify` or a `speckit` path, and
-it is finalized after the deletion of the Spec Kit tooling.
+bare name is not caught; a stale path is). Exceptions are in `scripts/paths-allowlist.txt`: a token may be listed only if it
+is not a file of this repository (a local or generated file, an image name, a label), each with its reason; the list never
+names `.specify` or a `speckit` path, and it is finalized after the deletion of the Spec Kit tooling. Run on the
+repository after the pointer fixes, the check found no stale pointer and nine such tokens.
 
 ### 9. Landing order, carrier of each rule, and rollback
 
@@ -1097,7 +1098,7 @@ below is a task of section 4 with the prefix `TEGM`; it is ticked only with an e
   *   **Proposed Changes**: Drop the `.specify/feature.json` read. When the branch name matches `^feature/([0-9]{3})-`, print
       the existing "Other branches mention NNN" warning for the number, listing only names that fully match
       `(origin/)?feature/[0-9]{3}-[a-z0-9-]{1,40}`, with `origin/` stripped, duplicates removed and the current branch
-      excluded; print the current branch only when it matches the same pattern (otherwise `Branch: (unusual name)`). Add the EGM
+      excluded; print the current branch only when it fully matches `[A-Za-z0-9._/-]{1,80}` (otherwise `Branch: (unusual name)`). Add the EGM
       warning of section 6 with these exact texts: `EGM plugin not installed: run "claude plugin install egm@egm --scope
       project"`; `EGM plugin hash is not in docs/engineering/egm-accepted-hashes.json: a review made with it will fail
       scripts/check-design-docs.py`; `EGM check skipped` on any error. The hook reads
@@ -1130,7 +1131,7 @@ below is a task of section 4 with the prefix `TEGM`; it is ticked only with an e
       check and giving each entry a reason on the line above. The search excludes `scripts/check-agent-config.py`,
       `scripts/tests/test_check_agent_config.py` and `scripts/paths-allowlist.txt`. Tests build a temporary git repository
       and cover: an existing path, a missing path, a placeholder, a `://` token, a slash command (`/verify`,
-      `/egm:egm-draft`), a bare basename that exists, a path suffix (`rest/conformance.rs`), an allowlisted path, a
+      `/egm:egm-draft`), an absolute path and an `@` import, a bare basename that exists, a path suffix (`rest/conformance.rs`), an allowlisted path, a
       directory prefix, a path relative to the containing file, a fenced block, a file that names `speckit` on a live
       surface, and `main()` exiting 2 outside git. Add a test that the six files of the transitional clause (`AGENTS.md`,
       the three repository reviewers, `verify` and the pull request template) carry the text `not yet converted`.
