@@ -318,7 +318,9 @@ version string therefore does not identify the content, and `ref` in a settings 
     `claude plugin install egm@egm --scope project` once, and `AGENTS.md` says so.
 *   `scripts/egm-tree-hash.py` computes one hash from `plugin.json` and the files under the plugin's `agents/`, `docs/`,
     `resources/` and `skills/` (sorted relative paths and the hash of each file). `docs/` is included because the
-    skills tell the agent to read `docs/claude.md` before they run. Review records carry this hash, produced by the
+    skills tell the agent to read `docs/claude.md` before they run. The script reads the install directory
+    (`~/.claude/plugins/cache/egm/egm/<version>`) and never the marketplace clone: on 2026-11-02 the clone differed
+    from the installed copy in four files under `skills/` and four under `docs/`. Review records carry this hash, produced by the
     script, not typed by hand.
 *   `docs/engineering/egm-accepted-hashes.json` lists the accepted hashes. Its first entry is the commit that ran the
     reviews of this design. The check refuses a record whose hash is not in the list.
