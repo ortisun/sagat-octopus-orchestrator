@@ -1,6 +1,6 @@
 # specs
 
-One directory per feature, `NNN-slug/`, (`spec.md`, `plan.md`, `research.md`, `data-model.md`, `contracts/`, `quickstart.md`, `tasks.md`, `analysis.md`, `checklists/`, and a `validation-report.md` when the feature has measured evidence).
+One directory per feature, `NNN-slug/`: `spec.md`, `plan.md`, `research.md`, `data-model.md`, `contracts/`, `quickstart.md`, `tasks.md`, `analysis.md`, `checklists/`, and a `validation-report.md` when the feature has measured evidence.
 
 - A spec says what and why, testable and technology-free; a plan says how and carries the Constitution Check; `research.md` holds the decision (`D`), gap (`G`) and owner-question (`O`) registers. Resolve every `[NEEDS CLARIFICATION]` before planning.
 - Task text that turns out to name a file that was never created or a range that was wrong is amended with a decision that says so (as D300 did); it is not silently reinterpreted.
