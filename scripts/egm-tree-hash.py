@@ -56,7 +56,11 @@ def tree_hash(root):
     if not os.path.isfile(os.path.join(root, MARKER)):
         raise Refusal(f"{MARKER} is missing: {root} is not an installed EGM plugin")
     entries = []
-    for current, dirs, files in os.walk(root, followlinks=False):
+
+    def unreadable(error):
+        raise Refusal(f"cannot read a directory: {error.strerror}")
+
+    for current, dirs, files in os.walk(root, followlinks=False, onerror=unreadable):
         for name in list(dirs) + files:
             full = os.path.join(current, name)
             if os.path.islink(full):
@@ -70,10 +74,10 @@ def tree_hash(root):
                 continue
             mode = "755" if os.stat(full).st_mode & 0o111 else "644"
             entries.append(("/".join(parts), mode, file_digest(full)))
-    entries.sort(key=lambda entry: entry[0].encode())
+    entries.sort(key=lambda entry: os.fsencode(entry[0]))
     summary = hashlib.sha256()
     for rel, mode, digest in entries:
-        summary.update(f"{rel}\0{mode}\0{digest}\n".encode())
+        summary.update(os.fsencode(rel) + b"\0" + mode.encode() + b"\0" + digest.encode() + b"\n")
     return summary.hexdigest()
 
 

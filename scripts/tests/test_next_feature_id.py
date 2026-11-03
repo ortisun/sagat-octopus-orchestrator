@@ -161,6 +161,21 @@ class NextFeatureId(unittest.TestCase):
         self.assertEqual(out, "001\n")
         self.assertIn("git fetch", err)
 
+    def test_a_name_with_a_huge_number_is_ignored_without_a_crash(self):
+        touch(self.repo.root, "docs/designs/" + "9" * 200 + "-x.md")
+        touch(self.repo.root, "specs/004-a/spec.md")
+        code, out, _ = run(self.repo)
+        self.assertEqual((code, out), (0, "005\n"))
+
+    def test_non_ascii_digits_are_not_numbers(self):
+        touch(self.repo.root, "specs/\u0663\u0663\u0663-x/spec.md")
+        self.assertEqual(run(self.repo)[1], "001\n")
+
+    def test_999_taken_exits_1(self):
+        touch(self.repo.root, "specs/999-last/spec.md")
+        code, out, _ = run(self.repo)
+        self.assertEqual((code, out), (1, ""))
+
     def test_outside_a_git_repository_exits_2(self):
         with tempfile.TemporaryDirectory() as plain:
             code, out, _ = run(_Dir(plain))

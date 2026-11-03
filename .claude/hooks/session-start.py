@@ -53,9 +53,8 @@ def egm_warning(project: str):
         script = os.path.join(project, "scripts", "egm-tree-hash.py")
         for path in paths:
             result = subprocess.run([sys.executable, script, path], capture_output=True, text=True, timeout=8)
-            if result.returncode != 0:
-                return SKIPPED
-            if result.stdout.strip() not in accepted:
+            # A copy that cannot be hashed (a symlink, an unreadable file) is not the accepted copy.
+            if result.returncode != 0 or result.stdout.strip() not in accepted:
                 return UNLISTED
         return None
     except Exception:
