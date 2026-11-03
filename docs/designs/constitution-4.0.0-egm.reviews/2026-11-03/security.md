@@ -4,7 +4,7 @@ Reviewer: `security-reviewer` (read-only; the author saved this report and appen
 
 I found no Blocker. I found 8 Major and 4 Nit findings. The central issue is that every check validates author-written data against author-controlled files in the same pull request. Several holes also go beyond that acknowledged limit.
 
-**What I read.** I read the design in full, the plugin install at `/Users/marcelo/.claude/plugins/cache/egm/egm/0.1.0/`, `.claude/settings.json`, `.github/workflows/ci.yml` (head and grep), `.claude/hooks/session-start.py`, `docs/owner-decisions.md` (grep), `docs/engineering/ai-engineering.md` (grep), and the current constitution.
+**What I read.** I read the design in full, the plugin install at `~/.claude/plugins/cache/egm/egm/0.1.0/`, `.claude/settings.json`, `.github/workflows/ci.yml` (head and grep), `.claude/hooks/session-start.py`, `docs/owner-decisions.md` (grep), `docs/engineering/ai-engineering.md` (grep), and the current constitution.
 
 **Confirmed by reading a file**
 - **Agent tool lists match the design's NFR (lines 645-652).**
@@ -133,7 +133,7 @@ I found no Blocker. I found 8 Major and 4 Nit findings. The central issue is tha
 
 **N2. No secret scan covers design docs and committed review reports (NFR line 651).**
 - "Design docs must hold no secret" is a prose rule. I found no gitleaks, trufflehog or detect-secrets in `.github`, `scripts` or the engineering docs.
-- Reports are committed agent output. They can quote file content and absolute local paths such as `/Users/<name>/...`.
+- Reports are committed agent output. They can quote file content and absolute local paths of a person's machine.
 - Recommendation: add a pattern scan for `docs/designs/**` in the check, and tell authors to strip home paths from reports.
 - Status: absence of a scanner verified. The path leakage is a suspicion.
 
