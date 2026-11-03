@@ -7,6 +7,7 @@ Architecture/configuration/vendor fitness checks, version consistency, SDK packa
 ## Interface
 
 - `check-agent-config.py [repo-root]` validates agent configuration and documentation links; `check-architecture.py [--metadata FILE]` checks crate layers/dependencies/cycles. [check-agent-config.py:check] [check-architecture.py:main]
+- `check-design-docs.py [--root DIR]` checks the design docs under `docs/designs` (sections, status, task ids, evidence, owner gates, the approval record, the body rule against the reviewed commit) and the constitution's principle hashes; `egm-tree-hash.py <plugin-dir>` prints the content hash of an installed EGM plugin; `next-feature-id.py [--root DIR]` prints the next free feature number. [check-design-docs.py:main] [check-design-docs.py:Checker] [egm-tree-hash.py:tree_hash] [next-feature-id.py:main]
 - `check-vendor.py` verifies the exact upstream snapshot and reviewed manifest override. `release-version.sh` prints the product version after checking workspace, SDK packaging and Studio declarations. [check-vendor.py:verify] [release-version.sh:workspace]
 - `package-sdks.sh [output-directory]` builds six-language artifacts and consumers; `package-rust-sdk.sh <output-directory>` packages committed Rust SDK source and runs an extracted-artifact consumer. [package-sdks.sh:SDK_VERSION] [package-rust-sdk.sh:output_dir]
 - `smoke-compose.sh` supports `ENV_FILE`, optional `SAGAT_BIN` and `SAGAT_SMOKE_BROWSER` for isolated stack and user-journey checks. [smoke-compose.sh:ENV_FILE] [smoke-compose.sh:SAGAT_BIN] [smoke-compose.sh:SAGAT_SMOKE_BROWSER]
@@ -30,6 +31,7 @@ Run from the repository root:
 ```sh
 python3 scripts/check-architecture.py
 python3 scripts/check-agent-config.py
+python3 scripts/check-design-docs.py
 python3 scripts/check-vendor.py
 bash scripts/release-version.sh
 ```

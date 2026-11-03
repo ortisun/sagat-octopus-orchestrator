@@ -167,6 +167,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # check-design-docs.py reads the reviewed commit and the base branch of the pull request.
+          fetch-depth: 0
       - run: rustup show active-toolchain
       - run: python3 -m unittest discover -s scripts/tests -v
       - run: python3 scripts/check-architecture.py
@@ -174,6 +177,7 @@ jobs:
       - run: python3 scripts/check-upgrade-boundary.py
       - run: python3 scripts/check-vendor.py
       - run: python3 scripts/check-agent-config.py
+      - run: python3 scripts/check-design-docs.py
 
   sdks:
     name: sdks (unit tests, conformance suite, user stories, faults)
