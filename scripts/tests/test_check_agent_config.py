@@ -1,8 +1,11 @@
 """Regression tests for scripts/check-agent-config.py (run: python3 -m unittest discover scripts/tests)."""
 import importlib.util
 import json
+import os
 import pathlib
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -158,6 +161,85 @@ class CheckAgentConfig(unittest.TestCase):
     def test_egm_enabled_without_its_marketplace_fails(self):
         self.egm_settings(extraKnownMarketplaces={})
         self.has("marketplace")
+
+
+class PathCheck(unittest.TestCase):
+    """The backticked-path check and the scoped search (repository fixtures: they need `ls-files`)."""
+
+    def setUp(self):
+        self.repo = Repo().good()
+        self.addCleanup(self.repo.close)
+        self._env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+        self.vcs("init", "-q", "-b", "develop")
+        self.repo.write("docs/a.md", "a\n")
+        self.repo.write("tests/x/rest/conformance.rs", "// c\n")
+        self.repo.write("crates/x/src/lib.rs", "// l\n")
+
+    def vcs(self, *args):
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                       cwd=self.repo.root, env=self._env, capture_output=True, check=True)
+
+    def problems(self, agents_text="", allowlist=None):
+        self.repo.write("AGENTS.md", AGENTS + agents_text)
+        if allowlist is not None:
+            self.repo.write("scripts/paths-allowlist.txt", allowlist)
+        self.vcs("add", "-A")
+        return module.check_paths(self.repo.root)
+
+    def test_existing_paths_pass(self):
+        self.assertEqual(self.problems("See `docs/a.md`, `crates/x/` and `AGENTS.md`.\n"), [])
+
+    def test_a_missing_path_fails(self):
+        out = self.problems("See `docs/gone.md`.\n")
+        self.assertTrue(any("docs/gone.md" in e for e in out), out)
+
+    def test_a_missing_bare_file_name_fails_and_an_existing_one_passes(self):
+        self.assertTrue(self.problems("Use `nothing.py`.\n"))
+        self.assertEqual(self.problems("Use `lib.rs`.\n"), [])
+
+    def test_placeholders_urls_and_options_are_not_paths(self):
+        text = "`docs/<id>.md` `specs/NNN-slug/` `a/*.md` `{a,b}/c.md` `https://x.y/z.md` `-x/y` `$HOME/a.md` `~/a.md` `origin/main` `a/...` `file.rs:42` `/srv/studio` `/v1/ready` `@AGENTS.md`\n"
+        self.assertEqual(self.problems(text), [])
+
+    def test_slash_commands_are_not_paths(self):
+        self.assertEqual(self.problems("Run `/verify`, `/adr` and `/egm:egm-draft`.\n"), [])
+
+    def test_a_path_suffix_counts(self):
+        self.assertEqual(self.problems("See `rest/conformance.rs`.\n"), [])
+
+    def test_a_path_relative_to_the_containing_file_counts(self):
+        self.repo.write("docs/engineering/guide.md", "See `../a.md`.\n")
+        self.assertEqual(self.problems(), [])
+
+    def test_fenced_blocks_are_skipped(self):
+        self.assertEqual(self.problems("```\n`docs/gone.md`\n```\n"), [])
+
+    def test_an_allowlisted_path_is_skipped(self):
+        self.assertEqual(self.problems("See `target/debug/x`.\n", allowlist="# built outside the repository\ntarget/*\n"), [])
+
+    def test_a_stale_pointer_to_the_old_constitution_is_found(self):
+        out = self.problems("See `.specify/memory/constitution.md`.\n")
+        self.assertTrue(any(".specify/memory/constitution.md" in e for e in out), out)
+
+    def test_speckit_on_a_live_surface_fails(self):
+        out = self.problems("Run the old planning skill, speckit.\n")
+        self.assertTrue(any("speckit" in e.lower() for e in out), out)
+        self.assertTrue(any("spec kit" in e.lower() for e in self.problems("Use Spec Kit.\n")))
+
+    def test_the_search_ignores_its_own_files(self):
+        self.repo.write("scripts/check-agent-config.py", "# speckit\n")
+        self.repo.write("scripts/tests/test_check_agent_config.py", "# speckit\n")
+        self.repo.write("scripts/paths-allowlist.txt", "# speckit is gone\n")
+        self.assertEqual(self.problems(), [])
+
+    def test_a_dated_record_outside_the_surfaces_may_name_it(self):
+        self.repo.write("docs/governance/old.md", "Spec Kit and speckit.\n")
+        self.assertEqual(self.problems(), [])
+
+    def test_main_exits_2_outside_a_repository(self):
+        with tempfile.TemporaryDirectory() as plain:
+            result = subprocess.run([sys.executable, str(SCRIPT), plain], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

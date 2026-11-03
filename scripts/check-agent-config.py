@@ -12,12 +12,16 @@ Checks (all must pass; exit 1 otherwise):
     marketplace has autoUpdate false and a known source, and no other plugin is enabled.
   * ADRs start with `# ADR-NNNN` (colon or dash), carry a Status line near the top and have unique numbers.
   * Relative links in the instruction files and docs/engineering resolve.
+  * Backticked paths in the instruction surfaces exist in the repository (check_paths, needs git), and
+    the removed specification tooling (Spec Kit) is named nowhere on a live surface.
 
-Run from anywhere: python3 scripts/check-agent-config.py [repo-root]
+Run from anywhere: python3 scripts/check-agent-config.py [repo-root]  (exit 2 outside a git repository)
 """
+import fnmatch
 import json
 import pathlib
 import re
+import subprocess
 import sys
 
 ROOT_AGENTS_BUDGET = 160
@@ -28,6 +32,17 @@ DESCRIPTION_LIMIT = 1536
 WRITE_TOOLS = {"Write", "Edit", "NotebookEdit", "Bash"}
 EGM_REPO = "google/elephant-goldfish-model"
 EGM_PLUGIN = "egm@egm"
+PATH_SUFFIXES = (".md", ".py", ".rs", ".toml", ".json", ".yaml", ".yml", ".sh")
+NOT_A_PATH_PARTS = ("<", ">", "*", "{", "NNN", "...", "://")
+NOT_A_PATH_STARTS = ("http", "-", "$", "~", "origin/", "/", "@")
+SPAN = re.compile(r"(?<!`)`([^`\n]+)`(?!`)")
+REMOVED_TOOL = re.compile(r"speckit|spec kit", re.I)
+SEARCH_FILES = {"AGENTS.md", "CLAUDE.md", "README.md", "docs/constitution.md"}
+SEARCH_PREFIXES = (".claude/", ".github/", "scripts/", "docs/engineering/")
+SEARCH_EXCLUDED = {"scripts/check-agent-config.py", "scripts/tests/test_check_agent_config.py",
+                   "scripts/paths-allowlist.txt"}
+PATH_SCAN_FILES = {"AGENTS.md", "CLAUDE.md", "README.md", "SPECIFICATION-INDEX.md", "specs/README.md",
+                   "docs/constitution.md", "docs/adr/README.md"}
 SKIP_DIRS = {"node_modules", "target", ".git", ".venv", "dist", "bin", "obj", ".claude/worktrees"}
 
 
@@ -217,9 +232,103 @@ def check(root: pathlib.Path) -> list[str]:
     return errors
 
 
+def tracked_files(root: pathlib.Path):
+    """Tracked paths (POSIX, relative to root), or None outside a git repository."""
+    result = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], capture_output=True)
+    if result.returncode != 0:
+        return None
+    return [name for name in result.stdout.decode("utf-8", errors="replace").split("\0") if name]
+
+
+def fence_flags(lines):
+    flags, marker = [], None
+    for line in lines:
+        match = re.match(r"^ {0,3}(```|~~~)", line)
+        if marker is None:
+            marker = match.group(1) if match else None
+            flags.append(bool(match))
+        else:
+            flags.append(True)
+            if match and match.group(1) == marker:
+                marker = None
+    return flags
+
+
+def is_path_token(token: str) -> bool:
+    if " " in token or not ("/" in token or token.endswith(PATH_SUFFIXES)):
+        return False
+    if any(part in token for part in NOT_A_PATH_PARTS) or token.startswith(NOT_A_PATH_STARTS):
+        return False
+    return not re.search(r":[0-9]+$", token)
+
+
+def path_exists(token: str, source: str, tracked: list, basenames: set) -> bool:
+    if "/" not in token:
+        return token in basenames
+    bare = token.rstrip("/")
+    here = pathlib.PurePosixPath(source).parent
+    candidates = {bare}
+    relative = pathlib.PurePosixPath(*here.parts, bare)
+    parts = []
+    for part in relative.parts:
+        if part == "..":
+            if parts:
+                parts.pop()
+        elif part != ".":
+            parts.append(part)
+    candidates.add("/".join(parts))
+    for path in tracked:
+        for candidate in candidates:
+            if path == candidate or path.startswith(candidate + "/"):
+                return True
+        if path.endswith("/" + bare) or ("/" + bare + "/") in ("/" + path):
+            return True
+    return False
+
+
+def check_paths(root: pathlib.Path) -> list:
+    """Backticked paths that do not exist, and mentions of the removed specification tooling."""
+    tracked = tracked_files(root)
+    if tracked is None:
+        return ["not inside a git repository: the path check needs `git ls-files`"]
+    errors = []
+    basenames = {name.rsplit("/", 1)[-1] for name in tracked}
+    allowlist_file = root / "scripts" / "paths-allowlist.txt"
+    allowed = []
+    if allowlist_file.is_file():
+        allowed = [line.strip() for line in allowlist_file.read_text().splitlines()
+                   if line.strip() and not line.lstrip().startswith("#")]
+    for rel in tracked:
+        scanned = (rel in PATH_SCAN_FILES or rel.endswith("/AGENTS.md")
+                   or (rel.startswith("docs/engineering/") and rel.endswith(".md"))
+                   or (rel.startswith((".claude/agents/", ".claude/skills/")) and rel.endswith(".md")))
+        searched = ((rel in SEARCH_FILES or rel.startswith(SEARCH_PREFIXES)) and rel not in SEARCH_EXCLUDED)
+        if not (scanned or searched):
+            continue
+        try:
+            lines = (root / rel).read_text().splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        flags = fence_flags(lines)
+        for number, line in enumerate(lines, start=1):
+            if searched and REMOVED_TOOL.search(line):
+                errors.append(f"{rel}:{number}: names the removed tooling (Spec Kit / speckit)")
+            if not scanned or flags[number - 1]:
+                continue
+            for token in (m.group(1) for m in SPAN.finditer(line)):
+                if not is_path_token(token) or any(fnmatch.fnmatchcase(token, pat) for pat in allowed):
+                    continue
+                if not path_exists(token, rel, tracked, basenames):
+                    errors.append(f"{rel}:{number}: `{token}` does not exist in the repository")
+    return errors
+
+
 def main() -> int:
     root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else pathlib.Path(__file__).resolve().parents[1]).resolve()
-    errors = check(root)
+    if tracked_files(root) is None:
+        print("error: not inside a git repository (the path check needs git ls-files)")
+        return 2
+    errors = check(root) + check_paths(root)
     for message in errors:
         print(f"error: {message}")
     if errors:
