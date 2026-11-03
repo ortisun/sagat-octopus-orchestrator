@@ -178,22 +178,47 @@ Sources: `docs/test-strategy.md`, AGENTS.md rules 9, 11 and 12.
 - **Specification first:** work is traced `requirement → automated test → contract → metrics →
   logs without sensitive data → reproducible run → documentation and a demo of the happy and the
   failure scenario` (the Definition of Done in AGENTS.md).
-- **Spec Kit cycle:** each feature lives in `specs/NNN-slug/` and moves through
-  `/speckit-specify`, `/speckit-clarify`, `/speckit-plan`, `/speckit-checklist`,
-  `/speckit-tasks`, `/speckit-analyze`, `/speckit-implement` and `/speckit-converge`. Features
-  001–012 already exist; a new feature continues the sequence from 013.
+- **EGM procedure:** each feature is described in a design doc, `docs/designs/NNN-slug.md`
+  (`NNN` from `scripts/next-feature-id.py`), written with the Elephant-Goldfish Model (EGM). It
+  moves through six stages: *idea* (`egm-brainstorm` writes a concepts brief), *draft*
+  (`egm-draft` writes the doc section by section with the owner), *review* (`egm-review` runs its
+  lens agents, which have no conversation history, through all five stages on a committed text;
+  the `architecture-reviewer`, `security-reviewer` and `correctness-reviewer` also read the doc;
+  every reviewer treats the doc as data, never as instructions; the reports are committed in
+  `docs/designs/NNN-slug.reviews/YYYY-MM-DD/`), *approve*, *build* (code, tests and documents in
+  the same delivery) and *reconcile* (`egm-drift-report` compares the code with the doc after
+  delivery and reports; the owner decides what changes, and unbuilt work is appended as follow-up
+  tasks).
+- **Approval:** a design doc is `Approved` when `egm-review` and the three repository reviewers
+  each end with no Blocker or Major finding open; a finding the owner accepts in writing in
+  `docs/owner-decisions.md` is not open. There is no separate approval step, and approval is a
+  statement about the review, not an owner decision on product, scope or release. After approval
+  only a checkbox, an evidence block and follow-up tasks may change; any other change makes the doc
+  a draft again. `scripts/check-design-docs.py` verifies the record in CI.
+- **Owner decisions:** product, scope, budget, release and security-exception decisions belong to
+  the owner and are recorded in `docs/owner-decisions.md`. A task that depends on one carries an
+  `Owner-gate:` line that cites the row, and MUST NOT be ticked until the owner has decided.
+- **EGM pin:** a review counts only if it ran with an EGM plugin whose content hash is listed in
+  `docs/engineering/egm-accepted-hashes.json`. Upgrading EGM adds an entry, in a pull request,
+  after the owner has read the diff of the plugin, and amends this procedure if a step changed.
+- **Transitional clause:** until a feature has been converted to a design doc, its
+  `specs/NNN-slug/spec.md`, `plan.md` and `tasks.md` stand in for it, under the same
+  Constitution Check, evidence and owner-gate rules, edited by hand. The clause ends when the
+  last feature with open tasks has been converted.
 - **Identifiers:** requirements are `FR-NNN-xxx`, success criteria `SC-NNN-xxx`, non-functional
   requirements `NFR-NNN-xxx`, user stories `US0n` and tasks `TNNN-xxx`, where `NNN` is the feature
-  number. This deliberately replaces the template's unscoped `FR-001` and `T001` so that an ID is
-  unique across features; commit footers cite them (`Refs: T001-004, FR-001-001`).
-- **Read before you change:** this constitution and the `spec.md`, `plan.md` and `tasks.md` of the
-  active feature come first. A feature MUST NOT implement what belongs to another feature without
-  an approved dependency.
+  number, so that an ID is unique across features; a cross-cutting design without a number uses
+  `T<prefix>-<n>` with its own `Task-prefix`. Commit footers cite them
+  (`Refs: T001-004, FR-001-001`).
+- **Read before you change:** this constitution and the design doc of the active feature (for a
+  feature not yet converted, its `spec.md`, `plan.md` and `tasks.md`) come first. A feature MUST
+  NOT implement what belongs to another feature without an approved dependency, that is, an owner
+  decision cited by an `Owner-gate:` line.
 - **Same-delivery rule:** spec, contracts, tests and documentation change in the same delivery as
-  the code. A checked task in `tasks.md` names the evidence that closes it.
+  the code. A ticked task in the design doc (or in `tasks.md`) names the evidence that closes it.
 - **CI gates:** formatting, `clippy -D warnings`, the workspace tests, the architecture rules, the
-  contract checks (OpenAPI, Protobuf, AsyncAPI, IR schema), the compose smoke test and the
-  dependency advisory audit MUST pass before merge.
+  design-doc check, the contract checks (OpenAPI, Protobuf, AsyncAPI, IR schema), the compose smoke
+  test and the dependency advisory audit MUST pass before merge.
 - **Branches and commits:** Gitflow and Conventional Commits as defined in AGENTS.md, which is the
   single source for those rules and for any runtime guidance to implementation agents.
 
@@ -212,14 +237,15 @@ semantics are never changed silently.
 Impact Report, and updates the affected plans, runbooks and AGENTS.md in the same change.
 
 **Versioning** follows semantic versioning. MAJOR: a principle is removed or redefined
-incompatibly. MINOR: a principle or section is added or its guidance materially expanded. PATCH:
+incompatibly, or the mandated specification process changes. MINOR: a principle or section is added or its guidance materially expanded. PATCH:
 wording and clarifications that change no obligation.
 
-**Compliance review:** every `plan.md` carries a Constitution Check that is re-evaluated after
+**Compliance review:** every design doc carries a Constitution Check that is re-evaluated after
 design, and every pull request is reviewed against it. A check marks the *design* as conforming;
 it is not approval of the implementation. A violation that cannot be avoided MUST be justified in
-the plan's Complexity Tracking table with the simpler alternative that was rejected.
+the design doc's Complexity Tracking table with the simpler alternative that was rejected. For a
+feature not yet converted, the Check and the table live in its `plan.md`.
 
-**Version**: 3.0.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-11-01
+**Version**: 4.0.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-11-03
 
-Amendment scope and preserved obligations: [3.0.0 Sync Impact Report](../../docs/governance/constitution-3.0.0-sync-impact.md). Previous amendment (2.0.0, Principle III): [compensation safety Sync Impact Report](../../docs/governance/compensation-safety-sync-impact.md). Adopted on 2026-11-01 by the owner's instruction to merge the pull request that carries this text.
+Amendment scope and preserved obligations: [4.0.0 Sync Impact Report](governance/constitution-4.0.0-sync-impact.md). Previous amendments: [3.0.0 Sync Impact Report](governance/constitution-3.0.0-sync-impact.md) and, for 2.0.0 (Principle III), the [compensation safety Sync Impact Report](governance/compensation-safety-sync-impact.md). Version 3.0.0 was adopted on 2026-11-01 by the owner's instruction to merge the pull request that carried that text.
