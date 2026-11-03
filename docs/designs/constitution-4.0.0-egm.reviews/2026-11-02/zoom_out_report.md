@@ -1,8 +1,8 @@
 # Goldfish Review Report
 
-**Target:** `/Users/marcelo/Documents/Projects/sagat-octopus-egm/docs/designs/constitution-4.0.0-egm.md` (`1..878`, the full file)
+**Target:** `docs/designs/constitution-4.0.0-egm.md` (`1..878`, the full file)
 
-**Standard:** `/Users/marcelo/.claude/plugins/cache/egm/egm/0.1.0/resources/document_standards/zoom-out-standard.md`
+**Standard:** `~/.claude/plugins/cache/egm/egm/0.1.0/resources/document_standards/zoom-out-standard.md`
 
 **Mode:** REVIEW
 
@@ -47,7 +47,7 @@ No Blocker was reported.
 ### 4. "Approved" is overloaded, and the owner gate is a leaky patch for it - Severity: Major
 * **Reviewer Lens:** `egm-zoom-out`
 * **Affected Scope:** "3. Approval" (237-243 and 249-254); "5. Owner decisions: gates on tasks" (298-308); "7. Conversion", last paragraphs (362-366); Section 10 (421-422); Alternative E (468-475).
-* **Discrepancy Description**: EGM's template already defines `Status: [Draft | Proposed | In Review | Approved]` (`/Users/marcelo/.claude/plugins/cache/egm/egm/0.1.0/skills/egm-draft/references/design_doc.md:4`), so line 249's claim that the template has "no status block" understates what exists. Under the design, a review-clean but unscoped draft becomes `Approved`, while `SPECIFICATION-INDEX.md:83-86` says the drafts are "none approved". Section 10 admits that the owner gate "is the only barrier" and covers only tasks the author marked.
+* **Discrepancy Description**: EGM's template already defines `Status: [Draft | Proposed | In Review | Approved]` (`~/.claude/plugins/cache/egm/egm/0.1.0/skills/egm-draft/references/design_doc.md:4`), so line 249's claim that the template has "no status block" understates what exists. Under the design, a review-clean but unscoped draft becomes `Approved`, while `SPECIFICATION-INDEX.md:83-86` says the drafts are "none approved". Section 10 admits that the owner gate "is the only barrier" and covers only tasks the author marked.
 * **Rationale & Recommendation**: A cost-free alternative is unused: leave review-clean docs at `Proposed` and reserve `Approved` for the owner. That needs no extra state beyond the one the EGM template already defines. The design records this as an owner decision, so the owner should re-decide it knowingly, with the consequence stated plainly: "Approved" would no longer mean "the scope is accepted".
 
 ### 5. The id allocator is scope creep beyond what Spec Kit supplied - Severity: Major

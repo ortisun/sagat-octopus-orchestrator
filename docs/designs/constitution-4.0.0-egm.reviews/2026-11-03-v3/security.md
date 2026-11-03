@@ -26,7 +26,7 @@ Previous round (8 Major): resolved M1 (header boundary), M6 for the commit forma
 2. Regex details: use `fullmatch`, `[0-9]`, bound the digits; the `Doc` line has no status-block counterpart; say "per line".
 3. `git cat-file -e <sha>` also succeeds for a tree or blob: use `<sha>^{commit}`.
 4. Wrong citation (716, decision O): "plugins are supply chain" is `docs/engineering/ai-engineering.md:50`, not `AGENTS.md` rule 20.
-5. A committed report already contains an absolute local path; the rule is prose only. Fix: R2 rejects `/Users/`, `/home/`, `C:\` and the report is cleaned.
+5. A committed report already contains an absolute local path; the rule is prose only. Fix: R2 rejects an absolute path prefix and the report is cleaned.
 6. The branch-name filter still passes instruction-shaped names and the hook prints the current branch unfiltered (T000-25).
 7. R8 proves self-consistency only; the hashes sit in the report the same pull request writes.
 8. Hook robustness: `installed_plugins.json` entries are a list per plugin; parse and hash errors must be caught.

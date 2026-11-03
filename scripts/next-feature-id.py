@@ -10,7 +10,7 @@ A warning goes to standard error when the last `git fetch` is missing or older t
 because numbers taken on branches that were never fetched are invisible.
 
 It prints the number only: D, G, O and ADR numbers are not allocated here.
-Exit codes: 0 number printed; 1 no number left below 1000; 2 not a git repository.
+Exit codes: 0 number printed; 1 no number left below 1000; 2 not a git repository or git failed.
 """
 import argparse
 import os
@@ -19,7 +19,7 @@ import subprocess
 import sys
 import time
 
-LEADING_NUMBER = re.compile(r"^(\d+)-")
+LEADING_NUMBER = re.compile(r"^([0-9]{1,6})-")
 PRINTABLE_REF = re.compile(r"^[A-Za-z0-9._/-]{1,80}$")
 TREE_DIRS = ("specs", "docs/designs")
 STALE_AFTER_SECONDS = 86400
@@ -66,7 +66,7 @@ def tree_names(root, commit):
 
 
 def describe(refname):
-    return refname if PRINTABLE_REF.match(refname) else "a ref whose name is not printable"
+    return refname if PRINTABLE_REF.fullmatch(refname) else "a ref whose name is not printable"
 
 
 def fetch_warning(root):
@@ -113,8 +113,12 @@ def main(argv):
         print("next-feature-id: not inside a git repository", file=sys.stderr)
         return 2
     root = probe.stdout.strip()
-    numbers, warnings = find_numbers(root)
-    stale = fetch_warning(root)
+    try:
+        numbers, warnings = find_numbers(root)
+        stale = fetch_warning(root)
+    except subprocess.CalledProcessError:
+        print("next-feature-id: git failed while reading the refs", file=sys.stderr)
+        return 2
     if stale:
         warnings.append(stale)
     for message in warnings:

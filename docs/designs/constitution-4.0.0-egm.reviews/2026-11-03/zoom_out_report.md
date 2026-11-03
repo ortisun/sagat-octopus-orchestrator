@@ -1,6 +1,6 @@
 # Goldfish Review Report
 
-**Target:** `/Users/marcelo/Documents/Projects/sagat-octopus-egm/docs/designs/constitution-4.0.0-egm.md` (`1..935`, the full file; the header "Detailed Implementation Plan" is at line 681)
+**Target:** `docs/designs/constitution-4.0.0-egm.md` (`1..935`, the full file; the header "Detailed Implementation Plan" is at line 681)
 
 **Mode:** REVIEW. **Standard:** `zoom-out-standard.md` (plugin `0.1.0`). **Date:** 2026-11-03.
 

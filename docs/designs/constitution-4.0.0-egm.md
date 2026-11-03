@@ -355,11 +355,14 @@ person then reads the diff and decides whether an amendment is needed.
 **Transitional clause** (decision M). Until the conversion design has converted a feature, its `specs/NNN-slug/spec.md`,
 `plan.md` and `tasks.md` stand in for its design doc. Its `plan.md` carries the Constitution Check and Complexity
 Tracking, its tasks are ticked only with the evidence that closes them, and an owner decision gates a task as in section
-5. The skills that generated these files no longer exist, so they are edited by hand. The clause ends when the conversion
-design has converted the last of the 20 features. The check does not cover these files (section 9). Every dependent that
+5. The skills that generated these files no longer exist, so they are edited by hand. The generated implement skill also
+enforced the checklist gate (feature 036's tasks say so), so the clause keeps it: unticked items of the feature's
+`checklists/*.md` block its implementation until the owner accepts them in a row of `docs/owner-decisions.md`; review
+is the only control. The clause ends when the conversion design has converted the last of the 20 features. The check does
+not cover these files (section 9). Every dependent that
 tells an agent which document to read (`AGENTS.md`, the three repository reviewers, `verify`, `parallel-agents` and the
 pull request template) carries the same alternative wording: "the design doc, or for a feature not yet converted its
-`spec.md`, `plan.md` and `tasks.md`". A unit test greps those six files for it. The constitution's own text names neither
+`spec.md`, `plan.md` and `tasks.md`". A unit test greps those seven files for it. The constitution's own text names neither
 Spec Kit nor the generated skills.
 
 ### 3. Approval: rule, record and check
@@ -428,7 +431,7 @@ the review, so every field can be written by the author (Risks and Mitigations).
 `docs/engineering/egm-accepted-hashes.json`. It exits non-zero and prints one line per failure, in the form `<rule>
 <path>[:<line>]: <message>`. It never edits a file, never prints file content in a failure line, and never skips a rule it
 cannot run: a missing git history or base ref is a failure. All scanners work per line and ignore lines inside code
-fences (a fence opens and closes with a line that begins with three backticks or three tildes). It reads two environment
+fences (a fence opens and closes with a line that begins, after at most three spaces, with three backticks or three tildes). It reads two environment
 variables: `GITHUB_EVENT_NAME` (the check is **strict** when it equals `pull_request`; unset or any other value is not
 strict) and `GITHUB_BASE_REF`. The **base ref** is `origin/$GITHUB_BASE_REF` on a pull request and `origin/develop`
 otherwise.
@@ -465,7 +468,7 @@ strict run fails and a run that is not strict prints a warning and skips those c
     `Previous-source: <40 hex blob id>` and a table `| Principle | Disposition | sha256 (previous) | sha256 (this version) |`
     with one row for each Roman numeral I to VIII. A **principle block** is the text from the `### ` heading line through
     the line before the next line that begins with `## ` or `### `, with trailing blank lines removed, LF line endings and
-    UTF-8. The check recomputes the block of the new constitution and of the blob named by `Previous-source`
+    UTF-8, hashed as the SHA-256 of its lines joined by LF with no trailing newline. The check recomputes the block of the new constitution and of the blob named by `Previous-source`
     (`git cat-file blob`), and requires both to equal the table, and the two columns to be equal on every row whose
     disposition is `KEEP`.
 *   **R9 status.** `Status` is exactly one of `Draft`, `Proposed`, `In Review` or `Approved`; any other value fails. A task
@@ -625,13 +628,13 @@ exits 2. It scans the files that `check-agent-config.py` scans today plus `READM
 `specs/README.md`, `docs/constitution.md`, `.claude/agents` and `.claude/skills`. It skips fenced code blocks and reads
 single-backtick spans. A **path token** is a backticked string with no space that contains a `/` or ends in `.md`, `.py`,
 `.rs`, `.toml`, `.json`, `.yaml`, `.yml` or `.sh`. It is not a path token if it contains `<`, `>`, `*`, `{`, `NNN`, `...`
-or `://`, if it ends in `:<digits>`, if it is only `/`, if it begins with `http`, `-`, `$`, `~` or `origin/`, or if it is a
-slash command (it fully matches `/[a-z][a-z0-9:-]*`). A token with a `/` exists if a tracked file has it as a path, as a
-directory prefix or as a path suffix after a `/`, resolved against the repository root first and then against the
+or `://`, if it ends in `:<digits>`, or if it begins with `http`, `-`, `$`, `~`, `origin/`, `/` or `@` (an absolute path, a
+route, a slash command or an import directive is not a path of this repository). A token with a `/` exists if it is a tracked path or a directory of one, whole or as a suffix after a `/`, resolved against the repository root first and then against the
 directory of the file that contains it. A token with no `/` exists if any tracked file has it as a basename (so a stale
-bare name is not caught; a stale path is). Exceptions are in `scripts/paths-allowlist.txt`: a path may be listed only if it
-is produced or ignored outside git (a build output, a local file); the list never names `.specify` or a `speckit` path, and
-it is finalized after the deletion of the Spec Kit tooling.
+bare name is not caught; a stale path is). Exceptions are in `scripts/paths-allowlist.txt`: a token may be listed only if it
+is not a file of this repository (a local or generated file, an image name, a label), each with its reason; the list never
+names `.specify` or a `speckit` path, and it is finalized after the deletion of the Spec Kit tooling. Run on the
+repository after the pointer fixes, the check found no stale pointer and nine such tokens.
 
 ### 9. Landing order, carrier of each rule, and rollback
 
@@ -670,7 +673,7 @@ only before PR 2 merges, because `AGENTS.md`, the constitution and the `verify` 
 | `/speckit-constitution` | An amendment by pull request with a version bump and a Sync Impact Report | R8 |
 | `/speckit-specify`, `/speckit-plan` | `egm-draft` | R1 |
 | `/speckit-clarify` | `egm-brainstorm` questions and the Open Questions section | None |
-| `/speckit-checklist` | **None.** Existing `checklists/` stay in `specs/`; the release-blocking items of feature 036's security checklist (34 open items, reported) are not enforced | None |
+| `/speckit-checklist` | Existing `checklists/` stay in `specs/`; the transitional clause makes their unticked items (feature 036's security checklist has 34, reported) block implementation until the owner accepts them | **None.** Review only |
 | `/speckit-tasks` | The author writes the tasks | R4 |
 | `/speckit-analyze` | The approval review. The requirement-to-task coverage check is **deferred** to the conversion design | None for coverage |
 | `/speckit-implement` | No skill; the agent builds from the doc and ticks with evidence | R7 |
@@ -693,7 +696,7 @@ only before PR 2 merges, because `AGENTS.md`, the constitution and the `verify` 
 | Enabling the plugin in project settings loads nine agent types into every session; the synthesizer has the `Agent` tool and can reach other agent types; none of the plugin's instructions tells its agents to treat a reviewed document as data | Documented in the Non-Functional Requirements; the author recounts findings from the reports; no path-wide deny (it would block this very work); the owner can move the enabling to user scope | Two of the agents have write tools, and `Write` has no path scope |
 | The id allocator sees only what the last `git fetch` brought, and branch names are untrusted input | A warning when the fetch is old; names are matched against `^[A-Za-z0-9._/-]{1,80}$` before they are printed; numbers of 1000 or more are ignored | Numbers on branches never pushed are invisible |
 | Removing the tooling breaks other sessions that rebase | The transitional clause; the pull request is not merged by the assistant | A session that rebases after the merge loses the skills |
-| Unconverted features have no check for evidence, ticks or the Check | The transitional clause names the rule; a test greps its six dependents; the conversion design closes the gap | Hand-edited files |
+| Unconverted features have no check for evidence, ticks or the Check | The transitional clause names the rule; a test greps its seven dependents; the conversion design closes the gap | Hand-edited files |
 | Design docs and committed reports could hold a secret or a local path | R2 rejects absolute machine paths in reports; reports are reviewed in the pull request | No secret scanner covers `docs/designs/` |
 | Rollback | A forward amendment | A revert restores stale task state |
 
@@ -1097,7 +1100,7 @@ below is a task of section 4 with the prefix `TEGM`; it is ticked only with an e
   *   **Proposed Changes**: Drop the `.specify/feature.json` read. When the branch name matches `^feature/([0-9]{3})-`, print
       the existing "Other branches mention NNN" warning for the number, listing only names that fully match
       `(origin/)?feature/[0-9]{3}-[a-z0-9-]{1,40}`, with `origin/` stripped, duplicates removed and the current branch
-      excluded; print the current branch only when it matches the same pattern (otherwise `Branch: (unusual name)`). Add the EGM
+      excluded; print the current branch only when it fully matches `[A-Za-z0-9._/-]{1,80}` (otherwise `Branch: (unusual name)`). Add the EGM
       warning of section 6 with these exact texts: `EGM plugin not installed: run "claude plugin install egm@egm --scope
       project"`; `EGM plugin hash is not in docs/engineering/egm-accepted-hashes.json: a review made with it will fail
       scripts/check-design-docs.py`; `EGM check skipped` on any error. The hook reads
@@ -1125,15 +1128,16 @@ below is a task of section 4 with the prefix `TEGM`; it is ticked only with an e
 - [ ] TEGM-26 Modify `scripts/check-agent-config.py` and `scripts/tests/test_check_agent_config.py`; create `scripts/paths-allowlist.txt`.
   *   **Type / Scope**: Existing checker, its tests, and the exceptions file. Finalized last, after TEGM-27.
   *   **Proposed Changes**: Add `check_paths(root)` of section 8, called from `main()`, and the scoped search for `speckit`
-      and `Spec Kit`. The existing `check()` and its tests do not change. The allowlist has one path or `fnmatch` pattern
+      and `Spec Kit`. The existing `check()` and its tests do not change, except for the settings guard of TEGM-4. The allowlist has one path or `fnmatch` pattern
       per line and `#` comments, and the admission rule of section 8; the implementer produces its content by running the
       check and giving each entry a reason on the line above. The search excludes `scripts/check-agent-config.py`,
       `scripts/tests/test_check_agent_config.py` and `scripts/paths-allowlist.txt`. Tests build a temporary git repository
       and cover: an existing path, a missing path, a placeholder, a `://` token, a slash command (`/verify`,
-      `/egm:egm-draft`), a bare basename that exists, a path suffix (`rest/conformance.rs`), an allowlisted path, a
+      `/egm:egm-draft`), an absolute path and an `@` import, a bare basename that exists, a path suffix (`rest/conformance.rs`), an allowlisted path, a
       directory prefix, a path relative to the containing file, a fenced block, a file that names `speckit` on a live
-      surface, and `main()` exiting 2 outside git. Add a test that the six files of the transitional clause (`AGENTS.md`,
-      the three repository reviewers, `verify` and the pull request template) carry the text `not yet converted`.
+      surface, and `main()` exiting 2 outside git. Add a test that the seven files of the transitional clause (`AGENTS.md`,
+      the three repository reviewers, `verify`, `parallel-agents` and the pull request template) carry the text
+      `not yet converted`. A relative path may not climb out of the repository.
 
 #### Follow-up tasks
 

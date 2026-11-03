@@ -1,12 +1,12 @@
 # Goldfish Review Report (Stage 8, Intermediate Zoom Out)
 
-**Target:** `/Users/marcelo/Documents/Projects/sagat-octopus-egm/docs/designs/constitution-4.0.0-egm.md` (`1..1216`, the full file; the header `## Detailed Implementation Plan` is at line 908, bounds confirmed by the synthesizer and the reviewer)
+**Target:** `docs/designs/constitution-4.0.0-egm.md` (`1..1216`, the full file; the header `## Detailed Implementation Plan` is at line 908, bounds confirmed by the synthesizer and the reviewer)
 
-**Standard:** `/Users/marcelo/.claude/plugins/cache/egm/egm/0.1.0/resources/document_standards/zoom-out-standard.md`
+**Standard:** `~/.claude/plugins/cache/egm/egm/0.1.0/resources/document_standards/zoom-out-standard.md`
 
 **Mode:** REVIEW
 
-**Earlier report read by the reviewer:** `/Users/marcelo/Documents/Projects/sagat-octopus-egm/docs/designs/constitution-4.0.0-egm.reviews/2026-11-02/zoom_out_report.md` (stage 5, 878-line version of the document)
+**Earlier report read by the reviewer:** `docs/designs/constitution-4.0.0-egm.reviews/2026-11-02/zoom_out_report.md` (stage 5, 878-line version of the document)
 
 ## Reviewer Status
 
@@ -38,7 +38,7 @@ Of the six stage 5 Majors, none is fully resolved. Two are partly resolved (1 an
 
 | # | Stage 5 finding | Status now | Evidence |
 | --- | --- | --- | --- |
-| 1 (Major) | EGM hash pin does not cover what Claude Code loads; CI cannot recompute it | PARTLY RESOLVED | The hash set now includes `.claude-plugin/` and its adapters (lines 516-524). Section 6 (line 533) and the Risks table (line 682) say CI compares strings only. Remaining: `egm-tree-hash.py`, its tests and the file-set decision stay. Alternative I rejects "record only the version", not "record the plugin commit", which Claude Code already stores (`/Users/marcelo/.claude/plugins/installed_plugins.json:46`, `gitCommitSha`, per user and outside the repository). See finding 7. |
+| 1 (Major) | EGM hash pin does not cover what Claude Code loads; CI cannot recompute it | PARTLY RESOLVED | The hash set now includes `.claude-plugin/` and its adapters (lines 516-524). Section 6 (line 533) and the Risks table (line 682) say CI compares strings only. Remaining: `egm-tree-hash.py`, its tests and the file-set decision stay. Alternative I rejects "record only the version", not "record the plugin commit", which Claude Code already stores (`~/.claude/plugins/installed_plugins.json:46`, `gitCommitSha`, per user and outside the repository). See finding 7. |
 | 2 (Major) | Reviewed-commit diff carries the cost Alternative H rejected; grammar does not match the data | CONTESTED BY A RECORDED DECISION (grammar half: PARTLY RESOLVED) | Recorded in Alternative H (lines 787-795) and "Contested findings" item 4 (line 211); the drafting decision is in `tasks/reviews/2026-11-02-egm-constitution/concepts_brief.md` ("Decisions taken while drafting", line 277). The consequence is stated. The rejection reasoning is not sound at this altitude: the weakness is said to be "handled" by one convention, one CI line and a `Reviewed-blob` fallback that cannot work (finding 1). The `Reviewed-blob` fallback was added by the Critic round, not decided by the owner, so it can be deleted without reversing the owner's choice of a diff. The evidence grammar now matches only part of the real data (finding 8). |
 | 3 (Major) | 20-feature wave and 23-PR plan disproportionate; check does not fit the population | CONTESTED BY A RECORDED DECISION | Recorded in Alternatives C and D (lines 739-754) and "Contested findings" item 1. The cost model and a stop condition (lines 592-600) now state the consequence, but the figures are understated (finding 3). The 033 heading problem is handled by a "no Check in the source plan" rule (lines 560-562) that the check itself then rejects (finding 2). The deletion of `.specify/` still waits behind the wave only through the transitional clause (lines 637-639), which breaks the Spec Kit skills it protects (finding 6). Q4 (lines 182-184) leaves early removal open. |
 | 4 (Major) | "Approved" is overloaded; the owner gate is a leaky patch | CONTESTED BY A RECORDED DECISION | Recorded in Alternative E (lines 758-765), "Contested findings" item 2, Section 5 (lines 487-489), Section 7 (lines 583-586) and a Risks row (line 677: "That gate is the only barrier"). The consequence is stated plainly. The understatement about the template's Status field is fixed (line 394). The "adds a step" rejection does not address the no-extra-state variant that leaves review-clean docs at `Proposed`, a status the EGM template already defines (`design_doc.md:4`). Q3 reopens a related variant. |

@@ -20,7 +20,7 @@ import re
 import subprocess
 import sys
 
-FENCE_RE = re.compile(r"^ {0,3}(```|~~~)")
+FENCE_RE = re.compile(r"^ {0,3}(```(?=[^`]*$)|~~~)")
 HYPHEN_RE = re.compile(r"^-{20,}$")
 FIELD_RE = re.compile(r"^\*   \*\*([A-Za-z][A-Za-z -]*):\*\* (.*)$")
 TASK_RE = re.compile(r"^\s*[-*] \[( |x|X)\] (T[0-9]{3}-[0-9]+|T[A-Z]{2,8}-[0-9]+) ")
@@ -29,7 +29,9 @@ INLINE_MARKER_RE = re.compile(r"Evidence \([0-9]{4}-[0-9]{2}-[0-9]{2}\):")
 PROTECTED_RE = re.compile(r"^\s*(Refs|Owner-gate):")
 OD_ID_RE = re.compile(r"OD-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]+")
 COUNTS_RE = re.compile(r"Counts: Blocker ([0-9]{1,4}), Major ([0-9]{1,4}), Nit ([0-9]{1,4})")
-SEMVER_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
+SEMVER_RE = re.compile(r"[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}")
+LOOSE_CHECKBOX_RE = re.compile(r"^\s*[-*+] \[[ xX]\]")
+SAFE_SHOWN = re.compile(r"[A-Za-z0-9._/#:+-]{1,80}")
 HEX40 = re.compile(r"[0-9a-f]{40}")
 HEX64 = re.compile(r"[0-9a-f]{64}")
 SAFE_REF = re.compile(r"[A-Za-z0-9._/-]{1,80}")
@@ -60,6 +62,11 @@ def fence_flags(lines):
     return flags
 
 
+def shown(value):
+    """A value from a doc, safe to print: plain and short, otherwise a placeholder."""
+    return value if SAFE_SHOWN.fullmatch(value) else "(malformed)"
+
+
 def header_end(lines):
     for index, line in enumerate(lines):
         if HYPHEN_RE.match(line):
@@ -79,8 +86,12 @@ def parse_tasks(lines, flags, begin):
         if not match:
             index += 1
             continue
+        indent = len(lines[index]) - len(lines[index].lstrip())
         probe = index + 1
         while probe < len(lines) and (lines[probe].strip() == "" or lines[probe].startswith("  ")):
+            sibling = None if flags[probe] else TASK_RE.match(lines[probe])
+            if sibling and len(lines[probe]) - len(lines[probe].lstrip()) <= indent:
+                break
             probe += 1
         end = probe - 1
         while end > index and lines[end].strip() == "":
@@ -109,12 +120,24 @@ class Doc:
                 self.fields[field.group(1)] = field.group(2)
         begin = self.hend + 1 if self.hend is not None else 0
         self.tasks = parse_tasks(self.lines, self.flags, begin)
+        covered = {k for task in self.tasks for k in range(task.start, task.end + 1)}
+        self.stray_checkboxes = [i for i in range(begin, len(self.lines))
+                                 if i not in covered and not self.flags[i] and LOOSE_CHECKBOX_RE.match(self.lines[i])]
 
     def sections(self):
         """Map heading text of each level-2 heading outside fences to its content lines."""
-        found, current = {}, None
+        found, current, in_comment = {}, None, False
         for line, fenced in zip(self.lines, self.flags):
-            if not fenced and line.startswith("## "):
+            if fenced:
+                continue
+            if in_comment:
+                in_comment = "-->" not in line
+                continue
+            line = re.sub(r"<!--.*?-->", "", line)
+            if "<!--" in line:
+                in_comment = True
+                continue
+            if line.startswith("## "):
                 current = line[3:].strip()
                 found[current] = []
             elif current is not None:
@@ -145,7 +168,7 @@ def normalized_body(doc, keep_ids):
                 out.extend((k + 1, lines[k]) for k in range(task.start + 1, stop) if lines[k].strip())
             index = task.end + 1
             continue
-        if not flags[index] and (in_region or line.strip() == ""):
+        if not flags[index] and (line.strip() == "" or (in_region and line.strip() == "None yet.")):
             index += 1
             continue
         out.append((index + 1, line))
@@ -220,7 +243,10 @@ class Checker:
         try:
             with open(os.path.join(self.root, rel), encoding="utf-8", newline="") as handle:
                 return handle.read()
+        except FileNotFoundError:
+            return None
         except (OSError, UnicodeDecodeError):
+            self.fail("R1", rel, None, "the file cannot be read as UTF-8")
             return None
 
     def base_ok(self):
@@ -318,9 +344,12 @@ class Checker:
     # -- the run ---------------------------------------------------------------------------
     def run(self):
         docs = []
-        for path in sorted(glob.glob(os.path.join(self.root, "docs", "designs", "*.md"))):
+        designs = os.path.join(self.root, "docs", "designs")
+        names = sorted(n for n in os.listdir(designs) if n.endswith(".md")) if os.path.isdir(designs) else []
+        for name in names:
+            path = os.path.join(designs, name)
             rel = os.path.relpath(path, self.root).replace(os.sep, "/")
-            if os.path.basename(path) in ("README.md", "TEMPLATE.md") or not os.path.isfile(path):
+            if name in ("README.md", "TEMPLATE.md") or not os.path.isfile(path):
                 continue
             text = self.read(rel)
             if text is None:
@@ -328,9 +357,14 @@ class Checker:
                 continue
             docs.append(Doc(rel, text))
         self.owner_rows()
+        known, problem = self.accepted_hashes()
+        if known is None:
+            self.fail("R2", "docs/engineering/egm-accepted-hashes.json", None, problem)
         for doc in docs:
             self.check_sections(doc)
             self.check_status(doc)
+            if "\r" in doc.text:
+                continue
             self.check_ids(doc)
             self.check_evidence(doc)
             self.check_gates(doc)
@@ -354,6 +388,9 @@ class Checker:
 
     # R9 (status) ------------------------------------------------------------------------
     def check_status(self, doc):
+        if "\r" in doc.text:
+            self.fail("R9", doc.rel, None, "carriage returns are not allowed: use LF line endings")
+            return
         if doc.hend is None:
             self.fail("R9", doc.rel, None, "the header has no line of 20 or more hyphens")
             return
@@ -385,6 +422,8 @@ class Checker:
                 self.fail("R4", doc.rel, None, "an unnumbered doc needs a Task-prefix of 2 to 8 capital letters")
                 return
             pattern = re.compile(rf"T{prefix}-[0-9]+")
+        for index in doc.stray_checkboxes:
+            self.fail("R4", doc.rel, index + 1, "a checkbox line that is not a task: write '- [ ] T<id> text'")
         seen = set()
         for task in doc.tasks:
             if not pattern.fullmatch(task.id):
@@ -431,7 +470,7 @@ class Checker:
                     token = re.compile(rf"(?<![A-Za-z0-9-]){re.escape(task.id)}(?![0-9])")
                     if row is None or not token.search(row["Covers"]):
                         self.fail("R5", doc.rel, index + 1,
-                                  f"{task.id} is ticked but {gate or '(empty)'} is not an owner row that covers it")
+                                  f"{task.id} is ticked but {shown(gate) if gate else '(empty)'} is not an owner row that covers it")
 
     # R2 and R3 --------------------------------------------------------------------------
     def check_approved(self, doc):
@@ -442,6 +481,10 @@ class Checker:
         if missing:
             return
         ok = True
+        if not fields.get("Author", "").strip():
+            self.fail("R2", doc.rel, None, "Author is missing or empty")
+        if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", fields.get("Date", "")):
+            self.fail("R2", doc.rel, None, "Date is missing or not YYYY-MM-DD")
         commit = fields["Reviewed-commit"]
         if not HEX40.fullmatch(commit):
             self.fail("R2", doc.rel, None, "Reviewed-commit is not 40 lowercase hex characters")
@@ -450,10 +493,8 @@ class Checker:
         if not HEX64.fullmatch(egm_hash):
             self.fail("R2", doc.rel, None, "EGM-hash is not 64 lowercase hex characters")
             ok = False
-        accepted, problem = self.accepted_hashes()
-        if accepted is None:
-            self.fail("R2", doc.rel, None, problem)
-        else:
+        accepted, _ = self.accepted_hashes()
+        if accepted is not None:
             known, minimum = accepted
             if HEX64.fullmatch(egm_hash) and egm_hash not in known:
                 self.fail("R2", doc.rel, None, "EGM-hash is not on the accepted list")
@@ -511,18 +552,18 @@ class Checker:
         reviews = os.path.join(self.root, "docs", "designs", doc.stem + ".reviews")
         full = os.path.join(self.root, path)
         if os.path.realpath(full) != os.path.abspath(full) or os.path.islink(full):
-            self.fail("R2", doc.rel, None, f"a symbolic link is involved in the report path {path}")
+            self.fail("R2", doc.rel, None, f"a symbolic link is involved in the report path {shown(path)}")
             return None
         real_reviews = os.path.realpath(reviews)
         if os.path.commonpath([real_reviews, os.path.realpath(full)]) != real_reviews:
-            self.fail("R2", doc.rel, None, f"the report {path} is not under docs/designs/{doc.stem}.reviews/")
+            self.fail("R2", doc.rel, None, f"the report {shown(path)} is not under docs/designs/{doc.stem}.reviews/")
             return None
         if not os.path.isfile(full):
-            self.fail("R2", doc.rel, None, f"the report {path} is not a regular file")
+            self.fail("R2", doc.rel, None, f"the report {shown(path)} is not a regular file")
             return None
-        code, out = self.git("ls-files", "-s", "--", path)
+        code, out = self.git("--literal-pathspecs", "ls-files", "-s", "--", path)
         if code != 0 or not out.startswith("100644 "):
-            self.fail("R2", doc.rel, None, f"the report {path} is not a tracked regular file (mode 100644)")
+            self.fail("R2", doc.rel, None, f"the report {shown(path)} is not a tracked regular file (mode 100644)")
             return None
         with open(full, "rb") as handle:
             data = handle.read()
@@ -535,11 +576,11 @@ class Checker:
             if data is None:
                 continue
             if hashlib.sha256(data).hexdigest() != recorded:
-                self.fail("R2", doc.rel, None, f"the SHA-256 of {path} differs from the recorded one")
+                self.fail("R2", doc.rel, None, f"the SHA-256 of {shown(path)} differs from the recorded one")
                 continue
             text = data.decode("utf-8", errors="replace")
             if LOCAL_PATH_RE.search(text):
-                self.fail("R2", doc.rel, None, f"{path} holds an absolute path of a machine")
+                self.fail("R2", doc.rel, None, f"{shown(path)} holds an absolute path of a machine")
             found = self.parse_report(doc, path, text)
             if found is None:
                 continue
@@ -565,22 +606,22 @@ class Checker:
                 counts.append(line)
         for key in ("Doc", "Reviewed-commit", "Reviewer"):
             if len(seen[key]) != 1:
-                self.fail("R2", doc.rel, None, f"{path} needs exactly one '{key}:' line")
+                self.fail("R2", doc.rel, None, f"{shown(path)} needs exactly one '{key}:' line")
                 return None
         if len(counts) != 1 or not COUNTS_RE.fullmatch(counts[0]):
-            self.fail("R2", doc.rel, None, f"{path} needs exactly one well formed Counts line")
+            self.fail("R2", doc.rel, None, f"{shown(path)} needs exactly one well formed Counts line")
             return None
         reviewer = seen["Reviewer"][0]
         if seen["Doc"][0] != doc.rel:
-            self.fail("R2", doc.rel, None, f"{path} names another doc")
+            self.fail("R2", doc.rel, None, f"{shown(path)} names another doc")
         if seen["Reviewed-commit"][0] != doc.fields["Reviewed-commit"]:
-            self.fail("R2", doc.rel, None, f"{path} was written for another Reviewed-commit")
+            self.fail("R2", doc.rel, None, f"{shown(path)} was written for another Reviewed-commit")
         if reviewer == "egm-review":
             if seen["EGM-hash"] != [doc.fields["EGM-hash"]]:
-                self.fail("R2", doc.rel, None, f"the EGM-hash of {path} differs from the header")
+                self.fail("R2", doc.rel, None, f"the EGM-hash of {shown(path)} differs from the header")
         elif reviewer in REVIEWERS:
             if len(seen["Agent-blob"]) != 1 or not HEX40.fullmatch(seen["Agent-blob"][0]):
-                self.fail("R2", doc.rel, None, f"{path} needs exactly one Agent-blob line of 40 hex characters")
+                self.fail("R2", doc.rel, None, f"{shown(path)} needs exactly one Agent-blob line of 40 hex characters")
             else:
                 self.agent_blobs[(doc.rel, reviewer)] = seen["Agent-blob"][0]
         parsed = COUNTS_RE.fullmatch(counts[0])
@@ -673,15 +714,38 @@ class Checker:
                         self.fail("R6", f"specs/{name}", None, f"the number {match.group(1)} is used by a design doc with another slug")
 
     # R8 ---------------------------------------------------------------------------------
+    def base_constitution(self):
+        """(blob id, text) of the constitution at the base ref, wherever it lived, or (None, None)."""
+        for rel in ("docs/constitution.md", ".specify/memory/constitution.md"):
+            code, blob = self.git("rev-parse", "--verify", "--quiet", f"{self.base}:{rel}")
+            if code == 0:
+                shown_code, body = self.git("show", f"{self.base}:{rel}")
+                return blob.strip(), body if shown_code == 0 else None
+        return None, None
+
+    def check_amendment(self, text, source, report_rel):
+        """A changed constitution needs a higher version and a Previous-source that is the base text."""
+        if not self.base_ok():
+            return
+        blob, base_text = self.base_constitution()
+        if base_text is None or base_text == text:
+            return
+        if source != blob:
+            self.fail("R8", report_rel, None, "Previous-source is not the constitution at the base ref")
+        now = re.search(r"\*\*Version\*\*: ([0-9]{1,6})\.([0-9]{1,6})\.([0-9]{1,6})", text)
+        before = re.search(r"\*\*Version\*\*: ([0-9]{1,6})\.([0-9]{1,6})\.([0-9]{1,6})", base_text)
+        if now and before and tuple(map(int, now.groups())) <= tuple(map(int, before.groups())):
+            self.fail("R8", "docs/constitution.md", None, "the constitution changed but its version did not increase")
+
     def check_constitution(self):
         text = self.read("docs/constitution.md")
         if text is None:
             return
         rel = "docs/constitution.md"
-        match = re.search(r"\*\*Version\*\*: ([0-9]+\.[0-9]+\.[0-9]+)", text)
+        match = re.search(r"\*\*Version\*\*: ([0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6})", text)
         versions = []
-        for path in glob.glob(os.path.join(self.root, "docs", "governance", "constitution-*-sync-impact.md")):
-            found = re.fullmatch(r"constitution-([0-9]+\.[0-9]+\.[0-9]+)-sync-impact\.md", os.path.basename(path))
+        for path in glob.glob(os.path.join(glob.escape(self.root), "docs", "governance", "constitution-*-sync-impact.md")):
+            found = re.fullmatch(r"constitution-([0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6})-sync-impact\.md", os.path.basename(path))
             if found:
                 versions.append(found.group(1))
         if not match or not versions:
@@ -702,6 +766,7 @@ class Checker:
         if not source or set(table) != set(ROMAN):
             self.fail("R8", report_rel, None, "the report lacks 'Previous-source:' or a row for each principle I to VIII")
             return
+        self.check_amendment(text, source.group(1), report_rel)
         code, previous = self.git("cat-file", "blob", source.group(1))
         if code != 0:
             self.fail("R8", report_rel, None, "Previous-source is not a blob of this clone")

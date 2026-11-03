@@ -1,6 +1,6 @@
 # Goldfish Review Report
 
-**Target:** `/Users/marcelo/Documents/Projects/sagat-octopus-egm/docs/designs/constitution-4.0.0-egm.md` (`lines 1-590`)
+**Target:** `docs/designs/constitution-4.0.0-egm.md` (`lines 1-590`)
 
 **Round:** 1 (2026-11-02). **Mode:** REVIEW.
 
@@ -60,7 +60,7 @@ The "Traceability" table at the end maps every raw finding to its entry.
     `*Done 2026-10-29.* Evidence: ...`, a multi-line paragraph.
   * The repository has no `CODEOWNERS` file (Glob over the whole worktree).
   * EGM's Claude Code adapters are in `.claude-plugin/agents/` and carry `tools: [Read, Grep, Glob]` and `omitClaudeMd: true`
-    (`/Users/marcelo/.claude/plugins/cache/egm/egm/0.1.0/docs/claude.md`, lines 112-138). The hash set at lines 319-321 does
+    (`~/.claude/plugins/cache/egm/egm/0.1.0/docs/claude.md`, lines 112-138). The hash set at lines 319-321 does
     not include `.claude-plugin/`.
   * `specs/035-iceberg-write-steps/plan.md` line 115 reads "Requires ADR" in the Pre-design column and "Pass pending ADR-0071
     acceptance" in the Post-design column.

@@ -126,6 +126,26 @@ class TreeHash(unittest.TestCase):
         code, _, _ = run(self.root / "nope")
         self.assertEqual(code, 2)
 
+    def test_an_unreadable_directory_exits_2_instead_of_hashing_a_partial_tree(self):
+        locked = self.root / "skills" / "locked"
+        write(locked, "inner.md", "x")
+        locked.chmod(0)
+        self.addCleanup(lambda: locked.chmod(0o755))
+        code, out, err = run(self.root)
+        self.assertEqual(code, 2, err)
+        self.assertEqual(out, "")
+
+    def test_a_file_name_that_is_not_utf8_does_not_crash_the_script(self):
+        raw = os.fsencode(str(self.root)) + b"/skills/bad\xff.md"
+        try:
+            with open(raw, "wb") as handle:
+                handle.write(b"x")
+        except OSError:
+            self.skipTest("this file system refuses non-UTF-8 names")
+        code, out, err = run(self.root)
+        self.assertIn(code, (0, 2), err)
+        self.assertNotIn("Traceback", err)
+
     def test_symlinks_are_refused(self):
         os.symlink("/etc/hosts", self.root / "link.md")
         code, out, err = run(self.root)
