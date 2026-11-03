@@ -269,14 +269,17 @@ def path_exists(token: str, source: str, tracked: list, basenames: set) -> bool:
     here = pathlib.PurePosixPath(source).parent
     candidates = {bare}
     relative = pathlib.PurePosixPath(*here.parts, bare)
-    parts = []
+    parts, escaped = [], False
     for part in relative.parts:
         if part == "..":
             if parts:
                 parts.pop()
+            else:
+                escaped = True
         elif part != ".":
             parts.append(part)
-    candidates.add("/".join(parts))
+    if not escaped:
+        candidates.add("/".join(parts))
     for path in tracked:
         for candidate in candidates:
             if path == candidate or path.startswith(candidate + "/"):

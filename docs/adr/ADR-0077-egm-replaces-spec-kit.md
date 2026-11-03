@@ -46,7 +46,7 @@ as accepted trade-offs. One EGM review of this repository (`tasks/reviews/2026-1
 - A third-party plugin becomes part of the process. The pin is by content hash and detects drift; it cannot reproduce a
   version, and enabling the plugin in project settings loads nine agent types, two with write tools, into every session.
 - The 20 features with open tasks keep hand-edited `spec.md`, `plan.md` and `tasks.md` until the conversion design lands;
-  no check covers them. Requirement-to-task coverage, the append-only check on `research.md` and a replacement for the
+  no check covers them, except that unticked `checklists/*.md` items block implementation until the owner accepts them (constitution, transitional clause; review only). Requirement-to-task coverage, the append-only check on `research.md` and a replacement for the
   `checklists/` and `taskstoissues` steps are deferred.
 - The check proves that an approval record is consistent, not that a review ran in a fresh context. The assistant commits
   under the owner's git identity, so the owner's review of the pull request is the control for owner rows.

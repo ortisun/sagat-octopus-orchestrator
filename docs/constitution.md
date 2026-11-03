@@ -203,8 +203,10 @@ Sources: `docs/test-strategy.md`, AGENTS.md rules 9, 11 and 12.
   after the owner has read the diff of the plugin, and amends this procedure if a step changed.
 - **Transitional clause:** until a feature has been converted to a design doc, its
   `specs/NNN-slug/spec.md`, `plan.md` and `tasks.md` stand in for it, under the same
-  Constitution Check, evidence and owner-gate rules, edited by hand. The clause ends when the
-  last feature with open tasks has been converted.
+  Constitution Check, evidence and owner-gate rules, edited by hand; unticked items of its
+  `checklists/*.md` MUST block its implementation until the owner accepts them in a row of
+  `docs/owner-decisions.md`. The clause ends when the last feature with open tasks has been
+  converted.
 - **Identifiers:** requirements are `FR-NNN-xxx`, success criteria `SC-NNN-xxx`, non-functional
   requirements `NFR-NNN-xxx`, user stories `US0n` and tasks `TNNN-xxx`, where `NNN` is the feature
   number, so that an ID is unique across features; a cross-cutting design without a number uses

@@ -3,9 +3,7 @@
 A design doc describes one feature (or one cross-cutting change) and carries its plan, its tasks and the record of its
 approval. They are written with the Elephant-Goldfish Model (EGM): `egm-brainstorm`, `egm-draft`, then `egm-review`. The
 rules below are enforced by `python3 scripts/check-design-docs.py`; the full definitions are in
-[constitution-4.0.0-egm.md](constitution-4.0.0-egm.md) (sections 3 to 5), which is also the first design doc. The
-constitution that mandates this process lands as version 4.0.0 in a second pull request; until then the checks run but no
-rule outside this directory refers to them.
+[constitution-4.0.0-egm.md](constitution-4.0.0-egm.md) (sections 3 to 5), which is also the first design doc.
 
 ## Naming
 

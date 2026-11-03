@@ -40,7 +40,7 @@ A **unit** of 3.0.0 is one principle, one bullet or paragraph of any other secti
 
 Added units, not in 3.0.0: **Approval** (a design doc is `Approved` when `egm-review` and the three repository reviewers
 end with no Blocker or Major open; the owner accepts findings in writing), **Owner decisions** (moved from a bullet of
-`AGENTS.md`), **EGM pin** and **Transitional clause**.
+`AGENTS.md`), **EGM pin** and **Transitional clause**, which also keeps the checklist gate that the generated implement skill enforced: unticked `checklists/*.md` items of a feature not yet converted block its implementation until the owner accepts them.
 
 Of the 31 sentences of 3.0.0 that use MUST or MUST NOT, 28 are present verbatim in 4.0.0. The other three are the REWRITE
 rows above: "A feature MUST NOT implement what belongs to another feature without an approved dependency" (now followed by
@@ -69,7 +69,8 @@ UTF-8, hashed as the SHA-256 of the lines joined by LF with no trailing newline.
 
 ## Dependents updated in the same change
 
-`AGENTS.md`, `CLAUDE.md`, `README.md`, `SPECIFICATION-INDEX.md`, `specs/AGENTS.md`, `specs/README.md`,
+`AGENTS.md`, `CLAUDE.md`, `README.md`, `SPECIFICATION-INDEX.md`, `.gitignore`, `.github/workflows/ci.yml`, `docs/designs/README.md`
+and `TEMPLATE.md`, `scripts/README.md`, `specs/AGENTS.md`, `specs/README.md`, the checklist wording of features 020 and 036,
 `docs/engineering/{sdd-workflow,README,ai-engineering,architecture-principles}.md`, the three repository reviewers under
 `.claude/agents/`, the `verify` and `parallel-agents` skills, `.github/pull_request_template.md`, `tests/Cargo.toml`, the
 quickstarts of features 014 and 016, `.claude/hooks/session-start.py`, `.claude/settings.json`,

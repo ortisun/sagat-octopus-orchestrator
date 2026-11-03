@@ -198,7 +198,7 @@ class PathCheck(unittest.TestCase):
         self.assertEqual(self.problems("Use `lib.rs`.\n"), [])
 
     def test_placeholders_urls_and_options_are_not_paths(self):
-        text = "`docs/<id>.md` `specs/NNN-slug/` `a/*.md` `{a,b}/c.md` `https://x.y/z.md` `-x/y` `$HOME/a.md` `~/a.md` `origin/main` `a/...` `file.rs:42` `/srv/studio` `/v1/ready` `@AGENTS.md`\n"
+        text = "`docs/<id>.md` `specs/NNN-slug/` `a/*.md` `{a,b}/c.md` `https://x.y/z.md` `-x/y` `$HOME/a.md` `~/a.md` `origin/main` `a/...` `crates/x/src/lib.rs:42` `/srv/studio` `/v1/ready` `@AGENTS.md`\n"
         self.assertEqual(self.problems(text), [])
 
     def test_slash_commands_are_not_paths(self):
@@ -240,6 +240,40 @@ class PathCheck(unittest.TestCase):
         with tempfile.TemporaryDirectory() as plain:
             result = subprocess.run([sys.executable, str(SCRIPT), plain], capture_output=True, text=True)
             self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+
+
+    def test_a_relative_path_cannot_escape_the_repository(self):
+        self.repo.write("etc/x.md", "x\n")
+        self.repo.write("docs/engineering/guide.md", "See `../../../etc/x.md`.\n")
+        out = self.problems()
+        self.assertTrue(any("../../../etc/x.md" in e for e in out), out)
+
+    def test_a_directory_token_matches_a_directory_by_path_or_by_suffix(self):
+        self.repo.write("specs/001-x/contracts/a.json", "{}\n")
+        self.assertEqual(self.problems("See `contracts/` and `specs/001-x/contracts/`.\n"), [])
+        self.assertTrue(self.problems("See `contracts/nothing/`.\n"))
+
+
+class TransitionalWording(unittest.TestCase):
+    """Every file that tells an agent which document to read carries the alternative for a feature
+    not yet converted to a design doc (the constitution's transitional clause)."""
+
+    FILES = (
+        "AGENTS.md",
+        ".claude/agents/architecture-reviewer.md",
+        ".claude/agents/security-reviewer.md",
+        ".claude/agents/correctness-reviewer.md",
+        ".claude/skills/verify/SKILL.md",
+        ".claude/skills/parallel-agents/SKILL.md",
+        ".github/pull_request_template.md",
+    )
+
+    def test_the_seven_dependents_carry_the_wording(self):
+        root = pathlib.Path(__file__).resolve().parents[2]
+        for rel in self.FILES:
+            with self.subTest(file=rel):
+                text = (root / rel).read_text()
+                self.assertIn("not yet converted", " ".join(text.split()), f"{rel} lacks the transitional wording")
 
 
 if __name__ == "__main__":
