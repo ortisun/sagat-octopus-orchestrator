@@ -2,7 +2,7 @@
 
 ## Overview
 
-Source-bearing schema contracts within the Spec Kit feature tree. The complete feature inventory remains in the [specification index](../SPECIFICATION-INDEX.md); this contract index does not change feature acceptance.
+Source-bearing schema contracts within the feature tree. The complete feature inventory remains in the [specification index](../SPECIFICATION-INDEX.md); this contract index does not change feature acceptance.
 
 ## Interface
 
