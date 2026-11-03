@@ -400,7 +400,7 @@ no way to replace its template. The repository therefore keeps `docs/designs/TEM
 
 **Status block.** The status block is the **header** of the doc: the lines up to and including the first line of 20 or
 more hyphens (and nothing else). Lines of the form `*   **<Field>:** <value>` (a regular expression
-`^\*   \*\*([A-Za-z-]+):\*\* (.*)$`) are its fields; each field appears at most once and their order is free. The `Status`
+`^\*   \*\*([A-Za-z][A-Za-z -]*):\*\* (.*)$`) are its fields; each field appears at most once and their order is free. The `Status`
 line is the only status line.
 
 ```text
