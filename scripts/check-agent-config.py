@@ -8,7 +8,8 @@ Checks (all must pass; exit 1 otherwise):
     nested AGENTS.md files stay small.
   * Skills have front matter (name equals the directory, a description within the listing limit) and stay
     under 500 lines; agents have name and description and the reviewers are read-only.
-  * .claude/settings.json parses and every hook command it names exists and is executable.
+  * .claude/settings.json parses and every hook command it names exists and is executable; the EGM
+    marketplace has autoUpdate false and a known source, and no other plugin is enabled.
   * ADRs start with `# ADR-NNNN` (colon or dash), carry a Status line near the top and have unique numbers.
   * Relative links in the instruction files and docs/engineering resolve.
 
@@ -25,6 +26,8 @@ CLAUDE_BUDGET = 60
 SKILL_BUDGET = 500
 DESCRIPTION_LIMIT = 1536
 WRITE_TOOLS = {"Write", "Edit", "NotebookEdit", "Bash"}
+EGM_REPO = "google/elephant-goldfish-model"
+EGM_PLUGIN = "egm@egm"
 SKIP_DIRS = {"node_modules", "target", ".git", ".venv", "dist", "bin", "obj", ".claude/worktrees"}
 
 
@@ -164,6 +167,21 @@ def check(root: pathlib.Path) -> list[str]:
         deny = " ".join((data.get("permissions") or {}).get("deny", []))
         if ".env" not in deny:
             err(".claude/settings.json must deny reading .env files")
+        # The EGM plugin is pinned by content (ADR-0077): no auto-update, one known source, one plugin.
+        marketplaces = data.get("extraKnownMarketplaces") or {}
+        for name, entry in marketplaces.items():
+            if not isinstance(entry, dict) or entry.get("autoUpdate") is not False:
+                err(f".claude/settings.json: marketplace {name} must set autoUpdate to false")
+        if "egm" in marketplaces:
+            source = (marketplaces["egm"] or {}).get("source") if isinstance(marketplaces["egm"], dict) else None
+            if not (isinstance(source, dict) and source.get("source") == "github"
+                    and source.get("repo") == EGM_REPO):
+                err(f".claude/settings.json: the egm marketplace must come from github {EGM_REPO}")
+        enabled = data.get("enabledPlugins") or {}
+        if set(enabled) - {EGM_PLUGIN}:
+            err(f".claude/settings.json: enabledPlugins may only contain {EGM_PLUGIN}, not {sorted(set(enabled) - {EGM_PLUGIN})}")
+        if EGM_PLUGIN in enabled and "egm" not in marketplaces:
+            err(f".claude/settings.json: {EGM_PLUGIN} is enabled but the egm marketplace is not declared")
 
     # ADRs
     seen: dict[str, str] = {}

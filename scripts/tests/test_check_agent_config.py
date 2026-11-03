@@ -124,6 +124,41 @@ class CheckAgentConfig(unittest.TestCase):
         self.repo.write("AGENTS.md", AGENTS + "\nSee [it](docs/missing.md).\n")
         self.has("broken link")
 
+    # -- the EGM plugin entry in the project settings (ADR-0077) ---------------------------
+    def egm_settings(self, **overrides):
+        settings = {
+            "permissions": {"deny": ["Read(./.env)"]},
+            "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/h.py"}]}]},
+            "extraKnownMarketplaces": {"egm": {"source": {"source": "github", "repo": "google/elephant-goldfish-model"}, "autoUpdate": False}},
+            "enabledPlugins": {"egm@egm": True},
+        }
+        settings.update(overrides)
+        self.repo.write(".claude/settings.json", json.dumps(settings))
+
+    def test_the_accepted_egm_entry_passes(self):
+        self.egm_settings()
+        self.assertEqual(self.repo.errors(), [])
+
+    def test_a_marketplace_with_auto_update_on_fails(self):
+        self.egm_settings(extraKnownMarketplaces={"egm": {"source": {"source": "github", "repo": "google/elephant-goldfish-model"}, "autoUpdate": True}})
+        self.has("autoUpdate")
+
+    def test_a_marketplace_without_auto_update_false_fails(self):
+        self.egm_settings(extraKnownMarketplaces={"egm": {"source": {"source": "github", "repo": "google/elephant-goldfish-model"}}})
+        self.has("autoUpdate")
+
+    def test_another_egm_source_fails(self):
+        self.egm_settings(extraKnownMarketplaces={"egm": {"source": {"source": "github", "repo": "someone/else"}, "autoUpdate": False}})
+        self.has("google/elephant-goldfish-model")
+
+    def test_another_enabled_plugin_fails(self):
+        self.egm_settings(enabledPlugins={"egm@egm": True, "other@market": True})
+        self.has("enabledPlugins")
+
+    def test_egm_enabled_without_its_marketplace_fails(self):
+        self.egm_settings(extraKnownMarketplaces={})
+        self.has("marketplace")
+
 
 if __name__ == "__main__":
     unittest.main()
