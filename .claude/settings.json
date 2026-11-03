@@ -3,18 +3,6 @@
   "env": {
     "CARGO_PROFILE_DEV_DEBUG": "0"
   },
-  "extraKnownMarketplaces": {
-    "egm": {
-      "source": {
-        "source": "github",
-        "repo": "google/elephant-goldfish-model"
-      },
-      "autoUpdate": false
-    }
-  },
-  "enabledPlugins": {
-    "egm@egm": true
-  },
   "permissions": {
     "allow": [
       "Bash(cargo fmt:*)",

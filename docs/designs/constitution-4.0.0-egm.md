@@ -575,8 +575,8 @@ two commits on GitHub on 2026-11-02). A version string therefore does not identi
 *   **The hash.** `scripts/egm-tree-hash.py <plugin-dir>` prints the SHA-256 (lowercase hex) of the lines
     `<path>\0<mode>\0<sha256 of the file>\n`, sorted by path in the byte order of UTF-8, over **every file** of the plugin
     directory except the exclusions below. `<path>` is relative with `/` separators; `<mode>` is `755` if the file has any
-    executable bit and `644` otherwise. Exclusions: the directories `.git`, `.github`, `site`, `tests` and `distributions`
-    at the top level; the file `.in_use` at the top level; any file with the extension `.svg`, `.woff2`, `.png`, `.jpg`,
+    executable bit and `644` otherwise. Exclusions: the paths `.git`, `.github`, `.in_use` (a directory of per-process
+    markers that Claude Code rewrites), `site`, `tests` and `distributions` at the top level; any file with the extension `.svg`, `.woff2`, `.png`, `.jpg`,
     `.jpeg`, `.gif`, `.ico` or `.webp` below a directory named `assets`; any file below a `__pycache__` directory; and any
     file named `TEST.md` or `test_scenarios.yaml`. A file that Claude Code could load as a hook, command, MCP server or
     agent therefore changes the hash. The script exits 2, and prints nothing on standard output, if
@@ -911,7 +911,7 @@ below is a task of section 4 with the prefix `TEGM`; it is ticked only with an e
       symlink refusal that exits 2 (already built), the missing-directory exit 2 (already built). Tests: the same tree
       gives the same hash; a changed byte, a renamed file, a changed adapter in `.claude-plugin/agents/`, a new
       `hooks/hooks.json` and a changed executable bit each change it; a file in an excluded path (`site/`, `tests/`,
-      `skills/x/TEST.md`, `skills/x/assets/logo.svg`) does not; a script below an `assets/` directory
+      `skills/x/TEST.md`, `skills/x/assets/logo.svg`, `.in_use/<pid>`) does not; a script below an `assets/` directory
       (`skills/x/assets/run.sh`) and a path that only resembles an exclusion (`skills/x/TEST.md.bak`, `contest/a.md`) do
       change it; a missing `.claude-plugin/plugin.json`, a missing directory and a symlink exit 2 with nothing on standard
       output.

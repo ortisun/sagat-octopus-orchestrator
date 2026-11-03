@@ -14,6 +14,7 @@ def write(root, rel, data: "bytes | str" = b"x"):
     path = pathlib.Path(root) / rel
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data if isinstance(data, bytes) else data.encode())
+    path.chmod(0o644)
     return path
 
 
@@ -54,7 +55,7 @@ class TreeHash(unittest.TestCase):
              "skills/egm-review/SKILL.md", "README.md"]
         ):
             digest = hashlib.sha256((self.root / rel).read_bytes()).hexdigest()
-            lines.append(f"{rel}\0{digest}\n")
+            lines.append(f"{rel}\x00644\x00{digest}\n")
         expected = hashlib.sha256("".join(lines).encode()).hexdigest()
         self.assertEqual(self.hash(), expected)
 
@@ -82,12 +83,29 @@ class TreeHash(unittest.TestCase):
         before = self.hash()
         for rel in (
             ".git/HEAD", ".github/workflows/x.yml", ".in_use", "site/index.html",
-            "tests/test_x.py", "distributions/a.zip", "skills/x/assets/logo.png",
-            "assets/logo.png", "skills/x/TEST.md", "skills/x/test_scenarios.yaml",
+            "tests/test_x.py", "distributions/a.zip", "skills/x/assets/logo.svg",
+            "assets/logo.png", "docs/assets/font.woff2", "skills/x/TEST.md", "skills/x/test_scenarios.yaml",
             "scripts/__pycache__/x.pyc",
         ):
             write(self.root, rel, "changed")
         self.assertEqual(self.hash(), before)
+
+    def test_in_use_markers_of_running_sessions_do_not_change_the_hash(self):
+        # Claude Code keeps a directory of per-process marker files in the install.
+        before = self.hash()
+        write(self.root, ".in_use/16819", "")
+        write(self.root, ".in_use/20808", "")
+        self.assertEqual(self.hash(), before)
+
+    def test_a_script_below_an_assets_directory_is_hashed(self):
+        before = self.hash()
+        write(self.root, "skills/x/assets/run.sh", "echo hi")
+        self.assertNotEqual(self.hash(), before)
+
+    def test_a_changed_executable_bit_changes_the_hash(self):
+        before = self.hash()
+        (self.root / "README.md").chmod(0o755)
+        self.assertNotEqual(self.hash(), before)
 
     def test_a_path_that_only_resembles_an_exclusion_is_hashed(self):
         before = self.hash()

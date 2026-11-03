@@ -3,8 +3,9 @@
 
 Usage: python3 scripts/egm-tree-hash.py <plugin-dir>
 
-The hash is the SHA-256 of the lines "<relative path>\\0<sha256 of the file>\\n", sorted by
-path, over every file of the directory except the exclusions below. A file that Claude Code
+The hash is the SHA-256 of the lines "<path>\\0<mode>\\0<sha256 of the file>\\n", sorted by
+path, over every file of the directory except the exclusions below. <mode> is 755 when the
+file has any executable bit and 644 otherwise. A file that Claude Code
 could load as a hook, command, MCP server or agent therefore changes the hash. Point it at the
 install directory (~/.claude/plugins/cache/egm/egm/<version>), never at the marketplace clone.
 
@@ -15,9 +16,10 @@ import hashlib
 import os
 import sys
 
-TOP_LEVEL_EXCLUDED_DIRS = {".git", ".github", "site", "tests", "distributions"}
-EXCLUDED_ROOT_FILES = {".in_use"}
-EXCLUDED_DIR_NAMES = {"assets", "__pycache__"}
+TOP_LEVEL_EXCLUDED = {".git", ".github", ".in_use", "site", "tests", "distributions"}
+EXCLUDED_PYCACHE = "__pycache__"
+ASSET_DIR = "assets"
+ASSET_EXTENSIONS = {".svg", ".woff2", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp"}
 EXCLUDED_FILE_NAMES = {"TEST.md", "test_scenarios.yaml"}
 MARKER = os.path.join(".claude-plugin", "plugin.json")
 
@@ -28,11 +30,11 @@ class Refusal(Exception):
 
 def excluded(rel_parts):
     """True when the path (a tuple of components) is outside the hashed set."""
-    if len(rel_parts) == 1 and rel_parts[0] in EXCLUDED_ROOT_FILES:
+    if rel_parts[0] in TOP_LEVEL_EXCLUDED:
         return True
-    if len(rel_parts) > 1 and rel_parts[0] in TOP_LEVEL_EXCLUDED_DIRS:
+    if EXCLUDED_PYCACHE in rel_parts[:-1]:
         return True
-    if any(part in EXCLUDED_DIR_NAMES for part in rel_parts[:-1]):
+    if ASSET_DIR in rel_parts[:-1] and os.path.splitext(rel_parts[-1])[1] in ASSET_EXTENSIONS:
         return True
     return rel_parts[-1] in EXCLUDED_FILE_NAMES
 
@@ -66,11 +68,12 @@ def tree_hash(root):
             parts = tuple(rel.split(os.sep))
             if excluded(parts):
                 continue
-            entries.append(("/".join(parts), file_digest(full)))
-    entries.sort()
+            mode = "755" if os.stat(full).st_mode & 0o111 else "644"
+            entries.append(("/".join(parts), mode, file_digest(full)))
+    entries.sort(key=lambda entry: entry[0].encode())
     summary = hashlib.sha256()
-    for rel, digest in entries:
-        summary.update(f"{rel}\0{digest}\n".encode())
+    for rel, mode, digest in entries:
+        summary.update(f"{rel}\0{mode}\0{digest}\n".encode())
     return summary.hexdigest()
 
 
