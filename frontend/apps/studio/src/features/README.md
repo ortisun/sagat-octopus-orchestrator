@@ -6,6 +6,7 @@ Studio feature areas composed by the application routes.
 
 ## Interface
 
+- [batch](batch/README.md) — Batch operations: starting a job from the run list filters, following its progress and the outcome of each run, and cancelling it.
 - [connections](connections/README.md) — Namespace PostgreSQL connection lifecycle, secret-backed credentials, revision-aware deletion, and managed probes.
 - [database](database/README.md) — Ad hoc database execution authoring, retained-result viewing, bounded decoding, and immutable pending commands.
 - [integrations](integrations/README.md) — Namespace broker connector administration and egress-policy editing.

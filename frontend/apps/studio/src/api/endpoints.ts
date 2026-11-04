@@ -8,6 +8,20 @@ type Schemas = components['schemas'];
 export type AuthContext = Schemas['AuthContext'];
 export type NamespaceResource = Schemas['NamespaceResource'];
 export type VersionDocument = Schemas['WorkflowVersionDocument'];
+export type BatchJob = Schemas['BatchJob'];
+export type BatchItem = Schemas['BatchItem'];
+export type BatchPreview = Schemas['BatchPreview'];
+export type BatchSelector = Schemas['BatchSelector'];
+/**
+ * What `createBatchOperation` takes. The generated type makes the fields that have a default
+ * required and the payload of a signal an empty object; the contract has them optional and free.
+ */
+export type BatchCreateRequest = Omit<Schemas['BatchCreateRequest'], 'businessId' | 'maxItems' | 'itemsPerSecond' | 'signal'> & {
+  businessId?: Schemas['BatchCreateRequest']['businessId'];
+  maxItems?: number;
+  itemsPerSecond?: number;
+  signal?: { name: string; payload: Record<string, unknown> };
+};
 
 async function collectPages<T>(load: (cursor: string | undefined) => Promise<Page<T>>): Promise<T[]> {
   const items: T[] = [];
@@ -50,6 +64,19 @@ export function endpoints(api: ApiClient) {
     journal: (id: string, query: { cursor?: string; limit?: number } = {}, signal?: AbortSignal) => api.get<Page<JournalEvent>>(path`/runs/${id}/events`, { query, signal }),
     telemetry: (id: string, signal?: AbortSignal) => api.get<RunTelemetry>(path`/runs/${id}/telemetry`, { signal }),
     operate: (id: string, request: OperationRequest, key?: string) => api.post<OperationResult>(path`/runs/${id}/operations`, { body: request, ...(key ? { key } : {}) }),
+
+    // Batch operations (feature 018): the routes carry the namespace id, not its slug.
+    previewBatch: (namespaceId: string, body: { selector: BatchSelector; maxItems?: number }, signal?: AbortSignal) =>
+      api.post<BatchPreview>(path`/namespaces/${namespaceId}/batch-operations/preview`, { body, signal }),
+    createBatch: (namespaceId: string, body: BatchCreateRequest, key: string, signal?: AbortSignal) =>
+      api.post<BatchJob>(path`/namespaces/${namespaceId}/batch-operations`, { body, key, signal }),
+    listBatches: (namespaceId: string, query: { cursor?: string; limit?: number; state?: string } = {}, signal?: AbortSignal) =>
+      api.get<Page<BatchJob>>(path`/namespaces/${namespaceId}/batch-operations`, { query, signal }),
+    getBatch: (namespaceId: string, id: string, signal?: AbortSignal) => api.get<BatchJob>(path`/namespaces/${namespaceId}/batch-operations/${id}`, { signal }),
+    batchItems: (namespaceId: string, id: string, query: { cursor?: string; limit?: number; state?: string } = {}, signal?: AbortSignal) =>
+      api.get<Page<BatchItem>>(path`/namespaces/${namespaceId}/batch-operations/${id}/items`, { query, signal }),
+    cancelBatch: (namespaceId: string, id: string, reason: string, key: string, signal?: AbortSignal) =>
+      api.post<BatchJob>(path`/namespaces/${namespaceId}/batch-operations/${id}/cancel`, { body: { reason }, key, signal }),
   };
 }
 

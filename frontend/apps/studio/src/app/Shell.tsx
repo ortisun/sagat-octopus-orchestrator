@@ -12,6 +12,7 @@ export const SCOPED = [
   { to: '/workflows', label: 'Workflows' },
   { to: '/scripts', label: 'Scripts' },
   { to: '/runs', label: 'Runs' },
+  { to: '/batches', label: 'Batches' },
   { to: '/operations', label: 'Operations' },
   { to: '/database-executions', label: 'Ad hoc database' },
   { to: '/connections', label: 'Connections' },

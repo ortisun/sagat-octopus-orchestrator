@@ -735,9 +735,29 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   is not vacuous: its monitor and its deadlock are shown by the self-tests of T018-012 (it sees two run locks held at
   once, and the harness reproduces a deadlock); no mutation of the platform could be made to hold two run locks,
   because no path of the platform does.
-- [ ] T018-050 [P] [US5] Studio batch (from run-list filter, preview, confirm with reason, progress,
+- [x] T018-050 [P] [US5] Studio batch (from run-list filter, preview, confirm with reason, progress,
   items, cancel) — `frontend/apps/studio/src/features/batch/`, `frontend/apps/studio/src/features/runs/runList.ts`
   — component tests — FR-018-047.
+  *Done 2026-11-04.* `features/batch/`: `BatchFromRuns` (a "Batch operation…" button in the toolbar of the run list, shown
+  only with `run:batch`, which turns the status, workflow and origin filters into the selector of a job: choose an action,
+  count the runs, give a reason, confirm; nothing is asked of the platform before a person acts, the job starts only after
+  the runs were counted for the same limit and a reason of 8 to 2,000 characters, an unchanged request keeps its
+  idempotency key, a signal needs a JSON object within 256 KiB, a step-based action names its step), `BatchesPage`
+  (`/batches`, newest first, a state filter, load more, followed every 5 s while one job is at work) and `BatchPage`
+  (`/batches/:batchId`: the state in words and a shape, a progress bar with "25 of 40 runs have an outcome (62%)", the
+  counters, the outcome of each run with the reason in words or the error code, a filter by outcome, load more, followed
+  every 2 s while the job works, the payload never shown, only a short digest; "Cancel the job" with `run:batch`, a reason
+  and the plain statement that what was applied stays applied). A deployment with batch operations off (`ROUTE_NOT_FOUND`)
+  is told so. Routes `batches` and `batches/:batchId`, a "Batches" entry in the menu, six endpoints in
+  `api/endpoints.ts`. The pure rules are in `model.ts` and tested alone. Evidence, from `frontend/` in CI's order: `npm run
+  lint` clean, `npm run typecheck` clean, `npm test` 91 files and 1,233 tests passed (39 new in `features/batch/`: 14 of the
+  model, 10 of the dialog, 9 of the job page, 6 of the list), `npm run build`, `npm run check:api`. Six mutations were caught,
+  each by its own test: the dialog without its "count first" guard, the count kept after the limit changed, the dialog
+  offered without `run:batch`, the cancel button without `run:batch`, the cancel form without its reason check, and the
+  outcome filter not sent. Not run here: `npm run typecheck --workspace @sagat/e2e` needs the TypeScript SDK built
+  (`bash sdks/typescript/conformance/prepare.sh`) and fails without it for reasons unrelated to this change, and the
+  browser journeys (Rust-driven, ignored without Node and Chromium) have no journey for batches. The filter of the run
+  list (`runList.ts`) is not changed: the dialog reads the filters the page already holds.
 - [ ] T018-051 [US5] Job/item purge; selection through 020's `RunSelector`
   (`specs/020-visibility-analytics-archival/contracts/list-query.md`) when enabled, `query` refused
   `QUERY_UNSUPPORTED_OPERATOR` while it is off; `listRuns` filters mapped to 020's `BusinessId`/`ScheduleId`

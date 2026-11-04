@@ -19,6 +19,7 @@ import { NotAllowed } from './NotAllowed';
 import { originLabel, useVersions, useWorkflowIndex, versionLabel } from './queries';
 import type { WorkflowIndex } from './queries';
 import { RunListStore } from './runList';
+import { BatchFromRuns } from '../batch/BatchFromRuns';
 import { StartRun } from './StartRun';
 import { ScrollRegion } from './ScrollRegion';
 import { clip } from './time';
@@ -97,6 +98,7 @@ export function RunsPage({ variant = 'page', selectedRunId }: RunsPageProps = {}
         ) : null}
         {variant === 'page' ? <OpenRun /> : null}
         {variant === 'page' ? <StartRun choices={(workflows.data?.list ?? []).filter((workflow) => workflow.activeVersion)} /> : null}
+        {variant === 'page' ? <BatchFromRuns filters={{ status, workflowId, origin }} {...(workflowId ? { workflowName: workflows.data?.list.find((workflow) => workflow.id === workflowId)?.name } : {})} /> : null}
       </div>
       {namespace === undefined ? (
         <p role="status">Waiting for a namespace…</p>
