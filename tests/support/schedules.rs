@@ -273,7 +273,7 @@ impl Fixture {
 
     /// Waits until some backend waits on a lock (`pg_stat_activity`, not a time), for at most two
     /// minutes, then panics naming `stage`.
-    async fn wait_for_a_backend_on_a_lock(&self, stage: &str) {
+    pub(crate) async fn wait_for_a_backend_on_a_lock(&self, stage: &str) {
         super::bounded::within(stage, std::time::Duration::from_secs(120), async {
             loop {
                 let waiting: i64 = sqlx::query_scalar(

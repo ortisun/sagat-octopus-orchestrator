@@ -62,6 +62,7 @@ pub mod signing;
 pub mod telemetry;
 pub mod worker;
 
+pub mod batch;
 pub mod blobs;
 
 pub mod secret_cleanup;

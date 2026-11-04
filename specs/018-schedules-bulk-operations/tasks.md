@@ -77,6 +77,12 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   14 passed, `integration_security_multitenancy` 126 passed, `integration_platform_foundation` 101 passed, workspace clippy
   clean. Still open: `batch_jobs`, `tenant_batch_jobs` and `pending_resets`, which land with the tables they count (their
   usage cannot be written before those tables exist).
+  *Update 2026-11-04:* `batch_jobs` (namespace, 2 by default, hard 16) and `tenant_batch_jobs` (tenant, 8, hard 64) are
+  done with the batch tables (migration `20270102000000_batch_operations`): the domain resources
+  (`domain/tests/batch_quotas.rs` 3 passed), the lock of the tenant and then of the namespace and the count of the jobs
+  that have not finished in `infra-postgres/src/quotas.rs`, the usage report, the `CHECK`s of the two ceilings tables, the
+  OpenAPI enums and the generated Studio types (`npm run check:api` and `npm run typecheck` clean). `pending_resets`
+  stays open with US06.
 - [ ] T018-008 Additive migrations (tables incl. `schedule_actions` PK with `origin`, `batch_jobs.selection_horizon xid8`,
   `schedule_trigger_handover`, and the instance-capability registry tables unless 029 or 031 shipped them; `runs` columns with the erasure-aware
   immutability trigger; `run_shard` partial indexes; ALWAYS triggers; grants; trigger-owned backfill;
@@ -95,6 +101,13 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   ways; a mutation of the action guard was caught. Not done: business ids and the `runs` columns with their erasure-aware
   trigger, batch jobs and items, resets, the five quota resources with the `quota_ceilings_resource_valid` CHECK, the
   instance-capability registry, the trigger-owned backfill and the purge functions.
+  *Update 2026-11-04:* the batch tables are done: migration `20270102000000_batch_operations` (`batch_jobs` with the
+  selection bound, the `xid8` horizon of the creating snapshot, the durable rate slot and a generated shard;
+  `batch_items` with one row per run; `ALWAYS` guards that keep what a job is fixed, a finished job finished and an ended
+  item as it ended; content accounting of the justification and the selector; grants without `DELETE`; a `down` that
+  refuses while a job exists or a limit for the resources is set). Tested in `batch::` (guards, privileges, rollback and
+  applying again). Still open: the business-id table and the `runs` columns, resets, the instance-capability registry, the
+  trigger-owned backfill and the purge functions of jobs and items.
 - [ ] T018-009 Classify new variable-size columns; register payload-referencing columns for 020's
   reference check; extend the runtime-privilege test — `crates/infra-postgres/storage-classification.json`,
   `tests/integration/platform-foundation/runtime_privileges.rs` — manifest test, `SAGAT_TEST_AS_RUNTIME_ROLE=1`
@@ -105,6 +118,10 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   PENDING until T018-014. Evidence: `manifest_covers_every_variable_size_column_and_every_accounted_table_has_always_triggers`
   and the 8 `durable_quotas` tests pass. Not done: the runtime-privilege audit of the stores' statements (no statement exists
   yet) and the columns of the later migrations.
+  *Update 2026-11-04:* the 11 variable-size columns of `batch_jobs` and `batch_items` are classified (the selector and the
+  justification as content, the rest protected with the `CHECK` that bounds it) and `infra-postgres/src/batch.rs` owns
+  them; `manifest_covers_every_variable_size_column_and_every_accounted_table_has_always_triggers` passes. The accounting
+  triggers take the content columns in the order of the manifest (selector, then reason), which the test enforces.
 - [ ] T018-010 Merge the REST fragment, AsyncAPI additions (intentional baseline regeneration) and
   reasons; assert `workflow.schema.json` and `worker.baseline.json` unchanged —
   `specs/001-platform-foundation/contracts/{openapi.yaml,events.asyncapi.yaml,events.baseline.json}` —
@@ -130,6 +147,10 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `ScheduleCalendar` port. The strict JSON codec lives in `application/src/schedule_codec.rs` (moved from `infra-ir` so that
   `api-http` and `infra-postgres` share it without an edge between adapters). Not done: `BusinessIdStore`, `BatchStore`,
   `ResetStore`, and the `NewRun` admissions processed by `RunStore::create`.
+  *Update 2026-11-04:* `BatchStore` (create with the ceilings and the request key, read, list, items, request cancel,
+  preview) is built in `application/src/batch.rs`, with the records it speaks and the codec of the selector and the
+  parameters (`application/tests/batch_codec.rs` 5 passed); `PgBatchStore` implements it. Not done: `ResetStore`,
+  `BusinessIdStore` and the `NewRun` admissions.
 - [ ] T018-012 Lock-order interleaving harness (barriers, deadlock counter) for the merged admission slots
   of ADR-0050 decision 7 and both aggregate orders (aggregate → run; run → bookkeeping row), with
   slot-order cases for the admission paths of 019, 021, 022, 024, 025, 026 and 030 as they merge —
@@ -568,6 +589,25 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `crates/infra-postgres/src/batch.rs`, `crates/application/src/batch.rs`,
   `crates/api-http/src/routes/batch.rs`, `crates/api-http/src/dto_batch.rs` — contract/store tests —
   FR-018-027, FR-018-028, FR-018-032.
+  *Part done 2026-11-04 (task stays open: the routes and the DTOs, and the executor that selects and applies).* The
+  store and the service are built (decision D1957): create (judged against the active jobs of the namespace and of the
+  tenant under a fence, idempotent by key, the payload of a signal or an update kept as content and never returned, the
+  audit record naming the action and never the justification), preview (counted up to `maxItems + 1` with a sample of 20
+  in a read that stops after 5 seconds), read, list newest first with a cursor, items, and cancel (once, audited once, a
+  finished job left alone). `batch::` 16 passed in `integration_schedules_bulk_operations`; the test of the fence fails
+  (naming its stage) when the lock is removed; a concurrent race for the last place passes even without the lock, so it
+  is kept as a check of the outcome and the fence has its own deterministic test. Gates on the final tree (private
+  `CARGO_TARGET_DIR`, `RUST_TEST_THREADS=2`): `integration_schedules_bulk_operations` 185 passed and
+  `fault_schedules_bulk_operations` 16 passed, each also with `SAGAT_TEST_AS_RUNTIME_ROLE=1`;
+  `integration_platform_foundation` 101 (the runtime-privilege audit found the bare word of a statement stored as a
+  value, now a flag); `integration_security_multitenancy` 126 (the quota views list the two new resources);
+  `contract_schedules_bulk_operations` 1, `contract_rest_platform_foundation` 9, `contract_rest_security_multitenancy`
+  17, `contract_developer_experience` 8; `integration_database_connections` 7; the unit suites of domain, application,
+  infra-postgres, scheduler, api-http and execution-engine 1,202 passed, 0 failed (the inline test that fixes the number
+  of quota resources found the new ones); Studio `npm run check:api` and `npm run typecheck` clean; `cargo fmt --check`
+  and `cargo clippy --workspace --all-targets --locked -- -D warnings` clean. The gates found two failures on the first
+  run and one more on the second, all of them tests that list every resource or every literal; none was a defect of the
+  behaviour. `MARK_MANUAL_REVIEW` is the single-run `Hold`, which needs `run:operate` only.
 - [ ] T018-046 [US5] Executor pass (horizon wait on `pg_snapshot_xmin`, keyset selection rounds, item order
   run → fence → job → item, rate slot, deferral, drain) with kill/restart, duplicate, lost-hint and
   late-commit faults — `crates/scheduler/src/batches.rs`, `tests/fault/schedules-bulk-operations/batch.rs`

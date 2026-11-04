@@ -410,6 +410,22 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
 - **D1956** (2026-11-04, T018-016) The input of a schedule is checked for shape and size, not against the `inputSchema` of the
   target version (G1955): nothing on the platform enforces that schema, so a schedule would be stricter than a person
   starting the same workflow.
+- **D1957** (2026-11-04, T018-045) Batch jobs: the model and who may do what. A job is a row that never changes except in
+  its progress (an `ALWAYS` guard refuses every other `UPDATE`, a finished job staying finished) with one item row per
+  selected run and no foreign key to `runs`, so retention of an item never waits for a run. Creating it needs
+  `run:batch` and every permission of the single action (`action_permissions`): `run:operate` for cancel, pause, resume and
+  retry-step and mark-manual-review (the single-run `Hold`), `run:signal`, `run:update`, and `run:operate` with `run:start` for
+  rerun; `REPIN` is `BATCH_ACTION_UNAVAILABLE` while feature 019 is not enabled. The creation is judged under a fence
+  (the tenant's first, then the namespace's, the same order everywhere) against the jobs that have not finished, 2 per
+  namespace and 8 per tenant by default (hard 16 and 64). The selection bound, the horizon (`pg_snapshot_xmax(pg_current_snapshot())`)
+  and the first slot come from the database inside the creating transaction, so the executor can wait until every
+  transaction that was open then has ended. The key (`Idempotency-Key`, 8 to 160 characters) is recorded with the job: a
+  repeat answers the job it made, a changed request is `IDEMPOTENCY_KEY_REUSED`. The payload of a signal or the
+  arguments of an update are a payload of the tenant, named by a digest, and neither the job record nor its audit record
+  carries the body; the audit reason is the action name. A `businessIdPrefix` selector is refused
+  (`BATCH_SELECTOR_UNSUPPORTED`) until business ids exist, because there is no column to match. New reasons of the contract:
+  `BATCH_PARAMS_INVALID`, `BATCH_ACTION_UNAVAILABLE`, `BATCH_LIMITS_INVALID`, `BATCH_PAYLOAD_INVALID`,
+  `BATCH_PAYLOAD_TOO_LARGE`, `BATCH_SELECTOR_UNSUPPORTED`, carried by the new `AppError::InvalidBatch`.
 - **D1955** (2026-11-04, T018-028) The actions of a schedule are purged by a bounded function, visiting schedules in
   turn. Nothing deleted them: an hourly schedule writes 8,700 rows a year and one every minute 525,000. FR-018-013
   keeps "at least the last 1,000 or 30 days": an action goes when it is older than 30 days **and** beyond the
