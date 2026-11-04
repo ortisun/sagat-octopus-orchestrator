@@ -156,6 +156,19 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   slot-order cases for the admission paths of 019, 021, 022, 024, 025, 026 and 030 as they merge —
   `tests/support/lock_order.rs` — self-test reproduces an opposite-order deadlock and passes the slot
   order — NFR-018-001.
+  *Part done 2026-11-04 (task stays open for the slot-order cases of the admission paths of 019, 021, 022, 024, 025,
+  026 and 030, which exist only as those features merge).* The harness is built: `interleave` runs plans of locks at once,
+  each in a transaction and a connection of its own, and holds every plan after each lock until the others have taken
+  theirs or are seen waiting on a lock in `pg_stat_activity` (a plan queued behind another one cannot keep the holder at a
+  barrier); `Slot` and `assert_ascending` state the ten slots of the decision and refuse a plan that returns to a lower
+  one; `RowLockMonitor` samples the row locks of a table with `pgrowlocks`, because `pg_locks` does not list them, and
+  reports any transaction that holds more than one. Evidence, `fault_schedules_bulk_operations` `batch_locks::` (7
+  passed): two plans that take two rows in opposite orders give exactly one deadlock victim and one commit (and the
+  database counter `pg_stat_database.deadlocks` rises by one), in the same order both commit; the same for a ring of
+  three advisory locks, and for three plans in one order; a plan in the order of the slots is accepted and one that goes
+  from a run back to a schedule row is refused by name; the monitor sees a transaction that holds two run locks. A first
+  version of the barrier hung when a plan was queued behind the other (found by running it), and sampling on the
+  connection that holds the locks hung it too; it samples from another connection now.
 
 ## Phase 3: US01 — Run a workflow on a schedule (P1, MVP)
 
@@ -709,9 +722,19 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   tenant, admits no job and leaves nothing stored. Mutations that were caught: the selection without its tenant and
   namespace conditions (the preview counts three runs instead of one), and a limit of zero read as one. Not covered: the
   `deployment:manage` permission of `REPIN`, which does not exist before feature 019.
-- [ ] T018-049 [US5] Lock monitor (`pg_locks` sampling: never two run locks) and harness interleaving with
+- [x] T018-049 [US5] Lock monitor (`pg_locks` sampling: never two run locks) and harness interleaving with
   API cancel/signal — `tests/fault/schedules-bulk-operations/batch_locks.rs` — zero deadlocks —
   FR-018-030; NFR-018-001.
+  *Done 2026-11-04.* `batch_locks::a_batch_job_and_the_api_on_the_same_runs_never_hold_two_run_locks_or_deadlock`: 24 open
+  runs, two tasks that pause, resume and signal them through the API for as long as the test lasts, three rounds of a
+  `PAUSE` job and a `RESUME` job over the same runs at the top rate, then the API cancelling the runs from the last to the
+  first while a `CANCEL` job works through them; the monitor looked 1,157 times (one run of the test), saw run locks held and
+  never more than one by one transaction, the API made 1,008 calls and met nothing but a state that was not the one
+  asked for, the seven jobs ended `COMPLETED` with counters equal to their items and no failure (a skipped item is
+  `ALREADY_TERMINAL` and nothing else), every run is `CANCELLED`, and `pg_stat_database.deadlocks` did not move. The test
+  is not vacuous: its monitor and its deadlock are shown by the self-tests of T018-012 (it sees two run locks held at
+  once, and the harness reproduces a deadlock); no mutation of the platform could be made to hold two run locks,
+  because no path of the platform does.
 - [ ] T018-050 [P] [US5] Studio batch (from run-list filter, preview, confirm with reason, progress,
   items, cancel) — `frontend/apps/studio/src/features/batch/`, `frontend/apps/studio/src/features/runs/runList.ts`
   — component tests — FR-018-047.

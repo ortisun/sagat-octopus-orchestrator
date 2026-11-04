@@ -19,6 +19,7 @@ pub mod collector;
 pub mod contract;
 pub mod dx;
 pub mod engine;
+pub mod lock_order;
 pub mod logs;
 pub mod nats;
 pub mod oidc;
