@@ -1,19 +1,19 @@
 # Instructions for implementation agents — Sagat Octopus Orchestrator
 
-A durable workflow platform built **from specifications** (Spec Kit): a Rust modular monolith with PostgreSQL as the authority, NATS or Redis as a hint, six SDKs and a React Studio. The constitution (`.specify/memory/constitution.md`) outranks this file; this file is the single source of runtime guidance for every agent (Claude Code, Codex, Copilot, Cursor). It holds what an agent cannot infer from the code. Details live in `docs/engineering/`, in the nested `AGENTS.md` of the directory you work in, and in `.claude/skills/`.
+A durable workflow platform built **from specifications**: a Rust modular monolith with PostgreSQL as the authority, NATS or Redis as a hint, six SDKs and a React Studio. The constitution (`docs/constitution.md`) outranks this file; this file is the single source of runtime guidance for every agent (Claude Code, Codex, Copilot, Cursor). It holds what an agent cannot infer from the code. Details live in `docs/engineering/`, in the nested `AGENTS.md` of the directory you work in, and in `.claude/skills/`.
 
 ## Start here
 
-- Read the constitution and the `spec.md`, `plan.md`, `tasks.md` of the active feature before changing code (`.specify/feature.json`, branch `feature/<id>-<slug>`).
+- Read the constitution and the design doc `docs/designs/NNN-slug.md` of the active feature (the number is in the branch name `feature/<id>-<slug>`), or, for a feature not yet converted, its `spec.md`, `plan.md` and `tasks.md`, before changing code.
 - **Check for existing work first**: `git branch -a | grep <feature id>` and `git worktree list`. Other sessions (people, Codex, Claude) work in sibling worktrees; a feature may already be built there. Duplicated work has happened (feature 016).
-- Specification-driven cycle: `/speckit-specify` → `/speckit-clarify` → `/speckit-plan` → `/speckit-checklist` → `/speckit-tasks` → `/speckit-analyze` → `/speckit-implement` → `/speckit-converge`. How we use it: `docs/engineering/sdd-workflow.md`.
-- Ids are feature-scoped: `FR-NNN-xxx`, `SC-NNN-xxx`, `NFR-NNN-xxx`, `US0n`, `TNNN-xxx`. Decisions `D…`, gaps `G…`, owner questions `O…` are registered in the feature's `research.md`; never renumber, and look at other open branches before taking the next number (a clash happened).
-- A task in `tasks.md` is ticked only with the evidence that closes it: a named test and its result, or a command and its output.
-- Only the owner decides what is product, scope or release. Record the answer in `docs/owner-decisions.md`; ask when the code, the spec and the defaults do not settle it.
+- Design cycle: `egm-brainstorm` → `egm-draft` → `egm-review` (the Elephant-Goldfish Model; its skills are manual-only, so read the `SKILL.md` and follow it). The steps need a harness that can start subagents, and approval needs Claude Code because it runs the three repository reviewers. Run `claude plugin install egm@egm --scope project` once. How we use it: `docs/engineering/sdd-workflow.md`.
+- Ids are feature-scoped: `FR-NNN-xxx`, `SC-NNN-xxx`, `NFR-NNN-xxx`, `US0n`, `TNNN-xxx`. Decisions `D…`, gaps `G…`, owner questions `O…` are registered in the feature's `research.md`; never renumber, and take the next feature number from `python3 scripts/next-feature-id.py`, which looks at other open branches (a clash happened).
+- A task in the design doc (or in `tasks.md` of a feature not yet converted) is ticked only with the evidence that closes it: a named test and its result, or a command and its output.
+- Only the owner decides what is product, scope or release. Record the answer in `docs/owner-decisions.md`; ask when the code, the spec and the defaults do not settle it (`docs/constitution.md`, Owner decisions).
 
 ## Rules
 
-1. Read `.specify/memory/constitution.md` and the `spec.md`, `plan.md`, `tasks.md` of the active feature BEFORE changing code.
+1. Read `docs/constitution.md` and the design doc of the active feature (or, for a feature not yet converted, its `spec.md`, `plan.md`, `tasks.md`) BEFORE changing code.
 2. Do not implement functionality from another feature without an approved dependency. When diverging from an ADR, create a new ADR and update dependents.
 3. A state transition, next-task scheduling, timer/subscription update and outbox **MUST** obey the documented transactional boundaries.
 4. Do not promise exactly-once for external effects; require an idempotency key / reconciliation for critical effects.
@@ -40,7 +40,7 @@ A durable workflow platform built **from specifications** (Spec Kit): a Rust mod
 ```sh
 cargo fmt --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
-python3 scripts/check-architecture.py && python3 scripts/check-agent-config.py
+python3 scripts/check-architecture.py && python3 scripts/check-agent-config.py && python3 scripts/check-design-docs.py
 cargo test -p sagat-tests --test <kind>_<feature>            # e.g. integration_workflow_primitives (real PostgreSQL via Testcontainers; Docker needed)
 SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test -p sagat-tests ...   # every service as the least-privilege role sagat_app
 RUST_TEST_THREADS=2 cargo test --workspace --locked --no-fail-fast   # the local resource profile; see docs/test-strategy.md

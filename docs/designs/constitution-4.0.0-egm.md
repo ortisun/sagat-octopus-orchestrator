@@ -146,6 +146,11 @@ check does not accept as an owner decision until the owner changes it to `owner`
 *   **W. Checks that need the reviewed commit run only for docs that a pull request changes.** *Reason:* a squash merge
     of an earlier pull request would otherwise fail every later pull request (Q2).
 
+After the first push, the owner answered the question "what do I need to approve?" with "Decida por mim" (row
+OD-2026-11-03-32). Decisions X to AC, rows 33 to 38 of `docs/owner-decisions.md`, were taken then: keep the checklist
+gate, keep the plugin in project scope, keep 4.0.0, leave this design `Draft` and rows 9 to 31 `delegate`, merge both
+pull requests when CI is green, and keep ADR-0077 `Proposed`.
+
 ## The Problem
 
 Removing the Spec Kit files is mechanical. The rules that depend on its layout are the risk. The constitution and the

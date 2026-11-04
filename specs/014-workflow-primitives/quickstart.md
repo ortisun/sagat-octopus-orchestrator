@@ -19,8 +19,7 @@ From the repository root:
 ```sh
 cargo test -p sagat-tests --test e2e_developer_experience --locked -- --ignored order_processing::
 cargo test -p sagat-tests --test contract_developer_experience --locked
-SPECIFY_FEATURE_DIRECTORY=specs/014-workflow-primitives SPECIFY_FEATURE_NO_PERSIST=1 \
-  .specify/scripts/bash/check-prerequisites.sh --json --require-spec --require-tasks --include-tasks
+ls specs/014-workflow-primitives
 ```
 
 The first command executes all five languages unless `SAGAT_EXAMPLE_LANGS` deliberately selects a
