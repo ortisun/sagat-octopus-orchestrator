@@ -1,9 +1,8 @@
 """Tests for scripts/select-test-targets.py (run: python3 -m unittest discover scripts/tests).
 
-Every case builds a throwaway git repository whose tests/Cargo.toml mimics the real one, commits a base,
-changes files, and asks the script which integration test targets must run.
+Every case builds a throwaway git repository with a small Cargo workspace and a tests/Cargo.toml that mimics the
+real one, commits a base, changes files, and asks the script what the CI must run.
 """
-import json
 import os
 import pathlib
 import subprocess
@@ -28,6 +27,21 @@ TARGETS = {
     "e2e_sdk_multilanguage": "e2e/sdk-multilanguage/main.rs",
     "fault_sdk_multilanguage": "fault/sdk-multilanguage/main.rs",
 }
+# What each target's own sources name: integration_a -> domain, contract_a -> application, contract_rest_a -> leaf.
+SOURCES = {
+    "integration/a/main.rs": "use sagat_domain::Thing;\n",
+    "contract/a/main.rs": "use sagat_application::Service;\n",
+    "contract/a/rest/main.rs": "use sagat_leaf::Leaf;\n",
+}
+WORKSPACE = {
+    "Cargo.toml": '[workspace]\nmembers = ["crates/domain", "crates/application", "crates/leaf", "apps/cli", "tests"]\n',
+    "crates/domain/Cargo.toml": '[package]\nname = "sagat-domain"\n',
+    "crates/application/Cargo.toml": '[package]\nname = "sagat-application"\n\n[dependencies]\nsagat-domain = { workspace = true }\n',
+    "crates/leaf/Cargo.toml": '[package]\nname = "sagat-leaf"\n',
+    "apps/cli/Cargo.toml": '[package]\nname = "sagat-cli"\n\n[dependencies]\nsagat-application.workspace = true\n',
+}
+SDK_SUITE_NAMES = {"sdk_conformance", "e2e_sdk_multilanguage", "fault_sdk_multilanguage"}
+BROWSER_SUITE_NAMES = {"e2e_workflow_studio", "e2e_developer_experience", "e2e_database_connections"}
 
 
 def manifest(targets=None, description="d", dependency='tempfile = "3"'):
@@ -42,19 +56,24 @@ def git(root, *args):
                           capture_output=True, text=True, check=True).stdout.strip()
 
 
-class Selector(unittest.TestCase):
+class Scope(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.root = pathlib.Path(self._tmp.name)
         git(self.root, "init", "-q", "-b", "develop")
+        for rel, text in WORKSPACE.items():
+            self.write(rel, text)
         self.write("tests/Cargo.toml", manifest())
         for path in TARGETS.values():
-            self.write(f"tests/{path}", "// main\n")
-        self.write("tests/support/mod.rs", "// support\n")
+            self.write(f"tests/{path}", SOURCES.get(path, "// main\n"))
+        self.write("tests/support/mod.rs", "// support names every crate: use sagat_domain; use sagat_leaf;\n")
         self.write("tests/fixtures/data.json", "{}\n")
         self.write("tests/AGENTS.md", "# tests\n")
         self.write("crates/domain/src/lib.rs", "// lib\n")
+        self.write("crates/application/src/lib.rs", "// lib\n")
+        self.write("crates/leaf/src/lib.rs", "// lib\n")
+        self.write("apps/cli/src/main.rs", "// main\n")
         self.write("README.md", "r\n")
         self.base = self.commit("base")
 
@@ -68,30 +87,37 @@ class Selector(unittest.TestCase):
         git(self.root, "commit", "-q", "--allow-empty", "-m", message)
         return git(self.root, "rev-parse", "HEAD")
 
-    def select(self, event="pull_request", ref_name="feature/x", base="BASE", output=None):
+    def run_select(self, event="pull_request", ref_name="feature/x", ref_type="branch", base_ref="develop",
+                   base="BASE", output=None):
         base = self.base if base == "BASE" else base
         env = {k: v for k, v in os.environ.items() if not k.startswith("GITHUB_")}
         env.update(GIT_ENV)
         if output:
             env["GITHUB_OUTPUT"] = str(output)
-        result = subprocess.run(
-            [sys.executable, str(SCRIPT), "--root", str(self.root), "--event", event,
-             "--ref-name", ref_name, "--base", base],
+        return subprocess.run(
+            [sys.executable, str(SCRIPT), "--root", str(self.root), "--event", event, "--ref-name", ref_name,
+             "--ref-type", ref_type, "--base-ref", base_ref, "--base", base],
             capture_output=True, text=True, env=env)
-        return result
+
+    def decide(self, **kwargs):
+        result = self.run_select(**kwargs)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        values = {}
+        for line in result.stdout.splitlines():
+            key, sep, value = line.partition("=")
+            if sep and key in {"full", "crates", "sdks", "frontend", "scripts", "targets", "any", "all"}:
+                values[key] = value
+        return values
 
     def chosen(self, **kwargs):
-        result = self.select(**kwargs)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        line = next(l for l in result.stdout.splitlines() if l.startswith("targets="))
-        return set(line[len("targets="):].split())
+        return set(self.decide(**kwargs)["targets"].split())
 
-    # -- which files select which targets ------------------------------------------------
+    # -- which files select which integration targets -------------------------------------
     def test_a_modified_file_in_a_target_directory_selects_that_target_only(self):
-        self.write("tests/integration/a/steps.rs", "// new\n")
-        self.write("tests/integration/a/main.rs", "// changed\n")
+        self.write("tests/fault/b/steps.rs", "// new\n")
+        self.write("tests/fault/b/main.rs", "// changed\n")
         self.commit()
-        self.assertEqual(self.chosen(), {"integration_a"})
+        self.assertEqual(self.chosen(), {"fault_b"})
 
     def test_an_added_file_selects_its_target(self):
         self.write("tests/fault/b/new_case.rs", "// added\n")
@@ -116,19 +142,11 @@ class Selector(unittest.TestCase):
         self.assertEqual(self.chosen(), {"contract_a"})
 
     def test_a_rename_between_targets_selects_both(self):
-        self.write("tests/integration/a/moved.rs", "// m\n")
+        self.write("tests/fault/b/moved.rs", "// m\n")
         self.base = self.commit("with moved")
-        git(self.root, "mv", "tests/integration/a/moved.rs", "tests/fault/b/moved.rs")
+        git(self.root, "mv", "tests/fault/b/moved.rs", "tests/integration/a/moved.rs")
         self.commit()
         self.assertEqual(self.chosen(), {"integration_a", "fault_b"})
-
-    def test_a_change_outside_the_tests_selects_nothing(self):
-        self.write("crates/domain/src/lib.rs", "// changed\n")
-        self.write("README.md", "changed\n")
-        self.commit()
-        result = self.select()
-        self.assertEqual(self.chosen(), set())
-        self.assertIn("any=false", result.stdout)
 
     def test_shared_support_and_fixtures_select_every_target(self):
         for rel in ("tests/support/mod.rs", "tests/fixtures/data.json"):
@@ -138,22 +156,45 @@ class Selector(unittest.TestCase):
                 self.assertEqual(self.chosen(), set(TARGETS))
                 self.base = git(self.root, "rev-parse", "HEAD")
 
-    def test_documentation_under_tests_selects_nothing(self):
+    def test_runners_and_contract_files_select_every_target(self):
+        for rel in ("runners/go/Dockerfile", "specs/001-platform-foundation/contracts/openapi.yaml"):
+            with self.subTest(rel=rel):
+                self.write(rel, "changed " + rel + "\n")
+                self.commit()
+                self.assertEqual(self.chosen(), set(TARGETS))
+                self.assertEqual(self.decide()["full"], "false")
+                self.base = git(self.root, "rev-parse", "HEAD")
+
+    def test_documentation_selects_nothing_at_all(self):
+        self.write("README.md", "changed\n")
+        self.write("docs/guide.md", "x\n")
+        self.write("tasks/reviews/r.md", "x\n")
         self.write("tests/AGENTS.md", "# changed\n")
+        self.write("crates/domain/README.md", "x\n")
+        self.write("infra/helm/values.yaml", "a: 1\n")
         self.commit()
-        self.assertEqual(self.chosen(), set())
+        decision = self.decide()
+        self.assertEqual(
+            decision,
+            {"full": "false", "crates": "", "sdks": "", "frontend": "false", "scripts": "false",
+             "targets": "", "any": "false", "all": "false"})
 
     def test_frontend_journeys_select_the_browser_suites(self):
         self.write("frontend/e2e/journeys/login.spec.ts", "// x\n")
         self.commit()
-        self.assertEqual(self.chosen(), {"e2e_workflow_studio", "e2e_developer_experience", "e2e_database_connections"})
+        self.assertEqual(self.chosen(), BROWSER_SUITE_NAMES)
 
     def test_sdk_conformance_programs_select_the_sdk_suites(self):
         self.write("sdks/go/conformance/worker.go", "package x\n")
         self.commit()
-        self.assertEqual(self.chosen(), {"sdk_conformance", "e2e_sdk_multilanguage", "fault_sdk_multilanguage"})
+        self.assertEqual(self.chosen(), SDK_SUITE_NAMES)
 
-    # -- the manifest --------------------------------------------------------------------
+    def test_examples_select_the_developer_experience_suite(self):
+        self.write("examples/hello-world/typescript/index.ts", "// x\n")
+        self.commit()
+        self.assertEqual(self.chosen(), {"e2e_developer_experience"})
+
+    # -- the manifest ---------------------------------------------------------------------
     def test_a_new_test_entry_selects_that_target(self):
         extra = dict(TARGETS, new_suite="integration/new/main.rs")
         self.write("tests/Cargo.toml", manifest(extra))
@@ -188,99 +229,154 @@ class Selector(unittest.TestCase):
         bad = dict(TARGETS, **{"bad name; rm -rf": "integration/bad/main.rs"})
         self.write("tests/Cargo.toml", manifest(bad))
         self.commit()
-        result = self.select()
+        result = self.run_select()
         self.assertEqual(result.returncode, 2, result.stdout)
         self.assertNotIn("rm -rf", result.stdout)
 
-    # -- events --------------------------------------------------------------------------
-    def test_a_manual_run_selects_every_target(self):
-        self.assertEqual(self.chosen(event="workflow_dispatch", base=""), set(TARGETS))
-
-    def test_a_push_to_a_release_branch_selects_every_target(self):
-        for ref in ("main", "release/1.0.0", "hotfix/1.0.1"):
-            with self.subTest(ref=ref):
-                self.assertEqual(self.chosen(event="push", ref_name=ref), set(TARGETS))
-
-    def test_a_push_to_develop_selects_by_change(self):
-        self.write("tests/fault/b/x.rs", "// x\n")
+    # -- unit tests of the changed packages ------------------------------------------------
+    def test_a_changed_package_gets_its_own_unit_tests_only(self):
+        self.write("crates/leaf/src/lib.rs", "// changed\n")
         self.commit()
-        self.assertEqual(self.chosen(event="push", ref_name="develop"), {"fault_b"})
+        self.assertEqual(self.decide()["crates"], "sagat-leaf")
 
-    def test_a_missing_or_unknown_base_selects_every_target(self):
-        for base in ("", ZEROS, "f" * 40):
-            with self.subTest(base=base):
-                self.assertEqual(self.chosen(base=base), set(TARGETS))
-
-    # -- output --------------------------------------------------------------------------
-    def test_the_github_output_file_gets_the_selection(self):
-        self.write("tests/fault/b/x.rs", "// x\n")
+    def test_a_changed_core_package_does_not_pull_in_its_dependents_unit_tests(self):
+        self.write("crates/domain/src/lib.rs", "// changed\n")
         self.commit()
-        out = self.root / "gh_output.txt"
-        self.select(output=out)
-        text = out.read_text()
-        self.assertIn("targets=fault_b\n", text)
-        self.assertIn("any=true\n", text)
-        self.assertIn("all=false\n", text)
+        self.assertEqual(self.decide()["crates"], "sagat-domain")
 
-    def test_the_log_says_why_a_target_was_selected(self):
-        self.write("tests/fault/b/x.rs", "// x\n")
+    def test_two_changed_packages_are_both_listed(self):
+        self.write("crates/leaf/src/lib.rs", "// changed\n")
+        self.write("apps/cli/src/main.rs", "// changed\n")
         self.commit()
-        result = self.select()
-        self.assertIn("fault_b", result.stdout)
-        self.assertIn("tests/fault/b/x.rs", result.stdout)
+        self.assertEqual(set(self.decide()["crates"].split()), {"sagat-leaf", "sagat-cli"})
 
-    # -- the heavy product jobs (upgrade, compose smoke test, scale) -----------------------
-    def code(self, **kwargs):
-        result = self.select(**kwargs)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        return next(l for l in result.stdout.splitlines() if l.startswith("code=")) == "code=true"
-
-    def test_a_change_to_documentation_and_process_files_alone_is_not_code(self):
-        self.write("README.md", "changed\n")
-        self.write("docs/guide.md", "x\n")
-        self.write("tasks/reviews/r.md", "x\n")
-        self.write(".claude/skills/x/SKILL.md", "x\n")
-        self.write("tests/AGENTS.md", "changed\n")
-        self.write("crates/domain/README.md", "x\n")
-        self.write("scripts/tests/test_x.py", "x = 1\n")
-        self.write("LICENSE", "x\n")
-        self.commit()
-        self.assertFalse(self.code())
-
-    def test_any_other_file_makes_the_change_code(self):
-        for rel in ("crates/domain/src/lib.rs", ".github/workflows/ci.yml", "infra/docker/compose.yaml",
-                    "Cargo.lock", "frontend/package.json", "sdks/go/go.mod", "scripts/smoke-compose.sh",
-                    "a_new_top_level_directory/file.txt", "tests/fault/b/x.rs"):
+    def test_a_workspace_wide_input_selects_every_package_and_every_target(self):
+        for rel in ("Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml", "vendor/rskafka/src/lib.rs"):
             with self.subTest(rel=rel):
                 self.write(rel, "changed " + rel + "\n")
                 self.commit()
-                self.assertTrue(self.code())
+                decision = self.decide()
+                self.assertEqual(decision["crates"], "ALL")
+                self.assertEqual(decision["all"], "true")
+                self.assertEqual(set(decision["targets"].split()), set(TARGETS))
+                self.assertEqual(decision["full"], "false")
                 self.base = git(self.root, "rev-parse", "HEAD")
 
-    def test_documentation_mixed_with_code_is_code(self):
-        self.write("docs/guide.md", "x\n")
+    def test_the_tests_package_is_never_listed_for_unit_tests(self):
+        self.write("tests/fault/b/x.rs", "// x\n")
+        self.commit()
+        self.assertEqual(self.decide()["crates"], "")
+
+    # -- integration suites that touch the affected packages -------------------------------
+    def test_a_changed_leaf_package_selects_only_the_suite_that_names_it(self):
+        self.write("crates/leaf/src/lib.rs", "// changed\n")
+        self.commit()
+        self.assertEqual(self.chosen(), {"contract_rest_a"})
+
+    def test_a_changed_core_package_selects_the_suites_that_name_it_or_its_dependents(self):
         self.write("crates/domain/src/lib.rs", "// changed\n")
         self.commit()
-        self.assertTrue(self.code())
+        # integration_a names sagat_domain; contract_a names sagat_application, which depends on it.
+        self.assertEqual(self.chosen(), {"integration_a", "contract_a"})
 
-    def test_an_empty_change_is_not_code(self):
+    def test_an_app_that_no_suite_names_selects_no_suite(self):
+        self.write("apps/cli/src/main.rs", "// changed\n")
         self.commit()
-        self.assertFalse(self.code())
+        self.assertEqual(self.chosen(), set())
 
-    def test_every_event_that_runs_everything_is_code(self):
-        self.write("docs/guide.md", "x\n")
+    def test_the_shared_support_does_not_link_a_suite_to_every_package(self):
+        # tests/support names sagat_domain and sagat_leaf, but only the suite's own sources count.
+        self.write("crates/leaf/src/lib.rs", "// changed\n")
         self.commit()
-        self.assertTrue(self.code(event="workflow_dispatch", base=""))
-        self.assertTrue(self.code(event="push", ref_name="release/1.0.0"))
-        self.assertTrue(self.code(base=""))
-        self.assertTrue(self.code(base="f" * 40))
+        self.assertNotIn("fault_b", self.chosen())
 
-    def test_the_github_output_file_gets_the_code_flag(self):
-        self.write("docs/guide.md", "x\n")
+    def test_a_parent_suite_does_not_inherit_what_its_nested_suite_names(self):
+        self.write("crates/leaf/src/lib.rs", "// changed\n")
+        self.commit()
+        self.assertNotIn("contract_a", self.chosen())
+
+    def test_the_log_says_why_a_suite_was_selected(self):
+        self.write("crates/leaf/src/lib.rs", "// changed\n")
+        self.commit()
+        result = self.run_select()
+        self.assertIn("contract_rest_a", result.stdout)
+        self.assertIn("sagat-leaf", result.stdout)
+
+    # -- SDKs, Studio and scripts ----------------------------------------------------------
+    def test_an_sdk_change_selects_that_languages_unit_tests(self):
+        self.write("sdks/python/src/client.py", "x = 1\n")
+        self.write("sdks/go/client.go", "package x\n")
+        self.commit()
+        self.assertEqual(set(self.decide()["sdks"].split()), {"python", "go"})
+
+    def test_the_studio_and_the_scripts_are_flagged_when_their_files_change(self):
+        self.write("frontend/src/app.ts", "// x\n")
+        self.write("scripts/check-x.py", "x = 1\n")
+        self.commit()
+        decision = self.decide()
+        self.assertEqual((decision["frontend"], decision["scripts"]), ("true", "true"))
+
+    def test_a_change_elsewhere_flags_neither(self):
+        self.write("crates/leaf/src/lib.rs", "// changed\n")
+        self.commit()
+        decision = self.decide()
+        self.assertEqual((decision["sdks"], decision["frontend"], decision["scripts"]), ("", "false", "false"))
+
+    # -- what a release runs -----------------------------------------------------------------
+    def assert_full(self, decision):
+        self.assertEqual(decision["full"], "true")
+        self.assertEqual(decision["crates"], "ALL")
+        self.assertEqual(set(decision["sdks"].split()), {"typescript", "python", "go", "dotnet", "java", "rust"})
+        self.assertEqual((decision["frontend"], decision["scripts"], decision["all"]), ("true", "true", "true"))
+        self.assertEqual(set(decision["targets"].split()), set(TARGETS))
+
+    def test_a_manual_run_is_a_release(self):
+        self.assert_full(self.decide(event="workflow_dispatch", base=""))
+
+    def test_a_push_to_a_release_branch_is_a_release(self):
+        for ref in ("main", "release/1.0.0", "hotfix/1.0.1"):
+            with self.subTest(ref=ref):
+                self.assert_full(self.decide(event="push", ref_name=ref))
+
+    def test_a_release_tag_is_a_release(self):
+        self.assert_full(self.decide(event="push", ref_name="v1.2.0", ref_type="tag"))
+
+    def test_another_tag_is_not(self):
+        self.write("README.md", "changed\n")
+        self.commit()
+        self.assertEqual(self.decide(event="push", ref_name="nightly", ref_type="tag")["full"], "false")
+
+    def test_a_pull_request_into_main_or_a_release_branch_is_a_release(self):
+        for base_ref in ("main", "release/1.0.0", "hotfix/1.0.1"):
+            with self.subTest(base_ref=base_ref):
+                self.assert_full(self.decide(base_ref=base_ref))
+
+    def test_a_pull_request_into_develop_and_a_push_to_develop_are_not(self):
+        self.write("README.md", "changed\n")
+        self.commit()
+        self.assertEqual(self.decide(base_ref="develop")["full"], "false")
+        self.assertEqual(self.decide(event="push", ref_name="develop", base_ref="")["full"], "false")
+
+    def test_a_change_of_the_workflow_runs_the_whole_workflow(self):
+        self.write(".github/workflows/ci.yml", "name: ci\n")
+        self.commit()
+        self.assert_full(self.decide())
+
+    def test_a_missing_or_unknown_base_is_a_release(self):
+        for base in ("", ZEROS, "f" * 40):
+            with self.subTest(base=base):
+                self.assert_full(self.decide(base=base))
+
+    # -- output ------------------------------------------------------------------------------
+    def test_the_github_output_file_gets_the_whole_decision(self):
+        self.write("crates/leaf/src/lib.rs", "// changed\n")
         self.commit()
         out = self.root / "gh_output.txt"
-        self.select(output=out)
-        self.assertIn("code=false\n", out.read_text())
+        self.run_select(output=out)
+        text = out.read_text()
+        for expected in ("full=false\n", "crates=sagat-leaf\n", "sdks=\n", "frontend=false\n", "scripts=false\n",
+                         "targets=contract_rest_a\n", "any=true\n", "all=false\n"):
+            self.assertIn(expected, text)
 
 
 if __name__ == "__main__":

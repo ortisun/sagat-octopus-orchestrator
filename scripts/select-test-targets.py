@@ -1,30 +1,39 @@
 #!/usr/bin/env python3
-"""Select the integration test targets of tests/Cargo.toml that a change adds or modifies.
+"""Decide what the CI runs: the tests of what a change touches, or the whole stack for a release.
 
-Usage: python3 scripts/select-test-targets.py --event EVENT --ref-name REF --base SHA [--head REV] [--root DIR]
+Usage: python3 scripts/select-test-targets.py [--event E] [--ref-name N] [--ref-type T] [--base-ref B]
+                                              --base SHA [--head REV] [--root DIR]
 
-The CI runs the suites of the `sagat-tests` crate (integration, contract, fault, e2e, performance; they
-start PostgreSQL through Testcontainers) only for the targets whose files changed, and all of them when
-the change cannot be narrowed. It prints the selection and appends it to $GITHUB_OUTPUT:
+The rule (docs/constitution.md, CI gates; docs/test-strategy.md):
 
-  targets=<space-separated target names>   any=true|false   all=true|false   code=true|false
+  * On a pull request or a push to develop the CI runs only the unit tests of the changed packages, the unit
+    tests of the SDK, the Studio and the scripts whose files changed, and the integration suites (the
+    `sagat-tests` targets) that touch the affected code. Lints and the other verification jobs do not run.
+  * For a release the CI runs everything: every test, every lint, every verification job.
 
-A changed file selects, by the deepest target directory that contains it:
-  * a file under tests/<kind>/<feature>/ : that target (a nested target such as .../rest/ wins over its parent);
-  * a file under tests/ that no target directory contains (tests/support, tests/fixtures, ...): every target;
-  * tests/Cargo.toml: the [[test]] entries that are new or changed; every target if anything else but the
-    package description changed;
-  * Markdown under tests/: nothing;
-  * the harnesses the suites drive from outside tests/ (frontend/e2e, sdks/*/conformance): the suites that run them.
-Every target runs for a manual run, for a push to main, release/** or hotfix/**, and whenever no usable base
-commit is given (the safe default).
+A release is a push to main, release/** or hotfix/**, a push of a tag v*, a pull request into one of those
+branches, a manual run (workflow_dispatch), a change of .github/workflows (the workflow is then checked by what
+it runs), and any run with no usable base commit (the safe default).
 
-`code` says whether anything but documentation and process files changed (Markdown, docs/, tasks/, .claude/, the unit
-tests of the scripts, LICENSE). The upgrade, compose smoke-test and scale jobs run only when it is true; a path this
-script does not know counts as code, so a new directory is never skipped by mistake. It is true whenever every
-target runs.
+Scoped selection:
+  unit tests    the workspace packages that contain a changed file (their dependents are covered by the integration
+                suites below and by the release). A change of Cargo.toml, Cargo.lock, rust-toolchain.toml, .cargo/,
+                clippy.toml, rustfmt.toml or vendor/ selects every package.
+  integration   a `sagat-tests` target runs when (a) a file of its directory, or its [[test]] entry, changed;
+                (b) its own sources (not tests/support) name a package that is affected, that is a changed package
+                or one that depends on it, directly or not; (c) a harness it drives changed (frontend/e2e,
+                sdks/*/conformance, examples/); or (d) tests/support, tests/fixtures, runners/, a contract file
+                under specs/, or a dependency of tests/Cargo.toml changed, which selects every target.
+  SDKs, Studio  an SDK's unit tests run when a file under sdks/<language>/ changed; the Studio's when a file under
+                frontend/ changed; the scripts' when a file under scripts/ changed.
+  nothing       Markdown, docs/, tasks/, .claude/, infra/ and the rest select no test.
 
-Exit codes: 0 selection printed; 2 the manifest or a target name cannot be trusted.
+It prints the decision and appends it to $GITHUB_OUTPUT:
+
+  full=true|false   crates=<package names|ALL>   sdks=<languages>   frontend=true|false   scripts=true|false
+  targets=<target names>   any=true|false   all=true|false
+
+Exit codes: 0 decision printed; 2 a manifest or a name cannot be trusted.
 """
 import argparse
 import os
@@ -34,19 +43,25 @@ import sys
 import tomllib
 
 TARGET_NAME = re.compile(r"[a-z][a-z0-9_]*")
-FULL_REFS = re.compile(r"main|release/.+|hotfix/.+")
+RELEASE_BRANCH = re.compile(r"main|release/.+|hotfix/.+")
+RELEASE_TAG = re.compile(r"v[0-9].*")
 SHA = re.compile(r"[0-9a-f]{40}")
+IDENT = re.compile(r"\bsagat_[a-z0-9_]+\b")
 MANIFEST = "tests/Cargo.toml"
+TESTS_PACKAGE = "sagat-tests"
+SDK_LANGUAGES = ("typescript", "python", "go", "dotnet", "java", "rust")
 BROWSER_SUITES = ("e2e_workflow_studio", "e2e_developer_experience", "e2e_database_connections")
 SDK_SUITES = ("sdk_conformance", "e2e_sdk_multilanguage", "fault_sdk_multilanguage")
 HARNESSES = (
     (re.compile(r"frontend/e2e/"), BROWSER_SUITES),
     (re.compile(r"sdks/[a-z]+/conformance/"), SDK_SUITES),
+    (re.compile(r"examples/"), ("e2e_developer_experience",)),
 )
-
-
-# Files that no product job exercises. Everything else, including paths nobody has thought of, is code.
-DOCUMENTATION = re.compile(r".*\.md|docs/.*|tasks/.*|\.claude/.*|scripts/tests/.*|LICENSE")
+# Inputs of every Rust package: a change selects every package and every target.
+RUST_ROOT_INPUTS = re.compile(r"Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|clippy\.toml|rustfmt\.toml|\.cargo/.*|vendor/.*")
+# Inputs of the integration suites that cannot be tied to one of them: every target runs.
+SHARED_INPUTS = re.compile(r"runners/.*|specs/.*/contracts/.*")
+MARKDOWN = re.compile(r".*\.md")
 
 
 class Untrusted(Exception):
@@ -57,12 +72,59 @@ def git(root, *args):
     return subprocess.run(["git", "-C", root, *args], capture_output=True)
 
 
+def read_toml(path):
+    with open(path, "rb") as handle:
+        return tomllib.load(handle)
+
+
+class Workspace:
+    """The packages of the root workspace: where they live, what they are called in code and who depends on whom."""
+
+    def __init__(self, root):
+        data = read_toml(os.path.join(root, "Cargo.toml"))
+        self.directory, self.ident, self.depends_on = {}, {}, {}
+        for member in data["workspace"]["members"]:
+            manifest = read_toml(os.path.join(root, member, "Cargo.toml"))
+            name = manifest["package"]["name"]
+            self.directory[name] = member + "/"
+            self.ident[manifest.get("lib", {}).get("name", name.replace("-", "_"))] = name
+            self.depends_on[name] = self._dependencies(manifest)
+        known = set(self.directory)
+        for name in self.depends_on:
+            self.depends_on[name] &= known
+
+    @staticmethod
+    def _dependencies(manifest):
+        found = set()
+        keys = ("dependencies", "dev-dependencies", "build-dependencies")
+        tables = [manifest.get(key, {}) for key in keys]
+        tables += [target.get(key, {}) for target in manifest.get("target", {}).values() for key in keys]
+        for table in tables:
+            for key, value in table.items():
+                found.add(value["package"] if isinstance(value, dict) and "package" in value else key)
+        return found
+
+    def owner(self, rel):
+        owners = [name for name, directory in self.directory.items() if rel.startswith(directory)]
+        return max(owners, key=lambda name: len(self.directory[name])) if owners else None
+
+    def dependents(self, names):
+        """These packages and every package that depends on any of them, directly or not."""
+        reached = set(names)
+        grew = True
+        while grew:
+            grew = False
+            for name, deps in self.depends_on.items():
+                if name not in reached and deps & reached:
+                    reached.add(name)
+                    grew = True
+        return reached
+
+
 def head_targets(root):
     """{target name: path relative to tests/} from the manifest in the working tree."""
     try:
-        with open(os.path.join(root, MANIFEST), "rb") as handle:
-            data = tomllib.load(handle)
-        targets = {entry["name"]: entry["path"] for entry in data["test"]}
+        targets = {entry["name"]: entry["path"] for entry in read_toml(os.path.join(root, MANIFEST))["test"]}
     except (OSError, ValueError, KeyError, TypeError):
         raise Untrusted("tests/Cargo.toml cannot be read as a list of [[test]] targets")
     for name, path in targets.items():
@@ -100,47 +162,129 @@ def manifest_selection(root, base, targets, reasons):
     return chosen
 
 
-def select(root, base, head, targets):
-    """(chosen names, reasons, whether every target runs, whether code changed) for the files that differ."""
-    changed = git(root, "diff", "--name-only", "-z", "--no-renames", base, head)
-    if changed.returncode != 0:
-        return set(targets), [("every target", "the diff against the base could not be read")], True, True
-    files = [name for name in changed.stdout.decode("utf-8", errors="replace").split("\0") if name]
-    code = any(not DOCUMENTATION.fullmatch(name) for name in files)
-    directories = {name: "tests/" + path.rsplit("/", 1)[0] + "/" if "/" in path else "tests/" for name, path in targets.items()}
-    chosen, reasons = set(), []
+def referenced_packages(root, directory, workspace, nested=()):
+    """The workspace packages named (as sagat_* identifiers) by the Rust files under a target directory,
+    leaving out the directories of the targets nested below it, which own those files."""
+    found = set()
+    for current, subdirectories, names in os.walk(os.path.join(root, directory)):
+        subdirectories[:] = [d for d in subdirectories
+                             if os.path.relpath(os.path.join(current, d), root).replace(os.sep, "/") + "/" not in nested]
+        for name in names:
+            if name.endswith(".rs"):
+                try:
+                    with open(os.path.join(current, name), encoding="utf-8", errors="replace") as handle:
+                        found |= {workspace.ident[i] for i in IDENT.findall(handle.read()) if i in workspace.ident}
+                except OSError:
+                    continue
+    return found
+
+
+class Decision:
+    def __init__(self, targets):
+        self.targets = targets
+        self.full = False
+        self.crates, self.sdks, self.frontend, self.scripts = set(), set(), False, False
+        self.chosen, self.everything, self.reasons = set(), False, []
+
+    def run_everything(self, why):
+        self.full = True
+        self.everything = True
+        self.chosen = set(self.targets)
+        self.reasons.append(("every target", why))
+
+
+def changed_files(root, base, head):
+    diff = git(root, "diff", "--name-only", "-z", "--no-renames", base, head)
+    if diff.returncode != 0:
+        return None
+    return [name for name in diff.stdout.decode("utf-8", errors="replace").split("\0") if name]
+
+
+def scope(root, base, head, targets, workspace):
+    """The Decision for the files that differ between base and head."""
+    decision = Decision(targets)
+    files = changed_files(root, base, head)
+    if files is None:
+        decision.run_everything("the diff against the base could not be read")
+        return decision
+    if any(rel.startswith(".github/workflows/") for rel in files):
+        decision.run_everything("the workflow itself changed, so it is checked by running all of it")
+        return decision
+    directories = {name: "tests/" + path.rsplit("/", 1)[0] + "/" if "/" in path else "tests/"
+                   for name, path in targets.items()}
+    changed_packages = set()
     for rel in files:
+        if MARKDOWN.fullmatch(rel):
+            continue
+        if RUST_ROOT_INPUTS.fullmatch(rel):
+            decision.everything = True
+            decision.chosen = set(targets)
+            decision.reasons.append(("every target", f"{rel} is an input of every Rust package"))
+            continue
+        if SHARED_INPUTS.fullmatch(rel):
+            decision.chosen = set(targets)
+            decision.reasons.append(("every target", f"{rel} is shared by the suites"))
+            continue
+        for language in SDK_LANGUAGES:
+            if rel.startswith(f"sdks/{language}/"):
+                decision.sdks.add(language)
+        if rel.startswith("frontend/"):
+            decision.frontend = True
+        if rel.startswith("scripts/"):
+            decision.scripts = True
+        for pattern, names in HARNESSES:
+            if pattern.match(rel):
+                for name in names:
+                    if name in targets:
+                        decision.chosen.add(name)
+                        decision.reasons.append((name, rel))
         if rel == MANIFEST:
-            found = manifest_selection(root, base, targets, reasons)
+            found = manifest_selection(root, base, targets, decision.reasons)
             if found is None:
-                return set(targets), reasons, True, code
-            chosen |= found
+                decision.chosen = set(targets)
+            else:
+                decision.chosen |= found
         elif rel.startswith("tests/"):
-            if rel.endswith(".md"):
-                continue
             owners = [name for name, directory in directories.items() if rel.startswith(directory)]
             if not owners:
-                reasons.append(("every target", f"{rel} is shared by the suites"))
-                return set(targets), reasons, True, code
+                decision.chosen = set(targets)
+                decision.reasons.append(("every target", f"{rel} is shared by the suites"))
+                continue
             depth = max(len(directories[name]) for name in owners)
             for name in sorted(n for n in owners if len(directories[n]) == depth):
-                chosen.add(name)
-                reasons.append((name, rel))
+                decision.chosen.add(name)
+                decision.reasons.append((name, rel))
         else:
-            for pattern, names in HARNESSES:
-                if pattern.match(rel):
-                    for name in names:
-                        if name in targets:
-                            chosen.add(name)
-                            reasons.append((name, rel))
-    return chosen, reasons, False, code
+            owner = workspace.owner(rel)
+            if owner and owner != TESTS_PACKAGE:
+                changed_packages.add(owner)
+    if decision.everything:
+        decision.crates = {name for name in workspace.directory if name != TESTS_PACKAGE}
+    else:
+        decision.crates = set(changed_packages)
+    affected = workspace.dependents(changed_packages)
+    if affected and decision.chosen != set(targets):
+        for name in sorted(targets):
+            if name in decision.chosen:
+                continue
+            nested = {d for d in directories.values() if d != directories[name] and d.startswith(directories[name])}
+            touched = referenced_packages(root, directories[name], workspace, nested) & affected
+            if touched:
+                decision.chosen.add(name)
+                decision.reasons.append(
+                    (name, f"it names {', '.join(sorted(touched))}, affected by {', '.join(sorted(changed_packages))}"))
+    return decision
 
 
-def full_run_reason(event, ref_name, base, root):
+def full_run_reason(event, ref_name, ref_type, base_ref, base, root):
     if event == "workflow_dispatch":
         return "a manual run"
-    if event == "push" and FULL_REFS.fullmatch(ref_name):
+    if event == "push" and ref_type == "tag" and RELEASE_TAG.fullmatch(ref_name):
+        return f"the release tag {ref_name}"
+    if event == "push" and ref_type != "tag" and RELEASE_BRANCH.fullmatch(ref_name):
         return f"a push to {ref_name}"
+    if event == "pull_request" and RELEASE_BRANCH.fullmatch(base_ref):
+        return f"a pull request into {base_ref}"
     if not SHA.fullmatch(base) or set(base) == {"0"}:
         return "no usable base commit"
     if git(root, "cat-file", "-e", f"{base}^{{commit}}").returncode != 0:
@@ -148,16 +292,33 @@ def full_run_reason(event, ref_name, base, root):
     return None
 
 
-def emit(chosen, everything, reasons, code):
+def emit(decision):
+    if decision.full:
+        crates, sdks = "ALL", list(SDK_LANGUAGES)
+        frontend = scripts = True
+    else:
+        crates = "ALL" if decision.everything else " ".join(sorted(decision.crates))
+        sdks, frontend, scripts = sorted(decision.sdks), decision.frontend, decision.scripts
     grouped = {}
-    for name, why in reasons:
+    for name, why in decision.reasons:
         grouped.setdefault(name, []).append(why)
     for name, whys in grouped.items():
         more = f" (+{len(whys) - 1} more)" if len(whys) > 1 else ""
         print(f"select {name}: {whys[0]}{more}")
-    names = " ".join(sorted(chosen))
-    lines = [f"targets={names}", f"any={'true' if chosen else 'false'}", f"all={'true' if everything else 'false'}",
-             f"code={'true' if code else 'false'}"]
+
+    def flag(value):
+        return "true" if value else "false"
+
+    lines = [
+        f"full={flag(decision.full)}",
+        f"crates={crates}",
+        f"sdks={' '.join(sdks)}",
+        f"frontend={flag(frontend)}",
+        f"scripts={flag(scripts)}",
+        f"targets={' '.join(sorted(decision.chosen))}",
+        f"any={flag(decision.chosen)}",
+        f"all={flag(decision.everything)}",
+    ]
     for line in lines:
         print(line)
     path = os.environ.get("GITHUB_OUTPUT")
@@ -171,20 +332,25 @@ def main(argv):
     parser.add_argument("--root", default=os.getcwd())
     parser.add_argument("--event", default=os.environ.get("GITHUB_EVENT_NAME", ""))
     parser.add_argument("--ref-name", default=os.environ.get("GITHUB_REF_NAME", ""))
+    parser.add_argument("--ref-type", default=os.environ.get("GITHUB_REF_TYPE", "branch"))
+    parser.add_argument("--base-ref", default=os.environ.get("GITHUB_BASE_REF", ""))
     parser.add_argument("--base", default="")
     parser.add_argument("--head", default="HEAD")
     args = parser.parse_args(argv[1:])
     try:
         targets = head_targets(args.root)
-    except Untrusted as error:
-        print(f"select-test-targets: {error}", file=sys.stderr)
+        workspace = Workspace(args.root)
+    except (Untrusted, OSError, KeyError, ValueError, TypeError) as error:
+        message = error if isinstance(error, Untrusted) else "the workspace cannot be read"
+        print(f"select-test-targets: {message}", file=sys.stderr)
         return 2
-    reason = full_run_reason(args.event, args.ref_name, args.base, args.root)
+    reason = full_run_reason(args.event, args.ref_name, args.ref_type, args.base_ref, args.base, args.root)
     if reason:
-        emit(set(targets), True, [("every target", reason)], True)
-        return 0
-    chosen, reasons, everything, code = select(args.root, args.base, args.head, targets)
-    emit(chosen, everything, reasons, code)
+        decision = Decision(targets)
+        decision.run_everything(reason)
+    else:
+        decision = scope(args.root, args.base, args.head, targets, workspace)
+    emit(decision)
     return 0
 
 
