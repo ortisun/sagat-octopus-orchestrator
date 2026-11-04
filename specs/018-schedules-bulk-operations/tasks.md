@@ -149,7 +149,7 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   exclusive, exclusions in UTC, the later of an ambiguous time) were each caught. `infra-ir` + `application` suites 470
   passed, clippy `-D warnings`, fmt and `check-architecture.py` clean. The port is `sagat_application::schedules::
   ScheduleCalendar` (also part of T018-011). G1013: the `dst` policy does not reach cron strings.
-- [ ] T018-014 [US1] PostgreSQL `ScheduleStore` (revisions, head CAS, due scan by `(shard, next_wake_at)`
+- [x] T018-014 [US1] PostgreSQL `ScheduleStore` (revisions, head CAS, due scan by `(shard, next_wake_at)`
   bounded by `now()`, actions, purge) — `crates/infra-postgres/src/schedules.rs` —
   `tests/integration/schedules-bulk-operations/store.rs` — FR-018-001, FR-018-013, FR-018-014.
   *Part done 2026-10-29 (task stays open).* `PgScheduleStore` (`infra-postgres/src/schedules.rs`) creates, reads and lists
@@ -167,6 +167,11 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `DROPPED_DELETED`, the name is free, a second delete is a no-op). Evidence: `integration_schedules_bulk_operations` 34
   passed (9 in `changes`), also as the runtime role; `integration_platform_foundation` 101; dropping the head check fails 2
   tests. Not done: the due scan by `(shard, next_wake_at)`, actions, purge, backfills, obligations.
+  *Reconciled and ticked 2026-11-04.* The "not done" above was written before the later tasks and is out of date: the due
+  scan is `PgScheduleStore::due_schedules` (the shards the replica owns, `ACTIVE`, `next_wake_at <= clock_timestamp()`,
+  oldest first, bounded; tested through the pass in `pass::` and `fault_schedules_bulk_operations`), the actions are
+  written with the decisions and the admissions (T018-015, T018-024..027, T018-030) and read by `describe`, the purge is
+  T018-028, the backfills T018-025 and the obligations T018-030. Retention of the revisions and tombstones is G1954.
 - [x] T018-015 [US1] Schedule admission inside `RunStore::create` (fence, CAS, action + state after the
   initial reduction, refusal commits nothing) — `crates/infra-postgres/src/{execution.rs,schedules.rs}`
   — one-commit content test — FR-018-004, FR-018-005.
@@ -210,6 +215,12 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   into the declared input field. The business-id prefix is refused with `NotAllowed` until US03. Evidence: 15 tests in
   `firing.rs`, 82 passed in all, also as the runtime role. Not done: the input check against the schema of the target
   version, `nominalTimeField` against that schema, business-id prefix.
+  *Decision 2026-11-04 (D1956, gap G1955): the input is not checked against the input schema of the target version.* The
+  workflow IR declares an `inputSchema`, but nothing on the platform enforces it: a run started by the API, a signal or
+  a worker is not validated against it either, so a schedule that refused the input a person may start the same
+  workflow with would be inconsistent, and the check needs a validator port that the run start would use as well. What a
+  schedule checks stays: an object, at most 64 KiB. The business-id prefix waits for US03. `nominalTimeField` is
+  already written into the input at the action.
 - [ ] T018-017 [US1] Schedule pass (owned shards, fairness, round ceiling, metrics) and engine wiring —
   `crates/scheduler/src/{schedules.rs,lib.rs,monitor.rs}`, `apps/execution-engine/src/lib.rs` — two-replica
   pass tests — FR-018-005, FR-018-044.
