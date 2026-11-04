@@ -96,6 +96,7 @@ impl Fixture {
                 next_action_at: Some(next),
                 next_actual_at: Some(next),
                 remaining_actions: self.schedule.remaining_actions.map(|n| n - 1),
+                recovery: None,
                 extra: vec![],
             },
             manual: None,

@@ -90,6 +90,12 @@ pub(crate) async fn fixture() -> Fixture {
 
 /// A fixture whose clock starts at `start`.
 pub(crate) async fn fixture_from(start: OffsetDateTime) -> Fixture {
+    fixture_with(start, Ceilings::default()).await
+}
+
+/// A fixture whose firing acts under `ceilings` (a recovery, a buffer, the runs it tracks) instead of
+/// the defaults, so that a test reaches a ceiling with a handful of times.
+pub(crate) async fn fixture_with(start: OffsetDateTime, ceilings: Ceilings) -> Fixture {
     let w = world().await;
     let (workflow, _) = w.publish(chain("scheduled")).await;
     let w = Arc::new(w);
@@ -107,7 +113,7 @@ pub(crate) async fn fixture_from(start: OffsetDateTime) -> Fixture {
         clock.clone(),
         PgIdentityStore::new(w.db.pool.clone()),
         Starts(Arc::clone(&w)),
-        Ceilings::default(),
+        ceilings,
     );
     Fixture {
         w,

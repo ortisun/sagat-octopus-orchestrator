@@ -225,6 +225,8 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   takes over all its schedules and backfills.
   *Update 2026-11-03:* the engine now gives the firing a `DatabaseClock` synced before every round (D1802, T018-020), so
   due-ness and the planning of the times agree on the database's time.
+  *Update 2026-11-04 (T018-029):* the pass that bounds the due slice of a long outage, which T018-003 left to this task,
+  is built: a recovery is planned once, remembered on the schedule and carried out a step at a time (D1951).
 - [ ] T018-018 [US1] REST create/read/list/update/delete — `crates/api-http/src/routes/{schedules.rs,mod.rs}`,
   `crates/api-http/src/dto_schedules.rs` — contract tests — FR-018-001, FR-018-013, FR-018-043.
   *Part done 2026-10-30 (task stays open).* Built behind `SAGAT_SCHEDULES_ENABLED` (control plane, off by default):
@@ -406,6 +408,26 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   — `crates/infra-postgres/src/maintenance.rs` — contract + purge tests — FR-018-013.
 - [ ] T018-029 [US2] Catch-up after a simulated outage (`ONE`, `ALL`, summary, trigger-owned 366 d) —
   `tests/integration/schedules-bulk-operations/catchup.rs` — SC-018-003 — FR-018-008.
+  *Part done 2026-11-04 (task stays open: the trigger-owned schedule with its 366-day window is US07, T018-060).* The
+  outage tests found that the limits of a recovery held for one slice of the backlog and never for the backlog itself
+  (decision D1951, migration `20261230001000_schedule_recovery`): with a ceiling of 5 and 20 owed times, mode `ALL`
+  started 20 runs and mode `ONE` started 3; a 14-day outage on a per-minute schedule never became idle in 50 steps (a
+  step summarized 102 times); and a workflow with no published version was retried on every round with no backoff
+  (D1952). Seen failing first, then fixed: a recovery is planned once and remembered on the schedule
+  (`recovery_until`, `recovery_acts`), carried out one step at a time by the pure `plan_recovery_step`, summarized
+  10,000 times at a step and counted past the slice. Evidence: `catchup::` 8 passed (ceiling in mode `ALL` and `ONE`;
+  the limits kept between steps, read from the columns; a 20,000-minute outage with a one-day window in 3 steps and
+  18,560 + 1 + 1,439 times accounted for; US01 scenario 5, a time owed until the window ends and then missed; no
+  published version backs off; the migration refuses a rollback in the middle of a recovery, rolls back and applies
+  again; the constraints of the two columns); `schedules_properties` 9 passed, among them
+  `a_recovery_in_steps_keeps_its_ceiling_and_counts_every_time_once` (random backlogs, windows, modes and ceilings; a
+  mutation that stops remembering the recovery fails it with "25 actions, at most 2"); `schedules` 45. Gates on the
+  final tree (private `CARGO_TARGET_DIR`, `RUST_TEST_THREADS=2`): `integration_schedules_bulk_operations` 152 passed,
+  also with `SAGAT_TEST_AS_RUNTIME_ROLE=1` (152); `fault_schedules_bulk_operations` 11, both ways;
+  `integration_platform_foundation` 101; `integration_security_multitenancy` 126; `integration_database_connections` 7;
+  `contract_schedules_bulk_operations` 1; unit suites of domain, application, infra-postgres, scheduler, api-http and
+  execution-engine green; `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`
+  clean. Gaps G1951 (the count stops after a million times) and G1952 (a refused backfill step has no backoff).
 - [ ] T018-030 [US2] `CANCEL_OTHER` obligations via the ordinary cancel use case; races with self
   completion and with failed compensation — `tests/fault/schedules-bulk-operations/cancel_other.rs` —
   first commit wins — FR-018-006, FR-018-007.

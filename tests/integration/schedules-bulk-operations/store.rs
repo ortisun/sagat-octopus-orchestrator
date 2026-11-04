@@ -128,6 +128,7 @@ fn record(world: &World, name: &str) -> ScheduleRecord {
         next_actual_at: Some(now),
         retry_at: None,
         recheck_at: None,
+        recovery: None,
         tracked_runs: vec![],
         buffered: 0,
         created_at: now,

@@ -358,6 +358,32 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
   its requester; the requester only presses the button. Not done: a run keeps no record of whose authority it
   started under, so a database step claimed after the schedule was resumed by someone else is admitted under the new
   `authorizedBy` (G1950).
+- **D1951** (2026-11-04, T018-029) A recovery is planned once and remembered. FR-018-008 limits a catch-up: mode `ONE`
+  acts on the earliest time inside the window, mode `ALL` on up to `catchup_actions`, and the rest is one `COALESCED`
+  summary. A step of the pass acts on one time and planned the backlog again from the next one, over a slice of
+  `catchup_actions + 2` times, so the limit held for one slice and never for a backlog: 20 owed times with a ceiling of
+  5 started 20 runs in mode `ALL` and 3 in mode `ONE`, and a hundred thousand owed times would have started them all
+  with a thundering herd of admissions, which is what the ceiling exists to prevent. The schedule now carries
+  `recovery_until` (the instant the recovery's times end; what falls due later is the next recovery) and
+  `recovery_acts` (the actions it may still take), migration `20261230001000_schedule_recovery`, both null outside
+  a recovery. The pure `plan_recovery_step` (domain) decides one step from the slice and the remembered recovery:
+  `Missed` (a summary of up to `SUMMARY_CHUNK` = 10,000 times older than the window, the recovery untouched), `Act`
+  (`settle` on the last allowed action or the last time owed, when the pass counts every later time up to the end of
+  the recovery into one `COALESCED` row in the same transaction and forgets the recovery; otherwise it remembers the
+  actions left, but only when the backlog is longer than the recovery may act on), `Coalesce` (the actions are
+  used up and times remain: one more summary), `Finished` and `Idle`. The slice a step reads is a chunk of 10,000
+  when it only summarizes (a year of per-minute times is a few dozen steps, not thousands) and `acts left + 2`
+  otherwise. Counting the rest is `ScheduleFiring::tally`: up to 100 calls of the calendar, a million times (G1951).
+  A revision, a pause or resume and a delete clear the recovery; trigger-now and a backfill leave it alone. A
+  property test runs a whole recovery step by step over random backlogs, windows, modes and ceilings and checks that
+  the actions never exceed the mode's allowance, are the earliest times inside the window, and that every due time
+  is acted on, coalesced or missed exactly once. Alternatives refused: counting the whole backlog in the first step
+  without remembering (unbounded work, and the same herd if the count is cut), and a `COALESCED` marker in the
+  `counters` object (it is returned by describe and bounded to 1 KiB).
+- **D1952** (2026-11-04, T018-029) A time that cannot start because the workflow has no published version is owed
+  with the same backoff as a full quota (5 s doubling to 5 min), not retried on every round: `StateConflict` with
+  `runs::NO_PUBLISHED_VERSION` is told apart from the `StateConflict` of "another process acted first", which still
+  commits nothing and defers nothing.
 
 ## 4. Gaps
 
@@ -386,6 +412,8 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
 | G1605 | Draft lock orders that deviated from ADR-0050 decision 7 on 2026-10-27 (026 T2 membership and rate buckets after the link row; 030 endpoint head before memberships; 021 asset heads after secrets and the variable fence as an "authority slot"). Resolved the same day: 021 and 026 now follow decision 7 exactly (021 D1624, 026 D1337 revised); 030 follows it with one listed exception, a caller transaction locking its own `START` row after its run (030 D1660), recorded in decision 7. | Owners 021, 026, 030. | Resolved |
 | G1606 | `REMATERIALIZE` checks of other features (retired version, paused resource, retired snapshot, busy permit) are evaluated at reset time; a preview reports them as provisional and a reset can still fail on them. | Inherent to reset at a later time. | Accepted |
 | G1950 | A run keeps no record of whose authority it started under. The 017 admission of a database step claimed after the schedule was resumed by someone else (or after `authorizedBy` changed through an update) stands on the new `authorizedBy`, not on the member the run started under (D1950). | Fails closed when that member lacks database authority (the step is refused, the run is not corrupted), and open when the new one has it and the old one did not. Closing it needs a column on `runs` (an additive migration with the erasure-aware immutability trigger of the provenance columns) or a different rule for the claim. | Open |
+| G1951 | The count of a recovery's summary stops after 100 calls of the calendar (a million times: a year of a schedule every 30 s, the densest the spacing floor and the longest window allow). Past it the step records a partial `COALESCED` summary and the recovery is remembered with no actions left, so the next step goes on summarizing instead of acting again; the work per step is bounded, the number of steps is not. | A schedule that dense with a window that long and an outage that long is not a case anyone sized for; the steps are cheap (one small transaction each) and the pass takes `steps_per_schedule` of them per round. Revisit with the benchmark (T018-072). | Open |
+| G1952 | A backfill step that the admission refuses (a full quota, no published version) waits and is tried again on every round of the pass, with no backoff, unlike a scheduled time (D1952). | A round is one poll of the database per owned shard and the step is one rolled-back transaction; harmless at the default poll but wasteful. Fix with a `retry_at` on the backfill (a migration). | Open |
 
 ## 5. Owner questions (the plan implements the recommended defaults)
 

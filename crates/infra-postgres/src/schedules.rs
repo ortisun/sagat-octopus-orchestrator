@@ -22,7 +22,8 @@ use sagat_domain::execution::{RunId, RunStatus};
 use sagat_domain::identity::{NamespaceId, Permission, Role, TenantId};
 use sagat_domain::quota::QuotaResource;
 use sagat_domain::schedules::{
-    ActionKind, Ceilings, Origin, Outcome, ScheduleId, ScheduleName, ScheduleTarget, VersionPolicy,
+    ActionKind, Ceilings, Origin, Outcome, Recovery, ScheduleId, ScheduleName, ScheduleTarget,
+    VersionPolicy,
 };
 use sagat_domain::sharding::Shard;
 use serde_json::Value;
@@ -175,6 +176,11 @@ pub(crate) async fn recheck_authority(
     }
 }
 
+/// The actions a recovery may still take, as the column holds them (at most 1,000).
+fn recovery_acts_column(acts: u32) -> i32 {
+    i32::try_from(acts).unwrap_or(i32::MAX)
+}
+
 fn conflict_on_duplicate(error: sqlx::Error) -> StoreError {
     match &error {
         sqlx::Error::Database(db) if db.is_unique_violation() => {
@@ -306,6 +312,8 @@ pub(crate) async fn record_start(
          next_actual_at = $4, retry_at = CASE WHEN $10 THEN retry_at ELSE NULL END, \
          remaining_actions = $5, tracked_runs = array_append(tracked_runs, $6), \
          buffered = GREATEST(buffered - $8, 0), counters = $9, updated_at = $7, \
+         recovery_until = CASE WHEN $10 THEN recovery_until ELSE $11 END, \
+         recovery_acts = CASE WHEN $10 THEN recovery_acts ELSE $12 END, \
          recheck_at = CASE WHEN GREATEST(buffered - $8, 0) > 0 THEN $7 + interval '5 seconds' ELSE NULL END \
          WHERE tenant_id = $1 AND id = $2",
     )
@@ -325,6 +333,8 @@ pub(crate) async fn record_start(
     .bind(counters)
     // a manual action or a backfill is not the time that is owed
     .bind(admission.kind != ActionKind::Scheduled)
+    .bind(admission.after.recovery.map(|r| r.until))
+    .bind(admission.after.recovery.map(|r| recovery_acts_column(r.acts_left)))
     .execute(&mut *conn)
     .await
     .map_err(store_error)?;
@@ -496,6 +506,7 @@ macro_rules! select_schedules {
             "SELECT s.tenant_id, s.namespace_id, s.id, s.name, s.origin, s.trigger_id, s.state, ",
             "s.head_revision, s.state_version, s.note, s.note_by, s.note_at, s.authorized_by, ",
             "s.remaining_actions, s.next_action_at, s.next_actual_at, s.retry_at, s.recheck_at, s.tracked_runs, ",
+            "s.recovery_until, s.recovery_acts, ",
             "s.buffered, s.created_at, s.updated_at, r.spec, r.policies, r.action, r.input_digest ",
             "FROM schedules s ",
             "JOIN schedule_revisions r ON r.tenant_id = s.tenant_id AND r.schedule_id = s.id ",
@@ -520,6 +531,16 @@ fn record_from(row: &PgRow) -> Result<ScheduleRecord, StoreError> {
     let state_version: i64 = col(row, "state_version")?;
     let remaining: Option<i32> = col(row, "remaining_actions")?;
     let buffered: i32 = col(row, "buffered")?;
+    let recovery_until: Option<OffsetDateTime> = col(row, "recovery_until")?;
+    let recovery_acts: Option<i32> = col(row, "recovery_acts")?;
+    let recovery = match (recovery_until, recovery_acts) {
+        (None, None) => None,
+        (Some(until), Some(acts)) => Some(Recovery {
+            until,
+            acts_left: u32::try_from(acts).map_err(|_| corrupt("recovery actions"))?,
+        }),
+        _ => return Err(corrupt("recovery")),
+    };
     Ok(ScheduleRecord {
         id: ScheduleId::new(col::<Uuid>(row, "id")?),
         tenant_id: TenantId::new(col::<Uuid>(row, "tenant_id")?),
@@ -558,6 +579,7 @@ fn record_from(row: &PgRow) -> Result<ScheduleRecord, StoreError> {
         next_actual_at: col(row, "next_actual_at")?,
         retry_at: col(row, "retry_at")?,
         recheck_at: col(row, "recheck_at")?,
+        recovery,
         tracked_runs: col(row, "tracked_runs")?,
         buffered: u32::try_from(buffered).map_err(|_| corrupt("buffered count"))?,
         created_at: col(row, "created_at")?,
@@ -855,8 +877,8 @@ impl ScheduleStore for PgScheduleStore {
         sqlx::query(
             "UPDATE schedules SET name = $3, head_revision = $4, state_version = state_version + 1, \
              state = $5, authorized_by = $6, remaining_actions = $7, next_action_at = $8, \
-             next_actual_at = $9, retry_at = NULL, updated_at = $10 \
-             WHERE tenant_id = $1 AND id = $2",
+             next_actual_at = $9, retry_at = NULL, recovery_until = NULL, recovery_acts = NULL, \
+             updated_at = $10 WHERE tenant_id = $1 AND id = $2",
         )
         .bind(r.tenant_id.as_uuid())
         .bind(r.id.as_uuid())
@@ -904,7 +926,7 @@ impl ScheduleStore for PgScheduleStore {
             "UPDATE schedules SET state = $3, state_version = state_version + 1, \
              note = COALESCE($4, note), note_by = COALESCE($5, note_by), note_at = COALESCE($6, note_at), \
              authorized_by = COALESCE($7, authorized_by), next_action_at = $8, next_actual_at = $9, \
-             retry_at = NULL, updated_at = $10 \
+             retry_at = NULL, recovery_until = NULL, recovery_acts = NULL, updated_at = $10 \
              WHERE tenant_id = $1 AND id = $2",
         )
         .bind(change.tenant_id.as_uuid())
@@ -969,6 +991,7 @@ impl ScheduleStore for PgScheduleStore {
         sqlx::query(
             "UPDATE schedules SET state = 'DELETED', deleted_at = $3, buffered = 0, \
              next_action_at = NULL, next_actual_at = NULL, retry_at = NULL, \
+             recovery_until = NULL, recovery_acts = NULL, \
              state_version = state_version + 1, updated_at = $3 \
              WHERE tenant_id = $1 AND id = $2",
         )
@@ -1444,7 +1467,9 @@ impl ScheduleStore for PgScheduleStore {
              recheck_at = CASE WHEN buffered + $6 > 0 THEN $9 + interval '5 seconds' ELSE NULL END, \
              state = CASE WHEN $8::text IS NULL THEN state ELSE 'PAUSED' END, \
              note = COALESCE($8, note), note_by = CASE WHEN $8::text IS NULL THEN note_by ELSE 'system' END, \
-             note_at = CASE WHEN $8::text IS NULL THEN note_at ELSE $9 END, updated_at = $9 \
+             note_at = CASE WHEN $8::text IS NULL THEN note_at ELSE $9 END, updated_at = $9, \
+             recovery_until = CASE WHEN $10 THEN recovery_until ELSE $11 END, \
+             recovery_acts = CASE WHEN $10 THEN recovery_acts ELSE $12 END \
              WHERE tenant_id = $1 AND id = $2",
         )
         .bind(decision.tenant_id.as_uuid())
@@ -1462,6 +1487,8 @@ impl ScheduleStore for PgScheduleStore {
         .bind(decision.pause.as_ref().map(|p| p.note.as_str()))
         .bind(decision.at)
         .bind(manual)
+        .bind(decision.after.recovery.map(|r| r.until))
+        .bind(decision.after.recovery.map(|r| recovery_acts_column(r.acts_left)))
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;

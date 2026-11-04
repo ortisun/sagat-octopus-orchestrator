@@ -192,6 +192,9 @@ pub struct ScheduleRecord {
     pub retry_at: Option<OffsetDateTime>,
     /// When the runs that hold back a waiting action are looked at again.
     pub recheck_at: Option<OffsetDateTime>,
+    /// The recovery of an outage that is being carried out step by step, with the limits it was
+    /// planned under (`FR-018-008`); `None` when the schedule is not in the middle of one.
+    pub recovery: Option<sagat_domain::schedules::Recovery>,
     pub tracked_runs: Vec<Uuid>,
     pub buffered: u32,
     pub created_at: OffsetDateTime,
@@ -213,6 +216,9 @@ pub struct ScheduleAfter {
     pub next_actual_at: Option<OffsetDateTime>,
     /// The new count of actions that may still start a run; `None` for a schedule with no limit.
     pub remaining_actions: Option<u32>,
+    /// The recovery the schedule remembers after the action (`None`: none). An action that is not
+    /// one of the schedule's own times (trigger-now, a backfill) leaves the stored one alone.
+    pub recovery: Option<sagat_domain::schedules::Recovery>,
     /// Rows recorded in the same transaction: the summaries of the times a recovery did not act on.
     pub extra: Vec<RecordedAction>,
 }
@@ -1113,6 +1119,7 @@ where
             next_actual_at,
             retry_at: None,
             recheck_at: None,
+            recovery: None,
             tracked_runs: Vec::new(),
             buffered: 0,
             created_at: now,

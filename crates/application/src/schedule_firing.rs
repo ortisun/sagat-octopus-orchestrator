@@ -15,16 +15,23 @@ use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::execution::{RunId, RunStatus};
 use sagat_domain::identity::{Permission, Principal, Subject};
 use sagat_domain::schedules::{
-    ActionKind, Ceilings, Decision, Origin, Outcome, Reason, Release, ScheduleId, Standing,
-    VersionPolicy, decide, failure_pauses, plan_catch_up, release,
+    ActionKind, Ceilings, Decision, Origin, Outcome, Reason, Recovery, RecoveryStep, Release,
+    ScheduleId, Standing, Summary, VersionPolicy, decide, failure_pauses, plan_recovery_step,
+    recovery_slice, release,
 };
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
+
+/// How many calls of the calendar one step makes to count the times a recovery summarizes: with
+/// the most a call returns, a million times, which is a year of a schedule every 30 seconds. What
+/// is past it is left to the next step of the recovery, which keeps summarizing.
+const TALLY_CALLS: usize = 100;
 
 use crate::clock::Clock;
 use crate::definitions::Idempotency;
 use crate::error::{AppError, StoreError};
 use crate::identity::{IdentityStore, RequestContext};
+use crate::runs::NO_PUBLISHED_VERSION;
 use crate::schedules::{
     AUTHORITY_REVOKED, ActionDedupe, ActionView, AutoPause, BackfillProgress, DueBackfill,
     DueSchedule, ManualRequest, Reconcile, RecordedAction, ScheduleAdmission, ScheduleAfter,
@@ -234,6 +241,7 @@ where
             next_action_at: record.next_action_at,
             next_actual_at: record.next_actual_at,
             remaining_actions: record.remaining_actions,
+            recovery: record.recovery,
             extra: Vec::new(),
         };
         match decide(&policies, &standing, &self.ceilings) {
@@ -397,6 +405,7 @@ where
                 next_action_at: record.next_action_at,
                 next_actual_at: record.next_actual_at,
                 remaining_actions: record.remaining_actions,
+                recovery: record.recovery,
                 extra: Vec::new(),
             },
             pause: None,
@@ -447,6 +456,7 @@ where
                         next_action_at: record.next_action_at,
                         next_actual_at: record.next_actual_at,
                         remaining_actions: record.remaining_actions,
+                        recovery: record.recovery,
                         extra: Vec::new(),
                     },
                     manual: None,
@@ -630,6 +640,7 @@ where
                     remaining_actions: record.remaining_actions.map(|n| {
                         n.saturating_sub(u32::from(waiting.kind == ActionKind::Scheduled))
                     }),
+                    recovery: record.recovery,
                     extra: Vec::new(),
                 },
                 manual: None,
@@ -658,72 +669,110 @@ where
         let Some(first) = record.next_action_at.filter(|_| time_due) else {
             return Ok(Fired::Idle);
         };
-        let ceiling = usize::try_from(self.ceilings.catchup_actions).unwrap_or(usize::MAX);
+        // The recovery is planned once and remembered: its end and the actions it may still take hold
+        // across the steps that carry it out, so a backlog longer than the ceiling is acted on up to
+        // the ceiling however many steps and processes it takes (FR-018-008).
+        let kept = record.recovery;
+        let end = kept.map_or(now, |r| r.until.min(now));
         let due_times = self
             .calendar
             .occurrences(
                 &record.spec,
                 first - Duration::milliseconds(1),
-                Some(now),
-                ceiling
-                    .saturating_add(2)
+                Some(end),
+                recovery_slice(first, now, kept, &record.policies, &self.ceilings)
                     .min(crate::schedules::MAX_OCCURRENCES_PER_CALL),
             )
             .map_err(|_| AppError::Internal)?;
-        let plan = plan_catch_up(&due_times, now, &record.policies, &self.ceilings);
-        if let Some(missed) = plan.missed {
-            let next = next_times(&self.calendar, record.id, &record.spec, missed.last)
-                .map_err(|_| AppError::Internal)?;
-            let decision = ScheduleDecision {
-                tenant_id: record.tenant_id,
-                schedule: record.id,
-                expected_state_version: record.state_version,
-                fence,
-                actions: vec![RecordedAction {
-                    nominal_at: missed.first,
-                    kind: ActionKind::Scheduled,
-                    revision: record.revision,
-                    outcome: Outcome::MissedCatchupWindow,
-                    reason: None,
-                    summary: Some((missed.count, missed.last)),
-                }],
-                after: ScheduleAfter {
-                    next_action_at: next.0,
-                    next_actual_at: next.1,
-                    remaining_actions: record.remaining_actions,
-                    extra: Vec::new(),
-                },
-                pause: None,
-                at: now,
-                dedupe: None,
-                backfill: None,
-            };
-            return self.committed(self.store.record_decision(&decision, None).await);
-        }
-        let Some(time) = plan.act.first().copied() else {
-            return Ok(Fired::Idle);
+        let summary_row = |summary: Summary, outcome: Outcome| RecordedAction {
+            nominal_at: summary.first,
+            kind: ActionKind::Scheduled,
+            revision: record.revision,
+            outcome,
+            reason: None,
+            summary: Some((summary.count, summary.last)),
         };
-        let last_act = plan.act.len() == 1;
-        let coalesced = if last_act { plan.coalesced } else { None };
+        let (time, coalesced, recovery_after) =
+            match plan_recovery_step(&due_times, now, kept, &record.policies, &self.ceilings) {
+                RecoveryStep::Idle => return Ok(Fired::Idle),
+                RecoveryStep::Finished => {
+                    let after = ScheduleAfter {
+                        next_action_at: record.next_action_at,
+                        next_actual_at: record.next_actual_at,
+                        remaining_actions: record.remaining_actions,
+                        recovery: None,
+                        extra: Vec::new(),
+                    };
+                    return self.record(&record, fence, Vec::new(), after, now).await;
+                }
+                // too old for the window: a summary of up to a chunk of them; the recovery goes on
+                RecoveryStep::Missed(missed) => {
+                    let next = next_times(&self.calendar, record.id, &record.spec, missed.last)
+                        .map_err(|_| AppError::Internal)?;
+                    let after = ScheduleAfter {
+                        next_action_at: next.0,
+                        next_actual_at: next.1,
+                        remaining_actions: record.remaining_actions,
+                        recovery: kept,
+                        extra: Vec::new(),
+                    };
+                    let action = summary_row(missed, Outcome::MissedCatchupWindow);
+                    return self.record(&record, fence, vec![action], after, now).await;
+                }
+                // the actions of the recovery are used up: the times that remain are one more summary
+                RecoveryStep::Coalesce => {
+                    let (rest, reached) =
+                        self.tally(&record, first - Duration::milliseconds(1), end)?;
+                    let Some(rest) = rest else {
+                        let after = ScheduleAfter {
+                            next_action_at: record.next_action_at,
+                            next_actual_at: record.next_actual_at,
+                            remaining_actions: record.remaining_actions,
+                            recovery: None,
+                            extra: Vec::new(),
+                        };
+                        return self.record(&record, fence, Vec::new(), after, now).await;
+                    };
+                    let next = next_times(&self.calendar, record.id, &record.spec, rest.last)
+                        .map_err(|_| AppError::Internal)?;
+                    let after = ScheduleAfter {
+                        next_action_at: next.0,
+                        next_actual_at: next.1,
+                        remaining_actions: record.remaining_actions,
+                        recovery: if reached { None } else { kept },
+                        extra: Vec::new(),
+                    };
+                    let action = summary_row(rest, Outcome::Coalesced);
+                    return self.record(&record, fence, vec![action], after, now).await;
+                }
+                RecoveryStep::Act { time, settle, then } => {
+                    if settle {
+                        // the last action of the recovery: every time after it up to the end of the
+                        // recovery is one summary, counted here because the step looked at a slice
+                        let (rest, reached) = self.tally(&record, time, end)?;
+                        let left = (!reached).then(|| Recovery {
+                            until: kept.map_or(now, |r| r.until),
+                            acts_left: 0,
+                        });
+                        (time, rest, left)
+                    } else {
+                        (time, None, then)
+                    }
+                }
+            };
         let covers = coalesced.map_or(time, |c| c.last);
         let (next_action_at, next_actual_at) =
             next_times(&self.calendar, record.id, &record.spec, covers)
                 .map_err(|_| AppError::Internal)?;
         let extra: Vec<RecordedAction> = coalesced
-            .map(|c| RecordedAction {
-                nominal_at: c.first,
-                kind: ActionKind::Scheduled,
-                revision: record.revision,
-                outcome: Outcome::Coalesced,
-                reason: None,
-                summary: Some((c.count, c.last)),
-            })
+            .map(|c| summary_row(c, Outcome::Coalesced))
             .into_iter()
             .collect();
         let mut after = ScheduleAfter {
             next_action_at,
             next_actual_at,
             remaining_actions: record.remaining_actions,
+            recovery: recovery_after,
             extra,
         };
         match decide(&record.policies, &standing, &self.ceilings) {
@@ -747,6 +796,7 @@ where
                 // nothing is left to give: the schedule acts as paused, with no next time
                 after.next_action_at = None;
                 after.next_actual_at = None;
+                after.recovery = None;
                 self.record(&record, fence, Vec::new(), after, now).await
             }
             other
@@ -769,6 +819,47 @@ where
                 self.record(&record, fence, vec![action], after, now).await
             }
         }
+    }
+
+    /// The times after `after` up to `until` as one summary, and whether the summary reached
+    /// `until`. It looks at a bounded number of them ([`TALLY_CALLS`] calls of the calendar, a
+    /// million times of the densest schedule in a year's window): what is past the bound is left to
+    /// the next step of the recovery, which goes on summarizing instead of acting again.
+    fn tally(
+        &self,
+        record: &ScheduleRecord,
+        after: OffsetDateTime,
+        until: OffsetDateTime,
+    ) -> Result<(Option<Summary>, bool), AppError> {
+        let mut cursor = after;
+        let (mut count, mut first, mut last) = (0u32, None, None);
+        let summary = |count, first: Option<OffsetDateTime>, last: Option<OffsetDateTime>| {
+            first
+                .zip(last)
+                .map(|(first, last)| Summary { count, first, last })
+        };
+        for _ in 0..TALLY_CALLS {
+            let times = self
+                .calendar
+                .occurrences(
+                    &record.spec,
+                    cursor,
+                    Some(until),
+                    crate::schedules::MAX_OCCURRENCES_PER_CALL,
+                )
+                .map_err(|_| AppError::Internal)?;
+            let (Some(head), Some(tail)) = (times.first().copied(), times.last().copied()) else {
+                return Ok((summary(count, first, last), true));
+            };
+            first.get_or_insert(head);
+            last = Some(tail);
+            count = count.saturating_add(u32::try_from(times.len()).unwrap_or(u32::MAX));
+            cursor = tail;
+            if times.len() < crate::schedules::MAX_OCCURRENCES_PER_CALL {
+                return Ok((summary(count, first, last), true));
+            }
+        }
+        Ok((summary(count, first, last), false))
     }
 
     async fn record(
@@ -813,11 +904,14 @@ where
                 self.revoke_authority(record, fence, now).await
             }
             // another process acted first, or the lease is gone: nothing was committed
-            Err(AppError::StateConflict(reason)) => Ok(Fired::Refused(reason)),
+            Err(AppError::StateConflict(reason)) if reason != NO_PUBLISHED_VERSION => {
+                Ok(Fired::Refused(reason))
+            }
             // no room, a store that is down, a workflow with no published version: the time stays
             // owed and is tried again under the same key
             Err(
-                AppError::QuotaExceeded(_)
+                AppError::StateConflict(_)
+                | AppError::QuotaExceeded(_)
                 | AppError::Unavailable
                 | AppError::Busy { .. }
                 | AppError::NotAllowed(_),
@@ -923,6 +1017,7 @@ where
                 next_action_at: None,
                 next_actual_at: None,
                 remaining_actions: record.remaining_actions,
+                recovery: None,
                 extra: Vec::new(),
             },
             pause: Some(AutoPause {
