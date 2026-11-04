@@ -615,6 +615,12 @@ The other fixes were wording:
   - *`GET /database-drivers`* exists since feature 017 (`listDatabaseDrivers`, `x-implemented: '017'`). 035 widens the
     `DatabaseDriverList` schema to the four drivers and the operation keeps its marker; the operations that carry
     `x-implemented: '035'` are the two catalog-browse operations.
+  - *Markers (amended again at T035-008).* The two catalog-browse operations are merged before any route serves them.
+    `tests/AGENTS.md` fixes the convention: a planned operation carries `x-planned`, a built one `x-implemented`, and
+    the cross-tenant battery attacks every `x-implemented` operation live and lists the others by name. They therefore
+    carry `x-planned: '035'` and are listed in the battery's operations not built yet; the task that adds a route flips
+    its marker to `x-implemented: '035'` and removes it from the list. The contract test accepts either marker, so it
+    does not need a change when the route lands.
   - *"Every existing operation is byte-identical"* is a digest of each operation and of the parameters of its path,
     taken from the canonical file before the merge (`fixtures/openapi-operations.json`, 170 operations). *"No number is
     reused"* is the same for the protocol (`fixtures/worker-proto-fields.json`, 28 messages and enums): a number that

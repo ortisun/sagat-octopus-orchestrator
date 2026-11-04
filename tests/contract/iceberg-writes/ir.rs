@@ -376,3 +376,26 @@ fn the_samples_cover_every_mode_scope_record_source_and_destination_kind() {
         names(&defs["destination"]["properties"]["kind"]["enum"])
     );
 }
+
+/// The schema is the editor-time gate: it describes the nodes, and publication is the codec's decision. Until the
+/// domain parses `icebergWrite` and `destinations` (T035-093 and the tasks before it) the codec must refuse a
+/// workflow that uses them, instead of accepting it and dropping the step. This is the pending state, written down
+/// (AGENTS.md rule 11); the domain task replaces it with the acceptance tests.
+#[test]
+fn schema_acceptance_does_not_enable_publication_yet() {
+    use sagat_application::definitions::IrCodec;
+    use sagat_infra_ir::JsonIrCodec;
+
+    let accepted_by_the_codec: Vec<String> = valid_documents()
+        .into_iter()
+        .filter(|(_, document)| {
+            let bytes = serde_json::to_vec(document).expect("JSON");
+            JsonIrCodec.parse(&bytes).is_ok()
+        })
+        .map(|(name, _)| name)
+        .collect();
+    assert!(
+        accepted_by_the_codec.is_empty(),
+        "the codec publishes workflows that the engine cannot run: {accepted_by_the_codec:?}"
+    );
+}

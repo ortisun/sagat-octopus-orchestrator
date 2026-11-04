@@ -143,18 +143,25 @@ fn the_driver_list_names_all_four_drivers() {
     );
 }
 
+/// An operation is `x-planned: '035'` while the contract is merged and no route serves it (the cross-tenant battery
+/// attacks every `x-implemented` operation live, and a planned one is listed there by name), and
+/// `x-implemented: '035'` from the task that adds its route (D035-073).
+fn belongs_to_035(operation: &Value) -> bool {
+    operation["x-planned"] == "035" || operation["x-implemented"] == "035"
+}
+
 #[test]
 fn the_catalog_browse_operations_exist_and_belong_to_035() {
     let openapi = openapi();
     let start = &openapi["paths"]["/namespaces/{namespaceId}/connections/{connectionName}/catalog-browse"]
         ["post"];
-    assert_eq!(start["x-implemented"], "035", "start a browse: {start}");
+    assert!(belongs_to_035(start), "start a browse: {start}");
     assert!(
         start["responses"].get("202").is_some(),
         "a browse is admitted, not answered"
     );
     let read = &openapi["paths"]["/namespaces/{namespaceId}/catalog-browses/{browseId}"]["get"];
-    assert_eq!(read["x-implemented"], "035", "read a browse: {read}");
+    assert!(belongs_to_035(read), "read a browse: {read}");
     for (what, operation) in [("start", start), ("read", read)] {
         assert!(
             operation["responses"].get("404").is_some(),

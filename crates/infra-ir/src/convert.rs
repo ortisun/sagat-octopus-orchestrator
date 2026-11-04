@@ -76,6 +76,7 @@ fn unsupported(kind: &str) -> Option<&'static str> {
         "forEach" | "while" | "repeatUntil" | "return" | "continueAsNew" => {
             "this workflow capability is not enabled by the runtime"
         }
+        "icebergWrite" => ICEBERG_WRITE_NOT_ENABLED,
         _ => return None,
     })
 }
@@ -84,9 +85,17 @@ fn unsupported_structured(kind: &str) -> Option<&'static str> {
     Some(match kind {
         "foreach" => "legacy collection placeholder has no executable definition",
         "humanApproval" => "legacy approval placeholder has no executable definition",
+        "icebergWrite" => ICEBERG_WRITE_NOT_ENABLED,
         _ => return None,
     })
 }
+
+/// The canonical schema describes the Iceberg write step and step-output destinations (feature 035), but no domain
+/// type runs them yet. Publishing such a workflow would drop the step, so the codec refuses it until the domain tasks
+/// of the feature parse and schedule them (T035-093 and before).
+const ICEBERG_WRITE_NOT_ENABLED: &str =
+    "the Apache Iceberg write step is not enabled by the runtime";
+const DESTINATIONS_NOT_ENABLED: &str = "step-output destinations are not enabled by the runtime";
 
 fn integer_u32(node: &Map<String, Value>, field: &str, at: &str) -> Result<u32, IrError> {
     node.get(field)
@@ -517,6 +526,13 @@ fn nodes(raw_nodes: &[Value], at: &str, structured: bool) -> Result<Vec<Node>, I
                 node: id.chars().take(64).collect(),
                 kind: kind.to_owned(),
                 reason,
+            });
+        }
+        if node.contains_key("destinations") {
+            return Err(IrError::Unsupported {
+                node: id.chars().take(64).collect(),
+                kind: "destinations".to_owned(),
+                reason: DESTINATIONS_NOT_ENABLED,
             });
         }
         let id = node_id(id, &format!("{at}/id"))?;
