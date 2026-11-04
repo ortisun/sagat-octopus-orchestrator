@@ -203,6 +203,22 @@ contracts, so every later task has a place to put its failing test.
     reasons and in `sdks/error-catalog.json`.
 
   Refs: FR-035-008, FR-035-029, FR-035-033.
+
+  *2026-11-04, written, left unticked until T035-008 turns the red ones green:* `tests/contract/iceberg-writes/`
+  holds `ir.rs`, `receipts.rs`, `openapi.rs`, `proto.rs`, `errors.rs`, `main.rs` and the fixtures (8 IR documents,
+  6 receipts, two blessed baselines); the amendments of the task text are D035-073 and G035-027. `cargo test -p
+  sagat-tests --test contract_iceberg_writes --locked`: 11 passed, 10 failed, each for the reason the merge removes:
+  the canonical schema has no `icebergWrite` (7 of the 8 samples are refused, and 19 of the 35 refusal cases have a
+  base it refuses) and does not read `destinations` on a root activity (14 cases are accepted that must be refused;
+  the other 2 cases hold); `DatabaseConnection.config`
+  is not a `oneOf`; no catalog-browse operation, no `purpose` or `egressCeiling`, one driver in the list; no
+  `iceberg`, `object_storage` or `clickhouse` field in `ResolvedDatabase`; 25 codes missing from
+  `sdks/error-catalog.json` and 9 reasons missing from the `Error` schema. The 11 that pass guard what must not
+  change: the fragments themselves (receipts accept 6 samples and refuse 17 edits and an injected field in all 6; the
+  fragment accepts the sample nodes and refuses the edited ones), body placement, the 170 existing operations and the
+  28 messages and enums. Four mutations of the contracts (`unevaluatedProperties`, the ceilings of 8, an operation's
+  summary, a field number) each failed the guard that owns them, and the files were restored. `cargo clippy -p
+  sagat-tests --all-targets --locked -- -D warnings` clean.
 - [ ] T035-008 Merge the fragments into the canonical contracts, then regenerate the derived files.
   Merges:
   - [contracts/workflow-lake.schema.json](contracts/workflow-lake.schema.json) into

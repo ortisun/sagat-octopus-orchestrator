@@ -1,0 +1,44 @@
+{
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "kind": "Workflow",
+  "metadata": {
+    "name": "destinations-on-database"
+  },
+  "entrypoint": "read",
+  "nodes": [
+    {
+      "id": "read",
+      "type": "database",
+      "connectionRef": {
+        "name": "orders-db"
+      },
+      "operation": "query",
+      "statement": "SELECT id FROM orders",
+      "next": "done",
+      "destinations": [
+        {
+          "name": "mirror",
+          "kind": "postgresql",
+          "connectionRef": {
+            "name": "orders-db"
+          },
+          "target": {
+            "schema": "public",
+            "relation": "orders_copy"
+          },
+          "mode": "insert",
+          "keyColumn": "id",
+          "effectKeyColumn": "effect_key",
+          "records": {
+            "outputPath": "/rows"
+          },
+          "onFailure": "fail"
+        }
+      ]
+    },
+    {
+      "id": "done",
+      "type": "end"
+    }
+  ]
+}

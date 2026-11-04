@@ -606,3 +606,36 @@ The other fixes were wording:
   checks the three facts; two mutations of the diagnosis (log dropped, state always "failed") each failed it.
   *Exit condition:* if the failure returns, its panic now names the cause; record it here and fix that cause. Close
   this gap after the lake fixtures have run in CI without a failure for a release cycle.
+- **D035-073 — What the contract tests of T035-007 pin, where the task text was imprecise.** Amended here, not
+  reinterpreted in silence (specs/AGENTS.md). Decided by: delegate.
+  - *Samples.* The fourteen IR and five receipt samples of planning were checked in a scratch directory and never
+    saved, so they are written again: 8 whole workflow documents under `tests/contract/iceberg-writes/fixtures/ir/valid`
+    and 6 receipts under `fixtures/receipts`. A refusal case is an accepted sample plus one edit by JSON pointer
+    (35 IR cases, 17 receipt cases), so the edit alone explains the refusal.
+  - *`GET /database-drivers`* exists since feature 017 (`listDatabaseDrivers`, `x-implemented: '017'`). 035 widens the
+    `DatabaseDriverList` schema to the four drivers and the operation keeps its marker; the operations that carry
+    `x-implemented: '035'` are the two catalog-browse operations.
+  - *"Every existing operation is byte-identical"* is a digest of each operation and of the parameters of its path,
+    taken from the canonical file before the merge (`fixtures/openapi-operations.json`, 170 operations). *"No number is
+    reused"* is the same for the protocol (`fixtures/worker-proto-fields.json`, 28 messages and enums): a number that
+    exists keeps its name and type, a new one may be added. A deliberate change re-blesses with
+    `SAGAT_CONTRACT_BASELINE_BLESS=1` after the diff is read (rule 18).
+  - *Errors.* Each code of the table in errors.md is an entry of `sdks/error-catalog.json` with the table's retry flag
+    (D035-042). Each refusal reason (the `VALIDATION_FAILED` reasons, `UNSUPPORTED_NODE`, `CREDENTIAL_IN_URI`) is written
+    in the OpenAPI `Error` schema, where the reasons of the existing codes are; a reason refines a code and is not a
+    new `Error.code`. The existing step failure codes of 017 (`DATABASE_*`) are not in the catalog today, so the table's
+    `OUTCOME_UNKNOWN` joins it with the new ones; T035-024 chooses the entry shape.
+  - *Placement.* The loop and `chainPolicy` refusals of `database` are made by the publication codec, not by the JSON
+    Schema, so the schema cases cover the root-only rule (a body refuses `icebergWrite` and `destinations`) and the
+    codec rules stay with the domain tests (T035-009..).
+- **G035-027 — Three places where the contract fragments do not yet fit the canonical shapes.** Found while writing
+  the contract tests; none is pinned by a test yet, each is settled by the task that implements it.
+  1. `connections.md` names `ConnectionProbeResult.checks[]`, but the canonical OpenAPI has no such schema: the probe
+     returns a `Run` and `DatabaseConnectionProbe` is the latest-probe read. The schema to extend is chosen with the
+     probe task.
+  2. A `STEP_OUTPUT` subscription "selects no run-event kinds", but `CreateWebhookSubscriptionRequest.events` requires
+     one to eight items of `run.finished`. `events` must become optional for that purpose, or the purpose must be
+     refused with events; the subscription task decides.
+  3. The ClickHouse destination "declares only the table" while `tableIdentifier` requires a namespace; the samples
+     use `target.relation`, which the fragment allows. The T035-008 merge states which of the two is canonical.
+  *Exit condition:* each is closed by the task that implements the operation, with a test.

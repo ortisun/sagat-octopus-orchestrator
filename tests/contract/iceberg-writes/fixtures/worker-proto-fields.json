@@ -1,0 +1,220 @@
+{
+  "numbers": {
+    "enum sagat_octopus_orchestrator.v1.DatabaseOperationKind": {
+      "0": "DATABASE_OPERATION_UNSPECIFIED",
+      "1": "DATABASE_QUERY",
+      "2": "DATABASE_EXECUTE"
+    },
+    "enum sagat_octopus_orchestrator.v1.DatabaseTlsMode": {
+      "0": "DATABASE_TLS_UNSPECIFIED",
+      "1": "DATABASE_TLS_VERIFY_FULL",
+      "2": "DATABASE_TLS_DEVELOPMENT_PLAINTEXT"
+    },
+    "message sagat_octopus_orchestrator.v1.CompleteStepRequest": {
+      "1": "task_id Optional String ",
+      "10": "output_sha256 Optional String ",
+      "11": "traceparent Optional String ",
+      "12": "instance Optional Message .sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity",
+      "2": "run_id Optional String ",
+      "3": "step_id Optional String ",
+      "4": "attempt Optional Int32 ",
+      "5": "generation Optional Int64 ",
+      "6": "lease_token Optional String ",
+      "7": "idempotency_key Optional String ",
+      "8": "output_json Optional String ",
+      "9": "output_blob_ref Optional String "
+    },
+    "message sagat_octopus_orchestrator.v1.DatabaseLimits": {
+      "1": "max_statement_bytes Optional Uint32 ",
+      "2": "max_parameters Optional Uint32 ",
+      "3": "max_parameter_bytes Optional Uint32 ",
+      "4": "max_rows Optional Uint32 ",
+      "5": "max_result_bytes Optional Uint32 ",
+      "6": "timeout_ms Optional Uint32 ",
+      "7": "connect_timeout_ms Optional Uint32 ",
+      "8": "pool_size Optional Uint32 ",
+      "9": "idle_timeout_ms Optional Uint32 "
+    },
+    "message sagat_octopus_orchestrator.v1.DatabaseValue": {
+      "1": "null_value Optional Bool ",
+      "10": "json_value Optional String ",
+      "2": "boolean_value Optional Bool ",
+      "3": "integer_value Optional String ",
+      "4": "decimal_value Optional String ",
+      "5": "float_value Optional Double ",
+      "6": "text_value Optional String ",
+      "7": "timestamp_value Optional String ",
+      "8": "date_value Optional String ",
+      "9": "binary_value Optional Bytes "
+    },
+    "message sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity": {
+      "1": "instance_path Repeated Message .sagat_octopus_orchestrator.v1.ScopePathSegment",
+      "2": "definition_node_id Optional String "
+    },
+    "message sagat_octopus_orchestrator.v1.FailStepRequest": {
+      "1": "task_id Optional String ",
+      "10": "retryable Optional Bool ",
+      "11": "traceparent Optional String ",
+      "12": "instance Optional Message .sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity",
+      "2": "run_id Optional String ",
+      "3": "step_id Optional String ",
+      "4": "attempt Optional Int32 ",
+      "5": "generation Optional Int64 ",
+      "6": "lease_token Optional String ",
+      "7": "idempotency_key Optional String ",
+      "8": "error_code Optional String ",
+      "9": "safe_message Optional String "
+    },
+    "message sagat_octopus_orchestrator.v1.HeartbeatRequest": {
+      "1": "task_id Optional String ",
+      "2": "worker_id Optional String ",
+      "3": "generation Optional Int64 ",
+      "4": "lease_token Optional String ",
+      "5": "run_id Optional String ",
+      "6": "step_id Optional String ",
+      "7": "attempt Optional Int32 ",
+      "8": "instance Optional Message .sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity"
+    },
+    "message sagat_octopus_orchestrator.v1.HeartbeatResponse": {
+      "1": "lease_expires_at_epoch_ms Optional Int64 ",
+      "2": "cancel_requested Optional Bool "
+    },
+    "message sagat_octopus_orchestrator.v1.PollTasksRequest": {
+      "1": "worker_id Optional String ",
+      "2": "session_token Optional String ",
+      "3": "max_tasks Optional Int32 "
+    },
+    "message sagat_octopus_orchestrator.v1.PollTasksResponse": {
+      "1": "tasks Repeated Message .sagat_octopus_orchestrator.v1.TaskLease",
+      "2": "retry_after_ms Optional Int32 "
+    },
+    "message sagat_octopus_orchestrator.v1.PostgresConnection": {
+      "1": "host Optional String ",
+      "2": "port Optional Uint32 ",
+      "3": "database Optional String ",
+      "4": "tls Optional Enum .sagat_octopus_orchestrator.v1.DatabaseTlsMode",
+      "5": "ca_pem Optional String "
+    },
+    "message sagat_octopus_orchestrator.v1.ReadBlobHeader": {
+      "1": "blob_id Optional String ",
+      "2": "size Optional Int64 ",
+      "3": "sha256 Optional String ",
+      "4": "content_type Optional String "
+    },
+    "message sagat_octopus_orchestrator.v1.ReadBlobRequest": {
+      "1": "task_id Optional String ",
+      "2": "run_id Optional String ",
+      "3": "step_id Optional String ",
+      "4": "attempt Optional Int32 ",
+      "5": "generation Optional Int64 ",
+      "6": "lease_token Optional String ",
+      "7": "blob_id Optional String ",
+      "8": "instance Optional Message .sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity"
+    },
+    "message sagat_octopus_orchestrator.v1.ReadBlobResponse": {
+      "1": "header Optional Message .sagat_octopus_orchestrator.v1.ReadBlobHeader",
+      "2": "chunk Optional Bytes "
+    },
+    "message sagat_octopus_orchestrator.v1.RegisterWorkerRequest": {
+      "1": "worker_name Optional String ",
+      "2": "namespace Optional String ",
+      "3": "capabilities Optional Message .sagat_octopus_orchestrator.v1.WorkerCapabilities"
+    },
+    "message sagat_octopus_orchestrator.v1.RegisterWorkerResponse": {
+      "1": "worker_id Optional String ",
+      "2": "session_token Optional String ",
+      "3": "accepted_protocol_version Optional String "
+    },
+    "message sagat_octopus_orchestrator.v1.ResolveSecretsRequest": {
+      "1": "task_id Optional String ",
+      "2": "run_id Optional String ",
+      "3": "step_id Optional String ",
+      "4": "attempt Optional Int32 ",
+      "5": "generation Optional Int64 ",
+      "6": "lease_token Optional String ",
+      "7": "traceparent Optional String ",
+      "8": "instance Optional Message .sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity"
+    },
+    "message sagat_octopus_orchestrator.v1.ResolveSecretsResponse": {
+      "1": "secrets Repeated Message .sagat_octopus_orchestrator.v1.ResolvedSecret"
+    },
+    "message sagat_octopus_orchestrator.v1.ResolvedDatabase": {
+      "1": "connection_id Optional String ",
+      "10": "namespace_id Optional String ",
+      "11": "connection_name Optional String ",
+      "12": "tenant_id Optional String ",
+      "2": "connection_revision Optional Uint32 ",
+      "3": "postgres Optional Message .sagat_octopus_orchestrator.v1.PostgresConnection",
+      "4": "operation Optional Enum .sagat_octopus_orchestrator.v1.DatabaseOperationKind",
+      "5": "statement Optional String ",
+      "6": "parameters Repeated Message .sagat_octopus_orchestrator.v1.DatabaseValue",
+      "7": "limits Optional Message .sagat_octopus_orchestrator.v1.DatabaseLimits",
+      "8": "credential Optional Message .sagat_octopus_orchestrator.v1.ResolvedSecret",
+      "9": "lease_expires_at_epoch_ms Optional Int64 "
+    },
+    "message sagat_octopus_orchestrator.v1.ResolvedSecret": {
+      "1": "name Optional String ",
+      "2": "value Optional Bytes ",
+      "3": "version Optional Uint32 "
+    },
+    "message sagat_octopus_orchestrator.v1.ScopePathSegment": {
+      "1": "scope_node_id Optional String ",
+      "2": "iteration_index Optional Uint32 "
+    },
+    "message sagat_octopus_orchestrator.v1.StepCommandResponse": {
+      "1": "command_id Optional String ",
+      "2": "already_applied Optional Bool ",
+      "3": "step_status Optional String ",
+      "4": "run_status Optional String "
+    },
+    "message sagat_octopus_orchestrator.v1.TaskLease": {
+      "1": "task_id Optional String ",
+      "10": "input_blob_ref Optional String ",
+      "11": "traceparent Optional String ",
+      "12": "tenant_alias Optional String ",
+      "13": "idempotency_key Optional String ",
+      "14": "task_kind Optional String ",
+      "15": "target_node Optional String ",
+      "16": "target_idempotency_key Optional String ",
+      "17": "instance Optional Message .sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity",
+      "18": "target_instance Optional Message .sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity",
+      "2": "run_id Optional String ",
+      "3": "step_id Optional String ",
+      "4": "attempt Optional Int32 ",
+      "5": "generation Optional Int64 ",
+      "6": "lease_token Optional String ",
+      "7": "expires_at_epoch_ms Optional Int64 ",
+      "8": "activity_name Optional String ",
+      "9": "input_json Optional String "
+    },
+    "message sagat_octopus_orchestrator.v1.WorkerCapabilities": {
+      "1": "languages Repeated String ",
+      "2": "activities Repeated String ",
+      "3": "pools Repeated String ",
+      "4": "max_inflight Optional Int32 ",
+      "5": "protocol_version Optional String "
+    },
+    "message sagat_octopus_orchestrator.v1.WriteBlobHeader": {
+      "1": "task_id Optional String ",
+      "10": "instance Optional Message .sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity",
+      "2": "run_id Optional String ",
+      "3": "step_id Optional String ",
+      "4": "attempt Optional Int32 ",
+      "5": "generation Optional Int64 ",
+      "6": "lease_token Optional String ",
+      "7": "content_type Optional String ",
+      "8": "expected_size Optional Int64 ",
+      "9": "expected_sha256 Optional String "
+    },
+    "message sagat_octopus_orchestrator.v1.WriteBlobRequest": {
+      "1": "header Optional Message .sagat_octopus_orchestrator.v1.WriteBlobHeader",
+      "2": "chunk Optional Bytes "
+    },
+    "message sagat_octopus_orchestrator.v1.WriteBlobResponse": {
+      "1": "blob_id Optional String ",
+      "2": "size Optional Int64 ",
+      "3": "sha256 Optional String ",
+      "4": "content_type Optional String "
+    }
+  }
+}
