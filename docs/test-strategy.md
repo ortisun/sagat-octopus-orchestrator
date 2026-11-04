@@ -11,6 +11,31 @@
 - E2E: author→publish→trigger→run→saga compensation→visualize; inline code TypeScript and C#; human approval.
 - Load/stress: partitioning, active steps, 10k/100k/1M waits, pools/quotas, high fanout, huge DAG and backpressure.
 
+## What CI runs
+
+CI always runs the formatting and lint gates, the unit tests of every crate (`cargo test --workspace --exclude sagat-tests`)
+and the other jobs. The integration suites, which are the `sagat-tests` targets (integration, contract, fault, e2e and
+performance) and start PostgreSQL through Testcontainers, cost most of the delivery time and run only for what a change adds
+or modifies. The `changes` job runs `scripts/select-test-targets.py`, which compares the change with its base and selects:
+
+- the target whose directory contains a changed file (the deepest one, so `tests/contract/<feature>/rest/` does not select its
+  parent), and a target whose `[[test]]` entry in `tests/Cargo.toml` is new or changed;
+- every target when `tests/support`, `tests/fixtures` or anything else under `tests/` that no target owns changes, or when
+  `tests/Cargo.toml` changes beyond its `[[test]]` entries and package description;
+- the browser suites when `frontend/e2e` changes and the SDK suites when `sdks/<language>/conformance` changes;
+- nothing for Markdown under `tests/` and for any file outside the paths above.
+
+Every target runs on a push to `main`, `release/**` or `hotfix/**`, on a manual run (`workflow_dispatch`), and whenever there is
+no usable base commit. The consequence is deliberate and should be remembered: code changed without a change to its tests does
+not run an integration suite in CI. Run the suites of what you change locally (`/verify`), and start a manual run when a change
+is risky.
+
+The three jobs that verify the product as a whole rather than one suite (the released v0.2 upgrade, the Docker Compose smoke
+test, and scale and recovery) are skipped when a change is documentation or process files only: Markdown, `docs/`, `tasks/`,
+`.claude/`, the unit tests of the scripts and `LICENSE`. `scripts/select-test-targets.py` prints `code=false` for such a change.
+A path the script does not know counts as code, so a new directory is never skipped by mistake, and every run that selects
+every target also runs them.
+
 ## Where the tests live and what they are called
 
 `tests/<kind>/<feature>/` with `<kind>` one of `e2e`, `integration`, `contract`, `fault` and `performance`, and `<feature>` the

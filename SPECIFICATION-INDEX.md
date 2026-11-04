@@ -68,7 +68,8 @@ evidence and owner decisions before treating an item as a new requirement.
 ## Authoritative navigation
 
 - [Product and source-checkout usage](README.md).
-- [Approved principles](.specify/memory/constitution.md).
+- [Approved principles](docs/constitution.md).
+- New features are described in [`docs/designs/`](docs/designs/README.md); existing features keep `specs/NNN-slug/` until they are converted.
 - [Current architecture](docs/architecture/overview.md) and [decision records](docs/adr/README.md).
 - [Canonical contracts](specs/001-platform-foundation/contracts/).
 - [SDK semantic contract](sdks/SPEC.md) and [compatibility evidence](docs/sdk-compatibility.md).
