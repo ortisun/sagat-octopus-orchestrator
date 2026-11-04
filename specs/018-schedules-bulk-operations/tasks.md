@@ -287,9 +287,31 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `sagat-application` green; `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`,
   `check-architecture.py` and `check-agent-config.py` clean. Not run: the whole-workspace test run (CI runs it) and the SDK
   checks (no SDK or contract changed).
-- [ ] T018-021 [US1] Authority and provenance (recheck under membership lock order, auto-pause + audit,
+- [x] T018-021 [US1] Authority and provenance (recheck under membership lock order, auto-pause + audit,
   `system:schedule:<id>`, 017 database authority, key replay) —
   `tests/integration/schedules-bulk-operations/authority.rs` — SC-018-004 — FR-018-015, FR-018-016, FR-018-041.
+  *Done 2026-11-04 (decision D1950, gap G1950).* Two real defects, both found by a test that failed first. (1) The
+  authority was read once outside the transaction that admits the run, so a revocation that committed in between did not
+  stop the run: `ScheduleAdmission.authority` now names the subject the action acts for and `RunStore::create` locks its
+  membership `FOR SHARE` (`sagat_lock_memberships`) and checks `run:start` again, after the shard fence and the schedule
+  row and before the quota checks; the refusal is `StateConflict(AUTHORITY_REVOKED)`, which the firing turns into the
+  `AUTHORITY_REVOKED` action plus the pause (a scheduled time, a waiting action), the stop of a backfill, or `Forbidden`
+  for trigger-now; a replay of the key is answered before the check. (2) A workflow with a managed database step could
+  never be started by a schedule: the 017 admission looked for the database authority of `system:schedule:<id>`, which no
+  membership has (`fire` answered `NotFound` and the time stayed owed for ever); `database::authority_of` now stands the
+  run on the member `authorizedBy`, and the action requires of that member `database:use` (and `database:write` when a step
+  writes), taking the catalog lock before the membership as 017 does. Evidence, all on the final tree with a private
+  `CARGO_TARGET_DIR` and `RUST_TEST_THREADS=2`: `integration_schedules_bulk_operations` 144 passed (134 before; 10 new:
+  6 in `authority`, 2 in `admission`, 1 in `trigger`, 1 in `backfill`), also with `SAGAT_TEST_AS_RUNTIME_ROLE=1` (144);
+  `fault_schedules_bulk_operations` 11 passed, both ways; `integration_platform_foundation` 101 (the runtime-privilege audit
+  reads the new statement); `integration_security_multitenancy` 126; `integration_database_connections` 7;
+  `contract_schedules_bulk_operations` 1; unit suites of domain, application, infra-postgres, scheduler, api-http and
+  execution-engine green; `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`,
+  `check-architecture.py` and `check-agent-config.py` clean. Seen failing first: the race (a run started on revoked
+  authority) and the database step (`NotFound`). The three race tests written after the fix (trigger-now, backfill,
+  the waiting action) were run with `recheck_authority` switched off as a mutation: all six race tests failed, and the
+  mutation was reverted. The race is made with a held row lock and `pg_stat_activity` (no sleeps): another transaction
+  holds the schedule row, the action waits for it, the membership is revoked and committed, the row is released.
 - [x] T018-022 [US1] Schedule ceilings and quotas (count incl. zero, entries, spacing, input bytes,
   round size) — `tests/integration/schedules-bulk-operations/limits.rs` — one test per row —
   FR-018-003, FR-018-045; NFR-018-003.
@@ -404,6 +426,9 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   component tests — FR-018-047.
 - [ ] T018-033 [P] [US2] Schedule input disclosure (016 audiences, `no-store`, audit) —
   `tests/integration/schedules-bulk-operations/disclosure.rs` — per-level cases — FR-018-042.
+  *Not started (2026-11-04).* It needs the route `discloseScheduleInput`
+  (`contracts/rest.openapi.yaml`, `/schedules/{scheduleId}/input-disclosures`), so it changes the canonical OpenAPI, the
+  generated reference and the Studio types and wires the route; it is done with the other REST leftovers.
 
 ## Phase 5: US03 — Business identifiers and start delay (P1)
 

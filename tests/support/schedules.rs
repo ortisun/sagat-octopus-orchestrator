@@ -174,6 +174,80 @@ impl Fixture {
             .expect("create the schedule")
     }
 
+    /// Creates the schedule as `who`, who becomes its authority.
+    pub(crate) async fn create_as(
+        &self,
+        who: &Principal,
+        name: &str,
+        spec: &Value,
+        policies: &Value,
+        target: Option<Value>,
+    ) -> ScheduleRecord {
+        self.service
+            .create(
+                who,
+                self.w.namespace.id(),
+                self.write_of(name, spec, policies, target),
+                &RequestContext::default(),
+            )
+            .await
+            .expect("create the schedule")
+    }
+
+    /// Runs `action` while another transaction holds the row of `schedule`; once the action is
+    /// waiting for that row, `subject` is demoted to a viewer and committed, and then the row is
+    /// released. Whatever the action read about `subject` before it started is out of date when it
+    /// admits its run: a revocation that has returned must stop it (`FR-018-015`, ADR-0050 decision 7).
+    ///
+    /// The wait is for a backend that waits on a lock (`pg_stat_activity`), not for a time.
+    pub(crate) async fn revoked_while_the_action_waits<T>(
+        &self,
+        schedule: &ScheduleRecord,
+        subject: &str,
+        action: impl std::future::Future<Output = T>,
+    ) -> T {
+        let mut held = self.w.db.pool.begin().await.expect("hold the schedule");
+        sqlx::query("SELECT id FROM schedules WHERE id = $1 FOR UPDATE")
+            .bind(schedule.id.as_uuid())
+            .fetch_one(&mut *held)
+            .await
+            .expect("lock the row of the schedule");
+        let revoke = async {
+            super::bounded::within(
+                "the action waits for the row of the schedule",
+                std::time::Duration::from_secs(120),
+                async {
+                    loop {
+                        let waiting: i64 = sqlx::query_scalar(
+                            "SELECT count(*) FROM pg_stat_activity \
+                             WHERE datname = current_database() AND pid <> pg_backend_pid() \
+                               AND wait_event_type = 'Lock'",
+                        )
+                        .fetch_one(&self.w.db.pool)
+                        .await
+                        .expect("look at the backends");
+                        if waiting > 0 {
+                            break;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                },
+            )
+            .await;
+            sqlx::query(
+                "UPDATE memberships SET role = 'viewer' WHERE tenant_id = $1 AND subject = $2",
+            )
+            .bind(schedule.tenant_id.as_uuid())
+            .bind(subject)
+            .execute(&self.w.db.pool)
+            .await
+            .expect("revoke");
+            held.commit().await.expect("release the schedule");
+        };
+        let (done, ()) = tokio::join!(action, revoke);
+        done
+    }
+
     pub(crate) fn due(&self, schedule: &ScheduleRecord) -> DueSchedule {
         DueSchedule {
             tenant_id: schedule.tenant_id,

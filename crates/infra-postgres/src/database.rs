@@ -7,7 +7,9 @@ use crate::{
     pool::BeginSafely,
     quotas::lock_secrets,
 };
-pub(crate) use admission::{admit_definition, admit_node, run_actors};
+pub(crate) use admission::{
+    admit_definition, admit_node, authority_of, database_writes, run_actors,
+};
 use sagat_application::{
     database::{ConnectionRecord, ConnectionStore, ConnectionWrite},
     error::StoreError,

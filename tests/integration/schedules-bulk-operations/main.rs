@@ -7,6 +7,7 @@
 mod support;
 
 mod admission;
+mod authority;
 mod backfill;
 mod changes;
 mod firing;

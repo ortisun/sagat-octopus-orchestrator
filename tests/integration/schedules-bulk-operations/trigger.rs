@@ -285,6 +285,47 @@ async fn two_requests_with_one_key_at_once_make_one_action() {
 }
 
 #[tokio::test]
+async fn a_caller_who_loses_run_start_while_trigger_now_is_admitted_starts_nothing() {
+    let f = fixture().await;
+    let schedule = f.create("trigger-race", &hourly(), &json!({}), None).await;
+    let caller = f.w.member("caller-late", Role::Developer).await;
+
+    let answer = f
+        .revoked_while_the_action_waits(
+            &schedule,
+            caller.subject().as_str(),
+            f.firing.trigger(
+                &caller,
+                schedule.id,
+                &TriggerRequest {
+                    overlap: None,
+                    key: "trigger-key-race",
+                },
+                &RequestContext::default(),
+            ),
+        )
+        .await;
+
+    assert!(
+        matches!(answer, Err(AppError::Forbidden { .. })),
+        "{answer:?}"
+    );
+    assert!(f.runs(&schedule).await.is_empty(), "no run");
+    let rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM schedule_actions WHERE schedule_id = $1")
+            .bind(schedule.id.as_uuid())
+            .fetch_one(&f.w.db.pool)
+            .await
+            .expect("rows");
+    assert_eq!(rows, 0, "no action either: nothing committed");
+    assert_eq!(
+        f.read(&schedule).await.state,
+        ScheduleState::Active,
+        "a caller who lost the right does not pause the schedule"
+    );
+}
+
+#[tokio::test]
 async fn who_may_trigger_and_what_can_be_triggered() {
     let f = fixture().await;
     let schedule = f.create("guarded", &hourly(), &json!({}), None).await;

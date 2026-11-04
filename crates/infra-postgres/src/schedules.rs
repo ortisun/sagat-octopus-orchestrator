@@ -12,14 +12,14 @@ use sagat_application::schedule_codec::{
     target_to_json,
 };
 use sagat_application::schedules::{
-    ActionDedupe, ActionView, BackfillProgress, BackfillRecord, BackfillState, BufferedAction,
-    DueBackfill, DueSchedule, NewBackfill, NewSchedule, Reconcile, RecordedAction, Revise,
-    ScheduleActivity, ScheduleAdmission, ScheduleDecision, ScheduleOrigin, ScheduleRecord,
+    AUTHORITY_REVOKED, ActionDedupe, ActionView, BackfillProgress, BackfillRecord, BackfillState,
+    BufferedAction, DueBackfill, DueSchedule, NewBackfill, NewSchedule, Reconcile, RecordedAction,
+    Revise, ScheduleActivity, ScheduleAdmission, ScheduleDecision, ScheduleOrigin, ScheduleRecord,
     ScheduleState, ScheduleStore, ShardFence, StateChange, TargetCheck,
 };
 use sagat_domain::audit::AuditRecord;
 use sagat_domain::execution::{RunId, RunStatus};
-use sagat_domain::identity::{NamespaceId, TenantId};
+use sagat_domain::identity::{NamespaceId, Permission, Role, TenantId};
 use sagat_domain::quota::QuotaResource;
 use sagat_domain::schedules::{
     ActionKind, Ceilings, Origin, Outcome, ScheduleId, ScheduleName, ScheduleTarget, VersionPolicy,
@@ -132,6 +132,47 @@ pub(crate) async fn lock_for_admission(
         admission.kind != ActionKind::Scheduled,
     )
     .await
+}
+
+/// Locks the membership of the subject an action acts for (`FOR SHARE`, through the function the
+/// runtime role may call) and checks that it still holds `run:start`, and, when the workflow has
+/// managed database steps (`database` is whether any of them writes), the database authority of
+/// feature 017. A revocation that is already committed stops the run; one that is not waits for
+/// this transaction, so it cannot slip in between the check and the commit (`FR-018-015`).
+///
+/// It follows the lock of the schedule row and, for a workflow with database steps, the catalog of
+/// the namespace, the order 017 and ADR-0050 decision 7 give.
+pub(crate) async fn recheck_authority(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    admission: &ScheduleAdmission,
+    database: Option<bool>,
+) -> Result<(), StoreError> {
+    let role: Option<String> =
+        sqlx::query_scalar("SELECT role FROM public.sagat_lock_memberships($1, ARRAY[$2::text])")
+            .bind(tenant.as_uuid())
+            .bind(&admission.authority)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(store_error)?;
+    let role = role
+        .map(|role| role.parse::<Role>())
+        .transpose()
+        .map_err(|_| StoreError::Internal {
+            detail: "a membership holds a role this build does not know".to_owned(),
+        })?;
+    let holds = role.is_some_and(|role| {
+        role.grants(Permission::RunStart)
+            && database.is_none_or(|writes| {
+                role.grants(Permission::DatabaseUse)
+                    && (!writes || role.grants(Permission::DatabaseWrite))
+            })
+    });
+    if holds {
+        Ok(())
+    } else {
+        Err(StoreError::StateConflict(AUTHORITY_REVOKED))
+    }
 }
 
 fn conflict_on_duplicate(error: sqlx::Error) -> StoreError {

@@ -337,6 +337,27 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
   schedule and delay instants are classified by 028's time-class catalog
   (`specs/028-developer-tooling/contracts/time-classes.md`: `workflow_due`/`workflow_record`, batch
   selection bounds `infrastructure`).
+- **D1950** (2026-11-04, T018-021) The authority of a schedule's action is checked where the run is admitted, and
+  a database step stands on it. (1) `ScheduleAdmission.authority` names the subject the action acts for
+  (`authorizedBy` for a scheduled time and a released waiting action, the requester of a backfill, the caller of
+  trigger-now). `RunStore::create` locks that membership `FOR SHARE` (through `sagat_lock_memberships`, the only way
+  the runtime role can) and checks `run:start` again, after the shard fence and the schedule row and before the quota
+  checks, so a revocation that has returned stops the run and one that has not waits for this transaction. The refusal
+  is `StateConflict(AUTHORITY_REVOKED)`, committed nothing; the firing records the time `AUTHORITY_REVOKED` and pauses
+  the schedule (a scheduled time, a waiting action), stops the backfill, or answers trigger-now `Forbidden` (the caller
+  lost the right; the schedule is not paused for it). The replay of a key is answered before this check. Before this,
+  the role was read once outside the transaction and a revocation committing in between did not stop the run.
+  (2) A run started by `system:schedule:<id>` stood on a subject that no membership has, so a workflow with a managed
+  database step could not be admitted at all: the 017 admission found no database authority for the starter and the
+  time stayed owed for ever (`fire` answered `NotFound`). The 017 actors of such a run are now the publisher and the
+  member `authorizedBy` of the schedule today (`database::authority_of`, also for the root starter of a child and for
+  the replay check), and a schedule action whose workflow has such steps requires of that member `database:use` (and
+  `database:write` when a step writes) besides `run:start`, taking the catalog lock before the membership as 017
+  does. Losing database authority is losing the authority of the schedule (`AUTHORITY_REVOKED`, paused). A run
+  started by trigger-now or a backfill stands, for its database steps, on `authorizedBy` as well as on the role of
+  its requester; the requester only presses the button. Not done: a run keeps no record of whose authority it
+  started under, so a database step claimed after the schedule was resumed by someone else is admitted under the new
+  `authorizedBy` (G1950).
 
 ## 4. Gaps
 
@@ -364,6 +385,7 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
 | G1607 | A binary older than the instance-capability registry release does not register, so no activation can see it; activations therefore require the registry release deployed fleet-wide first (operator precondition, checked by nothing but the runbook), and rollback below a recorded requirement is unsupported. | Inherent to introducing the registry; 029's prerequisite release (T029-003) is the vehicle. | Accepted |
 | G1605 | Draft lock orders that deviated from ADR-0050 decision 7 on 2026-10-27 (026 T2 membership and rate buckets after the link row; 030 endpoint head before memberships; 021 asset heads after secrets and the variable fence as an "authority slot"). Resolved the same day: 021 and 026 now follow decision 7 exactly (021 D1624, 026 D1337 revised); 030 follows it with one listed exception, a caller transaction locking its own `START` row after its run (030 D1660), recorded in decision 7. | Owners 021, 026, 030. | Resolved |
 | G1606 | `REMATERIALIZE` checks of other features (retired version, paused resource, retired snapshot, busy permit) are evaluated at reset time; a preview reports them as provisional and a reset can still fail on them. | Inherent to reset at a later time. | Accepted |
+| G1950 | A run keeps no record of whose authority it started under. The 017 admission of a database step claimed after the schedule was resumed by someone else (or after `authorizedBy` changed through an update) stands on the new `authorizedBy`, not on the member the run started under (D1950). | Fails closed when that member lacks database authority (the step is refused, the run is not corrupted), and open when the new one has it and the old one did not. Closing it needs a column on `runs` (an additive migration with the erasure-aware immutability trigger of the provenance columns) or a different rule for the claim. | Open |
 
 ## 5. Owner questions (the plan implements the recommended defaults)
 

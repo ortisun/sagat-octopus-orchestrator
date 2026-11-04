@@ -26,10 +26,10 @@ use crate::definitions::Idempotency;
 use crate::error::{AppError, StoreError};
 use crate::identity::{IdentityStore, RequestContext};
 use crate::schedules::{
-    ActionDedupe, ActionView, AutoPause, BackfillProgress, DueBackfill, DueSchedule, ManualRequest,
-    Reconcile, RecordedAction, ScheduleAdmission, ScheduleAfter, ScheduleCalendar,
-    ScheduleDecision, ScheduleOrigin, ScheduleRecord, ScheduleState, ScheduleStore, ShardFence,
-    next_times,
+    AUTHORITY_REVOKED, ActionDedupe, ActionView, AutoPause, BackfillProgress, DueBackfill,
+    DueSchedule, ManualRequest, Reconcile, RecordedAction, ScheduleAdmission, ScheduleAfter,
+    ScheduleCalendar, ScheduleDecision, ScheduleOrigin, ScheduleRecord, ScheduleState,
+    ScheduleStore, ShardFence, next_times,
 };
 
 /// What a schedule starts, as the run service needs it.
@@ -245,6 +245,7 @@ where
                 );
                 let admission = ScheduleAdmission {
                     schedule: record.id,
+                    authority: caller.subject().as_str().to_owned(),
                     nominal_at: nominal,
                     kind: ActionKind::Triggered,
                     revision: record.revision,
@@ -254,7 +255,16 @@ where
                     manual: Some(ManualRequest { dedupe, audit }),
                     backfill: None,
                 };
-                self.start_run(&record, &principal, admission, ctx).await?;
+                match self.start_run(&record, &principal, admission, ctx).await {
+                    Ok(_) => {}
+                    // the caller lost `run:start` while the request was being admitted
+                    Err(AppError::StateConflict(AUTHORITY_REVOKED)) => {
+                        return Err(AppError::Forbidden {
+                            permission: Permission::RunStart,
+                        });
+                    }
+                    Err(other) => return Err(other),
+                }
                 self.committed_action(caller, idempotency).await
             }
             // nothing is left to give cannot happen: the count was not given
@@ -356,17 +366,7 @@ where
             Err(_) => None,
         };
         let Some(membership) = authorized else {
-            let audit = self.audit(
-                &record,
-                &system,
-                AuditAction::ScheduleBackfillCancelled,
-                "authority revoked",
-                now,
-            );
-            self.store
-                .cancel_backfill(record.tenant_id, record.id, backfill.id, now, &audit)
-                .await?;
-            return Ok(Fired::Acted);
+            return self.stop_backfill(&record, backfill.id, now).await;
         };
 
         let after = backfill
@@ -437,6 +437,7 @@ where
                 let principal = Principal::new(record.tenant_id, system.clone(), membership.role());
                 let admission = ScheduleAdmission {
                     schedule: record.id,
+                    authority: backfill.requested_by.clone(),
                     nominal_at: time,
                     kind: ActionKind::Backfill,
                     revision: record.revision,
@@ -456,6 +457,10 @@ where
                     .await
                 {
                     Ok(_) => Ok(Fired::Acted),
+                    // the requester lost the authority while the run was being admitted
+                    Err(AppError::StateConflict(AUTHORITY_REVOKED)) => {
+                        self.stop_backfill(&record, backfill.id, now).await
+                    }
                     // another process acted first, or the lease is gone: nothing was committed
                     Err(AppError::StateConflict(reason)) => Ok(Fired::Refused(reason)),
                     // the backfill waits and tries this time again
@@ -594,41 +599,7 @@ where
             Err(_) => None,
         };
         let Some(membership) = authorized else {
-            let nominal = record.next_action_at.unwrap_or(now);
-            let decision = ScheduleDecision {
-                tenant_id: record.tenant_id,
-                schedule: record.id,
-                expected_state_version: record.state_version,
-                fence,
-                actions: vec![RecordedAction {
-                    nominal_at: nominal,
-                    kind: ActionKind::Scheduled,
-                    revision: record.revision,
-                    outcome: Outcome::AuthorityRevoked,
-                    reason: Some("AUTHORITY_REVOKED"),
-                    summary: None,
-                }],
-                after: ScheduleAfter {
-                    next_action_at: None,
-                    next_actual_at: None,
-                    remaining_actions: record.remaining_actions,
-                    extra: Vec::new(),
-                },
-                pause: Some(AutoPause {
-                    note: "the authorizing subject can no longer start runs".to_owned(),
-                }),
-                at: now,
-                dedupe: None,
-                backfill: None,
-            };
-            let audit = self.audit(
-                &record,
-                &system,
-                AuditAction::ScheduleAutoPaused,
-                "authority revoked",
-                now,
-            );
-            return self.committed(self.store.record_decision(&decision, Some(&audit)).await);
+            return self.revoke_authority(&record, fence, now).await;
         };
         let principal = Principal::new(record.tenant_id, system.clone(), membership.role());
 
@@ -646,6 +617,7 @@ where
         {
             let admission = ScheduleAdmission {
                 schedule: record.id,
+                authority: record.authorized_by.clone(),
                 nominal_at: waiting.nominal_at,
                 kind: waiting.kind,
                 revision: waiting.revision,
@@ -759,6 +731,7 @@ where
                 after.remaining_actions = record.remaining_actions.map(|n| n.saturating_sub(1));
                 let admission = ScheduleAdmission {
                     schedule: record.id,
+                    authority: record.authorized_by.clone(),
                     nominal_at: time,
                     kind: ActionKind::Scheduled,
                     revision: record.revision,
@@ -831,8 +804,14 @@ where
         ctx: &RequestContext,
     ) -> Result<Fired, AppError> {
         let nominal = admission.nominal_at;
+        let fence = admission.fence.clone();
         match self.start_run(record, principal, admission, ctx).await {
             Ok(_) => Ok(Fired::Acted),
+            // the membership was locked and read again where the run is admitted, and the subject
+            // the schedule acts for no longer holds the authority: nothing was committed
+            Err(AppError::StateConflict(AUTHORITY_REVOKED)) => {
+                self.revoke_authority(record, fence, now).await
+            }
             // another process acted first, or the lease is gone: nothing was committed
             Err(AppError::StateConflict(reason)) => Ok(Fired::Refused(reason)),
             // no room, a store that is down, a workflow with no published version: the time stays
@@ -892,6 +871,75 @@ where
         self.starts
             .start_scheduled(principal, &request, admission, ctx)
             .await
+    }
+
+    /// The requester of a backfill can no longer start runs: the backfill is stopped, with an audit
+    /// record, and starts nothing more.
+    async fn stop_backfill(
+        &self,
+        record: &ScheduleRecord,
+        backfill: Uuid,
+        now: OffsetDateTime,
+    ) -> Result<Fired, AppError> {
+        let system = Subject::schedule(record.id.as_uuid());
+        let audit = self.audit(
+            record,
+            &system,
+            AuditAction::ScheduleBackfillCancelled,
+            "authority revoked",
+            now,
+        );
+        self.store
+            .cancel_backfill(record.tenant_id, record.id, backfill, now, &audit)
+            .await?;
+        Ok(Fired::Acted)
+    }
+
+    /// The subject the schedule acts for no longer holds the authority to start runs: the next time
+    /// is recorded `AUTHORITY_REVOKED` and the schedule is paused with a system note and an audit
+    /// record, in one transaction. Nothing starts (`FR-018-015`, `SC-018-004`).
+    async fn revoke_authority(
+        &self,
+        record: &ScheduleRecord,
+        fence: Option<ShardFence>,
+        now: OffsetDateTime,
+    ) -> Result<Fired, AppError> {
+        let system = Subject::schedule(record.id.as_uuid());
+        let nominal = record.next_action_at.unwrap_or(now);
+        let decision = ScheduleDecision {
+            tenant_id: record.tenant_id,
+            schedule: record.id,
+            expected_state_version: record.state_version,
+            fence,
+            actions: vec![RecordedAction {
+                nominal_at: nominal,
+                kind: ActionKind::Scheduled,
+                revision: record.revision,
+                outcome: Outcome::AuthorityRevoked,
+                reason: Some("AUTHORITY_REVOKED"),
+                summary: None,
+            }],
+            after: ScheduleAfter {
+                next_action_at: None,
+                next_actual_at: None,
+                remaining_actions: record.remaining_actions,
+                extra: Vec::new(),
+            },
+            pause: Some(AutoPause {
+                note: "the authorizing subject can no longer start runs".to_owned(),
+            }),
+            at: now,
+            dedupe: None,
+            backfill: None,
+        };
+        let audit = self.audit(
+            record,
+            &system,
+            AuditAction::ScheduleAutoPaused,
+            "authority revoked",
+            now,
+        );
+        self.committed(self.store.record_decision(&decision, Some(&audit)).await)
     }
 
     fn committed(&self, result: Result<(), StoreError>) -> Result<Fired, AppError> {

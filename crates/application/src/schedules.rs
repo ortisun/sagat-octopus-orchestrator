@@ -291,12 +291,22 @@ pub struct BufferedAction {
     pub revision: u32,
 }
 
+/// The reason the admission of a schedule's run is refused when the subject it acts for no longer
+/// holds the authority (`FR-018-015`): a [`StoreError::StateConflict`](crate::error::StoreError) with
+/// this text, which the firing tells apart from "another process acted first".
+pub const AUTHORITY_REVOKED: &str = "the subject the action acts for no longer holds its authority";
+
 /// An action of a schedule that starts a run (`FR-018-005`). It rides on the creation of the run, so
 /// the fence check, the compare-and-swap on the schedule, the run, the action row and the new state
 /// of the schedule commit together or not at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScheduleAdmission {
     pub schedule: ScheduleId,
+    /// The subject whose authority the action acts under: `authorizedBy` for a scheduled time, the
+    /// requester of a backfill, the caller of trigger-now. The transaction that admits the run locks
+    /// its membership and checks `run:start` again (and, for a workflow with managed database steps,
+    /// its feature 017 authority), so a revocation that has returned stops the run (`FR-018-015`).
+    pub authority: String,
     /// With the origin of `kind`, the identity of the action: at most one per schedule.
     pub nominal_at: OffsetDateTime,
     pub kind: sagat_domain::schedules::ActionKind,
