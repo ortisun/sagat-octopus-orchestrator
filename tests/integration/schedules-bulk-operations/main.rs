@@ -18,6 +18,7 @@ mod migration;
 mod pass;
 mod purge;
 mod rest;
+mod schedules;
 mod service;
 mod store;
 mod store_support;

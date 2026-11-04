@@ -241,8 +241,24 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `describe` and delete at a revision; `crates/application/tests/schedule_document.rs` 4); without the namespace check of
   the route the isolation test fails. Not done: the list filters `origin`, `state`, `workflowId`, `name` and `inputBytes`
   (G1015).
-- [ ] T018-019 [P] [US1] US01 scenarios 1–5 — `tests/integration/schedules-bulk-operations/schedules.rs`
+- [x] T018-019 [P] [US1] US01 scenarios 1–5 — `tests/integration/schedules-bulk-operations/schedules.rs`
   — target output — FR-018-001..005, FR-018-016.
+  *Done 2026-11-04.* The scenario file walks the five scenarios of the story and says, for each, which test proves it.
+  These are tests of behaviour that already existed, so none was red first and none found a defect (the defects of the
+  story were found by T018-020..022, 029). Scenario 1: a spec with a calendar, a cron string and an interval, the zone
+  `Europe/Lisbon`, `startAt`, `endAt` and ten minutes of jitter is revision 1, its first nominal time is the earliest
+  of the three kinds on or after the start, the actual time moves by less than the setting, the next ten times are in
+  order and inside the bounds, nothing runs on 1 November and one run starts for 2 November. Scenario 2: the replica
+  that lost the shard considers the time first and is fenced with nothing started, the holder starts exactly one
+  run (`startedBy = system:schedule:<id>`, schedule id, nominal time, kind and revision on the run, key
+  `nominal-{ms}` in scope `schedule:{id}`), and a second look by the former finds nothing; the engine-level proof is
+  `pass::two_replicas_split_the_schedules_by_shard_and_every_time_starts_one_run`; "counted" waits for the gauges
+  of T018-017. Scenario 3: the 28-write kill matrix of T018-020 (`fault_schedules_bulk_operations`). Scenario 4: four
+  specs that never fire or fire too often are refused with `SCHEDULE_NEVER_FIRES` / `SCHEDULE_TOO_FREQUENT` and a
+  before-and-after count of schedules, revisions, payloads, audit records and charges is unchanged. Scenario 5:
+  `catchup::` (a full quota, then the window ends; no published version, with a backoff). Evidence:
+  `integration_schedules_bulk_operations` 169 passed, also with `SAGAT_TEST_AS_RUNTIME_ROLE=1` (169); `cargo fmt --check`
+  and `cargo clippy --workspace --all-targets --locked -- -D warnings` clean.
 - [x] T018-020 [US1] Faults: crash after each statement of transaction 2, stale fence, duplicate pass,
   lost hint, restart, skewed process clocks — `tests/fault/schedules-bulk-operations/firing.rs` (+ `clocks.rs`,
   `tripwire.rs`) — one run
