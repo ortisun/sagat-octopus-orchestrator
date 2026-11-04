@@ -7,6 +7,7 @@ Architecture/configuration/vendor fitness checks, version consistency, SDK packa
 ## Interface
 
 - `check-agent-config.py [repo-root]` validates agent configuration and documentation links; `check-architecture.py [--metadata FILE]` checks crate layers/dependencies/cycles. [check-agent-config.py:check] [check-architecture.py:main]
+- `select-test-targets.py --base <sha>` prints the `sagat-tests` targets that a change adds or modifies (and why) and writes `targets`, `any` and `all` to `$GITHUB_OUTPUT`; CI runs only those integration suites. [select-test-targets.py:main] [select-test-targets.py:select]
 - `check-vendor.py` verifies the exact upstream snapshot and reviewed manifest override. `release-version.sh` prints the product version after checking workspace, SDK packaging and Studio declarations. [check-vendor.py:verify] [release-version.sh:workspace]
 - `package-sdks.sh [output-directory]` builds six-language artifacts and consumers; `package-rust-sdk.sh <output-directory>` packages committed Rust SDK source and runs an extracted-artifact consumer. [package-sdks.sh:SDK_VERSION] [package-rust-sdk.sh:output_dir]
 - `smoke-compose.sh` supports `ENV_FILE`, optional `SAGAT_BIN` and `SAGAT_SMOKE_BROWSER` for isolated stack and user-journey checks. [smoke-compose.sh:ENV_FILE] [smoke-compose.sh:SAGAT_BIN] [smoke-compose.sh:SAGAT_SMOKE_BROWSER]
