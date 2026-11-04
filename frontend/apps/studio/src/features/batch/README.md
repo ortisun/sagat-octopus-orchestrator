@@ -15,7 +15,7 @@ Batch operations (feature 018): starting a durable, rate-limited job from the fi
 
 - The dialog is offered only with `run:batch`; the pages need `run:read`. Nothing is asked of the platform before a person acts, and the job is started only after the runs have been counted for the same limit and a reason of 8 to 2,000 characters. [frontend/apps/studio/src/features/batch/BatchFromRuns.tsx:BatchForm] [frontend/apps/studio/src/features/batch/model.ts:reasonProblem]
 - The selector is the filters of the run list and nothing else; `UPDATE` and `REPIN` are not offered because the platform refuses them. An unchanged request keeps its idempotency key across a retry. [frontend/apps/studio/src/features/batch/model.ts:selectorOf] [frontend/apps/studio/src/features/batch/model.ts:BATCH_ACTIONS]
-- A signal payload must be a JSON object within 256 KiB; the payload of a job is never shown, only that it has one and a short digest. [frontend/apps/studio/src/features/batch/model.ts:requestOf] [frontend/apps/studio/src/features/batch/BatchPage.tsx:Summary]
+- A signal payload must be a JSON object within 256 KiB; the payload of a job is never shown, nor its digest, only that it has one. [frontend/apps/studio/src/features/batch/model.ts:requestOf] [frontend/apps/studio/src/features/batch/BatchPage.tsx:Summary]
 - A job at work is followed (2 s for the job, 3 s for its items, 5 s for the list) and left alone once it has ended. [frontend/apps/studio/src/features/batch/BatchPage.tsx:Job] [frontend/apps/studio/src/features/batch/BatchesPage.tsx:Jobs]
 
 ## Side Effects

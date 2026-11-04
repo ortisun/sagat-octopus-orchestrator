@@ -127,13 +127,45 @@ async fn every_batch_operation_conforms_to_the_contract_on_its_normal_and_error_
     record((m, t, s));
     assert_eq!(body["state"], "SELECTING");
     assert_eq!(body["action"], "CANCEL");
+    assert_eq!(body["hasPayload"], false);
     let id = body["batchId"].as_str().expect("id").to_owned();
+    // a job with a payload says that it has one; neither the payload nor its digest comes back, for a
+    // digest would let a reader confirm a guess of what they may not read
+    let (m, t, s, signal) = check_body(
+        &api,
+        &spec,
+        &keyed(
+            scenario(
+                "POST",
+                JOBS,
+                &jobs,
+                alice.clone(),
+                Some(json!({
+                    "selector": {"runIds": [nobody]}, "action": "SIGNAL",
+                    "signal": {"name": "order.approved", "payload": {"approved": true}},
+                    "reason": "tell them it was approved", "itemsPerSecond": 50
+                })),
+                202,
+            ),
+            90,
+        ),
+    )
+    .await;
+    record((m, t, s));
+    assert_eq!(signal["hasPayload"], true);
+    assert!(signal.get("payloadDigest").is_none(), "{signal}");
+    assert!(
+        !signal.to_string().contains("approved\":true"),
+        "the payload is not returned"
+    );
     let one = format!("{jobs}/{id}");
     for (n, (who, doc, expect)) in [
         (vera.clone(), cancel_all("clean up the stuck runs"), 403),
         (As::Anonymous, cancel_all("clean up the stuck runs"), 401),
         (bob.clone(), cancel_all("clean up the stuck runs"), 404),
         (alice.clone(), cancel_all("short"), 422),
+        // a reason is plain text: a new line in it would make the single-run use cases refuse it
+        (alice.clone(), cancel_all("clean up\nthe stuck runs"), 422),
         (
             alice.clone(),
             json!({"selector": {"runIds": [nobody]}, "action": "UPDATE", "update": {"name": "u", "args": {}}, "reason": "clean up the stuck runs"}),
@@ -194,6 +226,27 @@ async fn every_batch_operation_conforms_to_the_contract_on_its_normal_and_error_
     )
     .await;
     record((m, t, s));
+    // and so is a key of the platform's own, which a caller could use to decide what an item does
+    for reserved in [
+        "batch:0194f5e2-reserved-by-the-platform",
+        "schedule:0194f5e2-reserved",
+    ] {
+        let (m, t, s, _) = check_body(
+            &api,
+            &spec,
+            &scenario(
+                "POST",
+                JOBS,
+                &jobs,
+                alice.clone(),
+                Some(cancel_all("clean up the stuck runs")),
+                400,
+            )
+            .with_header("idempotency-key", reserved),
+        )
+        .await;
+        record((m, t, s));
+    }
 
     // ---- read and list
     for (path, who, expect) in [

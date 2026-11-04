@@ -123,6 +123,19 @@ async fn pause_and_resume_apply_to_the_runs_they_fit_and_skip_the_others() {
     );
     assert_eq!(counts(&pause), (2, 1, 1, 0, 0));
     assert!(paused(&f, open).await);
+    // the audit of the run says which job paused it, and why
+    let why: Option<String> = sqlx::query_scalar(
+        "SELECT reason FROM audit_records WHERE action = 'run.paused' AND resource_id = $1",
+    )
+    .bind(open.to_string())
+    .fetch_one(&f.w.db.pool)
+    .await
+    .expect("the audit of the pause");
+    assert!(
+        why.as_deref()
+            .is_some_and(|reason| reason.starts_with(&format!("batch {}: ", pause.id))),
+        "{why:?}"
+    );
 
     let resume = run_job(
         &f,

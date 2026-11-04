@@ -233,7 +233,12 @@ impl Stage {
         match self {
             Self::Drain => {
                 service(f)
-                    .cancel(&f.w.admin, created.id, &RequestContext::default())
+                    .cancel(
+                        &f.w.admin,
+                        created.id,
+                        "stop this batch job",
+                        &RequestContext::default(),
+                    )
                     .await
                     .expect("cancel the job");
             }
@@ -464,15 +469,16 @@ async fn a_process_killed_after_any_write_of_a_failure_commits_nothing_and_the_j
 
 // --- duplicates and late commits ------------------------------------------------------------------
 
-/// Waits until `n` backends wait on a lock (`pg_stat_activity`, not a time), then panics naming
-/// `stage` after two minutes.
+/// Waits until `n` backends wait on a lock while running a statement about batch jobs
+/// (`pg_stat_activity`, not a time), then panics naming `stage` after two minutes. The world has
+/// loops of its own that wait on other tables: they are not the steps this waits for.
 async fn wait_for_backends_on_locks(f: &Fixture, n: i64, stage: &str) {
     within(stage, StdDuration::from_secs(120), async {
         loop {
             let waiting: i64 = sqlx::query_scalar(
                 "SELECT count(*) FROM pg_stat_activity \
                  WHERE datname = current_database() AND pid <> pg_backend_pid() \
-                   AND wait_event_type = 'Lock'",
+                   AND wait_event_type = 'Lock' AND query LIKE '%batch_jobs%'",
             )
             .fetch_one(&f.w.db.pool)
             .await
@@ -571,7 +577,16 @@ async fn a_cancel_that_commits_while_an_item_is_recorded_loses_neither_the_item_
         let service = service(&f);
         let admin = f.w.admin.clone();
         let id = created.id;
-        async move { service.cancel(&admin, id, &RequestContext::default()).await }
+        async move {
+            service
+                .cancel(
+                    &admin,
+                    id,
+                    "stop this batch job",
+                    &RequestContext::default(),
+                )
+                .await
+        }
     });
     wait_for_backends_on_locks(&f, 1, "the cancel waits for the job").await;
     let step = tokio::spawn({
@@ -604,6 +619,96 @@ async fn a_cancel_that_commits_while_an_item_is_recorded_loses_neither_the_item_
             done.counts.cancelled
         ),
         (3, 1, 2)
+    );
+    assert_eq!(endings_of(&f, created.id).await, 1);
+}
+
+// --- a job over a thousand runs ----------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_job_over_a_thousand_runs_applies_each_once_across_a_restart_and_a_cancel() {
+    let f = fixture().await;
+    let runs = runs_started(&f, 1_000).await;
+    let applies = Applies::default();
+    let first = executor(&f, &applies);
+    let created = create(&f, &f.w.admin, &runs, "a-thousand-runs").await;
+    live(&f);
+
+    // the selection takes the thousand runs in two pages, the first process applies 400 of them
+    let mut steps = 0;
+    while job(&f, created.id).await.state == JobState::Selecting {
+        f.clock.advance(Duration::seconds(1));
+        first.step(&due(&created), None).await.expect("select");
+        steps += 1;
+        assert!(steps < 5_000, "the selection never ended");
+    }
+    assert_eq!(job(&f, created.id).await.counts.selected, 1_000);
+    for _ in 0..400 {
+        f.clock.advance(Duration::seconds(1));
+        assert_eq!(
+            first.step(&due(&created), None).await.expect("item"),
+            Stepped::Acted
+        );
+    }
+
+    // it dies; another process starts from the database alone and applies 300 more
+    drop(first);
+    let second = executor(&f, &applies);
+    for _ in 0..300 {
+        f.clock.advance(Duration::seconds(1));
+        assert_eq!(
+            second.step(&due(&created), None).await.expect("item"),
+            Stepped::Acted
+        );
+    }
+
+    // the operator cancels: what was applied stays applied, the rest is marked and nothing more runs
+    service(&f)
+        .cancel(
+            &f.w.admin,
+            created.id,
+            "stop this batch job",
+            &RequestContext::default(),
+        )
+        .await
+        .expect("cancel");
+    let ended = until_it_ends(&f, &second, &created).await;
+
+    assert_eq!(ended.state, JobState::Cancelled);
+    let c = &ended.counts;
+    assert_eq!(
+        (
+            c.selected,
+            c.succeeded,
+            c.cancelled,
+            c.skipped,
+            c.failed,
+            c.deferred
+        ),
+        (1_000, 700, 300, 0, 0, 0)
+    );
+    let by_state: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT state, count(*) FROM batch_items WHERE job_id = $1 GROUP BY state ORDER BY state",
+    )
+    .bind(created.id)
+    .fetch_all(&f.w.db.pool)
+    .await
+    .expect("items by state");
+    assert_eq!(
+        by_state,
+        vec![("CANCELLED".to_owned(), 300), ("SUCCEEDED".to_owned(), 700)],
+        "the counters equal the outcomes of the items"
+    );
+    let keys: BTreeSet<String> = applies.keys().into_iter().collect();
+    assert_eq!(
+        applies.keys().len(),
+        700,
+        "each run was applied once: not repeated by the restart, not applied after the cancel"
+    );
+    assert_eq!(keys.len(), 700);
+    assert!(
+        keys.iter()
+            .all(|key| key.starts_with(&format!("batch:{}:", created.id)))
     );
     assert_eq!(endings_of(&f, created.id).await, 1);
 }

@@ -15,7 +15,11 @@ where
 {
     async fn apply(&self, request: &ItemRequest<'_>) -> Result<ItemEffect, AppError> {
         let id = RunId::new(request.run);
-        let reason: String = request.job.reason.chars().take(512).collect();
+        // the audit of the run says which job did it, as well as why
+        let reason: String = format!("batch {}: {}", request.job.id, request.job.reason)
+            .chars()
+            .take(512)
+            .collect();
         let done = || ItemEffect::Applied { new_run: None };
         let params = crate::batch::JobParams::from_json(&request.job.params)
             .map_err(|_| AppError::Internal)?;

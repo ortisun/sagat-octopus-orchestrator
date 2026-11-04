@@ -168,7 +168,12 @@ where
                     Ok(Stepped::Idle) => break,
                     Ok(Stepped::Refused(reason)) => {
                         tracing::debug!(reason, "a batch step was refused");
-                        metrics::counter!("scheduler_fenced_total", "kind" => "batch").increment(1);
+                        // an item that another step ended, or a job that was cancelled, is an
+                        // ordinary race; only a lost lease is what the fencing alert counts
+                        if reason.contains("lease") {
+                            metrics::counter!("scheduler_fenced_total", "kind" => "batch")
+                                .increment(1);
+                        }
                         round.refused += 1;
                         break;
                     }

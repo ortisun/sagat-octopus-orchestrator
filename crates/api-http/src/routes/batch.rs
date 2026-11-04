@@ -190,9 +190,8 @@ pub async fn cancel_batch<B: Governance>(
 ) -> Result<(StatusCode, Json<JobBody>), ApiError> {
     idempotency_key(&headers)?;
     let id = admitted_job(&state, &caller, &namespace, &id, ApiOperation::BatchWrite).await?;
-    body.check()?;
     let job = batches(&state)?
-        .cancel(&caller.session.principal, id, &caller.ctx)
+        .cancel(&caller.session.principal, id, &body.reason, &caller.ctx)
         .await?;
     Ok((StatusCode::ACCEPTED, Json(JobBody::from(&job))))
 }

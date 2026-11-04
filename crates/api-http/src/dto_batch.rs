@@ -230,16 +230,6 @@ pub struct CancelBody {
     pub reason: String,
 }
 
-impl CancelBody {
-    /// # Errors
-    /// `BATCH_REASON_INVALID` for a reason that is not 8 to 2000 characters.
-    pub fn check(&self) -> Result<(), AppError> {
-        Justification::new(&self.reason)
-            .map(|_| ())
-            .map_err(|_| invalid("BATCH_REASON_INVALID", "/reason"))
-    }
-}
-
 // --- what is returned -----------------------------------------------------------------------------
 
 /// What a preview found.
@@ -281,7 +271,9 @@ pub struct JobBody {
     pub state: &'static str,
     pub failure_reason: Option<&'static str>,
     pub created_by: String,
-    pub payload_digest: Option<String>,
+    /// Whether the job carries a signal payload. Its digest is not returned: it would let a reader
+    /// of the job confirm a guess of a payload they may not read.
+    pub has_payload: bool,
     pub max_items: u32,
     pub items_per_second: f64,
     pub counts: CountsBody,
@@ -295,14 +287,6 @@ pub struct JobBody {
     pub expires_at: Option<OffsetDateTime>,
 }
 
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes.iter().fold(String::with_capacity(64), |mut out, b| {
-        let _ = write!(out, "{b:02x}");
-        out
-    })
-}
-
 impl From<&JobRecord> for JobBody {
     fn from(job: &JobRecord) -> Self {
         Self {
@@ -313,7 +297,7 @@ impl From<&JobRecord> for JobBody {
                 .failure_reason
                 .map(sagat_domain::batch::FailureReason::as_str),
             created_by: job.created_by.clone(),
-            payload_digest: job.payload_digest.map(|digest| hex(&digest)),
+            has_payload: job.payload_digest.is_some(),
             max_items: job.max_items,
             items_per_second: f64::from(job.rate.milli()) / 1000.0,
             counts: CountsBody {

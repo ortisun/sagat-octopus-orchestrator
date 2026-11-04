@@ -502,7 +502,22 @@ pub trait BatchStore: QuotaLookup + Send + Sync {
         audit: &AuditRecord,
     ) -> impl Future<Output = Result<Option<JobRecord>, StoreError>> + Send;
 
-    /// The jobs of the shards the replica owns that are due to be looked at, earliest first.
+    /// The last look before an effect is applied to a run: the lease is still the replica's, the job
+    /// still runs (not cancelled, not over) and the item has not ended. Anything else is a
+    /// `StateConflict`. The effect is a transaction of its own, so a lease lost or a cancel made
+    /// after this look still lets it through; the record that follows is refused then, and a repeat of
+    /// the keyed effect changes nothing.
+    fn ensure_live(
+        &self,
+        tenant: TenantId,
+        id: Uuid,
+        ordinal: u32,
+        fence: Option<&ShardFence>,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// The jobs of the shards the replica owns that are due to be looked at, earliest first. A job
+    /// that has nothing to do yet is not among them (a selection that waits for a transaction, items
+    /// that are all deferred to a later time): it would keep the head of every round.
     fn due_jobs(
         &self,
         shards: &[Shard],
@@ -606,6 +621,15 @@ fn invalid(reason: &'static str, field: &str) -> AppError {
     }
 }
 
+/// The name of a signal as the single-run route takes it: 1 to 128 characters, starting with a
+/// letter or digit, then letters, digits and `_ . : -`.
+fn valid_signal_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    name.len() <= 128
+        && chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':' | '-'))
+}
+
 /// Every permission of the single action, besides `run:batch` (`FR-018-034`).
 #[must_use]
 pub fn action_permissions(action: Action) -> &'static [Permission] {
@@ -697,6 +721,13 @@ impl<S: BatchStore, C: Clock> BatchService<S, C> {
             .is_some_and(|step| sagat_domain::workflow::NodeId::parse_stored(step).is_err())
         {
             return Err(invalid("BATCH_ACTION_PARAMETERS", "/stepId"));
+        }
+        if write
+            .signal
+            .as_ref()
+            .is_some_and(|signal| !valid_signal_name(&signal.name))
+        {
+            return Err(invalid("BATCH_ACTION_PARAMETERS", "/signal/name"));
         }
         if !write.instance_path.is_empty() {
             // a step of an iteration of a collection or a loop needs its scope path resolved per run;
@@ -806,6 +837,7 @@ impl<S: BatchStore, C: Clock> BatchService<S, C> {
             scope: format!("batch.create:{namespace}"),
             key: key.to_owned(),
             fingerprint: fingerprint(&[
+                principal.subject().as_str().as_bytes(),
                 write.action.as_str().as_bytes(),
                 selector_to_json(&write.selector).to_string().as_bytes(),
                 record.params.to_string().as_bytes(),
@@ -1003,9 +1035,12 @@ impl<S: BatchStore, C: Clock> BatchService<S, C> {
         &self,
         principal: &Principal,
         id: Uuid,
+        reason: &str,
         ctx: &RequestContext,
     ) -> Result<JobRecord, AppError> {
         principal.authorize(Permission::RunBatch)?;
+        let reason =
+            Justification::new(reason).map_err(|_| invalid("BATCH_REASON_INVALID", "/reason"))?;
         let current = self
             .store
             .job(principal.tenant_id(), id)
@@ -1025,7 +1060,8 @@ impl<S: BatchStore, C: Clock> BatchService<S, C> {
             id.to_string(),
             ctx.trace_id.clone(),
             now,
-        );
+        )
+        .with_reason(reason.as_str());
         self.store
             .request_cancel(principal.tenant_id(), id, now, &audit)
             .await?

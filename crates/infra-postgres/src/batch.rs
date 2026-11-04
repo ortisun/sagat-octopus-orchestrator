@@ -242,6 +242,12 @@ impl BatchStore for PgBatchStore {
             }
         }
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        // The bound is read before this transaction has an identity of its own (the payload insert
+        // below gives it one): a transaction that took its identity before that is waited for.
+        let bound: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(store_error)?;
         let hash = crate::definitions::hash(&idempotency.fingerprint);
         if let Some(existing) =
             crate::definitions::replay(&mut tx, r.tenant_id, idempotency, &hash).await?
@@ -249,6 +255,13 @@ impl BatchStore for PgBatchStore {
             return Ok(Applied::Replayed(existing));
         }
         lock_batch_jobs(&mut tx, r.tenant_id, r.namespace_id).await?;
+        // The same request may have committed while this one waited for the fence: it is answered
+        // with that job, not counted against the ceiling a second time.
+        if let Some(existing) =
+            crate::definitions::replay(&mut tx, r.tenant_id, idempotency, &hash).await?
+        {
+            return Ok(Applied::Replayed(existing));
+        }
         ensure_room_for_batch(
             &mut tx,
             r.tenant_id,
@@ -277,7 +290,7 @@ impl BatchStore for PgBatchStore {
              (tenant_id, namespace_id, id, action, params, payload_digest, selector, reason, created_by, \
               state, max_items, rate_milli, selection_bound_at, selection_horizon, next_slot_at, \
               created_at, expires_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'SELECTING', $10, $11, clock_timestamp(), \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'SELECTING', $10, $11, $14, \
                      pg_current_xact_id(), clock_timestamp(), $12, $13)",
         )
         .bind(r.tenant_id.as_uuid())
@@ -293,6 +306,7 @@ impl BatchStore for PgBatchStore {
         .bind(i32::try_from(r.rate.milli()).unwrap_or(i32::MAX))
         .bind(r.created_at)
         .bind(r.expires_at)
+        .bind(bound)
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
@@ -423,10 +437,22 @@ impl BatchStore for PgBatchStore {
     async fn due_jobs(&self, shards: &[Shard], limit: u32) -> Result<Vec<DueJob>, StoreError> {
         let shards: Vec<i16> = shards.iter().map(|s| i16::from(s.index())).collect();
         let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
-            "SELECT tenant_id, id FROM batch_jobs \
-             WHERE shard = ANY($1) AND state IN ('SELECTING', 'RUNNING', 'CANCELLING') \
-               AND next_slot_at <= clock_timestamp() \
-             ORDER BY next_slot_at, id LIMIT $2",
+            "SELECT j.tenant_id, j.id FROM batch_jobs j \
+             WHERE j.shard = ANY($1) AND j.state IN ('SELECTING', 'RUNNING', 'CANCELLING') \
+               AND j.next_slot_at <= clock_timestamp() \
+               AND ( \
+                 j.state = 'CANCELLING' \
+                 OR (j.state = 'SELECTING' \
+                     AND pg_snapshot_xmin(pg_current_snapshot()) > j.selection_horizon) \
+                 OR (j.state = 'RUNNING' AND ( \
+                     NOT EXISTS (SELECT 1 FROM batch_items w \
+                                  WHERE w.tenant_id = j.tenant_id AND w.job_id = j.id \
+                                    AND w.state = 'DEFERRED' AND w.next_attempt_at > clock_timestamp()) \
+                     OR EXISTS (SELECT 1 FROM batch_items r \
+                                 WHERE r.tenant_id = j.tenant_id AND r.job_id = j.id \
+                                   AND (r.state = 'PENDING' \
+                                        OR (r.state = 'DEFERRED' AND r.next_attempt_at <= clock_timestamp())))))) \
+             ORDER BY j.next_slot_at, j.id LIMIT $2",
         )
         .bind(shards)
         .bind(i64::from(limit))
@@ -442,6 +468,36 @@ impl BatchStore for PgBatchStore {
             .collect())
     }
 
+    async fn ensure_live(
+        &self,
+        tenant: TenantId,
+        id: Uuid,
+        ordinal: u32,
+        fence: Option<&ShardFence>,
+    ) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        check_fence(&mut tx, id, fence).await?;
+        let live: Option<bool> = sqlx::query_scalar(
+            "SELECT j.state = 'RUNNING' AND i.state IN ('PENDING', 'DEFERRED') \
+             FROM batch_jobs j JOIN batch_items i ON i.tenant_id = j.tenant_id AND i.job_id = j.id \
+             WHERE j.tenant_id = $1 AND j.id = $2 AND i.ordinal = $3",
+        )
+        .bind(tenant.as_uuid())
+        .bind(id)
+        .bind(i32::try_from(ordinal).unwrap_or(i32::MAX))
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        tx.commit().await.map_err(store_error)?;
+        if live == Some(true) {
+            Ok(())
+        } else {
+            Err(StoreError::StateConflict(
+                "the job no longer runs this item",
+            ))
+        }
+    }
+
     async fn select_round(
         &self,
         tenant: TenantId,
@@ -450,6 +506,11 @@ impl BatchStore for PgBatchStore {
         page: u32,
     ) -> Result<Selected, StoreError> {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        // a selection that scans for too long is given up and tried again, not held for ever
+        sqlx::query("SET LOCAL statement_timeout = '10s'")
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
         check_fence(&mut tx, id, fence).await?;
         // The snapshot of this statement against the horizon of the job: every transaction that was
         // open when the job was created has ended once the oldest one still open is not older.

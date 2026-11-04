@@ -530,7 +530,12 @@ async fn cancelling_a_job_marks_the_items_that_have_not_run_and_undoes_nothing()
         Stepped::Acted
     );
     service(&f)
-        .cancel(&f.w.admin, job_.id, &RequestContext::default())
+        .cancel(
+            &f.w.admin,
+            job_.id,
+            "stop this batch job",
+            &RequestContext::default(),
+        )
         .await
         .expect("cancel");
     f.clock.advance(Duration::seconds(1));
@@ -753,7 +758,8 @@ async fn a_replica_that_lost_its_lease_records_nothing_and_the_new_owner_goes_on
 }
 
 #[tokio::test]
-async fn a_replica_that_lost_its_lease_cannot_record_an_item_and_the_effect_is_not_repeated() {
+async fn a_replica_that_lost_its_lease_neither_applies_nor_records_an_item_and_the_new_owner_goes_on()
+ {
     let f = fixture().await;
     let all = runs_started(&f, 1).await;
     live(&f);
@@ -784,7 +790,7 @@ async fn a_replica_that_lost_its_lease_cannot_record_an_item_and_the_effect_is_n
         },
     };
 
-    // the old replica applies the effect (it is keyed, so harmless) and cannot say so
+    // the old replica is stopped before it touches the run
     let refused = exec.step(&due(&job_), Some(stale)).await.expect("step");
 
     assert!(matches!(refused, Stepped::Refused(_)), "{refused:?}");
@@ -794,7 +800,11 @@ async fn a_replica_that_lost_its_lease_cannot_record_an_item_and_the_effect_is_n
         "nothing is recorded without the lease"
     );
     assert_eq!(job(&f, job_.id).await.counts.succeeded, 0);
-    assert_eq!(status_of(&f, all[0]).await, "CANCELLED");
+    assert_ne!(
+        status_of(&f, all[0]).await,
+        "CANCELLED",
+        "the replica that lost its lease did not apply the action"
+    );
 
     f.clock.advance(Duration::seconds(1));
     exec.step(&due(&job_), Some(holder.clone()))
@@ -816,4 +826,98 @@ async fn a_replica_that_lost_its_lease_cannot_record_an_item_and_the_effect_is_n
         cancellations, 1,
         "the old replica and the new owner cancelled the run once between them"
     );
+}
+
+#[tokio::test]
+async fn the_last_look_before_an_effect_refuses_an_ended_item_a_stale_lease_and_a_cancelled_job() {
+    use sagat_application::batch::BatchStore;
+    use sagat_application::error::StoreError;
+
+    let f = fixture().await;
+    runs_started(&f, 2).await;
+    live(&f);
+    let exec = executor(&f);
+    let job_ = create(&f, write(Action::Cancel, everything()), "last-look").await;
+    select(&exec, &job_).await;
+    let store = PgBatchStore::new(f.w.db.pool.clone());
+    let ordinals: Vec<u32> = items(&f, job_.id)
+        .await
+        .into_iter()
+        .map(|(n, ..)| u32::try_from(n).expect("ordinal"))
+        .collect();
+    let (first, second) = (ordinals[0], ordinals[1]);
+    let conflict =
+        |result: Result<(), StoreError>| matches!(result, Err(StoreError::StateConflict(_)));
+
+    store
+        .ensure_live(job_.tenant_id, job_.id, first, None)
+        .await
+        .expect("a pending item of a running job is live");
+
+    // an item that has ended is not applied again
+    assert_eq!(
+        exec.step(&due(&job_), None).await.expect("first item"),
+        Stepped::Acted
+    );
+    assert!(conflict(
+        store
+            .ensure_live(job_.tenant_id, job_.id, first, None)
+            .await
+    ));
+    store
+        .ensure_live(job_.tenant_id, job_.id, second, None)
+        .await
+        .expect("the other is still live");
+
+    // a replica whose lease was taken over
+    let shard = Shard::of(job_.id);
+    sqlx::query(
+        "UPDATE scheduler_shards SET owner = 'replica-new', generation = 12, \
+         expires_at = clock_timestamp() + interval '1 hour' WHERE shard = $1",
+    )
+    .bind(i16::from(shard.index()))
+    .execute(&f.w.db.pool)
+    .await
+    .expect("a new owner");
+    let stale = ShardFence {
+        owner: "replica-old".to_owned(),
+        lease: Lease {
+            shard,
+            generation: 11,
+        },
+    };
+    let holder = ShardFence {
+        owner: "replica-new".to_owned(),
+        lease: Lease {
+            shard,
+            generation: 12,
+        },
+    };
+    let lost = store
+        .ensure_live(job_.tenant_id, job_.id, second, Some(&stale))
+        .await;
+    assert!(
+        matches!(lost, Err(StoreError::StateConflict(reason)) if reason.contains("lease")),
+        "{lost:?}"
+    );
+    store
+        .ensure_live(job_.tenant_id, job_.id, second, Some(&holder))
+        .await
+        .expect("the owner may");
+
+    // a job that was cancelled stops its items before the run is touched
+    service(&f)
+        .cancel(
+            &f.w.admin,
+            job_.id,
+            "stop this batch job",
+            &RequestContext::default(),
+        )
+        .await
+        .expect("cancel");
+    assert!(conflict(
+        store
+            .ensure_live(job_.tenant_id, job_.id, second, Some(&holder))
+            .await
+    ));
 }

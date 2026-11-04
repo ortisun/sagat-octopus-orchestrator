@@ -66,6 +66,7 @@ pub trait BatchUseCase: Send + Sync {
         &'a self,
         principal: &'a Principal,
         id: Uuid,
+        reason: &'a str,
         ctx: &'a RequestContext,
     ) -> BatchFuture<'a, JobRecord>;
 }
@@ -132,8 +133,9 @@ where
         &'a self,
         principal: &'a Principal,
         id: Uuid,
+        reason: &'a str,
         ctx: &'a RequestContext,
     ) -> BatchFuture<'a, JobRecord> {
-        Box::pin(self.cancel(principal, id, ctx))
+        Box::pin(self.cancel(principal, id, reason, ctx))
     }
 }

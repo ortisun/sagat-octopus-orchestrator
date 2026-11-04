@@ -17,7 +17,11 @@ use time::Duration;
 use uuid::Uuid;
 
 use crate::firing::{Fixture, fixture};
+use crate::support::bounded::within;
 use crate::support::schedules::TestClock;
+
+/// The reason of a cancellation in the tests.
+const STOP: &str = "the provider is down";
 
 fn service(f: &Fixture) -> BatchService<PgBatchStore, TestClock> {
     BatchService::new(PgBatchStore::new(f.w.db.pool.clone()), f.clock.clone())
@@ -236,6 +240,40 @@ async fn parameters_the_action_does_not_take_and_limits_out_of_range_create_noth
             BatchWrite {
                 action: Action::RetryStep,
                 step_id: Some("not a step!".to_owned()),
+                ..cancel()
+            },
+            "BATCH_ACTION_PARAMETERS",
+        ),
+        // the name of a signal is bounded and plain, as the single-run route takes it
+        (
+            BatchWrite {
+                action: Action::Signal,
+                signal: Some(NamedPayload {
+                    name: "x".repeat(129),
+                    body: b"{}".to_vec(),
+                }),
+                ..cancel()
+            },
+            "BATCH_ACTION_PARAMETERS",
+        ),
+        (
+            BatchWrite {
+                action: Action::Signal,
+                signal: Some(NamedPayload {
+                    name: String::new(),
+                    body: b"{}".to_vec(),
+                }),
+                ..cancel()
+            },
+            "BATCH_ACTION_PARAMETERS",
+        ),
+        (
+            BatchWrite {
+                action: Action::Signal,
+                signal: Some(NamedPayload {
+                    name: "two words".to_owned(),
+                    body: b"{}".to_vec(),
+                }),
                 ..cancel()
             },
             "BATCH_ACTION_PARAMETERS",
@@ -531,26 +569,38 @@ async fn jobs_are_read_listed_newest_first_and_never_across_tenants() {
 }
 
 #[tokio::test]
-async fn cancelling_stops_the_job_once_audits_once_and_refuses_a_finished_job() {
+async fn cancelling_stops_the_job_once_audits_once_with_its_reason_and_refuses_a_finished_job() {
     let f = fixture().await;
     let job = create(&f, cancel(), "to-cancel").await.expect("create");
     let service = service(&f);
     let viewer = f.w.member("watcher", Role::Viewer).await;
     assert!(matches!(
-        service.cancel(&viewer, job.id, &ctx()).await,
+        service.cancel(&viewer, job.id, STOP, &ctx()).await,
         Err(AppError::Forbidden { .. })
     ));
     assert!(matches!(
-        service.cancel(&f.w.other_admin, job.id, &ctx()).await,
+        service.cancel(&f.w.other_admin, job.id, STOP, &ctx()).await,
         Err(AppError::NotFound)
     ));
+    for bad in ["short", "stop\nthe job now", "        "] {
+        assert!(
+            matches!(
+                service.cancel(&f.w.admin, job.id, bad, &ctx()).await,
+                Err(AppError::InvalidBatch {
+                    reason: "BATCH_REASON_INVALID",
+                    ..
+                })
+            ),
+            "{bad:?}"
+        );
+    }
 
     let cancelling = service
-        .cancel(&f.w.admin, job.id, &ctx())
+        .cancel(&f.w.admin, job.id, STOP, &ctx())
         .await
         .expect("cancel");
     let twice = service
-        .cancel(&f.w.admin, job.id, &ctx())
+        .cancel(&f.w.admin, job.id, STOP, &ctx())
         .await
         .expect("again");
 
@@ -568,6 +618,18 @@ async fn cancelling_stops_the_job_once_audits_once_and_refuses_a_finished_job() 
     .await
     .expect("audit");
     assert_eq!(audits, 1);
+    let why: Option<String> = sqlx::query_scalar(
+        "SELECT reason FROM audit_records WHERE action = 'batch.cancelled' AND resource_id = $1",
+    )
+    .bind(job.id.to_string())
+    .fetch_one(&f.w.db.pool)
+    .await
+    .expect("the reason");
+    assert_eq!(
+        why.as_deref(),
+        Some(STOP),
+        "the reason of the decision is in the trail"
+    );
 
     // a job that is over is refused, stays as it ended and is not audited as cancelled
     let done = create(&f, cancel(), "done-job-1").await.expect("done");
@@ -576,7 +638,7 @@ async fn cancelling_stops_the_job_once_audits_once_and_refuses_a_finished_job() 
         .execute(&f.w.db.pool)
         .await
         .expect("finish");
-    let refused = service.cancel(&f.w.admin, done.id, &ctx()).await;
+    let refused = service.cancel(&f.w.admin, done.id, STOP, &ctx()).await;
     assert!(
         matches!(
             refused,
@@ -778,4 +840,109 @@ async fn a_rollback_is_refused_while_a_job_is_kept_and_applying_again_brings_the
         .await
         .expect("forward again");
     assert_eq!(jobs_stored(&f).await, 0, "{}", job.id);
+}
+
+// --- a replay belongs to the caller, and a race on one key makes one job -----------------------------
+
+#[tokio::test]
+async fn a_key_used_by_another_caller_is_not_a_replay_of_the_first_callers_job() {
+    let f = fixture().await;
+    let other = f.w.member("second-operator", Role::Operator).await;
+    // one body (a request names a run id nobody has, drawn once)
+    let body = cancel();
+    let first = create(&f, body.clone(), "shared-key-1")
+        .await
+        .expect("first");
+    let service = service(&f);
+
+    // the same key and the same body from another person: nothing of the first caller's job
+    let second = service
+        .create(
+            &other,
+            f.w.namespace.id(),
+            body.clone(),
+            "shared-key-1",
+            &ctx(),
+        )
+        .await;
+
+    assert!(
+        matches!(second, Err(AppError::IdempotencyKeyReused)),
+        "{second:?}"
+    );
+    assert_eq!(jobs_stored(&f).await, 1);
+    // and the first caller still gets their own job back
+    let again = create(&f, body, "shared-key-1").await.expect("replay");
+    assert_eq!(again.id, first.id);
+}
+
+#[tokio::test]
+async fn two_requests_with_one_key_that_wait_for_the_fence_together_make_one_job() {
+    let f = fixture().await;
+    let tenant = f.w.admin.tenant_id();
+    // room for one job only: the second request must be answered with the first one's job, not
+    // refused for being a second
+    for statement in [
+        "INSERT INTO quota_limits (tenant_id, namespace_id, resource, max_value, updated_by) \
+         VALUES ($1, $2, 'batch_jobs', 1, 'admin')",
+    ] {
+        sqlx::query(statement)
+            .bind(tenant.as_uuid())
+            .bind(f.w.namespace.id().as_uuid())
+            .execute(&f.w.db.pool)
+            .await
+            .expect("one job at a time");
+    }
+    let mut held = f.w.db.pool.begin().await.expect("hold the fence");
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("quota:tenant_batch_jobs:{tenant}"))
+        .execute(&mut *held)
+        .await
+        .expect("take the fence");
+    let body = cancel();
+    let request = |key: &'static str| {
+        let pool = f.w.db.pool.clone();
+        let clock = f.clock.clone();
+        let admin = f.w.admin.clone();
+        let namespace = f.w.namespace.id();
+        let body = body.clone();
+        tokio::spawn(async move {
+            BatchService::new(PgBatchStore::new(pool), clock)
+                .create(&admin, namespace, body, key, &ctx())
+                .await
+        })
+    };
+    let (first, second) = (request("same-key-race"), request("same-key-race"));
+    within(
+        "both requests wait for the fence",
+        std::time::Duration::from_secs(120),
+        async {
+            loop {
+                let waiting: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM pg_stat_activity \
+                     WHERE datname = current_database() AND pid <> pg_backend_pid() \
+                       AND wait_event_type = 'Lock' AND query LIKE '%pg_advisory_xact_lock%'",
+                )
+                .fetch_one(&f.w.db.pool)
+                .await
+                .expect("look at the backends");
+                if waiting >= 2 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        },
+    )
+    .await;
+    held.commit().await.expect("release the fence");
+
+    let (first, second) = (
+        first.await.expect("join").expect("the first request"),
+        second.await.expect("join").expect("the second request"),
+    );
+    assert_eq!(
+        first.id, second.id,
+        "the second is answered with the first job"
+    );
+    assert_eq!(jobs_stored(&f).await, 1);
 }

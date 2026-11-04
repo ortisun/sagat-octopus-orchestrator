@@ -8,18 +8,23 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
 
-use sagat_application::batch::{BatchService, BatchWrite, JobRecord};
-use sagat_application::batch_executor::{BatchExecutor, ExecutorSettings};
+use sagat_application::batch::{BatchService, BatchStore, BatchWrite, DueJob, JobRecord};
+use sagat_application::batch_executor::{
+    BatchExecutor, ExecutorSettings, ItemActions, ItemEffect, ItemRequest, Stepped,
+};
 use sagat_application::clock::SystemClock;
+use sagat_application::error::AppError;
 use sagat_application::identity::RequestContext;
 use sagat_domain::batch::{Action, JobState, Rate, Selector};
 use sagat_domain::sharding::Shard;
 use sagat_infra_postgres::{DatabaseClock, PgBatchStore, PgIdentityStore, PgRunStore};
 use sagat_scheduler::{BatchPass, BatchRound, BatchSettings, Keeper, KeeperSettings, Placement};
+use serde_json::json;
 use uuid::Uuid;
 
 use crate::batch_executor::{Runs, everything, job, runs_started, status_of, write};
 use crate::firing::{Fixture, fixture};
+use crate::support::bounded::within;
 
 type Clock = DatabaseClock<SystemClock>;
 type Pass = BatchPass<PgBatchStore, Runs, PgIdentityStore, Clock>;
@@ -311,7 +316,22 @@ async fn a_replica_that_lost_its_lease_is_refused_where_it_records_and_the_job_w
     .execute(&f.w.db.pool)
     .await
     .expect("take the shard over");
-    let round = a.pass.round().await;
+    // a job whose selection still waits for a transaction is not due: the usurped replica is refused
+    // in the first round in which it is
+    let round = within(
+        "the job is due and the usurped replica meets the new owner",
+        StdDuration::from_secs(60),
+        async {
+            loop {
+                let round = a.pass.round().await;
+                if round.due > 0 {
+                    return round;
+                }
+                tokio::time::sleep(StdDuration::from_millis(20)).await;
+            }
+        },
+    )
+    .await;
     assert_eq!((round.steps, round.refused, round.failed), (0, 1, 0));
     let waiting = job(&f, created.id).await;
     assert_eq!(waiting.state, JobState::Selecting);
@@ -373,4 +393,189 @@ async fn a_round_takes_no_more_steps_than_its_ceiling_and_the_next_one_carries_o
     for run in &runs {
         assert_eq!(status_of(&f, *run).await, "CANCELLED");
     }
+}
+
+// --- what is due -------------------------------------------------------------------------------------
+
+/// An action that is always refused for now, as when the platform is at one of its limits.
+#[derive(Clone)]
+struct AtItsLimit;
+
+impl ItemActions for AtItsLimit {
+    async fn apply(&self, _: &ItemRequest<'_>) -> Result<ItemEffect, AppError> {
+        Err(AppError::QuotaExceeded("a limit of the test"))
+    }
+}
+
+async fn ids_due(f: &Fixture, jobs: &[&JobRecord], limit: u32) -> Vec<Uuid> {
+    let shards: Vec<Shard> = jobs.iter().map(|job| Shard::of(job.id)).collect();
+    PgBatchStore::new(f.w.db.pool.clone())
+        .due_jobs(&shards, limit)
+        .await
+        .expect("due jobs")
+        .into_iter()
+        .map(|due| due.id)
+        .collect()
+}
+
+#[tokio::test]
+async fn a_job_that_has_nothing_to_do_yet_does_not_keep_the_head_of_the_round() {
+    let f = fixture().await;
+    let (stuck_run, ready_run) = (
+        f.w.start(f.workflow, &json!({})).await.as_uuid(),
+        f.w.start(f.workflow, &json!({})).await.as_uuid(),
+    );
+    room_for(&f, 4).await;
+    let clock = clock(&f).await;
+
+    // the older job has an item the platform refused for now: it waits for its time
+    let stuck = create(
+        &f,
+        &clock,
+        fast(
+            Action::Cancel,
+            Selector::run_ids(vec![stuck_run]).expect("s"),
+        ),
+        "head-stuck",
+    )
+    .await;
+    let refusing: BatchExecutor<PgBatchStore, AtItsLimit, PgIdentityStore, Clock> =
+        BatchExecutor::new(
+            PgBatchStore::new(f.w.db.pool.clone()),
+            AtItsLimit,
+            PgIdentityStore::new(f.w.db.pool.clone()),
+            clock.clone(),
+            ExecutorSettings::default(),
+        );
+    let due = |job: &JobRecord| DueJob {
+        tenant_id: job.tenant_id,
+        id: job.id,
+    };
+    for _ in 0..500 {
+        if refusing.step(&due(&stuck), None).await.expect("step") == Stepped::Acted {
+            break;
+        }
+        tokio::time::sleep(StdDuration::from_millis(5)).await;
+    }
+    // (the first step took the page of the selection; the next one meets the refusal)
+    assert_eq!(
+        refusing
+            .step(&due(&stuck), None)
+            .await
+            .expect("refused item"),
+        Stepped::Acted
+    );
+    assert_eq!(job(&f, stuck.id).await.counts.deferred, 1);
+
+    // the newer one has a run to cancel
+    let ready = create(
+        &f,
+        &clock,
+        fast(
+            Action::Cancel,
+            Selector::run_ids(vec![ready_run]).expect("s"),
+        ),
+        "head-ready",
+    )
+    .await;
+    let working: BatchExecutor<PgBatchStore, Runs, PgIdentityStore, Clock> = BatchExecutor::new(
+        PgBatchStore::new(f.w.db.pool.clone()),
+        Runs(Arc::clone(&f.w)),
+        PgIdentityStore::new(f.w.db.pool.clone()),
+        clock.clone(),
+        ExecutorSettings::default(),
+    );
+    for _ in 0..500 {
+        if working.step(&due(&ready), None).await.expect("step") == Stepped::Acted {
+            break;
+        }
+        tokio::time::sleep(StdDuration::from_millis(5)).await;
+    }
+
+    // a round that can look at one job looks at the one that can do something
+    assert_eq!(ids_due(&f, &[&stuck, &ready], 1).await, vec![ready.id]);
+    assert_eq!(ids_due(&f, &[&stuck, &ready], 10).await, vec![ready.id]);
+
+    // when the time of the refused item comes, the older job is due again, and first
+    sqlx::query(
+        "UPDATE batch_items SET next_attempt_at = clock_timestamp() - interval '1 second' \
+         WHERE job_id = $1",
+    )
+    .bind(stuck.id)
+    .execute(&f.w.db.pool)
+    .await
+    .expect("the time has come");
+    within(
+        "the older job is due again",
+        StdDuration::from_secs(30),
+        async {
+            while ids_due(&f, &[&stuck, &ready], 10).await != vec![stuck.id, ready.id] {
+                tokio::time::sleep(StdDuration::from_millis(20)).await;
+            }
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_selection_that_waits_for_a_transaction_is_not_due_until_it_can_go_on() {
+    let f = fixture().await;
+    f.w.start(f.workflow, &json!({})).await;
+    let clock = clock(&f).await;
+    // a transaction that has an identity, open when the job is created
+    let mut held = f.w.db.pool.begin().await.expect("begin");
+    sqlx::query("SELECT pg_current_xact_id()")
+        .execute(&mut *held)
+        .await
+        .expect("an identity");
+    let waiting = create(
+        &f,
+        &clock,
+        fast(Action::Cancel, everything()),
+        "waits-for-a-transaction",
+    )
+    .await;
+
+    assert_eq!(ids_due(&f, &[&waiting], 10).await, Vec::<Uuid>::new());
+    held.rollback().await.expect("end it");
+    within(
+        "the selection may go on",
+        StdDuration::from_secs(60),
+        async {
+            while ids_due(&f, &[&waiting], 10).await != vec![waiting.id] {
+                tokio::time::sleep(StdDuration::from_millis(20)).await;
+            }
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_job_being_cancelled_is_always_due() {
+    let f = fixture().await;
+    let clock = clock(&f).await;
+    f.w.start(f.workflow, &json!({})).await;
+    let job_ = create(
+        &f,
+        &clock,
+        fast(Action::Cancel, everything()),
+        "cancelled-and-due",
+    )
+    .await;
+    BatchService::new(PgBatchStore::new(f.w.db.pool.clone()), clock.clone())
+        .cancel(
+            &f.w.admin,
+            job_.id,
+            "stop this batch job",
+            &RequestContext::default(),
+        )
+        .await
+        .expect("cancel");
+
+    within("the drain is due", StdDuration::from_secs(30), async {
+        while ids_due(&f, &[&job_], 10).await != vec![job_.id] {
+            tokio::time::sleep(StdDuration::from_millis(20)).await;
+        }
+    })
+    .await;
 }

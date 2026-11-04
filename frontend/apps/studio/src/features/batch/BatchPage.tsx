@@ -70,11 +70,7 @@ function Summary({ job, namespaceId }: { job: BatchJob; namespaceId: string }) {
         {job.maxItems ? `, at most ${job.maxItems.toLocaleString('en')} runs` : ''}
         {job.itemsPerSecond ? `, ${job.itemsPerSecond} a second` : ''}.
       </p>
-      {job.payloadDigest ? (
-        <p>
-          It carries a payload, which is not shown. Digest <code>{job.payloadDigest.slice(0, 16)}…</code>
-        </p>
-      ) : null}
+      {job.hasPayload ? <p>It carries a payload, which is not shown.</p> : null}
       {job.failureReason ? (
         <Banner tone="error" title="The job stopped.">
           {failureText(job.failureReason)}

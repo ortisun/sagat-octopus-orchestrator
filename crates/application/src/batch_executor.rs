@@ -342,6 +342,15 @@ where
             payload: payload.as_deref(),
             ctx: &ctx,
         };
+        // The last look before the run is touched: a replica that lost its lease, a job that was
+        // cancelled or an item that has ended since they were read does not apply the action.
+        if let Err(error) = self
+            .store
+            .ensure_live(job.tenant_id, job.id, item.ordinal, fence.as_ref())
+            .await
+        {
+            return Self::refused(error);
+        }
         let outcome = match self.actions.apply(&request).await {
             Ok(ItemEffect::Applied { new_run }) => ItemOutcome::Succeeded { new_run },
             Ok(ItemEffect::Skip(reason)) => ItemOutcome::Skipped(reason),

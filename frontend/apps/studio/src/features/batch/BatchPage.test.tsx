@@ -63,11 +63,10 @@ describe('A batch job', () => {
     expect(within(rows[0]!).getByRole('link')).toHaveAttribute('href', '/runs/0194f5e2-7b1c-7000-8000-000000000001');
   });
 
-  it('does not show the payload it carries, only that it has one', async () => {
-    await mount({ routes: { [`GET ${BASE}`]: () => job({ action: 'SIGNAL', payloadDigest: 'ab'.repeat(32) }) } });
+  it('does not show the payload it carries, nor anything that could confirm a guess of it, only that it has one', async () => {
+    await mount({ routes: { [`GET ${BASE}`]: () => job({ action: 'SIGNAL', hasPayload: true }) } });
     expect(await screen.findByText(/carries a payload, which is not shown/)).toBeVisible();
-    expect(screen.getByText(/abababababababab…/)).toBeVisible();
-    expect(screen.queryByText('ab'.repeat(32))).not.toBeInTheDocument();
+    expect(screen.queryByText(/digest/i)).not.toBeInTheDocument();
   });
 
   it('asks the platform for the outcome a person filters by', async () => {

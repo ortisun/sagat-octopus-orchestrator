@@ -4010,7 +4010,7 @@ paths:
       tags: [Batch operations]
       x-implemented: '018'
       description: |
-        Needs `run:batch` and every permission of the single action. Counts against `batch_jobs` (a namespace) and `tenant_batch_jobs` (a tenant). The job selects the runs that existed when it was created, waits for the transactions that were open then to end, and applies the action to one run at a time at no more than `itemsPerSecond`; each item is its own transaction under the key `batch:{job}:{run}`, so a repeated step changes nothing twice. The signal payload or update arguments are kept as content and never returned. A refusal names `details.reason` (`BATCH_SELECTOR_INVALID`, `BATCH_ACTION_PARAMETERS`, `BATCH_ACTION_UNAVAILABLE`, `BATCH_LIMITS_INVALID`, `BATCH_REASON_INVALID`, `BATCH_PAYLOAD_INVALID`, `BATCH_PAYLOAD_TOO_LARGE`, `BATCH_SELECTOR_UNSUPPORTED`, `QUERY_UNSUPPORTED_OPERATOR`) and, where it can, `details.field` as a JSON pointer. A request sent again with the same key and body is answered with the first job.
+        Needs `run:batch` and every permission of the single action. Counts against `batch_jobs` (a namespace) and `tenant_batch_jobs` (a tenant). The job selects the runs that existed when it was created, waits for the transactions that were open then to end, and applies the action to one run at a time at no more than `itemsPerSecond`; each item is its own transaction under the key `batch:{job}:{run}`, so a repeated step changes nothing twice. The signal payload or update arguments are kept as content and never returned, nor is their digest. The keys that start with `batch:` or `schedule:` are the platform's own and are refused as an `Idempotency-Key`. A refusal names `details.reason` (`BATCH_SELECTOR_INVALID`, `BATCH_ACTION_PARAMETERS`, `BATCH_ACTION_UNAVAILABLE`, `BATCH_LIMITS_INVALID`, `BATCH_REASON_INVALID`, `BATCH_PAYLOAD_INVALID`, `BATCH_PAYLOAD_TOO_LARGE`, `BATCH_SELECTOR_UNSUPPORTED`, `QUERY_UNSUPPORTED_OPERATOR`) and, where it can, `details.field` as a JSON pointer. A request sent again with the same key and body is answered with the first job.
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/IdempotencyKey'}
@@ -4058,7 +4058,7 @@ paths:
       tags: [Batch operations]
       x-implemented: '018'
       description: |
-        Needs `run:batch`. The item in flight finishes, the items that were waiting become `CANCELLED`, and what was applied stays applied. Asking twice is asking once. A job that already ended is `409` `BATCH_NOT_CANCELLABLE`. The reason is checked (8 to 2000 characters) and is not kept.
+        Needs `run:batch`. The item in flight finishes, the items that were waiting become `CANCELLED`, and what was applied stays applied. Asking twice is asking once. A job that already ended is `409` `BATCH_NOT_CANCELLABLE`. The reason is checked (8 to 2000 characters of plain text) and kept in the audit record.
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/BatchId'}
@@ -7057,7 +7057,7 @@ components:
         instancePath: {type: array, maxItems: 8, items: {$ref: '#/components/schemas/ApprovalScope'}, description: 'Not supported yet: a non-empty path is refused with BATCH_ACTION_PARAMETERS.'}
         businessId: {type: string, enum: [KEEP, DROP], default: KEEP, description: RERUN only.}
         repin: {type: object, description: REPIN only (feature 019); the action is unavailable while that feature is off.}
-        reason: {type: string, minLength: 8, maxLength: 2000}
+        reason: {type: string, minLength: 8, maxLength: 2000, description: 'Plain text, trimmed: no control character, a new line included. It is kept with the job.'}
         maxItems: {type: integer, minimum: 1, maximum: 100000, default: 10000}
         itemsPerSecond: {type: number, exclusiveMinimum: 0, maximum: 200, default: 20}
     BatchPreview:
@@ -7077,7 +7077,7 @@ components:
         state: {$ref: '#/components/schemas/BatchJobState'}
         failureReason: {type: [string, 'null'], enum: [AUTHORITY_REVOKED, SELECTION_FAILED, null]}
         createdBy: {type: string}
-        payloadDigest: {type: [string, 'null'], description: Signal payload or update arguments; never the value.}
+        hasPayload: {type: boolean, description: 'Whether the job carries a signal payload or update arguments. Neither the value nor its digest is returned: a digest would let a reader of the job confirm a guess of a payload they may not read.'}
         maxItems: {type: integer}
         itemsPerSecond: {type: number}
         counts:

@@ -2830,7 +2830,7 @@ export interface paths {
         put?: never;
         /**
          * Create a durable, rate-limited batch job
-         * @description Needs `run:batch` and every permission of the single action. Counts against `batch_jobs` (a namespace) and `tenant_batch_jobs` (a tenant). The job selects the runs that existed when it was created, waits for the transactions that were open then to end, and applies the action to one run at a time at no more than `itemsPerSecond`; each item is its own transaction under the key `batch:{job}:{run}`, so a repeated step changes nothing twice. The signal payload or update arguments are kept as content and never returned. A refusal names `details.reason` (`BATCH_SELECTOR_INVALID`, `BATCH_ACTION_PARAMETERS`, `BATCH_ACTION_UNAVAILABLE`, `BATCH_LIMITS_INVALID`, `BATCH_REASON_INVALID`, `BATCH_PAYLOAD_INVALID`, `BATCH_PAYLOAD_TOO_LARGE`, `BATCH_SELECTOR_UNSUPPORTED`, `QUERY_UNSUPPORTED_OPERATOR`) and, where it can, `details.field` as a JSON pointer. A request sent again with the same key and body is answered with the first job.
+         * @description Needs `run:batch` and every permission of the single action. Counts against `batch_jobs` (a namespace) and `tenant_batch_jobs` (a tenant). The job selects the runs that existed when it was created, waits for the transactions that were open then to end, and applies the action to one run at a time at no more than `itemsPerSecond`; each item is its own transaction under the key `batch:{job}:{run}`, so a repeated step changes nothing twice. The signal payload or update arguments are kept as content and never returned, nor is their digest. The keys that start with `batch:` or `schedule:` are the platform's own and are refused as an `Idempotency-Key`. A refusal names `details.reason` (`BATCH_SELECTOR_INVALID`, `BATCH_ACTION_PARAMETERS`, `BATCH_ACTION_UNAVAILABLE`, `BATCH_LIMITS_INVALID`, `BATCH_REASON_INVALID`, `BATCH_PAYLOAD_INVALID`, `BATCH_PAYLOAD_TOO_LARGE`, `BATCH_SELECTOR_UNSUPPORTED`, `QUERY_UNSUPPORTED_OPERATOR`) and, where it can, `details.field` as a JSON pointer. A request sent again with the same key and body is answered with the first job.
          */
         post: operations["createBatchOperation"];
         delete?: never;
@@ -2870,7 +2870,7 @@ export interface paths {
         put?: never;
         /**
          * Stop admitting items; nothing applied is undone
-         * @description Needs `run:batch`. The item in flight finishes, the items that were waiting become `CANCELLED`, and what was applied stays applied. Asking twice is asking once. A job that already ended is `409` `BATCH_NOT_CANCELLABLE`. The reason is checked (8 to 2000 characters) and is not kept.
+         * @description Needs `run:batch`. The item in flight finishes, the items that were waiting become `CANCELLED`, and what was applied stays applied. Asking twice is asking once. A job that already ended is `409` `BATCH_NOT_CANCELLABLE`. The reason is checked (8 to 2000 characters of plain text) and kept in the audit record.
          */
         post: operations["cancelBatchOperation"];
         delete?: never;
@@ -5551,6 +5551,7 @@ export interface components {
             businessId: "KEEP" | "DROP";
             /** @description REPIN only (feature 019); the action is unavailable while that feature is off. */
             repin?: Record<string, never>;
+            /** @description Plain text, trimmed: no control character, a new line included. It is kept with the job. */
             reason: string;
             /** @default 10000 */
             maxItems: number;
@@ -5573,8 +5574,8 @@ export interface components {
             /** @enum {string|null} */
             failureReason?: "AUTHORITY_REVOKED" | "SELECTION_FAILED" | null;
             createdBy: string;
-            /** @description Signal payload or update arguments; never the value. */
-            payloadDigest?: string | null;
+            /** @description Whether the job carries a signal payload or update arguments. Neither the value nor its digest is returned: a digest would let a reader of the job confirm a guess of a payload they may not read. */
+            hasPayload?: boolean;
             maxItems?: number;
             itemsPerSecond?: number;
             counts: {

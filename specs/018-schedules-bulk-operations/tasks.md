@@ -642,7 +642,7 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   run → fence → job → item, rate slot, deferral, drain) with kill/restart, duplicate, lost-hint and
   late-commit faults — `crates/scheduler/src/batches.rs`, `tests/fault/schedules-bulk-operations/batch.rs`
   — SC-018-009 — FR-018-029..031, FR-018-033.
-  *Done 2026-11-04.* The executor itself is built (decision D1958): `BatchExecutor::step` selects, applies, drains, fails and ends a job
+  *Done 2026-11-04 (SC-018-009 is proven in part: see the review below).* The executor itself is built (decision D1958): `BatchExecutor::step` selects, applies, drains, fails and ends a job
   one step at a time, over `BatchStore` (`due_jobs`, `select_round`, `next_item`, `record_item`, `complete_job`,
   `drain_cancel`, `fail_job`). A design defect of D1033 was found by a held transaction: `pg_snapshot_xmax` is the last
   completed identity plus one, so an open transaction with that identity let the selection start; the horizon is now the
@@ -680,6 +680,13 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   selection is the held transaction of `batch_executor::` (the selection waits for it); its residual window is G1957.
   Not part of this task and not done: fairness between tenants, the gauges (`scheduler_lag_seconds{pass="batches"}`,
   `batch_items_total`) and the monitor alert, which the schedule pass lacks too (T018-017).
+  *After an independent read (D1960).* The kill matrix uses an action with no effect of its own, so it proves that the
+  record of an item is atomic and not that the effect and the record are (G1961, O1951); the held-transaction test proves
+  that the selection waits, not that a run the held transaction commits late is then selected; no lost hint exists to
+  test. SC-018-009 is covered by `a_job_over_a_thousand_runs_applies_each_once_across_a_restart_and_a_cancel` (1,000 runs
+  in two pages of selection, 400 items, a restart, 300 items, a cancel: 700 succeeded and 300 cancelled, every key applied
+  once, the counters equal the item rows) and by the lock monitor of T018-049; the run whose creating transaction was in
+  progress is the part not proven by a test (G1957, G1962).
 - [ ] T018-047 [US5] Item adapters for the eight actions through single-run use cases, skip reasons (incl.
   `TEST_RUN`), failed compensation of cancelled runs — `tests/integration/schedules-bulk-operations/batch_actions.rs`
   — one case per action and reason — FR-018-030, FR-018-031, FR-018-034, FR-018-050.
@@ -690,7 +697,7 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   and workers, `batch_actions::` (4 passed) and the earlier `batch_executor::`: `CANCEL` of a running run and of one that
   ended (`ALREADY_TERMINAL`); `PAUSE` and `RESUME` of a run they fit and of one that ended or is not paused
   (`NOT_APPLICABLE`), with the `paused` flag checked; `SIGNAL` to two runs that wait for it (both woken) and to a run that
-  waits for nothing and to a run already woken (`NOT_WAITING`, never buffered), the job showing the payload by digest only;
+  waits for nothing and to a run already woken (`NOT_WAITING`, never buffered), the job showing that it has a payload (`hasPayload`), never its digest (D1960);
   `RETRY_STEP` of a compensation that ran out of attempts and waits for an operator (`reserve~c`: the run goes back to
   `COMPENSATING` with another attempt), of a run that has no such step (`NOT_WAITING`) and of a step whose outcome is
   unknown (the item `FAILED` with `CONFLICT`, nothing repeated, the run stays in review); `MARK_MANUAL_REVIEW` of a step
@@ -734,7 +741,11 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `ALREADY_TERMINAL` and nothing else), every run is `CANCELLED`, and `pg_stat_database.deadlocks` did not move. The test
   is not vacuous: its monitor and its deadlock are shown by the self-tests of T018-012 (it sees two run locks held at
   once, and the harness reproduces a deadlock); no mutation of the platform could be made to hold two run locks,
-  because no path of the platform does.
+  because no path of the platform does. *After an independent read:* the batch executor takes no run lock of its own (the
+  run service does, one run at a time), so the monitor observes the run service under batch load; the order of the batch
+  side (job, then item, in `record_item`, `drain_cancel`, `fail_job` and `select_round`, and the job alone in
+  `request_cancel`) is by construction and is exercised by the duplicate-step and late-cancel tests of T018-046, not by
+  this monitor.
 - [x] T018-050 [P] [US5] Studio batch (from run-list filter, preview, confirm with reason, progress,
   items, cancel) — `frontend/apps/studio/src/features/batch/`, `frontend/apps/studio/src/features/runs/runList.ts`
   — component tests — FR-018-047.
@@ -746,7 +757,7 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   (`/batches`, newest first, a state filter, load more, followed every 5 s while one job is at work) and `BatchPage`
   (`/batches/:batchId`: the state in words and a shape, a progress bar with "25 of 40 runs have an outcome (62%)", the
   counters, the outcome of each run with the reason in words or the error code, a filter by outcome, load more, followed
-  every 2 s while the job works, the payload never shown, only a short digest; "Cancel the job" with `run:batch`, a reason
+  every 2 s while the job works, the payload never shown, nor its digest, only that the job has one; "Cancel the job" with `run:batch`, a reason
   and the plain statement that what was applied stays applied). A deployment with batch operations off (`ROUTE_NOT_FOUND`)
   is told so. Routes `batches` and `batches/:batchId`, a "Batches" entry in the menu, six endpoints in
   `api/endpoints.ts`. The pure rules are in `model.ts` and tested alone. Evidence, from `frontend/` in CI's order: `npm run
