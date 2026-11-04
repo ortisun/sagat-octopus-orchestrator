@@ -608,12 +608,11 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   and `cargo clippy --workspace --all-targets --locked -- -D warnings` clean. The gates found two failures on the first
   run and one more on the second, all of them tests that list every resource or every literal; none was a defect of the
   behaviour. `MARK_MANUAL_REVIEW` is the single-run `Hold`, which needs `run:operate` only.
-- [ ] T018-046 [US5] Executor pass (horizon wait on `pg_snapshot_xmin`, keyset selection rounds, item order
+- [x] T018-046 [US5] Executor pass (horizon wait on `pg_snapshot_xmin`, keyset selection rounds, item order
   run → fence → job → item, rate slot, deferral, drain) with kill/restart, duplicate, lost-hint and
   late-commit faults — `crates/scheduler/src/batches.rs`, `tests/fault/schedules-bulk-operations/batch.rs`
   — SC-018-009 — FR-018-029..031, FR-018-033.
-  *Part done 2026-11-04 (task stays open: the pass in the scheduler and its wiring in the engine, and the faults at each
-  write).* The executor itself is built (decision D1958): `BatchExecutor::step` selects, applies, drains, fails and ends a job
+  *Done 2026-11-04.* The executor itself is built (decision D1958): `BatchExecutor::step` selects, applies, drains, fails and ends a job
   one step at a time, over `BatchStore` (`due_jobs`, `select_round`, `next_item`, `record_item`, `complete_job`,
   `drain_cancel`, `fail_job`). A design defect of D1033 was found by a held transaction: `pg_snapshot_xmax` is the last
   completed identity plus one, so an open transaction with that identity let the selection start; the horizon is now the
@@ -636,9 +635,21 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   shards and cancel every run once; a replica whose shard was taken is refused where it records and the job goes on when
   the shard is back; a round of one step takes one step and the next carries on), 2 unit tests of the ceilings, 2 in
   `apps/execution-engine/tests/config.rs`. Mutations that were caught: the pass without the fence fails the lease test
-  (2 steps, 0 refused instead of 0 and 1), and a round without its ceiling fails the ceiling test. Not done: the faults
-  at each write (`tests/fault/schedules-bulk-operations/batch.rs`), fairness between tenants, the gauges
-  (`scheduler_lag_seconds{pass="batches"}`, `batch_items_total`) and the monitor alert, which the schedule pass lacks too.
+  (2 steps, 0 refused instead of 0 and 1), and a round without its ceiling fails the ceiling test.
+  *The faults* (`tests/fault/schedules-bulk-operations/batch.rs`, 7 passed): a process killed after each write of the five
+  transactions of the executor (a page of the selection 3 writes, an item 3, the last item 4, the drain of a cancelled
+  job 6, the failure of a job whose creator lost a permission 4; the connection dies inside PostgreSQL at the Nth write)
+  commits nothing (every table digest equal), leaves the job where it was, and a new executor started from the database
+  alone ends it exactly once (one item for each run, counters adding up to the items, one `batch.finished` record, the
+  key of each run unchanged); two steps at the same item, both waiting for the row of the job, count it once (one
+  `Acted`, one `Refused`); a cancel that commits first while an item that was applied is being recorded loses neither
+  (the item is counted `SUCCEEDED`, the other two `CANCELLED`, one end record). Mutations that were caught: dropping the
+  "item already ended" guard (the item is counted twice), refusing to record into a cancelling job (`Refused` instead of
+  `Acted`), and the audit of a drained job in a transaction of its own (the probe sees two transactions). No lost hint
+  exists to test: a job is found by the pass's own poll, as a schedule is. The late commit of a run against the
+  selection is the held transaction of `batch_executor::` (the selection waits for it); its residual window is G1957.
+  Not part of this task and not done: fairness between tenants, the gauges (`scheduler_lag_seconds{pass="batches"}`,
+  `batch_items_total`) and the monitor alert, which the schedule pass lacks too (T018-017).
 - [ ] T018-047 [US5] Item adapters for the eight actions through single-run use cases, skip reasons (incl.
   `TEST_RUN`), failed compensation of cancelled runs — `tests/integration/schedules-bulk-operations/batch_actions.rs`
   — one case per action and reason — FR-018-030, FR-018-031, FR-018-034, FR-018-050.

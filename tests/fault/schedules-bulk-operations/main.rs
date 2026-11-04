@@ -8,6 +8,7 @@
 #[path = "../../support/mod.rs"]
 mod support;
 
+mod batch;
 mod cancel_other;
 mod clocks;
 mod firing;
