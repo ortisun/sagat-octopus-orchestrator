@@ -652,7 +652,7 @@ impl<S: BatchStore, C: Clock> BatchService<S, C> {
     /// # Errors
     /// [`AppError::Forbidden`] without `run:batch` or a permission of the action;
     /// [`AppError::NotFound`] for a namespace that is not the tenant's; [`AppError::InvalidBatch`]
-    /// for parameters the action does not take (`BATCH_PARAMS_INVALID`), a feature that is not enabled
+    /// for parameters the action does not take (`BATCH_ACTION_PARAMETERS`), a feature that is not enabled
     /// (`BATCH_ACTION_UNAVAILABLE`), limits out of range (`BATCH_LIMITS_INVALID`), a payload that is
     /// not JSON or is too big, or a selector the deployment cannot evaluate;
     /// [`AppError::QuotaExceeded`] for a full namespace or tenant;
@@ -689,12 +689,12 @@ impl<S: BatchStore, C: Clock> BatchService<S, C> {
             || (write.drop_business_id && write.action != Action::Rerun)
             || (!write.instance_path.is_empty() && write.step_id.is_none())
         {
-            return Err(invalid("BATCH_PARAMS_INVALID", "/"));
+            return Err(invalid("BATCH_ACTION_PARAMETERS", "/"));
         }
         if !write.instance_path.is_empty() {
             // a step of an iteration of a collection or a loop needs its scope path resolved per run;
             // until then a job names root steps only (G1956)
-            return Err(invalid("BATCH_PARAMS_INVALID", "/instancePath"));
+            return Err(invalid("BATCH_ACTION_PARAMETERS", "/instancePath"));
         }
         if let SelectorKind::Filter(filter) = write.selector.kind()
             && filter.business_id_prefix.is_some()
@@ -877,6 +877,23 @@ impl<S: BatchStore, C: Clock> BatchService<S, C> {
             .await?)
     }
 
+    /// The namespace of a job of the caller's tenant. It needs no permission: the caller is
+    /// authorized for the namespace by the route, which then checks the job is in it.
+    ///
+    /// # Errors
+    /// [`AppError::NotFound`] for a job that is not the tenant's.
+    pub async fn namespace_of(
+        &self,
+        principal: &Principal,
+        id: Uuid,
+    ) -> Result<NamespaceId, AppError> {
+        self.store
+            .job(principal.tenant_id(), id)
+            .await?
+            .map(|job| job.namespace_id)
+            .ok_or(AppError::NotFound)
+    }
+
     /// # Errors
     /// [`AppError::Forbidden`] without `run:read`; [`AppError::NotFound`].
     pub async fn get(&self, principal: &Principal, id: Uuid) -> Result<JobRecord, AppError> {
@@ -973,7 +990,8 @@ impl<S: BatchStore, C: Clock> BatchService<S, C> {
     /// Stops a job after the item in flight; what was applied stays applied (`FR-018-032`).
     ///
     /// # Errors
-    /// [`AppError::Forbidden`] without `run:batch`; [`AppError::NotFound`].
+    /// [`AppError::Forbidden`] without `run:batch`; [`AppError::NotFound`];
+    /// [`AppError::BatchConflict`] (`BATCH_NOT_CANCELLABLE`) for a job that already ended.
     pub async fn cancel(
         &self,
         principal: &Principal,
@@ -981,6 +999,17 @@ impl<S: BatchStore, C: Clock> BatchService<S, C> {
         ctx: &RequestContext,
     ) -> Result<JobRecord, AppError> {
         principal.authorize(Permission::RunBatch)?;
+        let current = self
+            .store
+            .job(principal.tenant_id(), id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        if current.state.is_terminal() {
+            // nothing to stop, and nothing to audit: the job ended before this request
+            return Err(AppError::BatchConflict {
+                reason: "BATCH_NOT_CANCELLABLE",
+            });
+        }
         let now = self.clock.now();
         let audit = AuditRecord::by(
             principal,

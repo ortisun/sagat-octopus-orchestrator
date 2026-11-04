@@ -118,6 +118,7 @@ fn error_code(error: &AppError) -> &'static str {
         | AppError::Conflict(_)
         | AppError::RevisionConflict { .. }
         | AppError::ScheduleConflict { .. }
+        | AppError::BatchConflict { .. }
         | AppError::OutcomeUnresolved => "CONFLICT",
         AppError::IdempotencyKeyReused => "IDEMPOTENCY_KEY_REUSED",
         AppError::PayloadTooLarge(_) => "PAYLOAD_TOO_LARGE",

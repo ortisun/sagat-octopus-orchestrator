@@ -450,6 +450,18 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
   domain (5 s doubling to 5 min) and an item refused more than the retries allow or for longer than the window fails
   `RETRIES_EXHAUSTED`; any other error fails the item with a closed code. A job asking for `UPDATE` is refused when it is
   created (`BATCH_ACTION_UNAVAILABLE`, G1959), as is a step named with an instance path (G1956).
+- **D1959** (2026-11-04, T018-045) The routes of batch operations follow the contract and, where the code had named something
+  its own way, the contract wins. `BATCH_ACTION_PARAMETERS` is the reason for an action that needs or refuses a
+  parameter (the service said `BATCH_PARAMS_INVALID` and was renamed); a job that already ended is `409`
+  `BATCH_NOT_CANCELLABLE` (the service had left it alone and answered with it; it now refuses before it audits, and a job
+  being cancelled that is cancelled again is still one cancellation, one audit record). The use cases reach the HTTP layer
+  as one trait object (`BatchUseCase`, implemented by `BatchService`) so the routes take no new generic parameter, like
+  the schedule routes. Admission authorizes the namespace of the path (`run:batch` to create or cancel, `run:read` to read,
+  both to preview); the service then asks for the permissions of the action; a job is placed by `namespace_of`, which
+  needs no permission, so a caller with `run:batch` and no `run:read` can still cancel, and a job through the path of
+  another namespace of the same tenant is `404`. The ids of a selector travel as strings and are parsed here, so a
+  malformed id is `BATCH_SELECTOR_INVALID` at `/selector/...` and not a generic body error. The routes exist only behind
+  `SAGAT_BATCHES_ENABLED` (control plane and engine, off by default), on the database clock shared with the schedules.
 - **D1955** (2026-11-04, T018-028) The actions of a schedule are purged by a bounded function, visiting schedules in
   turn. Nothing deleted them: an hourly schedule writes 8,700 rows a year and one every minute 525,000. FR-018-013
   keeps "at least the last 1,000 or 30 days": an action goes when it is older than 30 days **and** beyond the
@@ -499,6 +511,7 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
 | G1957 | A transaction that began before a batch job was created and takes its identity only after it can commit a run whose `created_at` is before the job's bound after the selection read, and the run is not selected (D1958). | It is concurrent with the creation of the job, which commits first, so the run is not "before" the job in any order a caller can observe; the window is the milliseconds between reading the clock and the first write of a run creation. Closing it needs the selection to look at the oldest transaction that has not ended, not only at identities. | Open |
 | G1958 | The wait of an item for the lock of its run is not bounded to two seconds (`LOCK_WAIT` is never produced): the run service opens a run with `Lock::Wait`. A long transaction on one run delays the job's pass at that item. | Run transactions are short; a bounded wait needs a lock mode in the run store that gives up and an error to carry it. | Open |
 | G1959 | The `UPDATE` action of a batch is refused at creation: it needs the declared-operations evaluation of a run (its receipt, `reapplyOnReset`, the per-run update key), which no use case offers to a caller that is not the HTTP route. | A use case of the application layer for a declared Update, shared by the route and the batch. | Open |
+| G1960 | `cancelBatchOperation` requires an `Idempotency-Key` and a `reason` (8 to 2,000 characters) but neither is kept: asking twice is asking once by the nature of the operation (the second answer is the job being cancelled), and the reason is checked and not stored, because the audit record names the action and never free text (D1957). | A cancellation reason in the audit trail needs a closed vocabulary or a redaction rule; the key would need a replay store (as G1014 for schedule writes). | Open |
 | G1952 | A backfill step that the admission refuses (a full quota, no published version) waits and is tried again on every round of the pass, with no backoff, unlike a scheduled time (D1952). | A round is one poll of the database per owned shard and the step is one rolled-back transaction; harmless at the default poll but wasteful. Fix with a `retry_at` on the backfill (a migration). | Open |
 
 ## 5. Owner questions (the plan implements the recommended defaults)

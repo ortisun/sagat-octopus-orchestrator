@@ -167,6 +167,14 @@ fn body_of(operation: &str) -> Option<Value> {
         "createScheduleBackfill" => {
             json!({"start": "2026-10-01T00:00:00Z", "end": "2026-10-02T00:00:00Z"})
         }
+        // Feature 018: an administrator of another tenant batching, previewing or cancelling over
+        // the victim's runs.
+        "createBatchOperation" => json!({
+            "selector": {"filter": {}}, "action": "CANCEL",
+            "reason": "cross-tenant battery probe"
+        }),
+        "previewBatchOperation" => json!({"selector": {"filter": {}}}),
+        "cancelBatchOperation" => json!({"reason": "cross-tenant battery probe"}),
         // Feature 008: an administrator of another tenant draining the victim's worker.
         "drainWorker" | "undrainWorker" => {
             json!({"reason": "cross-tenant battery probe"})
@@ -224,6 +232,7 @@ fn is_resource_id(name: &str) -> bool {
             | "workflowId"
             | "runId"
             | "scheduleId"
+            | "batchId"
             | "scriptId"
             | "executionId"
             | "requestId"
@@ -280,6 +289,15 @@ async fn snapshot(api: &TestApi, victim: &Victim) -> Value {
         format!("/namespaces/{ns}/egress-policy"),
         format!("/namespaces/{ns}/scripts"),
         format!("/namespaces/{ns}/schedules"),
+        format!("/namespaces/{ns}/batch-operations"),
+        format!(
+            "/namespaces/{ns}/batch-operations/{}",
+            victim.ids["batchId"]
+        ),
+        format!(
+            "/namespaces/{ns}/batch-operations/{}/items",
+            victim.ids["batchId"]
+        ),
         format!(
             "/namespaces/{ns}/scripts/{}/versions",
             victim.ids["scriptId"]
@@ -473,9 +491,23 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
         .expect("schedule id")
         .to_owned();
 
+    let (status, batch) = send(
+        &api,
+        "POST",
+        &format!("/namespaces/{ns}/batch-operations"),
+        alice,
+        Some(&json!({
+            "selector": {"filter": {}}, "action": "CANCEL", "reason": "the victim's own batch"
+        })),
+    )
+    .await;
+    assert_eq!(status, 202, "{batch}");
+    let batch = batch["batchId"].as_str().expect("batch id").to_owned();
+
     let victim = Victim {
         ids: BTreeMap::from([
             ("scheduleId", schedule.clone()),
+            ("batchId", batch.clone()),
             ("backfillId", Uuid::now_v7().to_string()),
             ("scriptId", script.clone()),
             ("testRunId", test_run.clone()),

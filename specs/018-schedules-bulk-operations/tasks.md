@@ -585,12 +585,12 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
 
 ## Phase 7: US05 — Batch operations (P2)
 
-- [ ] T018-045 [US5] Batch store, service and routes (create, preview, read, list, items, cancel) —
+- [x] T018-045 [US5] Batch store, service and routes (create, preview, read, list, items, cancel) —
   `crates/infra-postgres/src/batch.rs`, `crates/application/src/batch.rs`,
   `crates/api-http/src/routes/batch.rs`, `crates/api-http/src/dto_batch.rs` — contract/store tests —
   FR-018-027, FR-018-028, FR-018-032.
-  *Part done 2026-11-04 (task stays open: the routes and the DTOs, and the executor that selects and applies).* The
-  store and the service are built (decision D1957): create (judged against the active jobs of the namespace and of the
+  *Done 2026-11-04 (the executor that selects and applies is T018-046/047).* The store and the service are built
+  (decision D1957): create (judged against the active jobs of the namespace and of the
   tenant under a fence, idempotent by key, the payload of a signal or an update kept as content and never returned, the
   audit record naming the action and never the justification), preview (counted up to `maxItems + 1` with a sample of 20
   in a read that stops after 5 seconds), read, list newest first with a cursor, items, and cancel (once, audited once, a
@@ -608,6 +608,23 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   and `cargo clippy --workspace --all-targets --locked -- -D warnings` clean. The gates found two failures on the first
   run and one more on the second, all of them tests that list every resource or every literal; none was a defect of the
   behaviour. `MARK_MANUAL_REVIEW` is the single-run `Hold`, which needs `run:operate` only.
+  *The routes and the DTOs (D1959):* `POST /namespaces/{id}/batch-operations/preview`, `GET` and `POST
+  /namespaces/{id}/batch-operations`, `GET /namespaces/{id}/batch-operations/{batchId}`, `POST .../{batchId}/cancel` and
+  `GET .../{batchId}/items`, in `api-http/src/routes/batch.rs` and `dto_batch.rs`, over the `BatchUseCase` trait object
+  (`application/src/batch_api.rs`), merged into the platform contract with `x-implemented: '018'` (six operations, the
+  `Batch operations` tag, `BatchId` and eight schemas) and served only behind `SAGAT_BATCHES_ENABLED`. Evidence:
+  `contract_schedules_bulk_operations` `batch::every_batch_operation_conforms_to_the_contract_on_its_normal_and_error_paths`
+  (every one of the six operations, each status it documents and each body checked against its schema: previews with a
+  filter, ids, a bad id, a bad status, a query refused, an unknown field; a job created and refused for a viewer, an
+  anonymous caller, another tenant, a short reason, `UPDATE`, a missing step, a rate over 200, an unknown action and a
+  missing key; reading, listing with a state and a bad cursor, items with a state, the job through another namespace of
+  the tenant as 404; cancelling twice and then a job that ended as 409 `BATCH_NOT_CANCELLABLE`); removing the same-namespace
+  check of the route makes it fail (the job is returned through the wrong namespace). The cross-tenant battery
+  (`contract_rest_security_multitenancy` `battery::`, 2 passed) now creates a job of the victim and snapshots it, and every
+  batch operation resists an administrator of another tenant; `integration_schedules_bulk_operations` `batch::` holds the
+  new refusal of a finished job; `apps/control-plane/tests/config.rs` the strict flag; `contract_developer_experience` was
+  blessed after reading the diff (six operations in a new group, 176 in all) and rerun without the switch; Studio
+  `npm run api`, `check:api` and `typecheck` are clean. Gap G1960.
 - [x] T018-046 [US5] Executor pass (horizon wait on `pg_snapshot_xmin`, keyset selection rounds, item order
   run → fence → job → item, rate slot, deferral, drain) with kill/restart, duplicate, lost-hint and
   late-commit faults — `crates/scheduler/src/batches.rs`, `tests/fault/schedules-bulk-operations/batch.rs`

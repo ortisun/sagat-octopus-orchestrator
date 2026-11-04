@@ -223,21 +223,21 @@ async fn parameters_the_action_does_not_take_and_limits_out_of_range_create_noth
                 step_id: Some("a".to_owned()),
                 ..cancel()
             },
-            "BATCH_PARAMS_INVALID",
+            "BATCH_ACTION_PARAMETERS",
         ),
         (
             BatchWrite {
                 action: Action::RetryStep,
                 ..cancel()
             },
-            "BATCH_PARAMS_INVALID",
+            "BATCH_ACTION_PARAMETERS",
         ),
         (
             BatchWrite {
                 drop_business_id: true,
                 ..cancel()
             },
-            "BATCH_PARAMS_INVALID",
+            "BATCH_ACTION_PARAMETERS",
         ),
         (
             BatchWrite {
@@ -523,7 +523,7 @@ async fn jobs_are_read_listed_newest_first_and_never_across_tenants() {
 }
 
 #[tokio::test]
-async fn cancelling_stops_the_job_once_audits_once_and_leaves_a_finished_job_alone() {
+async fn cancelling_stops_the_job_once_audits_once_and_refuses_a_finished_job() {
     let f = fixture().await;
     let job = create(&f, cancel(), "to-cancel").await.expect("create");
     let service = service(&f);
@@ -561,18 +561,35 @@ async fn cancelling_stops_the_job_once_audits_once_and_leaves_a_finished_job_alo
     .expect("audit");
     assert_eq!(audits, 1);
 
-    // a job that is over stays as it ended
+    // a job that is over is refused, stays as it ended and is not audited as cancelled
     let done = create(&f, cancel(), "done-job-1").await.expect("done");
     sqlx::query("UPDATE batch_jobs SET state = 'COMPLETED', finished_at = now() WHERE id = $1")
         .bind(done.id)
         .execute(&f.w.db.pool)
         .await
         .expect("finish");
-    let unchanged = service
-        .cancel(&f.w.admin, done.id, &ctx())
-        .await
-        .expect("cancel");
-    assert_eq!(unchanged.state, JobState::Completed);
+    let refused = service.cancel(&f.w.admin, done.id, &ctx()).await;
+    assert!(
+        matches!(
+            refused,
+            Err(AppError::BatchConflict {
+                reason: "BATCH_NOT_CANCELLABLE"
+            })
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(
+        service.get(&f.w.admin, done.id).await.expect("get").state,
+        JobState::Completed
+    );
+    let audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_records WHERE action = 'batch.cancelled' AND resource_id = $1",
+    )
+    .bind(done.id.to_string())
+    .fetch_one(&f.w.db.pool)
+    .await
+    .expect("audit");
+    assert_eq!(audits, 0, "a refused cancel is not an event");
 }
 
 // --- previewing ----------------------------------------------------------------------------------------

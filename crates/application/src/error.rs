@@ -150,6 +150,10 @@ pub enum AppError {
         reason: &'static str,
         field: Option<String>,
     },
+    /// A batch job that is in a state the request cannot be taken in (`details.reason` of the
+    /// contract): a job that already ended cannot be cancelled.
+    #[error("batch conflict: {reason}")]
+    BatchConflict { reason: &'static str },
     /// Another attempt was asked of a step whose last outcome is unknown; it must be settled
     /// (`RESOLVE_STEP`) before anything is repeated, by any role (feature 037).
     #[error("the step's last outcome is unknown and must be settled first")]

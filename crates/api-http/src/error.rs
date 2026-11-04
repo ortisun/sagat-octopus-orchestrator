@@ -664,6 +664,15 @@ impl ApiError {
                 e.parts.details = Some(json!({ "reason": reason }));
                 e
             }
+            AppError::BatchConflict { reason } => {
+                let mut e = Self::new(
+                    StatusCode::CONFLICT,
+                    ErrorCode::Conflict,
+                    "the batch operation is in a state that cannot take this request",
+                );
+                e.parts.details = Some(json!({ "reason": reason }));
+                e
+            }
             AppError::OutcomeUnresolved => {
                 let mut e = Self::new(
                     StatusCode::CONFLICT,

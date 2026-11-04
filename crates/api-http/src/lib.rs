@@ -24,6 +24,7 @@ mod context;
 mod core;
 pub mod denial;
 mod dto;
+mod dto_batch;
 mod dto_chains;
 mod dto_database;
 mod dto_declared_operations;
@@ -404,6 +405,7 @@ where
     let serves_secrets = state.secrets().is_some();
     let serves_events = state.events().is_some();
     let serves_schedules = state.schedules().is_some();
+    let serves_batches = state.batches().is_some();
     let serves_outbound = state.outbound().is_some();
     let serves_connectors = state.connectors().is_some();
     let serves_scripts = state.scripts().is_some();
@@ -586,6 +588,34 @@ where
                     axum::routing::post(sc::cancel_schedule_backfill::<B<S, C, G>>),
                 )
                 .layer(RequestBodyLimitLayer::new(sc::SCHEDULE_MAX_BODY_BYTES)),
+        );
+    }
+    // Batch operations are deployment-gated: without the service the routes are not there at all.
+    if serves_batches {
+        use routes::batch as ba;
+        router = router.merge(
+            Router::new()
+                .route(
+                    "/namespaces/{namespace_id}/batch-operations/preview",
+                    axum::routing::post(ba::preview_batch::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/batch-operations",
+                    get(ba::list_batches::<B<S, C, G>>).post(ba::create_batch::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/batch-operations/{batch_id}",
+                    get(ba::get_batch::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/batch-operations/{batch_id}/cancel",
+                    axum::routing::post(ba::cancel_batch::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/batch-operations/{batch_id}/items",
+                    get(ba::list_batch_items::<B<S, C, G>>),
+                )
+                .layer(RequestBodyLimitLayer::new(ba::BATCH_MAX_BODY_BYTES)),
         );
     }
     if serves_outbound {

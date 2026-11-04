@@ -2795,6 +2795,110 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/namespaces/{namespaceId}/batch-operations/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Count what a selector matches; changes nothing
+         * @description Needs `run:batch` and `run:read`. Counts the runs the selector matches up to `maxItems` (a count over `maxItems` is `capped`) and returns a sample of 20 ids; it reads for at most five seconds. A selector names a structured `filter`, a list of `runIds` or (while the query language of feature 020 is off) a `query`, which is refused with `QUERY_UNSUPPORTED_OPERATOR`. A selector that is malformed or over its ceiling is `BATCH_SELECTOR_INVALID`.
+         */
+        post: operations["previewBatchOperation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/batch-operations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Batch jobs of a namespace, newest first
+         * @description Needs `run:read`.
+         */
+        get: operations["listBatchOperations"];
+        put?: never;
+        /**
+         * Create a durable, rate-limited batch job
+         * @description Needs `run:batch` and every permission of the single action. Counts against `batch_jobs` (a namespace) and `tenant_batch_jobs` (a tenant). The job selects the runs that existed when it was created, waits for the transactions that were open then to end, and applies the action to one run at a time at no more than `itemsPerSecond`; each item is its own transaction under the key `batch:{job}:{run}`, so a repeated step changes nothing twice. The signal payload or update arguments are kept as content and never returned. A refusal names `details.reason` (`BATCH_SELECTOR_INVALID`, `BATCH_ACTION_PARAMETERS`, `BATCH_ACTION_UNAVAILABLE`, `BATCH_LIMITS_INVALID`, `BATCH_REASON_INVALID`, `BATCH_PAYLOAD_INVALID`, `BATCH_PAYLOAD_TOO_LARGE`, `BATCH_SELECTOR_UNSUPPORTED`, `QUERY_UNSUPPORTED_OPERATOR`) and, where it can, `details.field` as a JSON pointer. A request sent again with the same key and body is answered with the first job.
+         */
+        post: operations["createBatchOperation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/batch-operations/{batchId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A batch job with its counters
+         * @description Needs `run:read`. The counters equal the outcomes of the items.
+         */
+        get: operations["getBatchOperation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/batch-operations/{batchId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Stop admitting items; nothing applied is undone
+         * @description Needs `run:batch`. The item in flight finishes, the items that were waiting become `CANCELLED`, and what was applied stays applied. Asking twice is asking once. A job that already ended is `409` `BATCH_NOT_CANCELLABLE`. The reason is checked (8 to 2000 characters) and is not kept.
+         */
+        post: operations["cancelBatchOperation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/batch-operations/{batchId}/items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The items of a batch job, in order
+         * @description Needs `run:read`. An item shows what became of one run: its state, a closed reason for a skip or a deferral, the `Error.code` of a failure, and the run a rerun created.
+         */
+        get: operations["listBatchItems"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -5397,6 +5501,124 @@ export interface components {
             end: string;
             overlap?: components["schemas"]["ScheduleOverlapPolicy"];
         };
+        BatchSelector: {
+            filter: {
+                /** Format: uuid */
+                workflowId?: string;
+                /** Format: uuid */
+                versionId?: string;
+                status?: string[];
+                origin?: string;
+                /** Format: uuid */
+                scheduleId?: string;
+                /** Format: date-time */
+                createdAfter?: string;
+                /** Format: date-time */
+                createdBefore?: string;
+                /** @description Not matched yet: refused with BATCH_SELECTOR_UNSUPPORTED until business ids are bound to runs. */
+                businessIdPrefix?: string;
+            };
+        } | {
+            runIds: string[];
+        } | {
+            query: string;
+        };
+        /**
+         * @description Grows only. UPDATE and REPIN are refused with 422 BATCH_ACTION_UNAVAILABLE in this build: a declared update has no single-run use case a batch can call yet, and REPIN exists only when feature 019 is enabled.
+         * @enum {string}
+         */
+        BatchAction: "CANCEL" | "SIGNAL" | "UPDATE" | "RERUN" | "RETRY_STEP" | "PAUSE" | "RESUME" | "MARK_MANUAL_REVIEW" | "REPIN";
+        BatchCreateRequest: {
+            selector: components["schemas"]["BatchSelector"];
+            action: components["schemas"]["BatchAction"];
+            signal?: {
+                name: string;
+                payload: Record<string, never>;
+            };
+            update?: {
+                name: string;
+                args?: unknown;
+            };
+            /** @description RETRY_STEP and MARK_MANUAL_REVIEW; a root step of the workflow. */
+            stepId?: string;
+            /** @description Not supported yet: a non-empty path is refused with BATCH_ACTION_PARAMETERS. */
+            instancePath?: components["schemas"]["ApprovalScope"][];
+            /**
+             * @description RERUN only.
+             * @default KEEP
+             * @enum {string}
+             */
+            businessId: "KEEP" | "DROP";
+            /** @description REPIN only (feature 019); the action is unavailable while that feature is off. */
+            repin?: Record<string, never>;
+            reason: string;
+            /** @default 10000 */
+            maxItems: number;
+            /** @default 20 */
+            itemsPerSecond: number;
+        };
+        BatchPreview: {
+            matched: number;
+            /** @description More than maxItems matched. */
+            capped: boolean;
+            sample: string[];
+        };
+        /** @enum {string} */
+        BatchJobState: "SELECTING" | "RUNNING" | "CANCELLING" | "COMPLETED" | "CANCELLED" | "FAILED";
+        BatchJob: {
+            /** Format: uuid */
+            batchId: string;
+            action: components["schemas"]["BatchAction"];
+            state: components["schemas"]["BatchJobState"];
+            /** @enum {string|null} */
+            failureReason?: "AUTHORITY_REVOKED" | "SELECTION_FAILED" | null;
+            createdBy: string;
+            /** @description Signal payload or update arguments; never the value. */
+            payloadDigest?: string | null;
+            maxItems?: number;
+            itemsPerSecond?: number;
+            counts: {
+                selected: number;
+                succeeded: number;
+                skipped: number;
+                failed: number;
+                cancelled: number;
+                deferred: number;
+            };
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            startedAt?: string | null;
+            /** Format: date-time */
+            finishedAt?: string | null;
+            /** Format: date-time */
+            expiresAt?: string | null;
+        };
+        BatchJobPage: {
+            items: components["schemas"]["BatchJob"][];
+            nextCursor?: string | null;
+        };
+        /** @enum {string} */
+        BatchItemState: "PENDING" | "DEFERRED" | "SUCCEEDED" | "SKIPPED" | "FAILED" | "CANCELLED";
+        BatchItem: {
+            ordinal: number;
+            /** Format: uuid */
+            runId: string;
+            state: components["schemas"]["BatchItemState"];
+            /** @description Closed code, e.g. ALREADY_TERMINAL, NOT_APPLICABLE, NOT_WAITING, RUN_CONTINUED, HIDDEN_FROM_CREATOR; for a deferred item the cause (QUOTA_EXCEEDED, RATE_LIMITED, CONCURRENCY_QUEUE_FULL, LOCK_WAIT). */
+            reason?: string | null;
+            /** @description Canonical Error.code of a FAILED item. */
+            errorCode?: string | null;
+            attempts?: number;
+            /** Format: uuid */
+            newRunId?: string | null;
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        BatchItemPage: {
+            items: components["schemas"]["BatchItem"][];
+            nextCursor?: string | null;
+        };
         ScheduleBackfill: {
             /** Format: uuid */
             backfillId: string;
@@ -5631,6 +5853,7 @@ export interface components {
         /** @description Page size; values outside 1..200 are clamped. */
         Limit: number;
         ScheduleId: string;
+        BatchId: string;
         /** @description The identity (the `sub` of its token), URL-encoded. */
         WorkerSubject: string;
         /** @description The namespace member identity (the `sub` of its token), URL-encoded. */
@@ -11577,6 +11800,235 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ScheduleBackfill"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    previewBatchOperation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    selector: components["schemas"]["BatchSelector"];
+                    /** @default 10000 */
+                    maxItems?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description What the selector matches */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchPreview"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listBatchOperations: {
+        parameters: {
+            query?: {
+                /** @description Opaque cursor returned as `nextCursor` by the previous page. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size; values outside 1..200 are clamped. */
+                limit?: components["parameters"]["Limit"];
+                state?: components["schemas"]["BatchJobState"];
+            };
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of jobs */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchJobPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    createBatchOperation: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BatchCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description The job, accepted */
+            202: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchJob"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["QuotaExceeded"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    getBatchOperation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                batchId: components["parameters"]["BatchId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The job */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchJob"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    cancelBatchOperation: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                batchId: components["parameters"]["BatchId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    reason: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The job, being cancelled */
+            202: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchJob"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listBatchItems: {
+        parameters: {
+            query?: {
+                /** @description Opaque cursor returned as `nextCursor` by the previous page. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size; values outside 1..200 are clamped. */
+                limit?: components["parameters"]["Limit"];
+                state?: components["schemas"]["BatchItemState"];
+            };
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                batchId: components["parameters"]["BatchId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of items */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchItemPage"];
                 };
             };
             400: components["responses"]["BadRequest"];

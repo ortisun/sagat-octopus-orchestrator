@@ -412,6 +412,10 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
             sagat_domain::schedules::Ceilings::default(),
         ),
     )))
+    .with_batches(Arc::new(sagat_application::batch::BatchService::new(
+        sagat_infra_postgres::PgBatchStore::new(api_pool.clone()),
+        SystemClock,
+    )))
     .with_secrets(SecretService::new(
         executions.clone(),
         SystemClock,

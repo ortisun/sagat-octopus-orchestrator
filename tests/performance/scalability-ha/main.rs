@@ -93,6 +93,7 @@ fn app_error_variant(error: &AppError) -> &'static str {
         AppError::InvalidSchedule { .. } => "InvalidSchedule",
         AppError::InvalidBatch { .. } => "InvalidBatch",
         AppError::ScheduleConflict { .. } => "ScheduleConflict",
+        AppError::BatchConflict { .. } => "BatchConflict",
         AppError::OutcomeUnresolved => "OutcomeUnresolved",
         AppError::Invalid(_) => "Invalid",
         AppError::InvalidScript(_) => "InvalidScript",
