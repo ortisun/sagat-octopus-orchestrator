@@ -221,6 +221,8 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   whose lease was taken is refused where it acts and the time stays owed), 2 in `apps/execution-engine/tests/config.rs`;
   removing the fence from the pass makes the lease test fail (1 step, 0 refused instead of 0 and 1). Not done: fairness
   between tenants, the gauges (`scheduler_lag_seconds{pass="schedules"}`, `schedule_actions_total`) and the monitor alert.
+  *Update 2026-11-04 (T018-022):* the round ceiling is built: `round_actions` (100, hard 1,000) bounds the steps one round
+  takes over all its schedules and backfills.
   *Update 2026-11-03:* the engine now gives the firing a `DatabaseClock` synced before every round (D1802, T018-020), so
   due-ness and the planning of the times agree on the database's time.
 - [ ] T018-018 [US1] REST create/read/list/update/delete — `crates/api-http/src/routes/{schedules.rs,mod.rs}`,
@@ -288,9 +290,28 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
 - [ ] T018-021 [US1] Authority and provenance (recheck under membership lock order, auto-pause + audit,
   `system:schedule:<id>`, 017 database authority, key replay) —
   `tests/integration/schedules-bulk-operations/authority.rs` — SC-018-004 — FR-018-015, FR-018-016, FR-018-041.
-- [ ] T018-022 [US1] Schedule ceilings and quotas (count incl. zero, entries, spacing, input bytes,
+- [x] T018-022 [US1] Schedule ceilings and quotas (count incl. zero, entries, spacing, input bytes,
   round size) — `tests/integration/schedules-bulk-operations/limits.rs` — one test per row —
   FR-018-003, FR-018-045; NFR-018-003.
+  *Done 2026-11-04.* Evidence: `cargo test -p sagat-tests --locked --test integration_schedules_bulk_operations limits::`
+  — 11 passed; the whole suite 134 passed, also with `SAGAT_TEST_AS_RUNTIME_ROLE=1`; `fault_schedules_bulk_operations` 11 passed;
+  `cargo test -p sagat-scheduler -p sagat-execution-engine` green; `cargo fmt --check`, `cargo clippy --workspace --all-targets
+  --locked -- -D warnings`, `check-architecture.py` and `check-agent-config.py` clean (the integration runs took 427-525 s on a
+  loaded machine against 68 s on the previous day; no test timed out). One test per row of the plan's table that the first story
+  meets: schedules per namespace with a limit of **zero** (a new one is refused with nothing stored, charged or audited —
+  a before/after count of `schedules`, `schedule_revisions`, `payloads`, `audit_records`, `quota_transaction_deltas` — and the
+  existing one still fires); spec entries 10 accepted / 11 refused and exclusions 10 / 11 with nothing stored; the hard
+  ceiling of 32 entries holds whatever a namespace asks for; spacing 60 s accepted, 30 s `SCHEDULE_TOO_FREQUENT`, the 10 s
+  floor; input exactly 64 KiB (65,536 bytes) accepted and one byte more `PayloadTooLarge` with nothing stored; note 512 / 513;
+  remaining actions 1 and 1,000,000 accepted, 0 and 1,000,001 refused; a ceiling lowered after the fact refuses a new
+  five-entry spec while the five-entry schedule made before it is read back and fires (NFR-018-003); and **round size**: the
+  row "schedule actions per pass round per replica, 100 / 1,000" was not enforced by `SchedulePass`
+  (the round-ceiling item of T018-017), so the test was seen failing first (five due schedules, a ceiling of three: the
+  round took all five) and `ScheduleSettings::round_actions` (default 100, hard 1,000, `effective()`) now stops the round
+  there; the next round carries on (3 + 2 steps, then 0; every schedule started once); `SAGAT_SCHEDULES_ROUND_ACTIONS`
+  (1..=1,000, refused outside) in the engine config (`apps/execution-engine/tests/config.rs`), and a unit test of
+  `effective()` (0 → 1, above 1,000 → 1,000). Not covered here, and not a US01 row: jitter (its test is in `service.rs`),
+  catch-up and buffer ceilings (domain tests), backfill ceilings (`backfill.rs`), and the rows of US03..US06.
 
 ## Phase 4: US02 — Operate a schedule (P1)
 

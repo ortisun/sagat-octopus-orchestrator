@@ -10,6 +10,7 @@ mod admission;
 mod backfill;
 mod changes;
 mod firing;
+mod limits;
 mod migration;
 mod pass;
 mod rest;

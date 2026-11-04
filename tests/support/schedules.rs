@@ -123,17 +123,19 @@ pub(crate) fn hourly() -> Value {
 }
 
 impl Fixture {
-    pub(crate) async fn create(
+    /// The write of a schedule, decoded under the hard ceilings so that a test can build a spec the
+    /// service of a namespace with lower ceilings must still refuse.
+    pub(crate) fn write_of(
         &self,
         name: &str,
         spec: &Value,
         policies: &Value,
         target: Option<Value>,
-    ) -> ScheduleRecord {
-        let write = ScheduleWrite {
+    ) -> ScheduleWrite {
+        ScheduleWrite {
             name: ScheduleName::new(name).expect("name"),
-            spec: spec_from_json(spec, &Ceilings::default()).expect("spec"),
-            policies: policies_from_json(policies, &Ceilings::default()).expect("policies"),
+            spec: spec_from_json(spec, &Ceilings::HARD).expect("spec"),
+            policies: policies_from_json(policies, &Ceilings::HARD).expect("policies"),
             target: target_from_json(
                 &target.unwrap_or_else(|| json!({"workflowId": self.workflow.to_string()})),
             )
@@ -142,7 +144,14 @@ impl Fixture {
             paused: false,
             note: None,
             remaining_actions: None,
-        };
+        }
+    }
+
+    /// Creates the schedule, or says why the service refused.
+    pub(crate) async fn try_create(
+        &self,
+        write: ScheduleWrite,
+    ) -> Result<ScheduleRecord, AppError> {
         self.service
             .create(
                 &self.w.admin,
@@ -150,6 +159,17 @@ impl Fixture {
                 write,
                 &RequestContext::default(),
             )
+            .await
+    }
+
+    pub(crate) async fn create(
+        &self,
+        name: &str,
+        spec: &Value,
+        policies: &Value,
+        target: Option<Value>,
+    ) -> ScheduleRecord {
+        self.try_create(self.write_of(name, spec, policies, target))
             .await
             .expect("create the schedule")
     }

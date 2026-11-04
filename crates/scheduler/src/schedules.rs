@@ -23,6 +23,32 @@ pub struct ScheduleSettings {
     /// Steps taken for one schedule in one round: an outage is worked through over several rounds
     /// rather than by one schedule holding the others back.
     pub steps_per_schedule: u32,
+    /// Actions one replica takes in one round, over all its schedules and backfills (default 100,
+    /// hard ceiling 1,000). The round stops there and the next one carries on, so a burst of due
+    /// schedules is spread over rounds instead of one long one.
+    pub round_actions: u32,
+}
+
+impl ScheduleSettings {
+    /// The hard ceiling of [`Self::round_actions`].
+    pub const MAX_ROUND_ACTIONS: u32 = 1_000;
+
+    /// The settings held inside their ceilings: above the hard one is lowered, and at least one
+    /// action is allowed (a round that may do nothing would never advance a schedule).
+    #[must_use]
+    pub const fn effective(self) -> Self {
+        let round_actions = if self.round_actions == 0 {
+            1
+        } else if self.round_actions > Self::MAX_ROUND_ACTIONS {
+            Self::MAX_ROUND_ACTIONS
+        } else {
+            self.round_actions
+        };
+        Self {
+            round_actions,
+            ..self
+        }
+    }
 }
 
 impl Default for ScheduleSettings {
@@ -30,6 +56,7 @@ impl Default for ScheduleSettings {
         Self {
             batch: 100,
             steps_per_schedule: 20,
+            round_actions: 100,
         }
     }
 }
@@ -78,8 +105,14 @@ where
         Self {
             firing,
             placement,
-            settings,
+            settings: settings.effective(),
         }
+    }
+
+    /// Whether the round has taken the actions it may take (`FR-018-045`): it stops there and the
+    /// next one, which follows at once while there is work, carries on.
+    const fn full(&self, round: &ScheduleRound) -> bool {
+        round.steps >= self.settings.round_actions
     }
 
     /// The active backfills of the shards the replica owns, one step at a time under the lease of
@@ -105,6 +138,9 @@ where
             }
         };
         for backfill in backfills {
+            if self.full(round) {
+                return;
+            }
             let shard = Shard::of(backfill.schedule.as_uuid());
             let Some(lease) = snapshot.lease_of(shard, now) else {
                 continue;
@@ -114,6 +150,9 @@ where
                 lease,
             };
             for _ in 0..self.settings.steps_per_schedule {
+                if self.full(round) {
+                    return;
+                }
                 match self
                     .firing
                     .backfill_step(&backfill, Some(fence.clone()))
@@ -164,6 +203,9 @@ where
         round.due = due.len();
         self.backfills(&snapshot, now, &shards, &mut round).await;
         for schedule in due {
+            if self.full(&round) {
+                break;
+            }
             let shard = Shard::of(schedule.id.as_uuid());
             let Some(lease) = snapshot.lease_of(shard, now) else {
                 continue;
@@ -173,6 +215,9 @@ where
                 lease,
             };
             for _ in 0..self.settings.steps_per_schedule {
+                if self.full(&round) {
+                    break;
+                }
                 match self.firing.fire(&schedule, Some(fence.clone())).await {
                     Ok(Fired::Acted) => round.steps += 1,
                     Ok(Fired::Idle) => break,
@@ -192,5 +237,35 @@ where
             }
         }
         round
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ScheduleSettings;
+
+    #[test]
+    fn the_actions_of_a_round_stay_between_one_and_the_hard_ceiling() {
+        let with = |round_actions| {
+            ScheduleSettings {
+                round_actions,
+                ..ScheduleSettings::default()
+            }
+            .effective()
+            .round_actions
+        };
+        assert_eq!(ScheduleSettings::default().round_actions, 100);
+        assert_eq!(
+            with(0),
+            1,
+            "a round that may do nothing would never advance"
+        );
+        assert_eq!(with(1_000), 1_000);
+        assert_eq!(
+            with(1_001),
+            1_000,
+            "above the hard ceiling is lowered to it"
+        );
+        assert_eq!(with(u32::MAX), 1_000);
     }
 }

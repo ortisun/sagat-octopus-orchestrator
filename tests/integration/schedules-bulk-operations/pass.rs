@@ -22,20 +22,21 @@ use uuid::Uuid;
 use crate::firing::{Fixture, Starts, TestClock, fixture_from, hourly};
 use crate::support::schedules::some_hours_ago;
 
-type Pass = SchedulePass<PgScheduleStore, SpecCalendar, TestClock, PgIdentityStore, Starts>;
+pub(crate) type Pass =
+    SchedulePass<PgScheduleStore, SpecCalendar, TestClock, PgIdentityStore, Starts>;
 
 /// One replica: the keeper that holds its shards and the pass that works on them.
-struct Replica {
+pub(crate) struct Replica {
     keeper: Keeper<PgRunStore>,
-    pass: Pass,
-    placement: Placement,
+    pub(crate) pass: Pass,
+    pub(crate) placement: Placement,
 }
 
 fn replica(f: &Fixture, name: &str) -> Replica {
     replica_with(f, name, ScheduleSettings::default())
 }
 
-fn replica_with(f: &Fixture, name: &str, settings: ScheduleSettings) -> Replica {
+pub(crate) fn replica_with(f: &Fixture, name: &str, settings: ScheduleSettings) -> Replica {
     let placement = Placement::new(format!("{name}-{}", Uuid::now_v7()));
     let keeper = Keeper::new(
         f.w.store.clone(),
@@ -60,7 +61,7 @@ fn replica_with(f: &Fixture, name: &str, settings: ScheduleSettings) -> Replica 
 }
 
 impl Replica {
-    async fn keep(&self) {
+    pub(crate) async fn keep(&self) {
         self.keeper.round().await.expect("keeper round");
     }
 }
@@ -283,6 +284,7 @@ async fn a_backfill_resumes_after_the_committed_cursor_when_another_replica_take
         ScheduleSettings {
             batch: 100,
             steps_per_schedule: 2,
+            ..ScheduleSettings::default()
         },
     );
     first.keep().await;
