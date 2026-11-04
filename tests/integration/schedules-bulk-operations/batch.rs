@@ -234,6 +234,14 @@ async fn parameters_the_action_does_not_take_and_limits_out_of_range_create_noth
         ),
         (
             BatchWrite {
+                action: Action::RetryStep,
+                step_id: Some("not a step!".to_owned()),
+                ..cancel()
+            },
+            "BATCH_ACTION_PARAMETERS",
+        ),
+        (
+            BatchWrite {
                 drop_business_id: true,
                 ..cancel()
             },

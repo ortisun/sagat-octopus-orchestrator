@@ -691,6 +691,13 @@ impl<S: BatchStore, C: Clock> BatchService<S, C> {
         {
             return Err(invalid("BATCH_ACTION_PARAMETERS", "/"));
         }
+        if write
+            .step_id
+            .as_deref()
+            .is_some_and(|step| sagat_domain::workflow::NodeId::parse_stored(step).is_err())
+        {
+            return Err(invalid("BATCH_ACTION_PARAMETERS", "/stepId"));
+        }
         if !write.instance_path.is_empty() {
             // a step of an iteration of a collection or a loop needs its scope path resolved per run;
             // until then a job names root steps only (G1956)

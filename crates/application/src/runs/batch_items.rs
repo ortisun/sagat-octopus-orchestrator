@@ -74,13 +74,16 @@ where
                 let node = params
                     .step_id
                     .as_deref()
-                    .and_then(|step| NodeId::parse(step).ok())
+                    .and_then(|step| NodeId::parse_stored(step).ok())
                     .ok_or(AppError::Internal)?;
                 let action = if request.job.action == Action::RetryStep {
                     ReviewAction::Retry
                 } else {
                     ReviewAction::Hold
                 };
+                // A run the creator cannot see is hidden from them. Past this read, a `NotFound`
+                // from the review means the run has no such step, which is not for this action.
+                self.get(request.principal, id, request.ctx).await?;
                 match self
                     .review(
                         request.principal,
@@ -95,8 +98,10 @@ where
                     .await
                 {
                     Ok(_) => Ok(done()),
-                    // the step does not wait for an operator, or has moved on
-                    Err(AppError::StateConflict(_)) => skip(SkipReason::NotWaiting),
+                    // the run has no such step, or it does not wait for an operator, or has moved on
+                    Err(AppError::StateConflict(_) | AppError::NotFound) => {
+                        skip(SkipReason::NotWaiting)
+                    }
                     Err(other) => Err(other),
                 }
             }

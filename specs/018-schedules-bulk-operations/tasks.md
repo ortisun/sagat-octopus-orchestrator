@@ -670,15 +670,45 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
 - [ ] T018-047 [US5] Item adapters for the eight actions through single-run use cases, skip reasons (incl.
   `TEST_RUN`), failed compensation of cancelled runs — `tests/integration/schedules-bulk-operations/batch_actions.rs`
   — one case per action and reason — FR-018-030, FR-018-031, FR-018-034, FR-018-050.
-  *Part done 2026-11-04 (task stays open: one case per action and reason, `UPDATE`, `TEST_RUN`).* `ItemActions` is
-  implemented for the run service in `application/src/runs/batch_items.rs` for cancel, pause, resume (`operate`), signal,
-  retry-step and mark-manual-review (`review` with `Retry` and `Hold`) and rerun, each under the key of the item, with the
-  refusals that mean "not for this run" read as skips. Only `CANCEL` and `RERUN` are proved by `batch_executor::` so far;
-  the others are covered when their cases are written. `UPDATE` is refused at creation (G1959).
-- [ ] T018-048 [US5] Batch authorization and ceilings (no `run:batch`, missing action permission,
+  *Part done 2026-11-04 (task stays open for `UPDATE`, which a batch cannot apply yet (G1959), and `TEST_RUN`, which
+  needs feature 022, not approved).* `ItemActions` is implemented for the run service in
+  `application/src/runs/batch_items.rs` for cancel, pause, resume (`operate`), signal, retry-step and
+  mark-manual-review (`review` with `Retry` and `Hold`) and rerun, each under the key of its item. Cases against real runs
+  and workers, `batch_actions::` (4 passed) and the earlier `batch_executor::`: `CANCEL` of a running run and of one that
+  ended (`ALREADY_TERMINAL`); `PAUSE` and `RESUME` of a run they fit and of one that ended or is not paused
+  (`NOT_APPLICABLE`), with the `paused` flag checked; `SIGNAL` to two runs that wait for it (both woken) and to a run that
+  waits for nothing and to a run already woken (`NOT_WAITING`, never buffered), the job showing the payload by digest only;
+  `RETRY_STEP` of a compensation that ran out of attempts and waits for an operator (`reserve~c`: the run goes back to
+  `COMPENSATING` with another attempt), of a run that has no such step (`NOT_WAITING`) and of a step whose outcome is
+  unknown (the item `FAILED` with `CONFLICT`, nothing repeated, the run stays in review); `MARK_MANUAL_REVIEW` of a step
+  that has not started (the run goes to `MANUAL_REVIEW`) and of a run without that step (`NOT_WAITING`); `RERUN` and a
+  run that is not there (`RUN_CONTINUED`, `HIDDEN_FROM_CREATOR`). Real defects found by these cases and fixed: a run without
+  the named step was reported `HIDDEN_FROM_CREATOR` (the adapter now reads the run first, so a `NotFound` after that means
+  "no such step"), and a batch could not address a compensation (`reserve~c`) because the adapter read the step id with
+  the strict parser; a step id that is no node is now `BATCH_ACTION_PARAMETERS` at `/stepId` when the job is created.
+  Mutations that were caught: the strict parser, the missing `NotFound` mapping, every non-cancel skip as
+  `ALREADY_TERMINAL`, and a missing signal wait as `NOT_APPLICABLE`.
+- [x] T018-048 [US5] Batch authorization and ceilings (no `run:batch`, missing action permission,
   mid-job revocation, foreign ids, job/item ceilings, zero quota) —
   `tests/integration/schedules-bulk-operations/batch_security.rs` — SC-018-010 — FR-018-033, FR-018-034,
   FR-018-041, FR-018-045.
+  *Done 2026-11-04.* The cases are spread over four files of `integration_schedules_bulk_operations` and each is a named
+  test: `batch::creating_a_job_needs_run_batch_and_every_permission_of_the_action` (the role matrix over every action: a
+  viewer or a developer is refused, an operator and an administrator are not, and `MARK_MANUAL_REVIEW` needs only
+  `run:operate`); `batch_executor::a_creator_who_loses_a_permission_fails_the_job_and_nothing_more_is_applied`
+  (mid-job revocation: the job fails `AUTHORITY_REVOKED` and the items that had not run are cancelled);
+  `batch::active_jobs_are_limited_per_namespace_and_a_limit_of_zero_refuses_before_any_work`,
+  `batch::the_active_jobs_of_a_tenant_are_limited_too` and
+  `batch::a_creation_waits_for_the_fence_of_the_active_jobs_before_it_counts_them` (the ceilings of active jobs, judged
+  under a fence);
+  `batch::parameters_the_action_does_not_take_and_limits_out_of_range_create_nothing` (`maxItems` over 100,000, a rate over
+  200, `REPIN` and `UPDATE` unavailable); `batch::jobs_are_read_listed_newest_first_and_never_across_tenants` and the
+  cross-tenant battery. New in `batch_security::` (2 passed): a job names the ids of a run of another namespace and of
+  another tenant besides its own, the preview counts one, the job selects one, the other two are untouched and never
+  become items, not even skipped ones that would say they exist; a limit of zero, for the namespace and then for the
+  tenant, admits no job and leaves nothing stored. Mutations that were caught: the selection without its tenant and
+  namespace conditions (the preview counts three runs instead of one), and a limit of zero read as one. Not covered: the
+  `deployment:manage` permission of `REPIN`, which does not exist before feature 019.
 - [ ] T018-049 [US5] Lock monitor (`pg_locks` sampling: never two run locks) and harness interleaving with
   API cancel/signal — `tests/fault/schedules-bulk-operations/batch_locks.rs` — zero deadlocks —
   FR-018-030; NFR-018-001.

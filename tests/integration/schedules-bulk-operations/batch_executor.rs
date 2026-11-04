@@ -38,7 +38,7 @@ impl ItemActions for Runs {
     }
 }
 
-type Executor = BatchExecutor<PgBatchStore, Runs, PgIdentityStore, TestClock>;
+pub(crate) type Executor = BatchExecutor<PgBatchStore, Runs, PgIdentityStore, TestClock>;
 
 fn executor_with(f: &Fixture, settings: ExecutorSettings) -> Executor {
     BatchExecutor::new(
@@ -50,22 +50,22 @@ fn executor_with(f: &Fixture, settings: ExecutorSettings) -> Executor {
     )
 }
 
-fn executor(f: &Fixture) -> Executor {
+pub(crate) fn executor(f: &Fixture) -> Executor {
     executor_with(f, ExecutorSettings::default())
 }
 
-fn service(f: &Fixture) -> BatchService<PgBatchStore, TestClock> {
+pub(crate) fn service(f: &Fixture) -> BatchService<PgBatchStore, TestClock> {
     BatchService::new(PgBatchStore::new(f.w.db.pool.clone()), f.clock.clone())
 }
 
 /// The clock of the test follows the database's time, which the jobs are stamped with, and then
 /// moves by hand.
-fn live(f: &Fixture) {
+pub(crate) fn live(f: &Fixture) {
     f.clock
         .set(OffsetDateTime::now_utc() + Duration::seconds(2));
 }
 
-fn due(job: &JobRecord) -> DueJob {
+pub(crate) fn due(job: &JobRecord) -> DueJob {
     DueJob {
         tenant_id: job.tenant_id,
         id: job.id,
@@ -92,7 +92,7 @@ pub(crate) fn everything() -> Selector {
     Selector::filter(Filter::default()).expect("selector")
 }
 
-async fn create(f: &Fixture, write: BatchWrite, key: &str) -> JobRecord {
+pub(crate) async fn create(f: &Fixture, write: BatchWrite, key: &str) -> JobRecord {
     service(f)
         .create(
             &f.w.admin,
@@ -119,7 +119,10 @@ pub(crate) async fn job(f: &Fixture, id: Uuid) -> JobRecord {
 }
 
 /// `(ordinal, state, reason, error code)` of the items, in order.
-async fn items(f: &Fixture, id: Uuid) -> Vec<(i32, String, Option<String>, Option<String>)> {
+pub(crate) async fn items(
+    f: &Fixture,
+    id: Uuid,
+) -> Vec<(i32, String, Option<String>, Option<String>)> {
     sqlx::query_as(
         "SELECT ordinal, state, reason, error_code FROM batch_items WHERE job_id = $1 ORDER BY ordinal",
     )
@@ -139,7 +142,7 @@ pub(crate) async fn status_of(f: &Fixture, run: Uuid) -> String {
 
 /// Steps until the selection has taken a page. It waits, as it should, for a transaction of the time of
 /// creation that is still open (the world has loops of its own); each round is a database round trip.
-async fn select(exec: &Executor, job: &JobRecord) {
+pub(crate) async fn select(exec: &Executor, job: &JobRecord) {
     for _ in 0..500 {
         if exec.step(&due(job), None).await.expect("step") == Stepped::Acted {
             return;
