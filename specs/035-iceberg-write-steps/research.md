@@ -593,3 +593,16 @@ The other fixes were wording:
   Evidence: `create_bucket_waits_while_the_store_says_it_is_not_ready` (three 503s, then the bucket) failed first with
   the production message; 12 consecutive runs of `integration_iceberg_writes` passed afterwards. *Exit condition:*
   none while RustFS is the S3 fixture; the same wait applies to any fixture that reports health early.
+- **G035-026 — One unexplained failure of a lake fixture, and the diagnosis added to catch the next.** In 1 of 12
+  consecutive runs of `integration_iceberg_writes` (with two container cases running at once) the case
+  `the_admin_creates_a_table_the_catalog_can_load` panicked at the lookup of the REST fixture's mapped port, right
+  after `start()` returned; the panic text was not kept, so the cause is not known. 24 and then 30 consecutive runs
+  passed, and a probe that starts 12 RustFS containers at once and reads the port at once got all 12 ports, so a
+  plain race on the port lookup is unlikely. The leading suspicion, not shown, is a fixture that died after it
+  started (a JVM under memory pressure). `ready_container` (in `tests/support/lake.rs`) now ends the wait at once when
+  the container is not running and panics with its exit code and the last 30 lines of its stdout and stderr; before,
+  a dead container was a bare "port not exposed" or a five-minute wait. Evidence:
+  `a_container_that_exited_is_reported_with_its_exit_code_and_its_log` starts RustFS with a flag it refuses and
+  checks the three facts; two mutations of the diagnosis (log dropped, state always "failed") each failed it.
+  *Exit condition:* if the failure returns, its panic now names the cause; record it here and fix that cause. Close
+  this gap after the lake fixtures have run in CI without a failure for a release cycle.

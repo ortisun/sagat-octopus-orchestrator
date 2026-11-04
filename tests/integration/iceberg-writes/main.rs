@@ -7,3 +7,4 @@
 mod support;
 
 mod lake_fixture;
+mod lake_reader;

@@ -120,6 +120,55 @@ async fn create_bucket_does_not_wait_for_a_refusal_that_will_not_change() {
         .await;
 }
 
+/// A container that dies after `start()` returned (a JVM killed under memory pressure, a bad flag) used to end in a
+/// bare "REST catalog port" expectation, or in a five-minute wait. It now fails at once and says what the container
+/// was doing: its exit code and the end of its log.
+#[tokio::test]
+async fn a_container_that_exited_is_reported_with_its_exit_code_and_its_log() {
+    use futures_util::FutureExt;
+    use std::panic::AssertUnwindSafe;
+    use testcontainers_modules::testcontainers::{
+        GenericImage, ImageExt, core::IntoContainerPort, runners::AsyncRunner,
+    };
+
+    use crate::support::lake::{RUSTFS, ready_container};
+
+    let container = GenericImage::new(RUSTFS.0, RUSTFS.1)
+        .with_exposed_port(9000.tcp())
+        .with_cmd(["--no-such-flag"])
+        .start()
+        .await
+        .expect("start RustFS with a flag it refuses");
+
+    let outcome = AssertUnwindSafe(ready_container(
+        &container,
+        9000.tcp(),
+        "/health",
+        "RustFS fixture",
+    ))
+    .catch_unwind()
+    .await;
+    let payload = outcome.expect_err("a container that exited is not ready");
+    let message = payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| payload.downcast_ref::<&str>().map(|text| text.to_string()))
+        .expect("a text panic");
+
+    assert!(
+        message.contains("RustFS fixture is not running"),
+        "names the container: {message}"
+    );
+    assert!(
+        message.contains("exit code"),
+        "gives the exit code: {message}"
+    );
+    assert!(
+        message.contains("Usage: rustfs"),
+        "shows what the container printed before it died: {message}"
+    );
+}
+
 /// Real containers: RustFS and the Iceberg REST reference catalog on a private network.
 #[tokio::test]
 async fn the_admin_creates_a_table_the_catalog_can_load() {

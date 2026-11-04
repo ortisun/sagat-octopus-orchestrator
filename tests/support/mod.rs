@@ -20,6 +20,7 @@ pub mod contract;
 pub mod dx;
 pub mod engine;
 pub mod lake;
+pub mod lake_reader;
 pub mod logs;
 pub mod nats;
 pub mod oidc;

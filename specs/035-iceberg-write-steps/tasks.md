@@ -142,8 +142,18 @@ contracts, so every later task has a place to put its failing test.
   before the rule). The task text was incomplete: `iceberg` 0.10.1 has no storage features, so
   `tests/Cargo.toml` also declares `iceberg-storage-opendal` (D035-072). Both resolve and the three
   resulting advisories are ignored by the owner's decision (G035-024); `cargo audit --deny warnings`
-  exits 0. Not done: `tests/support/lake_reader.rs` (rows, snapshots, snapshot summaries and refs), which
-  needs a table to read and so waits for the fixture admin client of T035-004.
+  exits 0.
+  *2026-11-04, more done, still unticked:* `tests/support/lake_reader.rs` opens a table from the metadata file the
+  catalog points at (`StaticTable::from_metadata_file` over an S3 file IO against the fixture store) and returns the
+  columns, the snapshots with operation and summary, the branches and tags (read from the metadata document, because
+  the crate keeps the reference map private), the properties and the rows. `cargo test -p sagat-tests --test
+  integration_iceberg_writes --locked`: 12 passed. Three cases read a metadata document written by hand into the
+  in-memory file IO (two snapshots, an append then an overwrite, `main` on the second and a tag on the first); one
+  opens a table the REST fixture created in the real store; one names the location of a metadata file that is not
+  there. Three mutations of the reader (snapshots in reverse order, tags dropped, operation dropped) each failed
+  exactly the case that guards it. Not done: the rows of a table that has been committed, and the summary of a real
+  commit, because nothing in the repository writes to the lake yet; that case arrives with the first write-step test
+  (T035-013) and this task is ticked then.
 - [ ] T035-006 [P] Create the lake runtime skeleton in `runners/lake/`:
   - `pyproject.toml`, with mypy strict and ruff;
   - `requirements.in`;

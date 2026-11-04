@@ -28,6 +28,9 @@ rskafka = { version = "0.6", default-features = false }
 # features join with the tests that read those storages. Advisories: G035-024, .cargo/audit.toml.
 iceberg = "=0.10.1"
 iceberg-storage-opendal = { version = "=0.10.1", default-features = false, features = ["opendal-s3"] }
+# Row values of the independent reader, as the Arrow version the iceberg crate already resolves (no new crate in the lock).
+arrow-array = "58"
+arrow-cast = "58"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 jsonschema = { version = "0.58", default-features = false }
 hmac = "0.13"

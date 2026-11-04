@@ -19,7 +19,9 @@ use chrono::Utc;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use testcontainers_modules::testcontainers::{
-    ContainerAsync, GenericImage, ImageExt, core::IntoContainerPort, runners::AsyncRunner,
+    ContainerAsync, GenericImage, ImageExt,
+    core::{ContainerPort, IntoContainerPort},
+    runners::AsyncRunner,
 };
 
 use super::bounded::{START_LIMIT, within};
@@ -41,21 +43,69 @@ pub const REGION: &str = "us-east-1";
 /// The bucket the REST fixture's warehouse (`s3://warehouse/`) points at.
 pub const BUCKET: &str = "warehouse";
 
-/// Polls `url` until it answers with a success status. A service that never does ends the stage in a panic that
-/// names it (see `bounded.rs`), instead of a hung test.
-async fn wait_ready(url: &str, what: &str) {
+/// Waits until a started container answers `path` on `internal_port`, and returns `http://127.0.0.1:<port>`.
+///
+/// A container that is not running (it exited, or it was killed) ends the wait at once with its state and the end
+/// of its log. Without that a dead container is a bare "port not exposed", or a five-minute wait that names only
+/// the stage (see `bounded.rs`); with it, a rare failure of a fixture explains itself.
+pub async fn ready_container(
+    container: &ContainerAsync<GenericImage>,
+    internal_port: ContainerPort,
+    path: &str,
+    what: &str,
+) -> String {
+    let port = match container.get_host_port_ipv4(internal_port).await {
+        Ok(port) => port,
+        Err(error) => panic!(
+            "{}",
+            explain(container, what, &format!("no mapped port: {error}")).await
+        ),
+    };
+    let endpoint = format!("http://127.0.0.1:{port}");
+    let url = format!("{endpoint}{path}");
     let client = reqwest::Client::new();
     within(format!("{what} answers {url}"), START_LIMIT, async {
         loop {
-            if let Ok(response) = client.get(url).send().await
+            if let Ok(response) = client.get(&url).send().await
                 && response.status().is_success()
             {
                 return;
+            }
+            if !matches!(container.is_running().await, Ok(true)) {
+                panic!(
+                    "{}",
+                    explain(container, what, "it stopped before it answered").await
+                );
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
     })
     .await;
+    endpoint
+}
+
+/// What went wrong with a container: whether it runs, how it ended, and the end of what it printed.
+async fn explain(container: &ContainerAsync<GenericImage>, what: &str, problem: &str) -> String {
+    let running = matches!(container.is_running().await, Ok(true));
+    let exit_code = match container.exit_code().await {
+        Ok(Some(code)) => format!("{code}"),
+        Ok(None) => "none (still running)".to_string(),
+        Err(error) => format!("unknown ({error})"),
+    };
+    let mut log = String::new();
+    for (stream, bytes) in [
+        ("stdout", container.stdout_to_vec().await),
+        ("stderr", container.stderr_to_vec().await),
+    ] {
+        let text = String::from_utf8_lossy(&bytes.unwrap_or_default()).into_owned();
+        let lines: Vec<&str> = text.lines().collect();
+        let tail = &lines[lines.len().saturating_sub(30)..];
+        log.push_str(&format!("--- {stream}, last {} lines\n", tail.len()));
+        log.push_str(&tail.join("\n"));
+        log.push('\n');
+    }
+    let state = if running { "failed" } else { "is not running" };
+    format!("{what} {state}: {problem}; exit code: {exit_code}\n{log}")
 }
 
 /// A running object store and REST catalog. Dropping it removes the containers.
@@ -90,12 +140,7 @@ impl RestLake {
         )
         .await
         .unwrap_or_else(|error| panic!("start RustFS: {error}"));
-        let s3_port = store
-            .get_host_port_ipv4(9000.tcp())
-            .await
-            .expect("RustFS port");
-        let s3_endpoint = format!("http://127.0.0.1:{s3_port}");
-        wait_ready(&format!("{s3_endpoint}/health"), "RustFS").await;
+        let s3_endpoint = ready_container(&store, 9000.tcp(), "/health", "RustFS").await;
 
         // The catalog writes table metadata to the bucket, so the bucket exists before it starts.
         LakeAdmin::new(&s3_endpoint, "http://127.0.0.1:0")
@@ -119,12 +164,10 @@ impl RestLake {
         )
         .await
         .unwrap_or_else(|error| panic!("start the Iceberg REST fixture: {error}"));
-        let catalog_port = catalog
-            .get_host_port_ipv4(8181.tcp())
-            .await
-            .expect("REST catalog port");
-        wait_ready(
-            &format!("http://127.0.0.1:{catalog_port}/v1/config"),
+        let catalog_uri = ready_container(
+            &catalog,
+            8181.tcp(),
+            "/v1/config",
             "the Iceberg REST fixture",
         )
         .await;
@@ -133,7 +176,7 @@ impl RestLake {
             _store: store,
             _catalog: catalog,
             s3_endpoint,
-            catalog_uri: format!("http://127.0.0.1:{catalog_port}"),
+            catalog_uri,
         }
     }
 
