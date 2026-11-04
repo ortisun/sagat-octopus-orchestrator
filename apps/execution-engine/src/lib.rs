@@ -34,7 +34,7 @@ use sagat_infra_ir::schedule_calendar::SpecCalendar;
 use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
 use sagat_infra_nats::NatsPublisher;
 use sagat_infra_postgres::{
-    PgBlobCatalog, PgIdentityStore, PgRunStore, PgScheduleStore, spawn_pool_metrics,
+    DatabaseClock, PgBlobCatalog, PgIdentityStore, PgRunStore, PgScheduleStore, spawn_pool_metrics,
 };
 use sagat_scheduler::{
     DeliveryWorker, EventDispatcher, Keeper, Monitor, OutboxDispatcher, Placement,
@@ -383,11 +383,14 @@ pub async fn serve(
     if engine.schedules_enabled {
         // A schedule's run is admitted as the schedule's own subject, so the pass needs the same
         // run service the API has; it holds a store of its own over the shared pool.
+        // The pass finds what is due by the database's clock, so the firing must plan the times it
+        // acts on by the same clock, whatever this process's own says.
+        let database_clock = DatabaseClock::new(pool.clone(), SystemClock);
         let schedules: Arc<EngineSchedules> = Arc::new(SchedulePass::new(
             ScheduleFiring::new(
                 PgScheduleStore::new(pool.clone()),
                 SpecCalendar,
-                SystemClock,
+                database_clock.clone(),
                 PgIdentityStore::new(pool.clone()),
                 RunService::new(
                     store.clone(),
@@ -407,7 +410,8 @@ pub async fn serve(
                     let schedules = Arc::clone(&schedules);
                     move || {
                         let schedules = Arc::clone(&schedules);
-                        async move { schedules.round().await }
+                        let clock = database_clock.clone();
+                        async move { loops::schedule_round(&clock, &schedules).await }
                     }
                 },
                 engine.schedule_poll,

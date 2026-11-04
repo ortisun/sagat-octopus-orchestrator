@@ -20,6 +20,7 @@ use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::firing::{Fixture, Starts, TestClock, fixture_from, hourly};
+use crate::support::schedules::some_hours_ago;
 
 type Pass = SchedulePass<PgScheduleStore, SpecCalendar, TestClock, PgIdentityStore, Starts>;
 
@@ -62,14 +63,6 @@ impl Replica {
     async fn keep(&self) {
         self.keeper.round().await.expect("keeper round");
     }
-}
-
-/// An hour boundary a few hours ago. The pass finds what is due by the database clock and the
-/// firing decides by the clock of the test, so the test clock starts where the first time of an
-/// hourly schedule is already in the past for both.
-fn some_hours_ago() -> OffsetDateTime {
-    let now = OffsetDateTime::now_utc().unix_timestamp();
-    OffsetDateTime::from_unix_timestamp(now - now % 3_600 - 3 * 3_600).expect("instant")
 }
 
 async fn runs_of(f: &Fixture, schedule: Uuid) -> i64 {

@@ -282,6 +282,24 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
   overlap rule would drop one (`DROPPED_BUFFER_FULL`) the step waits instead and tries the same time again, so the
   cursor never passes a time that was neither acted on nor found acted on. Its times take no remaining action. The
   range holds at most 1,000 times (hard ceiling 10,000, T018-022) and a schedule runs one backfill at a time.
+- **D1802** (2026-11-03, T018-020) The firing acts on the database's time, not on the process's. The pass finds
+  what is due by `clock_timestamp()`, but `ScheduleFiring` plans the times it acts on (`occurrences(.., until = now)`)
+  and decides whether a retry has waited with the clock it is given; its module doc said the engine feeds that clock
+  from the database, and the engine fed `SystemClock`. A test with a process 3 hours ahead showed the cost: the firing
+  folded times 2.5 hours in the future into a `COALESCED` summary and moved the schedule beyond them, so those runs
+  would never start (and a process behind started nothing). `DatabaseClock<L>` (`infra-postgres/src/clock.rs`) keeps
+  the difference between the database's clock and `L` (one `SELECT clock_timestamp()` on a connection taken from the
+  pool first, so the wait for a connection is not counted; the answer is placed at the middle of the interval the
+  question took) and answers with `L` corrected by it. It is used wherever a schedule's time is computed:
+  the engine reads the database before every round (`loops::schedule_round`), and the control plane, whose
+  `ScheduleService` and trigger-now compute the first time of a created, updated or resumed schedule and the nominal
+  time of a manual action, syncs at start and every 5 s. **A clock that was never measured does not act:** the
+  engine's round returns `failed = 1` and does nothing until the first reading succeeds, because acting on the
+  process clock is the failure this removes and it cannot be undone; after a first reading a database that cannot be
+  asked leaves the last difference, which drifts by milliseconds in a minute. Run creation (`RunService`) still stamps
+  its own rows with the process clock, as every other run does. Alternatives refused: passing the database time
+  through `DueSchedule` (rewrites every firing test that moves a clock by hand), and a clock trait with an async
+  `now` (changes every `Clock` user).
 - **D1605** Reset-rule registry (coordinator C1): every journal event type has one rule (`COPY`,
   `REMATERIALIZE`, `EXCLUDE`, `REFUSE` — a window until a named closing event) in
   `contracts/journal-and-events.md`; existing types are owned by 018 for this purpose; drafts 019, 020,
@@ -342,6 +360,7 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
 | G1016 | D1040..D1045 (the Rust SDK, `CANCEL_OTHER`, the waiting reservation, the waiting order, the jitter seed, the item backoff) were written on this branch on 2026-10-29 in the numbers the parity branch gives feature 019 (its D1040..D1079). 018's own block (D1000..D1039) is full, and the check of that day looked at files and migrations but not at the decision blocks. Both sets are published, so neither is renumbered here. | The owner decides which side moves (suggested: 018's six become D1800..D1805 when PR #53 and PR #63 meet, with the references in code and tasks updated in the same change); new 018 decisions use D1800 and up meanwhile. | Open (owner) |
 | G1017 | A waiting trigger-now counts as one of the remaining actions a scheduled time must leave (the reservation of D1042 counts every waiting action), though it never uses one up; with `remainingActions` set and a trigger-now waiting, a scheduled time can find the schedule exhausted a time early. | Rare (a limit, an open run, a buffering rule and a manual action at once); the fix is to count waiting scheduled actions only, which needs the waiting count by kind in `Standing`. | Open |
 | G1015 | `listSchedules` takes `cursor` and `limit` only. The draft fragment also listed the filters `origin`, `state`, `workflowId` and `name`; they are not built, so the canonical contract does not name them, and the response `action` carries `inputDigest` but not `inputBytes`. | A filter needs an index per column (`schedules_by_workflow`, `schedules_by_state`) and a keyset that follows the filter; the store lists by id only. | Open |
+| G1018 | The crash-at-each-write matrix of T018-020 kills the transaction that starts a run (28 writes) and the one that records a skipped time (3 writes). The other decision-only steps (buffer, coalesce, drop, reconcile, auto-pause, the backfill step) have the same shape (fence, compare-and-swap, action row, new state in one transaction) but are not killed at each write; no test boots the control plane with schedules enabled and a skewed clock. | Extend the matrix with the `Step` enum of `tests/fault/schedules-bulk-operations/firing.rs` when a task touches those steps; add a control-plane wiring test with T018-018's remaining work. | Open |
 | G1607 | A binary older than the instance-capability registry release does not register, so no activation can see it; activations therefore require the registry release deployed fleet-wide first (operator precondition, checked by nothing but the runbook), and rollback below a recorded requirement is unsupported. | Inherent to introducing the registry; 029's prerequisite release (T029-003) is the vehicle. | Accepted |
 | G1605 | Draft lock orders that deviated from ADR-0050 decision 7 on 2026-10-27 (026 T2 membership and rate buckets after the link row; 030 endpoint head before memberships; 021 asset heads after secrets and the variable fence as an "authority slot"). Resolved the same day: 021 and 026 now follow decision 7 exactly (021 D1624, 026 D1337 revised); 030 follows it with one listed exception, a caller transaction locking its own `START` row after its run (030 D1660), recorded in decision 7. | Owners 021, 026, 030. | Resolved |
 | G1606 | `REMATERIALIZE` checks of other features (retired version, paused resource, retired snapshot, busy permit) are evaluated at reset time; a preview reports them as provisional and a reset can still fail on them. | Inherent to reset at a later time. | Accepted |

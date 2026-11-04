@@ -221,6 +221,8 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   whose lease was taken is refused where it acts and the time stays owed), 2 in `apps/execution-engine/tests/config.rs`;
   removing the fence from the pass makes the lease test fail (1 step, 0 refused instead of 0 and 1). Not done: fairness
   between tenants, the gauges (`scheduler_lag_seconds{pass="schedules"}`, `schedule_actions_total`) and the monitor alert.
+  *Update 2026-11-03:* the engine now gives the firing a `DatabaseClock` synced before every round (D1802, T018-020), so
+  due-ness and the planning of the times agree on the database's time.
 - [ ] T018-018 [US1] REST create/read/list/update/delete — `crates/api-http/src/routes/{schedules.rs,mod.rs}`,
   `crates/api-http/src/dto_schedules.rs` — contract tests — FR-018-001, FR-018-013, FR-018-043.
   *Part done 2026-10-30 (task stays open).* Built behind `SAGAT_SCHEDULES_ENABLED` (control plane, off by default):
@@ -237,9 +239,52 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   (G1015).
 - [ ] T018-019 [P] [US1] US01 scenarios 1–5 — `tests/integration/schedules-bulk-operations/schedules.rs`
   — target output — FR-018-001..005, FR-018-016.
-- [ ] T018-020 [US1] Faults: crash after each statement of transaction 2, stale fence, duplicate pass,
-  lost hint, restart, skewed process clocks — `tests/fault/schedules-bulk-operations/firing.rs` — one run
+- [x] T018-020 [US1] Faults: crash after each statement of transaction 2, stale fence, duplicate pass,
+  lost hint, restart, skewed process clocks — `tests/fault/schedules-bulk-operations/firing.rs` (+ `clocks.rs`,
+  `tripwire.rs`) — one run
   and one action per time, `verify_run` (SC-018-002) — FR-018-004, FR-018-005; NFR-018-001.
+  *Done 2026-11-03 for the start and skip transactions (gap G1018 names what is not killed at each write).*
+  Evidence: `cargo test -p sagat-tests --locked --test fault_schedules_bulk_operations` — 11 passed, also with
+  `SAGAT_TEST_AS_RUNTIME_ROLE=1`.
+  *Crash at each statement:* a statement-level trigger on every table kills its own backend after the Nth writing statement
+  (`tripwire.rs`). The watched start is one transaction of **28 writing statements on 13 tables** (`audit_records`,
+  `command_dedupe`, `event_outbox`, `payloads`, `quota_transaction_deltas`, `run_active_counts`, `run_events`,
+  `run_instance_usage`, `runs`, `schedule_actions`, `schedules`, `steps`, `telemetry_pending`) and the skipped time one of **3
+  writes on 3 tables** (`quota_transaction_deltas`, `schedule_actions`, `schedules`). For each position the step is
+  refused as an admission the store could not take (or fails) and is never reported done; an md5 digest of the content of
+  every other table is unchanged; the schedule's next time, remaining actions, buffer and tracked runs are unchanged; and after
+  the backoff the next pass acts exactly once: for a start one run with `startedBy = system:schedule:<id>`, the provenance
+  columns, scope `schedule:{id}` and key `nominal-{epoch ms}` in `command_dedupe`, one `STARTED` action and `verify_run`
+  clean; for a skip one `SKIPPED_OVERLAP` beside the one `STARTED`. A step armed one write past the last is not cut off
+  (the matrix is the whole transaction), and a firing split over two transactions fails the one-transaction assertion
+  (`a_process_killed_after_any_write_of_a_start_…`, `…_of_a_skip_…`). *Restart / lost reply:* the firing is rebuilt from the
+  database alone (`a_reply_that_never_arrives_does_not_make_the_restarted_process_start_the_time_again`). *Duplicates and stale
+  fence:* `eight_passes_racing_over_a_backlog_start_each_time_once` (8 passes released by a barrier on a multi-thread
+  runtime; 3 times, 3 runs, 3 actions; 15 steps lost the swap in the recorded run) and
+  `a_replica_with_a_stale_lease_and_a_duplicate_pass_leave_one_run_and_one_action` (the usurped replica is refused with
+  nothing recorded; the same pass twice at once acts once; a lease that ran out by the database clock is
+  `admission::a_lease_that_has_run_out_fences_its_owner_off_by_the_database_clock`). *Lost hint:* not applicable by
+  construction — a schedule is found by the pass's own poll of the database and no broker message announces it; the pass
+  tests run with no broker. *Skewed clocks:* a real defect, found by the first of these tests failing against a stub — the
+  engine fed the firing `SystemClock` although the module doc says the database's time, so a process 3 h ahead swallowed
+  times 2.5 h in the future into a summary (decision D1802). Fixed by `DatabaseClock` (`infra-postgres/src/clock.rs`) in the
+  engine (`loops::schedule_round`, synced before every round; a clock never measured does nothing) and in the control plane
+  (synced at start and every 5 s). Tests: `…_runs_hours_ahead_does_not_act_on_times_the_database_has_not_reached`,
+  `…_hours_behind_still_acts_on_the_times_that_are_owed`, `a_synced_clock_reads_the_database_whatever_the_process_clock_says`,
+  `a_clock_that_cannot_reach_the_database_keeps_the_last_time_it_knew`,
+  `the_round_of_the_engine_acts_on_the_database_time_of_a_replica_whose_clock_is_hours_fast` (calls `schedule_round`; removing
+  its sync fails it, run as a mutation) and `a_round_whose_clock_was_never_measured_does_nothing`. An independent
+  correctness review of the first version found the control plane unfixed, the fail-open first round, the pool wait inside
+  the measurement and weak assertions; all four are fixed above. Not done: killing the other decision-only steps (G1018), a
+  mutation that splits the firing in two transactions, and any test that boots the control plane with a skewed clock.
+  Gates on the final tree (private `CARGO_TARGET_DIR`, `RUST_TEST_THREADS=2`, Testcontainers PostgreSQL 16), each also with
+  `SAGAT_TEST_AS_RUNTIME_ROLE=1`: `fault_schedules_bulk_operations` 11 passed; `integration_schedules_bulk_operations` 123
+  passed (regression of the fixture move to `tests/support/schedules.rs`, shared by both binaries);
+  `integration_platform_foundation` 101 passed (the runtime-privilege audit); `integration_security_multitenancy` 126 passed;
+  unit suites of `sagat-execution-engine`, `sagat-control-plane`, `sagat-infra-postgres`, `sagat-scheduler` and
+  `sagat-application` green; `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`,
+  `check-architecture.py` and `check-agent-config.py` clean. Not run: the whole-workspace test run (CI runs it) and the SDK
+  checks (no SDK or contract changed).
 - [ ] T018-021 [US1] Authority and provenance (recheck under membership lock order, auto-pause + audit,
   `system:schedule:<id>`, 017 database authority, key replay) —
   `tests/integration/schedules-bulk-operations/authority.rs` — SC-018-004 — FR-018-015, FR-018-016, FR-018-041.

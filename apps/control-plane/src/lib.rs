@@ -532,7 +532,18 @@ pub async fn serve_with_admin(
         SystemClock,
         serve.runbook_base.clone(),
     ));
-    if serve.schedules_enabled {
+    // The times a schedule is created, updated, resumed or triggered at are computed on the
+    // database's clock, whatever this process's own says (FR-018-005, D1802); it is kept in step
+    // below, once the shutdown signal exists.
+    let schedule_clock = serve
+        .schedules_enabled
+        .then(|| sagat_infra_postgres::DatabaseClock::new(pool.clone(), SystemClock));
+    if let Some(clock) = &schedule_clock
+        && let Err(error) = clock.sync().await
+    {
+        tracing::warn!(%error, "could not read the database clock; schedules use this process's clock until it can");
+    }
+    if let Some(schedule_clock) = schedule_clock.clone() {
         let ceilings = sagat_domain::schedules::Ceilings::default();
         let schedules = || sagat_infra_postgres::PgScheduleStore::new(pool.clone());
         governance =
@@ -540,14 +551,14 @@ pub async fn serve_with_admin(
                 sagat_application::schedules::ScheduleService::new(
                     schedules(),
                     sagat_infra_ir::schedule_calendar::SpecCalendar,
-                    SystemClock,
+                    schedule_clock.clone(),
                     ceilings,
                 ),
                 // trigger-now starts a run in this process, as the schedule: it needs the run service
                 sagat_application::schedule_firing::ScheduleFiring::new(
                     schedules(),
                     sagat_infra_ir::schedule_calendar::SpecCalendar,
-                    SystemClock,
+                    schedule_clock,
                     sagat_infra_postgres::PgIdentityStore::new(pool.clone()),
                     sagat_application::runs::RunService::new(
                         executions.clone(),
@@ -737,6 +748,25 @@ pub async fn serve_with_admin(
         shutdown.await;
         let _ = stop_tx.send(true);
     });
+    let clock_sync = schedule_clock.map(|clock| {
+        let stop = stop_rx.clone();
+        tokio::spawn(async move {
+            // a few seconds of process-clock drift is far below what a schedule time can notice
+            let mut tick = tokio::time::interval(Duration::from_secs(5));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut stopped = std::pin::pin!(stopped(stop));
+            loop {
+                tokio::select! {
+                    () = &mut stopped => break,
+                    _ = tick.tick() => {
+                        if let Err(error) = clock.sync().await {
+                            tracing::warn!(%error, "could not read the database clock; keeping the last difference");
+                        }
+                    }
+                }
+            }
+        })
+    });
 
     // Public settings only; never the database URL.
     tracing::info!(
@@ -779,6 +809,9 @@ pub async fn serve_with_admin(
     tracing::info!("control plane stopped");
     pool_metrics.abort();
     metrics_upkeep.abort();
+    if let Some(task) = clock_sync {
+        task.abort();
+    }
     pool.close().await;
     Ok(())
 }
