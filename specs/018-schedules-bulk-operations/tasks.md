@@ -406,6 +406,24 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `a_waiting_trigger_starts_when_the_run_ends_and_uses_up_nothing` (only a scheduled start decrements).
 - [ ] T018-028 [US2] Describe (next N, recent, counters), actions route, action purge keeping `BUFFERED`
   — `crates/infra-postgres/src/maintenance.rs` — contract + purge tests — FR-018-013.
+  *Part done 2026-11-04 (task stays open: the actions route, `listScheduleActions`, changes the canonical OpenAPI and
+  waits for the REST work; describe is built, T018-018).* Nothing deleted actions. Now
+  `schedule_purge_actions(schedules, rows)` keeps an action while it is among the newest 1,000 of its schedule or younger
+  than 30 days and never deletes a `BUFFERED` one, runs through the housekeeping of the scheduler (a few schedules at a
+  time, at most 5,000 rows a call) and visits schedules in turn (decision D1955, migration
+  `20261230002000_schedule_action_purge`, gap G1954 for the revisions and tombstones). Evidence: `purge::` 7 passed in
+  `integration_schedules_bulk_operations` (1,300 days of actions: the 300 beyond the last thousand go, the oldest first,
+  and a second purge finds nothing; a schedule with 10 ancient actions keeps them; a waiting action 2,000 days old
+  stays; with one schedule per call the busy schedule is reached although a quiet one sorts first; at most the rows
+  given are deleted and the next call goes on; the runtime role may run the function and has no `DELETE` on the table;
+  a rollback drops the function and applying again brings it back). Seen failing first against a stub (nothing was
+  purged, the function did not exist), and the test of the rotation fails when the function orders by id alone.
+  Gates on the final tree (private `CARGO_TARGET_DIR`, `RUST_TEST_THREADS=2`): `integration_schedules_bulk_operations`
+  166 passed and `fault_schedules_bulk_operations` 16 passed, each also with `SAGAT_TEST_AS_RUNTIME_ROLE=1`;
+  `integration_platform_foundation` 101 (migrations, runtime-privilege audit); `integration_security_multitenancy` 126;
+  `integration_database_connections` 7; `contract_schedules_bulk_operations` 1; unit suites of domain, application,
+  infra-postgres, scheduler, api-http and execution-engine green; `cargo fmt --check` and
+  `cargo clippy --workspace --all-targets --locked -- -D warnings` clean.
 - [ ] T018-029 [US2] Catch-up after a simulated outage (`ONE`, `ALL`, summary, trigger-owned 366 d) —
   `tests/integration/schedules-bulk-operations/catchup.rs` — SC-018-003 — FR-018-008.
   *Part done 2026-11-04 (task stays open: the trigger-owned schedule with its 366-day window is US07, T018-060).* The

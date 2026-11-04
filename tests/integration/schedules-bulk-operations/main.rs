@@ -16,6 +16,7 @@ mod firing;
 mod limits;
 mod migration;
 mod pass;
+mod purge;
 mod rest;
 mod service;
 mod store;

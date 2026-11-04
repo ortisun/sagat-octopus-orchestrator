@@ -407,6 +407,19 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
 - **D1954** (2026-11-04, T018-030) A debt may be paid after the run that owes it was forgotten: the pass forgets runs that
   ended before it looks at debts, and a debt for a run that is terminal is paid by the `StateConflict` of the cancel, not
   by a special case, so the code has one path.
+- **D1955** (2026-11-04, T018-028) The actions of a schedule are purged by a bounded function, visiting schedules in
+  turn. Nothing deleted them: an hourly schedule writes 8,700 rows a year and one every minute 525,000. FR-018-013
+  keeps "at least the last 1,000 or 30 days": an action goes when it is older than 30 days **and** beyond the
+  newest 1,000 of its schedule, and a `BUFFERED` action never goes (the guard of the table refuses it as well).
+  The runtime role has no `DELETE` on the table, so retention is `schedule_purge_actions(schedules, rows)`
+  (`SECURITY DEFINER`, fixed `search_path`, migration `20261230002000_schedule_action_purge`), called by the
+  housekeeping of the scheduler a few schedules at a time and at most 5,000 rows per call. A rule of "oldest rows
+  first" would starve: a schedule with fewer than 1,000 actions keeps all of them however old, and its old rows
+  would be the first candidates of every call, for ever. The function therefore visits schedules in the order of
+  `schedules.actions_purged_at` (never visited first) and marks one visited only when its purgeable rows are
+  gone, so a schedule cut short by the row budget is the first to be looked at again and one with nothing to purge
+  is looked at once per cycle. The cut is the time of the thousandth newest action, found through the index that
+  already serves the recent-actions read.
 
 ## 4. Gaps
 
@@ -437,6 +450,7 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
 | G1950 | A run keeps no record of whose authority it started under. The 017 admission of a database step claimed after the schedule was resumed by someone else (or after `authorizedBy` changed through an update) stands on the new `authorizedBy`, not on the member the run started under (D1950). | Fails closed when that member lacks database authority (the step is refused, the run is not corrupted), and open when the new one has it and the old one did not. Closing it needs a column on `runs` (an additive migration with the erasure-aware immutability trigger of the provenance columns) or a different rule for the claim. | Open |
 | G1951 | The count of a recovery's summary stops after 100 calls of the calendar (a million times: a year of a schedule every 30 s, the densest the spacing floor and the longest window allow). Past it the step records a partial `COALESCED` summary and the recovery is remembered with no actions left, so the next step goes on summarizing instead of acting again; the work per step is bounded, the number of steps is not. | A schedule that dense with a window that long and an outage that long is not a case anyone sized for; the steps are cheap (one small transaction each) and the pass takes `steps_per_schedule` of them per round. Revisit with the benchmark (T018-072). | Open |
 | G1953 | A waiting action keeps waiting however long the runs that hold it back stay open (a run in `MANUAL_REVIEW` after a failed compensation can stay open for days) and starts when they end, even if it is older than the catch-up window; `data-model.md` has it become `MISSED_CATCHUP_WINDOW` instead. | Starting a stale time is the safe direction (the work is not lost) and the action is visible as `BUFFERED`; the transition needs an update of an action row under the append-only guard. | Open |
+| G1954 | Only the actions are purged. The revisions of a schedule (append-only: a trigger refuses every `UPDATE` and `DELETE`, and they carry the content the tenant is charged for), the obligations that are `DONE`, the finished backfills and the tombstone of a deleted schedule are kept for ever; `data-model.md` has the tombstone go 30 days after the last purge of its actions. | They are small next to the actions (a row per edit, per debt, per backfill), but a tenant that edits a big schedule often keeps charging its content quota with revisions nobody reads. Needs a guard that lets a purge function through, and a rule for the revision an action still names. | Open |
 | G1952 | A backfill step that the admission refuses (a full quota, no published version) waits and is tried again on every round of the pass, with no backoff, unlike a scheduled time (D1952). | A round is one poll of the database per owned shard and the step is one rolled-back transaction; harmless at the default poll but wasteful. Fix with a `retry_at` on the backfill (a migration). | Open |
 
 ## 5. Owner questions (the plan implements the recommended defaults)
