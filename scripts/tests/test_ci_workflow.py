@@ -50,6 +50,13 @@ class IntegrationSuitesRunOnlyWhenChanged(unittest.TestCase):
             self.assertTrue(gated, f"this step runs sagat-tests without the selection:\n{step}")
         self.assertGreater(found, 0, "the test no longer finds the steps it is meant to guard")
 
+    def test_the_upgrade_smoke_and_scale_jobs_are_skipped_for_documentation_only_changes(self):
+        for job in ("released-upgrade", "local-environment", "scale"):
+            block = re.search(rf"(?ms)^  {job}:\n(.*?)^  [a-z0-9-]+:\n", self.text + "\n  end:\n")
+            assert block is not None, job
+            self.assertIn("needs: changes", block.group(1), f"job {job} must wait for the selection")
+            self.assertIn("if: needs.changes.outputs.code == 'true'", block.group(1), f"job {job} must be gated by `code`")
+
     def test_a_manual_run_is_possible(self):
         self.assertRegex(self.text, r"(?m)^  workflow_dispatch:")
 

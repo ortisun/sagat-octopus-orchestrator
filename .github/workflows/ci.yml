@@ -23,13 +23,16 @@ jobs:
   # whose files a change adds or modifies; scripts/select-test-targets.py says which and why. Every target runs for
   # a manual run, for a push to main, release/** or hotfix/**, and when the change cannot be narrowed (shared
   # tests/support or tests/fixtures, a dependency of tests/Cargo.toml, or no usable base commit). Unit tests,
-  # lints and the other jobs are not affected.
+  # lints and the other jobs are not affected, except that the upgrade, compose smoke-test and scale jobs are
+  # skipped when the change is documentation or process files only (`code` is false); a path the script does not
+  # know counts as code.
   changes:
     name: integration suites to run (added or modified)
     runs-on: ubuntu-latest
     outputs:
       targets: ${{ steps.select.outputs.targets }}
       any: ${{ steps.select.outputs.any }}
+      code: ${{ steps.select.outputs.code }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -145,6 +148,8 @@ jobs:
 
   released-upgrade:
     name: released v0.2 upgrade compatibility
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 100
     env:
@@ -415,6 +420,8 @@ jobs:
 
   local-environment:
     name: local environment (docker compose smoke test)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -471,6 +478,8 @@ jobs:
 
   scale:
     name: scale and recovery (chart, load harness at a small size, disaster-recovery drill)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
