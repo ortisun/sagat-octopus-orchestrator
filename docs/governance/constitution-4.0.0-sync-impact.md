@@ -1,9 +1,9 @@
 # Constitution 4.0.0 — Sync Impact Report
 
 This record accompanies the pull request that replaces Spec Kit with the Elephant-Goldfish Model (EGM) as the only
-specification workflow and moves the constitution to `docs/constitution.md`. **Status: PREPARED, not adopted.** The
-amendment takes effect when the owner merges the pull request that carries it; a prepared diff or a passing check is not
-ratification. The design is [constitution-4.0.0-egm.md](../designs/constitution-4.0.0-egm.md), whose Status is still
+specification workflow and moves the constitution to `docs/constitution.md`. **Status: ADOPTED on 2026-11-03** by merging the
+pull request that carries it, on the owner's delegation to the assistant ("Decida por mim", row OD-2026-11-03-32); the owner
+may overrule it by a later amendment. The design is [constitution-4.0.0-egm.md](../designs/constitution-4.0.0-egm.md), whose Status is still
 `Draft`; the decisions it records under delegation are marked `Decided by: delegate` in
 [`docs/owner-decisions.md`](../owner-decisions.md) until the owner confirms them.
 

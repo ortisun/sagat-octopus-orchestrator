@@ -1,6 +1,6 @@
 # ADR-0077: EGM design docs replace Spec Kit as the only specification workflow
 
-**Status:** Proposed. The owner accepts it by merging the pull request that carries Constitution 4.0.0.
+**Status:** Proposed. Constitution 4.0.0 was merged on 2026-11-03 under the owner's delegation; an ADR is accepted by a person (`docs/adr/README.md`), so the owner accepts this one by changing this line.
 **Decided by:** The owner chose the direction on 2026-11-02 (`docs/owner-decisions.md`, rows OD-2026-11-03-1 to -8). The process details (decisions A to W of the design) were taken by the assistant under the owner's delegation of 2026-11-03 and stay `delegate` until the owner confirms them.
 **Refines / supersedes:** None. No ADR chose Spec Kit; Constitution 3.0.0 named it, and this ADR records the amendment.
 **Enforced by:** `scripts/check-design-docs.py` (CI job `architecture`; tests in `scripts/tests/test_check_design_docs.py`), the settings guard and path check of `scripts/check-agent-config.py`, and `scripts/egm-tree-hash.py` with `docs/engineering/egm-accepted-hashes.json`.

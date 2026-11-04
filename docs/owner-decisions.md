@@ -46,6 +46,13 @@ does not accept a `delegate` row as an owner gate or as the acceptance of a find
 | OD-2026-11-03-29 | U. The tree hash includes the file mode, excludes only image and font files below `assets/` and the `.in_use` markers, and refuses symlinks. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
 | OD-2026-11-03-30 | V. An approval record has exactly four reports, one per reviewer; an acceptance row cites `<report>#<n>`. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
 | OD-2026-11-03-31 | W. Checks that need the reviewed commit run only for docs that a pull request changes. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-32 | The owner delegated the approval of PR 1 and PR 2 and the confirmation of rows 9 to 31 to the assistant: "Decida por mim" (2026-11-03), after being told what needed approval. | owner | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-33 | X. Keep the checklist gate in the transitional clause: unticked `checklists/*.md` items of a feature not yet converted block its implementation until the owner accepts them. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-34 | Y. Keep the EGM plugin enabled in project scope, as the owner chose on 2026-11-02. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-35 | Z. Keep version 4.0.0 (MAJOR) and the amendment of the Versioning clause. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-36 | AA. Leave the design `Draft`: no finding is accepted on the owner's behalf, and rows 9 to 31 stay `delegate` (a delegate cannot become the owner by editing a cell). | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-37 | AB. Merge PR 1 and then PR 2 with merge commits once CI is green, on the owner's delegation. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-38 | AC. Keep ADR-0077 `Proposed`: the ADR rules say a person accepts. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
 
 ## 2026-11-01 — Feature 037 delivery, B01 split and upgrade compatibility
 
