@@ -11,6 +11,7 @@
 //! The [`OutboxDispatcher`] is the other half: it moves committed outbox messages to the broker,
 //! at-least-once, so a lost wake-up costs latency but never correctness.
 
+mod batches;
 mod deliveries;
 mod events;
 mod fairness;
@@ -21,6 +22,7 @@ mod schedules;
 mod shards;
 mod telemetry;
 
+pub use batches::{BatchPass, BatchRound, BatchSettings};
 pub use deliveries::{DeliveryRound, DeliverySettings, DeliveryWorker};
 pub use events::{EventDispatchSettings, EventDispatcher, EventRound};
 pub use fairness::{DEFAULT_WEIGHT, ROUNDS, Selection, Weights, rest, rest_after, select, share};

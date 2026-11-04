@@ -11,6 +11,7 @@ mod authority;
 mod backfill;
 mod batch;
 mod batch_executor;
+mod batch_pass;
 mod cancel_other;
 mod catchup;
 mod changes;

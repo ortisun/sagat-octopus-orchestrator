@@ -17,8 +17,8 @@ use sagat_infra_blobstore::{BlobSettings, BlobStoreConfig, ConfigError as BlobCo
 use sagat_infra_connectors::redis::RedisConfig;
 use sagat_infra_nats::NatsConfig;
 use sagat_scheduler::{
-    DeliverySettings, DispatchSettings, EventDispatchSettings, KeeperSettings, MonitorSettings,
-    ProjectorSettings, ScheduleSettings, SchedulerSettings,
+    BatchSettings, DeliverySettings, DispatchSettings, EventDispatchSettings, KeeperSettings,
+    MonitorSettings, ProjectorSettings, ScheduleSettings, SchedulerSettings,
 };
 use sagat_telemetry::OtlpConfig;
 
@@ -81,6 +81,12 @@ pub struct EngineConfig {
     pub schedules: ScheduleSettings,
     /// Pause between schedule rounds when the last one found nothing to do.
     pub schedule_poll: Duration,
+    /// Whether the replica runs batch jobs (`SAGAT_BATCHES_ENABLED`, off by default until the
+    /// feature is released): the REST routes can create jobs either way, none runs without it.
+    pub batches_enabled: bool,
+    pub batches: BatchSettings,
+    /// Pause between batch rounds when the last one found nothing to do.
+    pub batch_poll: Duration,
     /// The worker that sends outbound webhooks.
     pub deliveries: DeliverySettings,
     /// Pause between delivery rounds when the last one found nothing to send.
@@ -601,6 +607,40 @@ impl EngineConfig {
             optional(get, "SAGAT_SCHEDULES_POLL_MS", 1_000u64)?,
         )?);
 
+        let batches_enabled = flag(get, "SAGAT_BATCHES_ENABLED")?;
+        let batch_defaults = BatchSettings::default();
+        let batches = BatchSettings {
+            batch: u32::try_from(positive(
+                "SAGAT_BATCHES_BATCH",
+                optional(get, "SAGAT_BATCHES_BATCH", u64::from(batch_defaults.batch))?,
+            )?)
+            .ok()
+            .filter(|batch| *batch <= MAX_BATCH)
+            .ok_or_else(|| ConfigError::Invalid {
+                name: "SAGAT_BATCHES_BATCH",
+                reason: format!("must be at most {MAX_BATCH}"),
+            })?,
+            round_actions: u32::try_from(positive(
+                "SAGAT_BATCHES_ROUND_ACTIONS",
+                optional(
+                    get,
+                    "SAGAT_BATCHES_ROUND_ACTIONS",
+                    u64::from(batch_defaults.round_actions),
+                )?,
+            )?)
+            .ok()
+            .filter(|actions| *actions <= BatchSettings::MAX_ROUND_ACTIONS)
+            .ok_or_else(|| ConfigError::Invalid {
+                name: "SAGAT_BATCHES_ROUND_ACTIONS",
+                reason: format!("must be at most {}", BatchSettings::MAX_ROUND_ACTIONS),
+            })?,
+            ..batch_defaults
+        };
+        let batch_poll = Duration::from_millis(positive(
+            "SAGAT_BATCHES_POLL_MS",
+            optional(get, "SAGAT_BATCHES_POLL_MS", 1_000u64)?,
+        )?);
+
         let delivery_defaults = DeliverySettings::default();
         let deliveries = DeliverySettings {
             batch: u32::try_from(positive(
@@ -811,6 +851,9 @@ impl EngineConfig {
             schedules_enabled,
             schedules,
             schedule_poll,
+            batches_enabled,
+            batches,
+            batch_poll,
             deliveries,
             delivery_poll,
             connector_refresh,

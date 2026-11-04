@@ -624,6 +624,21 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   backoff and one that is not; two tests of a lease that was lost). Mutations that were caught: the original horizon
   (`xmax` with `>=`) fails the held-transaction test as `Acted` instead of `Idle`, and recording an item without the fence
   fails the stale-lease test. Gaps G1956..G1959.
+  *Update 2026-11-04 (the pass):* `BatchPass` (`crates/scheduler/src/batches.rs`) is the pass over the jobs of the shards a
+  replica owns, like `SchedulePass`: it asks the store for the due jobs (`state` selecting, running or cancelling, slot
+  reached, earliest first), takes the lease of the shard of each job from the keeper's placement, and takes at most
+  `steps_per_job` (20) steps for a job and `round_actions` (100, hard 1,000) steps over the round; a lost lease is a
+  refused step (`scheduler_fenced_total{kind="batch"}`), a failing one is logged and counted. The engine runs it behind
+  `SAGAT_BATCHES_ENABLED` (off by default; `SAGAT_BATCHES_BATCH` 1-5000, `SAGAT_BATCHES_ROUND_ACTIONS` 1-1,000,
+  `SAGAT_BATCHES_POLL_MS`), pacing the items by the database's clock like the schedule pass. Evidence: 5 in
+  `batch_pass::` (one replica selects and cancels the three runs of a job in 4 steps and each run is cancelled once; a
+  replica with no shard does nothing; two replicas split twelve jobs by shard, take 2 steps for each job of their own
+  shards and cancel every run once; a replica whose shard was taken is refused where it records and the job goes on when
+  the shard is back; a round of one step takes one step and the next carries on), 2 unit tests of the ceilings, 2 in
+  `apps/execution-engine/tests/config.rs`. Mutations that were caught: the pass without the fence fails the lease test
+  (2 steps, 0 refused instead of 0 and 1), and a round without its ceiling fails the ceiling test. Not done: the faults
+  at each write (`tests/fault/schedules-bulk-operations/batch.rs`), fairness between tenants, the gauges
+  (`scheduler_lag_seconds{pass="batches"}`, `batch_items_total`) and the monitor alert, which the schedule pass lacks too.
 - [ ] T018-047 [US5] Item adapters for the eight actions through single-run use cases, skip reasons (incl.
   `TEST_RUN`), failed compensation of cancelled runs — `tests/integration/schedules-bulk-operations/batch_actions.rs`
   — one case per action and reason — FR-018-030, FR-018-031, FR-018-034, FR-018-050.

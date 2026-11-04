@@ -30,7 +30,7 @@ use crate::support::schedules::TestClock;
 
 /// The run service of the world, as the executor's single-run use cases.
 #[derive(Clone)]
-struct Runs(Arc<World>);
+pub(crate) struct Runs(pub(crate) Arc<World>);
 
 impl ItemActions for Runs {
     async fn apply(&self, request: &ItemRequest<'_>) -> Result<ItemEffect, AppError> {
@@ -72,7 +72,7 @@ fn due(job: &JobRecord) -> DueJob {
     }
 }
 
-fn write(action: Action, selector: Selector) -> BatchWrite {
+pub(crate) fn write(action: Action, selector: Selector) -> BatchWrite {
     BatchWrite {
         selector,
         action,
@@ -88,7 +88,7 @@ fn write(action: Action, selector: Selector) -> BatchWrite {
     }
 }
 
-fn everything() -> Selector {
+pub(crate) fn everything() -> Selector {
     Selector::filter(Filter::default()).expect("selector")
 }
 
@@ -105,7 +105,7 @@ async fn create(f: &Fixture, write: BatchWrite, key: &str) -> JobRecord {
         .expect("create the job")
 }
 
-async fn runs_started(f: &Fixture, n: usize) -> Vec<Uuid> {
+pub(crate) async fn runs_started(f: &Fixture, n: usize) -> Vec<Uuid> {
     let mut ids = Vec::new();
     for _ in 0..n {
         ids.push(f.w.start(f.workflow, &json!({})).await.as_uuid());
@@ -114,7 +114,7 @@ async fn runs_started(f: &Fixture, n: usize) -> Vec<Uuid> {
     ids
 }
 
-async fn job(f: &Fixture, id: Uuid) -> JobRecord {
+pub(crate) async fn job(f: &Fixture, id: Uuid) -> JobRecord {
     service(f).get(&f.w.admin, id).await.expect("job")
 }
 
@@ -129,7 +129,7 @@ async fn items(f: &Fixture, id: Uuid) -> Vec<(i32, String, Option<String>, Optio
     .expect("items")
 }
 
-async fn status_of(f: &Fixture, run: Uuid) -> String {
+pub(crate) async fn status_of(f: &Fixture, run: Uuid) -> String {
     sqlx::query_scalar("SELECT status FROM runs WHERE id = $1")
         .bind(run)
         .fetch_one(&f.w.db.pool)
