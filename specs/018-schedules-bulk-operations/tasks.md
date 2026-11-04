@@ -612,9 +612,26 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   run → fence → job → item, rate slot, deferral, drain) with kill/restart, duplicate, lost-hint and
   late-commit faults — `crates/scheduler/src/batches.rs`, `tests/fault/schedules-bulk-operations/batch.rs`
   — SC-018-009 — FR-018-029..031, FR-018-033.
+  *Part done 2026-11-04 (task stays open: the pass in the scheduler and its wiring in the engine, and the faults at each
+  write).* The executor itself is built (decision D1958): `BatchExecutor::step` selects, applies, drains, fails and ends a job
+  one step at a time, over `BatchStore` (`due_jobs`, `select_round`, `next_item`, `record_item`, `complete_job`,
+  `drain_cancel`, `fail_job`). A design defect of D1033 was found by a held transaction: `pg_snapshot_xmax` is the last
+  completed identity plus one, so an open transaction with that identity let the selection start; the horizon is now the
+  creator's own identity. Evidence: `batch_executor::` 12 passed in `integration_schedules_bulk_operations` (pages by id
+  and `maxItems`; an empty job; the wait for a transaction open at creation; one item per slot with its effect, outcome
+  and counters, the last item ending the job; a finished run and an unknown id skipped with their reasons; a crash between
+  the effect and its record; the loss of the creator's permission; a cancel drained in pages; a refusal retried after a
+  backoff and one that is not; two tests of a lease that was lost). Mutations that were caught: the original horizon
+  (`xmax` with `>=`) fails the held-transaction test as `Acted` instead of `Idle`, and recording an item without the fence
+  fails the stale-lease test. Gaps G1956..G1959.
 - [ ] T018-047 [US5] Item adapters for the eight actions through single-run use cases, skip reasons (incl.
   `TEST_RUN`), failed compensation of cancelled runs — `tests/integration/schedules-bulk-operations/batch_actions.rs`
   — one case per action and reason — FR-018-030, FR-018-031, FR-018-034, FR-018-050.
+  *Part done 2026-11-04 (task stays open: one case per action and reason, `UPDATE`, `TEST_RUN`).* `ItemActions` is
+  implemented for the run service in `application/src/runs/batch_items.rs` for cancel, pause, resume (`operate`), signal,
+  retry-step and mark-manual-review (`review` with `Retry` and `Hold`) and rerun, each under the key of the item, with the
+  refusals that mean "not for this run" read as skips. Only `CANCEL` and `RERUN` are proved by `batch_executor::` so far;
+  the others are covered when their cases are written. `UPDATE` is refused at creation (G1959).
 - [ ] T018-048 [US5] Batch authorization and ceilings (no `run:batch`, missing action permission,
   mid-job revocation, foreign ids, job/item ceilings, zero quota) —
   `tests/integration/schedules-bulk-operations/batch_security.rs` — SC-018-010 — FR-018-033, FR-018-034,

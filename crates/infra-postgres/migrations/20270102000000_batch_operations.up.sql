@@ -54,9 +54,12 @@ CREATE TABLE batch_jobs (
     select_cursor      uuid,
     -- the selection looks at the runs created at or before this instant (the database clock)
     selection_bound_at timestamptz NOT NULL,
-    -- the selection starts once every transaction that was open when the job was created has ended
-    -- (`pg_snapshot_xmin(pg_current_snapshot())` has reached it), so no run that committed later with
-    -- an earlier creation time is missed
+    -- the identity of the transaction that creates the job. The selection starts once the oldest
+    -- transaction still open is younger than it (`pg_snapshot_xmin(pg_current_snapshot()) >
+    -- selection_horizon`), that is once every transaction that had an identity when the job was created has
+    -- ended, so a run committed by one of them with an earlier creation time is not missed. (The `xmax` of a
+    -- snapshot is the last completed identity plus one, not the next one, and would let a transaction that
+    -- is still open pass.)
     selection_horizon  xid8        NOT NULL,
     -- the durable rate slot: the earliest instant the next item may be applied
     next_slot_at       timestamptz NOT NULL,
@@ -168,6 +171,8 @@ CREATE TABLE batch_items (
     error_code      text,
     attempts        smallint    NOT NULL DEFAULT 0,
     next_attempt_at timestamptz,
+    -- when the first refusal happened: an item is retried for a bounded time after it
+    first_refused_at timestamptz,
     -- the run a rerun created
     new_run_id      uuid,
     updated_at      timestamptz NOT NULL,
@@ -180,7 +185,8 @@ CREATE TABLE batch_items (
         ('PENDING', 'DEFERRED', 'SUCCEEDED', 'SKIPPED', 'FAILED', 'CANCELLED')),
     CONSTRAINT batch_items_reason_closed CHECK (reason IS NULL OR reason ~ '^[A-Z][A-Z0-9_]{0,63}$'),
     CONSTRAINT batch_items_error_code_closed CHECK (error_code IS NULL OR error_code ~ '^[A-Z][A-Z0-9_]{0,63}$'),
-    CONSTRAINT batch_items_attempts_valid CHECK (attempts >= 0)
+    CONSTRAINT batch_items_attempts_valid CHECK (attempts >= 0),
+    CONSTRAINT batch_items_refusal_recorded CHECK ((attempts > 0) = (first_refused_at IS NOT NULL))
 );
 CREATE INDEX batch_items_state_idx ON batch_items (tenant_id, job_id, state, ordinal);
 

@@ -10,6 +10,7 @@ mod admission;
 mod authority;
 mod backfill;
 mod batch;
+mod batch_executor;
 mod cancel_other;
 mod catchup;
 mod changes;

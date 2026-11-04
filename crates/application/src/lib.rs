@@ -63,6 +63,7 @@ pub mod telemetry;
 pub mod worker;
 
 pub mod batch;
+pub mod batch_executor;
 pub mod blobs;
 
 pub mod secret_cleanup;

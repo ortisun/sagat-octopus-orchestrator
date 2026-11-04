@@ -11,12 +11,13 @@ use std::future::Future;
 
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::batch::{
-    Action, BatchError, FailureReason, Filter, ItemState, JobState, Justification, Limits,
-    ParamsGiven, Rate, Selector, SelectorKind,
+    Action, BatchError, DeferCause, FailureReason, Filter, ItemState, JobState, Justification,
+    Limits, ParamsGiven, Rate, Selector, SelectorKind, SkipReason,
 };
 use sagat_domain::execution::RunStatus;
 use sagat_domain::identity::{NamespaceId, Permission, Principal, TenantId};
 use sagat_domain::quota::QuotaResource;
+use sagat_domain::sharding::Shard;
 use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
@@ -27,7 +28,7 @@ use crate::definitions::{Applied, Idempotency, fingerprint};
 use crate::error::{AppError, StoreError};
 use crate::identity::{Page, PageRequest, RequestContext};
 use crate::quotas::QuotaLookup;
-use crate::schedules::StoredInput;
+use crate::schedules::{ShardFence, StoredInput};
 
 /// How long a finished job and its items are kept (`FR-018-033`): 30 days by default, at most 90.
 pub const DEFAULT_RETENTION: Duration = Duration::days(30);
@@ -93,6 +94,8 @@ pub struct ItemRecord {
     pub error_code: Option<String>,
     pub attempts: u32,
     pub next_attempt_at: Option<OffsetDateTime>,
+    /// When the first refusal happened: an item is retried for a bounded time after it.
+    pub first_refused_at: Option<OffsetDateTime>,
     /// The run a rerun created.
     pub new_run_id: Option<Uuid>,
     pub updated_at: OffsetDateTime,
@@ -386,6 +389,62 @@ pub struct Preview {
     pub sample: Vec<Uuid>,
 }
 
+/// A job the pass should look at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DueJob {
+    pub tenant_id: TenantId,
+    pub id: Uuid,
+}
+
+/// What a selection round did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Selected {
+    /// A transaction that was open when the job was created has not ended: the selection starts
+    /// once every one of them has (`FR-018-029`).
+    Waiting,
+    /// A page of runs became items; the job runs once the selection has reached its end or `maxItems`.
+    Picked { items: u32 },
+    /// The job is no longer selecting.
+    NotSelecting,
+}
+
+/// What the executor applies next.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NextItem {
+    Item(ItemRecord),
+    /// Every selected item has ended.
+    Drained,
+    /// Items remain, but none is due: the deferred ones wait for their retry.
+    Waiting,
+}
+
+/// How an item ended, or why it is put off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemOutcome {
+    Succeeded {
+        /// The run a rerun created.
+        new_run: Option<Uuid>,
+    },
+    Skipped(SkipReason),
+    /// A closed `Error.code`.
+    Failed {
+        code: &'static str,
+    },
+    /// Refused for now; tried again at `retry_at`.
+    Deferred {
+        cause: DeferCause,
+        retry_at: OffsetDateTime,
+    },
+}
+
+/// What a drain of a cancelled job did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Drained {
+    pub cancelled: u32,
+    /// Nothing was left to cancel and the job is `CANCELLED`.
+    pub finished: bool,
+}
+
 /// Persistence of batch jobs. Implemented by `sagat-infra-postgres`.
 pub trait BatchStore: QuotaLookup + Send + Sync {
     fn namespace_exists(
@@ -442,6 +501,89 @@ pub trait BatchStore: QuotaLookup + Send + Sync {
         at: OffsetDateTime,
         audit: &AuditRecord,
     ) -> impl Future<Output = Result<Option<JobRecord>, StoreError>> + Send;
+
+    /// The jobs of the shards the replica owns that are due to be looked at, earliest first.
+    fn due_jobs(
+        &self,
+        shards: &[Shard],
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<DueJob>, StoreError>> + Send;
+
+    /// One round of the selection: once every transaction that was open when the job was created
+    /// has ended, the next page of the runs the selector matches (those created at or before the
+    /// bound of the job, by run id after the cursor) become items, in one transaction with the
+    /// cursor and the counters. A lost lease is a `StateConflict` and commits nothing.
+    fn select_round(
+        &self,
+        tenant: TenantId,
+        id: Uuid,
+        fence: Option<&ShardFence>,
+        page: u32,
+    ) -> impl Future<Output = Result<Selected, StoreError>> + Send;
+
+    /// The next item to apply: the first that is pending, or deferred and due.
+    fn next_item(
+        &self,
+        tenant: TenantId,
+        id: Uuid,
+        at: OffsetDateTime,
+    ) -> impl Future<Output = Result<NextItem, StoreError>> + Send;
+
+    /// Records the outcome of an item with the counters and the next slot of the job, under the
+    /// fence of the shard, in one transaction. The effect was applied before, under the key of the
+    /// item, so a repeat of it changes nothing. A job that is over or an item that has ended is a
+    /// `StateConflict`.
+    #[allow(clippy::too_many_arguments)]
+    fn record_item(
+        &self,
+        tenant: TenantId,
+        id: Uuid,
+        ordinal: u32,
+        outcome: &ItemOutcome,
+        at: OffsetDateTime,
+        fence: Option<&ShardFence>,
+        finished: &AuditRecord,
+    ) -> impl Future<Output = Result<JobRecord, StoreError>> + Send;
+
+    /// Marks a job whose items have all ended `COMPLETED`.
+    fn complete_job(
+        &self,
+        tenant: TenantId,
+        id: Uuid,
+        at: OffsetDateTime,
+        fence: Option<&ShardFence>,
+        finished: &AuditRecord,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// Marks up to `limit` of the items that have not ended of a cancelling job `CANCELLED`; when none
+    /// is left the job is `CANCELLED` (`FR-018-032`).
+    fn drain_cancel(
+        &self,
+        tenant: TenantId,
+        id: Uuid,
+        limit: u32,
+        at: OffsetDateTime,
+        fence: Option<&ShardFence>,
+        finished: &AuditRecord,
+    ) -> impl Future<Output = Result<Drained, StoreError>> + Send;
+
+    /// Ends a job `FAILED` for `reason`; the items that had not ended are marked `CANCELLED`.
+    fn fail_job(
+        &self,
+        tenant: TenantId,
+        id: Uuid,
+        reason: FailureReason,
+        at: OffsetDateTime,
+        fence: Option<&ShardFence>,
+        finished: &AuditRecord,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// The bytes of a payload of the tenant (the signal or the update arguments of a job).
+    fn payload(
+        &self,
+        tenant: TenantId,
+        digest: &[u8; 32],
+    ) -> impl Future<Output = Result<Option<Vec<u8>>, StoreError>> + Send;
 
     /// Counts the runs a selector matches in a namespace, created at or before `bound`, up to
     /// `max_items + 1`, and samples a few of their ids. Changes nothing, within a bounded time.
@@ -532,7 +674,9 @@ impl<S: BatchStore, C: Clock> BatchService<S, C> {
                 "the Idempotency-Key must have 8 to 160 characters",
             ));
         }
-        if write.action.needs_feature_019() {
+        if write.action.needs_feature_019() || write.action == Action::Update {
+            // an Update goes through the declared operations of a run, which a batch does not call yet
+            // (G1959); a job that asked for it would only fail every item
             return Err(invalid("BATCH_ACTION_UNAVAILABLE", "/action"));
         }
         let given = ParamsGiven {
@@ -546,6 +690,11 @@ impl<S: BatchStore, C: Clock> BatchService<S, C> {
             || (!write.instance_path.is_empty() && write.step_id.is_none())
         {
             return Err(invalid("BATCH_PARAMS_INVALID", "/"));
+        }
+        if !write.instance_path.is_empty() {
+            // a step of an iteration of a collection or a loop needs its scope path resolved per run;
+            // until then a job names root steps only (G1956)
+            return Err(invalid("BATCH_PARAMS_INVALID", "/instancePath"));
         }
         if let SelectorKind::Filter(filter) = write.selector.kind()
             && filter.business_id_prefix.is_some()

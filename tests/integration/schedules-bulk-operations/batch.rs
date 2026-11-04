@@ -248,6 +248,14 @@ async fn parameters_the_action_does_not_take_and_limits_out_of_range_create_noth
             "BATCH_ACTION_UNAVAILABLE",
         ),
         (
+            // a declared Update is not applied by a batch yet (G1959): refuse it, do not fail every item
+            BatchWrite {
+                action: Action::Update,
+                ..cancel()
+            },
+            "BATCH_ACTION_UNAVAILABLE",
+        ),
+        (
             BatchWrite {
                 selector: Selector::filter(Filter {
                     business_id_prefix: Some("order-".to_owned()),

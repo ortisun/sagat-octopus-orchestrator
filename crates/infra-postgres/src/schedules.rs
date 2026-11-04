@@ -52,7 +52,7 @@ async fn lock_schedule(
     expected_state_version: u64,
     allow_paused: bool,
 ) -> Result<(), StoreError> {
-    check_fence(conn, schedule, fence).await?;
+    check_fence(conn, schedule.as_uuid(), fence).await?;
     let row: Option<(String, i64)> = sqlx::query_as(
         "SELECT state, state_version FROM schedules WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
     )
@@ -80,13 +80,13 @@ async fn lock_schedule(
 /// Takes the shard lease `FOR SHARE` and checks it is the one of this schedule, held by the owner
 /// and not run out by the database's clock. Without a fence (an HTTP command holds none) it checks
 /// nothing. A lease that is not held is a [`StoreError::StateConflict`].
-async fn check_fence(
+pub(crate) async fn check_fence(
     conn: &mut PgConnection,
-    schedule: ScheduleId,
+    owner_of: Uuid,
     fence: Option<&ShardFence>,
 ) -> Result<(), StoreError> {
     if let Some(fence) = fence {
-        let shard = Shard::of(schedule.as_uuid());
+        let shard = Shard::of(owner_of);
         let generation = i64::try_from(fence.lease.generation).ok();
         let (true, Some(generation)) = (fence.lease.shard == shard, generation) else {
             return Err(StoreError::StateConflict(
@@ -1573,7 +1573,7 @@ impl ScheduleStore for PgScheduleStore {
         at: OffsetDateTime,
     ) -> Result<(), StoreError> {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
-        check_fence(&mut tx, id, fence).await?;
+        check_fence(&mut tx, id.as_uuid(), fence).await?;
         // a debt another process has paid in the meantime is paid: nothing to change
         sqlx::query(
             "UPDATE schedule_obligations SET state = 'DONE', done_at = $5 \

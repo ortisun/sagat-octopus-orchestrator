@@ -6,6 +6,7 @@
 //! together or not at all.
 
 mod ad_hoc;
+mod batch_items;
 pub(crate) use ad_hoc::audit_denied as audit_database_execution_denied;
 pub use ad_hoc::{
     AdHocMode, ConnectionProbe, RetainedDefinition, RunOrigin, StartDatabaseExecution,
