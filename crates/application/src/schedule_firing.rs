@@ -15,9 +15,9 @@ use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::execution::{RunId, RunStatus};
 use sagat_domain::identity::{Permission, Principal, Subject};
 use sagat_domain::schedules::{
-    ActionKind, Ceilings, Decision, Origin, Outcome, Reason, Recovery, RecoveryStep, Release,
-    ScheduleId, Standing, Summary, VersionPolicy, decide, failure_pauses, plan_recovery_step,
-    recovery_slice, release,
+    ActionKind, Ceilings, Decision, Origin, Outcome, Overlap, Reason, Recovery, RecoveryStep,
+    Release, ScheduleId, Standing, Summary, VersionPolicy, decide, failure_pauses,
+    plan_recovery_step, recovery_slice, release,
 };
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
@@ -27,6 +27,9 @@ use uuid::Uuid;
 /// is past it is left to the next step of the recovery, which keeps summarizing.
 const TALLY_CALLS: usize = 100;
 
+/// The reason recorded with the cancellation `CANCEL_OTHER` asks of an open run.
+const CANCEL_OTHER_REASON: &str = "the overlap rule of the schedule is CANCEL_OTHER";
+
 use crate::clock::Clock;
 use crate::definitions::Idempotency;
 use crate::error::{AppError, StoreError};
@@ -34,9 +37,9 @@ use crate::identity::{IdentityStore, RequestContext};
 use crate::runs::NO_PUBLISHED_VERSION;
 use crate::schedules::{
     AUTHORITY_REVOKED, ActionDedupe, ActionView, AutoPause, BackfillProgress, DueBackfill,
-    DueSchedule, ManualRequest, Reconcile, RecordedAction, ScheduleAdmission, ScheduleAfter,
-    ScheduleCalendar, ScheduleDecision, ScheduleOrigin, ScheduleRecord, ScheduleState,
-    ScheduleStore, ShardFence, next_times,
+    DueSchedule, ManualRequest, NewObligation, Obligation, Reconcile, RecordedAction,
+    ScheduleAdmission, ScheduleAfter, ScheduleCalendar, ScheduleDecision, ScheduleOrigin,
+    ScheduleRecord, ScheduleState, ScheduleStore, ShardFence, next_times, obligation_key,
 };
 
 /// What a schedule starts, as the run service needs it.
@@ -58,6 +61,21 @@ pub trait ScheduledStarts: Send + Sync {
         admission: ScheduleAdmission,
         ctx: &RequestContext,
     ) -> impl Future<Output = Result<RunId, AppError>> + Send;
+
+    /// Cancels `run` through the ordinary cancel use case, as the schedule (`CANCEL_OTHER`). The cancel
+    /// is idempotent under `key`: a repeat of it, by this process or another, changes nothing more.
+    ///
+    /// # Errors
+    /// As the cancel use case: [`AppError::Forbidden`] without `run:operate`, [`AppError::NotFound`],
+    /// and [`AppError::StateConflict`] for a run that has ended.
+    fn cancel_run(
+        &self,
+        principal: &Principal,
+        run: Uuid,
+        reason: &str,
+        key: &str,
+        ctx: &RequestContext,
+    ) -> impl Future<Output = Result<(), AppError>> + Send;
 }
 
 /// How a call to [`ScheduleFiring::fire`] ended.
@@ -220,6 +238,7 @@ where
         let policies = request
             .overlap
             .map_or(record.policies, |o| record.policies.with_overlap(o));
+        crate::schedules::authorize_cancelling(caller, policies.overlap())?;
         let dedupe = ActionDedupe {
             idempotency: idempotency.clone(),
             resource: format!(
@@ -286,6 +305,11 @@ where
                     Decision::Buffer { .. } => (Outcome::Buffered, None),
                     _ => (Outcome::DroppedBufferFull, None),
                 };
+                let obligations = if matches!(other, Decision::Buffer { cancel_open: true }) {
+                    self.obligations_for(&record, nominal).await?
+                } else {
+                    Vec::new()
+                };
                 let decision = ScheduleDecision {
                     tenant_id: record.tenant_id,
                     schedule: record.id,
@@ -304,6 +328,7 @@ where
                     at: now,
                     dedupe: Some(dedupe),
                     backfill: None,
+                    obligations,
                 };
                 self.store.record_decision(&decision, Some(&audit)).await?;
                 self.committed_action(caller, idempotency).await
@@ -314,11 +339,17 @@ where
     /// How many of the runs the schedule tracks are still open: an ended one, or one that is gone,
     /// is closed even if the pass has not forgotten it yet.
     async fn open_runs(&self, record: &ScheduleRecord) -> Result<u32, AppError> {
+        let open = self.open_run_ids(record).await?.len();
+        Ok(u32::try_from(open).unwrap_or(u32::MAX))
+    }
+
+    /// The runs the schedule tracks that are still open, by looking at their status.
+    async fn open_run_ids(&self, record: &ScheduleRecord) -> Result<Vec<Uuid>, AppError> {
         let statuses = self
             .store
             .run_statuses(record.tenant_id, &record.tracked_runs)
             .await?;
-        let open = record
+        Ok(record
             .tracked_runs
             .iter()
             .filter(|run| {
@@ -327,8 +358,8 @@ where
                     .find(|(s, _)| s == *run)
                     .is_some_and(|(_, status)| !status.is_terminal())
             })
-            .count();
-        Ok(u32::try_from(open).unwrap_or(u32::MAX))
+            .copied()
+            .collect())
     }
 
     /// Takes the next step of a backfill (`FR-018-011`): the first nominal time of the range after
@@ -412,6 +443,7 @@ where
             at: now,
             dedupe: None,
             backfill: Some(progress),
+            obligations: Vec::new(),
         };
         let Some(&time) = next.first() else {
             // no time is left in the range
@@ -505,11 +537,11 @@ where
                     summary: None,
                 };
                 let step = progress(time, Some(outcome.as_str()), false);
-                self.committed(
-                    self.store
-                        .record_decision(&decision(vec![action], step), None)
-                        .await,
-                )
+                let mut owing = decision(vec![action], step);
+                if matches!(other, Decision::Buffer { cancel_open: true }) {
+                    owing.obligations = self.obligations_for(&record, time).await?;
+                }
+                self.committed(self.store.record_decision(&owing, None).await)
             }
         }
     }
@@ -568,7 +600,13 @@ where
                 None => ended.push((*id, RunStatus::Cancelled)),
             }
         }
-        let open = record.tracked_runs.len() - ended.len();
+        let open_ids: Vec<Uuid> = record
+            .tracked_runs
+            .iter()
+            .copied()
+            .filter(|id| !ended.iter().any(|(gone, _)| gone == id))
+            .collect();
+        let open = open_ids.len();
         if !ended.is_empty() {
             let failed =
                 record.policies.pause_on_failure() && ended.iter().any(|(_, s)| failure_pauses(*s));
@@ -605,13 +643,28 @@ where
                 .identity
                 .find_membership(record.tenant_id, &subject)
                 .await?
-                .filter(|m| m.role().grants(Permission::RunStart)),
+                .filter(|m| {
+                    m.role().grants(Permission::RunStart)
+                        && (record.policies.overlap() != Overlap::CancelOther
+                            || m.role().grants(Permission::RunOperate))
+                }),
             Err(_) => None,
         };
         let Some(membership) = authorized else {
             return self.revoke_authority(&record, fence, now).await;
         };
         let principal = Principal::new(record.tenant_id, system.clone(), membership.role());
+
+        // 2b. a cancellation the schedule owes an open run (`CANCEL_OTHER`) is paid before anything else
+        if let Some(owed) = self
+            .store
+            .pending_obligation(record.tenant_id, record.id)
+            .await?
+        {
+            return self
+                .pay_obligation(&record, &principal, owed, fence, now, &ctx)
+                .await;
+        }
 
         // 3. an action that was waiting goes first once nothing is open
         let standing = Standing {
@@ -816,7 +869,21 @@ where
                     reason,
                     summary: None,
                 };
-                self.record(&record, fence, vec![action], after, now).await
+                // `CANCEL_OTHER` owes every run it found open an ordinary cancellation, recorded
+                // with the action that waits for them
+                let obligations = if matches!(other, Decision::Buffer { cancel_open: true }) {
+                    open_ids
+                        .iter()
+                        .map(|run| NewObligation {
+                            run: *run,
+                            key: obligation_key(record.id, time, *run),
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                self.record_owing(&record, fence, vec![action], after, obligations, now)
+                    .await
             }
         }
     }
@@ -870,6 +937,20 @@ where
         after: ScheduleAfter,
         now: OffsetDateTime,
     ) -> Result<Fired, AppError> {
+        self.record_owing(record, fence, actions, after, Vec::new(), now)
+            .await
+    }
+
+    /// Records a decision that starts no run, with the cancellations it owes.
+    async fn record_owing(
+        &self,
+        record: &ScheduleRecord,
+        fence: Option<ShardFence>,
+        actions: Vec<RecordedAction>,
+        after: ScheduleAfter,
+        obligations: Vec<NewObligation>,
+        now: OffsetDateTime,
+    ) -> Result<Fired, AppError> {
         let decision = ScheduleDecision {
             tenant_id: record.tenant_id,
             schedule: record.id,
@@ -881,8 +962,59 @@ where
             at: now,
             dedupe: None,
             backfill: None,
+            obligations,
         };
         self.committed(self.store.record_decision(&decision, None).await)
+    }
+
+    /// The cancellations the action that waits at `nominal` owes the runs that are still open.
+    async fn obligations_for(
+        &self,
+        record: &ScheduleRecord,
+        nominal: OffsetDateTime,
+    ) -> Result<Vec<NewObligation>, AppError> {
+        Ok(self
+            .open_run_ids(record)
+            .await?
+            .into_iter()
+            .map(|run| NewObligation {
+                run,
+                key: obligation_key(record.id, nominal, run),
+            })
+            .collect())
+    }
+
+    /// Pays one cancellation the schedule owes (`CANCEL_OTHER`, `FR-018-006`) through the ordinary
+    /// cancel use case, under the key of the debt, and records it paid under the fence of the shard.
+    /// The first commit wins: a run that ended by itself, or is gone, leaves nothing to cancel and
+    /// the debt is paid. The cancel is idempotent, so a lease lost between the cancel and the
+    /// record costs a repeat that changes nothing: the fence guards the record.
+    async fn pay_obligation(
+        &self,
+        record: &ScheduleRecord,
+        principal: &Principal,
+        owed: Obligation,
+        fence: Option<ShardFence>,
+        now: OffsetDateTime,
+        ctx: &RequestContext,
+    ) -> Result<Fired, AppError> {
+        match self
+            .starts
+            .cancel_run(principal, owed.run, CANCEL_OTHER_REASON, &owed.key, ctx)
+            .await
+        {
+            Ok(()) | Err(AppError::StateConflict(_) | AppError::NotFound) => {}
+            // the subject the schedule acts for may not cancel runs any more
+            Err(AppError::Forbidden { .. }) => {
+                return self.revoke_authority(record, fence, now).await;
+            }
+            Err(other) => return Err(other),
+        }
+        self.committed(
+            self.store
+                .complete_obligation(record.tenant_id, record.id, &owed, fence.as_ref(), now)
+                .await,
+        )
     }
 
     /// Starts the run of an action. A refusal to admit it keeps the time owed.
@@ -1026,6 +1158,7 @@ where
             at: now,
             dedupe: None,
             backfill: None,
+            obligations: Vec::new(),
         };
         let audit = self.audit(
             record,

@@ -65,6 +65,17 @@ impl ScheduledStarts for Starts {
     ) -> Result<RunId, AppError> {
         ScheduledStarts::start_scheduled(&self.0.runs, principal, request, admission, ctx).await
     }
+
+    async fn cancel_run(
+        &self,
+        principal: &Principal,
+        run: Uuid,
+        reason: &str,
+        key: &str,
+        ctx: &RequestContext,
+    ) -> Result<(), AppError> {
+        ScheduledStarts::cancel_run(&self.0.runs, principal, run, reason, key, ctx).await
+    }
 }
 
 pub(crate) type Service = ScheduleService<PgScheduleStore, SpecCalendar, TestClock>;
@@ -219,27 +230,8 @@ impl Fixture {
             .await
             .expect("lock the row of the schedule");
         let revoke = async {
-            super::bounded::within(
-                "the action waits for the row of the schedule",
-                std::time::Duration::from_secs(120),
-                async {
-                    loop {
-                        let waiting: i64 = sqlx::query_scalar(
-                            "SELECT count(*) FROM pg_stat_activity \
-                             WHERE datname = current_database() AND pid <> pg_backend_pid() \
-                               AND wait_event_type = 'Lock'",
-                        )
-                        .fetch_one(&self.w.db.pool)
-                        .await
-                        .expect("look at the backends");
-                        if waiting > 0 {
-                            break;
-                        }
-                        tokio::task::yield_now().await;
-                    }
-                },
-            )
-            .await;
+            self.wait_for_a_backend_on_a_lock("the action waits for the row of the schedule")
+                .await;
             sqlx::query(
                 "UPDATE memberships SET role = 'viewer' WHERE tenant_id = $1 AND subject = $2",
             )
@@ -252,6 +244,53 @@ impl Fixture {
         };
         let (done, ()) = tokio::join!(action, revoke);
         done
+    }
+
+    /// Runs `action` while another transaction holds the row of `run` and has already finished it
+    /// as `status`; once the action is waiting for that row the transaction commits. The first
+    /// commit wins: the action finds a run that is over (`FR-018-007`).
+    pub(crate) async fn finished_while_the_action_waits<T>(
+        &self,
+        run: Uuid,
+        status: &str,
+        action: impl std::future::Future<Output = T>,
+    ) -> T {
+        let mut held = self.w.db.pool.begin().await.expect("hold the run");
+        sqlx::query("UPDATE runs SET status = $2, finished_at = now() WHERE id = $1")
+            .bind(run)
+            .bind(status)
+            .execute(&mut *held)
+            .await
+            .expect("finish the run, uncommitted");
+        let finish = async {
+            self.wait_for_a_backend_on_a_lock("the action waits for the row of the run")
+                .await;
+            held.commit().await.expect("commit the end of the run");
+        };
+        let (done, ()) = tokio::join!(action, finish);
+        done
+    }
+
+    /// Waits until some backend waits on a lock (`pg_stat_activity`, not a time), for at most two
+    /// minutes, then panics naming `stage`.
+    async fn wait_for_a_backend_on_a_lock(&self, stage: &str) {
+        super::bounded::within(stage, std::time::Duration::from_secs(120), async {
+            loop {
+                let waiting: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM pg_stat_activity \
+                     WHERE datname = current_database() AND pid <> pg_backend_pid() \
+                       AND wait_event_type = 'Lock'",
+                )
+                .fetch_one(&self.w.db.pool)
+                .await
+                .expect("look at the backends");
+                if waiting > 0 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
     }
 
     pub(crate) fn due(&self, schedule: &ScheduleRecord) -> DueSchedule {

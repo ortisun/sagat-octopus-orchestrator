@@ -13,9 +13,9 @@ use sagat_application::schedule_codec::{
 };
 use sagat_application::schedules::{
     AUTHORITY_REVOKED, ActionDedupe, ActionView, BackfillProgress, BackfillRecord, BackfillState,
-    BufferedAction, DueBackfill, DueSchedule, NewBackfill, NewSchedule, Reconcile, RecordedAction,
-    Revise, ScheduleActivity, ScheduleAdmission, ScheduleDecision, ScheduleOrigin, ScheduleRecord,
-    ScheduleState, ScheduleStore, ShardFence, StateChange, TargetCheck,
+    BufferedAction, DueBackfill, DueSchedule, NewBackfill, NewSchedule, Obligation, Reconcile,
+    RecordedAction, Revise, ScheduleActivity, ScheduleAdmission, ScheduleDecision, ScheduleOrigin,
+    ScheduleRecord, ScheduleState, ScheduleStore, ShardFence, StateChange, TargetCheck,
 };
 use sagat_domain::audit::AuditRecord;
 use sagat_domain::execution::{RunId, RunStatus};
@@ -51,6 +51,39 @@ async fn lock_schedule(
     fence: Option<&ShardFence>,
     expected_state_version: u64,
     allow_paused: bool,
+) -> Result<(), StoreError> {
+    check_fence(conn, schedule, fence).await?;
+    let row: Option<(String, i64)> = sqlx::query_as(
+        "SELECT state, state_version FROM schedules WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
+    )
+    .bind(tenant.as_uuid())
+    .bind(schedule.as_uuid())
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    let Some((state, version)) = row else {
+        return Err(StoreError::MissingReference);
+    };
+    let acts = state == ScheduleState::Active.as_str()
+        || (allow_paused && state == ScheduleState::Paused.as_str());
+    if !acts {
+        return Err(StoreError::StateConflict("the schedule is not active"));
+    }
+    if u64::try_from(version).ok() != Some(expected_state_version) {
+        return Err(StoreError::StateConflict(
+            "the schedule changed since the decision was made",
+        ));
+    }
+    Ok(())
+}
+
+/// Takes the shard lease `FOR SHARE` and checks it is the one of this schedule, held by the owner
+/// and not run out by the database's clock. Without a fence (an HTTP command holds none) it checks
+/// nothing. A lease that is not held is a [`StoreError::StateConflict`].
+async fn check_fence(
+    conn: &mut PgConnection,
+    schedule: ScheduleId,
+    fence: Option<&ShardFence>,
 ) -> Result<(), StoreError> {
     if let Some(fence) = fence {
         let shard = Shard::of(schedule.as_uuid());
@@ -92,27 +125,6 @@ async fn lock_schedule(
                 "the shard lease is no longer held",
             ));
         }
-    }
-    let row: Option<(String, i64)> = sqlx::query_as(
-        "SELECT state, state_version FROM schedules WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
-    )
-    .bind(tenant.as_uuid())
-    .bind(schedule.as_uuid())
-    .fetch_optional(&mut *conn)
-    .await
-    .map_err(store_error)?;
-    let Some((state, version)) = row else {
-        return Err(StoreError::MissingReference);
-    };
-    let acts = state == ScheduleState::Active.as_str()
-        || (allow_paused && state == ScheduleState::Paused.as_str());
-    if !acts {
-        return Err(StoreError::StateConflict("the schedule is not active"));
-    }
-    if u64::try_from(version).ok() != Some(expected_state_version) {
-        return Err(StoreError::StateConflict(
-            "the schedule changed since the decision was made",
-        ));
     }
     Ok(())
 }
@@ -1460,11 +1472,42 @@ impl ScheduleStore for PgScheduleStore {
                 waiting += 1;
             }
         }
+        // the cancellations the waiting action owes the runs it found open, in the same transaction
+        if !decision.obligations.is_empty() {
+            let Some(waits_since) = decision
+                .actions
+                .iter()
+                .find(|a| a.outcome == Outcome::Buffered)
+                .map(|a| a.nominal_at)
+            else {
+                return Err(StoreError::Internal {
+                    detail: "cancellations are owed by an action that waits".to_owned(),
+                });
+            };
+            for owed in &decision.obligations {
+                sqlx::query(
+                    "INSERT INTO schedule_obligations \
+                     (tenant_id, schedule_id, nominal_at, run_id, kind, state, idempotency_key, created_at) \
+                     VALUES ($1, $2, $3, $4, 'CANCEL_RUN', 'PENDING', $5, $6)",
+                )
+                .bind(decision.tenant_id.as_uuid())
+                .bind(decision.schedule.as_uuid())
+                .bind(waits_since)
+                .bind(owed.run)
+                .bind(&owed.key)
+                .bind(decision.at)
+                .execute(&mut *tx)
+                .await
+                .map_err(store_error)?;
+            }
+        }
         sqlx::query(
             "UPDATE schedules SET state_version = state_version + 1, next_action_at = $3, \
              next_actual_at = $4, retry_at = CASE WHEN $10 THEN retry_at ELSE NULL END, \
              remaining_actions = $5, buffered = buffered + $6, counters = $7, \
-             recheck_at = CASE WHEN buffered + $6 > 0 THEN $9 + interval '5 seconds' ELSE NULL END, \
+             recheck_at = CASE WHEN buffered + $6 > 0 \
+                 THEN $9 + CASE WHEN $13 THEN interval '0 seconds' ELSE interval '5 seconds' END \
+                 ELSE NULL END, \
              state = CASE WHEN $8::text IS NULL THEN state ELSE 'PAUSED' END, \
              note = COALESCE($8, note), note_by = CASE WHEN $8::text IS NULL THEN note_by ELSE 'system' END, \
              note_at = CASE WHEN $8::text IS NULL THEN note_at ELSE $9 END, updated_at = $9, \
@@ -1489,12 +1532,62 @@ impl ScheduleStore for PgScheduleStore {
         .bind(manual)
         .bind(decision.after.recovery.map(|r| r.until))
         .bind(decision.after.recovery.map(|r| recovery_acts_column(r.acts_left)))
+        .bind(!decision.obligations.is_empty())
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
         if let Some(audit) = audit {
             insert_audit(&mut tx, audit).await?;
         }
+        tx.commit().await.map_err(store_error)
+    }
+
+    async fn pending_obligation(
+        &self,
+        tenant: TenantId,
+        id: ScheduleId,
+    ) -> Result<Option<Obligation>, StoreError> {
+        let row: Option<(OffsetDateTime, Uuid, String)> = sqlx::query_as(
+            "SELECT nominal_at, run_id, idempotency_key FROM schedule_obligations \
+             WHERE tenant_id = $1 AND schedule_id = $2 AND state = 'PENDING' \
+             ORDER BY nominal_at, run_id LIMIT 1",
+        )
+        .bind(tenant.as_uuid())
+        .bind(id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_error)?;
+        Ok(row.map(|(nominal_at, run, key)| Obligation {
+            nominal_at,
+            run,
+            key,
+        }))
+    }
+
+    async fn complete_obligation(
+        &self,
+        tenant: TenantId,
+        id: ScheduleId,
+        obligation: &Obligation,
+        fence: Option<&ShardFence>,
+        at: OffsetDateTime,
+    ) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        check_fence(&mut tx, id, fence).await?;
+        // a debt another process has paid in the meantime is paid: nothing to change
+        sqlx::query(
+            "UPDATE schedule_obligations SET state = 'DONE', done_at = $5 \
+             WHERE tenant_id = $1 AND schedule_id = $2 AND nominal_at = $3 AND run_id = $4 \
+               AND state = 'PENDING'",
+        )
+        .bind(tenant.as_uuid())
+        .bind(id.as_uuid())
+        .bind(obligation.nominal_at)
+        .bind(obligation.run)
+        .bind(at)
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
         tx.commit().await.map_err(store_error)
     }
 

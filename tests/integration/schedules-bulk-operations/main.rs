@@ -9,6 +9,7 @@ mod support;
 mod admission;
 mod authority;
 mod backfill;
+mod cancel_other;
 mod catchup;
 mod changes;
 mod firing;

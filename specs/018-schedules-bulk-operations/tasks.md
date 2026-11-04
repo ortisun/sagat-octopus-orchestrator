@@ -428,9 +428,36 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `contract_schedules_bulk_operations` 1; unit suites of domain, application, infra-postgres, scheduler, api-http and
   execution-engine green; `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`
   clean. Gaps G1951 (the count stops after a million times) and G1952 (a refused backfill step has no backoff).
-- [ ] T018-030 [US2] `CANCEL_OTHER` obligations via the ordinary cancel use case; races with self
+- [x] T018-030 [US2] `CANCEL_OTHER` obligations via the ordinary cancel use case; races with self
   completion and with failed compensation — `tests/fault/schedules-bulk-operations/cancel_other.rs` —
   first commit wins — FR-018-006, FR-018-007.
+  *Done 2026-11-04 (decisions D1953, D1954; gap G1953; owner question O1950).* The domain already decided
+  `Buffer { cancel_open }` and nothing acted on it: the action waited and the open run was never cancelled. Now the
+  decision transaction records a debt per open run (`schedule_obligations`, key `schedule:{id}:cancel:{µs}:{run}`)
+  with the waiting action and makes the schedule due at once; the pass pays the oldest debt before anything else,
+  through `RunService::operate` (Cancel) as `system:schedule:<id>`, and records it `DONE` under the shard fence; the
+  waiting action then starts by the existing release. The cancel of a run that ended by itself or is gone leaves the
+  debt paid (first commit wins); `Forbidden` is the loss of the authority; the cancel is keyed, so a lease lost
+  between the cancel and the record costs a no-op repeat. Cancelling runs needs `run:operate`: creating, updating
+  or resuming such a schedule, a backfill that asks for the rule and the override of trigger-now need it, and so does
+  every action (a developer cannot write one: O1950). Seen failing first (7 integration tests: no debt was recorded,
+  nothing paid it, no permission was asked), then fixed. Evidence: `cancel_other::` 7 passed in
+  `integration_schedules_bulk_operations` (the debt in the same transaction, paid through the ordinary cancel with
+  one audited cancellation by the schedule, a run that ended by itself first, one debt per open run, trigger-now with
+  the rule overridden, who may write the rule, an authority that can no longer operate runs pauses the schedule) and
+  5 in `fault_schedules_bulk_operations` (a run that really finishes through a worker just before the cancel is left
+  `SUCCEEDED` and uncancelled; a cancel that committed before the debt was recorded is not asked twice; a replica
+  with a lost lease cannot record the debt and the new owner pays it once; a run that waits for review keeps the new
+  time waiting and is not cancelled again; a compensation that failed pauses a schedule that pauses on failure). Two
+  mutations were caught: recording the debt without the fence fails the lease test, and not treating `StateConflict`
+  as paid fails the self-completion race. The failed-compensation outcomes are set on the run row (the saga
+  machinery is proved in its own suites); G1953: a waiting action older than the catch-up window still starts when
+  the runs end. Gates on the final tree (private `CARGO_TARGET_DIR`, `RUST_TEST_THREADS=2`):
+  `integration_schedules_bulk_operations` 159 passed and `fault_schedules_bulk_operations` 16 passed, each also with
+  `SAGAT_TEST_AS_RUNTIME_ROLE=1`; `integration_platform_foundation` 101; `integration_security_multitenancy` 126;
+  `integration_database_connections` 7; `contract_schedules_bulk_operations` 1; unit suites of domain, application,
+  infra-postgres, scheduler, api-http and execution-engine green; `cargo fmt --check` and
+  `cargo clippy --workspace --all-targets --locked -- -D warnings` clean.
 - [x] T018-031 [US2] Revisions on update; delete → `DROPPED_DELETED`, name freed —
   `tests/integration/schedules-bulk-operations/revisions.rs` — FR-018-014.
   *Done 2026-10-30; the tests are in `changes.rs`, `service.rs` and `firing.rs` (no `revisions.rs`).* Evidence:

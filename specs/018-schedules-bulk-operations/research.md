@@ -384,6 +384,29 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
   with the same backoff as a full quota (5 s doubling to 5 min), not retried on every round: `StateConflict` with
   `runs::NO_PUBLISHED_VERSION` is told apart from the `StateConflict` of "another process acted first", which still
   commits nothing and defers nothing.
+- **D1953** (2026-11-04, T018-030) `CANCEL_OTHER` owes each open run an ordinary cancellation, recorded with the
+  action that waits and paid by the pass. The `Buffer { cancel_open }` decision of the domain was ignored: the action
+  waited and nothing cancelled the run. The decision transaction now inserts one `schedule_obligations` row per run the
+  schedule tracks as open, with the key `schedule:{id}:cancel:{µs of the waiting time}:{run}`, and makes the schedule due
+  at once (a schedule with a debt is looked at in the next round, not in five seconds). The pass pays the oldest debt
+  before anything else, right after the authority check: it calls the cancel use case of the run service
+  (`RunService::operate`, `run.cancel_requested` audited by `system:schedule:<id>` with the reason "the overlap rule of
+  the schedule is CANCEL_OTHER") under that key, then records the debt `DONE`. **The first commit wins:** the cancel
+  of a run that ended by itself (`StateConflict`) or is gone (`NotFound`) leaves nothing to do and the debt is paid;
+  `Forbidden` means the subject the schedule acts for may not cancel runs and is the loss of its authority
+  (`AUTHORITY_REVOKED`, paused); any other failure leaves the debt and the pass tries again. The waiting action
+  starts through the existing release once the runs are over (a run that waits for review is not over). Two
+  transactions, not the plan's one: the plan puts the shard fence and the obligation row inside the run's cancel
+  transaction, which would change the cancel path of the run store for one caller. The key makes the pair
+  idempotent instead (a cancel that committed before the record is replayed as a no-op, so the run is cancelled once),
+  and the fence guards the record: a replica that lost its lease may repeat the cancel it was about to repeat anyway,
+  but cannot record it, and the new owner pays again. Paying a recorded debt is not a new decision, so it needs no lease
+  to be right. **Who may write the rule:** cancelling a run needs `run:operate`, which a developer lacks, so creating,
+  updating or resuming a schedule with `CANCEL_OTHER`, asking for it in a backfill and overriding the rule in
+  trigger-now need `run:operate` (admin, operator), and the authority check of every action asks for it too (O1950).
+- **D1954** (2026-11-04, T018-030) A debt may be paid after the run that owes it was forgotten: the pass forgets runs that
+  ended before it looks at debts, and a debt for a run that is terminal is paid by the `StateConflict` of the cancel, not
+  by a special case, so the code has one path.
 
 ## 4. Gaps
 
@@ -413,6 +436,7 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
 | G1606 | `REMATERIALIZE` checks of other features (retired version, paused resource, retired snapshot, busy permit) are evaluated at reset time; a preview reports them as provisional and a reset can still fail on them. | Inherent to reset at a later time. | Accepted |
 | G1950 | A run keeps no record of whose authority it started under. The 017 admission of a database step claimed after the schedule was resumed by someone else (or after `authorizedBy` changed through an update) stands on the new `authorizedBy`, not on the member the run started under (D1950). | Fails closed when that member lacks database authority (the step is refused, the run is not corrupted), and open when the new one has it and the old one did not. Closing it needs a column on `runs` (an additive migration with the erasure-aware immutability trigger of the provenance columns) or a different rule for the claim. | Open |
 | G1951 | The count of a recovery's summary stops after 100 calls of the calendar (a million times: a year of a schedule every 30 s, the densest the spacing floor and the longest window allow). Past it the step records a partial `COALESCED` summary and the recovery is remembered with no actions left, so the next step goes on summarizing instead of acting again; the work per step is bounded, the number of steps is not. | A schedule that dense with a window that long and an outage that long is not a case anyone sized for; the steps are cheap (one small transaction each) and the pass takes `steps_per_schedule` of them per round. Revisit with the benchmark (T018-072). | Open |
+| G1953 | A waiting action keeps waiting however long the runs that hold it back stay open (a run in `MANUAL_REVIEW` after a failed compensation can stay open for days) and starts when they end, even if it is older than the catch-up window; `data-model.md` has it become `MISSED_CATCHUP_WINDOW` instead. | Starting a stale time is the safe direction (the work is not lost) and the action is visible as `BUFFERED`; the transition needs an update of an action row under the append-only guard. | Open |
 | G1952 | A backfill step that the admission refuses (a full quota, no published version) waits and is tried again on every round of the pass, with no backoff, unlike a scheduled time (D1952). | A round is one poll of the database per owned shard and the step is one rolled-back transaction; harmless at the default poll but wasteful. Fix with a `retry_at` on the backfill (a migration). | Open |
 
 ## 5. Owner questions (the plan implements the recommended defaults)
@@ -432,3 +456,7 @@ paragraphs below are kept as the question that was put.
 - **O1002 — Who holds `run:batch`.** (a) admin and operator; (b) also developer for actions a developer
   may take one by one. **Recommended: (a)** — a batch multiplies an action's blast radius by up to
   100,000.
+- **O1950 — Who may write a `CANCEL_OTHER` schedule.** (a) whoever holds `run:operate` (admin, operator; of the roles
+  that write schedules only admin), because the schedule cancels runs for them; (b) whoever holds `schedule:write`
+  (admin, developer), the schedule cancelling as the platform. **Recommended and implemented: (a)** — a developer who
+  may not cancel a run by hand would otherwise cancel any run of a workflow by writing a schedule (D1953).

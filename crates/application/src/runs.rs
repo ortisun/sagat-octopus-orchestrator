@@ -1723,4 +1723,26 @@ where
         .await?;
         Ok(started.info.run_id)
     }
+
+    async fn cancel_run(
+        &self,
+        principal: &Principal,
+        run: uuid::Uuid,
+        reason: &str,
+        key: &str,
+        ctx: &RequestContext,
+    ) -> Result<(), AppError> {
+        RunService::operate(
+            self,
+            principal,
+            RunId::new(run),
+            RunOperation::Cancel,
+            reason,
+            None,
+            key,
+            ctx,
+        )
+        .await
+        .map(|_| ())
+    }
 }
