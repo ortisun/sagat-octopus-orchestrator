@@ -4,6 +4,16 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-04 — The CI runs the tests of the change; the whole stack runs for a release
+
+The owner gave two instructions in the Claude session, the second replacing the first. The assistant recorded them; the
+rule is Constitution 4.1.0 (CI gates).
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-04-1 | "Quero que os testes de integração só rodem quando modificados ou adicionados. Eles custam muito do tempo de entrega." Implemented in #87 and #89. | owner | Superseded | .github/workflows/ci.yml |
+| OD-2026-11-04-2 | "Quero desativar alguns steps do ci. Está demorando muito. Quero que somente os testes unitários das alterações sejam executados e também os testes de integração que tocam nos arquivos afetados pelas edições. O que quero que rode completo é quando eu fechar uma release. Nesse momento preciso que rode toda a stack de testes, lint etc... Deixe isso como regra." | owner | Decided | docs/constitution.md, .github/workflows/ci.yml |
+
 ## 2026-11-03 — EGM replaces Spec Kit
 
 Rows 1–8 record what the owner answered in the Claude session of 2026-11-02 (the gates of `egm-brainstorm` and
