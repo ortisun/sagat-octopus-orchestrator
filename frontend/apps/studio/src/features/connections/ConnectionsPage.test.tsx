@@ -6,8 +6,8 @@ import { createApp } from '../../app/context';
 import { ConnectionsPage } from './ConnectionsPage';
 
 const canary = 'postgres-password-private';
-async function mount(failure?: 'secret' | 'connection', permissions = ['namespace:read', 'database:manage', 'secret:read', 'secret:manage']) {
-  let saved: Record<string, unknown> | undefined;
+async function mount(failure?: 'secret' | 'connection', permissions = ['namespace:read', 'database:manage', 'secret:read', 'secret:manage'], seed?: Record<string, unknown>) {
+  let saved: Record<string, unknown> | undefined = seed;
   const platform = fakePlatform({
     'GET /namespaces': () => ({ items: [{ id: 'ns-1', slug: 'payments', environment: 'prod' }, { id: 'ns-2', slug: 'other', environment: 'dev' }] }),
     'GET /namespaces/ns-1/connections': () => ({ items: saved ? [saved] : [] }),
@@ -40,6 +40,19 @@ async function credentials(user: ReturnType<typeof userEvent.setup>) {
   await user.type(screen.getByLabelText('Password'), canary);
 }
 describe('Database connections', () => {
+  it('lists a lake connection by its driver and offers neither the PostgreSQL form nor a probe for it', async () => {
+    const lake = {
+      id: 'connection-2', namespaceId: 'ns-1', name: 'lake-main', revision: 3, status: 'ACTIVE', createdAt: '2026-11-04T10:00:00Z', updatedAt: '2026-11-04T10:00:00Z',
+      config: { driver: 'iceberg', catalog: { type: 'rest', rest: { uri: 'https://catalog.example.com', warehouse: 'warehouse', auth: { type: 'bearer' } } }, storage: { type: 's3', s3: { region: 'us-east-1' } }, warehouseLocations: ['s3://warehouse/'], catalogSecret: 'catalog-access' },
+    };
+    await mount(undefined, ['namespace:read', 'database:manage', 'run:read', 'secret:read'], lake);
+    await screen.findByText('lake-main');
+    expect(screen.getByText('iceberg')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Delete connection lake-main' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Edit connection lake-main' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Probe connection lake-main' })).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('undefined');
+  });
   it('writes new credentials to OpenBao before saving a reference and clears their values', async () => {
     const { user, platform, app } = await mount(); await enter(user); await credentials(user);
     await user.click(screen.getByRole('button', { name: 'Save connection' }));

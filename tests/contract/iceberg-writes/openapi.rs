@@ -45,6 +45,17 @@ fn operation_digests(openapi: &Value) -> BTreeMap<String, String> {
     digests
 }
 
+/// Follows a `$ref` into `components.schemas`, as many times as it takes.
+fn resolved<'a>(openapi: &'a Value, node: &'a Value) -> &'a Value {
+    match node["$ref"]
+        .as_str()
+        .and_then(|reference| reference.strip_prefix("#/components/schemas/"))
+    {
+        Some(name) => resolved(openapi, schema(openapi, name)),
+        None => node,
+    }
+}
+
 fn blessing() -> bool {
     std::env::var_os("SAGAT_CONTRACT_BASELINE_BLESS").is_some()
 }
@@ -83,7 +94,18 @@ fn existing_operations_keep_their_exact_definition() {
 #[test]
 fn database_connection_config_is_a_one_of_discriminated_by_driver() {
     let openapi = openapi();
-    let config = &schema(&openapi, "DatabaseConnection")["properties"]["config"];
+    let config = resolved(
+        &openapi,
+        &schema(&openapi, "DatabaseConnection")["properties"]["config"],
+    );
+    let request = resolved(
+        &openapi,
+        &schema(&openapi, "PutDatabaseConnectionRequest")["properties"]["config"],
+    );
+    assert_eq!(
+        request, config,
+        "a connection is written with every variant it can be read with"
+    );
     let branches: Vec<String> = config["oneOf"]
         .as_array()
         .unwrap_or_else(|| panic!("DatabaseConnection.config is not a oneOf: {config}"))
@@ -125,7 +147,7 @@ fn every_connection_config_is_closed_and_names_its_driver() {
             "{name} names its driver"
         );
         assert_eq!(
-            config["properties"]["egressCeiling"]["enum"],
+            resolved(&openapi, &config["properties"]["egressCeiling"])["enum"],
             json!(["public", "internal", "pii"]),
             "{name} carries the egress ceiling, and `secret` is not a value"
         );
@@ -137,9 +159,25 @@ fn the_driver_list_names_all_four_drivers() {
     let openapi = openapi();
     let list = &schema(&openapi, "DatabaseDriverList")["properties"]["items"];
     assert_eq!(list["maxItems"], 4, "{list}");
+    let ids: Vec<Value> = list["items"]["oneOf"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a driver is one of two shapes: {list}"))
+        .iter()
+        .flat_map(|branch| {
+            resolved(&openapi, branch)["properties"]["id"]["enum"]
+                .as_array()
+                .expect("the ids a shape names")
+                .clone()
+        })
+        .collect();
     assert_eq!(
-        list["items"]["properties"]["id"]["enum"],
-        json!(["postgresql", "iceberg", "object_storage", "clickhouse"])
+        ids,
+        [
+            json!("postgresql"),
+            json!("iceberg"),
+            json!("object_storage"),
+            json!("clickhouse")
+        ]
     );
 }
 
@@ -181,7 +219,7 @@ fn subscriptions_carry_a_purpose_and_an_egress_ceiling_when_created_and_read() {
             "{name}.purpose"
         );
         assert_eq!(
-            properties["egressCeiling"]["enum"],
+            resolved(&openapi, &properties["egressCeiling"])["enum"],
             json!(["public", "internal", "pii"]),
             "{name}.egressCeiling"
         );

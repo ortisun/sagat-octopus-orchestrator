@@ -644,4 +644,14 @@ The other fixes were wording:
      refused with events; the subscription task decides.
   3. The ClickHouse destination "declares only the table" while `tableIdentifier` requires a namespace; the samples
      use `target.relation`, which the fragment allows. The T035-008 merge states which of the two is canonical.
+  4. The fragment says every root-level output-producing node gains `destinations`, without listing them. The merge
+     adds the property to the two kinds the contract tests cover, `activity` and `database`. `script`, `child` and
+     `icebergWrite` itself are undecided: `icebergWrite` refuses the property (its definition is closed), and the
+     schema does not read it on a `script` or `child` node (open objects), so only the codec stops it there, as it
+     does on every node until the domain parses destinations.
+  5. connections.md widens `operateRun` and adds a redrive through `database-executions` for `DESTINATION` steps. Both
+     change existing operations, so they are merged with the step kind (the destination tasks), not at T035-008, which
+     keeps the 170 existing operations byte-identical.
+  6. The Studio lists a lake connection by its driver and offers neither the PostgreSQL form nor a probe for it, because
+     `DatabaseConnection.config` is now a union; the kind-specific forms are the Studio tasks of the feature.
   *Exit condition:* each is closed by the task that implements the operation, with a test.
