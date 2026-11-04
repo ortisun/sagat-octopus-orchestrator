@@ -229,6 +229,59 @@ class Selector(unittest.TestCase):
         self.assertIn("fault_b", result.stdout)
         self.assertIn("tests/fault/b/x.rs", result.stdout)
 
+    # -- the heavy product jobs (upgrade, compose smoke test, scale) -----------------------
+    def code(self, **kwargs):
+        result = self.select(**kwargs)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return next(l for l in result.stdout.splitlines() if l.startswith("code=")) == "code=true"
+
+    def test_a_change_to_documentation_and_process_files_alone_is_not_code(self):
+        self.write("README.md", "changed\n")
+        self.write("docs/guide.md", "x\n")
+        self.write("tasks/reviews/r.md", "x\n")
+        self.write(".claude/skills/x/SKILL.md", "x\n")
+        self.write("tests/AGENTS.md", "changed\n")
+        self.write("crates/domain/README.md", "x\n")
+        self.write("scripts/tests/test_x.py", "x = 1\n")
+        self.write("LICENSE", "x\n")
+        self.commit()
+        self.assertFalse(self.code())
+
+    def test_any_other_file_makes_the_change_code(self):
+        for rel in ("crates/domain/src/lib.rs", ".github/workflows/ci.yml", "infra/docker/compose.yaml",
+                    "Cargo.lock", "frontend/package.json", "sdks/go/go.mod", "scripts/smoke-compose.sh",
+                    "a_new_top_level_directory/file.txt", "tests/fault/b/x.rs"):
+            with self.subTest(rel=rel):
+                self.write(rel, "changed " + rel + "\n")
+                self.commit()
+                self.assertTrue(self.code())
+                self.base = git(self.root, "rev-parse", "HEAD")
+
+    def test_documentation_mixed_with_code_is_code(self):
+        self.write("docs/guide.md", "x\n")
+        self.write("crates/domain/src/lib.rs", "// changed\n")
+        self.commit()
+        self.assertTrue(self.code())
+
+    def test_an_empty_change_is_not_code(self):
+        self.commit()
+        self.assertFalse(self.code())
+
+    def test_every_event_that_runs_everything_is_code(self):
+        self.write("docs/guide.md", "x\n")
+        self.commit()
+        self.assertTrue(self.code(event="workflow_dispatch", base=""))
+        self.assertTrue(self.code(event="push", ref_name="release/1.0.0"))
+        self.assertTrue(self.code(base=""))
+        self.assertTrue(self.code(base="f" * 40))
+
+    def test_the_github_output_file_gets_the_code_flag(self):
+        self.write("docs/guide.md", "x\n")
+        self.commit()
+        out = self.root / "gh_output.txt"
+        self.select(output=out)
+        self.assertIn("code=false\n", out.read_text())
+
 
 if __name__ == "__main__":
     unittest.main()

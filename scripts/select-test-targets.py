@@ -7,7 +7,7 @@ The CI runs the suites of the `sagat-tests` crate (integration, contract, fault,
 start PostgreSQL through Testcontainers) only for the targets whose files changed, and all of them when
 the change cannot be narrowed. It prints the selection and appends it to $GITHUB_OUTPUT:
 
-  targets=<space-separated target names>   any=true|false   all=true|false
+  targets=<space-separated target names>   any=true|false   all=true|false   code=true|false
 
 A changed file selects, by the deepest target directory that contains it:
   * a file under tests/<kind>/<feature>/ : that target (a nested target such as .../rest/ wins over its parent);
@@ -18,6 +18,11 @@ A changed file selects, by the deepest target directory that contains it:
   * the harnesses the suites drive from outside tests/ (frontend/e2e, sdks/*/conformance): the suites that run them.
 Every target runs for a manual run, for a push to main, release/** or hotfix/**, and whenever no usable base
 commit is given (the safe default).
+
+`code` says whether anything but documentation and process files changed (Markdown, docs/, tasks/, .claude/, the unit
+tests of the scripts, LICENSE). The upgrade, compose smoke-test and scale jobs run only when it is true; a path this
+script does not know counts as code, so a new directory is never skipped by mistake. It is true whenever every
+target runs.
 
 Exit codes: 0 selection printed; 2 the manifest or a target name cannot be trusted.
 """
@@ -38,6 +43,10 @@ HARNESSES = (
     (re.compile(r"frontend/e2e/"), BROWSER_SUITES),
     (re.compile(r"sdks/[a-z]+/conformance/"), SDK_SUITES),
 )
+
+
+# Files that no product job exercises. Everything else, including paths nobody has thought of, is code.
+DOCUMENTATION = re.compile(r".*\.md|docs/.*|tasks/.*|\.claude/.*|scripts/tests/.*|LICENSE")
 
 
 class Untrusted(Exception):
@@ -92,18 +101,19 @@ def manifest_selection(root, base, targets, reasons):
 
 
 def select(root, base, head, targets):
-    """(chosen names, reasons, whether every target runs) for the files that differ between base and head."""
+    """(chosen names, reasons, whether every target runs, whether code changed) for the files that differ."""
     changed = git(root, "diff", "--name-only", "-z", "--no-renames", base, head)
     if changed.returncode != 0:
-        return set(targets), [("every target", "the diff against the base could not be read")], True
+        return set(targets), [("every target", "the diff against the base could not be read")], True, True
     files = [name for name in changed.stdout.decode("utf-8", errors="replace").split("\0") if name]
+    code = any(not DOCUMENTATION.fullmatch(name) for name in files)
     directories = {name: "tests/" + path.rsplit("/", 1)[0] + "/" if "/" in path else "tests/" for name, path in targets.items()}
     chosen, reasons = set(), []
     for rel in files:
         if rel == MANIFEST:
             found = manifest_selection(root, base, targets, reasons)
             if found is None:
-                return set(targets), reasons, True
+                return set(targets), reasons, True, code
             chosen |= found
         elif rel.startswith("tests/"):
             if rel.endswith(".md"):
@@ -111,7 +121,7 @@ def select(root, base, head, targets):
             owners = [name for name, directory in directories.items() if rel.startswith(directory)]
             if not owners:
                 reasons.append(("every target", f"{rel} is shared by the suites"))
-                return set(targets), reasons, True
+                return set(targets), reasons, True, code
             depth = max(len(directories[name]) for name in owners)
             for name in sorted(n for n in owners if len(directories[n]) == depth):
                 chosen.add(name)
@@ -123,7 +133,7 @@ def select(root, base, head, targets):
                         if name in targets:
                             chosen.add(name)
                             reasons.append((name, rel))
-    return chosen, reasons, False
+    return chosen, reasons, False, code
 
 
 def full_run_reason(event, ref_name, base, root):
@@ -138,7 +148,7 @@ def full_run_reason(event, ref_name, base, root):
     return None
 
 
-def emit(chosen, everything, reasons):
+def emit(chosen, everything, reasons, code):
     grouped = {}
     for name, why in reasons:
         grouped.setdefault(name, []).append(why)
@@ -146,7 +156,8 @@ def emit(chosen, everything, reasons):
         more = f" (+{len(whys) - 1} more)" if len(whys) > 1 else ""
         print(f"select {name}: {whys[0]}{more}")
     names = " ".join(sorted(chosen))
-    lines = [f"targets={names}", f"any={'true' if chosen else 'false'}", f"all={'true' if everything else 'false'}"]
+    lines = [f"targets={names}", f"any={'true' if chosen else 'false'}", f"all={'true' if everything else 'false'}",
+             f"code={'true' if code else 'false'}"]
     for line in lines:
         print(line)
     path = os.environ.get("GITHUB_OUTPUT")
@@ -170,10 +181,10 @@ def main(argv):
         return 2
     reason = full_run_reason(args.event, args.ref_name, args.base, args.root)
     if reason:
-        emit(set(targets), True, [("every target", reason)])
+        emit(set(targets), True, [("every target", reason)], True)
         return 0
-    chosen, reasons, everything = select(args.root, args.base, args.head, targets)
-    emit(chosen, everything, reasons)
+    chosen, reasons, everything, code = select(args.root, args.base, args.head, targets)
+    emit(chosen, everything, reasons, code)
     return 0
 
 

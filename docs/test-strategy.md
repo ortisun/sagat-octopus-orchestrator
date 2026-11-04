@@ -30,6 +30,12 @@ no usable base commit. The consequence is deliberate and should be remembered: c
 not run an integration suite in CI. Run the suites of what you change locally (`/verify`), and start a manual run when a change
 is risky.
 
+The three jobs that verify the product as a whole rather than one suite (the released v0.2 upgrade, the Docker Compose smoke
+test, and scale and recovery) are skipped when a change is documentation or process files only: Markdown, `docs/`, `tasks/`,
+`.claude/`, the unit tests of the scripts and `LICENSE`. `scripts/select-test-targets.py` prints `code=false` for such a change.
+A path the script does not know counts as code, so a new directory is never skipped by mistake, and every run that selects
+every target also runs them.
+
 ## Where the tests live and what they are called
 
 `tests/<kind>/<feature>/` with `<kind>` one of `e2e`, `integration`, `contract`, `fault` and `performance`, and `<feature>` the
