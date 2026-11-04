@@ -4,6 +4,8 @@ on:
   push:
     branches: [main, develop, "release/**", "hotfix/**"]
   pull_request:
+  # A manual run executes every integration suite (see the `changes` job).
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -16,8 +18,35 @@ env:
   CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
 
 jobs:
+  # The integration suites (the `sagat-tests` crate: integration, contract, fault, e2e and performance targets,
+  # which start PostgreSQL through Testcontainers) cost most of the delivery time. They run only for the targets
+  # whose files a change adds or modifies; scripts/select-test-targets.py says which and why. Every target runs for
+  # a manual run, for a push to main, release/** or hotfix/**, and when the change cannot be narrowed (shared
+  # tests/support or tests/fixtures, a dependency of tests/Cargo.toml, or no usable base commit). Unit tests,
+  # lints and the other jobs are not affected.
+  changes:
+    name: integration suites to run (added or modified)
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.select.outputs.targets }}
+      any: ${{ steps.select.outputs.any }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The base of the change must be reachable.
+          fetch-depth: 0
+      - id: select
+        env:
+          PUSH_BASE: ${{ github.event.before }}
+        run: |
+          # On a pull request HEAD is the merge commit, so its first parent is the current tip of the base branch.
+          base="$PUSH_BASE"
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then base="$(git rev-parse HEAD^1)"; fi
+          python3 scripts/select-test-targets.py --base "$base"
+
   rust:
     name: rust (fmt, clippy, tests)
+    needs: changes
     runs-on: ubuntu-latest
     # A cold build takes about 30 minutes and the workspace tests about as long again. A test that hangs
     # must not hold the runner for the default six hours (it did on pull request 45).
@@ -35,6 +64,7 @@ jobs:
           cache-on-failure: true
       - run: cargo fmt --all -- --check
       - name: bounded ChildRoot holder discovery
+        if: contains(format(' {0} ', needs.changes.outputs.targets), ' integration_workflow_primitives ')
         env:
           SAGAT_TEST_AS_RUNTIME_ROLE: "1"
           RUST_TEST_THREADS: "2"
@@ -45,11 +75,13 @@ jobs:
           cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::discovery::holders:: --nocapture || proof_failed=1
           exit "$proof_failed"
       - name: scoped event quota rollback boundary
+        if: contains(format(' {0} ', needs.changes.outputs.targets), ' integration_workflow_primitives ')
         env:
           SAGAT_TEST_AS_RUNTIME_ROLE: "1"
           RUST_TEST_THREADS: "2"
         run: cargo test -p sagat-tests --test integration_workflow_primitives --locked -- scoped_event_storage::receiver::a_dispatcher_quota_refusal --nocapture
       - name: worker capacity lease boundary
+        if: contains(format(' {0} ', needs.changes.outputs.targets), ' integration_workflow_primitives ')
         env:
           SAGAT_TEST_AS_RUNTIME_ROLE: "1"
           RUST_TEST_THREADS: "2"
@@ -63,6 +95,7 @@ jobs:
           cargo test -p sagat-domain --test capacity_acquire_audit --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: isolated C# compiler and runtime images
+        if: needs.changes.outputs.any == 'true'
         run: |
           docker build -f runners/dotnet/Dockerfile.builder -t sagat/dotnet-builder:10.0.401 .
           docker build -f runners/dotnet/Dockerfile.runtime -t sagat/dotnet-runtime:10.0.12 .
@@ -71,22 +104,43 @@ jobs:
       # platform migrations twice is a no-op (T001-030/031).
       # Every failing test is reported, not only the first binary's: a first run on a new platform is the time to see them all.
       - name: build isolated database executor for process tests
+        if: needs.changes.outputs.any == 'true'
         run: cargo build -p sagat-database-runner --bin database-runner --locked
-      # Fail early on the changed transaction family and its migration/index interactions.
-      # The full workspace gate below still runs every non-ignored target.
+      # Fail early on the changed transaction family and its migration/index interactions, for the suites
+      # that were added or modified. The integration step below still runs every selected suite in full.
       - name: capacity and migration regression preflight
+        if: needs.changes.outputs.any == 'true'
         env:
           SAGAT_TEST_AS_RUNTIME_ROLE: "1"
           RUST_TEST_THREADS: "2"
+          TARGETS: ${{ needs.changes.outputs.targets }}
         run: |
-          cargo test -p sagat-tests --test contract_asyncapi_events_webhooks_messaging --locked
-          cargo test -p sagat-tests --test integration_workflow_primitives --locked -- hint_contract::capacity_acquire_hint_is_closed_control_metadata_without_execution_authority --exact --nocapture
-          cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::acquire:: --nocapture
-          cargo test -p sagat-tests --test integration_workflow_primitives --locked -- loop_progress::expression_failure_drains_once_restarts_and_finishes_from_the_journal --exact --nocapture
-          cargo test -p sagat-tests --test integration_security_multitenancy --locked -- bindings::releasing_the_leases_of_closed_sessions_is_an_index_lookup_and_not_a_scan_of_every_lease --exact --nocapture
-          cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::downgrade_waits_for_writer_before_deciding_whether_storage_is_empty --exact --nocapture
-          cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::vacate:: --nocapture
-      - run: cargo test --workspace --locked --no-fail-fast
+          selected() { case " $TARGETS " in *" $1 "*) return 0 ;; esac; return 1; }
+          if selected contract_asyncapi_events_webhooks_messaging; then
+            cargo test -p sagat-tests --test contract_asyncapi_events_webhooks_messaging --locked
+          fi
+          if selected integration_workflow_primitives; then
+            cargo test -p sagat-tests --test integration_workflow_primitives --locked -- hint_contract::capacity_acquire_hint_is_closed_control_metadata_without_execution_authority --exact --nocapture
+            cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::acquire:: --nocapture
+            cargo test -p sagat-tests --test integration_workflow_primitives --locked -- loop_progress::expression_failure_drains_once_restarts_and_finishes_from_the_journal --exact --nocapture
+            cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::downgrade_waits_for_writer_before_deciding_whether_storage_is_empty --exact --nocapture
+            cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::vacate:: --nocapture
+          fi
+          if selected integration_security_multitenancy; then
+            cargo test -p sagat-tests --test integration_security_multitenancy --locked -- bindings::releasing_the_leases_of_closed_sessions_is_an_index_lookup_and_not_a_scan_of_every_lease --exact --nocapture
+          fi
+      # The unit tests of every crate always run. The `sagat-tests` crate is the integration part of the workspace.
+      - name: unit tests of every crate
+        run: cargo test --workspace --exclude sagat-tests --locked --no-fail-fast
+        timeout-minutes: 60
+      - name: integration suites added or modified
+        if: needs.changes.outputs.any == 'true'
+        env:
+          TARGETS: ${{ needs.changes.outputs.targets }}
+        run: |
+          args=()
+          for target in $TARGETS; do args+=(--test "$target"); done
+          cargo test -p sagat-tests --locked --no-fail-fast "${args[@]}"
         timeout-minutes: 110
 
   released-upgrade:
@@ -181,6 +235,7 @@ jobs:
 
   sdks:
     name: sdks (unit tests, conformance suite, user stories, faults)
+    needs: changes
     runs-on: ubuntu-latest
     # Six-language validation reached 59m50s on a cold runner; leave cache-save margin.
     timeout-minutes: 90
@@ -244,24 +299,35 @@ jobs:
           cargo clippy --all-targets --locked -- -D warnings
           cargo test --locked
       # These three targets play every SDK against a real platform (PostgreSQL through Testcontainers, the
-      # engine and the API in the test process). They are #[ignore] in the workspace run above because they
-      # need the six toolchains.
-      - name: build isolated database executor for SDK conformance
-        run: cargo build -p sagat-database-runner --bin database-runner --locked
+      # engine and the API in the test process). They are #[ignore] in the workspace run because they need the
+      # six toolchains, and they run here only when one of them was added or modified.
       - name: conformance suite, user stories and faults, six languages
         env:
           SAGAT_RUST_SDK_TARGET_DIR: ${{ runner.temp }}/sagat-rust-sdk
-        run: cargo test -p sagat-tests --test sdk_conformance --test e2e_sdk_multilanguage --test fault_sdk_multilanguage --locked -- --ignored
+          TARGETS: ${{ needs.changes.outputs.targets }}
+        run: |
+          args=()
+          for target in sdk_conformance e2e_sdk_multilanguage fault_sdk_multilanguage; do
+            case " $TARGETS " in *" $target "*) args+=(--test "$target") ;; esac
+          done
+          if [ "${#args[@]}" -eq 0 ]; then
+            echo "No SDK conformance suite was added or modified: skipped."
+            exit 0
+          fi
+          cargo build -p sagat-database-runner --bin database-runner --locked
+          cargo test -p sagat-tests "${args[@]}" --locked -- --ignored
       # The hello-world and order-processing examples of each SDK run against a real platform: all five
       # produce the same persisted semantics; and the payment saga runs on a good day, a declined card
       # and a lost answer, plus the real sandbox.
       # The browser journey runs in the studio job, which installs the frontend and Chromium.
       - name: examples, five languages, payment saga and script sandbox
+        if: contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_developer_experience ')
         run: |
           cargo test -p sagat-tests --test e2e_developer_experience --locked -- --ignored us03:: order_processing:: saga:: scripts::
 
   studio:
     name: studio (lint, types, unit tests, build, browser journeys)
+    needs: changes
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -299,8 +365,10 @@ jobs:
       # platform (PostgreSQL through Testcontainers, the API serving the Studio, the engine, a sandbox runner). They are
       # #[ignore] in the workspace run because they need Node and Chromium. The benchmark runs only with STUDIO_PERF=1.
       - name: browser journeys
+        if: contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_workflow_studio ')
         run: cargo test -p sagat-tests --test e2e_workflow_studio --locked -- --ignored journeys
       - name: managed PostgreSQL and OpenBao browser journeys
+        if: contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_database_connections ')
         timeout-minutes: 30
         run: |
           cargo build -p sagat-database-runner --bin database-runner --locked
@@ -309,6 +377,7 @@ jobs:
         working-directory: frontend
         run: node --test e2e/compose-security.test.mjs
       - name: CLI, SDK and Studio onboarding journey
+        if: contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_developer_experience ')
         run: |
           cargo test -p sagat-tests --test e2e_developer_experience --locked -- --ignored onboarding_browser::
 
