@@ -119,6 +119,16 @@ contracts, so every later task has a place to put its failing test.
   socket `sagat-remaining` refused connections while `colima list` said Running, so the default daemon
   was used with a unique compose project and `down -v` of that project only; the ClickHouse fixture has
   no TLS yet; the Azurite push date is not verifiable by API.
+  *2026-11-04, more done, still unticked:* `tests/support/lake.rs` starts RustFS and the Iceberg REST reference
+  catalog from the pinned digests, on a private network and with its own container names, and waits for them under
+  `bounded::within`. The fixture admin client creates the bucket (S3 signature version 4 written over `sha2`), a
+  namespace and a table, and loads the table back. `cargo test -p sagat-tests --test integration_iceberg_writes
+  --locked`: 6 passed (RFC 4231 cases 2 and 6, the AWS `get-vanilla` signature, two cases of the bucket retry and
+  the container case in 2.2 s); 12 consecutive runs, 12 passed; no container or network left. A first version
+  waited for RustFS's `/health` and failed in 1 of 4 runs with `503 Service not ready: waiting for
+  storage_quorum`: `/health` answers before the storage layer is ready, so `create_bucket` now waits for that 503
+  and for nothing else (G035-025). Not done: the GCS, Azure, Glue (moto), Hive, JDBC, Lakekeeper and ClickHouse
+  starters (each arrives with the first test that needs it); TLS for ClickHouse.
 - [ ] T035-005 [P] Add the independent reader:
   - `iceberg = "=0.10.1"` as a test-only dependency in `tests/Cargo.toml`;
   - `tests/support/lake_reader.rs`, returning rows, snapshots, snapshot summaries and refs;

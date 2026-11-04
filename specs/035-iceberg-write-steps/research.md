@@ -586,3 +586,10 @@ The other fixes were wording:
   "2 vulnerabilities found, 1 denied warning" without them; the lockfile before the change passed.
   *Exit condition:* remove the ignores when opendal moves to `quick-xml` >= 0.41 and parquet drops
   `paste`; re-evaluate on 2026-12-02.
+- **G035-025 — RustFS reports healthy before its storage layer is ready.** `GET /health` answers 200 while a bucket
+  request still gets `503 Service not ready: waiting for storage_quorum`. A first `tests/support/lake.rs` waited for
+  `/health` and failed in 1 of 4 runs of the container case. `LakeAdmin::create_bucket` now waits for that 503 and for
+  no other refusal, under `bounded::within` (a store that never becomes ready ends the stage in a named panic).
+  Evidence: `create_bucket_waits_while_the_store_says_it_is_not_ready` (three 503s, then the bucket) failed first with
+  the production message; 12 consecutive runs of `integration_iceberg_writes` passed afterwards. *Exit condition:*
+  none while RustFS is the S3 fixture; the same wait applies to any fixture that reports health early.
