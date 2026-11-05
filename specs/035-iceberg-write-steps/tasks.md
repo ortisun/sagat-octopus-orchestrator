@@ -365,7 +365,7 @@ three conditions pass.
   - running with any capability or a writable root.
 
   Refs: FR-035-023, D035-048, G035-022.
-- [ ] T035-016 [P] Write the failing relay tests in `crates/infra-lake/tests/relay.rs`, plus unit tests
+- [x] T035-016 [P] Write the failing relay tests in `crates/infra-lake/tests/relay.rs`, plus unit tests
   in `crates/infra-database/src/network.rs` for `fd00:ec2::254` and `fd20:ce::254`. The relay:
   - refuses a missing or wrong token;
   - refuses `CONNECT` to an undeclared host, and counts the refusal;
@@ -382,7 +382,12 @@ three conditions pass.
   metadata services. They are named in `prohibited` and refused in development too. Four unit tests in `network.rs`: the
   two addresses are refused, their neighbours are not (the rule is two addresses, not a range), the IPv4-mapped forms
   of the IPv4 metadata addresses stay refused, and a policy that allows the ULA range still refuses them, also in a
-  mixed answer. The two tests that need the rule failed first. Not done: the relay and `crates/infra-lake/tests/relay.rs`.
+  mixed answer. The two tests that need the rule failed first.
+  *2026-11-05, done:* `crates/infra-lake/tests/relay.rs`, 34 cases: the token, the declared and regional endpoints, a
+  scripted resolver that proves one resolution and a connection to the checked address, every kind of forbidden
+  address, TCP mappings, a tunnel that carries bytes untouched, requests the relay does not serve, a real Unix socket
+  and shutdown, the connection limit, the admission timeouts and the peer user id (D035-078, D035-079). Written before
+  the relay; 39 mutations in two rounds, all caught.
 - [x] T035-017 [P] Write the failing `sagat.lake.v1` codec tests in `crates/infra-lake/tests/protocol.rs`:
   - one request line;
   - progress lines at most once per second;
@@ -563,6 +568,13 @@ three conditions pass.
 
   Add the IPv6 metadata addresses to `network.rs`, and the in-container forwarder in
   `runners/lake/sagat_lake/forwarder.py` with pytest. T035-016 passes. Refs: D035-049, D035-061.
+
+  *2026-11-05, the Rust half is done, left unticked:* `crates/infra-lake/src/relay.rs` (the token on a Unix socket, the
+  name policy, one resolution, the address policy over `NetworkPolicy` and the operator's networks, a tunnel that reads
+  nothing, TCP mappings, a count of denials by kind) and the IPv6 metadata addresses in `network.rs`. T035-016 passes:
+  34 cases, clippy clean. An independent security review found seven things and the relay changed for them (D035-079).
+  Not done: the in-container forwarder `forwarder.py` with its pytest, and what only the attempt driver can do (the
+  socket directory, `relay.token`, the user id, the operator's networks; G035-029).
 - [ ] T035-031 Write the relay canaries for the I1 clients in
   `tests/integration/iceberg-writes/relay_canaries.rs`. The PyIceberg REST client and the S3 FileIO,
   run inside a lake container, work through the relay, and every other route fails. Record the result
