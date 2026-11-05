@@ -674,11 +674,12 @@ infra/helm/                   Kubernetes chart and deployment values
 infra/observability/           Collector, Prometheus, Grafana and alert configuration
 infra/dr/                     Disaster-recovery drill and journal verification
 scripts/                      Repository validation and SDK packaging tools
-specs/NNN-slug/               Feature specifications, plans, tasks, contracts and evidence (Spec Kit)
+specs/NNN-slug/               Contracts, evidence and registers of each feature (and the spec, plan and tasks of features not yet converted)
+docs/designs/                 Design docs (EGM): plan, tasks and approval record of a feature or a cross-cutting change
 docs/                         Architecture, ADRs, engineering guide, references, quickstarts and runbooks
 .claude/                      Agent skills, read-only reviewer subagents, hooks and shared settings
 AGENTS.md, CLAUDE.md          Rules and commands for coding agents (CLAUDE.md imports AGENTS.md)
-.specify/memory/constitution.md Architecture and delivery principles
+docs/constitution.md          Architecture and delivery principles
 ```
 
 | Script | Purpose and side effects |
@@ -718,7 +719,7 @@ Start with [architecture](docs/architecture/overview.md),
 [execution semantics](docs/architecture/execution-semantics.md), [ADRs](docs/adr) and
 [AGENTS.md](AGENTS.md). Contributions use **Gitflow** and **Conventional Commits**: work on feature or
 bugfix branches from `develop`, never commit directly to `main`/`develop`, and include real validation
-evidence. Read the [constitution](.specify/memory/constitution.md) and the active feature's spec, plan
-and tasks before implementation. Spec Kit resolves the active feature through `.specify/feature.json`
-or `SPECIFY_FEATURE_DIRECTORY`; feature numbers are shared by every branch, so check `git branch -a` before taking the next one.
+evidence. Read the [constitution](docs/constitution.md) and the active feature's design doc (or, for a feature not yet
+converted, its spec, plan and tasks) before implementation. Feature numbers are shared by every branch: take the next
+one from `python3 scripts/next-feature-id.py`. The design cycle is in [AGENTS.md](AGENTS.md).
 How the project uses specification-driven development, records architecture decisions and directs coding agents is in the [engineering guide](docs/engineering/README.md).

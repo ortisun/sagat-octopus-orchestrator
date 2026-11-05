@@ -11,6 +11,39 @@
 - E2E: author→publish→trigger→run→saga compensation→visualize; inline code TypeScript and C#; human approval.
 - Load/stress: partitioning, active steps, 10k/100k/1M waits, pools/quotas, high fanout, huge DAG and backpressure.
 
+## What CI runs
+
+The rule is in the constitution (Development Workflow, CI gates) and is checked by `scripts/tests/test_ci_workflow.py`.
+
+**A pull request, and a push to `develop`,** runs only the tests of what it changes:
+
+- the unit tests of the workspace packages that contain a changed file (`cargo test -p <package>`), and every package when
+  `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/`, `clippy.toml`, `rustfmt.toml` or `vendor/` changes;
+- the unit tests of an SDK when a file under `sdks/<language>/` changes, of the Studio when a file under `frontend/` changes,
+  and of the scripts when a file under `scripts/` changes;
+- the integration suites (the `sagat-tests` targets: integration, contract, fault, e2e and performance, which start
+  PostgreSQL through Testcontainers) that touch the change: the suite whose directory holds a changed file (the deepest
+  one, so `tests/contract/<feature>/rest/` does not select its parent) or whose `[[test]]` entry is new or changed; the
+  suites whose own sources name an affected package, that is a changed package or one that depends on it; the browser
+  suites when `frontend/e2e` or `examples/` changes; the SDK suites when `sdks/<language>/conformance` changes; and every
+  suite when `tests/support`, `tests/fixtures`, `runners/`, a contract file under `specs/` or a dependency of
+  `tests/Cargo.toml` changes.
+
+Nothing else runs: no formatting, no `clippy`, no architecture, agent-configuration or design-doc check, no contract
+validation, no advisory audit, no upgrade, Compose smoke-test, scale or native-runner job. A change that touches only
+Markdown, `docs/`, `tasks/`, `.claude/` or `infra/` runs no test at all.
+
+**A release** runs everything: every unit test and integration suite, formatting, `clippy`, the checks above, the contract
+and observability validation, the advisory audit, and the upgrade, Compose smoke-test, scale and native-runner jobs. A
+release is a push to `main`, `release/**` or `hotfix/**`, a tag `v*`, a pull request into one of those branches, a manual
+run (`workflow_dispatch`), a change of `.github/workflows`, or any run with no usable base commit.
+
+What this costs, so it is not forgotten: a violation of a lint or of an architecture rule reaches `develop` and is found when
+a release is closed, and a suite that reaches the code only over HTTP, without naming its package, is not selected for a
+change to that package. Run the lints and the suites you affect before the pull request (`/verify`). Measured on the
+repository: a change to a leaf package (`infra-egress`) selects 12 of the 83 suites, a change to `domain` selects 76,
+because almost everything depends on it. A coverage map from test to file would select exactly; it is not built.
+
 ## Where the tests live and what they are called
 
 `tests/<kind>/<feature>/` with `<kind>` one of `e2e`, `integration`, `contract`, `fault` and `performance`, and `<feature>` the

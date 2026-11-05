@@ -4,6 +4,66 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-04 — The CI runs the tests of the change; the whole stack runs for a release
+
+The owner gave two instructions in the Claude session, the second replacing the first. The assistant recorded them; the
+rule is Constitution 4.1.0 (CI gates).
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-04-1 | "Quero que os testes de integração só rodem quando modificados ou adicionados. Eles custam muito do tempo de entrega." Implemented in #87 and #89. | owner | Superseded | .github/workflows/ci.yml |
+| OD-2026-11-04-2 | "Quero desativar alguns steps do ci. Está demorando muito. Quero que somente os testes unitários das alterações sejam executados e também os testes de integração que tocam nos arquivos afetados pelas edições. O que quero que rode completo é quando eu fechar uma release. Nesse momento preciso que rode toda a stack de testes, lint etc... Deixe isso como regra." | owner | Decided | docs/constitution.md, .github/workflows/ci.yml |
+
+## 2026-11-03 — EGM replaces Spec Kit
+
+Rows 1–8 record what the owner answered in the Claude session of 2026-11-02 (the gates of `egm-brainstorm` and
+`egm-draft`). On 2026-11-03 the owner delegated the open process decisions to the assistant ("Tome as decisões por
+mim."); rows 9–31 record the assistant's decisions A to W of
+[`docs/designs/constitution-4.0.0-egm.md`](designs/constitution-4.0.0-egm.md). They are reversible and stay
+`Decided by: delegate` until the owner confirms one by changing that cell to `owner`; `scripts/check-design-docs.py`
+does not accept a `delegate` row as an owner gate or as the acceptance of a finding.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-03-1 | EGM is the only specification workflow. Only the tooling is removed; every `specs/NNN-*/` directory stays. | owner | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-2 | All eight principles stay whole. The new constitution is `docs/constitution.md`. | owner | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-3 | Approval is automatic and has one state; Blocker and Major block; a contested or unfixed finding is settled only when the owner accepts it in writing. | owner | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-4 | The approval record is a status block in the doc; ticks after approval are checked against the reviewed commit. | owner | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-5 | The whole EGM procedure lives in the constitution. | owner | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-6 | The EGM pin is a settings entry plus a list of accepted hashes in the repository. | owner | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-7 | An owner decision gates a task, not the doc; the three repository reviewers are part of approval. | owner | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-8 | The 20 features with open tasks are converted into design docs by an agent that maps the sources, judged by `egm-review`; the id allocator ships with the tooling. | owner | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-9 | A. The conversion of the 20 features leaves the design and becomes a follow-up design. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-10 | B. The Spec Kit tooling is removed in PR 2, together with the constitution. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-11 | C. Version 4.0.0, and the Versioning clause is amended: a change of the mandated specification process is MAJOR. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-12 | D. No `CODEOWNERS` and no branch-protection change in this work (repository settings; recorded as a risk). | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-13 | E. No document-level `Scope-approval` field; the per-task owner gate stays. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-14 | F. No blob fallback for the reviewed commit; branches that hold approved docs merge `develop` and are not rebased. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-15 | G. Counts are stated per report with one `Counts:` line. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-16 | H. Owner gates cite an id: `Owner-gate: OD-YYYY-MM-DD-N`. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-17 | I. The id allocator prints the next number only; no table of reserved ranges. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-18 | J. The contests of the first review round on automatic approval, the allocator and the diff mechanism are accepted: the owner's decisions stand. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-19 | K. Security exceptions use the existing homes; confirmations keep the recommendation practice outside EGM sessions; review reports live in `docs/designs/NNN-slug.reviews/`. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-20 | L. The "broader reviewed Constitution candidate" of the 3.0.0 report stays out of scope. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-21 | M. Transitional clause: until converted, a feature's `spec.md`, `plan.md` and `tasks.md` stand in for its design doc, edited by hand. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-22 | N. Delegated decisions carry `Decided by: delegate`, which the check does not accept as an owner decision. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-23 | O. No new `permissions.allow` entry and no `permissions.deny` entry for the plugin. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-24 | P. ADR-0077 records the decision. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-25 | Q. An unnumbered design declares a `Task-prefix`; this design uses `EGM`. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-26 | R. Bootstrap: the first design is approved by hand and its tasks are ticked in a closing commit; PR 1 merges without that approval. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-27 | S. The body rule compares the normalized text of the reviewed commit with the working text, not diff hunks. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-28 | T. The plugin is enabled in PR 2, not PR 1. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-29 | U. The tree hash includes the file mode, excludes only image and font files below `assets/` and the `.in_use` markers, and refuses symlinks. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-30 | V. An approval record has exactly four reports, one per reviewer; an acceptance row cites `<report>#<n>`. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-31 | W. Checks that need the reviewed commit run only for docs that a pull request changes. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-32 | The owner delegated the approval of PR 1 and PR 2 and the confirmation of rows 9 to 31 to the assistant: "Decida por mim" (2026-11-03), after being told what needed approval. | owner | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-33 | X. Keep the checklist gate in the transitional clause: unticked `checklists/*.md` items of a feature not yet converted block its implementation until the owner accepts them. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-34 | Y. Keep the EGM plugin enabled in project scope, as the owner chose on 2026-11-02. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-35 | Z. Keep version 4.0.0 (MAJOR) and the amendment of the Versioning clause. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-36 | AA. Leave the design `Draft`: no finding is accepted on the owner's behalf, and rows 9 to 31 stay `delegate` (a delegate cannot become the owner by editing a cell). | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-37 | AB. Merge PR 1 and then PR 2 with merge commits once CI is green, on the owner's delegation. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+| OD-2026-11-03-38 | AC. Keep ADR-0077 `Proposed`: the ADR rules say a person accepts. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+
 ## 2026-11-01 — Feature 037 delivery, B01 split and upgrade compatibility
 
 The owner answered three questions in the Claude session that took over Codex's work. The answers

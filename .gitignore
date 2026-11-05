@@ -42,3 +42,6 @@ AGENTS.local.md
 .claude/settings.local.json
 # Private database/OpenBao development fixture
 /.local/
+
+# Local state of a removed tool (kept ignored in checkouts that still have it)
+.specify/
