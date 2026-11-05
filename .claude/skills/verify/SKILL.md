@@ -22,7 +22,7 @@ Evidence over assertion (AGENTS.md rules 12 and 17). Run what applies to the cha
 - **A decision** hard to reverse: `/adr`.
 
 ## Whole workspace
-`RUST_TEST_THREADS=2 cargo test --workspace --locked --no-fail-fast` runs every suite. CI runs the unit tests of every crate and only the integration suites (the `sagat-tests` targets) that the change adds or modifies (`python3 scripts/select-test-targets.py --base <sha>` prints which), so a change that touches no test is not covered by an integration suite there: run the suites of what you changed yourself. On this machine run it with the Docker daemon of the project (`DOCKER_HOST=unix://$HOME/.colima/sagat-remaining/docker.sock`) or failures will be environmental; say so rather than trusting or ignoring them.
+`RUST_TEST_THREADS=2 cargo test --workspace --locked --no-fail-fast` runs every suite, and it is what a release runs in CI together with the lints and the other checks. A pull request runs in CI only the unit tests of the changed packages and the integration suites that touch the affected code (`python3 scripts/select-test-targets.py --base <sha>` prints which, and why), so nothing in CI covers the lints or a suite that does not name your package: run them yourself. On this machine run it with the Docker daemon of the project (`DOCKER_HOST=unix://$HOME/.colima/sagat-remaining/docker.sock`) or failures will be environmental; say so rather than trusting or ignoring them.
 
 ## Report
 List: command, result (counts), anything skipped and why, anything flaky and its cause. Tick a task in the design doc (or in `tasks.md` of a feature not yet converted) only for what the output proves.

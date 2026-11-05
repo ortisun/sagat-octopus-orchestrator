@@ -218,9 +218,14 @@ Sources: `docs/test-strategy.md`, AGENTS.md rules 9, 11 and 12.
   decision cited by an `Owner-gate:` line.
 - **Same-delivery rule:** spec, contracts, tests and documentation change in the same delivery as
   the code. A ticked task in the design doc (or in `tasks.md`) names the evidence that closes it.
-- **CI gates:** formatting, `clippy -D warnings`, the workspace tests, the architecture rules, the
-  design-doc check, the contract checks (OpenAPI, Protobuf, AsyncAPI, IR schema), the compose smoke
-  test and the dependency advisory audit MUST pass before merge.
+- **CI gates:** a pull request, and a push to `develop`, MUST pass the unit tests of the packages it
+  changes (and of the SDKs, the Studio and the scripts whose files it changes) and the integration
+  suites that touch the affected code; `scripts/select-test-targets.py` decides which. A release MUST
+  pass the whole stack: every test, formatting, `clippy -D warnings`, the architecture rules, the
+  design-doc check, the contract checks (OpenAPI, Protobuf, AsyncAPI, IR schema), the upgrade, compose
+  smoke, scale and native-runner checks and the dependency advisory audit. A release is a push to
+  `main`, `release/**` or `hotfix/**`, a tag `v*`, a pull request into one of those branches, a manual
+  run, or a change of the workflow itself.
 - **Branches and commits:** Gitflow and Conventional Commits as defined in AGENTS.md, which is the
   single source for those rules and for any runtime guidance to implementation agents.
 
@@ -248,6 +253,6 @@ it is not approval of the implementation. A violation that cannot be avoided MUS
 the design doc's Complexity Tracking table with the simpler alternative that was rejected. For a
 feature not yet converted, the Check and the table live in its `plan.md`.
 
-**Version**: 4.0.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-11-03
+**Version**: 4.1.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-11-04
 
-Amendment scope and preserved obligations: [4.0.0 Sync Impact Report](governance/constitution-4.0.0-sync-impact.md). Previous amendments: [3.0.0 Sync Impact Report](governance/constitution-3.0.0-sync-impact.md) and, for 2.0.0 (Principle III), the [compensation safety Sync Impact Report](governance/compensation-safety-sync-impact.md). Version 3.0.0 was adopted on 2026-11-01 by the owner's instruction to merge the pull request that carried that text. Version 4.0.0 was adopted on 2026-11-03 by merging the pull request that carries this text, on the owner's delegation to the assistant ("Decida por mim"); the owner may overrule it by a later amendment.
+Amendment scope and preserved obligations: [4.1.0 Sync Impact Report](governance/constitution-4.1.0-sync-impact.md). Previous amendments: [4.0.0 Sync Impact Report](governance/constitution-4.0.0-sync-impact.md), [3.0.0 Sync Impact Report](governance/constitution-3.0.0-sync-impact.md) and, for 2.0.0 (Principle III), the [compensation safety Sync Impact Report](governance/compensation-safety-sync-impact.md). Version 3.0.0 was adopted on 2026-11-01 by the owner's instruction to merge the pull request that carried that text. Version 4.0.0 was adopted on 2026-11-03 by merging the pull request that carries this text, on the owner's delegation to the assistant ("Decida por mim"); the owner may overrule it by a later amendment. Version 4.1.0 was adopted on 2026-11-04 by the owner's instruction to scope the CI to the change and to run the whole stack for a release (`docs/owner-decisions.md`, OD-2026-11-04-2).
