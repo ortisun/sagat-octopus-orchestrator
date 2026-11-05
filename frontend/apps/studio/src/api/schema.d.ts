@@ -2646,7 +2646,7 @@ export interface paths {
         };
         /**
          * List the schedules of a namespace, newest first
-         * @description Needs `schedule:read`. Never returns the input of the runs, only its digest.
+         * @description Needs `schedule:read`. Never returns the input of the runs, only its digest. Every filter given has to hold; the order and the cursor are those of the listing without them, so a page ends where the next begins. A value that is not one of the listed ones is `400`.
          */
         get: operations["listSchedules"];
         put?: never;
@@ -11431,6 +11431,14 @@ export interface operations {
                 cursor?: components["parameters"]["Cursor"];
                 /** @description Page size; values outside 1..200 are clamped. */
                 limit?: components["parameters"]["Limit"];
+                /** @description A deleted schedule is never listed. */
+                state?: "ACTIVE" | "PAUSED";
+                /** @description API: written through the API. TRIGGER: kept by a cron trigger of a published workflow. */
+                origin?: "API" | "TRIGGER";
+                /** @description The workflow the schedule starts (its current revision). */
+                workflowId?: string;
+                /** @description Names that start with this text. */
+                name?: string;
             };
             header?: never;
             path: {

@@ -1,4 +1,4 @@
-import { screen, within } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { BASE, ID, json, mountSchedules, schedule } from '../../../test/schedules';
 import { SchedulesPage } from './SchedulesPage';
@@ -60,6 +60,54 @@ describe('The list of schedules', () => {
     await screen.findByRole('link', { name: 'second' });
     expect(platform.calls.some((call) => call.url.includes('cursor=next-1'))).toBe(true);
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+  });
+
+  it('asks the platform for the state a person chooses, from the first page, and shows what it answered', async () => {
+    let calls = 0;
+    const { user, platform } = await mount({
+      routes: {
+        [`GET ${BASE}`]: (_init, url) => {
+          calls++;
+          return url.includes('state=PAUSED')
+            ? { items: [schedule({ name: 'held', state: 'PAUSED' })], nextCursor: null }
+            : { items: [schedule(), schedule({ scheduleId: '0194f5e2-7b1c-7000-8000-0000000000c4', name: 'second' })], nextCursor: 'more' };
+        },
+      },
+    });
+    await screen.findByRole('link', { name: 'second' });
+    await user.click(screen.getByRole('button', { name: 'Load more' }));
+    await waitFor(() => expect(platform.calls.some((call) => call.url.includes('cursor=more'))).toBe(true));
+    await user.selectOptions(screen.getByLabelText('State'), 'PAUSED');
+    expect(await screen.findByRole('link', { name: 'held' })).toBeVisible();
+    expect(screen.queryByRole('link', { name: 'second' })).not.toBeInTheDocument();
+    const asked = platform.calls.filter((call) => call.url.includes('state=PAUSED'));
+    expect(asked.length).toBeGreaterThan(0);
+    expect(asked.every((call) => !call.url.includes('cursor='))).toBe(true);
+    expect(calls).toBeGreaterThan(2);
+  });
+
+  it('asks for the workflow a person chooses', async () => {
+    const { user, platform } = await mount();
+    await screen.findByRole('link', { name: 'nightly' });
+    await user.selectOptions(await screen.findByLabelText('Workflow'), 'nightly-report');
+    await waitFor(() => expect(platform.calls.some((call) => call.url.includes('workflowId=0194f5e2-7b1c-7000-8000-000000000001'))).toBe(true));
+  });
+
+  it('asks for a name once the person has stopped typing, not for every letter', async () => {
+    const { user, platform } = await mount();
+    await screen.findByRole('link', { name: 'nightly' });
+    await user.type(screen.getByLabelText('Name starts with'), '  rep ');
+    await waitFor(() => expect(platform.calls.some((call) => call.url.includes('name=rep'))).toBe(true));
+    const names = platform.calls.map((call) => new URL(call.url, 'http://studio.test').searchParams.get('name')).filter((name) => name !== null);
+    expect(names, 'one request for the word, trimmed').toEqual(['rep']);
+  });
+
+  it('says no schedule matches when filters leave none, and that there is none when they do not', async () => {
+    const { user } = await mount({ routes: { [`GET ${BASE}`]: (_init, url) => (url.includes('state=') ? { items: [], nextCursor: null } : { items: [schedule()], nextCursor: null }) } });
+    await screen.findByRole('link', { name: 'nightly' });
+    await user.selectOptions(screen.getByLabelText('State'), 'ACTIVE');
+    expect(await screen.findByText('No schedule matches these filters.')).toBeVisible();
+    expect(screen.queryByText('No schedule yet.')).not.toBeInTheDocument();
   });
 
   it('says there is none yet', async () => {

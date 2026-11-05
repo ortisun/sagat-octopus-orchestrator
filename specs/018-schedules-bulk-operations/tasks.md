@@ -304,7 +304,7 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   exclusion dropped from the query, the pass ignoring it): all caught; the one that survived (the duration recorded as 0,
   the test only counted samples) got an assertion on the sum. Not done: `schedules_paused_by_system_total`; the
   `delayed_starts` and `resets` passes belong to the features that build them (US03, US06).
-- [ ] T018-018 [US1] REST create/read/list/update/delete — `crates/api-http/src/routes/{schedules.rs,mod.rs}`,
+- [x] T018-018 [US1] REST create/read/list/update/delete — `crates/api-http/src/routes/{schedules.rs,mod.rs}`,
   `crates/api-http/src/dto_schedules.rs` — contract tests — FR-018-001, FR-018-013, FR-018-043.
   *Part done 2026-10-30 (task stays open).* Built behind `SAGAT_SCHEDULES_ENABLED` (control plane, off by default):
   `ScheduleUseCase` (a trait object over `ScheduleService`, so the HTTP layer needs no new generic parameter), the document
@@ -318,6 +318,23 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `describe` and delete at a revision; `crates/application/tests/schedule_document.rs` 4); without the namespace check of
   the route the isolation test fails. Not done: the list filters `origin`, `state`, `workflowId`, `name` and `inputBytes`
   (G1015).
+  *Done 2026-11-05 (the filters).* `GET /namespaces/{id}/schedules` takes `state` (`ACTIVE`, `PAUSED`; a deleted schedule is
+  never listed), `origin` (`API`, `TRIGGER`), `workflowId` (the workflow the head revision starts) and `name` (names that
+  start with it, at most 128 characters); every part given has to hold, a value that is none of the listed ones is `400`, and
+  the order and the cursor are those of the unfiltered listing. No new index: the scan is bounded by the `schedules` quota
+  (G1015 keeps `inputBytes` and the index as open). The Studio list narrows by state, workflow and name (asked for once
+  typing has rested). Seen failing first: `rest::a_listing_can_be_narrowed_by_state_workflow_and_name_and_pages_keep_to_the_filter`
+  (the filters were ignored: five schedules where one was asked for) and `a_filter_that_is_not_one_is_refused_in_words`
+  (`state=DELETED` answered `200` with an empty page). Evidence: `store::a_listing_is_narrowed_by_every_part_of_the_filter_...`
+  (five schedules over two workflows, one trigger-owned, one paused: each part alone, all of them together, a name matched
+  by its start and not inside, and paging one at a time through each filter gives the listing as a whole), the two `rest::`
+  tests above, the contract test (the filtered and refused requests conform to the schema), 13 Studio tests of the list. Gates on the final tree: `integration_schedules_bulk_operations` 227 passed, also with `SAGAT_TEST_AS_RUNTIME_ROLE=1` (227); `fault_schedules_bulk_operations` 30; `contract_schedules_bulk_operations` 2; `contract_rest_platform_foundation` 9; `contract_rest_security_multitenancy` 17; `contract_developer_experience` 8 (the reference lists no query parameter, so it did not change); `integration_platform_foundation` 101; unit suites of application, api-http, infra-postgres, scheduler and domain; Studio from `frontend/`: lint, typecheck, `npm test` (95 files, 1,321 tests), build and `check:api` clean; fmt and clippy clean.
+  Mutations, each reverted: 7 on the store and the route (each predicate dropped, a name matched anywhere, the filters ORed
+  with the cursor, a deleted state accepted, the name length unbounded) and 7 on the Studio list (state, workflow or name
+  not sent, a letter asked for at a time, an untrimmed name, one cache for every filter, the wrong empty message): all caught
+  (the first run of the cursor one survived and got the page-through-every-filter assertion). Still open from this task
+  and registered: G1014 (the key of a write is required and not replayed; the spec asks for replay only for trigger-now and
+  the with-start operations).
 - [x] T018-019 [P] [US1] US01 scenarios 1–5 — `tests/integration/schedules-bulk-operations/schedules.rs`
   — target output — FR-018-001..005, FR-018-016.
   *Done 2026-11-04.* The scenario file walks the five scenarios of the story and says, for each, which test proves it.

@@ -185,6 +185,48 @@ async fn every_schedule_operation_conforms_to_the_contract_on_its_normal_and_err
     )
     .await;
     record((m, t, s));
+    // the filters: each narrows the listing, a value that is none of the listed ones is a 400, and
+    // the answers match the contract
+    for (query, expect, items) in [
+        ("state=ACTIVE", 200, Some(1)),
+        ("state=PAUSED", 200, Some(0)),
+        ("origin=API", 200, Some(1)),
+        ("origin=TRIGGER", 200, Some(0)),
+        (&format!("workflowId={workflow}"), 200, Some(1)),
+        (
+            "workflowId=0194f5e2-7b1c-7000-8000-000000000009",
+            200,
+            Some(0),
+        ),
+        ("name=dai", 200, Some(1)),
+        ("name=ily", 200, Some(0)),
+        ("state=ACTIVE&origin=API&name=daily&limit=5", 200, Some(1)),
+        ("state=DELETED", 400, None),
+        ("origin=SOMEONE", 400, None),
+        ("workflowId=reports", 400, None),
+    ] {
+        let (m, t, s, body) = check_body(
+            &api,
+            &spec,
+            &scenario(
+                "GET",
+                LIST,
+                &format!("{list}?{query}"),
+                alice.clone(),
+                None,
+                expect,
+            ),
+        )
+        .await;
+        record((m, t, s));
+        if let Some(items) = items {
+            assert_eq!(
+                body["items"].as_array().map(Vec::len),
+                Some(items),
+                "{query}: {body}"
+            );
+        }
+    }
     for (path, who, expect) in [
         (
             format!("{one}?nextCount=3&recentCount=2"),

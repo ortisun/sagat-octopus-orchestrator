@@ -85,7 +85,7 @@ export function endpoints(api: ApiClient) {
     operate: (id: string, request: OperationRequest, key?: string) => api.post<OperationResult>(path`/runs/${id}/operations`, { body: request, ...(key ? { key } : {}) }),
 
     // Schedules (feature 018): the routes carry the namespace id, not its slug.
-    listSchedules: (namespaceId: string, query: { cursor?: string; limit?: number } = {}, signal?: AbortSignal) =>
+    listSchedules: (namespaceId: string, query: { cursor?: string; limit?: number; state?: 'ACTIVE' | 'PAUSED'; origin?: 'API' | 'TRIGGER'; workflowId?: string; name?: string } = {}, signal?: AbortSignal) =>
       api.get<Page<Schedule>>(path`/namespaces/${namespaceId}/schedules`, { query, signal }),
     getSchedule: (namespaceId: string, id: string, query: { nextCount?: number; recentCount?: number } = {}, signal?: AbortSignal) =>
       api.get<ScheduleDescription>(path`/namespaces/${namespaceId}/schedules/${id}`, { query, signal }),

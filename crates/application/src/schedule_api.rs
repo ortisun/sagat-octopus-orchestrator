@@ -11,8 +11,8 @@ use crate::quotas::QuotaLookup;
 use crate::schedule_firing::{ScheduleFiring, ScheduledStarts, TriggerRequest};
 use crate::schedules::{
     ActionCursor, ActionView, BackfillRecord, BackfillRequest, ScheduleCalendar,
-    ScheduleDescription, ScheduleDocument, ScheduleFuture, ScheduleRecord, ScheduleService,
-    ScheduleStore, ScheduleUseCase, decode_document,
+    ScheduleDescription, ScheduleDocument, ScheduleFilter, ScheduleFuture, ScheduleRecord,
+    ScheduleService, ScheduleStore, ScheduleUseCase, decode_document,
 };
 use uuid::Uuid;
 
@@ -86,10 +86,14 @@ where
         &'a self,
         principal: &'a Principal,
         namespace: NamespaceId,
+        filter: &'a ScheduleFilter,
         after: Option<ScheduleId>,
         limit: u32,
     ) -> ScheduleFuture<'a, Vec<ScheduleRecord>> {
-        Box::pin(self.service.list(principal, namespace, after, limit))
+        Box::pin(
+            self.service
+                .list(principal, namespace, filter, after, limit),
+        )
     }
 
     fn update<'a>(

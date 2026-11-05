@@ -15,8 +15,8 @@ use sagat_application::schedules::{
     AUTHORITY_REVOKED, ActionCursor, ActionDedupe, ActionView, BackfillProgress, BackfillRecord,
     BackfillState, BufferedAction, DueBackfill, DueSchedule, NewBackfill, NewSchedule, Obligation,
     Reconcile, RecordedAction, Revise, ScheduleActivity, ScheduleAdmission, ScheduleDecision,
-    ScheduleOrigin, ScheduleRecord, ScheduleState, ScheduleStore, ShardFence, StateChange,
-    TargetCheck,
+    ScheduleFilter, ScheduleOrigin, ScheduleRecord, ScheduleState, ScheduleStore, ShardFence,
+    StateChange, TargetCheck,
 };
 use sagat_domain::audit::AuditRecord;
 use sagat_domain::execution::{RunId, RunStatus};
@@ -780,17 +780,30 @@ impl ScheduleStore for PgScheduleStore {
         &self,
         tenant: TenantId,
         namespace: NamespaceId,
+        filter: &ScheduleFilter,
         after: Option<ScheduleId>,
         limit: u32,
     ) -> Result<Vec<ScheduleRecord>, StoreError> {
+        // Each part of the filter is optional in the statement, so the statement is one literal. A
+        // namespace holds at most as many schedules as its quota allows, which bounds the scan the
+        // filter makes over the head revisions.
         let rows = sqlx::query(select_schedules!(
             "WHERE s.tenant_id = $1 AND s.namespace_id = $2 AND s.state <> 'DELETED' \
-             AND ($3::uuid IS NULL OR s.id < $3) ORDER BY s.id DESC LIMIT $4"
+             AND ($3::uuid IS NULL OR s.id < $3) \
+             AND ($5::text IS NULL OR s.state = $5) \
+             AND ($6::text IS NULL OR s.origin = $6) \
+             AND ($7::text IS NULL OR r.action->>'workflowId' = $7) \
+             AND ($8::text IS NULL OR starts_with(s.name, $8)) \
+             ORDER BY s.id DESC LIMIT $4"
         ))
         .bind(tenant.as_uuid())
         .bind(namespace.as_uuid())
         .bind(after.map(ScheduleId::as_uuid))
         .bind(i64::from(limit))
+        .bind(filter.state.map(ScheduleState::as_str))
+        .bind(filter.origin.map(ScheduleOrigin::as_str))
+        .bind(filter.workflow.map(|id| id.to_string()))
+        .bind(filter.name_prefix.as_deref())
         .fetch_all(&self.pool)
         .await
         .map_err(store_error)?;

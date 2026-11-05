@@ -289,6 +289,107 @@ async fn the_list_is_newest_first_and_pages_by_cursor() {
     assert_eq!(status, 400, "{bad}");
 }
 
+/// The names of the schedules a listing returned, in order.
+fn names(page: &Value) -> Vec<String> {
+    page["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .map(|s| s["name"].as_str().expect("name").to_owned())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_listing_can_be_narrowed_by_state_workflow_and_name_and_pages_keep_to_the_filter() {
+    let r = rig().await;
+    let other = r.p.publish("billing", &chain_ir("billing")).await;
+    let (status, made) =
+        r.p.rest(
+            Method::POST,
+            &r.schedules(),
+            Some(&body(&other, "billing-nightly")),
+        )
+        .await;
+    assert_eq!(status, 201, "{made}");
+    let resting = Rig::id(&r.create("reports-resting").await);
+    for n in 0..3 {
+        r.create(&format!("reports-{n}")).await;
+    }
+    let (status, paused) =
+        r.p.rest(
+            Method::POST,
+            &format!("{}/pause", r.schedule(&resting)),
+            Some(&json!({"note": "release freeze"})),
+        )
+        .await;
+    assert_eq!(status, 200, "{paused}");
+
+    let listed = |query: String| {
+        let url = format!("{}?{query}", r.schedules());
+        let r = &r;
+        async move {
+            let (status, page) = r.p.rest(Method::GET, &url, None).await;
+            assert_eq!(status, 200, "{url}: {page}");
+            page
+        }
+    };
+    assert_eq!(
+        names(&listed("state=PAUSED".to_owned()).await),
+        ["reports-resting"]
+    );
+    assert_eq!(
+        names(&listed("state=ACTIVE".to_owned()).await),
+        ["reports-2", "reports-1", "reports-0", "billing-nightly"]
+    );
+    assert_eq!(
+        names(&listed(format!("workflowId={other}")).await),
+        ["billing-nightly"]
+    );
+    assert_eq!(
+        names(&listed("name=reports-r".to_owned()).await),
+        ["reports-resting"],
+        "a name is matched by its start"
+    );
+    assert_eq!(
+        names(&listed("name=reports-&state=ACTIVE&origin=API".to_owned()).await),
+        ["reports-2", "reports-1", "reports-0"],
+        "every part given has to hold"
+    );
+    assert!(
+        names(&listed("origin=TRIGGER".to_owned()).await).is_empty(),
+        "none of these is owned by a trigger"
+    );
+    assert!(
+        names(&listed(format!("workflowId={}&state=PAUSED", other)).await).is_empty(),
+        "the filters are ANDed"
+    );
+
+    // a page keeps to the filter and ends where the filtered listing ends
+    let first = listed("name=reports-&limit=2".to_owned()).await;
+    assert_eq!(names(&first), ["reports-2", "reports-1"]);
+    let cursor = first["nextCursor"].as_str().expect("a next page");
+    let second = listed(format!("name=reports-&limit=2&cursor={cursor}")).await;
+    assert_eq!(names(&second), ["reports-0", "reports-resting"]);
+    assert_eq!(second["nextCursor"], Value::Null);
+}
+
+#[tokio::test]
+async fn a_filter_that_is_not_one_is_refused_in_words() {
+    let r = rig().await;
+    for query in [
+        "state=DELETED",
+        "state=active",
+        "origin=SOMEONE",
+        "workflowId=reports",
+        &format!("name={}", "n".repeat(129)),
+    ] {
+        let (status, refused) =
+            r.p.rest(Method::GET, &format!("{}?{query}", r.schedules()), None)
+                .await;
+        assert_eq!(status, 400, "{query}: {refused}");
+    }
+}
+
 #[tokio::test]
 async fn every_change_needs_an_idempotency_key() {
     let r = rig().await;

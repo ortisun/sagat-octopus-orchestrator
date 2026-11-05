@@ -1,8 +1,10 @@
 import { useInfiniteQuery } from '@tanstack/react-query';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { useApp, useCan } from '../../app/context';
 import { Button } from '../../ui/Button';
 import { ErrorState } from '../../ui/ErrorState';
+import { Field } from '../../ui/Field';
 import { StatusBadge } from '../../ui/StatusBadge';
 import { NotAllowed } from '../runs/NotAllowed';
 import { useWorkflowIndex } from '../runs/queries';
@@ -10,6 +12,8 @@ import { OVERLAP_TEXT, describeSpec, scheduleState } from './model';
 import { Time, useNamespaceId } from './shared';
 
 const PAGE = 50;
+/** How long the name has to rest before it is asked for, so a word being typed is one request. */
+const TYPING_MS = 300;
 
 /** `/schedules`: the schedules of the namespace, with the state of each and the next time it acts. */
 export function SchedulesPage() {
@@ -25,11 +29,25 @@ function Schedules() {
   const mayWrite = useCan('schedule:write');
   const mayStart = useCan('run:start');
   const canCreate = mayWrite && mayStart;
+  const [state, setState] = useState<'' | 'ACTIVE' | 'PAUSED'>('');
+  const [workflowId, setWorkflowId] = useState('');
+  const [typed, setTyped] = useState('');
+  const [name, setName] = useState('');
+  useEffect(() => {
+    const timer = setTimeout(() => setName(typed.trim()), TYPING_MS);
+    return () => clearTimeout(timer);
+  }, [typed]);
+  const filtered = state !== '' || workflowId !== '' || name !== '';
   const list = useInfiniteQuery({
-    queryKey: ['schedules', namespace.id],
+    queryKey: ['schedules', namespace.id, state, workflowId, name],
     enabled: namespace.id !== undefined,
     initialPageParam: undefined as string | undefined,
-    queryFn: ({ pageParam, signal }) => ep.listSchedules(namespace.id as string, { limit: PAGE, ...(pageParam ? { cursor: pageParam } : {}) }, signal),
+    queryFn: ({ pageParam, signal }) =>
+      ep.listSchedules(
+        namespace.id as string,
+        { limit: PAGE, ...(pageParam ? { cursor: pageParam } : {}), ...(state ? { state } : {}), ...(workflowId ? { workflowId } : {}), ...(name ? { name } : {}) },
+        signal,
+      ),
     getNextPageParam: (last) => last.nextCursor ?? undefined,
   });
   const schedules = list.data?.pages.flatMap((page) => page.items) ?? [];
@@ -44,9 +62,31 @@ function Schedules() {
           </Link>
         </p>
       ) : null}
+      <div className="toolbar">
+        <Field label="State">
+          <select value={state} onChange={(event) => setState(event.target.value as '' | 'ACTIVE' | 'PAUSED')}>
+            <option value="">All states</option>
+            <option value="ACTIVE">Active</option>
+            <option value="PAUSED">Paused</option>
+          </select>
+        </Field>
+        <Field label="Workflow">
+          <select value={workflowId} onChange={(event) => setWorkflowId(event.target.value)}>
+            <option value="">All workflows</option>
+            {(workflows.data?.list ?? []).map((workflow) => (
+              <option key={workflow.id} value={workflow.id}>
+                {workflow.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Name starts with">
+          <input type="search" autoComplete="off" maxLength={128} value={typed} onChange={(event) => setTyped(event.target.value)} />
+        </Field>
+      </div>
       {namespace.pending || list.isPending ? <p role="status">Loading the schedules…</p> : null}
       {namespace.error || list.error ? <ErrorState error={namespace.error ?? list.error} what="Listing schedules" onRetry={() => void list.refetch()} /> : null}
-      {list.isSuccess && schedules.length === 0 ? <p>No schedule yet.</p> : null}
+      {list.isSuccess && schedules.length === 0 ? <p>{filtered ? 'No schedule matches these filters.' : 'No schedule yet.'}</p> : null}
       {schedules.length > 0 ? (
         <table>
           <caption className="visually-hidden">Schedules</caption>

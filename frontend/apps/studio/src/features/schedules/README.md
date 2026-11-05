@@ -6,7 +6,7 @@ Schedules (feature 018): listing the schedules of a namespace, creating and edit
 
 ## Interface
 
-- `SchedulesPage` lists the schedules with their state, workflow, rule and next time; `SchedulePage` shows one schedule, its next times as the platform computed them, and holds `ScheduleControls`, `Decisions` and `Backfills`. [frontend/apps/studio/src/features/schedules/SchedulesPage.tsx:SchedulesPage] [frontend/apps/studio/src/features/schedules/SchedulePage.tsx:SchedulePage]
+- `SchedulesPage` lists the schedules with their state, workflow, rule and next time, which the person can narrow by state, workflow and the start of a name (the platform filters; the name is asked for once typing has rested); `SchedulePage` shows one schedule, its next times as the platform computed them, and holds `ScheduleControls`, `Decisions` and `Backfills`. [frontend/apps/studio/src/features/schedules/SchedulesPage.tsx:SchedulesPage] [frontend/apps/studio/src/features/schedules/SchedulePage.tsx:SchedulePage]
 - `ScheduleFormPage` is the form at `/schedules/new` and `/schedules/:scheduleId/edit`. [frontend/apps/studio/src/features/schedules/ScheduleFormPage.tsx:ScheduleFormPage]
 - `ScheduleControls` offers pause, resume, run now, edit and delete, each behind the permissions the platform asks for. [frontend/apps/studio/src/features/schedules/ScheduleControls.tsx:ScheduleControls]
 - `Decisions` pages through the decisions of a schedule, newest first, optionally of one outcome; `Backfills` lists, starts and cancels backfills. [frontend/apps/studio/src/features/schedules/Decisions.tsx:Decisions] [frontend/apps/studio/src/features/schedules/Backfills.tsx:Backfills]

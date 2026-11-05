@@ -158,6 +158,18 @@ impl std::str::FromStr for ScheduleState {
     }
 }
 
+/// What a listing of schedules is narrowed to: every part that is given has to hold (`G1015`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScheduleFilter {
+    /// Active or paused (a deleted schedule is never listed).
+    pub state: Option<ScheduleState>,
+    pub origin: Option<ScheduleOrigin>,
+    /// The workflow the head revision of the schedule starts.
+    pub workflow: Option<Uuid>,
+    /// Names that start with this text.
+    pub name_prefix: Option<String>,
+}
+
 /// A schedule with its head revision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScheduleRecord {
@@ -695,12 +707,14 @@ pub trait ScheduleStore: Send + Sync {
         id: ScheduleId,
     ) -> impl Future<Output = Result<Option<ScheduleRecord>, StoreError>> + Send;
 
-    /// The schedules of a namespace that have not been deleted, newest first (ids are time-ordered),
-    /// those after `after` in that order when given.
+    /// The schedules of a namespace that have not been deleted and match `filter`, newest first (ids
+    /// are time-ordered), those after `after` in that order when given. The filter does not change
+    /// the order, so a page ends where the next begins whatever it is.
     fn schedules(
         &self,
         tenant: TenantId,
         namespace: NamespaceId,
+        filter: &ScheduleFilter,
         after: Option<ScheduleId>,
         limit: u32,
     ) -> impl Future<Output = Result<Vec<ScheduleRecord>, StoreError>> + Send;
@@ -1400,6 +1414,7 @@ where
         &self,
         principal: &Principal,
         namespace: NamespaceId,
+        filter: &ScheduleFilter,
         after: Option<ScheduleId>,
         limit: u32,
     ) -> Result<Vec<ScheduleRecord>, AppError> {
@@ -1413,7 +1428,13 @@ where
         }
         Ok(self
             .store
-            .schedules(principal.tenant_id(), namespace, after, limit.clamp(1, 200))
+            .schedules(
+                principal.tenant_id(),
+                namespace,
+                filter,
+                after,
+                limit.clamp(1, 200),
+            )
             .await?)
     }
 
@@ -1807,6 +1828,7 @@ pub trait ScheduleUseCase: Send + Sync {
         &'a self,
         principal: &'a Principal,
         namespace: NamespaceId,
+        filter: &'a ScheduleFilter,
         after: Option<ScheduleId>,
         limit: u32,
     ) -> ScheduleFuture<'a, Vec<ScheduleRecord>>;

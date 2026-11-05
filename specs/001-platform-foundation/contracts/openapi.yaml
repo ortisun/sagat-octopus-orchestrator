@@ -3691,11 +3691,15 @@ paths:
       tags: [Schedules]
       x-implemented: '018'
       description: |
-        Needs `schedule:read`. Never returns the input of the runs, only its digest.
+        Needs `schedule:read`. Never returns the input of the runs, only its digest. Every filter given has to hold; the order and the cursor are those of the listing without them, so a page ends where the next begins. A value that is not one of the listed ones is `400`.
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/Cursor'}
         - {$ref: '#/components/parameters/Limit'}
+        - {name: state, in: query, description: 'A deleted schedule is never listed.', schema: {type: string, enum: [ACTIVE, PAUSED]}}
+        - {name: origin, in: query, description: 'API: written through the API. TRIGGER: kept by a cron trigger of a published workflow.', schema: {type: string, enum: [API, TRIGGER]}}
+        - {name: workflowId, in: query, description: 'The workflow the schedule starts (its current revision).', schema: {type: string, format: uuid}}
+        - {name: name, in: query, description: 'Names that start with this text.', schema: {type: string, maxLength: 128}}
       responses:
         '200': {description: 'A page of schedules', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/SchedulePage'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
