@@ -1345,17 +1345,18 @@ impl ScheduleStore for PgScheduleStore {
 
     async fn due_schedules(
         &self,
-        shards: &[Shard],
-        limit: u32,
+        window: &sagat_application::maintenance::Window,
     ) -> Result<Vec<DueSchedule>, StoreError> {
-        let shards: Vec<i16> = shards.iter().map(|s| i16::from(s.index())).collect();
+        let exclude: Vec<Uuid> = window.exclude.iter().map(|t| t.as_uuid()).collect();
         let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
             "SELECT tenant_id, id FROM schedules \
              WHERE shard = ANY($1) AND state = 'ACTIVE' AND next_wake_at <= clock_timestamp() \
+               AND tenant_id <> ALL($3::uuid[]) \
              ORDER BY next_wake_at, id LIMIT $2",
         )
-        .bind(shards)
-        .bind(i64::from(limit))
+        .bind(window.shards.indexes())
+        .bind(i64::from(window.limit))
+        .bind(exclude)
         .fetch_all(&self.pool)
         .await
         .map_err(store_error)?;

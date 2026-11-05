@@ -600,6 +600,8 @@ impl EngineConfig {
                 name: "SAGAT_SCHEDULES_ROUND_ACTIONS",
                 reason: format!("must be at most {}", ScheduleSettings::MAX_ROUND_ACTIONS),
             })?,
+            // the search for other tenants rests like the scheduler's own
+            discovery_rest,
             ..schedule_defaults
         };
         let schedule_poll = Duration::from_millis(positive(

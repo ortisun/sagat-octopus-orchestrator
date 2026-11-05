@@ -721,12 +721,12 @@ pub trait ScheduleStore: Send + Sync {
         audit: &AuditRecord,
     ) -> impl Future<Output = Result<Option<ScheduleRecord>, StoreError>> + Send;
 
-    /// The schedules of the given shards whose wake time has come by the database clock, the
-    /// earliest first. Only active schedules are due.
+    /// The schedules of the window's shards whose wake time has come by the database clock, the
+    /// earliest first, leaving out the tenants the window excludes (those that already have their
+    /// share of the pass). Only active schedules are due.
     fn due_schedules(
         &self,
-        shards: &[sagat_domain::sharding::Shard],
-        limit: u32,
+        window: &crate::maintenance::Window,
     ) -> impl Future<Output = Result<Vec<DueSchedule>, StoreError>> + Send;
 
     /// The status of each of the given runs of a tenant (a run that is gone is absent).
