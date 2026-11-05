@@ -897,3 +897,81 @@ The other fixes were wording:
   container's `pids.max` and `memory.max` bound the forwarder, but the forwarder has no cap of its own. (4) No operation is served:
   `probe`, `icebergWrite`, `icebergRevert`, `objectWrite` and `browse` arrive with their tasks. (5) The Rust relay answers `CONTROL`
   with `400` until the driver serves it. *Exit condition:* each is closed by the task named, with a test.
+- **D035-082 — The Studio form for the Iceberg connection.** T035-046. Decided by: delegate.
+  - *Offered by the deployment.* A new connection can be Iceberg only if `GET /namespaces/{id}/database-drivers` lists
+    `iceberg` (the contract says the Studio and the SDKs never hard-code the list); a failed or PostgreSQL-only answer leaves
+    PostgreSQL alone. An existing connection keeps its kind.
+  - *Scope.* The form edits a REST catalog over S3-compatible storage, which is what the task names. A connection of another
+    catalog or storage type is listed and deleted but has no edit button until T035-078 (`editableIcebergOf` decides).
+  - *Credentials.* Catalog and storage credentials are an existing OpenBao secret or values entered once and written to OpenBao
+    first (017's flow), as the JSON of `data-model.md` "Credential secrets" (OAuth2 `clientId`/`clientSecret`, bearer `token`,
+    AWS keys). The secret is named `lake-catalog-<request id>` or `lake-storage-<request id>`; a retry reuses the id, changed
+    values take a new one, and the values leave the state once the write succeeds. The connection body carries references only.
+    Vended storage credentials need the catalog to delegate access, and then no storage secret is written, even if one was typed.
+  - *The ceiling.* `pii` is offered only to a session that holds `payload:reveal-pii`. That is a hint: the namespace reveal grant
+    is the server's decision (D035-074) and the save shows its answer through the error state.
+  - *Saving is not proof.* The form says that saving does not test the catalog or the storage, and shows no connectivity result.
+  - *Evidence.* `ConnectionsPage.test.tsx`: 30 tests (8 of the earlier behaviour, one of them adapted, and 22 new). The form was written
+    before its tests, so rule 18 was not followed to the letter; a mutation run is what shows that the tests catch it: 30 mutations
+    of the form, the editor and the page, 24 caught at once and six survivors (a storage secret written for vended credentials, the
+    vended state kept after the catalog stops delegating, `limits: {}` sent, more than 16 locations, an empty catalog URL, the
+    type chooser on an edit through the cached driver list). Each became a test and all six are now caught. `npm run lint`,
+    `typecheck`, `check:api`, `npm test` (87 files, 1,217 tests) and `npm run build` pass.
+- **G035-032 — What the Studio form leaves open.** (1) `GET .../database-drivers` returns PostgreSQL alone today, so no
+  deployment offers the form yet: the lake entries arrive with `lake.enabled` (T035-036) and the rest of T035-043. (2) The
+  per-check probe results of T035-046 need the probe (T035-045) and a field for them: `DatabaseConnectionProbe` in the OpenAPI
+  carries `run`, `revision` and `failureCode`, while T035-040 asks for `CATALOG_AUTH`, `WAREHOUSE` and `STORAGE_ACCESS` with the
+  tested revision and time. That is a contract amendment with T035-045; `ConnectionProbe` stays PostgreSQL-only until then.
+  (3) Other catalogs and stores (T035-078) and the browser journey (T035-074). (4) `remoteSigning` is kept on an edit and cannot
+  be set (D035-050). (5) The `@sagat/e2e` typecheck was not run here: it needs the TypeScript SDK built first
+  (`sdks/typescript/conformance/prepare.sh`), as in CI. *Exit condition:* each is closed by the task named, with a test.
+- **D035-083 — The `lake` container profile, its engine and what the isolation tests found.** T035-028 (the profile and
+  the engine; the sandbox-runner API is not built), T035-015 (the Docker half) and the first half of T035-029. Decided by:
+  delegate.
+  - *Where.* `crates/infra-sandbox/src/lake.rs` holds the configuration as a pure function (`container_config`) and
+    `lake/engine.rs` the engine calls (`run`, `start`, `exec`, `stop`, `sweep`, the work volume). They are not inside
+    `docker.rs`, as the task text says: that file is 2,100 lines of the script sandbox, and the two share five small helpers,
+    which became `pub(crate)`.
+  - *The profile.* `lake-runtime.md` "Isolation", with these choices: the user is `40000 + slot` (4,096 slots, so never root and
+    never a system account); the environment is exactly the four names of the contract; `/tmp` is a memory-backed `noexec`
+    scratch with a size of its own; the largest file a process may write is the work budget; the one mount is the attempt's own
+    sub-path of the work volume; three labels (`sagat.lake`, `.owner`, `.attempt`) serve the sweep and the per-node ceiling
+    that comes with the start API; every limit of zero is refused, because zero is not unlimited.
+  - *The work volume is memory-backed and mounted by sub-path.* A named volume of the local driver with `type=tmpfs,size=N`
+    is the size limit of all attempt directories together, and each container mounts only `<volume>/<attempt id>` (the
+    engine's volume sub-path option), so another attempt's directory is not there to be read.
+  - *Found: a memory-backed volume keeps its content only while some container has it mounted.* The first run of the tests
+    lost the directories when the preparer exited. In a deployment the lake runner's own mount keeps the volume for as long
+    as the runner runs; a restart of the runner drops every attempt directory, which is acceptable because the next attempt's
+    lookup resolves whatever the lost one had sent (D035-030). The tests use a holder container for the same reason.
+  - *Found: a test sweep must not share a label with its neighbours.* A sweep by owner removed the containers of tests that
+    ran at the same time; every test case has its own owner label now.
+  - *Evidence.* 19 configuration tests (`crates/infra-sandbox/tests/lake_profile.rs`) and 49 mutations of the module, six of
+    which survived at first (a hexadecimal range, a space alone or a control character alone in a name, the length limits of
+    an image and an owner, the first character of a volume name); each became a test and all are caught. Eight tests against a
+    real engine (`tests/integration/iceberg-writes/isolation.rs`, Docker 29 with runc and cgroup v2): the user and group of the
+    slot, no effective or bounding capability, `no-new-privileges`, a root that a world-writable path cannot be written
+    through, a `/tmp` that cannot run code and holds no more than its size, loopback as the only interface, no route to the
+    metadata addresses (IPv4 and IPv6) or to a public address, no engine socket or service-account directory, only the
+    attempt's own directory listed, its own token readable and another attempt's token absent, the same token unreadable
+    to the user of another slot, the memory, swap and process limits as cgroup values, no core dumps, a file larger than the
+    work budget and a third file past the volume both refused, an out-of-memory kill, a deadline kill that leaves no container,
+    and an image the engine does not have. 13 mutations of the isolation properties against that engine: seven were caught at
+    once and six survived, for weak probes (a write to `/`, which a non-root user cannot do anyway; an exec of BusyBox under an
+    unknown applet name; a file-size probe that met a full volume first; no look at the swap limit) or for redundancy
+    (`network_mode: none` and the disabled-network flag are each enough alone). The probes were fixed, both network settings
+    are mutated together, and all are now caught. `cargo clippy -p sagat-infra-sandbox -p sagat-tests --all-targets -- -D
+    warnings`, `cargo fmt --check` and `check-architecture.py` pass.
+- **G035-033 — What the lake profile leaves open.** (1) **Who gives a file to the user of a slot.** A token that is mode 0400 and
+  owned by the user of the slot needs `CAP_CHOWN`; the tests use a root holder. A lake runner that is a plain user
+  (`USER 10001`) cannot do it, so one of three has to be chosen before T035-035: the runner runs with the capability (a file or
+  ambient capability), the sandbox runner prepares the directory (it holds the engine, and the token is a per-attempt relay
+  token, not an external credential), or the slot users share a group and the mount alone separates the attempts, which gives
+  up the defence in depth that a user per slot is for. (2) A user namespace of the container's own is the engine's setting
+  (`userns-remap`, rootless mode, gVisor); the tests do not assert it. (3) The Kubernetes half of the spike (a pod sharing an
+  `emptyDir`, the Helm profile, the validation profile) is not run, so T035-029 stays open and G035-022 is not closed.
+  (4) The start, stop and kill API of the sandbox runner, and its per-node ceiling, are not built (the second half of T035-028);
+  the engine's `start`, `stop` and `sweep` are what it will call. (5) The runtime image does not exist yet (T035-027): the
+  tests use `python:3.13-alpine` (`SAGAT_LAKE_ISOLATION_IMAGE` names another). (6) `/dev/shm` is a separate memory-backed
+  scratch of the engine's default size that the profile does not set. *Exit condition:* each is closed by the task named, with a
+  test; (1) needs a decision first.

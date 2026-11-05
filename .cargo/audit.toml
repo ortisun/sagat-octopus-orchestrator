@@ -45,4 +45,19 @@ ignore = [
   # compile-time procedural macro: it executes at build time and leaves no runtime code behind.
   # Re-evaluate on 2026-12-02 or when parquet drops it.
   "RUSTSEC-2024-0436",
+
+  # 2026-11-05: two "unmaintained" notices (informational, no patched version), published 2026-10-01 and
+  # 2026-11-03, that `--deny warnings` turns into a red job for every release. See research.md, gaps G705
+  # and G706 (decided by delegate on the owner's instruction "Tome as decisoes por mim").
+  #
+  # pin-utils 0.1.1, macros (`pin_mut!`, `unsafe_pinned!`) reached through aws-smithy-http 0.64.1 and
+  # aws-smithy-types 1.8.1 (the AWS SigV4 signer of the connectors). aws-smithy-http 0.64.3 and
+  # aws-smithy-types 1.9.1 (2026-10-27) no longer depend on it; they pass the two-week rule on 2026-11-10.
+  # Expires 2026-11-10: take them with `cargo update` and delete this entry.
+  "RUSTSEC-2026-0441",
+  # astral-tokio-tar 0.6.4 (maintenance ended 2026-11-03), reached only through `testcontainers` 0.27.3,
+  # a dev-dependency of the test crates: `cargo tree -i astral-tokio-tar -e normal,build` prints nothing,
+  # so no binary that ships links it. testcontainers 0.28.0 still depends on it and the advisory names no
+  # patched version. Re-evaluate on 2026-12-02 (with G035-024) or when testcontainers drops it.
+  "RUSTSEC-2026-0440",
 ]

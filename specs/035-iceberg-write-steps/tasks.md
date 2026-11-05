@@ -365,6 +365,13 @@ three conditions pass.
   - running with any capability or a writable root.
 
   Refs: FR-035-023, D035-048, G035-022.
+
+  *2026-11-05, partly done, left unticked (D035-083, G035-033):* `tests/integration/iceberg-writes/isolation.rs` runs these
+  against a real Docker engine, with the `lake` profile and only the command replaced by a probe: another attempt's directory
+  and token, the metadata service and the network (IPv4 and IPv6), the engine socket, the capabilities and the root, and more
+  (the memory, swap and process limits, `/tmp`, the work volume, the deadline). 8 tests pass; 13 mutations of the profile are
+  caught. Not done: the runner's own token file (there is no runner in the Docker model to read it from; the test shows that
+  no service-account directory or engine socket is in the container) and the Kubernetes run (T035-029).
 - [x] T035-016 [P] Write the failing relay tests in `crates/infra-lake/tests/relay.rs`, plus unit tests
   in `crates/infra-database/src/network.rs` for `fd00:ec2::254` and `fd20:ce::254`. The relay:
   - refuses a missing or wrong token;
@@ -551,6 +558,11 @@ three conditions pass.
   In `apps/sandbox-runner/src/{api.rs,config.rs}`, add the start, stop and kill API. A start request
   carries no credential. A lake sandbox runner serves only lake containers and admits at most the
   "lake containers per node" ceiling. Refs: FR-035-023, D035-048, ADR-0013.
+
+  *2026-11-05, partly done, left unticked (D035-083, G035-033):* the profile is `container_config` in
+  `crates/infra-sandbox/src/lake.rs` (19 tests, 49 mutations caught) and the engine calls are `lake/engine.rs`; the place is not
+  `docker.rs`, as the text says. Not done: the start, stop and kill API and the "lake containers per node" ceiling in
+  `apps/sandbox-runner`, and the user-namespace and `/dev/shm` points of G035-033.
 - [ ] T035-029 Run spike T-isolation. Choose the co-location of the lake runner and the sandbox runner
   (one pod sharing an `emptyDir`, or a node-local socket) in Compose and in
   `infra/helm/templates/lake-runner.yaml`. Run T035-015 under both, the Helm one in the Kubernetes
@@ -559,6 +571,12 @@ three conditions pass.
 
   If no co-location passes, stop and ask the owner to choose between a node-local deployment and a
   per-attempt Kubernetes Job (plan.md Risks). Refs: G035-022, D035-048.
+
+  *2026-11-05, half done, left unticked (D035-083, G035-033):* the Docker/Compose half passes (T035-015 against a real
+  engine), and it found two things: a memory-backed work volume lives only while a container has it mounted, and handing a file
+  to the user of a slot needs `CAP_CHOWN`, which the lake runner as `USER 10001` does not have (G035-033, point 1, a decision
+  for before T035-035). Not done: the pod sharing an `emptyDir`, `infra/helm/templates/lake-runner.yaml`, the Kubernetes
+  validation profile, `docs/architecture/security-and-sandbox.md`, and so G035-022 stays open.
 - [ ] T035-030 Implement the relay in `crates/infra-lake/src/relay.rs`:
   - an authenticated Unix socket at `/work/<attempt-id>/relay.sock`;
   - a per-attempt token at `relay.token`, mode 0400, owned by the container's UID;
@@ -761,6 +779,15 @@ test to every catalog and storage type.
 
   Add the vitest cases to `ConnectionsPage.test.tsx`: no credential value after a reload. Refs:
   FR-035-001..006, SC-035-001.
+
+  *2026-11-05, partly done (D035-082, G035-032):* the Iceberg form for a REST catalog over S3 is in
+  `IcebergConnectionForm.tsx`, chosen by `ConnectionEditor.tsx` only when the deployment lists the driver: catalog and storage
+  credentials (existing OpenBao secret or created inline, references only in the connection), warehouse locations, allowed modes,
+  the ceiling with `pii` offered only with `payload:reveal-pii`, the vended-credentials choice, URL rules, and a note that saving
+  is not proof of connectivity. 30 tests in `ConnectionsPage.test.tsx` (no credential value after a reload among them), 30
+  mutations all caught; `npm run lint`, `typecheck`, `check:api`, `npm test` (87 files, 1,217 tests) and `npm run build` pass.
+  **Not done:** the per-check probe results (they need T035-045 and a field in the contract), the other catalog and storage
+  shapes (T035-078), and the server listing `iceberg` in `GET .../database-drivers` (T035-036, T035-043).
 
 **Checkpoint**: US01 on REST + S3 works and is tested on its own.
 

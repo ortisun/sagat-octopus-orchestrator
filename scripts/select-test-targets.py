@@ -6,7 +6,7 @@ Usage: python3 scripts/select-test-targets.py [--event E] [--ref-name N] [--ref-
 
 The rule (docs/constitution.md, CI gates; docs/test-strategy.md):
 
-  * On a pull request or a push to develop the CI runs only the unit tests of the changed packages, the unit
+  * On a pull request the CI runs only the unit tests of the changed packages, the unit
     tests of the SDK, the Studio and the scripts whose files changed, and the integration suites (the
     `sagat-tests` targets) that touch the affected code. Lints and the other verification jobs do not run.
   * For a release the CI runs everything: every test, every lint, every verification job.

@@ -4,6 +4,20 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-05 — A merge into `develop` starts no CI
+
+The owner gave the instruction in the Claude session while the assistant was merging a stack of pull requests, each of
+which would have started a run on `develop`. The assistant recorded it; the rule is Constitution 4.2.0 (CI gates).
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-05-1 | "Desativar o ci para merges na develop. Deixar o ci somente para merges de release" | owner | Decided | docs/constitution.md, .github/workflows/ci.yml |
+
+Read as the owner wrote it: the CI that a *merge* into `develop` starts (the `push` event) is turned off. The CI of a *pull
+request* is not a merge and keeps the rule of 4.1.0 (the tests of what it changes; the whole stack for a pull request into
+a release branch). If the owner meant that a pull request into `develop` should start no CI either, that is one more
+amendment and one more line of the workflow.
+
 ## 2026-11-04 — The CI runs the tests of the change; the whole stack runs for a release
 
 The owner gave two instructions in the Claude session, the second replacing the first. The assistant recorded them; the

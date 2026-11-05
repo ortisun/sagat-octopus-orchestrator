@@ -1,8 +1,8 @@
 """Guards the CI rule (run: python3 -m unittest discover scripts/tests).
 
-The rule (docs/constitution.md, CI gates): a pull request or a push to develop runs only the unit tests of the
-changed packages and the integration suites that touch the affected code; a release runs the whole stack, lints
-included. The job `changes` runs scripts/select-test-targets.py and every other job is gated by its outputs. A step
+The rule (docs/constitution.md, CI gates): a pull request runs only the unit tests of the changed packages and the
+integration suites that touch the affected code, a merge into develop starts no run, and a release runs the whole
+stack, lints included. The job `changes` runs scripts/select-test-targets.py and every other job is gated by its outputs. A step
 that ran a lint, a verification job or an integration suite without that gate would bring the full cost back on
 every pull request, or hide the release check.
 """
@@ -138,8 +138,17 @@ class CiRule(unittest.TestCase):
 
     def test_a_release_can_be_triggered_by_a_tag_a_branch_and_by_hand(self):
         self.assertRegex(self.text, r'(?m)^    tags: \["v\*"\]')
-        self.assertRegex(self.text, r'(?m)^    branches: \[main, develop, "release/\*\*", "hotfix/\*\*"\]')
+        self.assertRegex(self.text, r'(?m)^    branches: \[main, "release/\*\*", "hotfix/\*\*"\]')
         self.assertRegex(self.text, r"(?m)^  workflow_dispatch:")
+
+    def test_a_merge_into_develop_starts_no_run_and_a_pull_request_still_does(self):
+        """The owner's rule (OD-2026-11-05-1): the CI runs for a pull request and for a release, and a merge into
+        develop is neither: what the pull request proved is not proved again by the push that merges it."""
+        triggers = self.text.split("\njobs:", 1)[0]
+        pushed = re.search(r"(?ms)^  push:\n(.*?)^  \S", triggers)
+        self.assertIsNotNone(pushed, "the workflow has a push trigger")
+        self.assertNotIn("develop", pushed.group(1), "a push to develop starts the CI")
+        self.assertRegex(triggers, r"(?m)^  pull_request:")
 
 
 if __name__ == "__main__":
