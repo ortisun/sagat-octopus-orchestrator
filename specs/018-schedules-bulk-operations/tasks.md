@@ -1078,8 +1078,19 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
 - [ ] T018-069 [P] CLI `sagat schedule …`, `sagat batch …`, `sagat workflow {reset,signal-with-start,update-with-start}`,
   `--business-id`/`--if-exists`/`--start-delay` on `sagat workflow run` — `apps/cli/src/{args.rs,workflow.rs}`
   — CLI tests — FR-018-047.
-- [ ] T018-070 Cross-tenant battery over every new route and pass — `tests/contract/security-multitenancy/rest/battery.rs`
+- [x] T018-070 Cross-tenant battery over every new route and pass — `tests/contract/security-multitenancy/rest/battery.rs`
   — battery output, audited probes — FR-018-041; NFR-018-002.
+  *Done 2026-11-05:* routes — `battery::every_implemented_operation_resists_an_administrator_of_another_tenant` walks every
+  `x-implemented` operation of the OpenAPI, so the 21 operations of this feature are in it as they land, each with a body
+  of its own in `body_of` (`signalWithStart` and `updateWithStart` among them; 20 tests of
+  `contract_rest_security_multitenancy` pass, both modes of the platform targets in the other suites) and the probe of
+  another tenant's binding is on record (`business_ids_rest::another_tenant_probing_a_binding_finds_nothing_and_the_probe_is_on_record`);
+  passes — the schedule pass serves another tenant's due schedule while one tenant has a backlog
+  (`pass::a_tenant_with_a_backlog_does_not_hold_back_another_tenants_due_schedule`), a batch job reaches only the runs of its own
+  namespace and tenant whatever ids it names (`batch_security::a_job_reaches_only_the_runs_of_its_own_namespace_whatever_ids_it_names`),
+  jobs, schedule decisions and bindings are never read across tenants (`batch::jobs_are_read_listed_newest_first_and_never_across_tenants`,
+  `actions::the_decisions_of_a_schedule_are_not_seen_by_another_tenant…`, `business_id_lookup::the_binding_of_a_tenant_is_not_read_by_another…`),
+  and the with-start routes name no holder to a caller who may not read runs.
 - [ ] T018-071 Observability gates (label closure, OTel export canary, audit rollback, alert rules
   `SagatSchedulesLate`/`SagatBatchesStalled`, alert kinds, quota exhaustion per resource) —
   `infra/observability/alerts.yaml`, `crates/domain/src/operations.rs`,
