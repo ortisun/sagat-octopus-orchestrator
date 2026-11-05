@@ -20,6 +20,8 @@ the receipts are not written yet and arrive with the tasks that test them.
 - `sagat_lake/`: the host package (the version only, for now).
 - `smoke-image.sh <image>`: starts the image the way the sandbox runner does (no network, read-only root, no
   capabilities) and checks what the contract promises of it.
+- `tools/check_sbom.py <image.tar> <package>...`: reads the SPDX attestation BuildKit puts in an image exported as an
+  OCI archive and fails when it is missing or lacks a named package. A CI tool; it is not copied into the image.
 
 ## Invariants
 
@@ -47,6 +49,11 @@ runners/lake/smoke-image.sh sagat-lake-runtime
 # The SBOM: BuildKit's SPDX attestation of the build, with the scanner pinned by digest.
 docker buildx build -f runners/lake/Dockerfile --target lake-runtime --sbom=generator=docker/buildkit-syft-scanner:1@sha256:873a7458c3c8ac8e32c7b796c10e1600b07b963d2aa000a72a2d97aaaa2d6315 --output type=oci,dest=lake-runtime.oci.tar .
 ```
+
+CI (`.github/workflows/ci.yml`, job `lake-runtime`): the unit tests and the audit of the lock run when a file other than
+Markdown under `runners/lake/` changes; the types and lint, the image, `smoke-image.sh` and the SBOM check run for a
+release (Constitution 4.1.0). `.github/workflows/lake-audit.yml` audits the lock every week. A change under
+`runners/lake/` selects the lake suites (`iceberg-writes`), not every integration target.
 
 Regenerate a lock after changing its `.in` file, from `runners/lake`:
 

@@ -20,14 +20,16 @@ The rule is in the constitution (Development Workflow, CI gates) and is checked 
 - the unit tests of the workspace packages that contain a changed file (`cargo test -p <package>`), and every package when
   `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/`, `clippy.toml`, `rustfmt.toml` or `vendor/` changes;
 - the unit tests of an SDK when a file under `sdks/<language>/` changes, of the Studio when a file under `frontend/` changes,
-  and of the scripts when a file under `scripts/` changes;
+  and of the scripts when a file under `scripts/` changes; and of the lake runtime (Python, `runners/lake/`) with the
+  audit of its lock when a file other than Markdown under it changes;
 - the integration suites (the `sagat-tests` targets: integration, contract, fault, e2e and performance, which start
   PostgreSQL through Testcontainers) that touch the change: the suite whose directory holds a changed file (the deepest
   one, so `tests/contract/<feature>/rest/` does not select its parent) or whose `[[test]]` entry is new or changed; the
   suites whose own sources name an affected package, that is a changed package or one that depends on it; the browser
-  suites when `frontend/e2e` or `examples/` changes; the SDK suites when `sdks/<language>/conformance` changes; and every
-  suite when `tests/support`, `tests/fixtures`, `runners/`, a contract file under `specs/` or a dependency of
-  `tests/Cargo.toml` changes.
+  suites when `frontend/e2e` or `examples/` changes; the SDK suites when `sdks/<language>/conformance` changes; the lake
+  suites (`integration`, `fault`, `e2e` and `performance` of `iceberg-writes`) when `runners/lake/` changes; and every
+  suite when `tests/support`, `tests/fixtures`, any other `runners/` directory, a contract file under `specs/` or a
+  dependency of `tests/Cargo.toml` changes.
 
 Nothing else runs: no formatting, no `clippy`, no architecture, agent-configuration or design-doc check, no contract
 validation, no advisory audit, no upgrade, Compose smoke-test, scale or native-runner job. A change that touches only
@@ -36,7 +38,9 @@ Markdown, `docs/`, `tasks/`, `.claude/` or `infra/` runs no test at all.
 **A release** runs everything: every unit test and integration suite, formatting, `clippy`, the checks above, the contract
 and observability validation, the advisory audit, and the upgrade, Compose smoke-test, scale and native-runner jobs. A
 release is a push to `main`, `release/**` or `hotfix/**`, a tag `v*`, a pull request into one of those branches, a manual
-run (`workflow_dispatch`), a change of `.github/workflows`, or any run with no usable base commit.
+run (`workflow_dispatch`), a change of `.github/workflows`, or any run with no usable base commit. For the lake runtime
+that adds the types and lint, the image build, the smoke test of the image and its SBOM; its lock is also audited every
+week by `.github/workflows/lake-audit.yml`.
 
 What this costs, so it is not forgotten: a violation of a lint or of an architecture rule reaches `develop` and is found when
 a release is closed, and a suite that reaches the code only over HTTP, without naming its package, is not selected for a

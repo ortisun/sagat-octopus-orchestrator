@@ -34,6 +34,7 @@ jobs:
       sdks: ${{ steps.select.outputs.sdks }}
       frontend: ${{ steps.select.outputs.frontend }}
       scripts: ${{ steps.select.outputs.scripts }}
+      lake: ${{ steps.select.outputs.lake }}
       targets: ${{ steps.select.outputs.targets }}
       any: ${{ steps.select.outputs.any }}
     steps:
@@ -393,6 +394,56 @@ jobs:
         if: contains(format(' {0} ', needs.changes.outputs.targets), ' e2e_developer_experience ')
         run: |
           cargo test -p sagat-tests --test e2e_developer_experience --locked -- --ignored us03:: order_processing:: saga:: scripts::
+
+  # The Python runtime of the Iceberg write steps (feature 035, runners/lake): its unit tests and the audit of its lock
+  # follow a change under runners/lake; its lints, its image, the smoke test of the image and its SBOM are for a
+  # release. The lock is also audited every week by lake-audit.yml.
+  lake-runtime:
+    name: lake runtime (unit tests and audit; lints, image and SBOM for a release)
+    needs: changes
+    if: needs.changes.outputs.lake == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: dependencies from the lock
+        working-directory: runners/lake
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --require-hashes --no-deps -r requirements-dev.lock
+      - name: unit tests of the lake runtime
+        working-directory: runners/lake
+        run: .venv/bin/python -m pytest
+      - name: known vulnerabilities in the lock
+        working-directory: runners/lake
+        run: .venv/bin/pip-audit -r requirements.lock --require-hashes --disable-pip
+      - name: types and lint
+        if: needs.changes.outputs.full == 'true'
+        working-directory: runners/lake
+        run: |
+          .venv/bin/mypy
+          .venv/bin/ruff check .
+          .venv/bin/ruff format --check .
+      - name: image
+        if: needs.changes.outputs.full == 'true'
+        run: docker build -f runners/lake/Dockerfile --target lake-runtime -t sagat-lake-runtime .
+      - name: what the contract promises of the image
+        if: needs.changes.outputs.full == 'true'
+        run: bash runners/lake/smoke-image.sh sagat-lake-runtime
+      # Attestations need a BuildKit builder of the container driver; its image and the SBOM scanner are pinned.
+      - name: SBOM of the image
+        if: needs.changes.outputs.full == 'true'
+        run: |
+          docker buildx create --name lake-sbom --driver docker-container \
+            --driver-opt image=moby/buildkit:v0.34.0@sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c \
+            --use
+          docker buildx build --builder lake-sbom -f runners/lake/Dockerfile --target lake-runtime \
+            --sbom=generator=docker/buildkit-syft-scanner:1@sha256:873a7458c3c8ac8e32c7b796c10e1600b07b963d2aa000a72a2d97aaaa2d6315 \
+            --output type=oci,dest=lake-runtime.oci.tar .
+          python3 runners/lake/tools/check_sbom.py lake-runtime.oci.tar pyiceberg pyarrow s3fs gcsfs adlfs
 
   studio:
     name: studio (lint, types, unit tests, build, browser journeys)

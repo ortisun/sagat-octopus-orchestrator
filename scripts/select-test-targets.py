@@ -22,15 +22,18 @@ Scoped selection:
   integration   a `sagat-tests` target runs when (a) a file of its directory, or its [[test]] entry, changed;
                 (b) its own sources (not tests/support) name a package that is affected, that is a changed package
                 or one that depends on it, directly or not; (c) a harness it drives changed (frontend/e2e,
-                sdks/*/conformance, examples/); or (d) tests/support, tests/fixtures, runners/, a contract file
-                under specs/, or a dependency of tests/Cargo.toml changed, which selects every target.
+                sdks/*/conformance, examples/, runners/lake/ for the lake suites); or (d) tests/support,
+                tests/fixtures, runners/ (other than runners/lake/), a contract file under specs/, or a
+                dependency of tests/Cargo.toml changed, which selects every target.
   SDKs, Studio  an SDK's unit tests run when a file under sdks/<language>/ changed; the Studio's when a file under
-                frontend/ changed; the scripts' when a file under scripts/ changed.
+                frontend/ changed; the scripts' when a file under scripts/ changed; the lake runtime's (Python,
+                its lock and its image) when a file other than Markdown under runners/lake/ changed.
   nothing       Markdown, docs/, tasks/, .claude/, infra/ and the rest select no test.
 
 It prints the decision and appends it to $GITHUB_OUTPUT:
 
   full=true|false   crates=<package names|ALL>   sdks=<languages>   frontend=true|false   scripts=true|false
+  lake=true|false
   targets=<target names>   any=true|false   all=true|false
 
 Exit codes: 0 decision printed; 2 a manifest or a name cannot be trusted.
@@ -52,15 +55,20 @@ TESTS_PACKAGE = "sagat-tests"
 SDK_LANGUAGES = ("typescript", "python", "go", "dotnet", "java", "rust")
 BROWSER_SUITES = ("e2e_workflow_studio", "e2e_developer_experience", "e2e_database_connections")
 SDK_SUITES = ("sdk_conformance", "e2e_sdk_multilanguage", "fault_sdk_multilanguage")
+LAKE_SUITES = ("integration_iceberg_writes", "fault_iceberg_writes", "e2e_iceberg_writes", "perf_iceberg_writes")
 HARNESSES = (
     (re.compile(r"frontend/e2e/"), BROWSER_SUITES),
     (re.compile(r"sdks/[a-z]+/conformance/"), SDK_SUITES),
     (re.compile(r"examples/"), ("e2e_developer_experience",)),
+    # The lake runtime is driven by these suites; the contract suite reads the contract fragments, not the runtime.
+    (re.compile(r"runners/lake/"), LAKE_SUITES),
 )
 # Inputs of every Rust package: a change selects every package and every target.
 RUST_ROOT_INPUTS = re.compile(r"Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|clippy\.toml|rustfmt\.toml|\.cargo/.*|vendor/.*")
-# Inputs of the integration suites that cannot be tied to one of them: every target runs.
-SHARED_INPUTS = re.compile(r"runners/.*|specs/.*/contracts/.*")
+# Inputs of the integration suites that cannot be tied to one of them: every target runs. The lake runtime is not
+# one of them: it is tied to the lake suites (HARNESSES) and to its own job.
+SHARED_INPUTS = re.compile(r"runners/(?!lake/).*|specs/.*/contracts/.*")
+LAKE_RUNTIME = re.compile(r"runners/lake/.*")
 MARKDOWN = re.compile(r".*\.md")
 
 
@@ -183,7 +191,7 @@ class Decision:
     def __init__(self, targets):
         self.targets = targets
         self.full = False
-        self.crates, self.sdks, self.frontend, self.scripts = set(), set(), False, False
+        self.crates, self.sdks, self.frontend, self.scripts, self.lake = set(), set(), False, False, False
         self.chosen, self.everything, self.reasons = set(), False, []
 
     def run_everything(self, why):
@@ -232,6 +240,8 @@ def scope(root, base, head, targets, workspace):
             decision.frontend = True
         if rel.startswith("scripts/"):
             decision.scripts = True
+        if LAKE_RUNTIME.fullmatch(rel):
+            decision.lake = True
         for pattern, names in HARNESSES:
             if pattern.match(rel):
                 for name in names:
@@ -295,10 +305,11 @@ def full_run_reason(event, ref_name, ref_type, base_ref, base, root):
 def emit(decision):
     if decision.full:
         crates, sdks = "ALL", list(SDK_LANGUAGES)
-        frontend = scripts = True
+        frontend = scripts = lake = True
     else:
         crates = "ALL" if decision.everything else " ".join(sorted(decision.crates))
         sdks, frontend, scripts = sorted(decision.sdks), decision.frontend, decision.scripts
+        lake = decision.lake
     grouped = {}
     for name, why in decision.reasons:
         grouped.setdefault(name, []).append(why)
@@ -315,6 +326,7 @@ def emit(decision):
         f"sdks={' '.join(sdks)}",
         f"frontend={flag(frontend)}",
         f"scripts={flag(scripts)}",
+        f"lake={flag(lake)}",
         f"targets={' '.join(sorted(decision.chosen))}",
         f"any={flag(decision.chosen)}",
         f"all={flag(decision.everything)}",
