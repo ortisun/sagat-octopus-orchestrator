@@ -110,8 +110,20 @@ where
                 }
             }
             Action::Rerun => {
+                let business = if params.drop_business_id {
+                    RerunBusinessId::Drop
+                } else {
+                    RerunBusinessId::Keep
+                };
                 match self
-                    .rerun(request.principal, id, &reason, request.key, request.ctx)
+                    .rerun_with(
+                        request.principal,
+                        id,
+                        &reason,
+                        request.key,
+                        business,
+                        request.ctx,
+                    )
                     .await
                 {
                     Ok(started) => Ok(ItemEffect::Applied {

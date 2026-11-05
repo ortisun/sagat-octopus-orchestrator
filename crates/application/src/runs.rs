@@ -442,11 +442,23 @@ pub struct RerunSource {
     pub input: Vec<u8>,
 }
 
+/// What a rerun does with the business identifier of the run it repeats (`FR-018-040`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RerunBusinessId {
+    /// The new run is bound to the identifier, unless another open execution holds it
+    /// (`BUSINESS_ID_IN_USE`).
+    #[default]
+    Keep,
+    /// The new run starts without one.
+    Drop,
+}
+
 /// Why and from what a run is started again.
 #[derive(Debug, Clone, Copy)]
 pub struct Rerun<'a> {
     pub of: RunId,
     pub reason: &'a str,
+    pub business: RerunBusinessId,
 }
 
 /// What starting a run needs from the caller.
@@ -673,6 +685,25 @@ where
         key: &str,
         ctx: &RequestContext,
     ) -> Result<RunRecord, AppError> {
+        self.rerun_with(principal, id, reason, key, RerunBusinessId::Keep, ctx)
+            .await
+    }
+
+    /// As [`Self::rerun`], and says what becomes of the business identifier of the run
+    /// (`FR-018-040`): kept by default, or dropped.
+    ///
+    /// # Errors
+    /// Those of [`Self::rerun`]; [`AppError::BusinessIdConflict`] when the identifier is kept and
+    /// another open execution holds it.
+    pub async fn rerun_with(
+        &self,
+        principal: &Principal,
+        id: RunId,
+        reason: &str,
+        key: &str,
+        business: RerunBusinessId,
+        ctx: &RequestContext,
+    ) -> Result<RunRecord, AppError> {
         principal.authorize(Permission::RunOperate)?;
         principal.authorize(Permission::RunStart)?;
         let reason = reason.trim();
@@ -699,12 +730,30 @@ where
                     principal,
                     &original,
                     &source,
-                    Rerun { of: id, reason },
+                    Rerun {
+                        of: id,
+                        reason,
+                        business,
+                    },
                     key,
                     ctx,
                 )
                 .await;
         }
+        // The new run is bound to the identifier of the one it repeats, which has ended and so may be
+        // taken over, unless another open execution holds it by now: then the rerun is refused
+        // rather than started without the identifier it was asked to keep.
+        let options = match (&original.info.business_id, business) {
+            (Some(id), RerunBusinessId::Keep) => StartOptions {
+                business: Some(BusinessStart {
+                    id: id.clone(),
+                    conflict: ConflictPolicy::Fail,
+                    reuse: ReusePolicy::AllowDuplicate,
+                    window: ReuseWindow::default(),
+                }),
+            },
+            _ => StartOptions::default(),
+        };
         self.start_with(
             principal,
             &StartRun {
@@ -716,8 +765,12 @@ where
                 deadline: None,
                 key,
             },
-            StartOptions::default(),
-            Some(Rerun { of: id, reason }),
+            options,
+            Some(Rerun {
+                of: id,
+                reason,
+                business,
+            }),
             None,
             None,
             ctx,
@@ -752,9 +805,9 @@ where
                 "the correlation id is too long or has control characters",
             ));
         }
-        if options.business.is_some() && (rerun.is_some() || scheduled.is_some()) {
-            // a rerun keeps or drops the id of the run it repeats (T018-035), and a schedule's
-            // action never carries one: neither takes it from the caller
+        if options.business.is_some() && scheduled.is_some() {
+            // a schedule's action never carries an identifier (a rerun derives its own from the run
+            // it repeats, in `rerun_with`, never from the caller)
             return Err(AppError::InvalidStart {
                 reason: "BUSINESS_ID_NOT_APPLICABLE",
                 field: Some("/businessId".to_owned()),
@@ -914,6 +967,9 @@ where
                 &business.window.seconds().to_be_bytes(),
             ]));
         }
+        // A rerun that keeps the identifier carries it in `options` (above), so the same key under `DROP`
+        // is another request without a marker of its own; where the source has no identifier both
+        // choices are the same request.
         if let Some(blob_idempotency) = blob_idempotency {
             idempotency = blob_idempotency;
         }

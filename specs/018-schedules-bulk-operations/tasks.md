@@ -670,8 +670,13 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   no wildcards). Code is in `crates/application/src/runs.rs` (`StartOptions`, `start_with_options`) and
   `crates/api-http/src/routes/execution.rs`, not in the `runs/business_id.rs` and `dto.rs` this line names. OpenAPI,
   generated Studio types and `docs/reference/api.md` follow; `contract_schedules_bulk_operations` 3 passed (one is the
-  business-id contract on every answer), `integration` `business_ids_rest.rs` 6 passed. Not done: the lookup of a binding
-  and the rerun's `KEEP`/`DROP` of the identifier (G1969).
+  business-id contract on every answer), `integration` `business_ids_rest.rs` 6 passed.
+  *Update 2026-11-05 (rerun):* the rerun's `KEEP`/`DROP` (FR-018-040, D1966) is built: `RunService::rerun_with`, the
+  `businessId` of the operation request for `RERUN_AS_NEW` (422 for any other operation), the `dropBusinessId` of a batch
+  `RERUN` job, a held identifier failing the item as `CONFLICT`. `business_id_rerun.rs` 8 passed (seen failing first: 5 of
+  them, with the API stub that changed nothing), `business_ids_rest.rs` 9 passed (3 new over HTTP), 5 of 6 mutants killed and
+  the survivor, a fingerprint marker for `DROP`, removed because it distinguished nothing. Not done: the lookup of a
+  binding `GET .../business-ids/{id}` (G1969).
 - [ ] T018-036 [US3] 32-way race, policy table in/after window, terminal-commit race, chain continuity,
   key replay/reuse, harness vs signal paths — `tests/{integration,fault}/schedules-bulk-operations/business_ids.rs`
   — SC-018-006 — FR-018-018..021.
@@ -697,7 +702,8 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   are not the defaults are sent, the key changes with the identifier, and a `200` is announced as "already has an open run,
   nothing was started" (the client now tells a caller the status of a success); the run list filters by the start of an
   identifier (debounced, in the address, followed when the address changes by itself, cleared with the other filters) and
-  shows it on the row; the run header shows it as a fact. `npm test` 1342 passed (96 files), `npm run lint`, `typecheck`,
+  shows it on the row; the run header shows it as a fact; the rerun dialog of a run that has an identifier offers to keep it
+  (the default) or to start without it, and a held identifier is told in words with nothing to refresh. `npm test` 1346 passed (96 files), `npm run lint`, `typecheck`,
   `build` and `check:api` clean; 14 mutants of this code, 13 killed and the survivor (a trim that the dialog already did)
   removed. Not done: the delayed status, which needs the start delay of T018-037. `npm run typecheck --workspace @sagat/e2e`
   needs the TypeScript SDK built first (`sdks/typescript/conformance/prepare.sh`) and was not run here.

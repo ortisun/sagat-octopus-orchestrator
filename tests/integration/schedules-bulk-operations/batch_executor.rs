@@ -153,7 +153,7 @@ pub(crate) async fn select(exec: &Executor, job: &JobRecord) {
 }
 
 /// Steps the job until it has nothing more to do now; returns how many steps acted.
-async fn settle(exec: &Executor, job: &JobRecord) -> u32 {
+pub(crate) async fn settle(exec: &Executor, job: &JobRecord) -> u32 {
     let mut acted = 0;
     for _ in 0..200 {
         match exec.step(&due(job), None).await.expect("step") {

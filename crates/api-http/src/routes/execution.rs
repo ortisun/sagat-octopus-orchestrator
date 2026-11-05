@@ -19,7 +19,7 @@ use sagat_application::definitions::DiffRef;
 use sagat_application::error::AppError;
 use sagat_application::identity::{Page, PageRequest};
 use sagat_application::runs::{
-    GraphChanges, ReviewAction, RunFilter, RunOperation, StartOptions, StartRun,
+    GraphChanges, RerunBusinessId, ReviewAction, RunFilter, RunOperation, StartOptions, StartRun,
 };
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::execution::{
@@ -35,8 +35,8 @@ use crate::admission::{admit, namespace_slug};
 use crate::dto::PageBody;
 use crate::dto_exec::{
     CreateWorkflowBody, JournalEventBody, OperationBody, OperationResultBody, PublishBody,
-    PublishedBody, RunBody, SignalResultBody, StartRunBody, UpdateDraftBody, ValidateBody,
-    VersionBody, VersionSummary, WorkflowBody, compensation_plans_body, diff_body,
+    PublishedBody, RerunBusinessIdBody, RunBody, SignalResultBody, StartRunBody, UpdateDraftBody,
+    ValidateBody, VersionBody, VersionSummary, WorkflowBody, compensation_plans_body, diff_body,
     graph_changes_body, runtime_graph, validation_body,
 };
 use crate::error::ApiError;
@@ -1056,6 +1056,7 @@ pub async fn operate_run<B: Exec>(
             "the reason must be 8 to 2000 characters",
         ));
     }
+    let business = rerun_business(&body)?;
     let review = match body.action.as_str() {
         "RETRY_STEP" => Some(ReviewAction::Retry),
         "MARK_MANUAL_REVIEW" => Some(ReviewAction::Hold),
@@ -1096,7 +1097,7 @@ pub async fn operate_run<B: Exec>(
         "CANCEL" => RunOperation::Cancel,
         "PAUSE" => RunOperation::Pause,
         "RESUME" => RunOperation::Resume,
-        "RERUN_AS_NEW" => return rerun_run(&caller, &state, &headers, &id, &body).await,
+        "RERUN_AS_NEW" => return rerun_run(&caller, &state, &headers, &id, &body, business).await,
         _ => return Err(ApiError::validation("unknown operation")),
     };
     if body.step_id.is_some() || body.instance_path.is_some() {
@@ -1160,6 +1161,19 @@ fn validate_review_request(
     Ok(ExecutionInstanceId::in_path(path, node))
 }
 
+/// What a rerun does with the business identifier of the run it repeats (`businessId` of the
+/// request, `KEEP` when absent). Only a rerun has the choice.
+fn rerun_business(body: &OperationBody) -> Result<RerunBusinessId, ApiError> {
+    match body.business_id {
+        None => Ok(RerunBusinessId::Keep),
+        Some(_) if body.action != "RERUN_AS_NEW" => Err(ApiError::validation(
+            "businessId only goes with RERUN_AS_NEW",
+        )),
+        Some(RerunBusinessIdBody::Keep) => Ok(RerunBusinessId::Keep),
+        Some(RerunBusinessIdBody::Drop) => Ok(RerunBusinessId::Drop),
+    }
+}
+
 /// `RERUN_AS_NEW`: a run of the same version with the same input, from a run that ended.
 async fn rerun_run<B: Exec>(
     caller: &Caller,
@@ -1167,6 +1181,7 @@ async fn rerun_run<B: Exec>(
     headers: &HeaderMap,
     id: &str,
     body: &OperationBody,
+    business: RerunBusinessId,
 ) -> Result<(StatusCode, Json<OperationResultBody>), ApiError> {
     if body.step_id.is_some()
         || body.instance_path.is_some()
@@ -1193,14 +1208,16 @@ async fn rerun_run<B: Exec>(
     }
     let started = state
         .runs()
-        .rerun(
+        .rerun_with(
             &caller.session.principal,
             run_id,
             &body.reason,
             idempotency_key(headers)?,
+            business,
             &caller.ctx,
         )
-        .await?;
+        .await
+        .map_err(|error| holder_for_readers(error, caller))?;
     Ok((
         StatusCode::ACCEPTED,
         Json(OperationResultBody {

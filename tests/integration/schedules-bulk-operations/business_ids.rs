@@ -16,7 +16,7 @@ use uuid::Uuid;
 use crate::firing::{Fixture, fixture};
 use crate::support::engine::ctx;
 
-fn business(id: &str, conflict: ConflictPolicy, reuse: ReusePolicy) -> StartOptions {
+pub(crate) fn business(id: &str, conflict: ConflictPolicy, reuse: ReusePolicy) -> StartOptions {
     StartOptions {
         business: Some(BusinessStart {
             id: BusinessId::new(id).expect("an identifier"),
@@ -27,7 +27,11 @@ fn business(id: &str, conflict: ConflictPolicy, reuse: ReusePolicy) -> StartOpti
     }
 }
 
-async fn start(f: &Fixture, options: StartOptions, key: &str) -> Result<Started, AppError> {
+pub(crate) async fn start(
+    f: &Fixture,
+    options: StartOptions,
+    key: &str,
+) -> Result<Started, AppError> {
     f.w.runs
         .start_with_options(
             &f.w.admin,
@@ -46,11 +50,11 @@ async fn start(f: &Fixture, options: StartOptions, key: &str) -> Result<Started,
         .await
 }
 
-fn key() -> String {
+pub(crate) fn key() -> String {
     format!("business-{}", Uuid::now_v7())
 }
 
-async fn runs_of(f: &Fixture, id: &str) -> Vec<Uuid> {
+pub(crate) async fn runs_of(f: &Fixture, id: &str) -> Vec<Uuid> {
     sqlx::query_scalar("SELECT id FROM runs WHERE business_id = $1 ORDER BY id")
         .bind(id)
         .fetch_all(&f.w.db.pool)
@@ -58,7 +62,7 @@ async fn runs_of(f: &Fixture, id: &str) -> Vec<Uuid> {
         .expect("runs")
 }
 
-async fn holder_of(f: &Fixture, id: &str) -> Option<Uuid> {
+pub(crate) async fn holder_of(f: &Fixture, id: &str) -> Option<Uuid> {
     sqlx::query_scalar("SELECT execution_id FROM business_ids WHERE business_id = $1")
         .bind(id)
         .fetch_optional(&f.w.db.pool)
@@ -82,7 +86,7 @@ async fn succeed(f: &Fixture, run: RunId) {
 }
 
 /// Ends the run without success.
-async fn cancel(f: &Fixture, run: RunId) {
+pub(crate) async fn cancel(f: &Fixture, run: RunId) {
     f.w.operate_run(run, RunOperation::Cancel).await;
     assert!(f.w.run_status(run).await.is_terminal());
 }

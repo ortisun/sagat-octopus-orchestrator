@@ -300,6 +300,18 @@ pub struct OperationBody {
     /// graph.
     #[serde(default)]
     pub instance_path: Option<Vec<ScopeSegmentBody>>,
+    /// For `RERUN_AS_NEW`: `KEEP` (the default) binds the business identifier of the run to the new
+    /// one unless another open execution holds it, `DROP` starts the new run without one.
+    #[serde(default)]
+    pub business_id: Option<RerunBusinessIdBody>,
+}
+
+/// What a rerun does with the business identifier of the run it repeats.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum RerunBusinessIdBody {
+    Keep,
+    Drop,
 }
 
 /// One scope around a step: the collection or loop node and the iteration the step runs in

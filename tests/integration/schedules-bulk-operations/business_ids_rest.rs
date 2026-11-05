@@ -207,3 +207,113 @@ async fn runs_are_listed_by_identifier_and_by_the_start_of_one_and_a_prefix_has_
         assert_eq!(reason(&refused), "BUSINESS_ID_INVALID", "{query}");
     }
 }
+
+impl Rig {
+    /// Ends a run the way an operator does.
+    async fn cancel(&self, run: &str) {
+        let (status, body) = self
+            .p
+            .rest(
+                Method::POST,
+                &format!("/runs/{run}/operations"),
+                Some(&json!({"action": "CANCEL", "reason": "the customer changed their mind"})),
+            )
+            .await;
+        assert!(status == 200 || status == 202, "{status} {body}");
+    }
+
+    async fn rerun(&self, run: &str, extra: Value) -> (u16, Value) {
+        let mut body = json!({"action": "RERUN_AS_NEW", "reason": "start it again after the fix"});
+        for (key, value) in extra.as_object().expect("an object") {
+            body[key] = value.clone();
+        }
+        self.p
+            .rest(
+                Method::POST,
+                &format!("/runs/{run}/operations"),
+                Some(&body),
+            )
+            .await
+    }
+
+    async fn run(&self, id: &str) -> Value {
+        let (status, run) = self.p.rest(Method::GET, &format!("/runs/{id}"), None).await;
+        assert_eq!(status, 200, "{run}");
+        run
+    }
+}
+
+#[tokio::test]
+async fn a_rerun_keeps_the_identifier_unless_it_is_asked_to_drop_it() {
+    let r = rig().await;
+    let (_, first) = r.start(json!({"businessId": "rerun-http-1"})).await;
+    let first = first["runId"].as_str().expect("id").to_owned();
+    r.cancel(&first).await;
+
+    let (status, kept) = r.rerun(&first, json!({})).await;
+    assert_eq!(status, 202, "{kept}");
+    let kept_run = kept["newRunId"].as_str().expect("the new run").to_owned();
+    assert_eq!(r.run(&kept_run).await["businessId"], "rerun-http-1");
+    assert_eq!(
+        r.runs("businessId=rerun-http-1").await.len(),
+        2,
+        "the source and the rerun"
+    );
+
+    r.cancel(&kept_run).await;
+    let (status, explicit) = r.rerun(&first, json!({"businessId": "KEEP"})).await;
+    assert_eq!(status, 202, "{explicit}");
+    let (status, dropped) = r.rerun(&first, json!({"businessId": "DROP"})).await;
+    assert_eq!(status, 202, "{dropped}");
+    let dropped_run = dropped["newRunId"].as_str().expect("the new run");
+    assert!(
+        r.run(dropped_run).await.get("businessId").is_none(),
+        "a dropped identifier is not on the run"
+    );
+}
+
+#[tokio::test]
+async fn a_rerun_that_keeps_a_held_identifier_is_refused_naming_the_holder() {
+    let r = rig().await;
+    let (_, first) = r.start(json!({"businessId": "rerun-http-2"})).await;
+    let first = first["runId"].as_str().expect("id").to_owned();
+    r.cancel(&first).await;
+    let (_, holder) = r.start(json!({"businessId": "rerun-http-2"})).await;
+
+    let (status, refused) = r.rerun(&first, json!({})).await;
+    assert_eq!(status, 409, "{refused}");
+    assert_eq!(reason(&refused), "BUSINESS_ID_IN_USE");
+    assert_eq!(refused["details"]["runId"], holder["runId"]);
+    assert_eq!(r.runs("businessId=rerun-http-2").await.len(), 2);
+
+    let (status, dropped) = r.rerun(&first, json!({"businessId": "DROP"})).await;
+    assert_eq!(
+        status, 202,
+        "dropping needs nothing from the binding: {dropped}"
+    );
+}
+
+#[tokio::test]
+async fn the_identifier_choice_of_an_operation_is_checked() {
+    let r = rig().await;
+    let (_, first) = r.start(json!({"businessId": "rerun-http-3"})).await;
+    let first = first["runId"].as_str().expect("id").to_owned();
+    r.cancel(&first).await;
+
+    let (status, refused) = r.rerun(&first, json!({"businessId": "SOMETIMES"})).await;
+    assert_eq!(status, 422, "{refused}");
+    // it belongs to a rerun and to nothing else
+    let (status, refused) =
+        r.p.rest(
+            Method::POST,
+            &format!("/runs/{first}/operations"),
+            Some(&json!({
+                "action": "PAUSE",
+                "reason": "hold it while we look",
+                "businessId": "DROP"
+            })),
+        )
+        .await;
+    assert_eq!(status, 422, "{refused}");
+    assert_eq!(r.runs("businessId=rerun-http-3").await.len(), 1);
+}

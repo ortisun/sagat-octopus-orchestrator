@@ -115,8 +115,10 @@ fn error_code(error: &AppError) -> &'static str {
         | AppError::InvalidSchedule { .. }
         | AppError::InvalidBatch { .. }
         | AppError::InvalidDefinition(_)
+        | AppError::InvalidStart { .. }
         | AppError::InvalidScript(_) => "VALIDATION_FAILED",
         AppError::StateConflict(_)
+        | AppError::BusinessIdConflict { .. }
         | AppError::Conflict(_)
         | AppError::RevisionConflict { .. }
         | AppError::ScheduleConflict { .. }

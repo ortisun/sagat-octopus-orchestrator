@@ -507,8 +507,19 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
 - **D1965** (2026-11-05, T018-035) The identifier of a start is refused with `422 BUSINESS_ID_INVALID` and the place
   (`/businessId`, `/businessIdConflictPolicy`, `/businessIdReusePolicy`) when it is not 1 to 200 visible ASCII
   characters, when a policy comes without an identifier, or when it comes with `inputBlobRef`; a rerun and a schedule's
-  action take the identifier from the run they repeat (T018-035, not built) or never carry one
+  action take the identifier from the run they repeat (T018-035, built: D1966) or never carry one
   (`BUSINESS_ID_NOT_APPLICABLE`). A prefix filter is a literal (`LIKE` with `\`, `%`, `_` escaped).
+- **D1966** (2026-11-05, T018-035, `FR-018-040`) A rerun (`RERUN_AS_NEW` and a batch `RERUN`) chooses what becomes of the
+  identifier of the run it repeats. `KEEP` is the default and claims it for the new run with `FAIL` and `ALLOW_DUPLICATE`:
+  the source has ended, so it is a closed holder inside its window and is taken over, while another open execution that
+  holds it by now refuses the rerun with `409 BUSINESS_ID_IN_USE` (the holder named only to a caller with `run:read`), never
+  a rerun that quietly lacks the identifier. `DROP` starts without one and asks nothing of the binding, so it succeeds when
+  the identifier is held. The choice is part of the request a key stands for: `KEEP` extends the fingerprint with the
+  identifier the same way a start does (D1962) and `DROP` leaves it as it is, so the same key under the other choice is
+  `IDEMPOTENCY_KEY_REUSED` in either order (a marker for `DROP` was tried and its mutant survived: it distinguished nothing). `businessId` (`KEEP`/`DROP`) of the operation request is refused with `422` for any other
+  operation. In a batch job a held identifier fails the item with `CONFLICT` (it is for the operator to read and settle, not
+  a state the item skips), and the job's `businessId: DROP` is the `dropBusinessId` its parameters already carried. A
+  rerun of a private (ad hoc) run never has an identifier.
 - **D1955** (2026-11-04, T018-028) The actions of a schedule are purged by a bounded function, visiting schedules in
   turn. Nothing deleted them: an hourly schedule writes 8,700 rows a year and one every minute 525,000. FR-018-013
   keeps "at least the last 1,000 or 30 days": an action goes when it is older than 30 days **and** beyond the
@@ -567,7 +578,7 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
 | G1966 | The Studio's backfill dialog has no preview of how many times the range holds: no route counts them without starting the backfill, so it states the bound (1,000 times, an end that is not in the future) and shows the platform's refusal in words. | A preview is a read of the schedule's spec over a range, which the platform alone computes (the Studio computes no time); it needs a route (`previewScheduleBackfill`) with the contract, the reference and the types. | Open |
 | G1967 | The reuse window of an identifier is the default (30 days) for every namespace: `ReuseWindow::default()` is frozen into each binding and no setting changes it. FR-018-020 makes it namespace-configurable up to 366 days. | A namespace setting is a table or a column of its own (and a Studio form); the binding already freezes the window it was made under, so adding the setting changes nothing that exists. | Open |
 | G1968 | `business_ids_purge(p_rows)` removes the bindings whose holder closed and whose window passed, and nothing calls it yet: closed bindings stay until it does. They hold nothing (the claim reads the holder, not the row), so what they cost is rows and charged bytes. | The maintenance pass that runs the purge of schedule actions is the place; it needs a settings entry and a test of its own. | Open |
-| G1969 | The lookup of a binding (`FR-018-022`: holder, open, last status, reusable after) is not built, nor is the rerun's `KEEP`/`DROP` of the identifier. A start with the identifier of an open run is told who holds it only through the refusal. | Each is a route (or a field of the rerun) with its contract, reference, types, battery entry and Studio use: a slice of its own. | Open |
+| G1969 | The lookup of a binding (`FR-018-022`: holder, open, last status, reusable after) is not built (the rerun's `KEEP`/`DROP` is, D1966). A start with the identifier of an open run is told who holds it only through the refusal. | It is a route with its contract, reference, types, battery entry and Studio use: a slice of its own. | Open |
 | G1970 | The plain `continue_as_new` of the chain store (the prepared handoff, used by tests; production uses `continue_evaluated`) copies the identifier to the successor too, and no test of it checks that. | Its callers are the unit tests of the continuation and the prepared-handoff integration test; the production path is under `a_chain_holds_the_identifier_until_it_ends_and_every_segment_carries_it` and a mutation that drops the copy fails it. | Open |
 | G1971 | The privacy check covers logs at every level, metrics, error texts and every table; the spans exported over OTLP are not searched. The code adds no span attribute and `BusinessId`'s `Debug` hides the text, so a span field would show `BusinessId(..)`. | A real OTLP export canary (SC-018-014) belongs with the observability gates of T018-071. | Open |
 | G1952 | A backfill step that the admission refuses (a full quota, no published version) waits and is tried again on every round of the pass, with no backoff, unlike a scheduled time (D1952). | A round is one poll of the database per owned shard and the step is one rolled-back transaction; harmless at the default poll but wasteful. Fix with a `retry_at` on the backfill (a migration). | Open |
