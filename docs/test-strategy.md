@@ -48,6 +48,12 @@ change to that package. Run the lints and the suites you affect before the pull 
 repository: a change to a leaf package (`infra-egress`) selects 12 of the 83 suites, a change to `domain` selects 76,
 because almost everything depends on it. A coverage map from test to file would select exactly; it is not built.
 
+Measured on GitHub's runners on 2026-11-05, with two throwaway pull requests against `develop`: a change to one Markdown
+file ran the selection job (8 s) and skipped every other job; a comment added to `infra-egress` ran only the `rust` job,
+which took 28 min 51 s (the unit tests of that package and the 12 suites above), against 1 h 30 min for the same job in a
+release, with every other job skipped. The first run of the release rule, the merge of the change that introduced it, ran
+all 13 jobs green because it changed `.github/workflows`.
+
 ## Where the tests live and what they are called
 
 `tests/<kind>/<feature>/` with `<kind>` one of `e2e`, `integration`, `contract`, `fault` and `performance`, and `<feature>` the

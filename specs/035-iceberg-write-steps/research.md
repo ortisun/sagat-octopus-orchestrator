@@ -630,16 +630,46 @@ The other fixes were wording:
     removed).
   - *Errors.* Each code of the table in errors.md is an entry of `sdks/error-catalog.json` with the table's retry flag
     (D035-042); that needs a typed constant in each of the six SDKs, whose own tests require one per code, so it is
-    T035-024's work and not the contract merge's: the entries are drafted in `contracts/error-catalog.fragment.json`,
-    checked against the table now, and the case that reads the catalog is `#[ignore]`d with that reason until
-    T035-024. Each refusal reason (the `VALIDATION_FAILED` reasons, `UNSUPPORTED_NODE`, `CREDENTIAL_IN_URI`) is written
+    T035-024's work and not the contract merge's (done on 2026-11-05: the 25 entries are in the catalog and every SDK
+    has its constants). Each refusal reason (the `VALIDATION_FAILED` reasons, `UNSUPPORTED_NODE`, `CREDENTIAL_IN_URI`) is written
     in the OpenAPI `Error` schema, where the reasons of the existing codes are; a reason refines a code and is not a
     new `Error.code`. The existing step failure codes of 017 (`DATABASE_*`) are not in the catalog today, so the table's
     `OUTCOME_UNKNOWN` joins it with the new ones; T035-024 chooses the entry shape.
   - *Placement.* The loop and `chainPolicy` refusals of `database` are made by the publication codec, not by the JSON
     Schema, so the schema cases cover the root-only rule (a body refuses `icebergWrite` and `destinations`) and the
     codec rules stay with the domain tests (T035-009..).
-- **G035-027 — Three places where the contract fragments do not yet fit the canonical shapes.** Found while writing
+- **D035-074 — Who may set the `pii` egress ceiling, and where that is checked.** FR-035-005 says only a holder of
+  the reveal grant of the namespace. Decided by: delegate (found by an independent review of PR #95: the domain rule
+  existed with no caller, so nothing enforced it).
+  - *Where.* In `write_connection`, in the transaction that writes the revision, by
+    `has_effective_payload_reveal_grant` (the function disclosure uses: the current membership role still reads
+    internal values, and the grant set is held shared until commit), so a revocation cannot commit between the check
+    and the write. The rule itself is `ConnectionConfig::authorize_egress_ceiling`; the store calls it.
+  - *Which writes.* Only a write that leaves the connection `ACTIVE` at `pii`. A write that pauses or deletes carries
+    the ceiling the connection already had and needs nothing: otherwise revoking a grant would leave a `pii`
+    connection that nobody can pause or remove. Un-pausing is an active write, so it is checked. A retry of a write
+    that was accepted is answered from its receipt, before the check, like every other check of this write.
+  - *Refusal.* `StoreError::RevealGrantRequired`, which the application layer turns into `Forbidden` naming
+    `payload:reveal-pii` (403), as disclosure refuses. It is not 404 (the actor does manage connections, so nothing
+    is hidden) and not 409 (the state of the resource is not the cause).
+  - *Reach.* Only the store and the service can set a ceiling today; the REST body still refuses the field
+    (G035-027 item 7), so the grant check is reached through the application service until the connections work of
+    US01 opens the field.
+  - *Evidence.* `egress_ceiling_needs_the_reveal_grant` (integration_database_connections, real PostgreSQL): seen
+    failing first, with the store accepting a `pii` write by an admin who held no grant (`main.rs:703`, revision 1
+    stored at `pii`). After the fix `integration_database_connections` passes 7 of 7, and 7 of 7 with
+    `SAGAT_TEST_AS_RUNTIME_ROLE=1`. One mutation, the check applied to a write that pauses or deletes too, fails the
+    scenario at the pause that follows the revocation (`main.rs:797`); it was restored. The REST body still refusing the
+    field and the response not carrying it are pinned by two unit tests in `dto_database.rs` (each failed under its
+    own mutation), and the stored shape of a revision written before the feature by a golden in `infra-postgres`.
+- **D035-075 — Every catalog browse is one audit row.** `contracts/connections.md` says every browse is audited. The
+  first version of `AuditAction::DatabaseCatalogBrowsed` collapsed repeats like the denial actions do, which would have
+  hidden how much of a catalog someone walked. None of the three actions of the lake (`database.catalog_browsed`,
+  `destination.decided`, `iceberg.revert_requested`) collapses; the volume of browse rows is bounded by the browse limit
+  of the API (30 a minute for an actor, D035-066), not by a dedupe. Decided by: delegate (found by an independent
+  review of PR #95). Evidence: `the_audit_actions_of_the_lake_have_stable_names_and_none_collapses_repeats`
+  (domain, `tests/audit.rs`).
+- **G035-027 — Places where the contract fragments do not yet fit the canonical shapes or the code.** Found while writing
   the contract tests; none is pinned by a test yet, each is settled by the task that implements it.
   1. `connections.md` names `ConnectionProbeResult.checks[]`, but the canonical OpenAPI has no such schema: the probe
      returns a `Run` and `DatabaseConnectionProbe` is the latest-probe read. The schema to extend is chosen with the
@@ -659,4 +689,11 @@ The other fixes were wording:
      keeps the 170 existing operations byte-identical.
   6. The Studio lists a lake connection by its driver and offers neither the PostgreSQL form nor a probe for it, because
      `DatabaseConnection.config` is now a union; the kind-specific forms are the Studio tasks of the feature.
+  7. The OpenAPI allows `egressCeiling` on a PostgreSQL connection, but the REST body (`ConfigBody`,
+     `deny_unknown_fields`) still refuses it and the response does not carry it: the domain and the store hold it
+     (T035-022), the endpoint that sets it with the reveal-grant check is the connections work of US01 (T035-038..).
+     Until then a connection written through the API is always `internal`, which is what the response says by omission.
+  8. `DatabaseFailure::retryable()` (the retry flag of the table of failure codes) has no production reader yet; the
+     pin tests keep it equal to `contracts/errors.md`, and the retry decision of the lake and destination steps is
+     the first reader (the lake driver and destination tasks, which map a step failure to a retry).
   *Exit condition:* each is closed by the task that implements the operation, with a test.

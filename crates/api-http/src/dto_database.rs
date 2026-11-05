@@ -109,6 +109,9 @@ impl From<&ConnectionConfig> for ConfigBody {
             tls,
             secret,
             limits,
+            // The API does not carry the egress ceiling yet (feature 035, US01): the request body refuses it, so a
+            // connection written through the API is always `internal`, which a response without it also says.
+            egress_ceiling: _,
         } = v;
         let tls = match tls {
             TlsPolicy::VerifyFull { ca_pem } => TlsBody::VerifyFull {
@@ -206,4 +209,56 @@ pub struct DatabaseDriverBody {
 #[derive(Serialize)]
 pub struct DatabaseDriverListBody {
     pub items: [DatabaseDriverBody; 1],
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+    use sagat_domain::classification::EgressCeiling;
+    use serde_json::json;
+
+    fn body() -> serde_json::Value {
+        json!({
+            "driver": "postgresql", "host": "db.example.com", "port": 5432, "database": "orders",
+            "tls": {"mode": "verify-full"}, "secretName": "orders-access"
+        })
+    }
+
+    /// G035-027 item 7: the store holds the ceiling, the endpoint that sets it is the connections work of US01. Until
+    /// then a request that names it is refused and not silently stored as `internal`.
+    #[test]
+    fn a_request_that_names_the_egress_ceiling_is_refused() {
+        assert!(serde_json::from_value::<ConfigBody>(body()).is_ok());
+        for ceiling in ["public", "internal", "pii"] {
+            let mut with_ceiling = body();
+            with_ceiling["egressCeiling"] = json!(ceiling);
+            assert!(
+                serde_json::from_value::<ConfigBody>(with_ceiling).is_err(),
+                "{ceiling}"
+            );
+        }
+    }
+
+    /// The response says nothing about the ceiling, so what a connection with a `pii` ceiling returns is what one with the
+    /// default returns, and the field cannot leak through the response before the contract carries it.
+    #[test]
+    fn the_response_does_not_carry_the_egress_ceiling() {
+        let config = ConnectionConfig::postgres(
+            "db.example.com",
+            5432,
+            "orders",
+            TlsPolicy::VerifyFull { ca_pem: None },
+            SecretName::parse("orders-access").expect("a secret name"),
+            DatabaseLimits::default(),
+        )
+        .expect("a valid connection");
+        let default = serde_json::to_value(ConfigBody::from(&config)).expect("serializes");
+        let pii = serde_json::to_value(ConfigBody::from(
+            &config.with_egress_ceiling(EgressCeiling::Pii),
+        ))
+        .expect("serializes");
+        assert_eq!(default, pii);
+        assert!(default.get("egressCeiling").is_none());
+    }
 }
