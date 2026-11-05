@@ -68,46 +68,12 @@ fn refusal_reasons() -> Vec<String> {
     reasons
 }
 
-/// Pending, on purpose (AGENTS.md rule 11). Adding a code to `sdks/error-catalog.json` also needs a typed constant in
-/// each of the six SDKs, which their own tests require; that is T035-024 ("the catalog entries … and every per-SDK
-/// copy"), not the contract merge of T035-008. The entries are drafted in `contracts/error-catalog.fragment.json`
-/// and kept honest by the next case. Remove the `ignore` in T035-024.
+/// Every code of the table is an entry of the SDK error catalog, with the retry flag of the table and the shape of a
+/// step failure: of the worker origin, no HTTP status, a gRPC class the entries use, and a remediation that is a
+/// sentence without a value in it. A code in the catalog also needs a typed constant in each of the six SDKs, whose own
+/// tests require one (T035-024, D035-073).
 #[test]
-#[ignore = "pending T035-024: the codes join the SDK catalog together with the constants of the six SDKs"]
 fn every_failure_code_is_in_the_sdk_error_catalog_with_the_retry_flag_of_the_table() {
-    let catalog = read_json(&repository_root().join("sdks/error-catalog.json"));
-    let entries: BTreeMap<&str, &Value> = catalog["errors"]
-        .as_array()
-        .expect("the catalog lists errors")
-        .iter()
-        .map(|entry| (entry["code"].as_str().expect("a code"), entry))
-        .collect();
-
-    let mut problems = Vec::new();
-    for (code, retryable) in table_codes() {
-        match entries.get(code.as_str()) {
-            None => problems.push(format!("{code}: not in the catalog")),
-            Some(entry) => {
-                if let Some(expected) = retryable
-                    && entry["retryable"] != expected
-                {
-                    problems.push(format!("{code}: retryable should be {expected}"));
-                }
-            }
-        }
-    }
-    assert!(
-        problems.is_empty(),
-        "{} problem(s):\n{}",
-        problems.len(),
-        problems.join("\n")
-    );
-}
-
-/// The drafted catalog entries: one per code of the table, with its retry flag, in the shape of the entries that
-/// are in the catalog. T035-024 merges them with the constants of the six SDKs.
-#[test]
-fn the_drafted_catalog_entries_cover_every_code_of_the_table_with_its_retry_flag() {
     const GRPC: [&str; 9] = [
         "NOT_FOUND",
         "FAILED_PRECONDITION",
@@ -119,28 +85,22 @@ fn the_drafted_catalog_entries_cover_every_code_of_the_table_with_its_retry_flag
         "ALREADY_EXISTS",
         "INTERNAL",
     ];
-    let fragment = read_json(&fragments().join("error-catalog.fragment.json"));
-    let entries: BTreeMap<&str, &Value> = fragment["errors"]
+    let catalog = read_json(&repository_root().join("sdks/error-catalog.json"));
+    let entries: BTreeMap<&str, &Value> = catalog["errors"]
         .as_array()
-        .expect("the fragment lists errors")
+        .expect("the catalog lists errors")
         .iter()
         .map(|entry| (entry["code"].as_str().expect("a code"), entry))
         .collect();
 
-    let table = table_codes();
-    assert_eq!(
-        entries.keys().copied().collect::<Vec<_>>().len(),
-        table.len(),
-        "one entry per code, none twice"
-    );
     let mut problems = Vec::new();
-    for (code, retryable) in &table {
+    for (code, retryable) in table_codes() {
         let Some(entry) = entries.get(code.as_str()) else {
-            problems.push(format!("{code}: no drafted entry"));
+            problems.push(format!("{code}: not in the catalog"));
             continue;
         };
         if let Some(expected) = retryable
-            && entry["retryable"] != *expected
+            && entry["retryable"] != expected
         {
             problems.push(format!("{code}: retryable should be {expected}"));
         }
@@ -162,7 +122,12 @@ fn the_drafted_catalog_entries_cover_every_code_of_the_table_with_its_retry_flag
             ));
         }
     }
-    assert!(problems.is_empty(), "{}", problems.join("\n"));
+    assert!(
+        problems.is_empty(),
+        "{} problem(s):\n{}",
+        problems.len(),
+        problems.join("\n")
+    );
 }
 
 #[test]

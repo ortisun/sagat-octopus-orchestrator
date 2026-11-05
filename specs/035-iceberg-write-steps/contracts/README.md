@@ -10,7 +10,6 @@ contract it extends, in the same delivery as the code (constitution, same-delive
 | [worker-protocol.md](worker-protocol.md) | worker gRPC protocol | `specs/001-platform-foundation/contracts/worker.proto` |
 | [receipts.schema.json](receipts.schema.json) | step outputs | the workflow IR's output schemas and SDK types |
 | [errors.md](errors.md) | failure and error codes | `DatabaseFailure`, OpenAPI `Error.code`, `sdks/error-catalog.json` |
-| [error-catalog.fragment.json](error-catalog.fragment.json) | the step failure codes as catalog entries | `sdks/error-catalog.json` and a constant in each SDK (T035-024) |
 | [lake-runtime.md](lake-runtime.md) | runner ↔ Python host | `runners/lake/` (internal protocol `sagat.lake.v1`) |
 | [destinations.md](destinations.md) | per-kind write semantics | `crates/infra-database`, `runners/lake/`, ADR-0025 pipeline |
 

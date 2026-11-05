@@ -224,10 +224,9 @@ contracts, so every later task has a place to put its failing test.
   fragment accepts the sample nodes and refuses the edited ones), body placement, the 170 existing operations and the
   28 messages and enums. Four mutations of the contracts (`unevaluatedProperties`, the ceilings of 8, an operation's
   summary, a field number) each failed the guard that owns them, and the files were restored.
-  **Now:** `cargo test -p sagat-tests --test contract_iceberg_writes --locked` is 21 passed, 0 failed, 1 ignored. The
-  ignored case reads the SDK error catalog and is pending T035-024 by D035-073: a code in the catalog also needs a
-  typed constant in each of the six SDKs. Its 25 entries are drafted in `contracts/error-catalog.fragment.json` and
-  a case that runs checks them against errors.md. A first version of `proto.rs` carried a second baseline of the
+  **Now:** `cargo test -p sagat-tests --test contract_iceberg_writes --locked` is 21 passed, 0 failed, 0 ignored. The
+  case that reads the SDK error catalog waited for T035-024 (D035-073), which added the 25 entries and a typed constant
+  in each SDK on 2026-11-05. A first version of `proto.rs` carried a second baseline of the
   protocol; it duplicated `crates/api-grpc/tests/compatibility.rs` and was removed. `cargo clippy --workspace
   --all-targets --locked -- -D warnings` clean.
 - [x] T035-008 Merge the fragments into the canonical contracts, then regenerate the derived files.
@@ -330,9 +329,15 @@ three conditions pass.
   `the_audit_actions_of_the_lake_have_stable_names_and_the_decided_repeat_semantics` (a browse collapses repeats for
   five minutes like the other reads; a decision and a revert request never collapse). They did not compile before
   the variants existed; now `cargo test -p sagat-domain --test identity --test audit`: 32 and 11 passed.
-- [ ] T035-012 [P] Write the failing pin test in `crates/domain/src/database/failure.rs`: the full set
+- [x] T035-012 [P] Write the failing pin test in `crates/domain/src/database/failure.rs`: the full set
   of contracts/errors.md codes, each with its retryable flag, is identical in `code()` and in
   `parse()`, so no code can be added to one list only. Refs: FR-035-029, D035-042.
+
+  *2026-11-05, done:* 5 cases in `failure.rs`; they read the table of `contracts/errors.md` itself, so a documented
+  code that is unknown to `DatabaseFailure`, a known code the document does not list (outside the 017 codes), a
+  retry flag that differs, a code listed twice, or a code `parse` and `code()` disagree on, each fails. They did not
+  compile before `DatabaseFailure::ALL` and `retryable()`. Three mutations (a flag flipped, a documented row removed,
+  an undocumented row added) each failed the case that owns it.
 - [ ] T035-013 [P] Write the failing migration tests in `tests/integration/iceberg-writes/migration.rs`:
   - the up migration applies on the develop schema;
   - existing rows read unchanged: `purpose = RUN_EVENTS`, binding profile `database`, ceiling
@@ -435,6 +440,20 @@ three conditions pass.
   `crates/api-http/src/error.rs`, and the catalog entries to `sdks/error-catalog.json` and every
   per-SDK copy (Go, .NET, Java and the others its equality test names). T035-012 and the copy-equality
   tests pass. Refs: FR-035-029, D035-042.
+
+  *2026-11-05, partly done, left unticked:* `DatabaseFailure` is one table (macro) that builds the enum, `ALL`,
+  `code()`, `parse()` and `retryable()`: the 24 new codes join the 18 of feature 017, whose flags stay `false` as
+  the runner reports them today. The 25 entries of the table (the 24 and `OUTCOME_UNKNOWN`) are in
+  `sdks/error-catalog.json` (origin `worker`, no HTTP status, a gRPC class, the table's retry flag, one remediation
+  sentence each), with a typed constant in Go, Python, TypeScript, Java and .NET (Rust reads the catalog by name) and the
+  copies synced; `sdks/SPEC.md` and `sdks/README.md` say so. The SDK tests failed first ("the catalog has 44 codes and
+  the SDK 19 constants"), then: Go `go test -race`, vet, gofmt; Python 264 tests, mypy, ruff; TypeScript 131; Java
+  `./mvnw -q verify`; .NET 450 tests and `dotnet format`; Rust fmt, clippy and tests; `contract_iceberg_writes` 21
+  passed with the catalog case no longer ignored; workspace clippy clean; the connection integration suite passes.
+  Not done: the publication refusal reasons of `crates/api-http/src/error.rs` (`ICEBERG_NODE_NOT_ROOT`,
+  `MODE_NOT_ALLOWED`, ...). They are `details.reason` values raised by the publication checks, which do not exist yet
+  (T035-093 and the US01 tasks); each is added with the check that raises it, so none is dead code. The CLI help and the
+  error quickstart cover definition problems and do not list run-step failure codes (the 017 ones are not there either).
 - [ ] T035-025 Write `crates/infra-postgres/migrations/20270115000000_lake_destinations.{up,down}.sql`
   with the `/migration` checklist, covering data-model.md §3:
   - `steps.kind` accepts `DESTINATION`;
