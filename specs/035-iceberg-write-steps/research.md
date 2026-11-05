@@ -669,6 +669,71 @@ The other fixes were wording:
   of the API (30 a minute for an actor, D035-066), not by a dedupe. Decided by: delegate (found by an independent
   review of PR #95). Evidence: `the_audit_actions_of_the_lake_have_stable_names_and_none_collapses_repeats`
   (domain, `tests/audit.rs`).
+- **D035-076 — Configuration hygiene: where the hostile catalog lives, and what the filter accepts.** T035-018 and
+  T035-033, amended here and not reinterpreted in silence (specs/AGENTS.md). Decided by: delegate.
+  - *Placement.* The hostile catalog is `runners/lake/tests/hostile_catalog.py`, not `tests/fixtures/lake/hostile-catalog/`
+    as the task says. `scripts/select-test-targets.py` treats a file under `tests/` that no target owns as shared by
+    the suites, so a fixture there would turn a change to the lake runtime into a run of every target (Constitution
+    4.1.0, CI gates). Next to the runtime it stays inside the lake gate, and the Rust canaries of T035-031 start it from
+    there. It serves over real HTTP on the loopback, so a test parses the JSON a client receives.
+  - *Allowlist.* From `/v1/config`: `warehouse` and `prefix` only, the overrides over the defaults. From
+    `LoadTable.config`: the vended credential keys of the declared storage type, and only when the connection declares
+    vended credentials (S3: access key, secret key, session token; GCS: token and its expiry; ADLS: `adls.sas-token`,
+    the other forms arrive with their tests in the phase of every storage type), plus the three signer keys when remote
+    signing is declared on S3. A region, an endpoint, a role, a proxy and `py-io-impl` are never accepted. A value that
+    is not a string is dropped under any key.
+  - *Pin and environment.* `py-io-impl` is the first FileIO PyIceberg itself prefers for the scheme (PyArrow for S3 and
+    GCS, fsspec for ADLS), set by the host over whatever the catalog or the connection says. The environment is an
+    allowlist (`PATH`, locale, `TZ`, `TMPDIR`, three Python switches) plus `AWS_EC2_METADATA_DISABLED=true` and
+    `/dev/null` for the AWS config files, not a list of variables to remove. A missing credential is
+    `DATABASE_CREDENTIAL_UNAVAILABLE`, the code `errors.md` reuses from 017.
+  - *Locations.* The table location, the metadata file, the table properties that move the data
+    (`write.data.path`, `write.metadata.path`, `write.folder-storage.path`, `write.object-storage.path`), the manifest
+    lists, the metadata log and the statistics files must all lie under a declared prefix, compared at a path boundary
+    (`s3://lake/warehouse-evil/` is not under `s3://lake/warehouse/`). A path with a `.` or `..` segment, an encoded dot,
+    slash or NUL, a backslash, a control character, a query or a fragment is refused, and so is a response that does not
+    show where its files are. The error carries `ICEBERG_LOCATION_NOT_ALLOWED` and no location.
+  - *Evidence.* `pytest` in `runners/lake`: 93 cases in `test_config_hygiene.py`, 151 in the whole suite, with ruff,
+    `ruff format --check` and `mypy` (strict) clean. Written first and seen failing (no module). 21 mutations of the
+    module were applied one at a time: an extra accepted key, every `LoadTable` key accepted, a vended region, the
+    catalog replacing the pin, undeclared signing, an unclosed prefix, dot segments, encoded separators, an unclosed
+    location, the data-path properties, the manifest lists, a whole environment, missing credentials not failing, no
+    scheme check, an uncounted denial, an unchecked catalog prefix, an unchecked ADLS authority, an unbounded warehouse
+    value, undeclared vended credentials, user info in an S3 prefix, an unconfined warehouse. Two survived the first
+    tests (the ADLS authority and the length of a warehouse value); each has a test now and none survives.
+- **D035-077 — What the `sagat.lake.v1` codec accepts, and what it leaves to later tasks.** T035-017 and T035-032 (the
+  Rust half). Decided by: delegate.
+  - *Heartbeats.* The contract says at most one a second. The runner measures when a line arrived, and a socket
+    delivers late lines in a burst, so a window of one second holds two lines (the one on time and one of slack) and a
+    third is a flood (`HeartbeatFlood`). The time comes in as an argument, so no test sleeps.
+  - *One result.* A second result, or any line after the result, is `LineAfterResult`; a host that closes without one is
+    `NoResult`; a line over 1 MiB is `LineTooLong`. The attempt driver reads the socket a line at a time under that bound.
+  - *The result line.* Exactly `{"receipt": …, "relayDenials": n}` or `{"failure": …, "relayDenials": n}`; any other set of
+    members is `UnknownMember`, and a count that is not an integer from 0 to 2^32-1 is `Malformed`. Every
+    `ProtocolFailure` is `LAKE_HOST_PROTOCOL` and carries a closed kind, never content of the line.
+  - *Receipts.* Only the two kinds a host produces are read: `iceberg` and `object_storage`. The PostgreSQL, ClickHouse,
+    broker and `failed` receipts are written by the runner, so a host that sends one is refused. Every field is a type
+    that accepts only what `receipts.schema.json` names (a count is a canonical decimal string, a hash is 64 lowercase hex
+    digits), a field outside the schema is refused, and the receipt is built again from the typed fields. Two typed
+    fields are stricter than the schema on purpose: a snapshot id is a canonical signed 64-bit integer (the schema
+    allows 20 digits), and an effect key and a ref have no control character.
+  - *Failures.* The code must be one of `DatabaseFailure::ALL`. `column` is 1 to 128 characters with no control
+    character, and `reason` is 1 to 48 characters of `A-Z`, `0-9` and `_`: a closed charset and not a closed set, because
+    the reasons of each code arrive with the check that raises it (`ICEBERG_UNSUPPORTED_TABLE` names none today).
+  - *The request.* The envelope (`protocol`, `operation`, `effectKey`, `firstAttemptStartedAt`, `relay`) is typed and a body
+    cannot override it. The body of each operation (the pinned connection with its credentials, the table, the mode, the
+    limits) is an open map for now: its typed builder comes with the task that adds the operation (US01 and US02), and
+    the Iceberg connection model does not exist yet. That is a pending decision and not a design. The token and the body
+    are never shown by `Debug`.
+  - *Standard error.* Reduced to a closed `ExceptionClass` and a line count; the text is not kept. The class is the last
+    line's name when it is a CamelCase identifier, so a line that is only a secret classifies as none.
+  - *Not done.* The probe and browse results (`receipts.schema.json` has no shape for them; they arrive with their
+    tasks), the Python host, and the reader that applies the line bound to the socket.
+  - *Evidence.* `cargo test -p sagat-infra-lake --locked`: 31 passed; clippy `-D warnings` and `cargo fmt --check` clean;
+    the architecture check sees the new crate in the adapter layer. Written first and seen failing (unresolved
+    imports). 25 mutations of the codec were applied one at a time and all are caught; the first run let one survive
+    (an object-storage receipt that accepts unknown fields: the test only tried the Iceberg receipt) and a test now
+    covers both kinds.
 - **G035-027 — Places where the contract fragments do not yet fit the canonical shapes or the code.** Found while writing
   the contract tests; none is pinned by a test yet, each is settled by the task that implements it.
   1. `connections.md` names `ConnectionProbeResult.checks[]`, but the canonical OpenAPI has no such schema: the probe
@@ -697,3 +762,11 @@ The other fixes were wording:
      pin tests keep it equal to `contracts/errors.md`, and the retry decision of the lake and destination steps is
      the first reader (the lake driver and destination tasks, which map a step failure to a retry).
   *Exit condition:* each is closed by the task that implements the operation, with a test.
+- **G035-028 — Where the host reports its configuration denials.** `Hygiene.denied` counts what the filter refused by a
+  closed kind (`key_not_allowed`, `location_not_allowed`, `credential_missing`), but the result line of `sagat.lake.v1`
+  has one count, `relayDenials`, which is the relay's, and an extra field is `LAKE_HOST_PROTOCOL`. So nothing carries the
+  host's count to the runner's audit and metrics yet. Pending decision, taken with the codec (T035-032): add a typed
+  `hygieneDenials` object to the result line (a change to `lake-runtime.md` and to the codec tests), or fold the count
+  into `relayDenials` and lose the kind. A location or credential denial already fails the attempt with its code; the
+  dropped keys are the part that would be invisible. *Exit condition:* T035-032 decides and a test shows the count
+  reaching the audit.

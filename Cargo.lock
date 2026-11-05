@@ -5931,6 +5931,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sagat-infra-lake"
+version = "0.2.0"
+dependencies = [
+ "jsonschema",
+ "sagat-domain",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "sagat-infra-nats"
 version = "0.2.0"
 dependencies = [

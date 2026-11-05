@@ -376,7 +376,14 @@ three conditions pass.
   - never terminates TLS.
 
   Refs: FR-035-004, D035-049, D035-061.
-- [ ] T035-017 [P] Write the failing `sagat.lake.v1` codec tests in `crates/infra-lake/tests/protocol.rs`:
+
+  *2026-11-05, the `network.rs` part is done, the task is left unticked:* `fd00:ec2::254` (AWS) and `fd20:ce::254` (Google
+  Compute Engine) lie inside `fc00::/7`, which the policy allowed, so a policy that allows `fd00::/8` reached the
+  metadata services. They are named in `prohibited` and refused in development too. Four unit tests in `network.rs`: the
+  two addresses are refused, their neighbours are not (the rule is two addresses, not a range), the IPv4-mapped forms
+  of the IPv4 metadata addresses stay refused, and a policy that allows the ULA range still refuses them, also in a
+  mixed answer. The two tests that need the rule failed first. Not done: the relay and `crates/infra-lake/tests/relay.rs`.
+- [x] T035-017 [P] Write the failing `sagat.lake.v1` codec tests in `crates/infra-lake/tests/protocol.rs`:
   - one request line;
   - progress lines at most once per second;
   - exactly one result line;
@@ -387,7 +394,11 @@ three conditions pass.
     or logged.
 
   Refs: D035-062, D035-067.
-- [ ] T035-018 [P] Write the failing configuration-hygiene tests in
+
+  *2026-11-05, done:* `crates/infra-lake/tests/protocol.rs`, 31 cases against the real `receipts.schema.json` and the
+  receipt samples of the contract suite. Written before the codec and seen failing (the imports did not resolve), then
+  passing; 25 mutations of the codec are each caught (D035-077).
+- [x] T035-018 [P] Write the failing configuration-hygiene tests in
   `runners/lake/tests/test_config_hygiene.py`, and the hostile REST catalog fixture in
   `tests/fixtures/lake/hostile-catalog/`. The fixture returns:
   - `py-io-impl`, `s3.endpoint`, `s3.proxy-uri` and signer settings;
@@ -395,6 +406,13 @@ three conditions pass.
 
   Expect: every override dropped, every such location refused, and each denial counted. Refs:
   FR-035-004, D035-050.
+
+  *2026-11-05, done:* `runners/lake/tests/test_config_hygiene.py` (93 cases) and the hostile catalog, which is
+  `runners/lake/tests/hostile_catalog.py` and not `tests/fixtures/lake/hostile-catalog/` (D035-076: the selector treats
+  `tests/fixtures` as shared by every suite). The catalog serves over loopback HTTP: the hostile `py-io-impl`,
+  `s3.endpoint`, `s3.proxy-uri`, region, role and signer keys, vended credentials, a table at `169.254.169.254`, one at
+  the platform database, and one whose properties move the data files. Written before the module and seen failing
+  (`No module named 'sagat_lake.config_hygiene'`); 21 mutations of the module are each caught.
 - [ ] T035-019 [P] Write the failing T-commit-once test in
   `tests/integration/iceberg-writes/commit_once.rs`: a commit-counting relay in front of the REST
   fixture sees exactly one commit request per search, even when the catalog answers 409, 5xx or times
@@ -510,6 +528,13 @@ three conditions pass.
   In `scripts/check-architecture.py`, run `cargo tree -e features` for `apps/control-plane` and
   `apps/execution-engine`, and fail if `infra-lake`, `object_store/gcp` or `object_store/azure`
   appears. Refs: D035-058, constitution II.
+
+  *2026-11-05, partly done, left unticked:* the workspace crate `crates/infra-lake/` exists, in the adapter layer
+  (`python3 scripts/check-architecture.py`: 25 crates, layers respected), with the protocol codec. It depends on the
+  domain only, so the control plane does not link it. Not done: the `lake` cargo feature of `apps/database-runner`, the
+  `lake-runner` Dockerfile target, the `object_store` `gcp` and `azure` features, and the rule in
+  `scripts/check-architecture.py` that runs `cargo tree -e features` for the control plane and the execution engine.
+  They come with the first code that links the object-store clients.
 - [ ] T035-028 Implement the `lake` container profile in `crates/infra-sandbox/src/docker.rs`:
   - own user, pid, mount and network namespaces, with loopback only;
   - a distinct UID per slot;
@@ -550,7 +575,14 @@ three conditions pass.
   - it writes heartbeats and one result line, then exits 0.
 
   Add the pytest `runners/lake/tests/test_host_protocol.py`. T035-017 passes. Refs: D035-062, D035-067.
-- [ ] T035-033 Implement configuration hygiene in `runners/lake/sagat_lake/config_hygiene.py`:
+
+  *2026-11-05, the Rust half is done, left unticked:* `crates/infra-lake/src/protocol.rs` and `protocol/receipt.rs`
+  (the request envelope, the decoder with its heartbeat bound and its single result line, the typed receipts of the
+  two kinds a host produces, the closed failures, the standard-error summary). T035-017 passes: 31 cases, clippy
+  clean, 25 mutations caught (D035-077). Not done: `runners/lake/sagat_lake/host.py` (`PR_SET_DUMPABLE=0` first, the
+  relay authentication, one request line, heartbeats, one result line) and `test_host_protocol.py`; the probe and
+  browse results; and where the host's configuration denials are reported (G035-028).
+- [x] T035-033 Implement configuration hygiene in `runners/lake/sagat_lake/config_hygiene.py`:
   - an allowlist of `warehouse`, `prefix` and the declared storage type's vended credential keys;
   - `py-io-impl` and the FileIO implementation pinned;
   - remote signing refused unless declared;
@@ -558,6 +590,12 @@ three conditions pass.
   - GCS and Azure credentials passed explicitly, failing closed when missing.
 
   T035-018 passes. Refs: D035-050.
+
+  *2026-11-05, done:* `Hygiene` filters `/v1/config` and `LoadTable.config` to the allowlist, pins `py-io-impl`, refuses
+  signing unless declared, confines every location the catalog names to the declared prefixes, builds an allowlisted
+  environment with `AWS_EC2_METADATA_DISABLED=true`, and fails closed on a missing credential. `pytest` in
+  `runners/lake`: 151 passed (93 of them T035-018); `ruff check`, `ruff format --check` and `mypy` (strict) clean. The
+  host that calls it is T035-032. Where the host reports its denials is open (G035-028).
 - [ ] T035-034 Implement the conditional commit in `runners/lake/sagat_lake/commit.py`: set
   `commit.retry.num-retries = 0` in memory on the loaded table, and assert `assert-table-uuid` and
   `assert-ref-snapshot-id(ref, H)`. If T035-019 shows the override has no effect, build the updates and
