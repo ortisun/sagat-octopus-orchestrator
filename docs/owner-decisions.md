@@ -4,6 +4,14 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-05 — A correction to a delegated decision
+
+The row below corrects OD-2026-11-04-3 under the same delegation. It is `Decided by: delegate` and reversible.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-05-1 | The sentence of ADR-0075 telling a membership creator to lock chains in ascending order and then runs is withdrawn. A review of the lock-graph draft found it unreconciled with ADR-0030 §19 and ADR-0037 §6. ADR-0075 was accepted by delegation on 2026-11-04 in a pull request that had not been merged, so `develop` never carried the sentence as an accepted rule and the text was corrected before the acceptance reached it. ADR-0075 keeps the rule that a creator takes the group header `NOWAIT` before the first member insert; the chain and run lock set of the creator is open (ADR-0078). | delegate | Decided | docs/adr/ADR-0075-worker-leases-retain-child-root-possession.md |
+
 ## 2026-11-04 — Delegated decisions for release 0.3.0 (capacity ADR, collection and wait ceilings)
 
 The owner delegated the open decisions of the 0.3.0 ledger: "Tome as decisoes por mim. Que os melhores
