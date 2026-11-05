@@ -924,6 +924,18 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `SagatSchedulesLate`/`SagatBatchesStalled`, alert kinds, quota exhaustion per resource) —
   `infra/observability/alerts.yaml`, `crates/domain/src/operations.rs`,
   `tests/integration/schedules-bulk-operations/observability.rs` — SC-018-014 — FR-018-044, FR-018-045; NFR-018-006.
+  *Part done 2026-11-05 (task stays open: the OTel export canary, the audit rollback, alert kinds and the quota exhaustion
+  per resource).* Label closure: `counted::` reads the Prometheus page of the schedule and batch series and fails on any
+  label that is not `kind`, `outcome`, `action` or the histogram's `le`. Alerts: the lag of the schedule and batch passes
+  rides on `SagatSchedulerLate` (`max(scheduler_lag_seconds) > 60`, no `pass` matcher), whose summary now names them, and a new
+  `SagatBatchJobsStalled` (`batch_jobs_active > 0` with no item outcome for fifteen minutes: jobs accepted where no engine
+  runs them, G1965, or a selection waiting for an old transaction) points to `batch-operations.md#5-when-a-job-does-not-move`.
+  The new rule is tested with `promtool test rules` (`infra/observability/tests/batch_stalled_test.yaml`, run by CI after
+  `check rules`): it fires after fifteen minutes with jobs active and a flat counter, stays silent while items get outcomes
+  and while no job is active, and fires when the counter has never existed. Also: `promtool check rules` accepts the 25
+  rules (the CI image, run here), `contract_observability_operations` 9 passed (every metric a rule evaluates is one the
+  code emits, every rule has a runbook section that exists). The separate `SagatSchedulesLate` of the plan is not added:
+  the generic rule already covers the pass.
 - [ ] T018-072 Benchmark on a declared environment (firing lag at 1k/10k schedules, batch rate per job
   and 16 jobs, 32-way business-id claim, reset at 1k/20k events); adjust ceilings only from data —
   `tests/performance/schedules-bulk-operations/`, `tests/performance/reports/schedules-bulk-operations.md`

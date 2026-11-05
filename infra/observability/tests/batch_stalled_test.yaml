@@ -1,0 +1,64 @@
+rule_files:
+  - /rules/alerts.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # jobs are active and their items never get an outcome: the alert fires after fifteen minutes
+  - interval: 1m
+    input_series:
+      - series: 'batch_jobs_active'
+        values: '2x40'
+      - series: 'batch_items_total{action="cancel",outcome="succeeded"}'
+        values: '5x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SagatBatchJobsStalled
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: SagatBatchJobsStalled
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Batch jobs are active and no run has had an outcome from any of them for fifteen minutes.
+              runbook: docs/runbooks/batch-operations.md#5-when-a-job-does-not-move
+
+  # jobs are active and items keep getting outcomes: no alert
+  - interval: 1m
+    input_series:
+      - series: 'batch_jobs_active'
+        values: '2x40'
+      - series: 'batch_items_total{action="cancel",outcome="succeeded"}'
+        values: '0+10x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SagatBatchJobsStalled
+        exp_alerts: []
+
+  # no job is active: no alert, whatever the counter does
+  - interval: 1m
+    input_series:
+      - series: 'batch_jobs_active'
+        values: '0x40'
+      - series: 'batch_items_total{action="cancel",outcome="succeeded"}'
+        values: '5x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SagatBatchJobsStalled
+        exp_alerts: []
+
+  # jobs are active and no item has ever been counted (the series does not exist): the alert fires
+  - interval: 1m
+    input_series:
+      - series: 'batch_jobs_active'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SagatBatchJobsStalled
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Batch jobs are active and no run has had an outcome from any of them for fifteen minutes.
+              runbook: docs/runbooks/batch-operations.md#5-when-a-job-does-not-move

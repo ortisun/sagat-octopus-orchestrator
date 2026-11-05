@@ -65,6 +65,7 @@ With the routes on and no engine running jobs, a job is accepted and stays `SELE
 | `batch_item_duration_seconds{action}` | how long applying the action to one run took |
 | `scheduler_lag_seconds{pass="batches"}` | how long the oldest job the pass would take has waited; `SagatSchedulerLate` takes the maximum over every pass |
 | `scheduler_fenced_total{kind="batch"}` | steps another replica or a lost lease took away |
+| `SagatBatchJobsStalled` (alert) | jobs are active and no run has had an outcome from any of them for fifteen minutes: look first at the two flags (section 3), then at an old open transaction (point 1 above) |
 
 No label is a tenant, a job or a run. The audit trail records `batch.created`, `batch.cancelled` and `batch.finished`, and each item's effect is audited as the single action is.
 

@@ -545,6 +545,12 @@ jobs:
           docker run --rm --entrypoint promtool \
             -v "$PWD/infra/observability/alerts.yaml:/etc/prometheus/alerts.yaml:ro" \
             prom/prometheus:v3.15.0 check rules /etc/prometheus/alerts.yaml
+      - name: promtool test rules (the alerts fire and stay silent when they should)
+        run: |
+          docker run --rm --entrypoint promtool \
+            -v "$PWD/infra/observability:/rules:ro" \
+            -v "$PWD/infra/observability/tests:/tests:ro" \
+            prom/prometheus:v3.15.0 test rules /tests/batch_stalled_test.yaml
       - name: OpenTelemetry Collector validate
         run: |
           docker run --rm \
