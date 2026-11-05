@@ -6,8 +6,9 @@ The Python runtime of the Iceberg write steps and destinations (feature 035, D03
 lease, the credentials and the only network route; this program owns Iceberg semantics through PyIceberg, inside a
 per-attempt sandbox container (`specs/035-iceberg-write-steps/contracts/lake-runtime.md`).
 
-This directory is the skeleton (T035-006): the image, its lock and its checks. The relay client, the write protocol and
-the receipts are not written yet and arrive with the tasks that test them.
+This directory holds the image, its lock and its checks (T035-006), the filter of what a catalog sends
+(`config_hygiene.py`), the loopback ports that reach the relay (`forwarder.py`) and the host's side of `sagat.lake.v1`
+(`host.py`). The host serves no operation yet: the write protocol and the receipts arrive with the tasks that test them.
 
 ## Interface
 
@@ -17,7 +18,9 @@ the receipts are not written yet and arrive with the tasks that test them.
 - `requirements.in` is the one decided requirement (`pyiceberg[pyarrow,s3fs,gcsfs,adlfs,hive,glue,sql-postgres]==0.12.0`);
   `requirements.lock` is its closure with hashes (78 packages). `requirements-dev.in` and `requirements-dev.lock` add
   pytest, mypy, ruff and pip-audit for CI and for you.
-- `sagat_lake/`: the host package (the version only, for now).
+- `sagat_lake/`: the host package. `host.py` is the entry point (`python3 -I -X utf8 /opt/sagat/lake/sagat_lake/host.py
+  --attempt-dir <dir>`); `forwarder.py` turns an HTTP proxy port and a TCP port per mapping into connections to the relay;
+  `config_hygiene.py` filters what a catalog sends; `failures.py` is the closed failure a result line may carry.
 - `smoke-image.sh <image>`: starts the image the way the sandbox runner does (no network, read-only root, no
   capabilities) and checks what the contract promises of it.
 - `tools/check_sbom.py <image.tar> <package>...`: reads the SPDX attestation BuildKit puts in an image exported as an
