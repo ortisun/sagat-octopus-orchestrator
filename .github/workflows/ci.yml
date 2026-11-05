@@ -61,6 +61,15 @@ jobs:
     # must not hold the runner for the default six hours (it did on pull request 45).
     timeout-minutes: 150
     steps:
+      - name: free disk space
+        # A build of the whole workspace and its tests ran this runner out of disk once ("No space left on device", on a
+        # push that changed Cargo.lock). The image carries toolchains this job never uses: the Android SDK, the Haskell
+        # compilers and CodeQL. The .NET SDK stays, because some suites call it on the host.
+        if: needs.changes.outputs.full == 'true' || needs.changes.outputs.crates == 'ALL'
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # rust-toolchain.toml pins the exact compiler; rustup installs it on first use.
       - run: rustup show active-toolchain
