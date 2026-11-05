@@ -545,6 +545,10 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
   the delay joins the idempotency fingerprint only when present (D1962). The run `WAITING` while held is a status that
   already existed, and `startDelayedUntil` says why. The release of 022's run-level permit is the half this does not do
   (T018-037, blocked on 022).
+  A schema that predates the delay (a rollback, or a rollout whose migration has not run) still works: the loader of a run
+  reads the column through a snapshot of the row, so a missing column is `NULL` and not an error for every pass of the
+  scheduler, and the pass that looks for due releases treats an undefined column as having none (the rollback tests keep
+  driving the scheduler on the schema they roll back to).
 - **D1955** (2026-11-04, T018-028) The actions of a schedule are purged by a bounded function, visiting schedules in
   turn. Nothing deleted them: an hourly schedule writes 8,700 rows a year and one every minute 525,000. FR-018-013
   keeps "at least the last 1,000 or 30 days": an action goes when it is older than 30 days **and** beyond the

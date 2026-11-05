@@ -440,6 +440,14 @@ impl MaintenanceStore for PgRunStore {
         .bind(exclude)
         .fetch_all(self.pool())
         .await
+        // A schema that predates the delay (a rollback, or a rollout whose migration has not run yet)
+        // has no delayed start to release: that is not a failure of the pass.
+        .or_else(|error| match &error {
+            sqlx::Error::Database(database) if database.code().as_deref() == Some("42703") => {
+                Ok(Vec::new())
+            }
+            _ => Err(error),
+        })
         .map_err(store_error)?
         .iter()
         .map(run_ref)

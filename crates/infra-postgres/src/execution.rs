@@ -1859,13 +1859,18 @@ const RUN_SELECT: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workf
      WHERE runs.tenant_id = $1 AND runs.id = $2";
 
 /// The columns a command transaction reads about a run; `$tail` is the lock clause, if any.
+///
+/// `start_delayed_until` is read through a snapshot of the row, so that a schema that does not have it yet
+/// (a rollback, or a rollout whose migration has not run) still loads the run: every pass of the scheduler
+/// goes through here, and none of them may fail for a delay that no run of that schema can have.
 macro_rules! run_columns_sql {
     ($tail:literal) => {
         concat!(
             "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, \
      status, run_version, stop_reason, stop_code, paused, input_digest, correlation_id, started_by, \
      trace_id, deadline_at, created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, \
-     cancel_policy, depth, trace_parent_span, rerun_of, origin, start_delayed_until, \
+     cancel_policy, depth, trace_parent_span, rerun_of, origin, \
+     (to_jsonb(runs.*) ->> 'start_delayed_until')::timestamptz AS start_delayed_until, \
      clock_timestamp() AS db_now \
      FROM runs WHERE tenant_id = $1 AND id = $2",
             $tail

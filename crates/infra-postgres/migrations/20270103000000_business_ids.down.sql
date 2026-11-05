@@ -1,7 +1,8 @@
 -- Rollback is an operator/quiesced-service operation. A binding says which execution holds an
 -- identifier, and a run says which identifier it was started under: rolling back never destroys
 -- either, so it refuses while any of them exists.
-LOCK TABLE business_ids, runs IN SHARE ROW EXCLUSIVE MODE;
+-- `runs` first: the test of the leaf certification rollback waits for the statement that takes this lock
+LOCK TABLE runs, business_ids IN SHARE ROW EXCLUSIVE MODE;
 DO $guard$
 BEGIN
     IF EXISTS (SELECT 1 FROM business_ids) OR EXISTS (SELECT 1 FROM runs WHERE business_id IS NOT NULL) THEN

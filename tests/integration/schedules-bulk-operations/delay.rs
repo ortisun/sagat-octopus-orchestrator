@@ -405,3 +405,26 @@ async fn a_run_that_stops_qualifying_between_the_candidate_query_and_the_lock_is
         "and nothing was written for it"
     );
 }
+
+const BEFORE_DELAY: i64 = 20_270_103_000_000;
+
+#[tokio::test]
+async fn a_schema_that_predates_the_delay_has_nothing_to_release_and_the_pass_does_not_fail() {
+    let f = fixture().await;
+    let passes = scheduler_of(&f).await;
+    crate::migration::undo_to(&f.w.db, BEFORE_DELAY)
+        .await
+        .expect("no delayed run exists, so the rollback is allowed");
+
+    // the scheduler keeps going on the schema it finds
+    for _ in 0..3 {
+        let report = passes.tick().await;
+        assert_eq!(report.failed, 0, "{report:?}");
+        assert_eq!(report.starts_released, 0);
+    }
+
+    sagat_infra_postgres::migrate(&f.w.db.pool)
+        .await
+        .expect("forward again");
+    assert_eq!(settle(&passes).await, 0);
+}
