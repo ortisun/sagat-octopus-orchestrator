@@ -24,12 +24,13 @@ use sagat_application::runs::{
 };
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::execution::{
-    ExecutionInstanceId, FailureCode, InstancePath, ReviewOutcome, RunId, RunStatus, UpdateKey,
+    ExecutionInstanceId, FailureCode, InstancePath, ReviewOutcome, RunId, RunStatus,
 };
 use sagat_domain::workflow::{ActivityName, NodeId};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio_stream::wrappers::ReceiverStream;
+use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::admission::{admit, namespace_slug};
@@ -805,6 +806,23 @@ pub async fn update_with_start<B: Exec>(
     headers: HeaderMap,
     ApiJson(body): ApiJson<UpdateWithStartBody>,
 ) -> Result<Json<UpdateWithStartResultBody>, ApiError> {
+    // the contracted telemetry of an Update, as `updateRun` has it (feature 014)
+    let telemetry = crate::routes::declared_operations::OperationTelemetry::start(
+        sagat_telemetry::WorkflowPrimitiveKind::Update,
+    );
+    let result = update_with_start_operation(caller, state, headers, body)
+        .instrument(telemetry.span.clone())
+        .await;
+    telemetry.finish_update_with_start(&result);
+    result
+}
+
+async fn update_with_start_operation<B: Exec>(
+    caller: Caller,
+    state: B,
+    headers: HeaderMap,
+    body: UpdateWithStartBody,
+) -> Result<Json<UpdateWithStartResultBody>, ApiError> {
     use sagat_application::error::AppError;
     let invalid = |field: &str| {
         ApiError::from(AppError::InvalidStart {
@@ -839,10 +857,13 @@ pub async fn update_with_start<B: Exec>(
         ApiError::validation("update.name is not an operation name")
             .with_reason("UNDECLARED_OPERATION")
     })?;
-    let update_key = UpdateKey::parse(&body.update.update_key).map_err(|_| {
-        ApiError::validation("updateKey must be 1..128 printable ASCII characters without spaces")
+    let update_key = crate::routes::declared_operations::caller_update_key(&body.update.update_key)
+        .map_err(|_| {
+            ApiError::validation(
+                "updateKey must be 1..128 printable ASCII characters without spaces",
+            )
             .with_reason("INVALID_UPDATE_KEY")
-    })?;
+        })?;
     let arguments = serde_json::to_vec(&body.update.args)
         .map_err(|_| ApiError::from(AppError::Internal))
         .and_then(|bytes| {
@@ -893,6 +914,7 @@ pub async fn update_with_start<B: Exec>(
                 update_key: &update_key,
                 arguments: &arguments,
                 expected_state_revision: body.update.expected_state_revision,
+                batch_job: None,
             },
             &caller.ctx,
         )

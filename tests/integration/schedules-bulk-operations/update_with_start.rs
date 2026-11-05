@@ -16,8 +16,9 @@ use sagat_domain::execution::{OperationError, RunId, RunStatus, UpdateKey, Updat
 use sagat_domain::identity::Role;
 use sagat_domain::workflow::ActivityName;
 use serde_json::json;
+use sha2::Digest as _;
 
-use crate::business_ids::{holder_of, key, runs_of};
+use crate::business_ids::{cancel, holder_of, key, runs_of};
 use crate::firing::{Fixture, fixture};
 use crate::support::engine::{DECLARED_OPERATION as OPERATION, ctx, declared_waiter};
 
@@ -102,6 +103,7 @@ impl<'a> Call<'a> {
                     update_key: &update_key,
                     arguments: &self.arguments,
                     expected_state_revision: self.expected_revision,
+                    batch_job: None,
                 },
                 &ctx(),
             )
@@ -480,6 +482,163 @@ async fn a_key_used_by_a_plain_start_is_not_an_update_with_start_and_the_other_w
 }
 
 #[tokio::test]
+async fn a_request_served_by_an_open_holder_is_answered_again_after_the_holder_closes() {
+    let f = fixture().await;
+    let workflow = declared(&f).await;
+    let holder = Call::new(workflow, "acct-20", 11)
+        .send(&f)
+        .await
+        .expect("the holder")
+        .run
+        .info
+        .run_id;
+
+    // an open holder serves the request
+    let mut call = Call::new(workflow, "acct-20", 40);
+    call.update_key = "update-key-0020";
+    let served = call.send(&f).await.expect("served by the holder");
+    assert!(!served.started);
+    assert_eq!(served.run.info.run_id, holder);
+    assert_eq!(state_of(&f, holder).await.0, 2);
+
+    // the holder ends and the identifier is free for a new run
+    cancel(&f, holder).await;
+
+    // the retry, because the answer was lost, is answered as the first request was: it started
+    // nothing, it applied nothing a second time, and it names the holder, not a new run
+    let again = call.send(&f).await.expect("answered again");
+    assert!(!again.started, "the holder answered, and it still does");
+    assert_eq!(again.run.info.run_id, holder);
+    assert!(again.update.resolution.replayed());
+    assert_eq!(balance_of(&again), balance_of(&served));
+    assert_eq!(runs_of(&f, "acct-20").await.len(), 1, "no second run");
+    assert_eq!(state_of(&f, holder).await.0, 2, "applied once");
+
+    // another request under the same key is another request, though the holder is gone
+    let mut other = Call::new(workflow, "acct-20", 41);
+    other.key = call.key.clone();
+    other.update_key = "update-key-0020";
+    assert_eq!(
+        other.send(&f).await.err(),
+        Some(AppError::IdempotencyKeyReused)
+    );
+    assert_eq!(runs_of(&f, "acct-20").await.len(), 1);
+}
+
+/// Makes `head` the current segment of a continuation chain whose initial run is `root`.
+pub(crate) async fn chain_with_head(
+    f: &Fixture,
+    version: sagat_domain::definition::WorkflowVersionId,
+    root: RunId,
+    head: RunId,
+) {
+    let tenant = f.w.admin.tenant_id().as_uuid();
+    let namespace = f.w.namespace.id().as_uuid();
+    let now = crate::support::now();
+    // one transaction: the chain's head must be one of its segments by the time it commits
+    let mut tx = f.w.db.pool.begin().await.expect("chain transaction");
+    sqlx::query(
+        "INSERT INTO execution_chains \
+         (tenant_id,namespace_id,chain_id,current_run_id,definition_version_id,started_by, \
+          max_segments,original_deadline_at,created_at,updated_at) \
+         VALUES ($1,$2,$3,$4,$5,'alice',4,$6,$7,$7)",
+    )
+    .bind(tenant)
+    .bind(namespace)
+    .bind(root.as_uuid())
+    .bind(head.as_uuid())
+    .bind(version.as_uuid())
+    .bind(now + time::Duration::hours(1))
+    .bind(now)
+    .execute(&mut *tx)
+    .await
+    .expect("chain");
+    // the initial segment handed off to the head: a continued segment names its successor and the
+    // input it transferred
+    let input = b"{}";
+    let digest = sha2::Sha256::digest(input).to_vec();
+    sqlx::query(
+        "INSERT INTO payloads (tenant_id, digest, content) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING",
+    )
+    .bind(tenant)
+    .bind(&digest)
+    .bind(input.as_slice())
+    .execute(&mut *tx)
+    .await
+    .expect("payload");
+    sqlx::query(
+        "INSERT INTO chain_segments \
+         (tenant_id,namespace_id,chain_id,segment_index,run_id,predecessor_run_id,successor_run_id, \
+          completion_kind,transfer_input_digest,created_at,completed_at) \
+         VALUES ($1,$2,$3,0,$3,NULL,$4,'CONTINUED',$5,$6,$6)",
+    )
+    .bind(tenant)
+    .bind(namespace)
+    .bind(root.as_uuid())
+    .bind(head.as_uuid())
+    .bind(&digest)
+    .bind(now)
+    .execute(&mut *tx)
+    .await
+    .expect("initial segment");
+    sqlx::query(
+        "INSERT INTO chain_segments \
+         (tenant_id,namespace_id,chain_id,segment_index,run_id,predecessor_run_id,created_at) \
+         VALUES ($1,$2,$3,1,$4,$3,$5)",
+    )
+    .bind(tenant)
+    .bind(namespace)
+    .bind(root.as_uuid())
+    .bind(head.as_uuid())
+    .bind(now)
+    .execute(&mut *tx)
+    .await
+    .expect("head segment");
+    tx.commit().await.expect("commit chain");
+}
+
+#[tokio::test]
+async fn a_chain_holder_is_updated_in_the_segment_that_carries_the_work() {
+    let f = fixture().await;
+    let (workflow, version) =
+        f.w.publish(declared_waiter(&format!("chain-{}", uuid::Uuid::now_v7())))
+            .await;
+    // the run that holds the identifier is the initial run of a chain; the work is in the head
+    let root = Call::new(workflow, "acct-21", 11)
+        .send(&f)
+        .await
+        .expect("the holder")
+        .run
+        .info
+        .run_id;
+    let head =
+        f.w.start(
+            workflow,
+            &serde_json::from_slice::<serde_json::Value>(INPUT).expect("input"),
+        )
+        .await;
+    chain_with_head(&f, version, root, head).await;
+
+    let mut call = Call::new(workflow, "acct-21", 40);
+    call.update_key = "update-key-0021";
+    let done = call.send(&f).await.expect("updated");
+
+    assert!(!done.started);
+    assert_eq!(done.run.info.run_id, head, "the run that carries the work");
+    assert_eq!(state_of(&f, head).await.0, 1);
+    assert_eq!(
+        state_of(&f, root).await.0,
+        1,
+        "the initial segment keeps the one Update it was created with"
+    );
+
+    // and the retry reaches the same segment
+    let again = call.send(&f).await.expect("answered again");
+    assert_eq!(again.run.info.run_id, head);
+    assert!(again.update.resolution.replayed());
+}
+
+#[tokio::test]
 async fn a_delayed_run_admits_the_update() {
     let f = fixture().await;
     let workflow = declared(&f).await;
@@ -545,6 +704,7 @@ async fn it_needs_the_right_to_start_and_the_right_to_update() {
                     update_key: &update_key,
                     arguments: &arguments,
                     expected_state_revision: None,
+                    batch_job: None,
                 },
                 &ctx(),
             )

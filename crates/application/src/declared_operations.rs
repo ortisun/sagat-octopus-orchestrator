@@ -505,9 +505,24 @@ pub struct DeclaredUpdate {
     audit: AuditRecord,
     outbox_id: Uuid,
     occurred_at: OffsetDateTime,
+    /// The batch job that applies the Update to this run, if one does: written in the audit record
+    /// as an identifier, never as free text.
+    batch_job: Option<Uuid>,
 }
 
 impl DeclaredUpdate {
+    /// Marks the Update as applied by the batch job `job`.
+    #[must_use]
+    pub const fn with_batch_job(mut self, job: Uuid) -> Self {
+        self.batch_job = Some(job);
+        self
+    }
+
+    #[must_use]
+    pub const fn batch_job(&self) -> Option<Uuid> {
+        self.batch_job
+    }
+
     /// Builds an Update addressed to one exact run. Chain-addressed callers must use
     /// [`Self::for_chain`] so the receipt identity does not depend on the current head.
     #[must_use]
@@ -540,6 +555,7 @@ impl DeclaredUpdate {
             audit,
             outbox_id,
             occurred_at,
+            batch_job: None,
         }
     }
 
@@ -592,6 +608,7 @@ impl DeclaredUpdate {
             audit,
             outbox_id,
             occurred_at,
+            batch_job: None,
         })
     }
 

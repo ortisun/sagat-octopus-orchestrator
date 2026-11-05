@@ -346,6 +346,22 @@ async fn an_update_is_applied_to_the_runs_that_declare_it_and_skipped_for_the_ot
         "the ended run was not touched"
     );
 
+    // the change says which job made it, by its identifier, in the audit record of the run
+    let reasons: Vec<Option<String>> = sqlx::query_scalar(
+        "SELECT reason FROM audit_records WHERE resource_id = $1 AND action = 'run.updated'",
+    )
+    .bind(open_one.to_string())
+    .fetch_all(&f.w.db.pool)
+    .await
+    .expect("audit");
+    let mark = format!("batch={}", applied.id);
+    assert!(
+        reasons.iter().any(|reason| reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains(&mark))),
+        "the audit of the change names the job: {reasons:?}"
+    );
+
     // a validator that says no fails the item as the single call fails, and changes nothing
     let rejected = run_job(
         &f,

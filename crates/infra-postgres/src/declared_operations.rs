@@ -101,6 +101,7 @@ fn operation_audit(
     resolved_run_id: RunId,
     operation: &ActivityName,
     outcome: Option<UpdateReceiptStatus>,
+    batch_job: Option<uuid::Uuid>,
 ) -> AuditRecord {
     let reason = match outcome {
         None => format!("operation={}", operation.as_str()),
@@ -110,6 +111,11 @@ fn operation_audit(
         Some(UpdateReceiptStatus::Rejected) => {
             format!("operation={};outcome=rejected", operation.as_str())
         }
+    };
+    // a change a batch job made says which job made it
+    let reason = match batch_job {
+        Some(job) => format!("{reason};batch={job}"),
+        None => reason,
     };
     audit.follow_up(
         AuditAction::RunUpdated,
@@ -1031,6 +1037,7 @@ where
             resolved_run_id,
             request.operation(),
             Some(resolution.receipt().status()),
+            update.batch_job(),
         );
         insert_audit(tx, &audit).await?;
         return Ok(resolution);
@@ -1083,6 +1090,7 @@ where
                 resolved_run_id,
                 request.operation(),
                 Some(UpdateReceiptStatus::Rejected),
+                update.batch_job(),
             );
             insert_audit(tx, &audit).await?;
             Ok(resolution)
@@ -1121,6 +1129,7 @@ where
                 resolved_run_id,
                 request.operation(),
                 Some(UpdateReceiptStatus::Applied),
+                update.batch_job(),
             );
             insert_audit(tx, &audit).await?;
             Ok(resolution)

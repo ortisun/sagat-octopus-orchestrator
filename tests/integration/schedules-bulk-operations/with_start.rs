@@ -312,6 +312,90 @@ async fn plain_start(
 }
 
 #[tokio::test]
+async fn a_request_served_by_an_open_holder_is_answered_again_after_the_holder_closes() {
+    let f = fixture().await;
+    let waiting = waiter(&f).await;
+    let holder = plain_start(&f, waiting, "cart-60", &key())
+        .await
+        .expect("the holder")
+        .run
+        .info
+        .run_id;
+
+    // an open holder that waits for the signal serves the request
+    let k = key();
+    let served = signal_with_start(&f, waiting, "cart-60", br#"{"n": 1}"#, &k)
+        .await
+        .expect("served by the holder");
+    assert!(!served.started);
+    assert_eq!(served.run.info.run_id, holder);
+    assert_eq!(nodes(&served), ["w"]);
+
+    // the holder ends and the identifier is free for a new run
+    cancel(&f, holder).await;
+
+    // the retry, because the answer was lost, is answered as the first request was: no new run, and
+    // the signal is not delivered to one
+    let again = signal_with_start(&f, waiting, "cart-60", br#"{"n": 1}"#, &k)
+        .await
+        .expect("answered again");
+    assert!(!again.started, "the holder answered, and it still does");
+    assert_eq!(again.run.info.run_id, holder);
+    assert_eq!(nodes(&again), ["w"]);
+    assert_eq!(runs_of(&f, "cart-60").await.len(), 1, "no second run");
+
+    // another signal under the same key is another request, though the holder is gone
+    let other = signal_with_start(&f, waiting, "cart-60", br#"{"n": 2}"#, &k).await;
+    assert_eq!(other.err(), Some(AppError::IdempotencyKeyReused));
+    assert_eq!(runs_of(&f, "cart-60").await.len(), 1);
+}
+
+#[tokio::test]
+async fn a_chain_holder_is_signalled_in_the_segment_that_carries_the_work() {
+    let f = fixture().await;
+    let (waiting, version) =
+        f.w.publish(document(
+            &format!("with-start-chain-{}", uuid::Uuid::now_v7()),
+            "w",
+            vec![
+                with(
+                    wait_node("w", SIGNAL, "input.k", 300_000, None),
+                    "next",
+                    json!("notify"),
+                ),
+                activity("notify"),
+            ],
+        ))
+        .await;
+    // the run that holds the identifier is the initial run of a chain; the work is in the head
+    let root = plain_start(&f, waiting, "cart-61", &key())
+        .await
+        .expect("the holder")
+        .run
+        .info
+        .run_id;
+    let head = f.w.start(waiting, &json!({"k": "s"})).await;
+    crate::update_with_start::chain_with_head(&f, version, root, head).await;
+
+    let done = signal_with_start(&f, waiting, "cart-61", b"{}", &key())
+        .await
+        .expect("signalled");
+
+    assert!(!done.started);
+    assert_eq!(done.run.info.run_id, head, "the run that carries the work");
+    assert_eq!(nodes(&done), ["w"]);
+    assert_eq!(
+        f.w.step_status(head, "w").await,
+        Some(sagat_domain::execution::StepStatus::Succeeded)
+    );
+    assert_eq!(
+        f.w.step_status(root, "w").await,
+        Some(sagat_domain::execution::StepStatus::Waiting),
+        "the initial segment was not signalled"
+    );
+}
+
+#[tokio::test]
 async fn a_key_used_by_a_plain_start_is_not_a_with_start_request_and_the_other_way_round() {
     let f = fixture().await;
     let waiting = waiter(&f).await;

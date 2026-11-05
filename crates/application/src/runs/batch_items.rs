@@ -161,6 +161,7 @@ where
                     update_key: &update_key,
                     arguments: &arguments,
                     expected_state_revision: None,
+                    batch_job: Some(request.job.id),
                 };
                 match self
                     .update_in_own_transaction(
@@ -168,9 +169,11 @@ where
                         id,
                         namespace,
                         update,
+                        HolderReceipt::None,
                         request.ctx,
                     )
                     .await
+                    .map(|(applied, _)| applied)
                 {
                     Ok(applied) => match applied.resolution.receipt().status() {
                         UpdateReceiptStatus::Applied => Ok(done()),
@@ -184,21 +187,7 @@ where
                             }
                         }
                     },
-                    Err(AppError::DeclaredUpdate(error)) => match error {
-                        // the run's version declares no such Update
-                        DeclaredOperationStoreError::DefinitionUnavailable
-                        | DeclaredOperationStoreError::NotFound => {
-                            skip(SkipReason::OperationNotDeclared)
-                        }
-                        // the run is over, or handed off to its successor
-                        DeclaredOperationStoreError::Operation(OperationError::RunNotMutable(
-                            _,
-                        )) => skip(SkipReason::AlreadyTerminal),
-                        DeclaredOperationStoreError::Operation(OperationError::RunContinued) => {
-                            skip(SkipReason::RunContinued)
-                        }
-                        other => Err(AppError::DeclaredUpdate(other)),
-                    },
+                    Err(AppError::DeclaredUpdate(error)) => update_refusal(error),
                     Err(other) => Err(other),
                 }
             }
@@ -207,5 +196,119 @@ where
                 "the action is not available to batch jobs yet",
             )),
         }
+    }
+}
+
+/// What a batch item does with what its declared Update refused.
+fn update_refusal(error: DeclaredOperationStoreError) -> Result<ItemEffect, AppError> {
+    let skip = |reason: SkipReason| Ok(ItemEffect::Skip(reason));
+    match error {
+        // the run's version declares no such Update
+        DeclaredOperationStoreError::DefinitionUnavailable => {
+            skip(SkipReason::OperationNotDeclared)
+        }
+        // the run vanished between the read before and the lock
+        DeclaredOperationStoreError::NotFound => Err(AppError::NotFound),
+        // the run is over, or is winding down, compensating or waiting for a person: only a run that
+        // has ended is over for good
+        DeclaredOperationStoreError::Operation(OperationError::RunNotMutable(status)) => {
+            skip(if status.is_terminal() {
+                SkipReason::AlreadyTerminal
+            } else {
+                SkipReason::NotApplicable
+            })
+        }
+        DeclaredOperationStoreError::Operation(OperationError::RunContinued) => {
+            skip(SkipReason::RunContinued)
+        }
+        // the same failures the other actions have: the platform's, to be tried again, and a right the
+        // creator no longer has, which ends the job
+        DeclaredOperationStoreError::Storage(failure) => Err(AppError::from(failure)),
+        DeclaredOperationStoreError::Forbidden => Err(AppError::Forbidden {
+            permission: Permission::RunUpdate,
+        }),
+        other => Err(AppError::DeclaredUpdate(other)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::StoreError;
+    use sagat_domain::execution::RunStatus;
+
+    fn effect(error: DeclaredOperationStoreError) -> Result<ItemEffect, AppError> {
+        update_refusal(error)
+    }
+
+    fn not_mutable(status: RunStatus) -> DeclaredOperationStoreError {
+        DeclaredOperationStoreError::Operation(OperationError::RunNotMutable(status))
+    }
+
+    #[test]
+    fn only_a_run_that_has_ended_is_over_for_good() {
+        assert_eq!(
+            effect(not_mutable(RunStatus::Succeeded)),
+            Ok(ItemEffect::Skip(SkipReason::AlreadyTerminal))
+        );
+        assert_eq!(
+            effect(not_mutable(RunStatus::Cancelled)),
+            Ok(ItemEffect::Skip(SkipReason::AlreadyTerminal))
+        );
+        // a run that is winding down, compensating or waiting for a person is not
+        for status in [
+            RunStatus::Cancelling,
+            RunStatus::Compensating,
+            RunStatus::ManualReview,
+        ] {
+            assert_eq!(
+                effect(not_mutable(status)),
+                Ok(ItemEffect::Skip(SkipReason::NotApplicable)),
+                "{status:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn what_is_undeclared_or_handed_off_is_skipped_with_its_own_reason() {
+        assert_eq!(
+            effect(DeclaredOperationStoreError::DefinitionUnavailable),
+            Ok(ItemEffect::Skip(SkipReason::OperationNotDeclared))
+        );
+        assert_eq!(
+            effect(DeclaredOperationStoreError::Operation(
+                OperationError::RunContinued
+            )),
+            Ok(ItemEffect::Skip(SkipReason::RunContinued))
+        );
+        // a run that vanished is not an operation that was never declared
+        assert_eq!(
+            effect(DeclaredOperationStoreError::NotFound),
+            Err(AppError::NotFound)
+        );
+    }
+
+    #[test]
+    fn a_failure_of_the_platform_is_tried_again_and_a_lost_right_ends_the_job() {
+        assert_eq!(
+            effect(DeclaredOperationStoreError::Storage(
+                StoreError::Unavailable {
+                    detail: "pool timed out".to_owned()
+                }
+            )),
+            Err(AppError::Unavailable)
+        );
+        assert_eq!(
+            effect(DeclaredOperationStoreError::Forbidden),
+            Err(AppError::Forbidden {
+                permission: Permission::RunUpdate
+            })
+        );
+        assert!(matches!(
+            effect(DeclaredOperationStoreError::Operation(
+                OperationError::InvalidArguments
+            )),
+            Err(AppError::DeclaredUpdate(_))
+        ));
     }
 }

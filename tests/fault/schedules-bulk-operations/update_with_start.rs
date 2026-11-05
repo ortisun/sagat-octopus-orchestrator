@@ -68,6 +68,7 @@ async fn update_with_start(
                 update_key: &update_key,
                 arguments: &arguments,
                 expected_state_revision: None,
+                batch_job: None,
             },
             &ctx(),
         )
@@ -221,4 +222,99 @@ async fn a_rejected_update_with_start_that_dies_at_any_write_leaves_nothing_and_
         UpdateReceiptStatus::Rejected,
     )
     .await;
+}
+
+/// A request served by an open holder dies at any write: the Update, its receipt, its journal event,
+/// its audit and the receipts of the request itself are one transaction, so the table state is what it
+/// was, and the request sent again is served once.
+#[tokio::test]
+async fn a_request_served_by_an_open_holder_that_dies_at_any_write_leaves_nothing_and_sent_again_serves_once()
+ {
+    let f = fixture().await;
+    let workflow =
+        f.w.publish(declared_waiter(&format!("die-held-{}", Uuid::now_v7())))
+            .await
+            .0;
+    let wire = Tripwire::install(&f.w.db.pool).await;
+
+    // a holder to serve the probe, after a first request of the tenant that makes the writes the
+    // later ones do not
+    update_with_start(&f, workflow, "held-warm-up", "held-warm-up-key", true)
+        .await
+        .expect("the warm-up holder");
+    update_with_start(&f, workflow, "held-probe", "held-probe-first", true)
+        .await
+        .expect("the probe holder");
+    wire.watch().await;
+    let probe = update_with_start(&f, workflow, "held-probe", "held-probe-second", true)
+        .await
+        .expect("served by the probe holder");
+    wire.disarm().await;
+    assert!(!probe.started, "an open holder served it");
+    let writes = wire.writes().await;
+    let transactions: BTreeSet<i64> = writes.iter().map(|(xid, _, _)| *xid).collect();
+    assert_eq!(
+        transactions.len(),
+        1,
+        "a request served by a holder is one transaction: {writes:?}"
+    );
+    let tables: BTreeSet<&str> = writes.iter().map(|(_, _, t)| t.as_str()).collect();
+    for table in [
+        "operation_update_receipts",
+        "workflow_operation_states",
+        "run_events",
+        "audit_records",
+        "event_outbox",
+        "command_dedupe",
+    ] {
+        assert!(
+            tables.contains(table),
+            "the request is expected to write {table}: {writes:?}"
+        );
+    }
+
+    for (_, position, table) in &writes {
+        let id = format!("held-at-{position}");
+        let first = format!("held-at-{position}-first");
+        let key = format!("held-at-{position}-key");
+        let holder = update_with_start(&f, workflow, &id, &first, true)
+            .await
+            .unwrap_or_else(|error| panic!("write {position}, the holder: {error:?}"));
+        let holder = holder.run.info.run_id.as_uuid();
+        let digests = table_digests(&f.w.db.pool).await;
+
+        wire.arm(*position).await;
+        let result = update_with_start(&f, workflow, &id, &key, true).await;
+        wire.disarm().await;
+
+        assert!(
+            result.is_err(),
+            "cut off at write {position} ({table}), the request answered {result:?}"
+        );
+        assert_eq!(
+            table_digests(&f.w.db.pool).await,
+            digests,
+            "cut off at write {position} ({table}), a table changed"
+        );
+        assert_eq!(receipts(&f, holder).await.len(), 1, "write {position}");
+
+        // sent again: the holder serves it, once
+        let again = update_with_start(&f, workflow, &id, &key, true)
+            .await
+            .unwrap_or_else(|error| panic!("write {position} ({table}), sent again: {error:?}"));
+        assert!(!again.started, "write {position}");
+        assert_eq!(again.run.info.run_id.as_uuid(), holder, "write {position}");
+        assert!(!again.update.resolution.replayed(), "write {position}");
+        assert_eq!(receipts(&f, holder).await.len(), 2, "write {position}");
+
+        // and a third time is a replay: the same holder, no new effect
+        let third = update_with_start(&f, workflow, &id, &key, true)
+            .await
+            .expect("a replay of the request");
+        assert!(!third.started, "write {position}");
+        assert_eq!(third.run.info.run_id.as_uuid(), holder, "write {position}");
+        assert!(third.update.resolution.replayed(), "write {position}");
+        assert_eq!(receipts(&f, holder).await.len(), 2, "write {position}");
+        assert_eq!(runs_under(&f, &id).await.len(), 1, "write {position}");
+    }
 }

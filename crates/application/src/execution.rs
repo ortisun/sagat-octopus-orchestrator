@@ -985,6 +985,24 @@ pub trait RunTx: Send {
         async { Err(scoped_execution_adapter_required()) }
     }
 
+    /// Keeps, in this transaction, the receipts of a start that an existing holder served instead of
+    /// a new run (Signal-with-Start and Update-with-Start, feature 018): `start` under the key of the
+    /// request, so that a retry is answered from it even after the holder has closed and the identifier
+    /// is free, and `marker`, which says that the holder, not a new run, was the answer. Both name
+    /// `holder`, the run the effect reached. An adapter that cannot refuses.
+    fn remember_start_served<'a>(
+        &'a mut self,
+        _start: &'a Idempotency,
+        _marker: &'a Idempotency,
+        _holder: RunId,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send + 'a {
+        async {
+            Err(StoreError::Internal {
+                detail: "this adapter cannot keep the receipt of a start served by a holder".into(),
+            })
+        }
+    }
+
     /// Applies a declared Update to this run inside this transaction, which the caller then commits
     /// (a business rejection leaves its receipt with the run) or drops (nothing of it persists):
     /// Update-with-Start, feature 018. Whatever the Update needs to read it reads here, so the

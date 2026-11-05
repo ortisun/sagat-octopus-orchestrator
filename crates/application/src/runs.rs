@@ -135,6 +135,8 @@ pub struct UpdateAtStart<'a> {
     pub update_key: &'a UpdateKey,
     pub arguments: &'a DeclaredOperationArguments,
     pub expected_state_revision: Option<u64>,
+    /// The batch job that applies it, recorded in the audit of the change.
+    pub batch_job: Option<uuid::Uuid>,
 }
 
 /// What an Update-with-Start came to: the run, whether this request created it, and the Update's
@@ -155,6 +157,28 @@ enum WithStart<'a> {
 
 /// What a signal to a run that waits for nothing is refused with.
 const NOT_WAITING_FOR_SIGNAL: &str = "the run is not waiting for that signal";
+
+/// What becomes of the receipt of a start that an existing holder served (feature 018, `FR-018-026`).
+/// The holder is not created by the request, so `create` leaves no receipt of its own; without one a
+/// retry made after the holder closed would claim the free identifier and take effect a second time.
+#[derive(Clone, Copy)]
+enum HolderReceipt<'a> {
+    /// Nothing to keep or to read: a batch item, whose key is the item's own.
+    None,
+    /// The holder serves this request now: keep its receipts with the effect.
+    Keep(&'a Idempotency),
+    /// A retry: say whether the first request was served by a holder.
+    Read(&'a Idempotency),
+}
+
+/// The record that says a holder, not a new run, answered the request under `start`.
+fn served_marker(start: &Idempotency) -> Idempotency {
+    Idempotency {
+        scope: format!("{}.served", start.scope),
+        key: start.key.clone(),
+        fingerprint: start.fingerprint.clone(),
+    }
+}
 
 /// What creating a run came to.
 #[derive(Debug)]
@@ -328,6 +352,15 @@ pub trait RunStore:
     QuotaLookup + crate::telemetry::TelemetryStore + crate::authz::NamespaceDirectory + Send + Sync
 {
     type Tx: RunTx;
+
+    /// The run that carries the work of the execution `run` now: `run` itself, unless it is the
+    /// initial run of a continuation chain whose current segment is another (feature 018: a signal or
+    /// an Update meant for the execution that holds a business identifier reaches that segment).
+    fn current_segment(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+    ) -> impl Future<Output = Result<RunId, StoreError>> + Send;
 
     /// Reads an already committed start before resolving an ephemeral upload. `create` repeats
     /// this decision transactionally; conflicting fingerprints are never treated as misses.
@@ -1308,6 +1341,7 @@ where
             business: options.business,
         };
         let scheduled_start = new.schedule.is_some();
+        let start_receipt = new.idempotency.clone();
         // The instant the entry is held until, to the microsecond: the journal and the column hold
         // the same number, so a replay of the one is the other.
         let held_until_us = options
@@ -1332,7 +1366,7 @@ where
             created,
             scheduled_start,
             held_until_us,
-            with.map(|with| (with, request.key)),
+            with.map(|with| (with, &start_receipt)),
             ctx,
         )
         .await
@@ -1346,7 +1380,7 @@ where
         created: Admitted<S::Tx>,
         scheduled: bool,
         held_until_us: Option<i64>,
-        with: Option<(WithStart<'_>, &str)>,
+        with: Option<(WithStart<'_>, &Idempotency)>,
         ctx: &RequestContext,
     ) -> Result<Started, AppError> {
         match created {
@@ -1358,24 +1392,28 @@ where
             Admitted::Replayed(existing) => {
                 let mut started = self.known_start(principal, &existing, false).await?;
                 match with {
-                    Some((WithStart::Signal(signal), key)) => {
+                    Some((WithStart::Signal(signal), start)) => {
                         // what the first request delivered, from the receipt it left with the run
-                        started.delivered_to = self
-                            .delivered_before(principal, started.run.info.run_id, signal, key)
+                        let (delivered, served) = self
+                            .delivered_before(principal, started.run.info.run_id, signal, start)
                             .await?;
+                        started.delivered_to = delivered;
+                        started.existing = served;
                     }
-                    Some((WithStart::Update(update), _)) => {
+                    Some((WithStart::Update(update), start)) => {
                         // the receipt the first request left answers again, whatever the run is now
-                        started.update = Some(
-                            self.update_in_own_transaction(
+                        let (applied, served) = self
+                            .update_in_own_transaction(
                                 principal,
                                 started.run.info.run_id,
                                 started.run.info.namespace_id,
                                 update,
+                                HolderReceipt::Read(start),
                                 ctx,
                             )
-                            .await?,
-                        );
+                            .await?;
+                        started.update = Some(applied);
+                        started.existing = served;
                     }
                     None => {}
                 }
@@ -1383,17 +1421,27 @@ where
             }
             // the holder of the business identifier, returned and nothing created
             Admitted::Existing(holder) => {
-                let mut started = self.known_start(principal, &holder, true).await?;
+                // The holder of a continuation chain is its initial run; the work is in the segment
+                // that is current now, which is where a signal or an Update must go.
+                let holder_run = holder.parse::<RunId>().map_err(|_| AppError::Internal)?;
+                let target = self
+                    .store
+                    .current_segment(principal.tenant_id(), holder_run)
+                    .await?;
+                let mut started = self
+                    .known_start(principal, &target.to_string(), true)
+                    .await?;
                 match with {
-                    Some((WithStart::Signal(signal), key)) => {
+                    Some((WithStart::Signal(signal), start)) => {
                         // an open holder is signalled exactly as `signalRun` would
-                        started.delivered_to = self
-                            .signal(
+                        let (delivered, _) = self
+                            .signal_with_receipt(
                                 principal,
-                                started.run.info.run_id,
+                                target,
                                 signal.name,
                                 signal.payload,
-                                key,
+                                &start.key,
+                                HolderReceipt::Keep(start),
                                 ctx,
                             )
                             .await
@@ -1405,19 +1453,21 @@ where
                                 }
                                 other => other,
                             })?;
+                        started.delivered_to = delivered;
                     }
-                    Some((WithStart::Update(update), _)) => {
+                    Some((WithStart::Update(update), start)) => {
                         // an open holder gets the Update exactly as `updateRun` would apply it
-                        started.update = Some(
-                            self.update_in_own_transaction(
+                        let (applied, _) = self
+                            .update_in_own_transaction(
                                 principal,
-                                started.run.info.run_id,
+                                target,
                                 started.run.info.namespace_id,
                                 update,
+                                HolderReceipt::Keep(start),
                                 ctx,
                             )
-                            .await?,
-                        );
+                            .await?;
+                        started.update = Some(applied);
                     }
                     None => {}
                 }
@@ -1453,16 +1503,18 @@ where
                         tx.info().namespace_id,
                         run_id,
                         update,
+                        // the clock of the run's own events, the database's
+                        tx.now(),
                         ctx,
                     );
                     update_applied = Some(tx.apply_declared_update(&command, evaluator).await?);
                 }
-                if let Some((WithStart::Signal(signal), key)) = with {
+                if let Some((WithStart::Signal(signal), start)) = with {
                     // the signal goes in the creation transaction, to every step that waits for it
                     // after the initial reduction; if none does, nothing is created at all
                     let idempotency = Idempotency {
                         scope: format!("run.signal:{run_id}"),
-                        key: key.to_owned(),
+                        key: start.key.clone(),
                         fingerprint: fingerprint(&[signal.name.as_bytes(), signal.payload]),
                     };
                     delivered_to = match self
@@ -1500,9 +1552,11 @@ where
 
     /// The evaluator of declared Updates, or the refusal of a service that does not serve them.
     fn declared_evaluator(&self) -> Result<&dyn DeclaredOperationEvaluator, AppError> {
-        self.declared_updates.as_deref().ok_or(AppError::NotAllowed(
-            "this instance does not serve declared updates",
-        ))
+        // A server that was not wired for it, not a caller's mistake: an internal error, said once.
+        self.declared_updates.as_deref().ok_or_else(|| {
+            tracing::error!("a declared Update was asked of a run service without an evaluator");
+            AppError::Internal
+        })
     }
 
     /// The declared Update addressed to `run`, with the audit and the outbox notification that
@@ -1513,9 +1567,9 @@ where
         namespace: sagat_domain::identity::NamespaceId,
         run: RunId,
         update: UpdateAtStart<'_>,
+        occurred_at: OffsetDateTime,
         ctx: &RequestContext,
     ) -> DeclaredUpdate {
-        let occurred_at = self.clock.now();
         let audit = AuditRecord::by(
             principal,
             AuditAction::RunUpdated,
@@ -1533,13 +1587,17 @@ where
             update.expected_state_revision,
             principal.subject().clone(),
         );
-        DeclaredUpdate::new(
+        let command = DeclaredUpdate::new(
             request,
             update.arguments.clone(),
             audit,
             uuid::Uuid::now_v7(),
             occurred_at,
-        )
+        );
+        match update.batch_job {
+            Some(job) => command.with_batch_job(job),
+            None => command,
+        }
     }
 
     /// Applies the Update to a run that exists, in a transaction of its own: the open holder of a
@@ -1551,8 +1609,9 @@ where
         run: RunId,
         namespace: sagat_domain::identity::NamespaceId,
         update: UpdateAtStart<'_>,
+        receipt: HolderReceipt<'_>,
         ctx: &RequestContext,
-    ) -> Result<AppliedInTx, AppError> {
+    ) -> Result<(AppliedInTx, bool), AppError> {
         let evaluator = self.declared_evaluator()?;
         let Some(mut tx) = self
             .store
@@ -1561,10 +1620,19 @@ where
         else {
             return Err(AppError::Internal);
         };
-        let command = self.declared_update(principal, namespace, run, update, ctx);
+        let command = self.declared_update(principal, namespace, run, update, tx.now(), ctx);
         let applied = tx.apply_declared_update(&command, evaluator).await?;
+        let served = match receipt {
+            HolderReceipt::None => false,
+            HolderReceipt::Keep(start) => {
+                tx.remember_start_served(start, &served_marker(start), run)
+                    .await?;
+                true
+            }
+            HolderReceipt::Read(start) => tx.replay(&served_marker(start)).await?.is_some(),
+        };
         tx.commit().await?;
-        Ok(applied)
+        Ok((applied, served))
     }
 
     async fn audit_database_denial(
@@ -2157,6 +2225,24 @@ where
         key: &str,
         ctx: &RequestContext,
     ) -> Result<Vec<NodeId>, AppError> {
+        self.signal_with_receipt(principal, id, name, payload, key, HolderReceipt::None, ctx)
+            .await
+            .map(|(woken, _)| woken)
+    }
+
+    /// [`Self::signal`], and, when an existing holder of a business identifier serves a with-start
+    /// request, the receipts of that request kept in the same transaction ([`HolderReceipt`]).
+    #[allow(clippy::too_many_arguments)]
+    async fn signal_with_receipt(
+        &self,
+        principal: &Principal,
+        id: RunId,
+        name: &str,
+        payload: &[u8],
+        key: &str,
+        receipt: HolderReceipt<'_>,
+        ctx: &RequestContext,
+    ) -> Result<(Vec<NodeId>, bool), AppError> {
         principal.authorize(Permission::RunSignal)?;
         if payload.len() > MAX_PAYLOAD_BYTES || !self.engine.evaluator().is_json(payload) {
             return Err(AppError::NotAllowed(
@@ -2175,18 +2261,28 @@ where
         else {
             return Err(self.missing(principal, id, ctx).await);
         };
-        if let Some(delivered) = tx.replay(&idempotency).await? {
-            return Ok(delivered
+        let woken = match tx.replay(&idempotency).await? {
+            Some(delivered) => delivered
                 .split(',')
                 .filter(|n| !n.is_empty())
                 .filter_map(|n| NodeId::parse(n).ok())
-                .collect());
-        }
-        let woken = self
-            .deliver_signal(&mut tx, principal, id, name, payload, idempotency, ctx)
-            .await?;
+                .collect(),
+            None => {
+                self.deliver_signal(&mut tx, principal, id, name, payload, idempotency, ctx)
+                    .await?
+            }
+        };
+        let served = match receipt {
+            HolderReceipt::None => false,
+            HolderReceipt::Keep(start) => {
+                tx.remember_start_served(start, &served_marker(start), id)
+                    .await?;
+                true
+            }
+            HolderReceipt::Read(start) => tx.replay(&served_marker(start)).await?.is_some(),
+        };
         tx.commit().await?;
-        Ok(woken)
+        Ok((woken, served))
     }
 
     /// The receipt a with-start request left with its run: the nodes its signal woke.
@@ -2195,11 +2291,11 @@ where
         principal: &Principal,
         id: RunId,
         signal: SignalAtStart<'_>,
-        key: &str,
-    ) -> Result<Vec<NodeId>, AppError> {
+        start: &Idempotency,
+    ) -> Result<(Vec<NodeId>, bool), AppError> {
         let idempotency = Idempotency {
             scope: format!("run.signal:{id}"),
-            key: key.to_owned(),
+            key: start.key.clone(),
             fingerprint: fingerprint(&[signal.name.as_bytes(), signal.payload]),
         };
         let Some(mut tx) = self
@@ -2209,17 +2305,21 @@ where
         else {
             return Err(AppError::Internal);
         };
-        Ok(tx
-            .replay(&idempotency)
-            .await?
-            .map(|delivered| {
-                delivered
-                    .split(',')
-                    .filter(|n| !n.is_empty())
-                    .filter_map(|n| NodeId::parse(n).ok())
-                    .collect()
-            })
-            .unwrap_or_default())
+        // The receipt of the signal is written with the start's, in one transaction: a start that
+        // is replayed and has none is a broken invariant, not an empty answer.
+        let Some(delivered) = tx.replay(&idempotency).await? else {
+            tracing::error!("a replayed with-start request has no signal receipt");
+            return Err(AppError::Internal);
+        };
+        let served = tx.replay(&served_marker(start)).await?.is_some();
+        Ok((
+            delivered
+                .split(',')
+                .filter(|n| !n.is_empty())
+                .filter_map(|n| NodeId::parse(n).ok())
+                .collect(),
+            served,
+        ))
     }
 
     /// Delivers the signal to every step of the run in `tx` that waits for it, under the receipt

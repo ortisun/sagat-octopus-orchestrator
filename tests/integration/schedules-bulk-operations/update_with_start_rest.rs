@@ -172,11 +172,14 @@ async fn what_the_declaration_refuses_creates_nothing_and_says_what_updaterun_sa
     assert_eq!(status, 422, "{refused}");
     assert_eq!(refused["details"]["reason"], "INVALID_ARGUMENTS");
 
-    let mut key = r.body("acct-http-5", "has a space", allowed(25));
-    key["update"]["updateKey"] = json!("has a space");
-    let (status, refused) = r.go(&key).await;
-    assert_eq!(status, 422, "{refused}");
-    assert_eq!(refused["details"]["reason"], "INVALID_UPDATE_KEY");
+    // a key with a space, and a key of the platform's own (a batch job's item is `batch:{job}:{run}`)
+    for bad in ["has a space", "batch:0194f5e2-job:0194f5e2-run"] {
+        let mut key = r.body("acct-http-5", bad, allowed(25));
+        key["update"]["updateKey"] = json!(bad);
+        let (status, refused) = r.go(&key).await;
+        assert_eq!(status, 422, "{bad}: {refused}");
+        assert_eq!(refused["details"]["reason"], "INVALID_UPDATE_KEY", "{bad}");
+    }
 
     assert!(r.runs().await.is_empty(), "nothing was started");
 }

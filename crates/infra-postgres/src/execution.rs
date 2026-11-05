@@ -959,6 +959,18 @@ async fn current_worker_authorized(
 impl RunStore for PgRunStore {
     type Tx = PgRunTx;
 
+    async fn current_segment(&self, tenant: TenantId, run: RunId) -> Result<RunId, StoreError> {
+        let current: Option<Uuid> = sqlx::query_scalar(
+            "SELECT current_run_id FROM execution_chains WHERE tenant_id = $1 AND chain_id = $2",
+        )
+        .bind(tenant.as_uuid())
+        .bind(run.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_error)?;
+        Ok(current.map_or(run, RunId::new))
+    }
+
     async fn replay_start(
         &self,
         tenant: TenantId,
@@ -3664,6 +3676,29 @@ fn micros(duration: Duration) -> i64 {
 }
 
 impl RunTx for PgRunTx {
+    async fn remember_start_served<'a>(
+        &'a mut self,
+        start: &'a Idempotency,
+        marker: &'a Idempotency,
+        holder: RunId,
+    ) -> Result<(), StoreError> {
+        let tenant = self.info.tenant_id;
+        let holder = holder.to_string();
+        // `false` is a concurrent request with the same key that committed first; it served the same
+        // holder under the same fingerprint (a different one is refused when the start is replayed)
+        for record in [start, marker] {
+            remember(
+                &mut self.tx,
+                tenant,
+                record,
+                &hash(&record.fingerprint),
+                &holder,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     async fn apply_declared_update<'a>(
         &'a mut self,
         update: &'a sagat_application::declared_operations::DeclaredUpdate,
