@@ -1,7 +1,7 @@
 # ADR-0075: Worker leases retain ChildRoot possession through commit
 
 **Status:** Accepted (2026-11-04, by delegation) for the ChildRoot worker-lease guard only; production activation is NOT accepted (see "Activation gate")
-**Decided by:** Owner for O705/O706 scope; accepted by delegate on 2026-11-04 after an architecture review and a PostgreSQL/transaction review (OD-2026-11-04-3). Reversible until the owner confirms that row; the status returns to Proposed if the owner declines
+**Decided by:** Owner for O705/O706 scope; accepted by delegate on 2026-11-04 after an architecture review and a PostgreSQL/transaction review (OD-2026-11-04-3). The creator bullet of the Decision was amended on 2026-11-05, before this acceptance reached `develop` (OD-2026-11-05-1). Reversible until the owner confirms those rows; the status returns to Proposed if the owner declines
 **Refines / supersedes:** Refines ADR-0030 §18 (adds the group header G after chain and own run, acquired without waiting). Supersedes nothing. The native-command lock position, the sweeper, the creator and SCOPED_PATH are decided by the lock-graph ADR (gap G721; ADR-0078, proposed), not here
 **Enforced by:** `capacity_worker_possession`, focused PostgreSQL worker-capacity tests,
 `scripts/check-capacity-activation.py` and its negative fixtures. Not enforced by tooling yet: no
