@@ -5,7 +5,7 @@
 **Scope:** the first delivery chosen by the owner (O1709): US01, US02, US03, US04, US05, US06, US10 and US13. US07, US09, US08, US12 and US11 are listed at the end and are **not** decomposed (their design has pending decisions).
 **Tests come first and are seen failing** for the right reason (AGENTS rule 18). Races use held locks or barriers, never sleeps. A golden or generated file changes only after reading the diff, then the test is rerun without the bless switch.
 **Closing a task:** tick it only with the evidence that closes it — a named test and its result, or a command and its output — written after an em dash, as in feature 010. A task done in part stays unticked with a dated note.
-**Gates before `/speckit-implement`:** `checklists/security.md` is reviewer-owned and its items are unticked; the owner's answer to **O1710** (the operator surface) decides milestone M6, and tasks T036-053 to T036-065 assume option 1 (a separate operator listener) until then.
+**Gates before implementation (the constitution's transitional clause):** `checklists/security.md` is reviewer-owned and its items are unticked; the owner's answer to **O1710** (the operator surface) decides milestone M6, and tasks T036-053 to T036-065 assume option 1 (a separate operator listener) until then.
 **Added by the analysis of 2026-10-28:** T036-092 to T036-094 sit in the phase where they belong (the end of Phase 2, Phase 5 and Phase 7). The published IDs were not renumbered, so the IDs of a phase are not always in order.
 **Numbers:** migrations `20261226000000`, `20261226000100`, `20261226000200`; ADR-0072 to ADR-0074; D1700–D1734, G1700–G1718, O1700–O1710 (re-checked by T036-001).
 

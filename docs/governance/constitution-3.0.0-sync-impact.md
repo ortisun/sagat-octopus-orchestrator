@@ -1,5 +1,7 @@
 # Constitution 3.0.0 (B01) — Sync Impact Report
 
+> The constitution moved to `docs/constitution.md` in 4.0.0; paths below name its location at 3.0.0.
+
 This record accompanies the dedicated PR adopting the B01 amendment. It was prepared as 2.0.0 on
 top of 1.1.0. On 2026-11-01 the owner split it out of feature 037, which adopts 2.0.0 (Principle III
 only, compensation safety), so B01 is renumbered **3.0.0**. #75 merged first (`a76a3ac3`,

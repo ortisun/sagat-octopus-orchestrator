@@ -1,6 +1,6 @@
 [package]
 name = "sagat-tests"
-description = "Cross-crate integration, fault, contract and end-to-end test suites (paths follow specs/*/plan.md)."
+description = "Cross-crate integration, fault, contract and end-to-end test suites (paths follow docs/designs/*.md or, for a feature not yet converted, specs/*/plan.md)."
 version.workspace = true
 license.workspace = true
 edition.workspace = true
