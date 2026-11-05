@@ -573,13 +573,13 @@ three conditions pass.
   name policy, one resolution, the address policy over `NetworkPolicy` and the operator's networks, a tunnel that reads
   nothing, TCP mappings, a count of denials by kind) and the IPv6 metadata addresses in `network.rs`. T035-016 passes:
   34 cases, clippy clean. An independent security review found seven things and the relay changed for them (D035-079).
-  Not done: the in-container forwarder `forwarder.py` with its pytest, and what only the attempt driver can do (the
-  socket directory, `relay.token`, the user id, the operator's networks; G035-029).
+  *The forwarder is done* (D035-081): `runners/lake/sagat_lake/forwarder.py`, 25 cases. Not done: what only the attempt driver
+  can do (the socket directory, the `relay.token` file, the user id, the operator's networks; G035-029).
 - [ ] T035-031 Write the relay canaries for the I1 clients in
   `tests/integration/iceberg-writes/relay_canaries.rs`. The PyIceberg REST client and the S3 FileIO,
   run inside a lake container, work through the relay, and every other route fails. Record the result
   against G035-018 in research.md. Refs: G035-018, D035-049.
-- [ ] T035-032 Implement the `sagat.lake.v1` codec in `crates/infra-lake/src/protocol.rs`, and the host
+- [x] T035-032 Implement the `sagat.lake.v1` codec in `crates/infra-lake/src/protocol.rs`, and the host
   skeleton `runners/lake/sagat_lake/host.py`:
   - `PR_SET_DUMPABLE=0` is its first action;
   - it authenticates on the relay;
@@ -594,6 +594,13 @@ three conditions pass.
   clean, 25 mutations caught (D035-077). Not done: `runners/lake/sagat_lake/host.py` (`PR_SET_DUMPABLE=0` first, the
   relay authentication, one request line, heartbeats, one result line) and `test_host_protocol.py`; the probe and
   browse results; and where the host's configuration denials are reported (G035-028).
+
+  *2026-11-05, the Python half is done and the task is ticked:* `runners/lake/sagat_lake/host.py` (`PR_SET_DUMPABLE=0` first, the
+  token from `relay.token`, `CONTROL` on the relay, one bounded request line, heartbeats at most once a second, exactly one
+  result line, exit 0, nothing of the request written), `failures.py` and `tests/test_host_protocol.py` (38 cases and 1
+  skipped, which is Linux's), with 22 mutations of the host, the forwarder and the failures all caught (D035-081). The probe and
+  browse results, and the operations themselves, are the tasks of the stories that name them; the contract text of the host's
+  path is G035-031.
 - [x] T035-033 Implement configuration hygiene in `runners/lake/sagat_lake/config_hygiene.py`:
   - an allowlist of `warehouse`, `prefix` and the declared storage type's vended credential keys;
   - `py-io-impl` and the FileIO implementation pinned;

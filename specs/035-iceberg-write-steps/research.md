@@ -808,6 +808,35 @@ The other fixes were wording:
     `SAGAT_TEST_AS_RUNTIME_ROLE=1`, with a new scenario (`lake.rs`) against real PostgreSQL and OpenBao: the stored
     document, the retry, the audit row, another tenant's 404, a missing secret writing nothing, a SQL step refused,
     plaintext by environment, the `pii` grant, and the history of a paused connection.
+- **D035-081 — The container's side: the forwarder, the host skeleton and how it is started.** T035-030 (the forwarder)
+  and T035-032 (the host skeleton). Decided by: delegate.
+  - *The entry point.* `lake-runtime.md` says `python3 -I -X utf8 /opt/sagat/lake/host.py`, but the image holds the package at
+    `/opt/sagat/lake/sagat_lake/` and T035-032 names `sagat_lake/host.py`. The host is started as
+    `python3 -I -X utf8 /opt/sagat/lake/sagat_lake/host.py --attempt-dir /work/<attempt-id>`. `-I` ignores `PYTHONPATH` and
+    does not put the script's directory on the path, so the file puts its package's parent on `sys.path` itself, once, when it is
+    run as a script; a test starts the real process isolated to prove it. The text of the contract is amended with the
+    contract-touching PR that follows (G035-031), because a contract file selects every suite.
+  - *The control conversation.* After the relay's first line, the host sends `CONTROL`; the lake runner answers with the one
+    request line; the host writes its heartbeat lines and its one result line on the same connection and closes it. The
+    token is read from `relay.token` in the attempt directory and has the shape the relay checks (32 to 128 of `A-Z a-z 0-9
+    - _`). The Rust relay refuses `CONTROL` today, since the attempt driver serves it (T035-035).
+  - *What the host does and does not do.* `PR_SET_DUMPABLE=0` is the first action, even for a bad argument list. The request is
+    read to at most 4 MiB, counting the payload and not its newline, and a line that never ends is refused as soon as it passes
+    the bound; 30 s is the wait for it. A heartbeat is written every second while an operation works, never after the result.
+    The host serves no operation yet, and a request for one is `LAKE_HOST_PROTOCOL`. An exception no operation expected is
+    `WORKER_ERROR` and writes only the name of its class to standard error. `relayDenials` is always 0: the count is the
+    runner's, which owns the relay (G035-028).
+  - *Failures cannot carry text.* `Failure` refuses a code, a column or a reason the runner would refuse, so a bug cannot
+    produce a result line that fails the whole attempt as a protocol break.
+  - *The forwarder.* One HTTP proxy port and one TCP port per declared mapping, on `127.0.0.1` with ports the system chooses.
+    Each client connection gets a relay connection of its own that presents the token first, then forwards the client's
+    `CONNECT` request or asks for `TCP <name>` and hides the relay's one-line answer. It copies bytes and reads none of them.
+    A relay that is not there closes the client instead of hanging it; a denied request is answered as the relay answered it.
+  - *Evidence.* `pytest` in `runners/lake`: 214 passed and 1 skipped (the `prctl` test is Linux's and runs in CI), `ruff`,
+    `ruff format --check` and `mypy` (strict) clean. Written first and seen failing. 22 mutations of the forwarder, the host and
+    the failures are all caught; the first run let two survive (nothing pinned the request bound apart from the length check, and
+    the length check counted the newline, which a test of the exact boundary now covers). The relay is a double that speaks the
+    bytes of the Rust one (`tests/relay_double.py`); the real clients through the real relay are T035-031.
 - **G035-027 — Places where the contract fragments do not yet fit the canonical shapes or the code.** Found while writing
   the contract tests; none is pinned by a test yet, each is settled by the task that implements it.
   1. `connections.md` names `ConnectionProbeResult.checks[]`, but the canonical OpenAPI has no such schema: the probe
@@ -861,3 +890,10 @@ The other fixes were wording:
   turns it on, so a Hive metastore without TLS is refused everywhere until one does. (4) The Studio does not know the new
   kind (T035-046); its types already read the union. (5) The lake profile does not answer a lake connection yet
   (T035-044); until then nothing can resolve one. *Exit condition:* each is closed by the task named, with a test.
+- **G035-031 — The container's side leaves open.** (1) The text of `lake-runtime.md` gives the host's path as
+  `/opt/sagat/lake/host.py` (D035-081); it is amended with a PR that touches the contract. (2) The relay double and the Rust relay
+  are two implementations of one wire and can drift; T035-031 runs the real forwarder against the real relay. (3) The forwarder
+  accepts any number of local clients and each one costs a relay connection; the relay's own cap makes the rest wait, and the
+  container's `pids.max` and `memory.max` bound the forwarder, but the forwarder has no cap of its own. (4) No operation is served:
+  `probe`, `icebergWrite`, `icebergRevert`, `objectWrite` and `browse` arrive with their tasks. (5) The Rust relay answers `CONTROL`
+  with `400` until the driver serves it. *Exit condition:* each is closed by the task named, with a test.
