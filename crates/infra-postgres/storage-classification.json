@@ -7521,6 +7521,24 @@
     },
     {
       "table": "operation_update_receipts",
+      "column": "arguments_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed SHA-256 digest (32 bytes) of the canonical arguments of an Update that opted in with `reapplyOnReset`, kept in `payloads` (accounted there); the column never holds the content. Writer/source: `declared_operations.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/declared_operations.rs"
+      ]
+    },
+    {
+      "table": "operation_update_receipts",
       "column": "operation_name",
       "sql_type": "text",
       "class": "protected_system",

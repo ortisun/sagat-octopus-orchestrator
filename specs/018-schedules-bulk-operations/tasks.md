@@ -838,10 +838,41 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   after the caller lost the right is refused `403` and writes nothing
   (`with_start_rest::` and `update_with_start_rest::a_retry_after_the_caller_lost_the_right...`); another
   tenant's workflow is `404` for both routes in the cross-tenant battery (`body_of`).
-- [ ] T018-043 [US4] Write `via` on `wait.satisfied`; retain Update arguments on `state.updated` only for
+- [x] T018-043 [US4] Write `via` on `wait.satisfied`; retain Update arguments on `state.updated` only for
   Updates declared `reapplyOnReset` — `crates/application/src/{runs.rs,chain_progress.rs,declared_operations.rs}`,
   `crates/scheduler/src/events.rs`, `crates/infra-postgres/src/event_codec.rs` — old/new codec round-trip,
   no payload written for undeclared Updates, content charge — FR-018-039.
+  *Done 2026-11-05 (D1975, G1978); the task text is amended in one place: the arguments are referenced from the
+  receipt of the Update, not from the `payload_digest` of the `state.updated` row, which already holds the new state.*
+  **`via`:** `RunEvent::WaitSatisfied { node, via: Option<WaitVia> }` and `satisfy_wait(.., via)`; `signal` for
+  `signalRun` and a chain signal, `event` for the dispatch of a published event (the scheduler and the scoped event
+  commands), `signal_with_start` for Signal-with-Start whether it created the run or found an open holder. Tests:
+  `wait_via::` (3, real PostgreSQL: signal, published event, Signal-with-Start in both branches), the chain signal test
+  of `integration_workflow_primitives` reads the row, the scoped event commands of `sagat-domain`
+  (`scoped_event_wait_lifecycle`), and the codec round trip (`event_codec::tests`: each name, an older row without
+  `via` decodes and is written back as it was, an unknown name decodes as none). **Arguments:** migration
+  `20270105000000_retained_update_arguments` (`operation_update_receipts.arguments_digest`, a foreign key to `payloads`,
+  `APPLIED` only; `down` refuses while any is set; classified; the three pinned upgrade oracles move), the evaluator
+  returns the canonical arguments only when the declaration opts in (`DeclaredUpdateDecision::Applied { .., arguments }`),
+  the store writes the `payloads` row, the receipt column and `detail.retained` in the transaction of the Update.
+  Tests `retained_arguments::` (3, real PostgreSQL): an Update that opts in keeps them (receipt, content equal to the
+  canonical arguments, journal `retained: true`) and one that does not writes no payload (`retained: false`); the
+  content charge differs by exactly the size of the arguments between an opting-in Update and a twin that does not; the
+  same arguments applied to two runs are one row, and a rejected Update keeps nothing and has no `state.updated`.
+  Seventeen mutants killed: nine for `via` (the plain signal, the with-start that creates the run and the one served by
+  a holder, the pass-through to the wait, the chain signal, the dispatch of an event, the scoped event command, and the
+  codec writing and reading it) and eight for the arguments (no Update and every Update keeping them, no content write,
+  no receipt reference, the journal row saying always `true` and saying nothing, the marker never written and never
+  read).
+  Gates, both modes where marked: `sagat-domain`, `-application`, `-infra-ir`, `-scheduler`, `-api-http`, `-cli`,
+  `-infra-postgres` unit suites; the 20 contract targets that read the journal, the API or the IR; integration
+  `schedules_bulk_operations` 343 (both roles), `platform_foundation` 101 (both; migrations and privilege audit),
+  `durable_execution` 179 (both), `workflow_primitives` 755 (both), `security_multitenancy` 126 (both),
+  `payload_classification` 41 (both), `events_webhooks_messaging` 111, `observability_operations` 20,
+  `sagas_compensations` 82, `gitops_versioning` 35; fault `schedules_bulk_operations` 37 (both) and
+  `workflow_primitives` 92; clippy over the workspace. The capability that lets a workflow opt in is still off in every
+  deployment (G1977), so nothing is retained yet outside these tests; the reapply that reads the arguments is the
+  reset (T018-053, T018-056).
 - [x] T018-044 [US4] Error reasons and remediation rows — `crates/api-http/src/error.rs`,
   `docs/quickstarts/errors.md` — `errors-018` contract test — FR-018-043.
   *Done 2026-11-05 (D1971, G1975), for the reasons the built operations raise:* 29 reasons have a row of their own

@@ -653,6 +653,10 @@ async fn retain_evaluated_write(
     Ok(())
 }
 
+/// Writes an applied Update: its journal row, the state, the receipt and the outbox row, in the caller's
+/// transaction. `arguments` is the digest of the arguments kept for a reset, already a row of `payloads`,
+/// when the declaration keeps them.
+#[allow(clippy::too_many_arguments)]
 async fn commit_applied(
     tx: &mut Transaction<'_, Postgres>,
     update: &DeclaredUpdate,
@@ -661,6 +665,7 @@ async fn commit_applied(
     previous: &StoredState,
     state: &DeclaredOperationsState,
     receipt: &UpdateReceipt,
+    arguments: Option<Digest>,
 ) -> Result<(), DeclaredOperationStoreError> {
     let new_state = state.state();
     let result = receipt
@@ -674,6 +679,9 @@ async fn commit_applied(
         before_revision: receipt.before_state_revision(),
         after_revision: receipt.after_state_revision(),
         state_digest: new_state.digest(),
+        // the row says whether the arguments were kept, so a reset can tell an Update that did not opt in from
+        // one written before the journal said so
+        arguments_retained: Some(arguments.is_some()),
     };
     let encoded = crate::event_codec::encode(&event);
     sqlx::query(
@@ -761,8 +769,8 @@ async fn commit_applied(
          (tenant_id, namespace_id, address_scope, target_id, update_key, resolved_run_id, \
           operation_name, request_hash, status, result_digest, result_schema_digest, \
           result_size_bytes, before_state_revision, after_state_revision, run_version, actor, \
-          outbox_id, committed_at) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'APPLIED',$9,$10,$11,$12,$13,$14,$15,$16,$17)",
+          outbox_id, committed_at, arguments_digest) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'APPLIED',$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)",
     )
     .bind(receipt.scope().tenant_id().as_uuid())
     .bind(receipt.scope().namespace_id().as_uuid())
@@ -787,6 +795,7 @@ async fn commit_applied(
     .bind(receipt.actor().as_str())
     .bind(update.outbox_id())
     .bind(update.occurred_at())
+    .bind(arguments.map(|digest| digest.as_bytes().to_vec()))
     .execute(&mut **tx)
     .await
     .map_err(store_error)?;
@@ -1107,6 +1116,14 @@ where
                 retain_evaluated_write(tx, request.scope().tenant_id(), new_state).await?;
                 retain_evaluated_write(tx, request.scope().tenant_id(), result).await?;
             }
+            // The arguments are content of the tenant only when the declaration keeps them for a reset: the
+            // write is charged to `tenant_content_bytes` like any payload, and the receipt points at it.
+            let arguments = decision
+                .as_ref()
+                .and_then(DeclaredUpdateDecision::retained_arguments);
+            if let Some(arguments) = arguments {
+                retain_evaluated_write(tx, request.scope().tenant_id(), arguments).await?;
+            }
             if resolution
                 .receipt()
                 .result()
@@ -1122,6 +1139,7 @@ where
                 &stored,
                 &state,
                 resolution.receipt(),
+                arguments.map(|arguments| arguments.value().digest()),
             )
             .await?;
             let audit = operation_audit(

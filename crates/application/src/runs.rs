@@ -22,7 +22,7 @@ use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::execution::{
     self, ExecutionError, ExecutionInstanceId, OperationAddress, OperationScope, Progress,
     ReviewOutcome, RunEvent, RunId, RunStatus, StepStatus, StopReason, UpdateKey, UpdateRequest,
-    WaitingOn,
+    WaitVia, WaitingOn,
 };
 use sagat_domain::identity::{Namespace, NamespaceId, Permission, Principal, TenantId};
 use sagat_domain::workflow::{ActivityName, Digest, NodeId, NodeKind, WorkflowDefinition};
@@ -1442,6 +1442,7 @@ where
                                 signal.payload,
                                 &start.key,
                                 HolderReceipt::Keep(start),
+                                WaitVia::SignalWithStart,
                                 ctx,
                             )
                             .await
@@ -1525,6 +1526,7 @@ where
                             signal.name,
                             signal.payload,
                             idempotency,
+                            WaitVia::SignalWithStart,
                             ctx,
                         )
                         .await
@@ -2225,9 +2227,18 @@ where
         key: &str,
         ctx: &RequestContext,
     ) -> Result<Vec<NodeId>, AppError> {
-        self.signal_with_receipt(principal, id, name, payload, key, HolderReceipt::None, ctx)
-            .await
-            .map(|(woken, _)| woken)
+        self.signal_with_receipt(
+            principal,
+            id,
+            name,
+            payload,
+            key,
+            HolderReceipt::None,
+            WaitVia::Signal,
+            ctx,
+        )
+        .await
+        .map(|(woken, _)| woken)
     }
 
     /// [`Self::signal`], and, when an existing holder of a business identifier serves a with-start
@@ -2241,6 +2252,7 @@ where
         payload: &[u8],
         key: &str,
         receipt: HolderReceipt<'_>,
+        via: WaitVia,
         ctx: &RequestContext,
     ) -> Result<(Vec<NodeId>, bool), AppError> {
         principal.authorize(Permission::RunSignal)?;
@@ -2268,7 +2280,7 @@ where
                 .filter_map(|n| NodeId::parse(n).ok())
                 .collect(),
             None => {
-                self.deliver_signal(&mut tx, principal, id, name, payload, idempotency, ctx)
+                self.deliver_signal(&mut tx, principal, id, name, payload, idempotency, via, ctx)
                     .await?
             }
         };
@@ -2336,6 +2348,7 @@ where
         name: &str,
         payload: &[u8],
         idempotency: Idempotency,
+        via: WaitVia,
         ctx: &RequestContext,
     ) -> Result<Vec<NodeId>, AppError> {
         let targets: Vec<NodeId> = {
@@ -2404,7 +2417,7 @@ where
                 let mut events = Vec::new();
                 let mut pending = None;
                 for node in &targets {
-                    let progress = execution::satisfy_wait(def, state, node, now)?;
+                    let progress = execution::satisfy_wait(def, state, node, now, Some(via))?;
                     events.extend(progress.events);
                     pending = pending.or(progress.pending);
                 }

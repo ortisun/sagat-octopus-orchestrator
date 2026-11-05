@@ -1164,7 +1164,10 @@ fn a_wait_that_starts_in_one_batch_and_is_satisfied_in_a_later_one_gets_its_span
     j.push(
         60_000,
         "system:events",
-        RunEvent::WaitSatisfied { node: hold.clone() },
+        RunEvent::WaitSatisfied {
+            node: hold.clone(),
+            via: None,
+        },
     );
     let applied = 2;
     let kept: Vec<JournalEntry> = j

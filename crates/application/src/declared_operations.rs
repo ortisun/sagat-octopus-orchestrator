@@ -471,6 +471,10 @@ pub enum DeclaredUpdateDecision {
     Applied {
         new_state: EvaluatedOperationWrite,
         result: EvaluatedOperationWrite,
+        /// The canonical arguments of the Update, present only when its declaration keeps them for a reset
+        /// (`reapplyOnReset`, feature 018). They are written in the transaction of the Update as content of
+        /// the tenant and referenced by its receipt; an Update that does not opt in has none.
+        arguments: Option<Box<EvaluatedOperationWrite>>,
     },
     Rejected(UpdateRejection),
 }
@@ -479,7 +483,9 @@ impl DeclaredUpdateDecision {
     #[must_use]
     pub fn domain_evaluation(&self) -> UpdateEvaluation {
         match self {
-            Self::Applied { new_state, result } => UpdateEvaluation::Applied {
+            Self::Applied {
+                new_state, result, ..
+            } => UpdateEvaluation::Applied {
                 new_state: new_state.value.clone(),
                 result: result.value.clone(),
             },
@@ -490,7 +496,18 @@ impl DeclaredUpdateDecision {
     #[must_use]
     pub const fn writes(&self) -> Option<(&EvaluatedOperationWrite, &EvaluatedOperationWrite)> {
         match self {
-            Self::Applied { new_state, result } => Some((new_state, result)),
+            Self::Applied {
+                new_state, result, ..
+            } => Some((new_state, result)),
+            Self::Rejected(_) => None,
+        }
+    }
+
+    /// The arguments to keep for a reset, if the declaration asks for them and the Update was applied.
+    #[must_use]
+    pub fn retained_arguments(&self) -> Option<&EvaluatedOperationWrite> {
+        match self {
+            Self::Applied { arguments, .. } => arguments.as_deref(),
             Self::Rejected(_) => None,
         }
     }

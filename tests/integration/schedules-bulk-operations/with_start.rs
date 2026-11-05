@@ -16,10 +16,10 @@ use crate::business_ids::{cancel, holder_of, key, runs_of};
 use crate::firing::{Fixture, fixture};
 use crate::support::engine::{activity, ctx, document, wait_node, with};
 
-const SIGNAL: &str = "payment.confirmed";
+pub(crate) const SIGNAL: &str = "payment.confirmed";
 
 /// A workflow whose entry waits for the signal, and then does one activity.
-async fn waiter(f: &Fixture) -> WorkflowId {
+pub(crate) async fn waiter(f: &Fixture) -> WorkflowId {
     f.w.publish(document(
         &format!("with-start-waiter-{}", uuid::Uuid::now_v7()),
         "w",
@@ -36,7 +36,7 @@ async fn waiter(f: &Fixture) -> WorkflowId {
     .0
 }
 
-fn business(id: &str, reuse: ReusePolicy) -> BusinessStart {
+pub(crate) fn business(id: &str, reuse: ReusePolicy) -> BusinessStart {
     BusinessStart {
         id: BusinessId::new(id).expect("an identifier"),
         // an open holder is always signalled: the policy of a with-start request is not a choice
@@ -46,7 +46,7 @@ fn business(id: &str, reuse: ReusePolicy) -> BusinessStart {
     }
 }
 
-async fn signal_with_start(
+pub(crate) async fn signal_with_start(
     f: &Fixture,
     workflow: WorkflowId,
     id: &str,

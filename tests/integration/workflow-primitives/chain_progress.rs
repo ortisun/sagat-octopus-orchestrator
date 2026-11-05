@@ -781,6 +781,16 @@ async fn chain_signal_is_delivered_only_to_an_existing_wait_and_replays_after_re
             .expect("replay chain signal"),
         delivered
     );
+    // the journal says a caller's signal satisfied the wait (FR-018-039), once, whatever the replay did
+    let vias: Vec<Option<String>> = sqlx::query_scalar(
+        "SELECT detail->>'via' FROM run_events \
+         WHERE run_id = $1 AND event_type = 'wait.satisfied' ORDER BY seq",
+    )
+    .bind(chain.as_uuid())
+    .fetch_all(&world.db.pool)
+    .await
+    .expect("the journal");
+    assert_eq!(vias, [Some("signal".to_owned())]);
     world
         .store
         .verify_run(world.admin.tenant_id(), chain)

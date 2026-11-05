@@ -327,7 +327,8 @@ impl Harness {
     }
 
     pub fn satisfy_wait(&mut self, node: &str) -> Result<(), ExecutionError> {
-        let progress = execution::satisfy_wait(&self.def, &mut self.state, &sid(node), self.now)?;
+        let progress =
+            execution::satisfy_wait(&self.def, &mut self.state, &sid(node), self.now, None)?;
         self.absorb(progress);
         Ok(())
     }

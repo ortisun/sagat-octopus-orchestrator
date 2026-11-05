@@ -414,6 +414,42 @@ pub enum ReviewOutcome {
     Failed(FailureCode),
 }
 
+/// What satisfied a wait (feature 018, `FR-018-039`): the journal keeps it so a reset can tell the waits a
+/// caller satisfied by a signal, which it may deliver again, from those an event satisfied, which it may not.
+/// A row written before this existed has none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitVia {
+    /// A signal sent to the run, or to its chain.
+    Signal,
+    /// A published event that matched the wait's correlation.
+    Event,
+    /// The signal of a Signal-with-Start, delivered in the transaction that created the run.
+    SignalWithStart,
+}
+
+impl WaitVia {
+    /// The closed name written to the journal.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Signal => "signal",
+            Self::Event => "event",
+            Self::SignalWithStart => "signal_with_start",
+        }
+    }
+
+    /// The value a journal row names, if this version knows it.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "signal" => Some(Self::Signal),
+            "event" => Some(Self::Event),
+            "signal_with_start" => Some(Self::SignalWithStart),
+            _ => None,
+        }
+    }
+}
+
 /// How a `parallel` node ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JoinOutcome {
@@ -606,6 +642,8 @@ pub enum RunEvent {
     },
     WaitSatisfied {
         node: NodeId,
+        /// What satisfied it; `None` for a row written before the journal said so.
+        via: Option<WaitVia>,
     },
     /// The wait's deadline passed. `handled` means the node defines an `onTimeout` route.
     WaitTimedOut {
@@ -836,6 +874,10 @@ pub enum RunEvent {
         before_revision: u64,
         after_revision: u64,
         state_digest: Digest,
+        /// Whether the arguments of the Update were kept for a reset (`reapplyOnReset`, feature 018): `Some`
+        /// in a row written once the journal said so, `None` in an older one, which a reset reports as a
+        /// legacy event and not as an Update that did not opt in.
+        arguments_retained: Option<bool>,
     },
     /// Closes this segment while transferring explicit input and optional state to its successor.
     RunContinued {
@@ -1060,7 +1102,7 @@ impl RunEvent {
             | Self::TimerStarted { node, .. }
             | Self::TimerFired { node }
             | Self::WaitStarted { node, .. }
-            | Self::WaitSatisfied { node }
+            | Self::WaitSatisfied { node, .. }
             | Self::WaitTimedOut { node, .. }
             | Self::ApprovalOpened { node, .. }
             | Self::ApprovalDecided { node, .. }

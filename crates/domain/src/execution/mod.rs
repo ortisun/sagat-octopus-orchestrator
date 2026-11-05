@@ -60,7 +60,7 @@ pub use event::{
     AddressedRunEvent, Cause, ChildOutcome, CollectionDrainReason, CollectionOutcome,
     CorrelationKey, EventAddressError, FailureCode, Fence, JoinOutcome, LoopContinuation,
     LoopDrainReason, LoopKind, LoopOutcome, PlannedEntry, ReconcileResult, ReviewOutcome, RunEvent,
-    ScopedPlannedEntry, StopReason, SwitchSelection,
+    ScopedPlannedEntry, StopReason, SwitchSelection, WaitVia,
 };
 pub use instance::{
     ExecutionInstanceId, InstanceIdentityError, InstancePath, MAX_ITERATION_INDEX, MAX_SCOPE_DEPTH,

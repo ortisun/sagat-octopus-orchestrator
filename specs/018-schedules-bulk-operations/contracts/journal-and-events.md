@@ -21,17 +21,22 @@ the source. `runs.reset_sequence = N` lets every reader tell restored sequences 
 
 | Event | Field | Values | Written by |
 | --- | --- | --- | --- |
-| `wait.satisfied` | `via` (optional) | `signal`, `event`, `signal_with_start` | API signal, chain signal, event dispatch, Signal-with-Start, reset reapply (`signal`). Older rows have no `via` and decode unchanged. |
+| `wait.satisfied` | `via` (optional) | `signal`, `event`, `signal_with_start` | API signal and chain signal (`signal`), event dispatch (`event`), Signal-with-Start whether it created the run or found it (`signal_with_start`), reset reapply (`signal`). Older rows have no `via` and decode unchanged; a name this version does not know decodes as none. **Written since T018-043 (D1975).** |
 | `run.started` | `schedule` (optional) | `{"schedule_id", "nominal_at_us", "kind", "revision"}` | Schedule actions. |
-| `state.updated` | row `payload_digest` (opt-in) | digest of the canonical Update arguments, retained as a content-addressed payload | Only Updates declared `reapplyOnReset: true` (see `workflow-ir.fragment.schema.json`); others are `NOT_REAPPLIED` (`NOT_RETAINED`), older rows `LEGACY_EVENT`. |
+| `state.updated` | `retained` (optional) | `true`, `false` | Every Update applied since T018-043: `true` when its declaration opts in with `reapplyOnReset` and its arguments were kept, `false` when it does not. Older rows have none: a reset reports them `NOT_REAPPLIED` / `LEGACY_EVENT`, and an Update that did not opt in `NOT_REAPPLIED` / `NOT_RETAINED`. |
 | every re-emitted row | `restored` | `true` | Reset re-emission; the source rows are not changed. |
 | re-emitted `run.started` | `reset_of` | `{"source_run_id", "source_sequence"}` | Reset re-emission, so a reader knows from sequence 1. |
 | `run.started` | `delayed` (optional) | `true` | Starts with `startDelayMs`. |
 
 Detail keys are snake_case like the existing ones (`due_at_us`, `before_revision`). Decoders read fields
 by name (`crates/infra-postgres/src/event_codec.rs`), so older readers ignore the new optional ones.
-The retained Update arguments are charged to `tenant_content_bytes`; they are not a classification
-carrier (FR-016-004), so a journal disclosure of that sequence answers `NO_SCHEMA` as today.
+The retained Update arguments are the canonical arguments of the Update as a `payloads` row, charged to
+`tenant_content_bytes` like any payload and referenced by the **receipt** of the Update
+(`operation_update_receipts.arguments_digest`, migration `20270105000000`), not by the `payload_digest` of
+the journal row: that column of a `state.updated` row already references the new state (D1975). The receipt
+goes with the run, is written in the transaction of the row, and is found by `(resolved_run_id, run_version)`,
+the sequence of the row. They are not a classification carrier (FR-016-004), so a journal disclosure of that
+sequence answers `NO_SCHEMA` as today.
 
 ## Re-emitted prefix of a reset run
 
@@ -96,7 +101,7 @@ instance) applies in addition to these rules.
 | `saga.aborting`, `compensation.planned`, `saga.compensated`, `scope.compensation_planned`, `scope.compensated` | `EXCLUDE` | the source was compensating; reset to a point before the failure |
 | `reconciliation.requested` | `REFUSE` until `reconciliation.concluded` of the same step | an unknown outcome is open |
 | `reconciliation.concluded`, `step.needs_review`, `step.retry_requested`, `step.skipped`, `step.resolved` | `COPY` | an open review at the point makes it ineligible (state rule) |
-| `state.updated` | `COPY` | declared state restored; retained arguments (`reapplyOnReset`) stay referenced |
+| `state.updated` | `COPY` | declared state restored; the row keeps its `retained` marker, and the retained arguments (`reapplyOnReset`) stay where the receipt of the source run references them (D1975; whether a reset of the reset run finds them is G1978) |
 | `run.paused`, `run.resumed` | `COPY` | a point at which the run is paused is ineligible (state rule) |
 | `run.stop_requested`, `end.reached`, `run.finished` | `EXCLUDE` | terminal tail |
 | `execution_chain.started`, `execution_chain.successor_linked`, `run.continued`, `continuation.selected` | `EXCLUDE` | sources outside continuation chains only (G1001) |

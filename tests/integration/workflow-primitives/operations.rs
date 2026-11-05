@@ -978,6 +978,7 @@ async fn applied_update_commits_state_receipt_journal_audit_and_outbox_together(
                 Ok(DeclaredUpdateDecision::Applied {
                     new_state: state_write,
                     result,
+                    arguments: None,
                 })
             },
         )
@@ -1185,7 +1186,13 @@ async fn outbox_failure_rolls_back_state_journal_receipt_and_audit() {
         .apply_update(
             &command,
             |_, _| Ok(()),
-            |_| Ok(DeclaredUpdateDecision::Applied { new_state, result }),
+            |_| {
+                Ok(DeclaredUpdateDecision::Applied {
+                    new_state,
+                    result,
+                    arguments: None,
+                })
+            },
         )
         .await
         .expect_err("duplicate outbox rolls back");
@@ -1327,6 +1334,7 @@ async fn concurrent_expected_revision_updates_apply_once_and_reject_once() {
                 Ok(DeclaredUpdateDecision::Applied {
                     new_state: state_a,
                     result: result_a,
+                    arguments: None,
                 })
             }
         ),
@@ -1337,6 +1345,7 @@ async fn concurrent_expected_revision_updates_apply_once_and_reject_once() {
                 Ok(DeclaredUpdateDecision::Applied {
                     new_state: state_b,
                     result: result_b,
+                    arguments: None,
                 })
             }
         ),
@@ -1827,6 +1836,7 @@ async fn an_applied_update_is_committed_by_the_least_privilege_runtime_role() {
                 Ok(DeclaredUpdateDecision::Applied {
                     new_state: state_write,
                     result,
+                    arguments: None,
                 })
             },
         )

@@ -13,7 +13,7 @@ use time::OffsetDateTime;
 use super::error::ExecutionError;
 use super::event::{
     AddressedRunEvent, ChildOutcome, CorrelationKey, FailureCode, Fence, ReconcileResult,
-    ReviewOutcome, RunEvent, StopReason, SwitchSelection,
+    ReviewOutcome, RunEvent, StopReason, SwitchSelection, WaitVia,
 };
 use super::instance::ExecutionInstanceId;
 use super::path_state::PathExecutionState;
@@ -1984,12 +1984,16 @@ pub fn satisfy_wait(
     state: &mut RunState,
     node: &NodeId,
     now: OffsetDateTime,
+    via: Option<WaitVia>,
 ) -> Result<Progress, ExecutionError> {
     apply_then_settle(
         def,
         state,
         now,
-        RunEvent::WaitSatisfied { node: node.clone() },
+        RunEvent::WaitSatisfied {
+            node: node.clone(),
+            via,
+        },
     )
 }
 

@@ -3934,7 +3934,7 @@ impl RunState {
                     deadline: *deadline,
                 });
             }
-            RunEvent::WaitSatisfied { node } => {
+            RunEvent::WaitSatisfied { node, .. } => {
                 let step = self.step_mut(node, name, &[Waiting])?;
                 if !matches!(step.waiting, Some(WaitingOn::Event { .. })) {
                     return Err(ExecutionError::IllegalTransition {

@@ -28,7 +28,7 @@ use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::events::{
     GIVE_UP_AFTER, MAX_DISPATCH_ATTEMPTS, capacity_backoff, dispatch_backoff,
 };
-use sagat_domain::execution::{self, ExecutionError, RunId, StepStatus, WaitingOn};
+use sagat_domain::execution::{self, ExecutionError, RunId, StepStatus, WaitVia, WaitingOn};
 use sagat_domain::workflow::{Node, NodeKind, WorkflowDefinition};
 use time::OffsetDateTime;
 
@@ -584,7 +584,8 @@ where
         match self
             .engine
             .run(&mut tx, effects, move |def, state, now| {
-                let progress = execution::satisfy_wait(def, state, &node, now)?;
+                let progress =
+                    execution::satisfy_wait(def, state, &node, now, Some(WaitVia::Event))?;
                 Ok(((), progress))
             })
             .await

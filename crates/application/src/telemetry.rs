@@ -1088,7 +1088,7 @@ pub fn derive(facts: &RunFacts, entries: &[JournalEntry], applied_seq: u64) -> D
                     (entry.seq, at),
                 );
             }
-            RunEvent::WaitSatisfied { node } => {
+            RunEvent::WaitSatisfied { node, .. } => {
                 let instance =
                     ExecutionInstanceId::in_path(entry.instance_path.clone(), node.clone());
                 finished(

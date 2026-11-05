@@ -1,7 +1,7 @@
 //! Pure matching/window commands prepare an outcome; they grant no receipt/payload authority.
 use super::*;
 use sagat_domain::execution::{
-    satisfy_event_wait_instance, satisfy_event_wait_path_instance, scoped_event_wait_since,
+    WaitVia, satisfy_event_wait_instance, satisfy_event_wait_path_instance, scoped_event_wait_since,
 };
 
 #[test]
@@ -92,7 +92,9 @@ fn a_matching_event_at_the_window_boundary_records_the_exact_member_and_normal_r
         progress.events,
         vec![
             event(RunEvent::WaitSatisfied {
-                node: id("notified")
+                node: id("notified"),
+                // a published event satisfied it, and the journal says so
+                via: Some(WaitVia::Event)
             }),
             event(RunEvent::StepRouted {
                 node: id("notified"),
@@ -267,7 +269,8 @@ fn paused_satisfaction_records_only_the_outcome_and_cold_resume_selects_normal_n
     assert_eq!(
         progress.events,
         vec![event(RunEvent::WaitSatisfied {
-            node: id("notified")
+            node: id("notified"),
+            via: Some(WaitVia::Event)
         })]
     );
     assert!(!full.instance(&wait(0)).expect("deferred wait").routed());
