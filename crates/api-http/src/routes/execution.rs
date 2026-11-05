@@ -35,9 +35,10 @@ use crate::admission::{admit, namespace_slug};
 use crate::dto::PageBody;
 use crate::dto_exec::{
     BusinessBindingBody, CreateWorkflowBody, JournalEventBody, OperationBody, OperationResultBody,
-    PublishBody, PublishedBody, RerunBusinessIdBody, RunBody, SignalResultBody, StartRunBody,
-    UpdateDraftBody, ValidateBody, VersionBody, VersionSummary, WorkflowBody,
-    compensation_plans_body, diff_body, graph_changes_body, runtime_graph, validation_body,
+    PublishBody, PublishedBody, RerunBusinessIdBody, RunBody, SignalResultBody,
+    SignalWithStartBody, SignalWithStartResultBody, StartRunBody, UpdateDraftBody, ValidateBody,
+    VersionBody, VersionSummary, WorkflowBody, compensation_plans_body, diff_body,
+    graph_changes_body, runtime_graph, validation_body,
 };
 use crate::error::ApiError;
 use crate::exec::Exec;
@@ -478,6 +479,7 @@ pub async fn start_run<B: Exec>(
         sagat_application::runs::Started {
             run,
             existing: false,
+            delivered_to: Vec::new(),
         }
     } else {
         state
@@ -696,6 +698,98 @@ pub async fn list_runs<B: Exec>(
         )
         .await?;
     Ok(page(&result))
+}
+
+/// `POST /runs/signal-with-start` (feature 018, `FR-018-024`): signals the open run of the business
+/// identifier, or starts one and delivers the signal at creation. Never buffers a signal.
+pub async fn signal_with_start<B: Exec>(
+    caller: Caller,
+    State(state): State<B>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<SignalWithStartBody>,
+) -> Result<(StatusCode, Json<SignalWithStartResultBody>), ApiError> {
+    use sagat_application::error::AppError;
+    if body.start_delay_ms.is_some() {
+        return Err(AppError::InvalidStart {
+            reason: "START_DELAY_WITH_SIGNAL",
+            field: Some("/startDelayMs".to_owned()),
+        }
+        .into());
+    }
+    let invalid = |field: &str| {
+        ApiError::from(AppError::InvalidStart {
+            reason: "BUSINESS_ID_INVALID",
+            field: Some(field.to_owned()),
+        })
+    };
+    let id = sagat_domain::business_ids::BusinessId::new(&body.business_id)
+        .map_err(|_| invalid("/businessId"))?;
+    let reuse = body
+        .business_id_reuse_policy
+        .as_deref()
+        .map(|policy| {
+            policy
+                .parse::<sagat_domain::business_ids::ReusePolicy>()
+                .map_err(|()| invalid("/businessIdReusePolicy"))
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let name = body.signal.name.trim();
+    if name.is_empty() || name.chars().count() > 128 || name.chars().any(char::is_control) {
+        return Err(ApiError::validation(
+            "the signal name must be 1 to 128 characters",
+        ));
+    }
+    let input = to_bytes(&body.input)?;
+    let payload = to_bytes(&body.signal.payload)?;
+    let version = body
+        .version_id
+        .as_deref()
+        .map(parse_id::<WorkflowVersionId>)
+        .transpose()?;
+    let request = StartRun {
+        namespace: namespace(&headers)?,
+        workflow: parse_id::<WorkflowId>(&body.workflow_id)?,
+        version,
+        input: &input,
+        correlation_id: body.correlation_id.as_deref(),
+        deadline: body.deadline,
+        key: idempotency_key(&headers)?,
+    };
+    admit(
+        &state,
+        &caller,
+        ApiOperation::RunStart,
+        ApiTarget::NamespaceSlug(namespace_slug(request.namespace)?),
+    )
+    .await?;
+    let done = state
+        .runs()
+        .signal_with_start(
+            &caller.session.principal,
+            &request,
+            sagat_application::runs::BusinessStart {
+                id,
+                conflict: sagat_domain::business_ids::ConflictPolicy::UseExisting,
+                reuse,
+                window: sagat_domain::business_ids::ReuseWindow::default(),
+            },
+            sagat_application::runs::SignalAtStart {
+                name,
+                payload: &payload,
+            },
+            &caller.ctx,
+        )
+        .await
+        .map_err(|error| holder_for_readers(error, &caller))?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(SignalWithStartResultBody {
+            run_id: done.run.info.run_id.to_string(),
+            started: done.started,
+            delivered_to: done.delivered_to.iter().map(ToString::to_string).collect(),
+        }),
+    ))
 }
 
 /// `GET /namespaces/{namespaceId}/business-ids/{businessId}`: who holds a business identifier and how

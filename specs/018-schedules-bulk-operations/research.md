@@ -549,6 +549,24 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
   reads the column through a snapshot of the row, so a missing column is `NULL` and not an error for every pass of the
   scheduler, and the pass that looks for due releases treats an undefined column as having none (the rollback tests keep
   driving the scheduler on the schema they roll back to).
+- **D1969** (2026-11-05, T018-040, `FR-018-024`, `FR-018-026`) Signal-with-Start is one request over mechanisms that
+  already exist, and adds no table or event. The identifier is claimed with `UseExisting` whatever the caller wrote (an open
+  holder is always signalled; the reuse policy still governs a closed one). Then one of three things: the identifier has an
+  open holder, which is signalled by the ordinary `signal` use case (`202`, `started: false`; a holder that waits for
+  nothing is `409` `CONFLICT` with `details.reason` `NOT_WAITING` and nothing changes); the same key was already served,
+  and the answer is the first one, with the nodes it woke read from the receipt the signal left (`run.signal:{run}`); or a
+  run is created, and the signal is delivered by the same core as `signalRun` (`deliver_signal`) inside the creation
+  transaction, after the initial reduction, so it reaches every step that waits for it then. If none does the transaction is
+  dropped and the answer is `409` with `SIGNAL_NOT_ACCEPTED_AT_START`: no run, no binding, no stored signal and the
+  identifier is free (tested by taking it with an ordinary start afterwards). A signal is never buffered. The signal's name
+  and payload join the idempotency fingerprint, so the same key with another signal is `IDEMPOTENCY_KEY_REUSED`, and the
+  right is `run:start` and `run:signal` both (a Developer has the first, an Operator both). A start delay is refused at the
+  route (`422` `START_DELAY_WITH_SIGNAL`) because a held run waits for nothing. The answer is `202` `{runId, started,
+  deliveredTo}`; the route is admitted as `RunStart` (one token of the namespace, also for a request the engine refuses).
+  The signal marker in the fingerprint matters for a key shared by two operations: an ordinary start under key K and then a
+  with-start under K with the same body would otherwise replay the start and answer as if a signal had been delivered (the
+  receipt of the signal catches a changed signal, not a missing one). The task names `runs/with_start.rs`; the code is in
+  `runs.rs` beside `signal`, which it shares `deliver_signal` with.
 - **D1955** (2026-11-04, T018-028) The actions of a schedule are purged by a bounded function, visiting schedules in
   turn. Nothing deleted them: an hourly schedule writes 8,700 rows a year and one every minute 525,000. FR-018-013
   keeps "at least the last 1,000 or 30 days": an action goes when it is older than 30 days **and** beyond the
@@ -611,6 +629,7 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
 | G1970 | The plain `continue_as_new` of the chain store (the prepared handoff, used by tests; production uses `continue_evaluated`) copies the identifier to the successor too, and no test of it checks that. | Its callers are the unit tests of the continuation and the prepared-handoff integration test; the production path is under `a_chain_holds_the_identifier_until_it_ends_and_every_segment_carries_it` and a mutation that drops the copy fails it. | Open |
 | G1971 | The privacy check covers logs at every level, the fields of every span (created and closed, 2026-11-05), metrics, error texts and every table; what is not searched is the OTLP wire conversion of a span, which carries the same fields. `BusinessId`'s `Debug` hides the text, so a span field would show `BusinessId(..)`. | A real OTLP export canary (SC-018-014) belongs with the observability gates of T018-071. | Open (export only) |
 | G1972 | A declared Update on a delayed run (FR-018-023: "declared Updates are admitted") has no test: the fixtures of the declared operations create their runs with `NewRun` and a retained state, not through a start with options. Nothing in the reducer reads the hold when it applies an update, so the clause is believed, not proved. | A start with a delay and a declared initial state needs its own fixture; it belongs with Update-with-Start (T018-041), which needs the same one. | Open |
+| G1973 | Three cases of Signal-with-Start (D1969) are not proved. (1) A retry of a request that signalled an open holder is answered by the signal's receipt while that holder lives; once the holder has closed and the identifier is free, the same key starts a new run and signals it, which is not the first outcome (the request left no creation receipt to replay, because it created nothing). (2) A new run that 022's run-level permit would queue instead of start: 022 is not approved, so the rollback of that case (FR-018-024) has no test and no code. (3) The race of a wait's timeout against the delivery at creation: the wait has a timer, but a run is created and signalled in one transaction, so the timer cannot fire between them; no test pins that with a clock at the boundary. | (1) is a retry after the first request succeeded and the world moved on; the same shape exists for `signalRun` and the answer is truthful about what happens now. (2) waits for the owner's approval of 022. (3) needs a wait whose timeout is the creation instant. | Open |
 | G1952 | A backfill step that the admission refuses (a full quota, no published version) waits and is tried again on every round of the pass, with no backoff, unlike a scheduled time (D1952). | A round is one poll of the database per owned shard and the step is one rolled-back transaction; harmless at the default poll but wasteful. Fix with a `retry_at` on the backfill (a migration). | Open |
 
 ## 5. Owner questions (the plan implements the recommended defaults)

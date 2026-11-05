@@ -96,6 +96,7 @@ fn app_error_variant(error: &AppError) -> &'static str {
         AppError::BatchConflict { .. } => "BatchConflict",
         AppError::InvalidStart { .. } => "InvalidStart",
         AppError::BusinessIdConflict { .. } => "BusinessIdConflict",
+        AppError::SignalRefused { .. } => "SignalRefused",
         AppError::OutcomeUnresolved => "OutcomeUnresolved",
         AppError::Invalid(_) => "Invalid",
         AppError::InvalidScript(_) => "InvalidScript",

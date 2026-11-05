@@ -171,6 +171,12 @@ pub enum AppError {
         reason: &'static str,
         field: Option<String>,
     },
+    /// A signal that a with-start request cannot deliver (feature 018, `FR-018-024`): `reason` is the
+    /// closed `details.reason` of the contract, `NOT_WAITING` (the open run does not wait for it now)
+    /// or `SIGNAL_NOT_ACCEPTED_AT_START` (nothing in the new run waits for it, so nothing was
+    /// created). A signal is never buffered.
+    #[error("signal refused: {reason}")]
+    SignalRefused { reason: &'static str },
     /// A business identifier that an open or remembered execution holds (`BUSINESS_ID_IN_USE`,
     /// `BUSINESS_ID_REUSE_REJECTED`). `holder` names the execution; the API shows it only to a caller
     /// who may read runs. `reusable_after` is when a remembered id is free again.

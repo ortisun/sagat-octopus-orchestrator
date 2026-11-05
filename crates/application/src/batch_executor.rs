@@ -119,6 +119,7 @@ fn error_code(error: &AppError) -> &'static str {
         | AppError::InvalidScript(_) => "VALIDATION_FAILED",
         AppError::StateConflict(_)
         | AppError::BusinessIdConflict { .. }
+        | AppError::SignalRefused { .. }
         | AppError::Conflict(_)
         | AppError::RevisionConflict { .. }
         | AppError::ScheduleConflict { .. }

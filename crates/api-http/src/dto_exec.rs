@@ -272,6 +272,44 @@ pub struct StartRunBody {
     pub start_delay_ms: Option<u64>,
 }
 
+/// `POST /runs/signal-with-start`: a start with a business identifier, and the signal that goes with it
+/// (feature 018, `SignalWithStartRequest`).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SignalWithStartBody {
+    pub workflow_id: String,
+    #[serde(default)]
+    pub version_id: Option<String>,
+    pub input: Value,
+    #[serde(default)]
+    pub correlation_id: Option<String>,
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub deadline: Option<OffsetDateTime>,
+    pub business_id: String,
+    #[serde(default)]
+    pub business_id_reuse_policy: Option<String>,
+    /// Accepted only to be refused in words: a delayed run cannot accept a signal at creation.
+    #[serde(default)]
+    pub start_delay_ms: Option<u64>,
+    pub signal: SignalAtStartBody,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SignalAtStartBody {
+    pub name: String,
+    pub payload: Value,
+}
+
+/// What a Signal-with-Start came to (`SignalWithStartResult`).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignalWithStartResultBody {
+    pub run_id: String,
+    pub started: bool,
+    pub delivered_to: Vec<String>,
+}
+
 fn present_json<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<Value>, D::Error> {

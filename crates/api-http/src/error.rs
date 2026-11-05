@@ -676,6 +676,19 @@ impl ApiError {
                 });
                 e
             }
+            AppError::SignalRefused { reason } => {
+                let mut e = Self::new(
+                    StatusCode::CONFLICT,
+                    ErrorCode::Conflict,
+                    if reason == "NOT_WAITING" {
+                        "the run is not waiting for that signal"
+                    } else {
+                        "the new run would not accept that signal: nothing was created"
+                    },
+                );
+                e.parts.details = Some(json!({ "reason": reason }));
+                e
+            }
             // The holder is named by the route, and only to a caller who may read runs: this
             // conversion does not know who is asking.
             AppError::BusinessIdConflict {

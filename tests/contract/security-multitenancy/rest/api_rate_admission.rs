@@ -653,3 +653,43 @@ async fn a_binding_lookup_consumes_one_token_whether_it_finds_the_identifier_or_
         "and so is one that finds nothing"
     );
 }
+
+#[tokio::test]
+async fn a_signal_with_start_consumes_one_token_even_when_the_engine_refuses_it() {
+    let (api, tenant, namespace) = world().await;
+    // the workflow starts with an activity: nothing in a new run waits for a signal, so every
+    // request below is refused with a 409 after it was admitted
+    let workflow = create_and_publish_workflow(&api, "orders").await;
+    set_rate(&api, &namespace, 10).await;
+    seed_bucket(&api, tenant, &namespace, 10).await;
+
+    let send = || {
+        api.as_user(Method::POST, "/runs/signal-with-start", "alice", "acme")
+            .header("x-octopus-namespace", "payments")
+            .header("idempotency-key", uuid::Uuid::now_v7().to_string())
+            .json(&json!({
+                "workflowId": workflow,
+                "businessId": "order-9",
+                "input": {},
+                "signal": {"name": "payment.confirmed", "payload": {}}
+            }))
+            .send()
+    };
+    assert_eq!(
+        send().await.expect("refused").status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        tokens(&api, tenant, &namespace).await,
+        Some(19 * MICROTOKENS),
+        "a request the engine refuses was still a request of the namespace"
+    );
+    assert_eq!(
+        send().await.expect("refused again").status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        tokens(&api, tenant, &namespace).await,
+        Some(18 * MICROTOKENS)
+    );
+}

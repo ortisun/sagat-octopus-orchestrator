@@ -531,6 +531,33 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /runs/signal-with-start:
+    post:
+      operationId: signalWithStart
+      summary: Signal the open run of a business identifier, or start one and deliver the signal at creation
+      tags: [Runs]
+      x-implemented: '018'
+      description: |
+        Needs `run:start` and `run:signal`. Under the binding of the `businessId`: an open holder is signalled exactly as `signalRun` (`202` with `started: false`, or `409` `NOT_WAITING` when no step of it waits for the signal now, nothing changed); otherwise, subject to `businessIdReusePolicy`, a run is created and the signal is delivered to every step that waits for it after the initial reduction, in the same transaction (`202` with `started: true`). If no step of the new run waits for it the whole request is rolled back with `409` `SIGNAL_NOT_ACCEPTED_AT_START` and nothing is created. A signal is never buffered. `startDelayMs` is refused (`422` `START_DELAY_WITH_SIGNAL`). The same `Idempotency-Key` with the same body answers what the first request did; with another body it is `409 IDEMPOTENCY_KEY_REUSED`.
+      parameters:
+        - {$ref: '#/components/parameters/Namespace'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SignalWithStartRequest'}
+      responses:
+        '202': {description: 'The signal was delivered (and the run started when started is true)', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/SignalWithStartResult'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /runs/{runId}:
     get:
       operationId: getRun
@@ -4771,6 +4798,33 @@ components:
       properties:
         items: {type: array, items: {$ref: '#/components/schemas/WorkflowDraft'}}
         nextCursor: {type: [string, 'null']}
+    SignalWithStartRequest:
+      type: object
+      required: [workflowId, businessId, input, signal]
+      additionalProperties: false
+      properties:
+        workflowId: {type: string, format: uuid}
+        versionId: {type: string, format: uuid}
+        businessId: {type: string, minLength: 1, maxLength: 200, pattern: '^[!-~]+$', description: 'The caller''s own identifier for the run. Customer content: it is not echoed in an error, a log or a metric.'}
+        businessIdReusePolicy: {type: string, enum: [ALLOW_DUPLICATE, ALLOW_DUPLICATE_FAILED_ONLY, REJECT_DUPLICATE], default: ALLOW_DUPLICATE, description: 'What to do when a closed execution still remembers the identifier. An open holder is always signalled.'}
+        input: {type: object}
+        correlationId: {type: string, maxLength: 160}
+        deadline: {type: string, format: date-time}
+        startDelayMs: {type: integer, description: 'Refused: a delayed run cannot accept a signal at creation (422 START_DELAY_WITH_SIGNAL).'}
+        signal:
+          type: object
+          additionalProperties: false
+          required: [name, payload]
+          properties:
+            name: {type: string, minLength: 1, maxLength: 128}
+            payload: {type: object, description: 'At most 256 KiB, as signalRun.'}
+    SignalWithStartResult:
+      type: object
+      required: [runId, started, deliveredTo]
+      properties:
+        runId: {type: string, format: uuid}
+        started: {type: boolean, description: 'Whether this request created the run.'}
+        deliveredTo: {type: array, items: {type: string}, description: 'The nodes the signal woke.'}
     StartRunRequest:
       type: object
       required: [workflowId]

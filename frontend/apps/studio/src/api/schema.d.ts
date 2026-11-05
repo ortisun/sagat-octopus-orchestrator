@@ -380,6 +380,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/runs/signal-with-start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Signal the open run of a business identifier, or start one and deliver the signal at creation
+         * @description Needs `run:start` and `run:signal`. Under the binding of the `businessId`: an open holder is signalled exactly as `signalRun` (`202` with `started: false`, or `409` `NOT_WAITING` when no step of it waits for the signal now, nothing changed); otherwise, subject to `businessIdReusePolicy`, a run is created and the signal is delivered to every step that waits for it after the initial reduction, in the same transaction (`202` with `started: true`). If no step of the new run waits for it the whole request is rolled back with `409` `SIGNAL_NOT_ACCEPTED_AT_START` and nothing is created. A signal is never buffered. `startDelayMs` is refused (`422` `START_DELAY_WITH_SIGNAL`). The same `Idempotency-Key` with the same body answers what the first request did; with another body it is `409 IDEMPOTENCY_KEY_REUSED`.
+         */
+        post: operations["signalWithStart"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/runs/{runId}": {
         parameters: {
             query?: never;
@@ -3290,6 +3310,39 @@ export interface components {
         WorkflowPage: {
             items: components["schemas"]["WorkflowDraft"][];
             nextCursor?: string | null;
+        };
+        SignalWithStartRequest: {
+            /** Format: uuid */
+            workflowId: string;
+            /** Format: uuid */
+            versionId?: string;
+            /** @description The caller's own identifier for the run. Customer content: it is not echoed in an error, a log or a metric. */
+            businessId: string;
+            /**
+             * @description What to do when a closed execution still remembers the identifier. An open holder is always signalled.
+             * @default ALLOW_DUPLICATE
+             * @enum {string}
+             */
+            businessIdReusePolicy: "ALLOW_DUPLICATE" | "ALLOW_DUPLICATE_FAILED_ONLY" | "REJECT_DUPLICATE";
+            input: Record<string, never>;
+            correlationId?: string;
+            /** Format: date-time */
+            deadline?: string;
+            /** @description Refused: a delayed run cannot accept a signal at creation (422 START_DELAY_WITH_SIGNAL). */
+            startDelayMs?: number;
+            signal: {
+                name: string;
+                /** @description At most 256 KiB, as signalRun. */
+                payload: Record<string, never>;
+            };
+        };
+        SignalWithStartResult: {
+            /** Format: uuid */
+            runId: string;
+            /** @description Whether this request created the run. */
+            started: boolean;
+            /** @description The nodes the signal woke. */
+            deliveredTo: string[];
         };
         StartRunRequest: {
             /** Format: uuid */
@@ -6805,6 +6858,45 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Run"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    signalWithStart: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Namespace; authorization derives tenant from token, not header. */
+                "X-Octopus-Namespace": components["parameters"]["Namespace"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SignalWithStartRequest"];
+            };
+        };
+        responses: {
+            /** @description The signal was delivered (and the run started when started is true) */
+            202: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignalWithStartResult"];
                 };
             };
             400: components["responses"]["BadRequest"];

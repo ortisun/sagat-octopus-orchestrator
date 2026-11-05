@@ -780,6 +780,17 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   would queue, delay refused, timeout race, no stored signal without a waiting step) —
   `crates/application/src/runs/with_start.rs`, `crates/api-http/src/routes/execution.rs`,
   `tests/integration/schedules-bulk-operations/with_start.rs` — SC-018-008 — FR-018-024, FR-018-050.
+  *Done 2026-11-05 (not ticked: the 022 case is blocked, G1973):* `POST /runs/signal-with-start` (D1969). Service tests
+  `with_start::` (8) and REST tests `with_start_rest::` (5) pass against a real PostgreSQL: creation delivery and the
+  journal's `wait.satisfied`, a holder signalled with no second run, `NOT_WAITING` leaving the journal untouched, an entry
+  that waits for nothing rolling back the run and its binding (the identifier is then free), the reuse policy on a closed
+  holder, replay and `IDEMPOTENCY_KEY_REUSED` (also across a plain start and a with-start under one key), `run:start` and
+  `run:signal` both required, the delay refused (422), typed validation. Contract: path and schemas in the platform OpenAPI,
+  reference blessed, Studio types regenerated, the cross-tenant battery sends it, and a rate-admission test shows one token
+  per request. 11 mutants, one survived (the signal outside the start fingerprint) and a test now kills it. Not done: a
+  new run that 022's permit would queue (022 is not approved) and the timeout race at the creation instant (G1973). The
+  task names `crates/application/src/runs/with_start.rs`, which was not created: the code is in `runs.rs` next to `signal`,
+  whose core (`deliver_signal`) it shares.
 - [ ] T018-041 [US4] Update-with-Start (`USE_EXISTING`/`FAIL`, ADR-0031 receipts, `REJECTED` keeps the
   run, nothing on pre-admission failure, `no-store`) — same files — US04 cases + replay — FR-018-025.
 - [ ] T018-042 [US4] With-start idempotency and authorization (fingerprint, replay after current auth,

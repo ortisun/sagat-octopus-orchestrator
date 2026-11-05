@@ -36,6 +36,11 @@ fn body_of(operation: &str) -> Option<Value> {
         // Feature 007: a dry run of the victim's draft with a document of the attacker's.
         "validateWorkflowDraft" => json!({"ir": flow("attacker-flow")}),
         "startRun" => json!({"workflowId": "{workflowId}", "input": {}}),
+        // Feature 018: the attacker signals-or-starts under the victim's workflow.
+        "signalWithStart" => json!({
+            "workflowId": "{workflowId}", "businessId": "battery-probe", "input": {},
+            "signal": {"name": "battery.probe", "payload": {}}
+        }),
         "operateRun" => json!({"action": "CANCEL", "reason": "cross-tenant battery probe"}),
         "inspectRunPayload" | "discloseRunPayload" => json!({"source": "input"}),
         "signalRun" => json!({"paid": true}),
@@ -564,7 +569,7 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
             .any(is_resource_id)
             || matches!(
                 operation.as_str(),
-                "startRun" | "recordScriptRunnerIncident"
+                "startRun" | "signalWithStart" | "recordScriptRunnerIncident"
             );
         let body = body_of(&operation).map(|b| {
             // A body that names the victim's workflow (startRun) or namespace (a report from a

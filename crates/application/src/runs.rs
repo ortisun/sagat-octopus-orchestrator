@@ -104,7 +104,27 @@ pub struct BusinessBinding {
 pub struct Started {
     pub run: RunRecord,
     pub existing: bool,
+    /// The steps a signal delivered with the start woke (Signal-with-Start); empty otherwise.
+    pub delivered_to: Vec<NodeId>,
 }
+
+/// The signal a Signal-with-Start request delivers (feature 018, `FR-018-024`).
+#[derive(Debug, Clone, Copy)]
+pub struct SignalAtStart<'a> {
+    pub name: &'a str,
+    pub payload: &'a [u8],
+}
+
+/// What a Signal-with-Start came to: the run, whether this request created it, and the steps woken.
+#[derive(Debug, Clone)]
+pub struct SignalStarted {
+    pub run: RunRecord,
+    pub started: bool,
+    pub delivered_to: Vec<NodeId>,
+}
+
+/// What a signal to a run that waits for nothing is refused with.
+const NOT_WAITING_FOR_SIGNAL: &str = "the run is not waiting for that signal";
 
 /// What creating a run came to.
 #[derive(Debug)]
@@ -629,6 +649,7 @@ where
             None,
             None,
             None,
+            None,
             ctx,
         )
         .await
@@ -649,8 +670,53 @@ where
         options: StartOptions,
         ctx: &RequestContext,
     ) -> Result<Started, AppError> {
-        self.start_with(principal, request, options, None, None, None, ctx)
+        self.start_with(principal, request, options, None, None, None, None, ctx)
             .await
+    }
+
+    /// Signal-with-Start (feature 018, `FR-018-024`): signals the open run of the business identifier,
+    /// or, when there is none, creates a run and delivers the signal to it in the same transaction. If
+    /// no step of the new run waits for the signal the whole request is rolled back; a signal is never
+    /// buffered. The conflict policy of `business` is ignored: an open holder is always signalled.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `run:start` and `run:signal`; the errors of
+    /// [`Self::start_with_options`]; [`AppError::SignalRefused`] (`NOT_WAITING` for an open holder
+    /// that waits for nothing, `SIGNAL_NOT_ACCEPTED_AT_START` for a new run that would not accept
+    /// it); [`AppError::NotAllowed`] for a payload that is not JSON of at most 256 KiB.
+    pub async fn signal_with_start(
+        &self,
+        principal: &Principal,
+        request: &StartRun<'_>,
+        business: BusinessStart,
+        signal: SignalAtStart<'_>,
+        ctx: &RequestContext,
+    ) -> Result<SignalStarted, AppError> {
+        principal.authorize(Permission::RunSignal)?;
+        let options = StartOptions {
+            business: Some(BusinessStart {
+                conflict: ConflictPolicy::UseExisting,
+                ..business
+            }),
+            start_delay: None,
+        };
+        let started = self
+            .start_with(
+                principal,
+                request,
+                options,
+                None,
+                None,
+                None,
+                Some(signal),
+                ctx,
+            )
+            .await?;
+        Ok(SignalStarted {
+            run: started.run,
+            started: !started.existing,
+            delivered_to: started.delivered_to,
+        })
     }
 
     /// Starts the run of a schedule's action (feature 018). The principal is the schedule
@@ -677,6 +743,7 @@ where
             None,
             None,
             Some(admission),
+            None,
             ctx,
         )
         .await
@@ -698,6 +765,7 @@ where
             StartOptions::default(),
             None,
             Some(id),
+            None,
             None,
             ctx,
         )
@@ -829,6 +897,7 @@ where
             }),
             None,
             None,
+            None,
             ctx,
         )
         .await
@@ -844,9 +913,18 @@ where
         rerun: Option<Rerun<'_>>,
         input_blob: Option<sagat_domain::blobs::BlobId>,
         scheduled: Option<crate::schedules::ScheduleAdmission>,
+        with_signal: Option<SignalAtStart<'_>>,
         ctx: &RequestContext,
     ) -> Result<Started, AppError> {
         principal.authorize(Permission::RunStart)?;
+        if let Some(signal) = &with_signal
+            && (signal.payload.len() > MAX_PAYLOAD_BYTES
+                || !self.engine.evaluator().is_json(signal.payload))
+        {
+            return Err(AppError::NotAllowed(
+                "the signal payload must be JSON of at most 256 KiB",
+            ));
+        }
         if input_blob.is_none() && request.input.len() > MAX_PAYLOAD_BYTES {
             return Err(AppError::NotAllowed("the run input is larger than 256 KiB"));
         }
@@ -1022,6 +1100,13 @@ where
         };
         // The options join the fingerprint only when there are any, so the fingerprint of a start
         // that has none is what it always was and a retry made before an upgrade still replays.
+        if let Some(signal) = &with_signal {
+            idempotency.fingerprint.extend(fingerprint(&[
+                b"run.signal_at_start",
+                signal.name.as_bytes(),
+                signal.payload,
+            ]));
+        }
         if let Some(delay) = options.start_delay {
             idempotency.fingerprint.extend(fingerprint(&[
                 b"run.start_delay",
@@ -1142,11 +1227,13 @@ where
             created,
             scheduled_start,
             held_until_us,
+            with_signal.map(|signal| (signal, request.key)),
             ctx,
         )
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn finish_start(
         &self,
         principal: &Principal,
@@ -1154,6 +1241,7 @@ where
         created: Admitted<S::Tx>,
         scheduled: bool,
         held_until_us: Option<i64>,
+        with_signal: Option<(SignalAtStart<'_>, &str)>,
         ctx: &RequestContext,
     ) -> Result<Started, AppError> {
         match created {
@@ -1162,9 +1250,42 @@ where
             Admitted::Replayed(_) if scheduled => Err(AppError::StateConflict(
                 "the schedule already acted on that time",
             )),
-            Admitted::Replayed(existing) => self.known_start(principal, &existing, false).await,
+            Admitted::Replayed(existing) => {
+                let mut started = self.known_start(principal, &existing, false).await?;
+                if let Some((signal, key)) = with_signal {
+                    // what the first request delivered, from the receipt it left with the run
+                    started.delivered_to = self
+                        .delivered_before(principal, started.run.info.run_id, signal, key)
+                        .await?;
+                }
+                Ok(started)
+            }
             // the holder of the business identifier, returned and nothing created
-            Admitted::Existing(holder) => self.known_start(principal, &holder, true).await,
+            Admitted::Existing(holder) => {
+                let mut started = self.known_start(principal, &holder, true).await?;
+                if let Some((signal, key)) = with_signal {
+                    // an open holder is signalled exactly as `signalRun` would
+                    started.delivered_to = self
+                        .signal(
+                            principal,
+                            started.run.info.run_id,
+                            signal.name,
+                            signal.payload,
+                            key,
+                            ctx,
+                        )
+                        .await
+                        .map_err(|error| match error {
+                            AppError::StateConflict(NOT_WAITING_FOR_SIGNAL) => {
+                                AppError::SignalRefused {
+                                    reason: "NOT_WAITING",
+                                }
+                            }
+                            other => other,
+                        })?;
+                }
+                Ok(started)
+            }
             Admitted::Created(mut tx) => {
                 let effects = Effects::by(
                     Actor::Principal(principal.subject().as_str().to_owned()),
@@ -1183,9 +1304,43 @@ where
                     })
                     .await
                     .map_err(engine_error)?;
+                let mut delivered_to = Vec::new();
+                if let Some((signal, key)) = with_signal {
+                    // the signal goes in the creation transaction, to every step that waits for it
+                    // after the initial reduction; if none does, nothing is created at all
+                    let idempotency = Idempotency {
+                        scope: format!("run.signal:{run_id}"),
+                        key: key.to_owned(),
+                        fingerprint: fingerprint(&[signal.name.as_bytes(), signal.payload]),
+                    };
+                    delivered_to = match self
+                        .deliver_signal(
+                            &mut tx,
+                            principal,
+                            run_id,
+                            signal.name,
+                            signal.payload,
+                            idempotency,
+                            ctx,
+                        )
+                        .await
+                    {
+                        Ok(woken) => woken,
+                        Err(AppError::StateConflict(NOT_WAITING_FOR_SIGNAL)) => {
+                            drop(tx);
+                            return Err(AppError::SignalRefused {
+                                reason: "SIGNAL_NOT_ACCEPTED_AT_START",
+                            });
+                        }
+                        Err(other) => return Err(other),
+                    };
+                }
                 tx.commit().await?;
-                self.known_start(principal, &run_id.to_string(), false)
-                    .await
+                let mut started = self
+                    .known_start(principal, &run_id.to_string(), false)
+                    .await?;
+                started.delivered_to = delivered_to;
+                Ok(started)
             }
         }
     }
@@ -1260,7 +1415,11 @@ where
             .get(principal.tenant_id(), id)
             .await?
             .ok_or(AppError::Internal)?;
-        Ok(Started { run, existing })
+        Ok(Started {
+            run,
+            existing,
+            delivered_to: Vec::new(),
+        })
     }
 
     /// # Errors
@@ -1800,6 +1959,62 @@ where
                 .filter_map(|n| NodeId::parse(n).ok())
                 .collect());
         }
+        let woken = self
+            .deliver_signal(&mut tx, principal, id, name, payload, idempotency, ctx)
+            .await?;
+        tx.commit().await?;
+        Ok(woken)
+    }
+
+    /// The receipt a with-start request left with its run: the nodes its signal woke.
+    async fn delivered_before(
+        &self,
+        principal: &Principal,
+        id: RunId,
+        signal: SignalAtStart<'_>,
+        key: &str,
+    ) -> Result<Vec<NodeId>, AppError> {
+        let idempotency = Idempotency {
+            scope: format!("run.signal:{id}"),
+            key: key.to_owned(),
+            fingerprint: fingerprint(&[signal.name.as_bytes(), signal.payload]),
+        };
+        let Some(mut tx) = self
+            .store
+            .begin(principal.tenant_id(), id, Lock::Wait)
+            .await?
+        else {
+            return Err(AppError::Internal);
+        };
+        Ok(tx
+            .replay(&idempotency)
+            .await?
+            .map(|delivered| {
+                delivered
+                    .split(',')
+                    .filter(|n| !n.is_empty())
+                    .filter_map(|n| NodeId::parse(n).ok())
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// Delivers the signal to every step of the run in `tx` that waits for it, under the receipt
+    /// `idempotency`, and returns the nodes woken. The caller commits (or, for a creation, rolls back).
+    ///
+    /// # Errors
+    /// [`AppError::StateConflict`] when no step waits for the signal, and the failures of the run.
+    #[allow(clippy::too_many_arguments)]
+    async fn deliver_signal(
+        &self,
+        tx: &mut S::Tx,
+        principal: &Principal,
+        id: RunId,
+        name: &str,
+        payload: &[u8],
+        idempotency: Idempotency,
+        ctx: &RequestContext,
+    ) -> Result<Vec<NodeId>, AppError> {
         let targets: Vec<NodeId> = {
             let (def, state) = tx.parts();
             state
@@ -1818,9 +2033,7 @@ where
                 .collect()
         };
         if targets.is_empty() {
-            return Err(AppError::StateConflict(
-                "the run is not waiting for that signal",
-            ));
+            return Err(AppError::StateConflict(NOT_WAITING_FOR_SIGNAL));
         }
         // What a run retains is bounded (every lease carries it): a signal that would exceed it is
         // refused instead of stored.
@@ -1864,7 +2077,7 @@ where
         ));
         let woken = targets.clone();
         self.engine
-            .run(&mut tx, effects, move |def, state, now| {
+            .run(tx, effects, move |def, state, now| {
                 let mut events = Vec::new();
                 let mut pending = None;
                 for node in &targets {
@@ -1876,7 +2089,6 @@ where
             })
             .await
             .map_err(engine_error)?;
-        tx.commit().await?;
         Ok(woken)
     }
 
