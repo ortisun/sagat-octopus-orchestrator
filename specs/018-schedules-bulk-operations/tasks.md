@@ -928,8 +928,8 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
 - [ ] T018-047 [US5] Item adapters for the eight actions through single-run use cases, skip reasons (incl.
   `TEST_RUN`), failed compensation of cancelled runs — `tests/integration/schedules-bulk-operations/batch_actions.rs`
   — one case per action and reason — FR-018-030, FR-018-031, FR-018-034, FR-018-050.
-  *Part done 2026-11-04 (task stays open for `UPDATE`, which a batch cannot apply yet (G1959), and `TEST_RUN`, which
-  needs feature 022, not approved).* `ItemActions` is implemented for the run service in
+  *Part done 2026-11-04 (task stays open for `TEST_RUN`, which needs feature 022, not approved; `UPDATE` was added on
+  2026-11-05, see the end of this note).* `ItemActions` is implemented for the run service in
   `application/src/runs/batch_items.rs` for cancel, pause, resume (`operate`), signal, retry-step and
   mark-manual-review (`review` with `Retry` and `Hold`) and rerun, each under the key of its item. Cases against real runs
   and workers, `batch_actions::` (4 passed) and the earlier `batch_executor::`: `CANCEL` of a running run and of one that
@@ -946,6 +946,12 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   the strict parser; a step id that is no node is now `BATCH_ACTION_PARAMETERS` at `/stepId` when the job is created.
   Mutations that were caught: the strict parser, the missing `NotFound` mapping, every non-cancel skip as
   `ALREADY_TERMINAL`, and a missing signal wait as `NOT_APPLICABLE`.
+  *`UPDATE` added 2026-11-05 (D1972, G1959 closed):* `batch_actions::an_update_is_applied_to_the_runs_that_declare_it_and_skipped_for_the_others`
+  (two open runs `SUCCEEDED` with the declared state at revision 1; an ended run `SKIPPED ALREADY_TERMINAL` and untouched;
+  a run whose version declares no such Update `SKIPPED OPERATION_NOT_DECLARED`; a rule that says no `FAILED
+  VALIDATION_FAILED` with the state unchanged; another job applies again, once), the creation tests (an `UPDATE` without
+  its `update`, or with a name no operation can have, creates nothing), a unit test of the `Error.code` of a refused
+  Update, and 6 mutants killed. The task stays open for `TEST_RUN` only (feature 022).
 - [x] T018-048 [US5] Batch authorization and ceilings (no `run:batch`, missing action permission,
   mid-job revocation, foreign ids, job/item ceilings, zero quota) —
   `tests/integration/schedules-bulk-operations/batch_security.rs` — SC-018-010 — FR-018-033, FR-018-034,

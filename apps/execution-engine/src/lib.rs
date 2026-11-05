@@ -430,12 +430,14 @@ pub async fn serve(
         let batches: Arc<EngineBatches> = Arc::new(BatchPass::new(
             BatchExecutor::new(
                 PgBatchStore::new(pool.clone()),
+                // an `UPDATE` item applies a declared Update to the run, which needs its evaluator
                 RunService::new(
                     store.clone(),
                     SystemClock,
                     Engine::new(JsonEvaluator),
                     cache.clone(),
-                ),
+                )
+                .with_declared_updates(Arc::new(sagat_infra_ir::JsonDeclaredOperationEvaluator)),
                 PgIdentityStore::new(pool.clone()),
                 database_clock.clone(),
                 ExecutorSettings::default(),

@@ -281,6 +281,17 @@ async fn parameters_the_action_does_not_take_and_limits_out_of_range_create_noth
         ),
         (
             BatchWrite {
+                action: Action::Update,
+                update: Some(NamedPayload {
+                    name: "two words".to_owned(),
+                    body: b"{}".to_vec(),
+                }),
+                ..cancel()
+            },
+            "BATCH_ACTION_PARAMETERS",
+        ),
+        (
+            BatchWrite {
                 drop_business_id: true,
                 ..cancel()
             },
@@ -295,12 +306,12 @@ async fn parameters_the_action_does_not_take_and_limits_out_of_range_create_noth
             "BATCH_ACTION_UNAVAILABLE",
         ),
         (
-            // a declared Update is not applied by a batch yet (G1959): refuse it, do not fail every item
+            // an Update names the operation and carries its arguments
             BatchWrite {
                 action: Action::Update,
                 ..cancel()
             },
-            "BATCH_ACTION_UNAVAILABLE",
+            "BATCH_ACTION_PARAMETERS",
         ),
         (
             BatchWrite {

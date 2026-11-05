@@ -72,5 +72,5 @@ No label is a tenant, a job or a run. The audit trail records `batch.created`, `
 ## 6. What is not built yet
 
 - The purge of finished jobs and their items (T018-051, waiting on feature 020's selector).
-- `UPDATE` (G1959) and `REPIN` (feature 019) as batch actions; `RERUN` with `businessId: DROP` stores the choice and ignores it until business ids exist (G1964).
+- `REPIN` (feature 019) as a batch action. (`UPDATE` is built: each item applies the declared Update under the key of the item, `SUCCEEDED` when applied, `FAILED` with the `Error.code` of `updateRun` when a rule says no, `SKIPPED` with `ALREADY_TERMINAL`, `RUN_CONTINUED` or `OPERATION_NOT_DECLARED` otherwise.)
 - A bounded wait on locks inside an item (G1958) and a deadline for the wait of the selection (G1963); the clock skew between the host that stamps `runs.created_at` and the database clock the selection uses (G1962).

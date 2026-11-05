@@ -5,7 +5,9 @@
 
 use super::*;
 use crate::batch_executor::{ItemActions, ItemEffect, ItemRequest};
+use crate::declared_operations::DeclaredOperationStoreError;
 use sagat_domain::batch::{Action, SkipReason};
+use sagat_domain::execution::{OperationError, UpdateReceiptStatus, UpdateRejection};
 
 impl<S, C, E> ItemActions for RunService<S, C, E>
 where
@@ -134,9 +136,74 @@ where
                     Err(other) => Err(other),
                 }
             }
-            // an Update goes through the declared operations of the run, which the batch does not
-            // call yet; the feature 019 repin does not exist without that feature
-            Action::Update | Action::Repin => Err(AppError::NotAllowed(
+            Action::Update => {
+                let (Some(name), Some(payload)) = (params.name.as_deref(), request.payload) else {
+                    return Err(AppError::Internal);
+                };
+                // the key of the item is the key of the Update: a repeat of the item answers from the
+                // receipt it left, and the Update is applied once
+                let (Ok(operation), Ok(update_key), Ok(arguments)) = (
+                    ActivityName::parse(name),
+                    UpdateKey::parse(request.key),
+                    DeclaredOperationArguments::parse(payload),
+                ) else {
+                    return Err(AppError::Internal);
+                };
+                // A run the creator cannot see is hidden from them. Past this read, what the Update
+                // refuses is not for this action.
+                let namespace = self
+                    .get(request.principal, id, request.ctx)
+                    .await?
+                    .info
+                    .namespace_id;
+                let update = UpdateAtStart {
+                    operation: &operation,
+                    update_key: &update_key,
+                    arguments: &arguments,
+                    expected_state_revision: None,
+                };
+                match self
+                    .update_in_own_transaction(
+                        request.principal,
+                        id,
+                        namespace,
+                        update,
+                        request.ctx,
+                    )
+                    .await
+                {
+                    Ok(applied) => match applied.resolution.receipt().status() {
+                        UpdateReceiptStatus::Applied => Ok(done()),
+                        // a business rejection fails the item as `updateRun` fails the call
+                        UpdateReceiptStatus::Rejected => {
+                            match applied.resolution.receipt().rejection() {
+                                Some(UpdateRejection::RevisionConflict { .. }) => {
+                                    Err(AppError::StateConflict("the declared update was rejected"))
+                                }
+                                _ => Err(AppError::NotAllowed("the declared update was rejected")),
+                            }
+                        }
+                    },
+                    Err(AppError::DeclaredUpdate(error)) => match error {
+                        // the run's version declares no such Update
+                        DeclaredOperationStoreError::DefinitionUnavailable
+                        | DeclaredOperationStoreError::NotFound => {
+                            skip(SkipReason::OperationNotDeclared)
+                        }
+                        // the run is over, or handed off to its successor
+                        DeclaredOperationStoreError::Operation(OperationError::RunNotMutable(
+                            _,
+                        )) => skip(SkipReason::AlreadyTerminal),
+                        DeclaredOperationStoreError::Operation(OperationError::RunContinued) => {
+                            skip(SkipReason::RunContinued)
+                        }
+                        other => Err(AppError::DeclaredUpdate(other)),
+                    },
+                    Err(other) => Err(other),
+                }
+            }
+            // the feature 019 repin does not exist without that feature
+            Action::Repin => Err(AppError::NotAllowed(
                 "the action is not available to batch jobs yet",
             )),
         }
