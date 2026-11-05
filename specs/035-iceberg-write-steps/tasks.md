@@ -376,7 +376,7 @@ three conditions pass.
   - never terminates TLS.
 
   Refs: FR-035-004, D035-049, D035-061.
-- [ ] T035-017 [P] Write the failing `sagat.lake.v1` codec tests in `crates/infra-lake/tests/protocol.rs`:
+- [x] T035-017 [P] Write the failing `sagat.lake.v1` codec tests in `crates/infra-lake/tests/protocol.rs`:
   - one request line;
   - progress lines at most once per second;
   - exactly one result line;
@@ -387,6 +387,10 @@ three conditions pass.
     or logged.
 
   Refs: D035-062, D035-067.
+
+  *2026-11-05, done:* `crates/infra-lake/tests/protocol.rs`, 31 cases against the real `receipts.schema.json` and the
+  receipt samples of the contract suite. Written before the codec and seen failing (the imports did not resolve), then
+  passing; 25 mutations of the codec are each caught (D035-077).
 - [x] T035-018 [P] Write the failing configuration-hygiene tests in
   `runners/lake/tests/test_config_hygiene.py`, and the hostile REST catalog fixture in
   `tests/fixtures/lake/hostile-catalog/`. The fixture returns:
@@ -517,6 +521,13 @@ three conditions pass.
   In `scripts/check-architecture.py`, run `cargo tree -e features` for `apps/control-plane` and
   `apps/execution-engine`, and fail if `infra-lake`, `object_store/gcp` or `object_store/azure`
   appears. Refs: D035-058, constitution II.
+
+  *2026-11-05, partly done, left unticked:* the workspace crate `crates/infra-lake/` exists, in the adapter layer
+  (`python3 scripts/check-architecture.py`: 25 crates, layers respected), with the protocol codec. It depends on the
+  domain only, so the control plane does not link it. Not done: the `lake` cargo feature of `apps/database-runner`, the
+  `lake-runner` Dockerfile target, the `object_store` `gcp` and `azure` features, and the rule in
+  `scripts/check-architecture.py` that runs `cargo tree -e features` for the control plane and the execution engine.
+  They come with the first code that links the object-store clients.
 - [ ] T035-028 Implement the `lake` container profile in `crates/infra-sandbox/src/docker.rs`:
   - own user, pid, mount and network namespaces, with loopback only;
   - a distinct UID per slot;
@@ -557,6 +568,13 @@ three conditions pass.
   - it writes heartbeats and one result line, then exits 0.
 
   Add the pytest `runners/lake/tests/test_host_protocol.py`. T035-017 passes. Refs: D035-062, D035-067.
+
+  *2026-11-05, the Rust half is done, left unticked:* `crates/infra-lake/src/protocol.rs` and `protocol/receipt.rs`
+  (the request envelope, the decoder with its heartbeat bound and its single result line, the typed receipts of the
+  two kinds a host produces, the closed failures, the standard-error summary). T035-017 passes: 31 cases, clippy
+  clean, 25 mutations caught (D035-077). Not done: `runners/lake/sagat_lake/host.py` (`PR_SET_DUMPABLE=0` first, the
+  relay authentication, one request line, heartbeats, one result line) and `test_host_protocol.py`; the probe and
+  browse results; and where the host's configuration denials are reported (G035-028).
 - [x] T035-033 Implement configuration hygiene in `runners/lake/sagat_lake/config_hygiene.py`:
   - an allowlist of `warehouse`, `prefix` and the declared storage type's vended credential keys;
   - `py-io-impl` and the FileIO implementation pinned;

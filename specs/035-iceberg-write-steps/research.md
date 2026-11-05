@@ -701,6 +701,39 @@ The other fixes were wording:
     scheme check, an uncounted denial, an unchecked catalog prefix, an unchecked ADLS authority, an unbounded warehouse
     value, undeclared vended credentials, user info in an S3 prefix, an unconfined warehouse. Two survived the first
     tests (the ADLS authority and the length of a warehouse value); each has a test now and none survives.
+- **D035-077 — What the `sagat.lake.v1` codec accepts, and what it leaves to later tasks.** T035-017 and T035-032 (the
+  Rust half). Decided by: delegate.
+  - *Heartbeats.* The contract says at most one a second. The runner measures when a line arrived, and a socket
+    delivers late lines in a burst, so a window of one second holds two lines (the one on time and one of slack) and a
+    third is a flood (`HeartbeatFlood`). The time comes in as an argument, so no test sleeps.
+  - *One result.* A second result, or any line after the result, is `LineAfterResult`; a host that closes without one is
+    `NoResult`; a line over 1 MiB is `LineTooLong`. The attempt driver reads the socket a line at a time under that bound.
+  - *The result line.* Exactly `{"receipt": …, "relayDenials": n}` or `{"failure": …, "relayDenials": n}`; any other set of
+    members is `UnknownMember`, and a count that is not an integer from 0 to 2^32-1 is `Malformed`. Every
+    `ProtocolFailure` is `LAKE_HOST_PROTOCOL` and carries a closed kind, never content of the line.
+  - *Receipts.* Only the two kinds a host produces are read: `iceberg` and `object_storage`. The PostgreSQL, ClickHouse,
+    broker and `failed` receipts are written by the runner, so a host that sends one is refused. Every field is a type
+    that accepts only what `receipts.schema.json` names (a count is a canonical decimal string, a hash is 64 lowercase hex
+    digits), a field outside the schema is refused, and the receipt is built again from the typed fields. Two typed
+    fields are stricter than the schema on purpose: a snapshot id is a canonical signed 64-bit integer (the schema
+    allows 20 digits), and an effect key and a ref have no control character.
+  - *Failures.* The code must be one of `DatabaseFailure::ALL`. `column` is 1 to 128 characters with no control
+    character, and `reason` is 1 to 48 characters of `A-Z`, `0-9` and `_`: a closed charset and not a closed set, because
+    the reasons of each code arrive with the check that raises it (`ICEBERG_UNSUPPORTED_TABLE` names none today).
+  - *The request.* The envelope (`protocol`, `operation`, `effectKey`, `firstAttemptStartedAt`, `relay`) is typed and a body
+    cannot override it. The body of each operation (the pinned connection with its credentials, the table, the mode, the
+    limits) is an open map for now: its typed builder comes with the task that adds the operation (US01 and US02), and
+    the Iceberg connection model does not exist yet. That is a pending decision and not a design. The token and the body
+    are never shown by `Debug`.
+  - *Standard error.* Reduced to a closed `ExceptionClass` and a line count; the text is not kept. The class is the last
+    line's name when it is a CamelCase identifier, so a line that is only a secret classifies as none.
+  - *Not done.* The probe and browse results (`receipts.schema.json` has no shape for them; they arrive with their
+    tasks), the Python host, and the reader that applies the line bound to the socket.
+  - *Evidence.* `cargo test -p sagat-infra-lake --locked`: 31 passed; clippy `-D warnings` and `cargo fmt --check` clean;
+    the architecture check sees the new crate in the adapter layer. Written first and seen failing (unresolved
+    imports). 25 mutations of the codec were applied one at a time and all are caught; the first run let one survive
+    (an object-storage receipt that accepts unknown fields: the test only tried the Iceberg receipt) and a test now
+    covers both kinds.
 - **G035-027 — Places where the contract fragments do not yet fit the canonical shapes or the code.** Found while writing
   the contract tests; none is pinned by a test yet, each is settled by the task that implements it.
   1. `connections.md` names `ConnectionProbeResult.checks[]`, but the canonical OpenAPI has no such schema: the probe
