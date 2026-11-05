@@ -376,6 +376,13 @@ three conditions pass.
   - never terminates TLS.
 
   Refs: FR-035-004, D035-049, D035-061.
+
+  *2026-11-05, the `network.rs` part is done, the task is left unticked:* `fd00:ec2::254` (AWS) and `fd20:ce::254` (Google
+  Compute Engine) lie inside `fc00::/7`, which the policy allowed, so a policy that allows `fd00::/8` reached the
+  metadata services. They are named in `prohibited` and refused in development too. Four unit tests in `network.rs`: the
+  two addresses are refused, their neighbours are not (the rule is two addresses, not a range), the IPv4-mapped forms
+  of the IPv4 metadata addresses stay refused, and a policy that allows the ULA range still refuses them, also in a
+  mixed answer. The two tests that need the rule failed first. Not done: the relay and `crates/infra-lake/tests/relay.rs`.
 - [x] T035-017 [P] Write the failing `sagat.lake.v1` codec tests in `crates/infra-lake/tests/protocol.rs`:
   - one request line;
   - progress lines at most once per second;
