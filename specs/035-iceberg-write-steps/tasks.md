@@ -430,6 +430,15 @@ three conditions pass.
   `infra-postgres`, failing first). `cargo test -p sagat-tests --test integration_database_connections`: 7 passed,
   also with `SAGAT_TEST_AS_RUNTIME_ROLE=1`; workspace clippy clean. The REST body still refuses `egressCeiling`
   (G035-027 item 7).
+  *After the independent review of PR #95 (D035-074):* the reveal-grant rule had no caller. `write_connection` now
+  checks it in the transaction that writes the revision, for a write that leaves the connection active at `pii`
+  (`StoreError::RevealGrantRequired`, shown as `Forbidden` for `payload:reveal-pii`). The scenario
+  `egress_ceiling_needs_the_reveal_grant` failed first (a `pii` write by an admin with no grant was stored), then
+  `integration_database_connections` passed 7 of 7, also with `SAGAT_TEST_AS_RUNTIME_ROLE=1`; relaxing the condition to
+  every status failed it at the pause after the revocation. Also added: a golden of the configuration as feature 017
+  stored it (reads as `internal`, serializes back unchanged) and two `dto_database.rs` tests (the body refuses the
+  field, the response does not carry it), each failed by its own mutation. Still not done for the task: the
+  Iceberg, object-storage and ClickHouse variants, and the REST field.
 - [ ] T035-023 Add the permission and the audit actions:
   - `Permission::DatabaseBrowse` and its role tables in `crates/domain/src/identity.rs`;
   - the three audit actions in `crates/domain/src/audit.rs`;
@@ -444,6 +453,11 @@ three conditions pass.
   --all-targets --locked -- -D warnings` clean; the domain, API and application crates pass. Not done: the browse
   entry of `crates/application/src/api_admission.rs`, which comes with the browse route (the operations are
   `x-planned: '035'`).
+  *After the independent review of PR #95:* `every_permission_has_a_role_decision` was satisfied by the admin role
+  itself, so it could not fail; it now names the 13 admin-only permissions and fails when a permission in
+  `Permission::ALL` is in no decision (a removal from the list failed it, then the file was restored). A catalog browse
+  is one audit row each time and does not collapse repeats (D035-075; 11 audit tests). The doc comment of
+  `DatabaseBrowse` said "the roles that manage connections"; it now says developers and admins (D035-066).
 - [ ] T035-024 Add the contracts/errors.md codes to `DatabaseFailure` in
   `crates/domain/src/database/failure.rs`. Add the publication refusal reasons to
   `crates/api-http/src/error.rs`, and the catalog entries to `sdks/error-catalog.json` and every
