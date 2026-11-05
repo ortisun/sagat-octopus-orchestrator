@@ -17,3 +17,5 @@ Release checkpoints: [ADR-0040](ADR-0040-release-checkpoints-preserve-incomplete
 Recovery refinement: [ADR-0076](ADR-0076-compensation-failure-and-uncertain-effects.md) — accepted 2026-11-01 for delivery 1 (Constitution 2.0.0, principle III); provider qualification (US04) stays proposed.
 
 Specification workflow: [ADR-0077](ADR-0077-egm-replaces-spec-kit.md) — proposed; EGM design docs replace Spec Kit (Constitution 4.0.0).
+
+Capacity locks: [ADR-0078](ADR-0078-capacity-group-lock-order-and-possession-protocol.md) — proposed; the ChildRoot capacity group header is a lock nobody waits for and possession moves only through fenced commands (refines ADR-0075; leaves the creator, the sweeper's coverage and the worker's complete lock sequence open).
