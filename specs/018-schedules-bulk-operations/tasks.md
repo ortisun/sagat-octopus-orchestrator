@@ -938,6 +938,21 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   transaction on schedule, business-id, job, item, obligation or pending-reset rows —
   `tests/fault/schedules-bulk-operations/run_driven_locks.rs` — SC-018-016 — FR-018-007, FR-018-021,
   FR-018-030.
+  *Part done 2026-11-05 (task stays open: business-id and pending-reset rows, the wait timeout and the handoff).* The test
+  holds `ACCESS EXCLUSIVE` on every table of the two aggregates that exist (`schedules`, `schedule_revisions`,
+  `schedule_actions`, `schedule_backfills`, `schedule_obligations`, `batch_jobs`, `batch_items`, found by name so that one
+  added later is locked too; each is shown to refuse a statement with `lock_not_available` after 300 ms), which stops any
+  statement that reads or writes them, and drives the transitions a run goes through: a worker completes an attempt and the
+  step it unlocks (the run succeeds), a worker fails an attempt for good (the run ends), a person cancels, and the
+  scheduler's passes fire a timer (the step behind it is ready), take back a lease that ran out and enforce a run
+  deadline. Every one finishes while the locks are held, so none of them reads or writes a row of an aggregate (a run
+  learns nothing from them and they learn of a run by looking, ADR-0050 decision 7). The control: the firing of a due
+  schedule does wait for the same locks (seen in `pg_stat_activity`, not by a delay) and acts once they are released.
+  Evidence: `fault_schedules_bulk_operations` `run_driven_locks::` 1 passed, the suite 31 passed, also with
+  `SAGAT_TEST_AS_RUNTIME_ROLE=1`; a mutation that makes the transaction a run-driven change begins read the schedule that
+  tracks the run fails it with "stage `a worker completes` did not finish within 60s", naming the transition that waited.
+  Not covered: the wait timeout and the handoff transitions, and the rows of business ids and pending resets, which
+  exist when US03 and US06 do.
 - [ ] T018-077 Feature 020/022 integration once they merge: every run creator through 022's T10 (schedule
   action, starts, with-start, batch rerun, rerun, reset), reset `CONCURRENCY_PERMIT_UNAVAILABLE`,
   test-tree refusals, restored rows skipped by 020 analytics, attribute fold on reset, `RUN_PURGED`
