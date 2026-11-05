@@ -848,3 +848,95 @@ async fn a_start_the_admission_refuses_after_the_claim_leaves_no_binding_behind(
     );
     assert!(runs_of(&f, "quota-1").await.is_empty());
 }
+
+/// The stage limit of the races below: a step that has to wait for a lock never finishes.
+const STAGE: std::time::Duration = std::time::Duration::from_secs(60);
+
+#[tokio::test]
+async fn a_start_beside_the_end_of_its_holder_does_not_wait_for_it_and_sees_it_open_until_it_commits()
+ {
+    let f = fixture().await;
+    let id = "terminal-race-1";
+    let holder = start(&f, held_by(id), &key())
+        .await
+        .expect("the holder")
+        .run
+        .info
+        .run_id;
+
+    // the end of the holder is in flight: written, not yet committed
+    let mut ending = f.w.db.pool.begin().await.expect("a transaction");
+    sqlx::query(
+        "UPDATE runs SET status = 'CANCELLED', finished_at = clock_timestamp() WHERE id = $1",
+    )
+    .bind(holder.as_uuid())
+    .execute(&mut *ending)
+    .await
+    .expect("the end, uncommitted");
+
+    // a start does not wait for it (it reads the holder, it does not lock it) and sees it open
+    let refused = crate::support::bounded::within(
+        "a start beside the end of its holder",
+        STAGE,
+        start(&f, held_by(id), &key()),
+    )
+    .await
+    .expect_err("the holder has not ended as far as anybody can see");
+    assert_eq!(
+        refused,
+        AppError::BusinessIdConflict {
+            reason: "BUSINESS_ID_IN_USE",
+            holder,
+            reusable_after: None
+        }
+    );
+
+    // once the end commits, the next start takes the identifier over
+    ending.commit().await.expect("the end commits");
+    let next = start(&f, held_by(id), &key())
+        .await
+        .expect("the holder ended")
+        .run
+        .info
+        .run_id;
+    assert_ne!(next, holder);
+    assert_eq!(holder_of(&f, id).await, Some(next.as_uuid()));
+    assert_eq!(runs_of(&f, id).await.len(), 2);
+}
+
+#[tokio::test]
+async fn a_claim_in_flight_blocks_no_transition_of_the_run_that_holds_the_identifier() {
+    let f = fixture().await;
+    let id = "terminal-race-2";
+    let holder = start(&f, held_by(id), &key())
+        .await
+        .expect("the holder")
+        .run
+        .info
+        .run_id;
+
+    // a claim in flight: the row of the binding is locked, as the claim of a start does
+    let mut claiming = f.w.db.pool.begin().await.expect("a transaction");
+    sqlx::query("SELECT 1 FROM business_ids WHERE business_id = $1 FOR UPDATE")
+        .bind(id)
+        .fetch_all(&mut *claiming)
+        .await
+        .expect("the row of the binding");
+
+    // the holder goes through its end meanwhile: a transition of a run touches no binding
+    crate::support::bounded::within("the end of the holder", STAGE, cancel(&f, holder)).await;
+
+    claiming.rollback().await.expect("release the row");
+    lookup_closed(&f, id).await;
+}
+
+fn held_by(id: &str) -> StartOptions {
+    business(id, ConflictPolicy::Fail, ReusePolicy::AllowDuplicate)
+}
+
+async fn lookup_closed(f: &Fixture, id: &str) {
+    let binding = crate::business_id_lookup::lookup(f, id)
+        .await
+        .expect("the binding");
+    assert!(!binding.open, "the holder ended");
+}

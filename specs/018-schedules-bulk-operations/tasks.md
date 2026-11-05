@@ -697,7 +697,7 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `business_binding` and in `crates/api-http/src/routes/execution.rs`, not in the `runs/business_id.rs` and `dto.rs` this
   line names (D1961). Ticked from: `contract_schedules_bulk_operations` 3, `contract_rest_security_multitenancy` 18,
   `business_ids_rest.rs` 13, `business_id_rerun.rs` 8, `business_id_lookup.rs` 6.
-- [ ] T018-036 [US3] 32-way race, policy table in/after window, terminal-commit race, chain continuity,
+- [x] T018-036 [US3] 32-way race, policy table in/after window, terminal-commit race, chain continuity,
   key replay/reuse, harness vs signal paths — `tests/{integration,fault}/schedules-bulk-operations/business_ids.rs`
   — SC-018-006 — FR-018-018..021.
   *Part done (2026-11-05), the task stays open:* in `business_ids.rs` 32 concurrent starts of one identifier give one
@@ -709,8 +709,21 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   proves that the transitions of a run that holds an identifier never touch a schedule, batch or binding table
   (`run_driven_locks.rs`), and `batch_locks.rs` accepts a plan with the binding row in the Aggregate slot, after the schedule
   row and before the runs it acts on (the order of D1961; it checks a declared plan, not the claim itself).
-  Not done: the terminal-commit race with a start that is claiming, the harness-versus-signal paths, and the crash points of
-  the claim in a fault matrix; T018-012's slot cases are still the ones that block the lock-order half of this task.
+  *Done 2026-11-05 (ticked):* the rest of the line landed.
+  - The terminal-commit race (`business_ids.rs`): a start beside the end of its holder, written and not committed, does not
+    wait for it and finds it open (`BUSINESS_ID_IN_USE`), and takes the identifier over once the end commits; a claim in
+    flight, holding the row of the binding, blocks no transition of the run that holds it. A mutant that makes the claim lock
+    the holder it reads is killed (the start waits, and the stage limit names it).
+  - The signal and the other run-driven paths (`run_driven_locks.rs`, SC-018-016): with every table of the aggregates,
+    `business_ids` included, held in `ACCESS EXCLUSIVE`, a signal wakes a waiting run, a wait runs out and takes its
+    other way, and a chain hands off to its next segment, which carries the identifier, all without waiting. Mutants that make
+    a signal or the production hand-off read the binding table are killed; the one on the plain `continue_as_new` copy
+    survives, which is G1970.
+  - The crash matrix (`fault_schedules_bulk_operations` `business_ids.rs`): a start under an identifier is one transaction of
+    30 writing statements on 13 tables; the connection is killed after each in turn, and each time no table has changed,
+    there is neither a binding nor a run, and the same start sent again makes exactly one run that holds the identifier and a
+    third is a replay of it. A first start is made before the probe: its first counters are writes that later starts do not make.
+  `T018-012`'s slot cases for the admission paths of 019, 021, 022, 024, 025, 026 and 030 stay T018-012's, as those paths exist.
 - [ ] T018-037 [US3] Start delay (events, fenced release pass with `apply_if`, cancel/deadline, signal
   refused, Update admitted, quota; with 022 run-level concurrency the release acquires the permit or
   enqueues the run, FR-022-018) — `crates/scheduler/src/passes.rs`, `crates/infra-postgres/src/execution.rs`,
