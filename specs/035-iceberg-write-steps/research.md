@@ -775,6 +775,39 @@ The other fixes were wording:
     counter, an unbracketed authority, a zero limit, mapping names, a short token, any character in a token, a constant
     token), all caught. The gaps the reviewer listed in the tests were closed: an IPv4-mapped answer is connected to as
     IPv4, a mapped metadata address through a mapping is refused, spellings of an undeclared name are refused.
+- **D035-080 — The Iceberg connection: one document from the API to the database, and a SQL step never uses it.** T035-038,
+  T035-041, T035-042 and the REST half of T035-043. Decided by: delegate.
+  - *The type.* `ConnectionConfig::Iceberg(Box<IcebergConfig>)` in `crates/domain/src/database/iceberg.rs`, member by
+    member the `IcebergConnectionConfig` schema of the OpenAPI contract: the four catalogs, the three storage types, the
+    prefixes, the modes (`append` by default), the two secret references, the ceiling and the limits. Every rule of
+    data-model section 1 is a rule of `IcebergConfig::validate`, and each refusal is a closed `LakeConfigError` whose
+    `reason()` the API returns (`CREDENTIAL_IN_URI`, `VENDED_NEEDS_DELEGATION`, ...).
+  - *What the domain cannot know.* Plain `http`, a GCS emulator and a plaintext JDBC catalog are for a development
+    namespace (`requires_development()`, enforced where PostgreSQL's plaintext already is, in the transaction that
+    writes the revision). A Hive metastore with `tls: none` is for a deployment that allows it
+    (`uses_unauthenticated_metastore()`): `ConnectionService` refuses it with `UNAUTHENTICATED_METASTORE_NOT_ALLOWED`
+    unless `with_unauthenticated_metastore_allowed(true)`, and nothing sets that yet (G035-030).
+  - *A SQL step never uses a lake connection.* `secret()` and `limits()` were the accessors of a PostgreSQL connection;
+    they are `sql_secret()` and `sql_limits()`, which are `None` for a lake connection, and every SQL path answers that
+    the connection is unavailable: admission (a published `database` step that names it is `NotFound`, as an unknown
+    connection is), the execution of a step, the managed executor, the SQL runner and the gRPC answer of the SQL profile.
+    The lake profile answers a lake connection (T035-044).
+  - *Stored and shown as the same document.* The stored form is the contract's document (the egress ceiling only when it
+    is not the default, the modes in the order written); the reader ignores a member it does not know and checks every
+    rule again, so a document that breaks one is corrupt and is not used. The REST body is `deny_unknown_fields` at every
+    level, and `type` selects the one member that may be present.
+  - *Both secrets, and the ceiling.* `write_connection` locks and checks every secret the connection names (one for
+    PostgreSQL, a catalog's and a storage's for Iceberg) for OpenBao authority, and the `pii` check of D035-074 applies to
+    both kinds. `egressCeiling` is part of the REST body of both kinds and the response omits `internal`, which closes
+    G035-027 item 7.
+  - *Refusals.* `AppError::InvalidConnection { reason }` is a `422 VALIDATION_FAILED` whose `details.reason` is the closed
+    name, with one sentence of advice for each of the fourteen reasons; the message never repeats a value.
+  - *Evidence.* `cargo test` of the domain, application, API, store, executor and gRPC crates: 91 suites, 0 failed. The
+    domain rules were written first (compile-red), and 29 mutations of them are all caught (one survived: nothing
+    tested a zero or out-of-range port in a catalog address). `integration_database_connections` passes 7 of 7, also with
+    `SAGAT_TEST_AS_RUNTIME_ROLE=1`, with a new scenario (`lake.rs`) against real PostgreSQL and OpenBao: the stored
+    document, the retry, the audit row, another tenant's 404, a missing secret writing nothing, a SQL step refused,
+    plaintext by environment, the `pii` grant, and the history of a paused connection.
 - **G035-027 — Places where the contract fragments do not yet fit the canonical shapes or the code.** Found while writing
   the contract tests; none is pinned by a test yet, each is settled by the task that implements it.
   1. `connections.md` names `ConnectionProbeResult.checks[]`, but the canonical OpenAPI has no such schema: the probe
@@ -795,10 +828,8 @@ The other fixes were wording:
      keeps the 170 existing operations byte-identical.
   6. The Studio lists a lake connection by its driver and offers neither the PostgreSQL form nor a probe for it, because
      `DatabaseConnection.config` is now a union; the kind-specific forms are the Studio tasks of the feature.
-  7. The OpenAPI allows `egressCeiling` on a PostgreSQL connection, but the REST body (`ConfigBody`,
-     `deny_unknown_fields`) still refuses it and the response does not carry it: the domain and the store hold it
-     (T035-022), the endpoint that sets it with the reveal-grant check is the connections work of US01 (T035-038..).
-     Until then a connection written through the API is always `internal`, which is what the response says by omission.
+  7. *Closed in D035-080.* The OpenAPI allows `egressCeiling` on a PostgreSQL connection and the REST body now takes it,
+     for both kinds; the store checks the reveal grant for `pii` (D035-074).
   8. `DatabaseFailure::retryable()` (the retry flag of the table of failure codes) has no production reader yet; the
      pin tests keep it equal to `contracts/errors.md`, and the retry decision of the lake and destination steps is
      the first reader (the lake driver and destination tasks, which map a step failure to a retry).
@@ -821,3 +852,12 @@ The other fixes were wording:
   costs up to 8 K system calls per connection; the connection limit and the handshake timeout bound it, and a buffered
   reader that hands its unread bytes to the tunnel would be cheaper. *Exit condition:* closed by T035-035 and T035-030
   with the integration tests of T035-031.
+- **G035-030 — What the Iceberg connection leaves open.** (1) The OpenAPI pattern of `warehouseLocations`,
+  `^(s3|gs|abfss)://[^?#@\s]+$`, excludes `@`, so the `abfss://container@account.dfs.core.windows.net/...` form that ADLS
+  needs cannot be sent over REST, while the domain and the host's hygiene filter accept it. S3 and GCS are unaffected;
+  the contract is amended with the phase of every storage type. (2) `GET /database-drivers` still lists PostgreSQL only:
+  `iceberg` is listed when a probe exists (T035-045), so it does not advertise an unbuilt capability. (3)
+  `allowUnauthenticatedMetastore` is a builder on `ConnectionService` whose default is off, and no control-plane setting
+  turns it on, so a Hive metastore without TLS is refused everywhere until one does. (4) The Studio does not know the new
+  kind (T035-046); its types already read the union. (5) The lake profile does not answer a lake connection yet
+  (T035-044); until then nothing can resolve one. *Exit condition:* each is closed by the task named, with a test.
