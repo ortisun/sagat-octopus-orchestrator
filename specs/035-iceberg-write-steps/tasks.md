@@ -654,7 +654,7 @@ test to every catalog and storage type.
 
 ### Tests for User Story 1
 
-- [ ] T035-038 [P] [US01] Write the failing tests in `crates/domain/tests/database_connections.rs` for
+- [x] T035-038 [P] [US01] Write the failing tests in `crates/domain/tests/database_connections.rs` for
   every Iceberg configuration rule of data-model.md §1, quoted:
   - `catalog.type` is "`rest` | `glue` | `hive` | `jdbc`";
   - REST `uri` is "HTTPS outside development";
@@ -669,6 +669,11 @@ test to every catalog and storage type.
   - a URI with user info or query credentials fails `VALIDATION_FAILED`, reason `CREDENTIAL_IN_URI`.
 
   Refs: FR-035-001..005.
+
+  *2026-11-05, done:* the cases are in `crates/domain/tests/database_connections.rs` (26 in the file), one for each rule
+  quoted above and for the bounds of the members the schema names. Written first (the types did not exist); 29
+  mutations of the rules are all caught (D035-080). "Unknown settings are refused" is the REST body's
+  `deny_unknown_fields`, tested in `dto_database.rs`.
 - [ ] T035-039 [P] [US01] Write the failing tests in `tests/integration/iceberg-writes/connections.rs`:
   - creating a REST + S3 connection with a new OAuth2 secret stores the value in OpenBao, and the
     connection keeps only references;
@@ -682,6 +687,12 @@ test to every catalog and storage type.
   - every change is audited as `DatabaseConnectionChanged`.
 
   Refs: FR-035-001..005, FR-035-026, SC-035-001.
+
+  *2026-11-05, partly done, left unticked:* `tests/integration/database-connections/lake.rs` runs inside the lifecycle
+  scenario against real PostgreSQL and OpenBao (7 of 7, also as the runtime role): the stored document, reload, the
+  retry, the audit row, another tenant's 404, a missing secret writing nothing, a SQL step refused, plaintext by
+  environment, the `pii` grant and the history of a paused connection. Not done: creating the connection over REST
+  with a new OAuth2 secret, a Lakekeeper connection with vended credentials (its fixture), and `GET /database-drivers`.
 - [ ] T035-040 [P] [US01] Write the failing tests in `tests/integration/iceberg-writes/probe.rs`:
   - the probe runs in the managed executor;
   - it reports `CATALOG_AUTH`, `WAREHOUSE` and `STORAGE_ACCESS` with the tested revision and time;
@@ -695,17 +706,32 @@ test to every catalog and storage type.
 
 ### Implementation for User Story 1
 
-- [ ] T035-041 [US01] Add `ConnectionConfig::Iceberg`, with every catalog and storage shape, to
+- [x] T035-041 [US01] Add `ConnectionConfig::Iceberg`, with every catalog and storage shape, to
   `crates/domain/src/database.rs`. T035-038 passes. Refs: FR-035-001..005, D035-040.
-- [ ] T035-042 [US01] Validate and save the new kind in `crates/application/src/database.rs`. A
+
+  *2026-11-05, done:* `crates/domain/src/database/iceberg.rs` (D035-080). The new variant made seven places that took
+  the one variant for granted say what they do with a lake connection: all of them refuse it, since a SQL step never
+  uses one. The workspace compiles and its clippy is clean.
+- [x] T035-042 [US01] Validate and save the new kind in `crates/application/src/database.rs`. A
   revision is audited, and a `pii` ceiling requires a current reveal grant inside T1. Refs: FR-035-005,
   FR-035-024.
+
+  *2026-11-05, done:* `ConnectionService::put` validates the kind and words a refusal with its reason; the store writes
+  and reads the document of the contract, checks both secrets for OpenBao authority and the `pii` grant in the same
+  transaction, and the revision is audited (`lake.rs`, 7 of 7 integration tests, also as the runtime role). A Hive
+  metastore without TLS is refused unless the deployment allows it, and nothing allows it yet (G035-030).
 - [ ] T035-043 [US01] Expose the kind over REST:
   - the `oneOf` config with a `driver` discriminator in `crates/api-http/src/dto_database.rs`;
   - `GET /database-drivers` in `crates/api-http/src/routes/database.rs`;
   - the reasons `UNKNOWN_CONNECTION_KIND` and `CREDENTIAL_IN_URI`.
 
   Refs: FR-035-001, FR-035-002.
+
+  *2026-11-05, partly done, left unticked:* the `oneOf` config with its `driver` discriminator in `dto_database.rs`
+  (an Iceberg connection comes back as the document it was sent as, every member unknown to the contract is refused, and
+  `egressCeiling` is open on both kinds) and the reason `CREDENTIAL_IN_URI` with the other thirteen, each with advice.
+  Not done: `GET /database-drivers` listing `iceberg` (with the probe, T035-045) and `UNKNOWN_CONNECTION_KIND`, which
+  belongs to the publication that meets a connection of a kind it cannot use.
 - [ ] T035-044 [US01] Resolve the Iceberg connection. `ResolvedDatabase.iceberg` is built in
   `crates/api-grpc/src/service.rs` and `crates/application/src/worker/database.rs`. `catalogSecret` and
   `storageSecret` are each compared, pinned and audited separately (017 two-phase), and only the lake
