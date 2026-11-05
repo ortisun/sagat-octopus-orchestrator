@@ -330,7 +330,7 @@ where
                     backfill: None,
                     obligations,
                 };
-                self.store.record_decision(&decision, Some(&audit)).await?;
+                self.commit_decision(&decision, Some(&audit)).await?;
                 self.committed_action(caller, idempotency).await
             }
         }
@@ -449,8 +449,7 @@ where
             // no time is left in the range
             let done = progress(backfill.cursor.unwrap_or(backfill.start), None, true);
             return self.committed(
-                self.store
-                    .record_decision(&decision(Vec::new(), done), None)
+                self.commit_decision(&decision(Vec::new(), done), None)
                     .await,
             );
         };
@@ -461,8 +460,7 @@ where
         {
             let seen = progress(time, Some("ALREADY_ACTED"), false);
             return self.committed(
-                self.store
-                    .record_decision(&decision(Vec::new(), seen), None)
+                self.commit_decision(&decision(Vec::new(), seen), None)
                     .await,
             );
         }
@@ -541,7 +539,7 @@ where
                 if matches!(other, Decision::Buffer { cancel_open: true }) {
                     owing.obligations = self.obligations_for(&record, time).await?;
                 }
-                self.committed(self.store.record_decision(&owing, None).await)
+                self.committed(self.commit_decision(&owing, None).await)
             }
         }
     }
@@ -964,7 +962,7 @@ where
             backfill: None,
             obligations,
         };
-        self.committed(self.store.record_decision(&decision, None).await)
+        self.committed(self.commit_decision(&decision, None).await)
     }
 
     /// The cancellations the action that waits at `nominal` owes the runs that are still open.
@@ -1027,6 +1025,7 @@ where
         ctx: &RequestContext,
     ) -> Result<Fired, AppError> {
         let nominal = admission.nominal_at;
+        let kind = admission.kind;
         let fence = admission.fence.clone();
         match self.start_run(record, principal, admission, ctx).await {
             Ok(_) => Ok(Fired::Acted),
@@ -1052,6 +1051,7 @@ where
                 self.store
                     .defer_schedule(record.tenant_id, record.id, record.state_version, retry_at)
                     .await?;
+                count_action(kind, "ADMISSION_RETRY");
                 Ok(Fired::Refused(
                     "the admission was refused; the time stays owed",
                 ))
@@ -1094,9 +1094,27 @@ where
             version,
             input: &input,
         };
-        self.starts
+        let kind = admission.kind;
+        let current = record.next_action_at == Some(nominal);
+        let started = self
+            .starts
             .start_scheduled(principal, &request, admission, ctx)
-            .await
+            .await;
+        if started.is_ok() {
+            count_action(kind, Outcome::Started.as_str());
+            // How late the time it was meant for was acted on. Only the time the schedule was
+            // waiting for has one: a time that waited behind an open run, or one of a backfill,
+            // was held on purpose.
+            if kind == ActionKind::Scheduled
+                && current
+                && let Some(meant) = record.next_actual_at
+            {
+                let late = (self.clock.now() - meant).as_seconds_f64().max(0.0);
+                metrics::histogram!("schedule_action_lag_seconds", "kind" => "scheduled")
+                    .record(late);
+            }
+        }
+        started
     }
 
     /// The requester of a backfill can no longer start runs: the backfill is stopped, with an audit
@@ -1167,7 +1185,23 @@ where
             "authority revoked",
             now,
         );
-        self.committed(self.store.record_decision(&decision, Some(&audit)).await)
+        self.committed(self.commit_decision(&decision, Some(&audit)).await)
+    }
+
+    /// Commits a decision that starts no run, and counts what it decided once it is committed: a
+    /// decision refused by the fence or the compare-and-swap decided nothing.
+    async fn commit_decision(
+        &self,
+        decision: &ScheduleDecision,
+        audit: Option<&AuditRecord>,
+    ) -> Result<(), StoreError> {
+        let result = self.store.record_decision(decision, audit).await;
+        if result.is_ok() {
+            for action in &decision.actions {
+                count_action(action.kind, action.outcome.as_str());
+            }
+        }
+        result
     }
 
     fn committed(&self, result: Result<(), StoreError>) -> Result<Fired, AppError> {
@@ -1227,4 +1261,15 @@ fn with_nominal_time(
         None => return Err(AppError::Internal),
     }
     serde_json::to_vec(&document).map_err(|_| AppError::Internal)
+}
+
+/// Counts a decision of a schedule (`schedule_actions_total`). The labels are the closed sets of the
+/// kinds and the outcomes, lower-cased; none is a tenant, a schedule or a run.
+fn count_action(kind: ActionKind, outcome: &str) {
+    metrics::counter!(
+        "schedule_actions_total",
+        "kind" => kind.as_str().to_ascii_lowercase(),
+        "outcome" => outcome.to_ascii_lowercase()
+    )
+    .increment(1);
 }

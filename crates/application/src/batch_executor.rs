@@ -15,7 +15,9 @@
 use std::future::Future;
 
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
-use sagat_domain::batch::{DeferCause, FailureReason, JobState, Limits, Retry, SkipReason, retry};
+use sagat_domain::batch::{
+    Action, DeferCause, FailureReason, JobState, Limits, Retry, SkipReason, retry,
+};
 use sagat_domain::identity::{Permission, Principal, Role, Subject};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -233,7 +235,10 @@ where
             )
             .await
         {
-            Ok(drained) if drained.cancelled > 0 || drained.finished => Ok(Stepped::Acted),
+            Ok(drained) if drained.cancelled > 0 || drained.finished => {
+                count_items(job.action, "cancelled", u64::from(drained.cancelled));
+                Ok(Stepped::Acted)
+            }
             Ok(_) => Ok(Stepped::Idle),
             Err(error) => Self::refused(error),
         }
@@ -351,7 +356,11 @@ where
         {
             return Self::refused(error);
         }
-        let outcome = match self.actions.apply(&request).await {
+        let started = std::time::Instant::now();
+        let applied = self.actions.apply(&request).await;
+        metrics::histogram!("batch_item_duration_seconds", "action" => job.action.as_str().to_ascii_lowercase())
+            .record(started.elapsed().as_secs_f64());
+        let outcome = match applied {
             Ok(ItemEffect::Applied { new_run }) => ItemOutcome::Succeeded { new_run },
             Ok(ItemEffect::Skip(reason)) => ItemOutcome::Skipped(reason),
             // the creator lost a permission of the action while the job ran
@@ -383,7 +392,10 @@ where
             )
             .await
         {
-            Ok(_) => Ok(Stepped::Acted),
+            Ok(_) => {
+                count_items(job.action, outcome_label(&outcome), 1);
+                Ok(Stepped::Acted)
+            }
             Err(error) => Self::refused(error),
         }
     }
@@ -405,5 +417,28 @@ where
                 code: "RETRIES_EXHAUSTED",
             },
         }
+    }
+}
+
+/// What became of an item, as the closed label of `batch_items_total`.
+const fn outcome_label(outcome: &ItemOutcome) -> &'static str {
+    match outcome {
+        ItemOutcome::Succeeded { .. } => "succeeded",
+        ItemOutcome::Skipped(_) => "skipped",
+        ItemOutcome::Failed { .. } => "failed",
+        ItemOutcome::Deferred { .. } => "deferred",
+    }
+}
+
+/// Counts items once their outcome is committed (`batch_items_total`). The labels are the closed
+/// sets of the actions and the outcomes; none is a tenant, a job or a run.
+fn count_items(action: Action, outcome: &'static str, n: u64) {
+    if n > 0 {
+        metrics::counter!(
+            "batch_items_total",
+            "action" => action.as_str().to_ascii_lowercase(),
+            "outcome" => outcome
+        )
+        .increment(n);
     }
 }

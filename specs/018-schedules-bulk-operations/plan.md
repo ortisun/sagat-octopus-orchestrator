@@ -249,7 +249,7 @@ run's trace.
 
 | Metric | Type | Labels |
 | --- | --- | --- |
-| `schedule_actions_total` | counter | `kind` ∈ {scheduled, triggered, backfill}, `outcome` ∈ {started, skipped_overlap, buffered, dropped_buffer_full, dropped_deleted, coalesced, missed_catchup, already_acted, authority_revoked, admission_retry, business_id_conflict} |
+| `schedule_actions_total` | counter | `kind` ∈ {scheduled, triggered, backfill}, `outcome` ∈ {started, skipped_overlap, buffered, dropped_buffer_full, dropped_deleted, coalesced, missed_catchup_window, already_acted, authority_revoked, admission_retry, business_id_conflict} |
 | `schedule_action_lag_seconds` | histogram | `kind` |
 | `scheduler_lag_seconds` | gauge (existing) | `pass` gains `schedules`, `delayed_starts`, `batches`, `resets` |
 | `scheduler_fenced_total` | counter (existing) | `kind` gains `schedule`, `delayed_start`, `batch`, `reset` |

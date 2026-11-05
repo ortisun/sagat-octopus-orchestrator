@@ -255,7 +255,7 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   workflow with would be inconsistent, and the check needs a validator port that the run start would use as well. What a
   schedule checks stays: an object, at most 64 KiB. The business-id prefix waits for US03. `nominalTimeField` is
   already written into the input at the action.
-- [ ] T018-017 [US1] Schedule pass (owned shards, fairness, round ceiling, metrics) and engine wiring —
+- [x] T018-017 [US1] Schedule pass (owned shards, fairness, round ceiling, metrics) and engine wiring —
   `crates/scheduler/src/{schedules.rs,lib.rs,monitor.rs}`, `apps/execution-engine/src/lib.rs` — two-replica
   pass tests — FR-018-005, FR-018-044.
   *Part done 2026-10-29 (task stays open).* `SchedulePass` (`scheduler/src/schedules.rs`) looks at the due schedules of the
@@ -272,6 +272,38 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   due-ness and the planning of the times agree on the database's time.
   *Update 2026-11-04 (T018-029):* the pass that bounds the due slice of a long outage, which T018-003 left to this task,
   is built: a recovery is planned once, remembered on the schedule and carried out a step at a time (D1951).
+  *Done 2026-11-05 (the rest of the task: fairness, the gauges and the alert).* **Fairness.** The pass took the oldest
+  `batch` of any tenant, so one tenant's backlog (an outage on a thousand per-minute schedules) held back every schedule
+  that was due later. It now shares the batch by `fairness::select` like the passes of the runs (`due_schedules` takes
+  a `Window` with the shards and the tenants to leave out; `SAGAT_SCHEDULER_DISCOVERY_REST_MS` rests the search;
+  `scheduler_fairness_limited_total` and `_exhausted_total` carry `pass="schedules"`). Seen failing first:
+  `pass::a_tenant_with_a_backlog_does_not_hold_back_another_tenants_due_schedule` (twelve schedules of one tenant due two
+  hours ago, one of another due one hour ago, batch of four: the second tenant had 0 runs after the round, 1 after the
+  change) and `a_lone_tenant_with_a_backlog_still_gets_the_whole_batch` (four of four: the policy is work-conserving).
+  **Gauges and counters.** `scheduler_lag_seconds{pass="schedules"}` is how long the oldest active schedule has been
+  due, `{pass="batches"}` how long the oldest job the batch pass would take has waited (a job held back by an older open
+  transaction is not due, so it is not lag: no replica added would change that), `batch_jobs_active`; and
+  `schedule_actions_total{kind,outcome}` once a decision is committed (a decision the fence or the compare-and-swap
+  refused counts nothing; `admission_retry` for a time left owed), `schedule_action_lag_seconds{kind}` (how long after
+  its time a scheduled action started), `batch_items_total{action,outcome}` once an outcome is committed (cancelled items
+  of a drain included) and `batch_item_duration_seconds{action}`. No label is a tenant, schedule, job or run. **Alert.**
+  `SagatSchedulerLate` is `max(scheduler_lag_seconds) > 60` with no `pass` matcher, so it covers the two new passes, and
+  so does the KEDA query of the chart; the runbooks (`execution-engine.md`, `scaling.md`, `observability.md`) list them.
+  Evidence (private `CARGO_TARGET_DIR`, `RUST_TEST_THREADS=2`): `integration_schedules_bulk_operations` 224 passed, also
+  with `SAGAT_TEST_AS_RUNTIME_ROLE=1` (224); new: `lag::` 2, `counted::` 3 (a recorder of the test's own on a one-thread
+  runtime), `pass::` 2; `fault_schedules_bulk_operations` 30; `contract_schedules_bulk_operations` 2;
+  `integration_scalability_ha` 44; `contract_scalability_ha` 25 (it caught four comparisons with `clock_timestamp()` in
+  the new sample SQL, which the planner cannot use as the bound of a range: now `now()`); `integration_observability_operations` 20;
+  `contract_observability_operations` 9; `contract_developer_experience` 8; `integration_platform_foundation` 101 (the
+  runtime-privilege audit reads the new statements); unit suites of application, scheduler, infra-postgres,
+  execution-engine, domain and telemetry; `cargo fmt --check` and `cargo clippy --workspace --all-targets --locked -- -D
+  warnings` clean. Mutations, each reverted: 11 on the metrics (a job held by an older transaction counted as late, a
+  paused schedule counted as late, finished jobs counted as active, the batch lag showing the schedule lag, a started run
+  and a decision not counted, the lag measured from the wrong end, a refused decision counted, cancelled items not
+  counted, a succeeded item counted as skipped, the item duration not recorded) and 2 on the fairness (the tenant
+  exclusion dropped from the query, the pass ignoring it): all caught; the one that survived (the duration recorded as 0,
+  the test only counted samples) got an assertion on the sum. Not done: `schedules_paused_by_system_total`; the
+  `delayed_starts` and `resets` passes belong to the features that build them (US03, US06).
 - [ ] T018-018 [US1] REST create/read/list/update/delete — `crates/api-http/src/routes/{schedules.rs,mod.rs}`,
   `crates/api-http/src/dto_schedules.rs` — contract tests — FR-018-001, FR-018-013, FR-018-043.
   *Part done 2026-10-30 (task stays open).* Built behind `SAGAT_SCHEDULES_ENABLED` (control plane, off by default):
