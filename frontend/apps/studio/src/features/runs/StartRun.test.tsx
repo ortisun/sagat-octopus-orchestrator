@@ -107,7 +107,7 @@ describe('Start run', () => {
     await user.click(screen.getByRole('button', { name: 'Start run…' }));
     const dialog = await screen.findByRole('dialog', { name: 'Start a run' });
     expect(within(dialog).getByText(/recorded with your name/)).toBeInTheDocument();
-    expect(within(dialog).getAllByRole('option').map((o) => o.textContent)).toEqual(['order-saga', 'refund']);
+    expect(within(within(dialog).getByRole('combobox', { name: 'Workflow' })).getAllByRole('option').map((o) => o.textContent)).toEqual(['order-saga', 'refund']);
     expect(platform.calls).toHaveLength(0);
   });
 
@@ -276,5 +276,73 @@ describe('Start run with a business identifier', () => {
     await user.click(screen.getByRole('button', { name: 'Start run' }));
     expect(await screen.findByText(/Starting the run failed/)).toBeVisible();
     expect(screen.getByText('BUSINESS_ID_IN_USE', { selector: 'code' })).toBeVisible();
+  });
+});
+
+describe('Start run after a delay', () => {
+  const open = async (user: ReturnType<typeof userEvent.setup>) => {
+    await user.click(screen.getByRole('button', { name: 'Start run…' }));
+    await screen.findByRole('dialog', { name: 'Start a run' });
+  };
+
+  it('starts at once by default and sends nothing about a delay', async () => {
+    const { user, platform } = await mount();
+    await open(user);
+    expect(screen.getByLabelText('Start after (optional)')).toHaveValue('');
+    await user.click(screen.getByRole('button', { name: 'Start run' }));
+    await waitFor(() => expect(platform.calls).toHaveLength(1));
+    expect(bodyOf(platform, 0)).toEqual({ workflowId: WORKFLOWS[0]!.id, input: {} });
+  });
+
+  it('sends the delay in milliseconds, in the unit that was chosen', async () => {
+    const { user, platform } = await mount();
+    await open(user);
+    await user.type(screen.getByLabelText('Start after (optional)'), '2');
+    await user.selectOptions(screen.getByLabelText('Unit of the delay'), 'days');
+    await user.click(screen.getByRole('button', { name: 'Start run' }));
+    await waitFor(() => expect(platform.calls).toHaveLength(1));
+    expect(bodyOf(platform, 0)).toEqual({ workflowId: WORKFLOWS[0]!.id, input: {}, startDelayMs: 172_800_000 });
+  });
+
+  it('refuses a delay that is none, in words, before asking the platform', async () => {
+    const { user, platform } = await mount();
+    await open(user);
+    const field = screen.getByLabelText('Start after (optional)');
+    await user.type(field, '1.5');
+    await user.click(screen.getByRole('button', { name: 'Start run' }));
+    expect(await screen.findByText(/whole number/)).toBeVisible();
+    await user.clear(field);
+    await user.type(field, '400');
+    await user.selectOptions(screen.getByLabelText('Unit of the delay'), 'days');
+    await user.click(screen.getByRole('button', { name: 'Start run' }));
+    expect(await screen.findByText(/The delay is at most 366 days/)).toBeVisible();
+    expect(platform.calls).toHaveLength(0);
+  });
+
+  it('keeps the key of an unchanged request and changes it with the delay', async () => {
+    const { user, platform } = await mount({ failures: 2 });
+    await open(user);
+    const field = screen.getByLabelText('Start after (optional)');
+    await user.type(field, '3');
+    await user.click(screen.getByRole('button', { name: 'Start run' }));
+    await screen.findByText(/Starting the run/);
+    await user.click(screen.getByRole('button', { name: 'Start run' }));
+    await waitFor(() => expect(platform.calls).toHaveLength(2));
+    expect(key(platform, 1)).toBe(key(platform, 0));
+    await screen.findByText(/Starting the run/);
+    await user.clear(field);
+    await user.type(field, '4');
+    await user.click(screen.getByRole('button', { name: 'Start run' }));
+    await waitFor(() => expect(platform.calls).toHaveLength(3));
+    expect(key(platform, 2)).not.toBe(key(platform, 0));
+  });
+
+  it('says in the announcement that the run waits', async () => {
+    const { user } = await mount();
+    await open(user);
+    await user.type(screen.getByLabelText('Start after (optional)'), '1');
+    await user.click(screen.getByRole('button', { name: 'Start run' }));
+    await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent(`/runs/${RUN_ID}`));
+    expect(await screen.findByText(/waits 1 hour before it starts/)).toBeInTheDocument();
   });
 });

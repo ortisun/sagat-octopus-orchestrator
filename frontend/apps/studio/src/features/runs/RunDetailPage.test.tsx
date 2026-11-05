@@ -978,3 +978,18 @@ describe('the run page: who may do what', () => {
     expect(ADMIN).toContain('saga:override');
   });
 });
+
+describe('the run page: a delayed start', () => {
+  it('says when the entry is released, and what the status means', async () => {
+    const { nodes, edges } = sagaRun();
+    await open({ run: runOf({ status: 'WAITING', startDelayedUntil: '2026-10-12T09:00:00Z' }), graph: graphOf(nodes, edges, { status: 'WAITING' }) });
+    expect(await screen.findByText('Starts at')).toBeInTheDocument();
+    expect(screen.getByText(/held by its start delay/i)).toBeInTheDocument();
+  });
+
+  it('says nothing of it for a run that was not delayed', async () => {
+    await open({ run: runOf({ status: 'WAITING' }) });
+    await screen.findByText('Started by');
+    expect(screen.queryByText('Starts at')).not.toBeInTheDocument();
+  });
+});

@@ -72,6 +72,8 @@ export function RunHeader({
   const { settings } = useApp();
   const view = runStatus(status);
   const finished = isTerminal(status);
+  // the entry of a run started with a delay is held until then; once it ends or is stopped the run says so no more
+  const held = run.startDelayedUntil !== undefined && status === 'WAITING';
   return (
     <header className="rn-header">
       <div className="rn-title">
@@ -84,7 +86,7 @@ export function RunHeader({
         </div>
         <div className="rn-run-reference">
           <code title={run.runId}>{run.runId}</code> <CopyButton text={run.runId} what="run id" />
-          <span className="rn-status-help">{view.help}</span>
+          <span className="rn-status-help">{held ? 'Held by its start delay: nothing runs until the entry is released.' : view.help}</span>
         </div>
         <div className="toolbar">
           <FollowIndicator state={follow} />
@@ -119,6 +121,11 @@ export function RunHeader({
           </Fact>
           <Fact label="Started by">{run.startedBy ? clip(run.startedBy, 80) : 'unknown'}</Fact>
           {run.businessId ? <Fact label="Business id">{clip(run.businessId, 200)}</Fact> : null}
+          {held && run.startDelayedUntil ? (
+            <Fact label="Starts at">
+              <Moment at={run.startDelayedUntil} />
+            </Fact>
+          ) : null}
         </dl>
         <details className="rn-run-details">
           <summary>Run details</summary>

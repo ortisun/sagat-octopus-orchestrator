@@ -460,3 +460,16 @@ describe('the runs page: narrow windows', () => {
     }
   });
 });
+
+describe('the runs page: delayed starts', () => {
+  it('says under a waiting run when its entry is released, and says nothing under the others', async () => {
+    await open([
+      run(1, { status: 'WAITING', finishedAt: null, startDelayedUntil: '2026-10-12T09:00:00Z' }),
+      run(2, { status: 'WAITING', finishedAt: null }),
+    ]);
+    await screen.findByRole('table', { name: 'Runs, newest first' });
+    const [plain, delayed] = rows() as [HTMLElement, HTMLElement];
+    expect(delayed).toHaveTextContent(/Starts .*2026/);
+    expect(plain).not.toHaveTextContent(/Starts /);
+  });
+});

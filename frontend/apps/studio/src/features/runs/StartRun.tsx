@@ -12,6 +12,8 @@ import { ErrorState } from '../../ui/ErrorState';
 import { Field } from '../../ui/Field';
 import { CONFLICTS, REUSES, businessFields, businessIdProblem } from './businessId';
 import type { Conflict, Reuse } from './businessId';
+import { DELAY_UNITS, describeDelay, startDelayFields, startDelayProblem } from './startDelay';
+import type { DelayUnit } from './startDelay';
 import { clip } from './time';
 
 /** What a person may start: a workflow that has a published version. */
@@ -83,6 +85,9 @@ function StartForm({ choices, initialId, onClose }: { choices: readonly Startabl
   const [conflict, setConflict] = useState<Conflict>('FAIL');
   const [reuse, setReuse] = useState<Reuse>('ALLOW_DUPLICATE');
   const [idProblem, setIdProblem] = useState<string>();
+  const [delayAmount, setDelayAmount] = useState('');
+  const [delayUnit, setDelayUnit] = useState<DelayUnit>('hours');
+  const [delayProblem, setDelayProblem] = useState<string>();
   const [problem, setProblem] = useState<string>();
   const [error, setError] = useState<unknown>();
   const [starting, setStarting] = useState(false);
@@ -105,7 +110,11 @@ function StartForm({ choices, initialId, onClose }: { choices: readonly Startabl
     setIdProblem(wrong);
     if (wrong) return;
     const business = businessFields(id, conflict, reuse);
-    const fingerprint = `${workflowId}\n${JSON.stringify(parsed.input)}\n${JSON.stringify(business)}`;
+    const lateness = startDelayProblem(delayAmount, delayUnit);
+    setDelayProblem(lateness);
+    if (lateness) return;
+    const delay = startDelayFields(delayAmount, delayUnit);
+    const fingerprint = `${workflowId}\n${JSON.stringify(parsed.input)}\n${JSON.stringify(business)}\n${JSON.stringify(delay)}`;
     if (previous.current?.fingerprint !== fingerprint) previous.current = { fingerprint, key: crypto.randomUUID() };
     const controller = new AbortController();
     pending.current = controller;
@@ -116,7 +125,7 @@ function StartForm({ choices, initialId, onClose }: { choices: readonly Startabl
       // `200` rather than `202`: an open run already had the identifier and was returned, nothing was started
       let existing = false;
       const run = await api.post<Run>('/runs', {
-        body: { workflowId, input: parsed.input, ...business },
+        body: { workflowId, input: parsed.input, ...business, ...delay },
         key: previous.current.key,
         signal: controller.signal,
         onStatus: (status) => {
@@ -124,7 +133,8 @@ function StartForm({ choices, initialId, onClose }: { choices: readonly Startabl
         },
       });
       if (!current()) return;
-      announce(existing ? `That identifier already has an open run, ${run.runId.slice(-8)}. Nothing was started.` : `Started run ${run.runId.slice(-8)}.`);
+      const waits = delay.startDelayMs === undefined ? '' : ` It waits ${describeDelay(delayAmount, delayUnit)} before it starts.`;
+      announce(existing ? `That identifier already has an open run, ${run.runId.slice(-8)}. Nothing was started.` : `Started run ${run.runId.slice(-8)}.${waits}`);
       onClose();
       void navigate(path`/runs/${run.runId}`);
     } catch (cause) {
@@ -140,7 +150,9 @@ function StartForm({ choices, initialId, onClose }: { choices: readonly Startabl
         void submit(event);
       }}
     >
-      <p>This starts a new run of the workflow's active version. It runs at once and is recorded with your name; steps with effects outside the platform will run.</p>
+      <p>
+        This starts a new run of the workflow's active version. It runs at once, unless you give it a delay, and is recorded with your name; steps with effects outside the platform will run.
+      </p>
       <Field label="Workflow">
         <select value={workflowId} disabled={starting || choices.length === 1} onChange={(event) => setWorkflowId(event.target.value)}>
           {choices.map((choice) => (
@@ -178,6 +190,22 @@ function StartForm({ choices, initialId, onClose }: { choices: readonly Startabl
           </Field>
         </>
       ) : null}
+      <Field
+        label="Start after (optional)"
+        hint="The run is created now and waits; its first step is released after this long (at most 366 days). While it waits it counts as an active run and holds its business identifier."
+        error={delayProblem}
+      >
+        <input type="text" inputMode="numeric" autoComplete="off" spellCheck={false} maxLength={9} value={delayAmount} disabled={starting} onChange={(event) => setDelayAmount(event.target.value)} />
+      </Field>
+      <Field label="Unit of the delay">
+        <select value={delayUnit} disabled={starting} onChange={(event) => setDelayUnit(event.target.value as DelayUnit)}>
+          {DELAY_UNITS.map((unit) => (
+            <option key={unit.value} value={unit.value}>
+              {unit.label}
+            </option>
+          ))}
+        </select>
+      </Field>
       {problem ? (
         <p role="alert" className="error">
           {problem}

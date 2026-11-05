@@ -330,6 +330,11 @@ function RunRow({ run, index, measure, workflows }: { run: Run; index: number; m
             </span>
           </div>
         ) : null}
+        {run.startDelayedUntil && run.status === 'WAITING' ? (
+          <div className="hint">
+            Starts <Moment at={run.startDelayedUntil} />
+          </div>
+        ) : null}
       </td>
       <td>
         {originLabel(run.origin) ?? (workflow ? clip(workflow.name, 80) : `workflow ${run.workflowId.slice(0, 8)}`)}
