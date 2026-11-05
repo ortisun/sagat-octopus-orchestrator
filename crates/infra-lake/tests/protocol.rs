@@ -11,10 +11,12 @@ use jsonschema::Validator;
 use sagat_domain::database::DatabaseFailure;
 use sagat_infra_lake::protocol::{
     Decoder, EncodeError, Event, ExceptionClass, MAX_LINE_BYTES, Operation, Outcome, PROTOCOL,
-    ProtocolFailure, Receipt, RelayAccess, RelayToken, Request, StderrSummary, encode_request,
-    summarize_stderr,
+    ProtocolFailure, Receipt, RelayAccess, RelayToken, Request, StderrSummary, TokenError,
+    encode_request, summarize_stderr,
 };
 use serde_json::{Map, Value, json};
+
+const TOKEN: &str = "relay-token-canary-0123456789abcdef";
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -59,7 +61,7 @@ fn request(extra: Value) -> Request {
         Operation::IcebergWrite,
         "run-7f3a/load/1",
         "2026-11-05T10:00:00.000Z",
-        RelayAccess::new("/work/a1/relay.sock", RelayToken::new("relay-token-canary")),
+        RelayAccess::new("/work/a1/relay.sock", RelayToken::new(TOKEN).unwrap()),
         body(extra),
     )
 }
@@ -85,7 +87,7 @@ fn the_request_is_one_line_that_ends_with_a_newline() {
     assert_eq!(parsed["firstAttemptStartedAt"], "2026-11-05T10:00:00.000Z");
     assert_eq!(
         parsed["relay"],
-        json!({"socket": "/work/a1/relay.sock", "token": "relay-token-canary"})
+        json!({"socket": "/work/a1/relay.sock", "token": TOKEN})
     );
     assert_eq!(parsed["table"]["name"], "orders");
     assert_eq!(
@@ -108,7 +110,7 @@ fn every_operation_has_the_name_the_contract_gives_it() {
             operation,
             "k",
             "2026-11-05T10:00:00Z",
-            RelayAccess::new("/work/a/relay.sock", RelayToken::new("t")),
+            RelayAccess::new("/work/a/relay.sock", RelayToken::new(TOKEN).unwrap()),
             Map::new(),
         ))
         .unwrap();
@@ -139,7 +141,7 @@ fn the_debug_form_of_a_request_shows_neither_the_token_nor_the_credentials() {
         json!({"connection": {"credentials": {"s3.secret-access-key": "credential-canary"}}}),
     );
 
-    let shown = format!("{request:?} {:?}", RelayToken::new("relay-token-canary"));
+    let shown = format!("{request:?} {:?}", RelayToken::new(TOKEN).unwrap());
 
     assert!(!shown.contains("relay-token-canary"), "{shown}");
     assert!(!shown.contains("credential-canary"), "{shown}");
@@ -757,4 +759,62 @@ fn the_line_count_counts_lines_and_saturates() {
     assert_eq!(summarize_stderr(b"one\ntwo\n").lines, 2);
     assert_eq!(summarize_stderr(b"one\n\nthree").lines, 3);
     assert_eq!(summarize_stderr(&[0xff, b'\n', 0xfe]).lines, 2);
+}
+
+// -- the relay token --------------------------------------------------------------------------------------------------
+
+#[test]
+fn a_relay_token_is_long_enough_and_has_no_character_that_could_break_the_framing() {
+    let long = "a".repeat(129);
+    let short = "a".repeat(31);
+    for bad in [
+        "",
+        short.as_str(),
+        long.as_str(),
+        "relay token with spaces 0123456789abcdef",
+        "relay-token-with-a-newline\n0123456789abcdef",
+        "relay-token-with-a-return\r0123456789abcdef",
+        "relay-token-with-a-nul\u{0}0123456789abcdef",
+        "relay-token-with-a-colon:0123456789abcdef",
+        "relay-token-with-an-accent-\u{e9}0123456789abcdef",
+    ] {
+        assert_eq!(
+            RelayToken::new(bad).unwrap_err(),
+            TokenError::Shape,
+            "{bad:?}"
+        );
+    }
+    for good in [
+        "a".repeat(32),
+        "a".repeat(128),
+        "A-b_c-0123456789-0123456789-0123456789".to_owned(),
+    ] {
+        assert!(RelayToken::new(good).is_ok());
+    }
+}
+
+#[test]
+fn a_generated_token_is_64_hex_digits_valid_and_never_repeats() {
+    let first = RelayToken::generate().unwrap();
+    let second = RelayToken::generate().unwrap();
+
+    assert_ne!(first, second);
+    let encoded = encode_request(&Request::new(
+        Operation::Probe,
+        "k",
+        "2026-11-05T10:00:00Z",
+        RelayAccess::new("/work/a/relay.sock", first),
+        Map::new(),
+    ))
+    .unwrap();
+    let parsed: Value = serde_json::from_slice(&encoded).unwrap();
+    let token = parsed["relay"]["token"].as_str().unwrap();
+    assert_eq!(token.len(), 64);
+    assert!(
+        token
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        "{token}"
+    );
+    assert!(RelayToken::new(token).is_ok());
 }

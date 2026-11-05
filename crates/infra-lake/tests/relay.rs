@@ -10,21 +10,23 @@
 use std::collections::VecDeque;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
+use std::os::unix::fs::MetadataExt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use ipnet::IpNet;
 use sagat_infra_lake::protocol::RelayToken;
 use sagat_infra_lake::relay::{
-    Connector, Endpoint, EndpointPolicy, Mapping, Relay, RelayConfig, RelayDenials, Resolver,
-    SystemResolver, TcpConnector,
+    Connector, Endpoint, EndpointPolicy, Mapping, Relay, RelayConfig, RelayConfigError,
+    RelayDenials, Resolver, SystemResolver, TcpConnector,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream, duplex};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-const TOKEN: &str = "relay-token-canary";
+const TOKEN: &str = "relay-token-canary-0123456789abcdef";
 
 // -- the doubles ------------------------------------------------------------------------------------------------------
 
@@ -118,6 +120,26 @@ impl Connector for Recording {
     }
 }
 
+/// A resolver that never answers: a name server of the tenant's that is slow or black-holed.
+struct Hang;
+
+impl Resolver for Hang {
+    async fn resolve(&self, _host: &str, _port: u16) -> io::Result<Vec<IpAddr>> {
+        std::future::pending().await
+    }
+}
+
+/// A connector whose connection never completes.
+struct HangConnector;
+
+impl Connector for HangConnector {
+    type Stream = DuplexStream;
+
+    async fn connect(&self, _address: SocketAddr) -> io::Result<DuplexStream> {
+        std::future::pending().await
+    }
+}
+
 // -- helpers ----------------------------------------------------------------------------------------------------------
 
 fn endpoint(host: &str, port: u16) -> Endpoint {
@@ -133,8 +155,26 @@ fn endpoints() -> EndpointPolicy {
     .unwrap()
 }
 
+fn token() -> RelayToken {
+    RelayToken::new(TOKEN).unwrap()
+}
+
+fn networks(list: &[&str]) -> Vec<IpNet> {
+    list.iter().map(|net| net.parse().unwrap()).collect()
+}
+
+/// What an operator would allow in these tests: the documentation ranges, where the scripted answers live.
+fn public_networks() -> Vec<IpNet> {
+    networks(&["203.0.113.0/24", "2001:db8::/32"])
+}
+
+/// An operator who allows every address and leaves the exclusions of the policy to say no.
+fn everywhere() -> Vec<IpNet> {
+    networks(&["0.0.0.0/0", "::/0"])
+}
+
 fn config() -> RelayConfig {
-    RelayConfig::new(RelayToken::new(TOKEN), endpoints())
+    RelayConfig::new(token(), endpoints(), public_networks())
 }
 
 type TestRelay = Relay<Script, Recording>;
@@ -150,7 +190,7 @@ struct Session {
 }
 
 impl Session {
-    fn open(relay: &TestRelay) -> Self {
+    fn open<R: Resolver, C: Connector>(relay: &Relay<R, C>) -> Self {
         let (client, server) = duplex(64 * 1024);
         let relay = relay.clone();
         let served =
@@ -188,7 +228,7 @@ fn connect(target: &str) -> String {
 
 const ESTABLISHED: &str = "HTTP/1.1 200 Connection Established\r\n\r\n";
 
-async fn denied(relay: &TestRelay, request: &str) -> String {
+async fn denied<R: Resolver, C: Connector>(relay: &Relay<R, C>, request: &str) -> String {
     let mut session = Session::open(relay);
     session.authenticate().await;
     session.send(request.as_bytes()).await;
@@ -362,6 +402,10 @@ fn only_the_declared_and_the_regional_endpoints_are_allowed_and_nothing_that_loo
         ("169.254.169.254", 80),
         ("127.0.0.1", 9000),
         ("", 443),
+        ("catalog.example..", 443),
+        ("Attacker.Example.", 443),
+        ("CATALOG.EXAMPLE.EVIL.EXAMPLE", 443),
+        (".catalog.example", 443),
     ];
     for (host, port) in refused {
         assert!(!policy.allows(host, port), "{host}:{port}");
@@ -466,7 +510,10 @@ async fn a_name_is_matched_in_lower_case_without_its_trailing_dot() {
         session.read_exactly(ESTABLISHED.len()).await,
         ESTABLISHED.as_bytes()
     );
-    assert_eq!(script.asked.lock().unwrap().as_slice(), ["catalog.example"]);
+    assert_eq!(
+        script.asked.lock().unwrap().as_slice(),
+        ["catalog.example."]
+    );
 }
 
 // -- tunnels ----------------------------------------------------------------------------------------------------------
@@ -624,7 +671,11 @@ async fn loopback_link_local_metadata_and_platform_state_addresses_are_refused_f
     for address in forbidden {
         let script = Script::answering(vec![vec![address]]);
         let connector = Recording::new();
-        let relay = relay(config().with_deny([platform_state]), &script, &connector);
+        let relay = relay(
+            RelayConfig::new(token(), endpoints(), everywhere()).with_deny([platform_state]),
+            &script,
+            &connector,
+        );
 
         let answer = denied(&relay, &connect("catalog.example:443")).await;
 
@@ -644,7 +695,11 @@ async fn development_allows_loopback_and_still_refuses_the_metadata_services() {
     ] {
         let script = Script::answering(vec![vec![address]]);
         let connector = Recording::new();
-        let relay = relay(config().development(true), &script, &connector);
+        let relay = relay(
+            RelayConfig::new(token(), endpoints(), everywhere()).development(true),
+            &script,
+            &connector,
+        );
 
         let mut session = Session::open(&relay);
         session.authenticate().await;
@@ -688,7 +743,7 @@ async fn an_address_literal_needs_to_be_declared_and_is_not_resolved() {
     let connector = Recording::new();
     let policy = EndpointPolicy::new([endpoint("127.0.0.1", 9000), endpoint("2001:db8::1", 443)]);
     let relay = relay(
-        RelayConfig::new(RelayToken::new(TOKEN), policy).development(true),
+        RelayConfig::new(token(), policy, everywhere()).development(true),
         &script,
         &connector,
     );
@@ -747,7 +802,7 @@ async fn a_tcp_mapping_reaches_its_declared_destination_with_the_same_checks() {
     let mut received = vec![0; 10];
     remote.read_exact(&mut received).await.unwrap();
     assert_eq!(received, b"\x80\x01\x00\x01thrift");
-    assert_eq!(script.asked.lock().unwrap().as_slice(), ["hive.example"]);
+    assert_eq!(script.asked.lock().unwrap().as_slice(), ["hive.example."]);
     assert_eq!(
         connector.connected(),
         vec!["203.0.113.9:9083".parse::<SocketAddr>().unwrap()]
@@ -829,6 +884,14 @@ async fn anything_but_connect_and_a_mapping_is_unsupported() {
             "CONNECT catalog.example:+443 HTTP/1.1\r\n\r\n".to_owned(),
         ),
         (
+            "an IPv6 authority without brackets",
+            "CONNECT ::1:443 HTTP/1.1\r\n\r\n".to_owned(),
+        ),
+        (
+            "a longer IPv6 authority without brackets",
+            "CONNECT 2001:db8::1:443 HTTP/1.1\r\n\r\n".to_owned(),
+        ),
+        (
             "an unclosed IPv6 literal",
             "CONNECT [2001:db8::1:443 HTTP/1.1\r\n\r\n".to_owned(),
         ),
@@ -905,10 +968,13 @@ async fn over_a_unix_socket_a_tunnel_reaches_a_real_tcp_server_and_shutdown_clos
         }
     });
     let directory = tempfile::tempdir().unwrap();
+    let own_uid = std::fs::metadata(directory.path()).unwrap().uid();
     let path = directory.path().join("relay.sock");
     let listener = tokio::net::UnixListener::bind(&path).unwrap();
     let policy = EndpointPolicy::new([endpoint("fixture.example", port)]);
-    let config = RelayConfig::new(RelayToken::new(TOKEN), policy).development(true);
+    let config = RelayConfig::new(token(), policy, everywhere())
+        .development(true)
+        .with_peer_uid(own_uid);
     let script = Script::answering(vec![vec!["127.0.0.1"]]);
     let relay = Relay::new(config, script, TcpConnector::new(Duration::from_secs(5))).unwrap();
     let shutdown = CancellationToken::new();
@@ -971,4 +1037,329 @@ async fn the_system_resolver_resolves_a_literal_and_localhost_and_fails_for_noth
             .any(|address| address.is_loopback())
     );
     assert!(resolver.resolve("no-such-host.invalid", 80).await.is_err());
+}
+
+// -- the operator's allowed networks (review of the relay, finding 1) ------------------------------------------------
+
+#[tokio::test]
+async fn an_address_outside_the_networks_the_operator_allowed_is_refused_even_when_nothing_else_forbids_it()
+ {
+    // private, shared, unique-local and public addresses that `prohibited` does not name
+    let outside = [
+        "10.0.0.5",
+        "192.168.1.1",
+        "172.16.0.1",
+        "100.64.0.1",
+        "10.96.0.1",
+        "fd12::1",
+        "8.8.8.8",
+        "2606:4700::1",
+    ];
+    for address in outside {
+        let script = Script::answering(vec![vec![address]]);
+        let connector = Recording::new();
+        // no `with_deny`: the allowed networks alone keep the sandbox out of the cluster
+        let relay = relay(config(), &script, &connector);
+
+        let answer = denied(&relay, &connect("catalog.example:443")).await;
+
+        assert!(answer.starts_with("HTTP/1.1 403 "), "{address}: {answer}");
+        expect_counts(relay.denials(), 0, 1, 0, 0, 0);
+        assert_eq!(connector.connected().len(), 0, "{address}");
+    }
+}
+
+#[tokio::test]
+async fn a_relay_with_no_allowed_network_reaches_nothing() {
+    let script = Script::answering(vec![vec!["203.0.113.7"]]);
+    let connector = Recording::new();
+    let relay = relay(
+        RelayConfig::new(token(), endpoints(), []),
+        &script,
+        &connector,
+    );
+
+    let answer = denied(&relay, &connect("catalog.example:443")).await;
+
+    assert!(answer.starts_with("HTTP/1.1 403 "), "{answer}");
+    expect_counts(relay.denials(), 0, 1, 0, 0, 0);
+}
+
+// -- the address that is connected to ---------------------------------------------------------------------------------
+
+#[tokio::test]
+async fn an_ipv4_mapped_answer_is_connected_to_as_the_ipv4_address_it_was_checked_as() {
+    let script = Script::answering(vec![vec!["::ffff:203.0.113.7"]]);
+    let connector = Recording::new();
+    let relay = relay(
+        RelayConfig::new(token(), endpoints(), everywhere()),
+        &script,
+        &connector,
+    );
+    let mut session = Session::open(&relay);
+    session.authenticate().await;
+
+    session
+        .send(connect("catalog.example:443").as_bytes())
+        .await;
+
+    assert_eq!(
+        session.read_exactly(ESTABLISHED.len()).await,
+        ESTABLISHED.as_bytes()
+    );
+    assert_eq!(
+        connector.connected(),
+        vec!["203.0.113.7:443".parse::<SocketAddr>().unwrap()]
+    );
+}
+
+#[tokio::test]
+async fn a_tcp_mapping_that_resolves_to_a_mapped_metadata_address_is_refused() {
+    for address in [
+        "::ffff:169.254.169.254",
+        "::ffff:127.0.0.1",
+        "fd00:ec2::254",
+    ] {
+        let script = Script::answering(vec![vec![address]]);
+        let connector = Recording::new();
+        let relay = relay(with_mappings(), &script, &connector);
+
+        assert_eq!(
+            denied(&relay, "TCP metastore\n").await,
+            "DENIED\n",
+            "{address}"
+        );
+        expect_counts(relay.denials(), 0, 1, 0, 0, 0);
+        assert_eq!(connector.connected().len(), 0, "{address}");
+    }
+}
+
+// -- time, shutdown and resources (review of the relay, findings 2 and 3) --------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn a_name_server_that_never_answers_is_given_up_on_and_counted() {
+    let connector = Recording::new();
+    let relay = Relay::new(
+        config().with_admission_timeout(Duration::from_secs(5)),
+        Hang,
+        connector.clone(),
+    )
+    .unwrap();
+    let mut session = Session::open(&relay);
+    session.authenticate().await;
+    session
+        .send(connect("catalog.example:443").as_bytes())
+        .await;
+
+    tokio::time::advance(Duration::from_secs(6)).await;
+
+    let answer = session.everything().await;
+    assert!(answer.starts_with("HTTP/1.1 502 "), "{answer}");
+    expect_counts(relay.denials(), 0, 0, 1, 0, 0);
+    assert_eq!(connector.connected().len(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_destination_that_never_accepts_is_given_up_on_without_a_denial() {
+    let script = Script::answering(vec![vec!["203.0.113.7"]]);
+    let relay = Relay::new(
+        config().with_admission_timeout(Duration::from_secs(5)),
+        script,
+        HangConnector,
+    )
+    .unwrap();
+    let mut session = Session::open(&relay);
+    session.authenticate().await;
+    session
+        .send(connect("catalog.example:443").as_bytes())
+        .await;
+
+    tokio::time::advance(Duration::from_secs(6)).await;
+
+    let answer = session.everything().await;
+    assert!(answer.starts_with("HTTP/1.1 502 "), "{answer}");
+    expect_counts(relay.denials(), 0, 0, 0, 0, 0);
+}
+
+#[tokio::test]
+async fn shutdown_ends_a_connection_that_is_still_being_admitted() {
+    let relay = Relay::new(config(), Hang, Recording::new()).unwrap();
+    let shutdown = CancellationToken::new();
+    let (mut client, server) = duplex(64 * 1024);
+    let served = tokio::spawn({
+        let relay = relay.clone();
+        let shutdown = shutdown.clone();
+        async move { relay.handle(server, &shutdown).await }
+    });
+    client
+        .write_all(format!("SAGAT-RELAY/1 {TOKEN}\n").as_bytes())
+        .await
+        .unwrap();
+    client
+        .write_all(connect("catalog.example:443").as_bytes())
+        .await
+        .unwrap();
+
+    shutdown.cancel();
+
+    tokio::time::timeout(Duration::from_secs(5), served)
+        .await
+        .expect("the relay stopped waiting for the name server")
+        .unwrap();
+}
+
+#[tokio::test]
+async fn at_most_the_configured_number_of_connections_are_served_at_once() {
+    let script = Script::answering(vec![vec!["203.0.113.7"]; 3]);
+    let connector = Recording::new();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("relay.sock");
+    let listener = tokio::net::UnixListener::bind(&path).unwrap();
+    let relay = relay(config().with_max_connections(2), &script, &connector);
+    let shutdown = CancellationToken::new();
+    let server = tokio::spawn({
+        let relay = relay.clone();
+        let shutdown = shutdown.clone();
+        async move { relay.serve(listener, shutdown).await }
+    });
+    let open = |path: std::path::PathBuf| async move {
+        let mut stream = tokio::net::UnixStream::connect(path).await.unwrap();
+        stream
+            .write_all(format!("SAGAT-RELAY/1 {TOKEN}\n").as_bytes())
+            .await
+            .unwrap();
+        stream
+            .write_all(connect("catalog.example:443").as_bytes())
+            .await
+            .unwrap();
+        stream
+    };
+    let established = |mut stream: tokio::net::UnixStream| async move {
+        let mut answer = vec![0; ESTABLISHED.len()];
+        stream.read_exact(&mut answer).await.unwrap();
+        assert_eq!(answer, ESTABLISHED.as_bytes());
+        stream
+    };
+
+    let first = established(open(path.clone()).await).await;
+    let far_first = connector.remote().await;
+    let second = established(open(path.clone()).await).await;
+    let mut far_second = connector.remote().await;
+    assert_eq!(relay.open_connections(), 2);
+
+    // a third client is accepted by the kernel and is not served: a round trip on another tunnel gives the relay every
+    // chance to take it
+    let third = open(path.clone()).await;
+    let mut second = second;
+    second.write_all(b"ping").await.unwrap();
+    let mut ping = [0; 4];
+    far_second.read_exact(&mut ping).await.unwrap();
+    assert_eq!(connector.connected().len(), 2);
+    assert_eq!(relay.open_connections(), 2);
+
+    // when one ends, the third is served
+    drop(first);
+    drop(far_first);
+    let _third = established(third).await;
+    assert_eq!(connector.connected().len(), 3);
+
+    shutdown.cancel();
+    server.await.unwrap();
+    assert_eq!(relay.open_connections(), 0);
+}
+
+// -- who may connect (review of the relay, finding 7) ----------------------------------------------------------------
+
+#[tokio::test]
+async fn a_peer_with_another_user_id_is_refused_before_a_byte_of_it_is_read() {
+    let directory = tempfile::tempdir().unwrap();
+    let own_uid = std::fs::metadata(directory.path()).unwrap().uid();
+    let path = directory.path().join("relay.sock");
+    let listener = tokio::net::UnixListener::bind(&path).unwrap();
+    let script = Script::answering(vec![vec!["203.0.113.7"]]);
+    let connector = Recording::new();
+    let relay = relay(
+        config().with_peer_uid(own_uid.wrapping_add(1)),
+        &script,
+        &connector,
+    );
+    let shutdown = CancellationToken::new();
+    let server = tokio::spawn({
+        let relay = relay.clone();
+        let shutdown = shutdown.clone();
+        async move { relay.serve(listener, shutdown).await }
+    });
+
+    let mut stream = tokio::net::UnixStream::connect(&path).await.unwrap();
+    // the token is right and the destination is declared: the user id is what is wrong
+    let _ = stream
+        .write_all(format!("SAGAT-RELAY/1 {TOKEN}\n").as_bytes())
+        .await;
+    let _ = stream
+        .write_all(connect("catalog.example:443").as_bytes())
+        .await;
+    let mut answer = Vec::new();
+    stream.read_to_end(&mut answer).await.unwrap_or_default();
+
+    assert!(answer.is_empty(), "{answer:?}");
+    expect_counts(relay.denials(), 0, 0, 0, 1, 0);
+    assert_eq!((script.calls(), connector.connected().len()), (0, 0));
+    shutdown.cancel();
+    server.await.unwrap();
+}
+
+// -- a relay that is configured wrongly is not built -----------------------------------------------------------------
+
+#[test]
+fn a_relay_with_a_limit_of_zero_is_not_built() {
+    for config in [
+        config().with_max_connections(0),
+        config().with_handshake_timeout(Duration::ZERO),
+        config().with_admission_timeout(Duration::ZERO),
+    ] {
+        let built = Relay::new(config, Script::default(), Recording::new());
+        assert!(matches!(built, Err(RelayConfigError::Limit)));
+    }
+}
+
+#[test]
+fn a_mapping_has_a_lower_case_name_that_is_not_repeated() {
+    let long = "a".repeat(33);
+    for bad in [
+        "",
+        "Metastore",
+        "meta store",
+        "meta_store",
+        "../x",
+        long.as_str(),
+    ] {
+        let config = config().with_mappings([Mapping::new(bad, endpoint("hive.example", 9083))]);
+        let built = Relay::new(config, Script::default(), Recording::new());
+        assert!(matches!(built, Err(RelayConfigError::Mapping)), "{bad:?}");
+    }
+    let repeated = config().with_mappings([
+        Mapping::new("metastore", endpoint("hive.example", 9083)),
+        Mapping::new("metastore", endpoint("other.example", 9083)),
+    ]);
+    assert!(matches!(
+        Relay::new(repeated, Script::default(), Recording::new()),
+        Err(RelayConfigError::Mapping)
+    ));
+}
+
+#[test]
+fn more_than_256_allowed_networks_are_not_accepted() {
+    let many: Vec<IpNet> = (0..=255_u8)
+        .map(|n| format!("10.{n}.0.0/16").parse().unwrap())
+        .chain(["203.0.113.0/24".parse().unwrap()])
+        .collect();
+    assert_eq!(many.len(), 257);
+
+    let built = Relay::new(
+        RelayConfig::new(token(), endpoints(), many),
+        Script::default(),
+        Recording::new(),
+    );
+
+    assert!(matches!(built, Err(RelayConfigError::Network)));
 }

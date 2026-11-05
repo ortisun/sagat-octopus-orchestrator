@@ -36,10 +36,11 @@ use sagat_infra_database::{DestinationScope, NetworkPolicy};
 use sagat_telemetry::LakeRelayDenial;
 use sagat_telemetry::lake::record_relay_denial;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, copy_bidirectional};
-use tokio::net::{TcpStream, UnixListener};
-use tokio::task::JoinSet;
+use tokio::net::{TcpStream, UnixListener, UnixStream};
+use tokio::sync::Semaphore;
 use tokio::time::{Instant, timeout_at};
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 
 use crate::protocol::RelayToken;
 
@@ -52,6 +53,10 @@ const MAX_REQUEST_BYTES: usize = 8192;
 const MAX_MAPPING_NAME: usize = 32;
 const MAX_RESOLVED: usize = 17;
 const HTTPS: u16 = 443;
+/// Connections served at once by one relay: a sandbox that opens more waits in the kernel's backlog.
+const DEFAULT_MAX_CONNECTIONS: usize = 64;
+/// How long a request has to be resolved and connected (D035-079).
+const DEFAULT_ADMISSION_TIMEOUT: Duration = Duration::from_secs(10);
 
 const ESTABLISHED: &[u8] = b"HTTP/1.1 200 Connection Established\r\n\r\n";
 const FORBIDDEN: &[u8] = b"HTTP/1.1 403 Forbidden\r\n\r\n";
@@ -75,6 +80,8 @@ pub enum RelayConfigError {
     Mapping,
     #[error("the network policy is not valid")]
     Network,
+    #[error("a limit is zero")]
+    Limit,
 }
 
 /// A host (a lower-case DNS name without its trailing dot, or an address in its canonical form) and a port.
@@ -237,21 +244,37 @@ pub struct RelayConfig {
     token: RelayToken,
     endpoints: EndpointPolicy,
     mappings: Vec<Mapping>,
+    allow: Vec<IpNet>,
     deny: Vec<IpNet>,
     development: bool,
     handshake_timeout: Duration,
+    admission_timeout: Duration,
+    max_connections: usize,
+    peer_uid: Option<u32>,
 }
 
 impl RelayConfig {
+    /// `allow` is the operator's list of networks the sandbox may reach, as for the managed database executor: an
+    /// address outside it is refused whatever name it came from, and an empty list reaches nothing. It is a required
+    /// argument so that a relay cannot be built open: a declared name that a tenant's DNS points at the cluster's
+    /// own addresses is stopped here.
     #[must_use]
-    pub fn new(token: RelayToken, endpoints: EndpointPolicy) -> Self {
+    pub fn new(
+        token: RelayToken,
+        endpoints: EndpointPolicy,
+        allow: impl IntoIterator<Item = IpNet>,
+    ) -> Self {
         Self {
             token,
             endpoints,
             mappings: Vec::new(),
+            allow: allow.into_iter().collect(),
             deny: Vec::new(),
             development: false,
             handshake_timeout: Duration::from_secs(5),
+            admission_timeout: DEFAULT_ADMISSION_TIMEOUT,
+            max_connections: DEFAULT_MAX_CONNECTIONS,
+            peer_uid: None,
         }
     }
 
@@ -280,6 +303,30 @@ impl RelayConfig {
     #[must_use]
     pub fn with_handshake_timeout(mut self, limit: Duration) -> Self {
         self.handshake_timeout = limit;
+        self
+    }
+
+    /// How long the relay has to resolve a name and connect to the address it checked. A name server that never
+    /// answers is the tenant's to arrange, so it must not hold a thread of the runner.
+    #[must_use]
+    pub fn with_admission_timeout(mut self, limit: Duration) -> Self {
+        self.admission_timeout = limit;
+        self
+    }
+
+    /// How many connections are served at once (64 by default). The others wait in the kernel's backlog.
+    #[must_use]
+    pub fn with_max_connections(mut self, limit: usize) -> Self {
+        self.max_connections = limit;
+        self
+    }
+
+    /// Only a peer with this user id is served. The token proves a connection is the attempt's, but the sandboxed code
+    /// holds it too; the user id of the container's slot (a distinct one per slot) keeps another attempt's container
+    /// out if it could reach the socket. Read from the connection by the kernel, not by the client.
+    #[must_use]
+    pub fn with_peer_uid(mut self, uid: u32) -> Self {
+        self.peer_uid = Some(uid);
         self
     }
 }
@@ -370,6 +417,13 @@ struct Counters {
     request_unsupported: AtomicU32,
 }
 
+/// A count that stops at the maximum instead of starting again from zero.
+fn increment(counter: &AtomicU32) {
+    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+        Some(count.saturating_add(1))
+    });
+}
+
 enum Target {
     Connect(Endpoint),
     Tcp(String),
@@ -389,6 +443,10 @@ struct Inner<R, C> {
     policy: NetworkPolicy,
     scope: DestinationScope,
     handshake_timeout: Duration,
+    admission_timeout: Duration,
+    peer_uid: Option<u32>,
+    max_connections: usize,
+    slots: Arc<Semaphore>,
     resolver: R,
     connector: C,
     counters: Counters,
@@ -420,13 +478,15 @@ impl<R: Resolver, C: Connector> Relay<R, C> {
                 return Err(RelayConfigError::Mapping);
             }
         }
-        // Every address is allowed here; the name policy says where the sandbox may go, and the policy below says which
+        if config.max_connections == 0
+            || config.handshake_timeout.is_zero()
+            || config.admission_timeout.is_zero()
+        {
+            return Err(RelayConfigError::Limit);
+        }
+        // The name policy says where the sandbox may go; the operator's networks and the policy below say which
         // addresses a name may resolve to.
-        let everywhere = vec![
-            "0.0.0.0/0".parse().map_err(|_| RelayConfigError::Network)?,
-            "::/0".parse().map_err(|_| RelayConfigError::Network)?,
-        ];
-        let scope = DestinationScope::new(everywhere, ports.into_iter().collect())
+        let scope = DestinationScope::new(config.allow, ports.into_iter().collect())
             .map_err(|_| RelayConfigError::Network)?;
         let policy = NetworkPolicy::new(scope.clone(), config.deny, config.development)
             .map_err(|_| RelayConfigError::Network)?;
@@ -438,6 +498,10 @@ impl<R: Resolver, C: Connector> Relay<R, C> {
                 policy,
                 scope,
                 handshake_timeout: config.handshake_timeout,
+                admission_timeout: config.admission_timeout,
+                peer_uid: config.peer_uid,
+                max_connections: config.max_connections,
+                slots: Arc::new(Semaphore::new(config.max_connections)),
                 resolver,
                 connector,
                 counters: Counters::default(),
@@ -458,6 +522,14 @@ impl<R: Resolver, C: Connector> Relay<R, C> {
         }
     }
 
+    /// The connections being served by [`Relay::serve`] now.
+    #[must_use]
+    pub fn open_connections(&self) -> usize {
+        self.inner
+            .max_connections
+            .saturating_sub(self.inner.slots.available_permits())
+    }
+
     fn deny(&self, kind: LakeRelayDenial) {
         let counters = &self.inner.counters;
         let counter = match kind {
@@ -467,32 +539,69 @@ impl<R: Resolver, C: Connector> Relay<R, C> {
             LakeRelayDenial::TokenRefused => &counters.token_refused,
             LakeRelayDenial::RequestUnsupported => &counters.request_unsupported,
         };
-        counter.fetch_add(1, Ordering::Relaxed);
+        increment(counter);
         record_relay_denial(kind);
     }
 
-    /// Accepts connections on the attempt's socket until `shutdown`, then waits for the tunnels, which `shutdown` ends.
+    /// Accepts connections on the attempt's socket until `shutdown`, then waits for the connections, which `shutdown` ends.
+    ///
+    /// A slot is taken before a connection is accepted, so a sandbox that opens more than the limit waits in the
+    /// kernel's backlog instead of in this process; a finished connection leaves nothing behind.
     pub async fn serve(&self, listener: UnixListener, shutdown: CancellationToken) {
-        let mut tunnels = JoinSet::new();
+        let tracker = TaskTracker::new();
         loop {
-            tokio::select! {
+            let slot = tokio::select! {
                 () = shutdown.cancelled() => break,
-                accepted = listener.accept() => match accepted {
-                    Ok((stream, _)) => {
-                        let relay = self.clone();
-                        let shutdown = shutdown.clone();
-                        tunnels.spawn(async move { relay.handle(stream, &shutdown).await });
-                    }
-                    // A descriptor limit or a reset: back off instead of spinning.
-                    Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+                slot = Arc::clone(&self.inner.slots).acquire_owned() => match slot {
+                    Ok(slot) => slot,
+                    Err(_) => break,
                 },
+            };
+            let accepted = tokio::select! {
+                () = shutdown.cancelled() => break,
+                accepted = listener.accept() => accepted,
+            };
+            match accepted {
+                Ok((stream, _)) if !self.peer_allowed(&stream) => {
+                    self.deny(LakeRelayDenial::TokenRefused);
+                    drop(stream);
+                }
+                Ok((stream, _)) => {
+                    let relay = self.clone();
+                    let shutdown = shutdown.clone();
+                    tracker.spawn(async move {
+                        relay.handle(stream, &shutdown).await;
+                        drop(slot);
+                    });
+                }
+                // A descriptor limit or a reset: back off instead of spinning.
+                Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
             }
         }
-        while tunnels.join_next().await.is_some() {}
+        tracker.close();
+        tracker.wait().await;
     }
 
-    /// One connection of the sandbox, from its token to the end of its tunnel.
-    pub async fn handle<S>(&self, mut stream: S, shutdown: &CancellationToken)
+    /// Whether the kernel says the peer runs as the configured user (every peer, when none is configured).
+    fn peer_allowed(&self, stream: &UnixStream) -> bool {
+        self.inner
+            .peer_uid
+            .is_none_or(|uid| stream.peer_cred().is_ok_and(|peer| peer.uid() == uid))
+    }
+
+    /// One connection of the sandbox, from its token to the end of its tunnel. A shutdown ends it at any point: while
+    /// it waits for its request, for a name server or for a destination, as well as while it copies.
+    pub async fn handle<S>(&self, stream: S, shutdown: &CancellationToken)
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send,
+    {
+        tokio::select! {
+            () = shutdown.cancelled() => {}
+            () = self.converse(stream) => {}
+        }
+    }
+
+    async fn converse<S>(&self, mut stream: S)
     where
         S: AsyncRead + AsyncWrite + Unpin + Send,
     {
@@ -512,7 +621,8 @@ impl<R: Resolver, C: Connector> Relay<R, C> {
                 return;
             }
         };
-        let address = match self.admit(target).await {
+        let admission = Instant::now() + self.inner.admission_timeout;
+        let address = match self.admit(target, admission).await {
             Ok(address) => address,
             Err(refusal) => {
                 if let Refusal::Denied(kind) = refusal {
@@ -522,7 +632,8 @@ impl<R: Resolver, C: Connector> Relay<R, C> {
                 return;
             }
         };
-        let Ok(mut remote) = self.inner.connector.connect(address).await else {
+        let Ok(Ok(mut remote)) = timeout_at(admission, self.inner.connector.connect(address)).await
+        else {
             let _ = stream
                 .write_all(refusal_reply(mode, &Refusal::Unreachable))
                 .await;
@@ -535,10 +646,7 @@ impl<R: Resolver, C: Connector> Relay<R, C> {
         if stream.write_all(established).await.is_err() {
             return;
         }
-        tokio::select! {
-            _ = copy_bidirectional(&mut stream, &mut remote) => {}
-            () = shutdown.cancelled() => {}
-        }
+        let _ = copy_bidirectional(&mut stream, &mut remote).await;
     }
 
     /// The first line: the word and the attempt's token. Anything else is refused without a reply.
@@ -551,7 +659,7 @@ impl<R: Resolver, C: Connector> Relay<R, C> {
     }
 
     /// The name policy, one resolution, the address policy, and the address to connect to.
-    async fn admit(&self, target: Target) -> Result<SocketAddr, Refusal> {
+    async fn admit(&self, target: Target, deadline: Instant) -> Result<SocketAddr, Refusal> {
         let endpoint = match target {
             Target::Connect(endpoint) => endpoint,
             Target::Tcp(name) => self
@@ -566,15 +674,18 @@ impl<R: Resolver, C: Connector> Relay<R, C> {
         }
         let addresses = match endpoint.host.parse::<IpAddr>() {
             Ok(address) => vec![address],
-            Err(_) => match self
-                .inner
-                .resolver
-                .resolve(&endpoint.host, endpoint.port)
-                .await
-            {
-                Ok(answer) if !answer.is_empty() => answer.into_iter().take(MAX_RESOLVED).collect(),
-                _ => return Err(Refusal::Denied(LakeRelayDenial::ResolutionFailed)),
-            },
+            Err(_) => {
+                // Asked for as a fully qualified name: without its trailing dot the resolver's search domains (`ndots`)
+                // could turn `catalog.example` into an in-cluster name (D035-079).
+                let name = format!("{}.", endpoint.host);
+                match timeout_at(deadline, self.inner.resolver.resolve(&name, endpoint.port)).await
+                {
+                    Ok(Ok(answer)) if !answer.is_empty() => {
+                        answer.into_iter().take(MAX_RESOLVED).collect()
+                    }
+                    _ => return Err(Refusal::Denied(LakeRelayDenial::ResolutionFailed)),
+                }
+            }
         };
         self.inner
             .policy
@@ -676,10 +787,31 @@ fn parse_authority(authority: &str) -> Option<Endpoint> {
         let end = authority.find(']')?;
         (&authority[..=end], authority[end + 1..].strip_prefix(':')?)
     } else {
-        authority.rsplit_once(':')?
+        // Without brackets a colon is ambiguous (`::1:443`), and parsers that disagree about it are how a check is bypassed.
+        let (host, port) = authority.rsplit_once(':')?;
+        if host.contains(':') {
+            return None;
+        }
+        (host, port)
     };
     if port.is_empty() || port.len() > 5 || !port.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
     Endpoint::new(host, port.parse().ok()?).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_denial_counter_stops_at_the_maximum_instead_of_starting_again() {
+        let counter = AtomicU32::new(u32::MAX - 1);
+
+        increment(&counter);
+        increment(&counter);
+        increment(&counter);
+
+        assert_eq!(counter.load(Ordering::Relaxed), u32::MAX);
+    }
 }

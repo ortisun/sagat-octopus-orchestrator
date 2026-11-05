@@ -12,6 +12,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+getrandom = "0.4"
 ipnet = "2"
 sagat-domain.workspace = true
 sagat-infra-database.workspace = true
@@ -20,11 +21,11 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["net", "time", "rt", "sync", "io-util"] }
-tokio-util = { version = "0.7", default-features = false }
+tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 
 [dev-dependencies]
 ipnet = "2"
 jsonschema = { version = "0.58", default-features = false }
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
-tokio-util = { version = "0.7", default-features = false }
+tokio-util = { version = "0.7", default-features = false, features = ["rt"] }

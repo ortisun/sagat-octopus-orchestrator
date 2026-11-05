@@ -5934,6 +5934,7 @@ dependencies = [
 name = "sagat-infra-lake"
 version = "0.2.0"
 dependencies = [
+ "getrandom 0.4.3",
  "ipnet",
  "jsonschema",
  "sagat-domain",
