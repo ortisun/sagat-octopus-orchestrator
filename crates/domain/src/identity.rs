@@ -364,6 +364,9 @@ pub enum Permission {
     DatabaseAdHoc,
     DatabaseWrite,
     DatabaseResultRead,
+    /// Browse the catalog of an Iceberg connection: namespaces, tables and the shape of a table (feature 035). A
+    /// customer's metadata, so it is not part of `database:use`; held by the roles that manage connections.
+    DatabaseBrowse,
     /// Resolve only a leased managed database capability; additionally requires the machine role.
     DatabaseExecute,
     /// See the schedules of a namespace, their next times and their actions (`FR-018-013`).
@@ -381,7 +384,7 @@ pub enum Permission {
 
 impl Permission {
     /// Every permission, used to grant the admin role and to test the full matrix.
-    pub const ALL: [Self; 52] = [
+    pub const ALL: [Self; 53] = [
         Self::WorkspaceRead,
         Self::WorkspaceCreate,
         Self::NamespaceRead,
@@ -429,6 +432,7 @@ impl Permission {
         Self::DatabaseAdHoc,
         Self::DatabaseWrite,
         Self::DatabaseResultRead,
+        Self::DatabaseBrowse,
         Self::DatabaseExecute,
         Self::ScheduleRead,
         Self::ScheduleWrite,
@@ -486,6 +490,7 @@ impl Permission {
             Self::DatabaseAdHoc => "database:adhoc",
             Self::DatabaseWrite => "database:write",
             Self::DatabaseResultRead => "database:result:read",
+            Self::DatabaseBrowse => "database:browse",
             Self::DatabaseExecute => "database:execute",
             Self::ScheduleRead => "schedule:read",
             Self::ScheduleWrite => "schedule:write",
@@ -567,6 +572,7 @@ impl Role {
         Permission::DatabaseAdHoc,
         Permission::DatabaseWrite,
         Permission::DatabaseResultRead,
+        Permission::DatabaseBrowse,
         Permission::DatabaseExecute,
         Permission::ScheduleRead,
         Permission::ScheduleWrite,
@@ -591,19 +597,20 @@ impl Role {
     #[must_use]
     pub const fn permissions(self) -> &'static [Permission] {
         use Permission::{
-            ApprovalDecide, ApprovalRead, DatabaseAdHoc, DatabaseUse, DefinitionPublish,
-            DefinitionRead, DefinitionWrite, EventManage, EventPublish, EventRead, NamespaceRead,
-            OpsRead, PayloadReadInternal, PublicationApprove, QuotaRead, RunBatch, RunOperate,
-            RunPayloadInspect, RunQuery, RunRead, RunSignal, RunStart, RunUpdate, ScheduleOperate,
-            ScheduleRead, ScheduleWrite, ScriptBuild, ScriptExecute, ScriptPublish, ScriptRead,
-            ScriptWrite, SecretRead, SecretUse, VersionActivate, WorkerExecute, WorkerManage,
-            WorkspaceRead,
+            ApprovalDecide, ApprovalRead, DatabaseAdHoc, DatabaseBrowse, DatabaseUse,
+            DefinitionPublish, DefinitionRead, DefinitionWrite, EventManage, EventPublish,
+            EventRead, NamespaceRead, OpsRead, PayloadReadInternal, PublicationApprove, QuotaRead,
+            RunBatch, RunOperate, RunPayloadInspect, RunQuery, RunRead, RunSignal, RunStart,
+            RunUpdate, ScheduleOperate, ScheduleRead, ScheduleWrite, ScriptBuild, ScriptExecute,
+            ScriptPublish, ScriptRead, ScriptWrite, SecretRead, SecretUse, VersionActivate,
+            WorkerExecute, WorkerManage, WorkspaceRead,
         };
         match self {
             Self::Admin => Self::ADMIN_PERMISSIONS,
             Self::Developer => &[
                 DatabaseUse,
                 DatabaseAdHoc,
+                DatabaseBrowse,
                 WorkspaceRead,
                 NamespaceRead,
                 DefinitionRead,

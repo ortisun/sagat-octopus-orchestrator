@@ -183,6 +183,39 @@ fn payload_disclosure_audits_have_the_decided_repeat_semantics() {
     }
 }
 
+/// Feature 035 (D035-066). A browse is a read that a developer can repeat as often as they like, so repeats of the
+/// same one collapse like the other reads; a decision about a step, or a request to revert a commit, is an event
+/// each time and never collapses.
+#[test]
+fn the_audit_actions_of_the_lake_have_stable_names_and_the_decided_repeat_semantics() {
+    assert_eq!(
+        AuditAction::DatabaseCatalogBrowsed.as_str(),
+        "database.catalog_browsed"
+    );
+    assert_eq!(
+        AuditAction::DestinationDecided.as_str(),
+        "destination.decided"
+    );
+    assert_eq!(
+        AuditAction::IcebergRevertRequested.as_str(),
+        "iceberg.revert_requested"
+    );
+
+    assert!(AuditAction::DatabaseCatalogBrowsed.collapses_repeats());
+    assert_eq!(
+        AuditAction::DatabaseCatalogBrowsed.repeat_window(),
+        Some(std::time::Duration::from_secs(300))
+    );
+    for action in [
+        AuditAction::DestinationDecided,
+        AuditAction::IcebergRevertRequested,
+    ] {
+        assert!(!action.collapses_repeats(), "{action}");
+        assert_eq!(action.repeat_window(), None, "{action}");
+        assert_eq!(action.distinct_cap(), None, "{action}");
+    }
+}
+
 #[test]
 fn provisioning_records_are_attributed_to_the_system_and_cannot_be_mistaken_for_a_user() {
     let tenant = TenantId::generate();

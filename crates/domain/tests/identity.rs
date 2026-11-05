@@ -197,13 +197,13 @@ const ALL_ROLES: [Role; 7] = [
 /// The authoritative matrix, written out by hand (not derived from `Role::permissions`).
 fn expected(role: Role) -> Vec<Permission> {
     use Permission::{
-        ApprovalDecide, ApprovalRead, DatabaseAdHoc, DatabaseUse, DefinitionPublish,
-        DefinitionRead, DefinitionWrite, EventManage, EventPublish, EventRead, NamespaceRead,
-        OpsRead, PayloadReadInternal, PublicationApprove, QuotaRead, RunBatch, RunOperate,
-        RunPayloadInspect, RunQuery, RunRead, RunSignal, RunStart, RunUpdate, ScheduleOperate,
-        ScheduleRead, ScheduleWrite, ScriptBuild, ScriptExecute, ScriptPublish, ScriptRead,
-        ScriptWrite, SecretRead, SecretUse, VersionActivate, WorkerExecute, WorkerManage,
-        WorkspaceRead,
+        ApprovalDecide, ApprovalRead, DatabaseAdHoc, DatabaseBrowse, DatabaseUse,
+        DefinitionPublish, DefinitionRead, DefinitionWrite, EventManage, EventPublish, EventRead,
+        NamespaceRead, OpsRead, PayloadReadInternal, PublicationApprove, QuotaRead, RunBatch,
+        RunOperate, RunPayloadInspect, RunQuery, RunRead, RunSignal, RunStart, RunUpdate,
+        ScheduleOperate, ScheduleRead, ScheduleWrite, ScriptBuild, ScriptExecute, ScriptPublish,
+        ScriptRead, ScriptWrite, SecretRead, SecretUse, VersionActivate, WorkerExecute,
+        WorkerManage, WorkspaceRead,
     };
     match role {
         Role::Admin => Role::ADMIN_PERMISSIONS.to_vec(),
@@ -211,6 +211,7 @@ fn expected(role: Role) -> Vec<Permission> {
             vec![
                 DatabaseUse,
                 DatabaseAdHoc,
+                DatabaseBrowse,
                 WorkspaceRead,
                 NamespaceRead,
                 DefinitionRead,
@@ -285,7 +286,7 @@ fn expected(role: Role) -> Vec<Permission> {
 
 #[test]
 fn payload_permissions_are_fail_closed_for_builtin_roles() {
-    assert_eq!(Permission::ALL.len(), 52);
+    assert_eq!(Permission::ALL.len(), 53);
     assert_eq!(
         Permission::PayloadReadInternal.as_str(),
         "payload:read-internal"
@@ -327,6 +328,38 @@ fn role_permission_matrix_is_exactly_as_specified() {
                 "role {role} / permission {permission}"
             );
         }
+    }
+}
+
+/// Feature 035 (D035-066): browsing the catalog of an Iceberg connection reads a customer's metadata, so it is a
+/// permission of its own, held by the roles that manage connections and by no machine role.
+#[test]
+fn database_browse_is_held_by_developers_and_admins_only() {
+    assert_eq!(Permission::DatabaseBrowse.as_str(), "database:browse");
+    for role in ALL_ROLES {
+        assert_eq!(
+            role.grants(Permission::DatabaseBrowse),
+            matches!(role, Role::Admin | Role::Developer),
+            "{role}"
+        );
+    }
+}
+
+/// The permissions a built-in role grants to nobody on purpose; every other permission is held by a role that the
+/// matrix above names. A permission added to `ALL` without either decision fails here, not in production.
+const GRANTED_TO_NO_BUILTIN_ROLE: [Permission; 1] = [Permission::PayloadRevealPii];
+
+#[test]
+fn every_permission_has_a_role_decision() {
+    for permission in Permission::ALL {
+        let decided = ALL_ROLES
+            .into_iter()
+            .any(|role| expected(role).contains(&permission))
+            || GRANTED_TO_NO_BUILTIN_ROLE.contains(&permission);
+        assert!(
+            decided,
+            "{permission} is in Permission::ALL and in no role decision"
+        );
     }
 }
 

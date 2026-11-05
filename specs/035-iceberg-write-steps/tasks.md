@@ -308,7 +308,7 @@ three conditions pass.
   lowering `pii`, neither level is `pii`, a database result is `pii`, the three ceilings and `secret` refused, the
   default and the reveal grant). They failed to compile first (no `within`, `written_level`, `EgressCeiling`), then
   `cargo test -p sagat-domain --test classification`: 15 passed.
-- [ ] T035-011 [P] Write the failing tests in `crates/domain/tests/identity.rs` and
+- [x] T035-011 [P] Write the failing tests in `crates/domain/tests/identity.rs` and
   `crates/domain/tests/audit.rs`:
   - the catalog has 53 permissions (written as 49; develop held 52 before this feature, D035-071);
   - `database:browse` is held by developer and admin only;
@@ -317,6 +317,13 @@ three conditions pass.
     exist, with their collapse policy.
 
   Refs: FR-035-024, D035-066.
+
+  *2026-11-05, done:* `database_browse_is_held_by_developers_and_admins_only`, `every_permission_has_a_role_decision`
+  (every permission of `ALL` is held by a role of the hand-written matrix or is on the list of the ones granted to
+  none, which is `payload:reveal-pii`), the catalog test at 53, and
+  `the_audit_actions_of_the_lake_have_stable_names_and_the_decided_repeat_semantics` (a browse collapses repeats for
+  five minutes like the other reads; a decision and a revert request never collapse). They did not compile before
+  the variants existed; now `cargo test -p sagat-domain --test identity --test audit`: 32 and 11 passed.
 - [ ] T035-012 [P] Write the failing pin test in `crates/domain/src/database/failure.rs`: the full set
   of contracts/errors.md codes, each with its retryable flag, is identical in `code()` and in
   `parse()`, so no code can be added to one list only. Refs: FR-035-029, D035-042.
@@ -410,6 +417,13 @@ three conditions pass.
   - the browse operation in `crates/application/src/api_admission.rs`.
 
   T035-011 passes. Refs: FR-035-024, D035-066.
+
+  *2026-11-05, partly done, left unticked:* `Permission::DatabaseBrowse` (`database:browse`, developer and admin)
+  and the three `AuditAction`s are in `crates/domain`; `AuthContext` needs no edit because it is built from
+  `role.permissions()`. No other list of permissions pins the count (searched). `cargo clippy --workspace
+  --all-targets --locked -- -D warnings` clean; the domain, API and application crates pass. Not done: the browse
+  entry of `crates/application/src/api_admission.rs`, which comes with the browse route (the operations are
+  `x-planned: '035'`).
 - [ ] T035-024 Add the contracts/errors.md codes to `DatabaseFailure` in
   `crates/domain/src/database/failure.rs`. Add the publication refusal reasons to
   `crates/api-http/src/error.rs`, and the catalog entries to `sdks/error-catalog.json` and every
