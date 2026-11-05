@@ -3,7 +3,7 @@
 **Purpose**: Validate specification completeness and quality before planning and implementation.
 **Created**: 2026-10-26. **Feature**: [spec.md](../spec.md).
 **Review ownership**: filled by the specification author on 2026-10-26 as a self-review; a reviewer must
-confirm before `/speckit-implement` reads it. `[x]` means the requirement-quality criterion is met, not
+confirm before implementation reads it. `[x]` means the requirement-quality criterion is met, not
 that anything is built.
 
 ## Content quality
