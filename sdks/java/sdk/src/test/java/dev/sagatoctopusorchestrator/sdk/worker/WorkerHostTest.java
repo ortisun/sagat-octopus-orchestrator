@@ -859,7 +859,8 @@ class WorkerHostTest {
         long began = System.nanoTime();
         h.stop(Duration.ofSeconds(1));
         assertTrue(Duration.ofNanos(System.nanoTime() - began).toMillis() < 2000, "stop cancels the idle receive promptly");
-        assertTrue(fake.streamCancelled);
+        // The server learns of the cancellation on its own thread, after the client's stop has returned.
+        until(() -> fake.streamCancelled, "the server to see the stream cancelled");
     }
 
     @Test
