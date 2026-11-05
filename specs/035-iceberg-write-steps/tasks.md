@@ -762,6 +762,15 @@ test to every catalog and storage type.
   Add the vitest cases to `ConnectionsPage.test.tsx`: no credential value after a reload. Refs:
   FR-035-001..006, SC-035-001.
 
+  *2026-11-05, partly done (D035-082, G035-032):* the Iceberg form for a REST catalog over S3 is in
+  `IcebergConnectionForm.tsx`, chosen by `ConnectionEditor.tsx` only when the deployment lists the driver: catalog and storage
+  credentials (existing OpenBao secret or created inline, references only in the connection), warehouse locations, allowed modes,
+  the ceiling with `pii` offered only with `payload:reveal-pii`, the vended-credentials choice, URL rules, and a note that saving
+  is not proof of connectivity. 30 tests in `ConnectionsPage.test.tsx` (no credential value after a reload among them), 30
+  mutations all caught; `npm run lint`, `typecheck`, `check:api`, `npm test` (87 files, 1,217 tests) and `npm run build` pass.
+  **Not done:** the per-check probe results (they need T035-045 and a field in the contract), the other catalog and storage
+  shapes (T035-078), and the server listing `iceberg` in `GET .../database-drivers` (T035-036, T035-043).
+
 **Checkpoint**: US01 on REST + S3 works and is tested on its own.
 
 ---
