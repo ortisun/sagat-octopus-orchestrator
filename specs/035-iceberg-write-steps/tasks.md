@@ -3,7 +3,8 @@
 **Input**: [spec.md](spec.md), [plan.md](plan.md), [research.md](research.md),
 [data-model.md](data-model.md), [contracts/](contracts/README.md), [quickstart.md](quickstart.md).
 
-**Status**: Not started (generated 2026-10-28). Nothing below is built. A task is ticked only with
+**Status**: In progress (generated 2026-10-28; ADR-0071 accepted and implementation started
+2026-11-02). Only the tasks ticked below are done; nothing else is built. A task is ticked only with
 the evidence that closes it: a named test and its result, or a command and its output (AGENTS.md).
 
 **Tests**: required. Constitution VIII and AGENTS.md rule 18 make tests come first: every test task
@@ -54,17 +55,29 @@ contracts, so every later task has a place to put its failing test.
 
   No code task starts before ADR-0071 is accepted (plan.md, Constitution Check, technology-baseline
   row). Refs: D035-045, D035-047, D035-066, O035-002..005.
-- [ ] T035-002 Before the first code commit, check every number the plan reserved:
+
+  *2026-11-02, partly done, left unticked:* ADR-0071 is Accepted; O035-003, O035-004 and O035-005 are
+  answered (D035-070, `docs/owner-decisions.md` 2026-11-02 items 1–4). Not done: O035-002 (ORC/Avro
+  and Kerberos priority, a later delivery, does not block I0–I1) and the developer-publication
+  question, which keeps the plan's answer "no" (D035-066) until the owner says otherwise.
+- [x] T035-002 Before the first code commit, check every number the plan reserved:
   1. Rebase `feature/035-iceberg-write-steps` on `origin/develop`.
   2. Check every open branch and worktree (`git branch -a`, `git worktree list`) for:
      - migration `20270115000000` still sorting after every branch's latest migration;
      - ADR-0071 still free;
-     - 48 permissions before this feature;
+     - 52 permissions before this feature (written as 48; amended by D035-071);
      - protocol minor 6 on develop.
   3. Record any change as a new D035 decision in research.md.
 
   Refs: D035-043, D035-044.
-- [ ] T035-003 Register the targets in `tests/Cargo.toml` and create each harness `main.rs`:
+
+  *Evidence, 2026-11-02:* `git merge --ff-only origin/develop` took the branch to `df59eb0e` (0 ahead,
+  0 behind). `git log --all` over `crates/infra-postgres/migrations/` shows the newest migration on any
+  branch is `20261231000000`, so `20270115000000` still sorts last. `git log --all` over `docs/adr/`
+  shows ADR-0071 only here, with 0072..0076 taken by other features. `Permission::ALL.len()` is 52 in
+  `crates/domain/tests/identity.rs:288`. `PROTOCOL_MINOR` is 6 in `crates/application/src/worker.rs:59`.
+  Recorded as D035-071.
+- [x] T035-003 Register the targets in `tests/Cargo.toml` and create each harness `main.rs`:
 
   | Target | Harness |
   |---|---|
@@ -78,6 +91,14 @@ contracts, so every later task has a place to put its failing test.
   | `e2e_step_destinations` | `tests/e2e/step-destinations/main.rs` |
 
   A harness that cannot start its containers fails the test. Refs: NFR-035-DUR, SC-035-010.
+
+  *Evidence, 2026-11-02:* `cargo test -p sagat-tests --locked --no-run --test contract_iceberg_writes
+  --test integration_iceberg_writes --test fault_iceberg_writes --test e2e_iceberg_writes --test
+  perf_iceberg_writes --test integration_step_destinations --test fault_step_destinations --test
+  e2e_step_destinations` → `Finished test profile [unoptimized] target(s) in 1m 09s`, 8 executables, 0
+  errors (private `CARGO_TARGET_DIR`, `CARGO_PROFILE_DEV_DEBUG=0`); `cargo fmt --check` prints nothing.
+  The harnesses declare no case yet: each one gains its first failing case in the task named in its
+  doc comment, so a run of any of them today reports 0 tests and proves nothing about the feature.
 - [ ] T035-004 [P] Declare the fixtures in `infra/docker/compose.lake.yaml`: the D035-041 images, each
   pinned by digest, with a tag at least two weeks old when added; loopback-only ports; a healthcheck
   per service. Add `tests/support/lake.rs`, which:
@@ -86,6 +107,28 @@ contracts, so every later task has a place to put its failing test.
   - never uses a hand-started service or another project's container.
 
   Refs: FR-035-032, SC-035-010, D035-041, AGENTS.md rule 16.
+
+  *2026-11-02, partly done, left unticked:* `infra/docker/compose.lake.yaml` (ten services, digests
+  fetched from the registries, loopback-only ports, a healthcheck each) and
+  `infra/docker/lake-init/01-databases.sql` exist. `docker compose config -q` passes, and in three
+  groups every service reached `healthy`: postgres, rustfs, iceberg-rest and lakekeeper (the
+  `lakekeeper-migrate` job exited 0); azurite, clickhouse, fake-gcs and moto; hive-metastore. The first
+  RustFS start failed (`Permission denied`, a root-owned `tmpfs`) and was fixed with an anonymous
+  volume. Not done: `tests/support/lake.rs` (Testcontainers startup and the fixture admin client);
+  all ten at once were not started (the shared Docker Desktop VM has 7.7 GiB); the project's Colima
+  socket `sagat-remaining` refused connections while `colima list` said Running, so the default daemon
+  was used with a unique compose project and `down -v` of that project only; the ClickHouse fixture has
+  no TLS yet; the Azurite push date is not verifiable by API.
+  *2026-11-04, more done, still unticked:* `tests/support/lake.rs` starts RustFS and the Iceberg REST reference
+  catalog from the pinned digests, on a private network and with its own container names, and waits for them under
+  `bounded::within`. The fixture admin client creates the bucket (S3 signature version 4 written over `sha2`), a
+  namespace and a table, and loads the table back. `cargo test -p sagat-tests --test integration_iceberg_writes
+  --locked`: 6 passed (RFC 4231 cases 2 and 6, the AWS `get-vanilla` signature, two cases of the bucket retry and
+  the container case in 2.2 s); 12 consecutive runs, 12 passed; no container or network left. A first version
+  waited for RustFS's `/health` and failed in 1 of 4 runs with `503 Service not ready: waiting for
+  storage_quorum`: `/health` answers before the storage layer is ready, so `create_bucket` now waits for that 503
+  and for nothing else (G035-025). Not done: the GCS, Azure, Glue (moto), Hive, JDBC, Lakekeeper and ClickHouse
+  starters (each arrives with the first test that needs it); TLS for ClickHouse.
 - [ ] T035-005 [P] Add the independent reader:
   - `iceberg = "=0.10.1"` as a test-only dependency in `tests/Cargo.toml`;
   - `tests/support/lake_reader.rs`, returning rows, snapshots, snapshot summaries and refs;
@@ -93,6 +136,24 @@ contracts, so every later task has a place to put its failing test.
     package other than `tests`.
 
   Refs: NFR-035-INTEROP, D035-026.
+
+  *2026-11-02, partly done, left unticked:* the architecture rule and its negative tests are in
+  (`python3 -m unittest scripts.tests.test_check_architecture`: 10 tests, OK; they failed 18 times
+  before the rule). The task text was incomplete: `iceberg` 0.10.1 has no storage features, so
+  `tests/Cargo.toml` also declares `iceberg-storage-opendal` (D035-072). Both resolve and the three
+  resulting advisories are ignored by the owner's decision (G035-024); `cargo audit --deny warnings`
+  exits 0.
+  *2026-11-04, more done, still unticked:* `tests/support/lake_reader.rs` opens a table from the metadata file the
+  catalog points at (`StaticTable::from_metadata_file` over an S3 file IO against the fixture store) and returns the
+  columns, the snapshots with operation and summary, the branches and tags (read from the metadata document, because
+  the crate keeps the reference map private), the properties and the rows. `cargo test -p sagat-tests --test
+  integration_iceberg_writes --locked`: 12 passed. Three cases read a metadata document written by hand into the
+  in-memory file IO (two snapshots, an append then an overwrite, `main` on the second and a tag on the first); one
+  opens a table the REST fixture created in the real store; one names the location of a metadata file that is not
+  there. Three mutations of the reader (snapshots in reverse order, tags dropped, operation dropped) each failed
+  exactly the case that guards it. Not done: the rows of a table that has been committed, and the summary of a real
+  commit, because nothing in the repository writes to the lake yet; that case arrives with the first write-step test
+  (T035-013) and this task is ticked then.
 - [ ] T035-006 [P] Create the lake runtime skeleton in `runners/lake/`:
   - `pyproject.toml`, with mypy strict and ruff;
   - `requirements.in`;
@@ -108,7 +169,25 @@ contracts, so every later task has a place to put its failing test.
 
   Add pytest, mypy, ruff and `pip-audit` (on every lock change and on a schedule) to
   `.github/workflows/ci.yml`. Refs: D035-026, G035-023, contracts/lake-runtime.md "Image".
-- [ ] T035-007 Write the failing contract tests in `tests/contract/iceberg-writes/`, with their
+
+  *2026-11-04, partly done, left unticked:* `runners/lake/` has `pyproject.toml` (mypy strict, ruff),
+  `requirements.in`, `requirements.lock` (78 packages, hashes, made with `uv pip compile --universal --exclude-newer
+  2026-11-04`, regenerated byte-identical), `requirements-dev.in/.lock` (106 packages: pytest 9.1.1, mypy 2.3.1,
+  ruff 0.16.9, pip-audit 2.10.1), the `Dockerfile` (stage `lake-runtime`), `sagat_lake/__init__.py`,
+  `tests/conftest.py` and `smoke-image.sh`. In a venv installed from the dev lock with `--require-hashes`: `pytest`
+  52 passed, `mypy` no issues in 7 files, `ruff check` and `ruff format --check` clean; `pip-audit -r
+  requirements.lock --require-hashes --disable-pip`: no known vulnerabilities. The policy tests failed first
+  (missing lock, Dockerfile and package) and every rule of the lock parser and of the Dockerfile has a case that
+  breaks it. `docker build --target lake-runtime` builds in 45 s (wheels only, so no package needed a compiler) and
+  `smoke-image.sh` passes 17 promises (imports of every extra, no pip, no ensurepip, no compiler, not root, host
+  read-only, read-only root) with no network and no capabilities; against the stock `python:3.12-slim` it failed 12
+  and, once two checks that had passed for the wrong reason were tightened, it fails 14. A build with
+  `--sbom=true` attaches an SPDX document of 179 packages (178 with a purl, PyIceberg and PyArrow among them).
+  Not done: the `ci.yml` jobs (pytest, mypy, ruff, pip-audit on every lock change and on a schedule, the image
+  build with the smoke script and the SBOM), because the scoped-gate rule of Constitution 4.1.0 (PR #90) changes the
+  same file and a gate for `runners/lake/**` has to be added to `scripts/select-test-targets.py` with it; and the
+  `linux/amd64` build, which only a CI runner builds (this machine is arm64).
+- [x] T035-007 Write the failing contract tests in `tests/contract/iceberg-writes/`, with their
   fixtures under `tests/contract/iceberg-writes/fixtures/`:
   - `ir.rs`: the canonical `workflow.schema.json` accepts the valid IR samples and refuses the invalid
     ones. Use at least the 14 IR cases checked at planning.
@@ -124,7 +203,28 @@ contracts, so every later task has a place to put its failing test.
     reasons and in `sdks/error-catalog.json`.
 
   Refs: FR-035-008, FR-035-029, FR-035-033.
-- [ ] T035-008 Merge the fragments into the canonical contracts, then regenerate the derived files.
+
+  *2026-11-04, done:* `tests/contract/iceberg-writes/` holds `ir.rs`, `receipts.rs`, `openapi.rs`, `proto.rs`,
+  `errors.rs`, `main.rs` and the fixtures (8 IR documents, 6 receipts, the baseline of the existing operations); the
+  amendments of the task text are D035-073 and G035-027. **Red state, before T035-008:** `cargo test -p
+  sagat-tests --test contract_iceberg_writes --locked`: 11 passed, 10 failed, each for the reason the merge removes:
+  the canonical schema has no `icebergWrite` (7 of the 8 samples are refused, and 19 of the 35 refusal cases have a
+  base it refuses) and does not read `destinations` on a root activity (14 cases are accepted that must be refused;
+  the other 2 cases hold); `DatabaseConnection.config`
+  is not a `oneOf`; no catalog-browse operation, no `purpose` or `egressCeiling`, one driver in the list; no
+  `iceberg`, `object_storage` or `clickhouse` field in `ResolvedDatabase`; 25 codes missing from
+  `sdks/error-catalog.json` and 9 reasons missing from the `Error` schema. The 11 that pass guard what must not
+  change: the fragments themselves (receipts accept 6 samples and refuse 17 edits and an injected field in all 6; the
+  fragment accepts the sample nodes and refuses the edited ones), body placement, the 170 existing operations and the
+  28 messages and enums. Four mutations of the contracts (`unevaluatedProperties`, the ceilings of 8, an operation's
+  summary, a field number) each failed the guard that owns them, and the files were restored.
+  **Now:** `cargo test -p sagat-tests --test contract_iceberg_writes --locked` is 21 passed, 0 failed, 1 ignored. The
+  ignored case reads the SDK error catalog and is pending T035-024 by D035-073: a code in the catalog also needs a
+  typed constant in each of the six SDKs. Its 25 entries are drafted in `contracts/error-catalog.fragment.json` and
+  a case that runs checks them against errors.md. A first version of `proto.rs` carried a second baseline of the
+  protocol; it duplicated `crates/api-grpc/tests/compatibility.rs` and was removed. `cargo clippy --workspace
+  --all-targets --locked -- -D warnings` clean.
+- [x] T035-008 Merge the fragments into the canonical contracts, then regenerate the derived files.
   Merges:
   - [contracts/workflow-lake.schema.json](contracts/workflow-lake.schema.json) into
     `specs/001-platform-foundation/contracts/workflow.schema.json`;
@@ -141,6 +241,31 @@ contracts, so every later task has a place to put its failing test.
   - each SDK's generated protobuf stubs.
 
   T035-007 passes. Refs: FR-035-008, FR-035-033, D035-043.
+
+  *2026-11-04, done in three commits:*
+  - **Workflow schema** (+702 lines, none removed): `icebergWrite` joins the root-only nodes and `activity` and
+    `database` accept `destinations`; the fragment's helpers are renamed (`lake*`, `stepDestination`) because
+    `expression` and `limits` exist. ajv (`--strict=false`) validates the CI example and the 8 lake samples. The
+    publication codec refused `icebergWrite` only as an unknown node and **accepted and dropped `destinations`**
+    on an activity and on a database node; it now refuses both as `UNSUPPORTED_NODE` (4 tests, failing first) until
+    the domain parses them. `docs/reference/workflow-document.md` blessed after reading the diff.
+  - **OpenAPI** (+337/-12): `DatabaseConnection.config` and the connection write request take a union discriminated by
+    `driver` (4 closed variants, each with `egressCeiling`), the driver list gains the lake drivers as a second item
+    shape, two catalog-browse operations (`x-planned: '035'`, listed in the battery as not built), subscription
+    `purpose` and `egressCeiling`, the refusal reasons in `Error`. The 170 existing operations are byte-identical.
+    Redocly lint valid; the live security battery (17 tests) and the webhook contract suite pass;
+    `docs/reference/api.md` blessed (172 operations; planned ones read "035 (planned)"); Studio types regenerated
+    and `check:api` passes; the Studio crashed on a union config, fixed with a test first (lint, typecheck, build and
+    1195 unit tests pass).
+  - **Protocol** (+76 lines): `IcebergConnection`, `ObjectStorageConnection`, `ClickHouseConnection` and their parts;
+    `ResolvedDatabase` fields 13 to 15; `worker.baseline.json` +344 lines, none removed. The new messages hold
+    credential bytes: their `Debug` is skipped and redacted (4 tests, failing first). Adding `iceberg-storage-opendal`
+    to the tests crate made rustls see both `aws-lc-rs` and `ring` (`cargo tree -e features`), so **3 gRPC TLS tests failed on
+    this branch**; `serve` now installs the `ring` provider like the other eight TLS sites. All six
+    SDKs synced and checked: Go (`go test -race`, vet, gofmt), Python (264 tests, mypy, ruff), TypeScript (131),
+    Java (`./mvnw -q verify`), .NET (450 tests, `dotnet format`), Rust (fmt, clippy, tests).
+  - Not done here, by decision: the catalog codes (T035-024, D035-073); `operateRun` and the redrive for destination
+    steps (G035-027 item 5); the `linux/amd64` builds and the six-language conformance run, which CI runs.
 
 ---
 
@@ -174,7 +299,7 @@ three conditions pass.
   Refs: FR-035-025, D035-051.
 - [ ] T035-011 [P] Write the failing tests in `crates/domain/tests/identity.rs` and
   `crates/domain/tests/audit.rs`:
-  - the catalog has 49 permissions;
+  - the catalog has 53 permissions (written as 49; develop held 52 before this feature, D035-071);
   - `database:browse` is held by developer and admin only;
   - a permission added to `ALL` without a role decision fails a test;
   - the audit actions `DatabaseCatalogBrowsed`, `DestinationDecided` and `IcebergRevertRequested`

@@ -1,0 +1,49 @@
+{
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "kind": "Workflow",
+  "metadata": {
+    "name": "lake-upsert-from-database"
+  },
+  "entrypoint": "read",
+  "nodes": [
+    {
+      "id": "read",
+      "type": "database",
+      "connectionRef": {
+        "name": "orders-db"
+      },
+      "operation": "query",
+      "statement": "SELECT id, name, deleted FROM customers",
+      "next": "load"
+    },
+    {
+      "id": "load",
+      "type": "icebergWrite",
+      "connectionRef": {
+        "name": "lake-main",
+        "revision": 3
+      },
+      "table": {
+        "namespace": [
+          "sales"
+        ],
+        "name": "orders"
+      },
+      "next": "done",
+      "mode": "upsert",
+      "upsert": {
+        "keyColumns": [
+          "id"
+        ],
+        "deleteMarker": "/deleted"
+      },
+      "records": {
+        "databaseResult": "read"
+      }
+    },
+    {
+      "id": "done",
+      "type": "end"
+    }
+  ]
+}

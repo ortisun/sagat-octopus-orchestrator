@@ -170,6 +170,9 @@ mod tests {
     fn response(namespace: NamespaceId) -> pb::ResolvedDatabase {
         pb::ResolvedDatabase {
             tenant_id: uuid::Uuid::new_v4().to_string(),
+            iceberg: None,
+            object_storage: None,
+            clickhouse: None,
             namespace_id: namespace.to_string(),
             connection_id: uuid::Uuid::new_v4().to_string(),
             connection_name: "warehouse".into(),

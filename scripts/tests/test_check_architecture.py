@@ -10,11 +10,15 @@ SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "check-architecture.py"
 
 
 def pkg(name, path, deps):
+    """A dependency is a name (a normal dependency) or a (name, kind) pair, kind being "dev" or "build"."""
     return {
         "id": name,
         "name": name,
         "manifest_path": f"/r/{path}/Cargo.toml",
-        "dependencies": [{"name": d, "kind": None} for d in deps],
+        "dependencies": [
+            {"name": d, "kind": None} if isinstance(d, str) else {"name": d[0], "kind": d[1]}
+            for d in deps
+        ],
     }
 
 
@@ -94,6 +98,27 @@ class ArchitectureRules(unittest.TestCase):
         ])
         # application -> application is allowed; this documents that it is not an adapter edge.
         self.assertEqual(code, 0, out)
+
+    def test_the_iceberg_crate_is_allowed_as_a_test_only_dependency(self):
+        # The independent reader of feature 035 (D035-026) lives in the test package only.
+        code, out = run_check([
+            pkg("d", "crates/domain", []),
+            pkg("sagat-tests", "tests", [("iceberg", "dev"), ("iceberg-catalog-rest", "dev")]),
+        ])
+        self.assertEqual(code, 0, out)
+
+    def test_the_iceberg_crate_must_not_reach_the_platform(self):
+        # Writes go through the Python runtime (ADR-0071); the Rust crate is the independent reader and
+        # may not become a normal, dev or build dependency of anything that ships.
+        for crate in ("iceberg", "iceberg-catalog-rest"):
+            for kind in (None, "dev", "build"):
+                for where in ("crates/infra-lake", "apps/control-plane", "crates/application"):
+                    with self.subTest(crate=crate, kind=kind, where=where):
+                        deps = [(crate, kind)] if kind else [crate]
+                        code, out = run_check([pkg("p", where, deps)])
+                        self.assertEqual(code, 1, out)
+                        self.assertIn(f"'p' must not depend on '{crate}'", out)
+                        self.assertIn("test-only", out)
 
     def test_cycles_are_reported(self):
         code, out = run_check([

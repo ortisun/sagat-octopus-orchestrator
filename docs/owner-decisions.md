@@ -64,6 +64,25 @@ does not accept a `delegate` row as an owner gate or as the acceptance of a find
 | OD-2026-11-03-37 | AB. Merge PR 1 and then PR 2 with merge commits once CI is green, on the owner's delegation. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
 | OD-2026-11-03-38 | AC. Keep ADR-0077 `Proposed`: the ADR rules say a person accepts. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
 
+## 2026-11-02 — Feature 035 implementation gates (Iceberg writes and step-output destinations)
+
+The owner answered the four questions below in the Claude session that took over feature 035, each
+by the recommended option. They open task T035-001 of `specs/035-iceberg-write-steps/tasks.md`;
+nothing here is built.
+
+| # | Item | Decision | Recorded in | Status |
+|---|---|---|---|---|
+| 1 | ADR-0071 | **Accepted** (“Aceitar (Recomendado)”): the platform-owned Python lake runtime, pinned by hash and confined to `lake` sandbox containers, extends the technology baseline. The three constitution-V conditions (T-isolation, relay and hostile-catalog canaries, T-commit-once) still gate the end of I1. | `docs/adr/ADR-0071-…` (status line) | Decided; not built |
+| 2 | O035-003 ceilings | **The plan's “Finite ceilings” table is approved as written** (D035-045), including the reference environment of SC-035-009. | `specs/035-iceberg-write-steps/research.md` (D035-070) | Decided; not built |
+| 3 | O035-004 failure policy | **`hold` is the default** for synchronous destinations (D035-023): an unproven outcome waits for a person. | `specs/035-iceberg-write-steps/research.md` (D035-070) | Decided; not built |
+| 4 | O035-005 020 sinks | **020's `OBJECT_STORAGE` and `CLICKHOUSE` sinks reference the new 017 connection kinds** `object_storage` and `clickhouse`; a destination is configured once for both modes. 020 is still a draft in PR #53's lineage. | `specs/035-iceberg-write-steps/research.md` (D035-070) | Decided; 020 not updated |
+| 5 | Audit gate for the independent reader | **Ignore RUSTSEC-2026-0194, RUSTSEC-2026-0195 and RUSTSEC-2024-0436, documented** (“Ignorar os 3, documentados”): the `iceberg` crates are test-only dev-dependencies of `sagat-tests`, enforced by `scripts/check-architecture.py`; re-evaluate on 2026-12-02. | `.cargo/audit.toml`; `specs/035-iceberg-write-steps/research.md` (G035-024, D035-072); `specs/001-platform-foundation/research.md` (G035-024) | Decided; ignores in place |
+
+Not asked, because neither blocks I0–I1: O035-002 (priority of ORC/Avro and Kerberos Hive) stays open
+for a later delivery; and developers may **not** publish writes, which keeps D035-066 (admin-only
+`database:write`) and ADR-0036 decision 5 unchanged. Either can be reopened by the owner.
+
+
 ## 2026-11-01 — Feature 037 delivery, B01 split and upgrade compatibility
 
 The owner answered three questions in the Claude session that took over Codex's work. The answers

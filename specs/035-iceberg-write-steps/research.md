@@ -144,12 +144,14 @@ questions after the clarification session; recorded in `docs/owner-decisions.md`
   2026-10-27 (D035-016):** the owner added the workflow name and version.
 - **O035-002** — Priority of ORC/Avro (G035-002) and Kerberos Hive (G035-001) for a later delivery.
 - **O035-003** — Default and maximum limits per step (records, bytes, files) and the reference
-  environment of SC-035-009; the plan proposes values, the owner approves them.
+  environment of SC-035-009; the plan proposes values, the owner approves them. **Answered
+  2026-11-02 (D035-070):** the plan's table is approved as written.
 - **O035-004** — Confirm `hold` as the default failure policy of synchronous destinations (D035-023).
+  **Answered 2026-11-02 (D035-070):** confirmed.
 - **O035-005** — Should 020's `OBJECT_STORAGE` and `CLICKHOUSE` sinks reference the new 017 connection
   kinds (`object_storage`, `clickhouse`) instead of carrying their own settings and secret, so a
   destination is configured once for both modes? Recommendation: yes (020's `POSTGRESQL` sink already
-  uses a 017 connection, and its `ICEBERG` sink will).
+  uses a 017 connection, and its `ICEBERG` sink will). **Answered 2026-11-02 (D035-070):** yes.
 
 ## Sources to consult during planning
 
@@ -502,7 +504,7 @@ same change.
   are admin-only, as 017 writes are. Developers browse (`database:browse`, new) and probe
   (`database:use`). Broker destinations need `event:manage`. Retrying a destination needs
   `run:operate`; skipping it needs `saga:override`. ADR-0071 records the permission-catalog change
-  (ADR-0036 decision 5: 48 → 49).
+  (ADR-0036 decision 5: 48 → 49 as written; 52 → 53 on develop, amended by D035-071).
 
 ### New gaps (review round 1)
 
@@ -542,3 +544,119 @@ The other fixes were wording:
 - The quickstart's list of admin-published destinations is complete.
 - The new columns are classified `protected_system`.
 - `docs/architecture/security-and-sandbox.md` joins the files the feature updates.
+
+## Implementation start (2026-11-02)
+
+- **D035-070 — Owner gates of T035-001.** On 2026-11-02 the owner accepted ADR-0071, approved the
+  "Finite ceilings" table of plan.md as written (answers O035-003; the values are now D035-045 as
+  approved, not proposed), confirmed `hold` as the default failure policy of synchronous destinations
+  (answers O035-004, confirms D035-023) and decided that 020's `OBJECT_STORAGE` and `CLICKHOUSE` sinks
+  reference the new 017 connection kinds (answers O035-005). The record is
+  `docs/owner-decisions.md`, 2026-11-02, items 1–4. O035-002 stays open and does not block I0–I1.
+  Developers may not publish writes: D035-066 and ADR-0036 decision 5 stand.
+- **D035-071 — Reserved numbers re-checked against `origin/develop` `df59eb0e` (T035-002).**
+  - Migration `20270115000000_lake_destinations` still sorts after every branch's latest migration;
+    the latest is now `20261231000000_capacity_worker_membership_indexes` (D035-044 named
+    `20261225000000`).
+  - ADR-0071 is still the only ADR with this number. ADR-0072..0076 are taken by features 036, 033,
+    034, the capacity work and 037.
+  - The permission catalog has **52** entries on develop (`crates/domain/tests/identity.rs`,
+    `Permission::ALL.len()`), not 48. `database:browse` makes it **53**. Every "48 → 49" in this
+    feature (D035-066, plan.md, data-model.md, T035-011) now reads "52 → 53"; the grants do not change.
+  - `PROTOCOL_MINOR` is 6 in `crates/application/src/worker.rs`, as the plan assumed. The 035 fields
+    still take the next free minor when the feature merges (D035-043).
+- **D035-072 — The independent reader needs two crates, and three advisories are ignored with a written
+  reason.** `iceberg` 0.10.1 has no storage features (`default = []`): S3 access lives in the sibling
+  crate `iceberg-storage-opendal` 0.10.1 (feature `opendal-s3`). T035-005 named only `iceberg`; the
+  reader therefore declares both, as dev-dependencies of `sagat-tests` only, and
+  `scripts/check-architecture.py` refuses any `iceberg*` dependency of another package, of any kind
+  (negative tests in `scripts/tests/test_check_architecture.py`). The two crates add 94 crates to
+  `Cargo.lock`; no existing crate changes version (18 crates gain a second, older version beside the
+  current one). They make `cargo audit --deny warnings` fail on three advisories, which the owner
+  decided on 2026-11-02 ("Ignorar os 3, documentados") to ignore until 2026-12-02: G035-024.
+- **G035-024 — Advisories reached only through the test-only Iceberg reader.**
+  RUSTSEC-2026-0194 and RUSTSEC-2026-0195 (`quick-xml` 0.39.4, severity 7.5: quadratic run time on
+  duplicate-attribute checks, and unbounded namespace allocation in `NsReader`), pulled in by
+  `opendal-core` 0.57.0 and `opendal-service-s3` 0.57.0 under `iceberg-storage-opendal`; both fixes
+  need `quick-xml` >= 0.41, a different 0.x series that `[patch]` cannot substitute. RUSTSEC-2024-0436
+  (`paste` 1.0.15, unmaintained), a compile-time macro pulled in by `parquet` 58.4.1 under `iceberg`.
+  The path is `sagat-tests` (dev) → `iceberg-storage-opendal` → `opendal`; the reader parses only the
+  responses of the disposable fixtures of `infra/docker/compose.lake.yaml`. Evidence: `cargo audit
+  --deny warnings` exits 0 with the three ignores in `.cargo/audit.toml` and failed with exit 1 and
+  "2 vulnerabilities found, 1 denied warning" without them; the lockfile before the change passed.
+  *Exit condition:* remove the ignores when opendal moves to `quick-xml` >= 0.41 and parquet drops
+  `paste`; re-evaluate on 2026-12-02.
+- **G035-025 — RustFS reports healthy before its storage layer is ready.** `GET /health` answers 200 while a bucket
+  request still gets `503 Service not ready: waiting for storage_quorum`. A first `tests/support/lake.rs` waited for
+  `/health` and failed in 1 of 4 runs of the container case. `LakeAdmin::create_bucket` now waits for that 503 and for
+  no other refusal, under `bounded::within` (a store that never becomes ready ends the stage in a named panic).
+  Evidence: `create_bucket_waits_while_the_store_says_it_is_not_ready` (three 503s, then the bucket) failed first with
+  the production message; 12 consecutive runs of `integration_iceberg_writes` passed afterwards. *Exit condition:*
+  none while RustFS is the S3 fixture; the same wait applies to any fixture that reports health early.
+- **G035-026 — One unexplained failure of a lake fixture, and the diagnosis added to catch the next.** In 1 of 12
+  consecutive runs of `integration_iceberg_writes` (with two container cases running at once) the case
+  `the_admin_creates_a_table_the_catalog_can_load` panicked at the lookup of the REST fixture's mapped port, right
+  after `start()` returned; the panic text was not kept, so the cause is not known. 24 and then 30 consecutive runs
+  passed, and a probe that starts 12 RustFS containers at once and reads the port at once got all 12 ports, so a
+  plain race on the port lookup is unlikely. The leading suspicion, not shown, is a fixture that died after it
+  started (a JVM under memory pressure). `ready_container` (in `tests/support/lake.rs`) now ends the wait at once when
+  the container is not running and panics with its exit code and the last 30 lines of its stdout and stderr; before,
+  a dead container was a bare "port not exposed" or a five-minute wait. Evidence:
+  `a_container_that_exited_is_reported_with_its_exit_code_and_its_log` starts RustFS with a flag it refuses and
+  checks the three facts; two mutations of the diagnosis (log dropped, state always "failed") each failed it.
+  *Exit condition:* if the failure returns, its panic now names the cause; record it here and fix that cause. Close
+  this gap after the lake fixtures have run in CI without a failure for a release cycle.
+- **D035-073 — What the contract tests of T035-007 pin, where the task text was imprecise.** Amended here, not
+  reinterpreted in silence (specs/AGENTS.md). Decided by: delegate.
+  - *Samples.* The fourteen IR and five receipt samples of planning were checked in a scratch directory and never
+    saved, so they are written again: 8 whole workflow documents under `tests/contract/iceberg-writes/fixtures/ir/valid`
+    and 6 receipts under `fixtures/receipts`. A refusal case is an accepted sample plus one edit by JSON pointer
+    (35 IR cases, 17 receipt cases), so the edit alone explains the refusal.
+  - *`GET /database-drivers`* exists since feature 017 (`listDatabaseDrivers`, `x-implemented: '017'`). 035 widens the
+    `DatabaseDriverList` schema to the four drivers and the operation keeps its marker; the operations that carry
+    `x-implemented: '035'` are the two catalog-browse operations.
+  - *Markers (amended again at T035-008).* The two catalog-browse operations are merged before any route serves them.
+    `tests/AGENTS.md` fixes the convention: a planned operation carries `x-planned`, a built one `x-implemented`, and
+    the cross-tenant battery attacks every `x-implemented` operation live and lists the others by name. They therefore
+    carry `x-planned: '035'` and are listed in the battery's operations not built yet; the task that adds a route flips
+    its marker to `x-implemented: '035'` and removes it from the list. The contract test accepts either marker, so it
+    does not need a change when the route lands.
+  - *"Every existing operation is byte-identical"* is a digest of each operation and of the parameters of its path,
+    taken from the canonical file before the merge (`fixtures/openapi-operations.json`, 170 operations). A deliberate
+    change re-blesses with `SAGAT_CONTRACT_BASELINE_BLESS=1` after the diff is read (rule 18). *"No number is reused"*
+    already has an owner: `crates/api-grpc/tests/compatibility.rs` with `worker.baseline.json` (a number that exists
+    keeps its name and type, a new one may be added). A first version of the contract tests carried a second baseline
+    for it; it was removed as a duplicate, and the new messages joined `worker.baseline.json` (344 lines added, none
+    removed).
+  - *Errors.* Each code of the table in errors.md is an entry of `sdks/error-catalog.json` with the table's retry flag
+    (D035-042); that needs a typed constant in each of the six SDKs, whose own tests require one per code, so it is
+    T035-024's work and not the contract merge's: the entries are drafted in `contracts/error-catalog.fragment.json`,
+    checked against the table now, and the case that reads the catalog is `#[ignore]`d with that reason until
+    T035-024. Each refusal reason (the `VALIDATION_FAILED` reasons, `UNSUPPORTED_NODE`, `CREDENTIAL_IN_URI`) is written
+    in the OpenAPI `Error` schema, where the reasons of the existing codes are; a reason refines a code and is not a
+    new `Error.code`. The existing step failure codes of 017 (`DATABASE_*`) are not in the catalog today, so the table's
+    `OUTCOME_UNKNOWN` joins it with the new ones; T035-024 chooses the entry shape.
+  - *Placement.* The loop and `chainPolicy` refusals of `database` are made by the publication codec, not by the JSON
+    Schema, so the schema cases cover the root-only rule (a body refuses `icebergWrite` and `destinations`) and the
+    codec rules stay with the domain tests (T035-009..).
+- **G035-027 — Three places where the contract fragments do not yet fit the canonical shapes.** Found while writing
+  the contract tests; none is pinned by a test yet, each is settled by the task that implements it.
+  1. `connections.md` names `ConnectionProbeResult.checks[]`, but the canonical OpenAPI has no such schema: the probe
+     returns a `Run` and `DatabaseConnectionProbe` is the latest-probe read. The schema to extend is chosen with the
+     probe task.
+  2. A `STEP_OUTPUT` subscription "selects no run-event kinds", but `CreateWebhookSubscriptionRequest.events` requires
+     one to eight items of `run.finished`. `events` must become optional for that purpose, or the purpose must be
+     refused with events; the subscription task decides.
+  3. The ClickHouse destination "declares only the table" while `tableIdentifier` requires a namespace; the samples
+     use `target.relation`, which the fragment allows. The T035-008 merge states which of the two is canonical.
+  4. The fragment says every root-level output-producing node gains `destinations`, without listing them. The merge
+     adds the property to the two kinds the contract tests cover, `activity` and `database`. `script`, `child` and
+     `icebergWrite` itself are undecided: `icebergWrite` refuses the property (its definition is closed), and the
+     schema does not read it on a `script` or `child` node (open objects), so only the codec stops it there, as it
+     does on every node until the domain parses destinations.
+  5. connections.md widens `operateRun` and adds a redrive through `database-executions` for `DESTINATION` steps. Both
+     change existing operations, so they are merged with the step kind (the destination tasks), not at T035-008, which
+     keeps the 170 existing operations byte-identical.
+  6. The Studio lists a lake connection by its driver and offers neither the PostgreSQL form nor a probe for it, because
+     `DatabaseConnection.config` is now a union; the kind-specific forms are the Studio tasks of the feature.
+  *Exit condition:* each is closed by the task that implements the operation, with a test.

@@ -26,7 +26,10 @@ TARGETS = {
     "sdk_conformance": "contract/sdk-conformance/main.rs",
     "e2e_sdk_multilanguage": "e2e/sdk-multilanguage/main.rs",
     "fault_sdk_multilanguage": "fault/sdk-multilanguage/main.rs",
+    "integration_iceberg_writes": "integration/iceberg-writes/main.rs",
+    "e2e_iceberg_writes": "e2e/iceberg-writes/main.rs",
 }
+LAKE_SUITE_NAMES = {"integration_iceberg_writes", "e2e_iceberg_writes"}
 # What each target's own sources name: integration_a -> domain, contract_a -> application, contract_rest_a -> leaf.
 SOURCES = {
     "integration/a/main.rs": "use sagat_domain::Thing;\n",
@@ -105,7 +108,7 @@ class Scope(unittest.TestCase):
         values = {}
         for line in result.stdout.splitlines():
             key, sep, value = line.partition("=")
-            if sep and key in {"full", "crates", "sdks", "frontend", "scripts", "targets", "any", "all"}:
+            if sep and key in {"full", "crates", "sdks", "frontend", "scripts", "lake", "targets", "any", "all"}:
                 values[key] = value
         return values
 
@@ -156,6 +159,43 @@ class Scope(unittest.TestCase):
                 self.assertEqual(self.chosen(), set(TARGETS))
                 self.base = git(self.root, "rev-parse", "HEAD")
 
+    # -- the lake runtime (runners/lake) is not a shared input of the suites -------------------
+    def test_a_change_under_runners_lake_opens_the_lake_gate_and_selects_only_the_lake_suites(self):
+        self.write("runners/lake/sagat_lake/__init__.py", "x = 1\n")
+        self.commit()
+        decision = self.decide()
+        self.assertEqual(decision["lake"], "true")
+        self.assertEqual(set(decision["targets"].split()), LAKE_SUITE_NAMES)
+        self.assertEqual(decision["all"], "false")
+
+    def test_the_other_runners_still_select_every_target_and_leave_the_lake_gate_closed(self):
+        for rel in ("runners/go/Dockerfile", "runners/dotnet/Dockerfile.runtime"):
+            with self.subTest(rel=rel):
+                self.write(rel, "FROM scratch\n")
+                self.commit()
+                decision = self.decide()
+                self.assertEqual(set(decision["targets"].split()), set(TARGETS))
+                self.assertEqual(decision["lake"], "false")
+
+    def test_a_markdown_file_of_the_lake_runtime_selects_nothing(self):
+        self.write("runners/lake/README.md", "# lake\n")
+        self.commit()
+        decision = self.decide()
+        self.assertEqual(decision["lake"], "false")
+        self.assertEqual(decision["targets"], "")
+
+    def test_a_change_elsewhere_leaves_the_lake_gate_closed(self):
+        self.write("crates/domain/src/lib.rs", "// changed\n")
+        self.commit()
+        self.assertEqual(self.decide()["lake"], "false")
+
+    def test_a_release_opens_the_lake_gate(self):
+        for kwargs in ({"event": "push", "ref_name": "main", "base_ref": ""},
+                       {"event": "workflow_dispatch", "ref_name": "develop", "base_ref": ""},
+                       {"event": "push", "ref_name": "v1.0.0", "ref_type": "tag", "base_ref": ""}):
+            with self.subTest(**kwargs):
+                self.assertEqual(self.decide(**kwargs)["lake"], "true")
+
     def test_runners_and_contract_files_select_every_target(self):
         for rel in ("runners/go/Dockerfile", "specs/001-platform-foundation/contracts/openapi.yaml"):
             with self.subTest(rel=rel):
@@ -176,7 +216,7 @@ class Scope(unittest.TestCase):
         decision = self.decide()
         self.assertEqual(
             decision,
-            {"full": "false", "crates": "", "sdks": "", "frontend": "false", "scripts": "false",
+            {"full": "false", "crates": "", "sdks": "", "frontend": "false", "scripts": "false", "lake": "false",
              "targets": "", "any": "false", "all": "false"})
 
     def test_frontend_journeys_select_the_browser_suites(self):

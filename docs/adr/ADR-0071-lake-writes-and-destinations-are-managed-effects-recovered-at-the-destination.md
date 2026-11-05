@@ -1,9 +1,11 @@
 # ADR-0071: Lake writes and step-output destinations are managed effects recovered at the destination
 
-**Status:** Proposed
+**Status:** Accepted (2026-11-02)
 **Decided by:** agent proposal (2026-10-27, `/speckit-plan` of feature 035, revised after independent
-architecture and security reviews the same day), pending owner review. The scope it serves is the
-owner's (`docs/owner-decisions.md`, 2026-10-27, items 1–11).
+architecture and security reviews the same day); accepted by the owner on 2026-11-02 ("Aceitar
+(Recomendado)", `docs/owner-decisions.md`, 2026-11-02, item 1). The scope it serves is the owner's
+(`docs/owner-decisions.md`, 2026-10-27, items 1–11). Acceptance lets the code tasks of feature 035
+start; it does not close the constitution-V conditions below, which still gate the end of increment I1.
 **Refines / supersedes:**
 - **Refines [ADR-0035](ADR-0035-database-connections-and-managed-execution.md):** new connection kinds;
   an egress ceiling on every kind; a second, profile-bound deployment of the managed executor;
@@ -23,7 +25,8 @@ owner's (`docs/owner-decisions.md`, 2026-10-27, items 1–11).
   `STEP_OUTPUT` deliveries on dedicated subscriptions, a payload by reference, and an outbox hint from
   the delivery worker's settle transaction.
 - **Refines [ADR-0036](ADR-0036-integrated-scoped-managed-and-classified-execution.md) decision 5:** the
-  permission catalog grows from 48 to 49 (`database:browse`).
+  permission catalog grows by one entry, `database:browse` (written as 48 to 49; develop held 52 on
+  2026-11-02, so 52 to 53, research.md D035-071).
 - **Refines ADR-0036 decision 6 and [ADR-0033](ADR-0033-payload-values-are-classified-per-field.md):**
   `x-sagat-classification` annotations are accepted on the reserved `sagat.database.*` nodes, but only
   as egress annotations (never as disclosure carriers); and at egress, and only there, a written

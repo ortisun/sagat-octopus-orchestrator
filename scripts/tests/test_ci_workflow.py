@@ -16,7 +16,9 @@ FULL = "needs.changes.outputs.full == 'true'"
 RELEASE_ONLY_JOBS = ("released-upgrade", "native-runners", "contracts", "local-environment", "observability",
                      "scale", "dependencies")
 # Jobs whose steps are scoped by the change (and run whole for a release).
-SCOPED_JOBS = ("rust", "sdks", "studio", "architecture")
+SCOPED_JOBS = ("rust", "sdks", "studio", "architecture", "lake-runtime")
+LAKE = "needs.changes.outputs.lake == 'true'"
+AUDIT_WORKFLOW = WORKFLOW.parent / "lake-audit.yml"
 
 
 def steps(text):
@@ -95,6 +97,44 @@ class CiRule(unittest.TestCase):
         self.assertIn("needs.changes.outputs.frontend", unit)
         build = next(s for s in self.steps if s.startswith("      - name: lint, types, build"))
         self.assertRegex(build, rf"(?m)^        if: {re.escape(FULL)}\s*$")
+
+    def test_the_selection_hands_out_the_lake_gate(self):
+        self.assertIn("lake: ${{ steps.select.outputs.lake }}", self.text)
+
+    def test_the_lake_runtime_job_follows_the_lake_gate(self):
+        block = job_block(self.text, "lake-runtime")
+        self.assertIn("needs: changes", block)
+        self.assertRegex(block, rf"(?m)^    if: {re.escape(LAKE)}\s*$")
+        unit = next(s for s in steps(block) if "pytest" in s)
+        self.assertNotRegex(unit, r"(?m)^        if:", "the unit tests of the lake runtime run whenever the gate is open")
+        audit = next(s for s in steps(block) if "pip-audit" in s)
+        self.assertIn("--require-hashes", audit)
+        self.assertNotRegex(audit, r"(?m)^        if:", "the audit of the lock runs with every change of the runtime")
+
+    def test_the_lake_runtime_image_and_its_sbom_are_built_only_for_a_release(self):
+        found = 0
+        for step in steps(job_block(self.text, "lake-runtime")):
+            commands = [l for l in step.splitlines() if not l.lstrip().startswith("#")]
+            if any(re.search(r"docker (buildx )?(build|create)|smoke-image\.sh|check_sbom", l) for l in commands):
+                found += 1
+                self.assertRegex(step, rf"(?m)^        if: {re.escape(FULL)}\s*$",
+                                 f"this image step must run only for a release:\n{step}")
+        self.assertGreaterEqual(found, 3, "the image, its smoke test and its SBOM are all built")
+
+    def test_the_lake_image_is_built_with_pinned_inputs(self):
+        block = job_block(self.text, "lake-runtime")
+        self.assertRegex(block, r"image=moby/buildkit:v[0-9.]+@sha256:[0-9a-f]{64}", "the builder image is pinned")
+        self.assertRegex(block, r"buildkit-syft-scanner:[0-9]+@sha256:[0-9a-f]{64}", "the SBOM scanner is pinned")
+
+    def test_the_lake_lock_is_audited_every_week_by_a_workflow_of_its_own(self):
+        audit = AUDIT_WORKFLOW.read_text()
+        self.assertRegex(audit, r"(?m)^  schedule:\n    - cron: ")
+        self.assertRegex(audit, r"(?m)^  workflow_dispatch:")
+        self.assertRegex(audit, r"(?ms)^permissions:\n  contents: read\n")
+        self.assertIn("pip-audit", audit)
+        self.assertIn("runners/lake/requirements.lock", audit)
+        for action in re.findall(r"(?m)^\s*(?:- )?uses: (\S+)", audit):
+            self.assertRegex(action, r"@[0-9a-f]{40}$", f"{action} must be pinned to a commit")
 
     def test_a_release_can_be_triggered_by_a_tag_a_branch_and_by_hand(self):
         self.assertRegex(self.text, r'(?m)^    tags: \["v\*"\]')

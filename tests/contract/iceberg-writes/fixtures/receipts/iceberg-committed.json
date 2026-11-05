@@ -1,0 +1,18 @@
+{
+  "kind": "iceberg",
+  "outcome": "COMMITTED",
+  "effectKey": "run-7f3a/load/1",
+  "foundByLookup": false,
+  "mode": "append",
+  "ref": "main",
+  "snapshotId": "8744736658442914487",
+  "sequenceNumber": "12",
+  "schemaId": 3,
+  "formatVersion": 2,
+  "rowLevelMode": "NONE",
+  "rowsAdded": "1000",
+  "dataFilesAdded": "2",
+  "bytesWritten": "52311",
+  "ignoredFields": "0",
+  "droppedValues": "0"
+}
