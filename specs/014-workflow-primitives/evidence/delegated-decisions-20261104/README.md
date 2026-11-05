@@ -30,6 +30,12 @@ Where the decisions differ from an opinion:
   nested 100,000-instance one while nested scopes are closed. The delegate keeps the original
   acceptance criteria, as the owner decided on 2026-10-26, and makes the flat run extra evidence
   (OD-2026-11-04-7).
+- Withdrawn on 2026-11-05: the database review's second amendment told a membership creator to lock
+  chains in ascending order and then runs. A review of the lock-graph draft (ADR-0078) found it
+  unreconciled with ADR-0030 §19 and ADR-0037 §6, which forbid holding two existing run locks and
+  cross-locking parent and child. ADR-0075 keeps only the part about taking the group `NOWAIT` before
+  the first member insert; the creator's chain and run lock set is open. `database-review.md` stays as
+  the reviewer gave it.
 
 The reviewers' figures were taken from the performance report and its raw fragments. Three were
 re-read by the assistant (see the header of the data review); every other figure and every

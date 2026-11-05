@@ -2,7 +2,7 @@
 
 **Status:** Accepted (2026-11-04, by delegation) for the ChildRoot worker-lease guard only; production activation is NOT accepted (see "Activation gate")
 **Decided by:** Owner for O705/O706 scope; accepted by delegate on 2026-11-04 after an architecture review and a PostgreSQL/transaction review (OD-2026-11-04-3). Reversible until the owner confirms that row; the status returns to Proposed if the owner declines
-**Refines / supersedes:** Refines ADR-0030 §18 (adds the group header G after chain and own run, acquired without waiting). Supersedes nothing. The native-command lock position, the sweeper, the creator and SCOPED_PATH are decided by the lock-graph ADR (gap G721), not here
+**Refines / supersedes:** Refines ADR-0030 §18 (adds the group header G after chain and own run, acquired without waiting). Supersedes nothing. The native-command lock position, the sweeper, the creator and SCOPED_PATH are decided by the lock-graph ADR (gap G721; ADR-0078, proposed), not here
 **Enforced by:** `capacity_worker_possession`, focused PostgreSQL worker-capacity tests,
 `scripts/check-capacity-activation.py` and its negative fixtures. Not enforced by tooling yet: no
 blocking wait on G, and the presence of the guard in both lease producers; the activation script is a
@@ -37,10 +37,13 @@ uniqueness is group-scoped, so it does not prove one active group per chain.
 - A busy/nonholder group MUST yield no external lease and consume no attempt or admission
   quota. The normal transaction commit may retain preceding secret-refusal audits; it MUST
   NOT disguise a rollback as a successful commit.
-- Membership creation MUST lock chains in ascending (tenant_id, chain_id) order, then runs, and
-  MUST issue `SELECT ... FROM capacity_groups FOR UPDATE NOWAIT` before the first INSERT into
-  `capacity_group_members`, because the foreign-key check of that insert waits unconditionally
-  behind a worker's lock on G.
+- Membership creation MUST issue `SELECT ... FROM capacity_groups FOR UPDATE NOWAIT` before the
+  first INSERT into `capacity_group_members`, because the foreign-key check of that insert waits
+  unconditionally behind a worker's lock on G. The chain and run locks a creator holds, and their
+  order, are NOT decided here: they belong to the creator decision and MUST NOT contradict
+  ADR-0030 §19 and ADR-0037 §6 (see ADR-0078, "Open"). An earlier text of this bullet proposed
+  locking chains in ascending order and then runs; a review found it unreconciled with those two
+  rules, so it is withdrawn.
 - Unsupported SCOPED_PATH registrations MUST fail closed while their coordination semantics
   remain pending. ChildRoot scope is not a general scoped-capacity implementation.
 
@@ -79,7 +82,7 @@ downgrade still obeys retained native-receipt guards. This ADR proves no latency
 
 The guard MUST NOT be enabled in production, and no membership may be created, until all hold:
 
-- (a) The lock-graph ADR (G721) is accepted, with a CI check that no `capacity_groups` row lock lacks
+- (a) The lock-graph ADR (G721; ADR-0078, proposed 2026-11-05) is accepted, with a CI check that no `capacity_groups` row lock lacks
   `NOWAIT` or `SKIP LOCKED`. ADR-0030, ADR-0037, ADR-0038 and this ADR do not accept the full graph.
 - (b) The D714 scheduler-tick sweeper is wired with held-lock, restart and lost-hint tests. Without it
   an idle holder never vacates and every other member starves.
