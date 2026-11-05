@@ -659,4 +659,8 @@ The other fixes were wording:
      keeps the 170 existing operations byte-identical.
   6. The Studio lists a lake connection by its driver and offers neither the PostgreSQL form nor a probe for it, because
      `DatabaseConnection.config` is now a union; the kind-specific forms are the Studio tasks of the feature.
+  7. The OpenAPI allows `egressCeiling` on a PostgreSQL connection, but the REST body (`ConfigBody`,
+     `deny_unknown_fields`) still refuses it and the response does not carry it: the domain and the store hold it
+     (T035-022), the endpoint that sets it with the reveal-grant check is the connections work of US01 (T035-038..).
+     Until then a connection written through the API is always `internal`, which is what the response says by omission.
   *Exit condition:* each is closed by the task that implements the operation, with a test.

@@ -2,7 +2,9 @@
 mod failure;
 pub use failure::DatabaseFailure;
 
-use crate::{identity::Slug, secrets::SecretName, workflow::Expression};
+use crate::{
+    classification::EgressCeiling, identity::Slug, secrets::SecretName, workflow::Expression,
+};
 use std::{fmt, net::IpAddr};
 
 uuid_id!(
@@ -34,6 +36,8 @@ pub enum DatabaseError {
     ParameterLimit,
     #[error("unsupported or invalid database value")]
     InvalidValue,
+    #[error("setting a PII egress ceiling needs the reveal grant of the namespace")]
+    RevealGrantRequired,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,6 +153,9 @@ pub enum ConnectionConfig {
         tls: TlsPolicy,
         secret: SecretName,
         limits: DatabaseLimits,
+        /// The highest level a step may write to this connection (feature 035). A revision stored without one reads
+        /// as `internal`.
+        egress_ceiling: EgressCeiling,
     },
 }
 impl ConnectionConfig {
@@ -167,9 +174,31 @@ impl ConnectionConfig {
             tls,
             secret,
             limits,
+            egress_ceiling: EgressCeiling::default(),
         };
         config.validate()?;
         Ok(config)
+    }
+    /// The same connection with another egress ceiling. Whether the actor may set it is `authorize_egress_ceiling`.
+    #[must_use]
+    pub fn with_egress_ceiling(mut self, ceiling: EgressCeiling) -> Self {
+        let Self::Postgres { egress_ceiling, .. } = &mut self;
+        *egress_ceiling = ceiling;
+        self
+    }
+    #[must_use]
+    pub fn egress_ceiling(&self) -> EgressCeiling {
+        match self {
+            Self::Postgres { egress_ceiling, .. } => *egress_ceiling,
+        }
+    }
+    /// Setting `pii` as the ceiling needs the actor to hold the reveal grant for the namespace (FR-035-005); the other
+    /// ceilings need nothing more than the right to manage connections.
+    pub fn authorize_egress_ceiling(&self, holds_reveal_grant: bool) -> Result<(), DatabaseError> {
+        if self.egress_ceiling().requires_reveal_grant() && !holds_reveal_grant {
+            return Err(DatabaseError::RevealGrantRequired);
+        }
+        Ok(())
     }
     pub fn validate(&self) -> Result<(), DatabaseError> {
         let Self::Postgres {

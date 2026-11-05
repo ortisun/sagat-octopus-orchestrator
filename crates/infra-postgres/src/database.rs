@@ -14,6 +14,7 @@ use sagat_application::{
 };
 use sagat_domain::{
     audit::AuditRecord,
+    classification::EgressCeiling,
     database::{ConnectionConfig, ConnectionId, ConnectionStatus, DatabaseLimits, TlsPolicy},
     identity::{NamespaceId, Permission, Principal, Role, Slug},
     secrets::SecretName,
@@ -48,16 +49,23 @@ fn config_json(config: &ConnectionConfig) -> Value {
         tls,
         secret,
         limits,
+        egress_ceiling,
     } = config;
     let tls = match tls {
         TlsPolicy::VerifyFull { ca_pem } => json!({"mode":"verify-full", "caPem":ca_pem}),
         TlsPolicy::DevelopmentPlaintext => json!({"mode":"development-plaintext"}),
     };
-    json!({"driver":"postgresql", "host":host,"port":port,"database":database,"tls":tls,"secretName":secret.as_str(),"limits":{
+    let mut json = json!({"driver":"postgresql", "host":host,"port":port,"database":database,"tls":tls,"secretName":secret.as_str(),"limits":{
         "maxStatementBytes":limits.max_statement_bytes,"maxParameters":limits.max_parameters,"maxParameterBytes":limits.max_parameter_bytes,
         "maxRows":limits.max_rows,"maxResultBytes":limits.max_result_bytes,"timeoutMs":limits.timeout_ms,
         "connectTimeoutMs":limits.connect_timeout_ms,"poolSize":limits.pool_size,"idleTimeoutMs":limits.idle_timeout_ms
-    }})
+    }});
+    // The default is not written: a revision stored before feature 035 has no ceiling and reads as `internal`, and the
+    // idempotent replay of a write compares the stored JSON with the new one, so both must stay byte-identical.
+    if *egress_ceiling != EgressCeiling::default() {
+        json["egressCeiling"] = json!(egress_ceiling.as_str());
+    }
+    json
 }
 pub(crate) fn config_from(value: &Value) -> Result<ConnectionConfig, StoreError> {
     let text = |name: &str| {
@@ -96,6 +104,13 @@ pub(crate) fn config_from(value: &Value) -> Result<ConnectionConfig, StoreError>
         Some("development-plaintext") => TlsPolicy::DevelopmentPlaintext,
         _ => return Err(corrupt("database TLS")),
     };
+    let egress_ceiling = match &value["egressCeiling"] {
+        Value::Null => EgressCeiling::default(),
+        Value::String(name) => name
+            .parse::<EgressCeiling>()
+            .map_err(|_| corrupt("database egress ceiling"))?,
+        _ => return Err(corrupt("database egress ceiling")),
+    };
     ConnectionConfig::postgres(
         text("host")?,
         value["port"]
@@ -107,6 +122,7 @@ pub(crate) fn config_from(value: &Value) -> Result<ConnectionConfig, StoreError>
         SecretName::parse(text("secretName")?).map_err(|_| corrupt("database secret reference"))?,
         limits,
     )
+    .map(|config| config.with_egress_ceiling(egress_ceiling))
     .map_err(|_| corrupt("database connection settings"))
 }
 pub(crate) fn from_row(row: &PgRow) -> Result<ConnectionRecord, StoreError> {
@@ -293,5 +309,59 @@ impl ConnectionStore for PgRunStore {
         let result = rows.iter().map(from_row).collect::<Result<Vec<_>, _>>()?;
         tx.commit().await.map_err(store_error)?;
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn connection() -> ConnectionConfig {
+        ConnectionConfig::postgres(
+            "db.example.com",
+            5432,
+            "orders",
+            TlsPolicy::VerifyFull { ca_pem: None },
+            SecretName::parse("orders-access").expect("a secret name"),
+            DatabaseLimits::default(),
+        )
+        .expect("a valid connection")
+    }
+
+    /// The idempotent replay of a write compares the stored JSON with the new one, and a revision stored before the
+    /// feature has no ceiling: the default is therefore not written, so the two stay byte-identical.
+    #[test]
+    fn the_default_ceiling_is_not_written() {
+        assert!(config_json(&connection()).get("egressCeiling").is_none());
+    }
+
+    #[test]
+    fn another_ceiling_is_written_and_read_back() {
+        for ceiling in [EgressCeiling::Public, EgressCeiling::Pii] {
+            let json = config_json(&connection().with_egress_ceiling(ceiling));
+            assert_eq!(json["egressCeiling"], ceiling.as_str());
+            let read = config_from(&json).expect("a stored configuration");
+            assert_eq!(read.egress_ceiling(), ceiling);
+            assert_eq!(read, connection().with_egress_ceiling(ceiling));
+        }
+    }
+
+    #[test]
+    fn a_revision_stored_without_a_ceiling_reads_as_internal() {
+        let json = config_json(&connection());
+        let read = config_from(&json).expect("a stored configuration");
+        assert_eq!(read.egress_ceiling(), EgressCeiling::Internal);
+    }
+
+    #[test]
+    fn a_stored_ceiling_outside_the_three_values_is_corrupt() {
+        for stored in [json!("secret"), json!("bogus"), json!(3), json!(null)] {
+            let mut json = config_json(&connection());
+            json["egressCeiling"] = stored.clone();
+            let outcome = config_from(&json);
+            // `null` is the same as absent; every other value is refused rather than read as `internal`.
+            assert_eq!(outcome.is_ok(), stored.is_null(), "{stored}");
+        }
     }
 }

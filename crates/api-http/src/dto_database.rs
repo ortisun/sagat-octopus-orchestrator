@@ -109,6 +109,9 @@ impl From<&ConnectionConfig> for ConfigBody {
             tls,
             secret,
             limits,
+            // The API does not carry the egress ceiling yet (feature 035, US01): the request body refuses it, so a
+            // connection written through the API is always `internal`, which a response without it also says.
+            egress_ceiling: _,
         } = v;
         let tls = match tls {
             TlsPolicy::VerifyFull { ca_pem } => TlsBody::VerifyFull {

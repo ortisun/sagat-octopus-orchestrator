@@ -4,8 +4,8 @@ use std::str::FromStr;
 
 use proptest::prelude::*;
 use sagat_domain::classification::{
-    Audience, ClassificationError, ClassificationRules, Level, Visibility, WithheldReason,
-    visibility,
+    Audience, ClassificationError, ClassificationRules, DATABASE_RESULT, EgressCeiling, Level,
+    Visibility, WithheldReason, visibility, within, written_level,
 };
 
 #[test]
@@ -150,4 +150,132 @@ fn an_audience_cannot_reveal_pii_without_reading_internal() {
         );
     }
     assert!(Audience::new(true, true, false).pii);
+}
+
+// ---- Classification at egress (feature 035: FR-035-025, D035-051) -----------------------------------------------
+
+/// `secret` is always refused; any other level may leave when it does not exceed the ceiling.
+#[test]
+fn within_holds_for_every_pair_of_the_four_levels() {
+    for level in Level::ALL {
+        for ceiling in Level::ALL {
+            let expected = level != Level::Secret && level <= ceiling;
+            assert_eq!(
+                within(level, ceiling),
+                expected,
+                "{level} against a ceiling of {ceiling}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_secret_field_is_within_no_ceiling() {
+    for ceiling in Level::ALL {
+        assert!(!within(Level::Secret, ceiling), "{ceiling}");
+    }
+}
+
+#[test]
+fn the_written_level_is_the_stricter_of_the_inherited_and_the_declared_level() {
+    let options = [
+        None,
+        Some(Level::Public),
+        Some(Level::Internal),
+        Some(Level::Pii),
+        Some(Level::Secret),
+    ];
+    for inherited in options {
+        for declared in options {
+            let expected = match (inherited, declared) {
+                (None, None) => Level::UNMARKED,
+                (Some(level), None) | (None, Some(level)) => level,
+                (Some(a), Some(b)) => a.max(b),
+            };
+            assert_eq!(
+                written_level(inherited, declared),
+                expected,
+                "inherited {inherited:?}, declared {declared:?}"
+            );
+        }
+    }
+}
+
+/// D035-051: a `public` annotation of a record schema is not a disclosure carrier and cannot lower a level.
+#[test]
+fn a_public_declaration_never_lowers_an_inherited_pii_field() {
+    assert_eq!(
+        written_level(Some(Level::Pii), Some(Level::Public)),
+        Level::Pii
+    );
+    assert_eq!(
+        written_level(Some(Level::Secret), Some(Level::Public)),
+        Level::Secret
+    );
+    assert!(!within(
+        written_level(Some(Level::Pii), Some(Level::Public)),
+        Level::Internal
+    ));
+}
+
+#[test]
+fn a_field_with_neither_level_is_pii() {
+    assert_eq!(written_level(None, None), Level::Pii);
+    assert!(!within(written_level(None, None), Level::Internal));
+    assert!(within(written_level(None, None), Level::Pii));
+}
+
+#[test]
+fn the_fields_of_a_database_result_are_pii_whatever_a_declaration_says() {
+    assert_eq!(DATABASE_RESULT, Level::Pii);
+    assert_eq!(
+        written_level(Some(DATABASE_RESULT), Some(Level::Public)),
+        Level::Pii
+    );
+}
+
+/// The ceiling of a connection is one of three levels; `secret` is not a value (data-model.md section 1).
+#[test]
+fn an_egress_ceiling_is_public_internal_or_pii_and_never_secret() {
+    for (name, ceiling) in [
+        ("public", EgressCeiling::Public),
+        ("internal", EgressCeiling::Internal),
+        ("pii", EgressCeiling::Pii),
+    ] {
+        assert_eq!(name.parse::<EgressCeiling>(), Ok(ceiling));
+        assert_eq!(ceiling.as_str(), name);
+    }
+    for rejected in ["secret", "", "Pii", "restricted"] {
+        assert_eq!(
+            rejected.parse::<EgressCeiling>(),
+            Err(ClassificationError::UnknownLevel),
+            "accepted {rejected:?}"
+        );
+    }
+}
+
+#[test]
+fn the_default_ceiling_is_internal_and_only_pii_needs_the_reveal_grant() {
+    assert_eq!(EgressCeiling::default(), EgressCeiling::Internal);
+    assert!(EgressCeiling::Pii.requires_reveal_grant());
+    assert!(!EgressCeiling::Public.requires_reveal_grant());
+    assert!(!EgressCeiling::Internal.requires_reveal_grant());
+}
+
+#[test]
+fn a_ceiling_admits_exactly_the_levels_up_to_it() {
+    for ceiling in [
+        EgressCeiling::Public,
+        EgressCeiling::Internal,
+        EgressCeiling::Pii,
+    ] {
+        for level in Level::ALL {
+            assert_eq!(
+                ceiling.admits(level),
+                within(level, ceiling.as_level()),
+                "{level} / {ceiling:?}"
+            );
+        }
+    }
+    assert!(!EgressCeiling::Pii.admits(Level::Secret));
 }

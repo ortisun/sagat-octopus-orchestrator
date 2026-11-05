@@ -289,7 +289,12 @@ three conditions pass.
   - "setting `pii` requires the actor to hold the 016 reveal grant for the namespace".
 
   Refs: FR-035-005, D035-040.
-- [ ] T035-010 [P] Write the failing tests in `crates/domain/tests/classification.rs`:
+
+  *2026-11-05, done for the one variant that exists, left unticked:* 4 cases in `database_connections.rs` (default
+  `internal`, set and read back, a different ceiling is a different connection, `pii` needs the reveal grant and
+  the other two do not), failing first. The Iceberg, object-storage and ClickHouse variants do not exist yet; the same
+  cases are extended to them when T035-038 adds them.
+- [x] T035-010 [P] Write the failing tests in `crates/domain/tests/classification.rs`:
   - `within(level, ceiling)` holds for every pair of the four levels;
   - a written field's level is the stricter of its inherited and declared levels, so a `public`
     `recordSchema` annotation never lowers an inherited `pii` field;
@@ -297,6 +302,12 @@ three conditions pass.
   - database-result fields are `pii`.
 
   Refs: FR-035-025, D035-051.
+
+  *2026-11-05, done:* 8 cases in `crates/domain/tests/classification.rs` (every pair of the four levels, `secret` within
+  no ceiling, the written level for all 25 combinations of inherited and declared, a `public` declaration never
+  lowering `pii`, neither level is `pii`, a database result is `pii`, the three ceilings and `secret` refused, the
+  default and the reveal grant). They failed to compile first (no `within`, `written_level`, `EgressCeiling`), then
+  `cargo test -p sagat-domain --test classification`: 15 passed.
 - [ ] T035-011 [P] Write the failing tests in `crates/domain/tests/identity.rs` and
   `crates/domain/tests/audit.rs`:
   - the catalog has 53 permissions (written as 49; develop held 52 before this feature, D035-071);
@@ -383,6 +394,15 @@ three conditions pass.
   and `classification::within` with the stricter-of rule in `crates/domain/src/classification.rs`.
   Add no new domain dependency. T035-009 and T035-010 pass. Refs: FR-035-005, FR-035-025, D035-040,
   D035-051.
+
+  *2026-11-05, done for PostgreSQL, left unticked:* `classification::{within, written_level, DATABASE_RESULT,
+  EgressCeiling}` and `ConnectionConfig::{with_egress_ceiling, egress_ceiling, authorize_egress_ceiling}` with
+  `DatabaseError::RevealGrantRequired`; no new domain dependency. The store writes the ceiling only when it is not
+  the default, so a revision stored before the feature, and the idempotent replay that compares stored JSON, stay
+  byte-identical; it reads an absent ceiling as `internal` and refuses a stored `secret` (4 unit tests in
+  `infra-postgres`, failing first). `cargo test -p sagat-tests --test integration_database_connections`: 7 passed,
+  also with `SAGAT_TEST_AS_RUNTIME_ROLE=1`; workspace clippy clean. The REST body still refuses `egressCeiling`
+  (G035-027 item 7).
 - [ ] T035-023 Add the permission and the audit actions:
   - `Permission::DatabaseBrowse` and its role tables in `crates/domain/src/identity.rs`;
   - the three audit actions in `crates/domain/src/audit.rs`;

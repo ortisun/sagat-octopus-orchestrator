@@ -4,7 +4,7 @@ use sagat_domain::database::{
     ConnectionConfig, ConnectionRef, DatabaseError, DatabaseLimits, DatabaseOperation,
     OperationKind, Parameter, TlsPolicy, TypedValue,
 };
-use sagat_domain::{identity::Slug, secrets::SecretName};
+use sagat_domain::{classification::EgressCeiling, identity::Slug, secrets::SecretName};
 
 fn config(host: &str) -> Result<ConnectionConfig, DatabaseError> {
     ConnectionConfig::postgres(
@@ -179,4 +179,60 @@ fn managed_node_policies_and_cache_weight_cannot_be_bypassed() {
         ))
         .is_err()
     );
+}
+
+// ---- The egress ceiling of a connection (feature 035: FR-035-005, D035-040) -------------------------------------
+
+#[test]
+fn a_connection_without_a_ceiling_reads_as_internal() {
+    let connection = config("db.example.com").expect("a valid connection");
+    assert_eq!(connection.egress_ceiling(), EgressCeiling::Internal);
+}
+
+#[test]
+fn a_ceiling_is_set_on_a_connection_and_read_back() {
+    for ceiling in [
+        EgressCeiling::Public,
+        EgressCeiling::Internal,
+        EgressCeiling::Pii,
+    ] {
+        let connection = config("db.example.com")
+            .expect("a valid connection")
+            .with_egress_ceiling(ceiling);
+        assert_eq!(connection.egress_ceiling(), ceiling);
+        assert_eq!(
+            connection.validate(),
+            Ok(()),
+            "a ceiling does not make a connection invalid"
+        );
+    }
+}
+
+/// Changing the ceiling is a change of the connection: the revision is another value.
+#[test]
+fn two_connections_that_differ_only_in_the_ceiling_are_different() {
+    let internal = config("db.example.com").expect("a valid connection");
+    let public = internal.clone().with_egress_ceiling(EgressCeiling::Public);
+    assert_ne!(internal, public);
+}
+
+#[test]
+fn setting_pii_needs_the_reveal_grant_and_the_other_ceilings_do_not() {
+    let connection = config("db.example.com").expect("a valid connection");
+    for ceiling in [EgressCeiling::Public, EgressCeiling::Internal] {
+        for holds_grant in [false, true] {
+            let set = connection.clone().with_egress_ceiling(ceiling);
+            assert_eq!(
+                set.authorize_egress_ceiling(holds_grant),
+                Ok(()),
+                "{ceiling:?}, grant {holds_grant}"
+            );
+        }
+    }
+    let pii = connection.with_egress_ceiling(EgressCeiling::Pii);
+    assert_eq!(
+        pii.authorize_egress_ceiling(false),
+        Err(DatabaseError::RevealGrantRequired)
+    );
+    assert_eq!(pii.authorize_egress_ceiling(true), Ok(()));
 }
