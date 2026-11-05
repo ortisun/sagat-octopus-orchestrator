@@ -366,6 +366,18 @@ impl ApiError {
         self
     }
 
+    /// Adds one entry to the details of the error, keeping the ones it has.
+    #[must_use]
+    pub fn with_detail(mut self, key: &str, value: Value) -> Self {
+        let mut details = match self.parts.details.take() {
+            Some(Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        };
+        details.insert(key.to_owned(), value);
+        self.parts.details = Some(Value::Object(details));
+        self
+    }
+
     /// The error as it will be reported, for transports other than HTTP (the gRPC adapter maps the
     /// same classification onto its own status codes, so both agree on what an error means).
     #[must_use]
@@ -651,6 +663,38 @@ impl ApiError {
                     Self::validation(format!("the batch operation is not acceptable: {reason}"));
                 e.parts.details = Some(match field {
                     Some(field) => json!({ "reason": reason, "field": field }),
+                    None => json!({ "reason": reason }),
+                });
+                e
+            }
+            AppError::InvalidStart { reason, field } => {
+                let mut e =
+                    Self::validation(format!("the start option is not acceptable: {reason}"));
+                e.parts.details = Some(match field {
+                    Some(field) => json!({ "reason": reason, "field": field }),
+                    None => json!({ "reason": reason }),
+                });
+                e
+            }
+            // The holder is named by the route, and only to a caller who may read runs: this
+            // conversion does not know who is asking.
+            AppError::BusinessIdConflict {
+                reason,
+                reusable_after,
+                ..
+            } => {
+                let message = if reason == "BUSINESS_ID_REUSE_REJECTED" {
+                    "the reuse policy forbids a new run while the previous one is remembered"
+                } else {
+                    "another open execution holds this business identifier"
+                };
+                let mut e = Self::new(StatusCode::CONFLICT, ErrorCode::Conflict, message);
+                let after = reusable_after.and_then(|at| {
+                    at.format(&time::format_description::well_known::Rfc3339)
+                        .ok()
+                });
+                e.parts.details = Some(match after {
+                    Some(after) => json!({ "reason": reason, "reusableAfter": after }),
                     None => json!({ "reason": reason }),
                 });
                 e

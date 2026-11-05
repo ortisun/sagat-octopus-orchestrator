@@ -476,6 +476,8 @@ paths:
         - {name: workflowId, in: query, schema: {type: string}}
         - {name: origin, in: query, schema: {$ref: '#/components/schemas/DatabaseExecutionOrigin'}}
         - {name: status, in: query, schema: {type: string, enum: [RUNNING, WAITING, PAUSED, CANCELLING, COMPENSATING, MANUAL_REVIEW, SUCCEEDED, FAILED, CANCELLED, TIMED_OUT, COMPENSATED, PARTIAL, COMPENSATION_FAILED]}}
+        - {name: businessId, in: query, description: 'The runs started under this business identifier, whole.', schema: {type: string, minLength: 1, maxLength: 200, pattern: '^[!-~]+$'}}
+        - {name: businessIdPrefix, in: query, description: 'The runs whose business identifier starts with this text. A literal: nothing in it is a wildcard.', schema: {type: string, minLength: 1, maxLength: 200, pattern: '^[!-~]+$'}}
       responses:
         '200': {description: 'Page of runs', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RunPage'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
@@ -499,7 +501,17 @@ paths:
         content:
           application/json:
             schema: {$ref: '#/components/schemas/StartRunRequest'}
+      description: |
+        With a `businessId`, at most one open execution holds it at any commit. An open holder is a
+        `409` `CONFLICT` with `details.reason` `BUSINESS_ID_IN_USE` (`details.runId` names it when the
+        caller may read runs), or, with `businessIdConflictPolicy` `USE_EXISTING`, the answer is `200`
+        with the holder's run and nothing is created. A closed holder inside the reuse window (30 days)
+        is decided by `businessIdReusePolicy`; `REJECT_DUPLICATE` and `ALLOW_DUPLICATE_FAILED_ONLY` (for a
+        holder that succeeded) are a `409` with `details.reason` `BUSINESS_ID_REUSE_REJECTED` and
+        `details.reusableAfter`. An identifier or a policy that is none is `422` with `details.reason`
+        `BUSINESS_ID_INVALID` and `details.field`. Not combinable with `inputBlobRef`.
       responses:
+        '200': {description: 'An open execution already holds the business identifier and the start asked for USE_EXISTING: nothing was created', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}
         '202': {description: 'Run durably accepted: its first steps exist and workers can claim them', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -4747,6 +4759,9 @@ components:
         inputBlobRef: {type: string, format: uuid, description: 'An unused run-input blob uploaded by this subject in this namespace. The run input is its canonical $blob descriptor.'}
         correlationId: {type: string, maxLength: 160}
         deadline: {type: string, format: date-time, description: 'Must be in the future and within a year; the run times out at this instant.'}
+        businessId: {type: string, minLength: 1, maxLength: 200, pattern: '^[!-~]+$', description: 'The caller''s own identifier for the run: 1 to 200 visible ASCII characters. At most one open execution of a namespace holds it. Customer content: it is not echoed in an error, a log or a metric.'}
+        businessIdConflictPolicy: {type: string, enum: [FAIL, USE_EXISTING], default: FAIL, description: 'What to do when an open execution holds the identifier. There is no policy that terminates it. Needs businessId.'}
+        businessIdReusePolicy: {type: string, enum: [ALLOW_DUPLICATE, ALLOW_DUPLICATE_FAILED_ONLY, REJECT_DUPLICATE], default: ALLOW_DUPLICATE, description: 'What to do when a closed execution still remembers the identifier (30 days after it ended). Needs businessId.'}
     BlobDescriptor:
       type: object
       required: [id, size, sha256, contentType]
@@ -4800,6 +4815,7 @@ components:
         traceId: {type: [string, 'null']}
         correlationId: {type: [string, 'null']}
         rerunOf: {type: string, format: uuid, description: 'The ended run this one was started again from (RERUN_AS_NEW), when it was.'}
+        businessId: {type: string, minLength: 1, maxLength: 200, description: 'The business identifier the run was started under, when it was. Read by getRun and listRuns.'}
         depth: {type: integer, minimum: 0, maximum: 8, description: 'Nesting of child runs: 0 for a run started through the API.'}
         parent:
           type: [object, 'null']

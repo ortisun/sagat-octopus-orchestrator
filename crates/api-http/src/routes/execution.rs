@@ -18,14 +18,16 @@ use sagat_application::api_admission::{ApiOperation, ApiTarget};
 use sagat_application::definitions::DiffRef;
 use sagat_application::error::AppError;
 use sagat_application::identity::{Page, PageRequest};
-use sagat_application::runs::{GraphChanges, ReviewAction, RunFilter, RunOperation, StartRun};
+use sagat_application::runs::{
+    GraphChanges, ReviewAction, RunFilter, RunOperation, StartOptions, StartRun,
+};
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::execution::{
     ExecutionInstanceId, FailureCode, InstancePath, ReviewOutcome, RunId, RunStatus,
 };
 use sagat_domain::workflow::NodeId;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
@@ -110,6 +112,22 @@ pub struct ListQuery {
     pub workflow_id: Option<String>,
     pub status: Option<String>,
     pub origin: Option<String>,
+    #[serde(rename = "businessId")]
+    pub business_id: Option<String>,
+    #[serde(rename = "businessIdPrefix")]
+    pub business_id_prefix: Option<String>,
+}
+
+/// An identifier or a prefix of one: visible ASCII, at most 200 characters. A prefix is not empty either.
+fn business_text(text: &str, field: &'static str) -> Result<(), ApiError> {
+    sagat_domain::business_ids::BusinessId::new(text)
+        .map(|_| ())
+        .map_err(|_| {
+            ApiError::from(sagat_application::error::AppError::InvalidStart {
+                reason: "BUSINESS_ID_INVALID",
+                field: Some(field.to_owned()),
+            })
+        })
 }
 
 fn page_request(query: &ListQuery) -> PageRequest {
@@ -423,6 +441,7 @@ pub async fn start_run<B: Exec>(
         .as_deref()
         .map(parse_id::<WorkflowVersionId>)
         .transpose()?;
+    let options = start_options(&body)?;
     let request = StartRun {
         namespace: namespace(&headers)?,
         workflow: parse_id::<WorkflowId>(&body.workflow_id)?,
@@ -439,8 +458,13 @@ pub async fn start_run<B: Exec>(
         ApiTarget::NamespaceSlug(namespace_slug(request.namespace)?),
     )
     .await?;
-    let record = if let Some(id) = body.input_blob_ref {
-        state
+    let started = if let Some(id) = body.input_blob_ref {
+        if options.business.is_some() {
+            return Err(ApiError::validation(
+                "a business identifier cannot be combined with inputBlobRef",
+            ));
+        }
+        let run = state
             .runs()
             .start_with_blob(
                 &caller.session.principal,
@@ -448,14 +472,145 @@ pub async fn start_run<B: Exec>(
                 parse_id::<sagat_domain::blobs::BlobId>(&id)?,
                 &caller.ctx,
             )
-            .await?
+            .await?;
+        sagat_application::runs::Started {
+            run,
+            existing: false,
+        }
     } else {
         state
             .runs()
-            .start(&caller.session.principal, &request, &caller.ctx)
-            .await?
+            .start_with_options(&caller.session.principal, &request, options, &caller.ctx)
+            .await
+            .map_err(|error| holder_for_readers(error, &caller))?
     };
-    Ok((StatusCode::ACCEPTED, Json(RunBody::from(&record))))
+    // a start that found its holder open and asked for `USE_EXISTING` creates nothing: `200`
+    let status = if started.existing {
+        StatusCode::OK
+    } else {
+        StatusCode::ACCEPTED
+    };
+    Ok((status, Json(RunBody::from(&started.run))))
+}
+
+/// The options of a start: the business identifier and what to do when it is held.
+fn start_options(body: &StartRunBody) -> Result<StartOptions, ApiError> {
+    let Some(text) = body.business_id.as_deref() else {
+        if body.business_id_conflict_policy.is_some() || body.business_id_reuse_policy.is_some() {
+            return Err(sagat_application::error::AppError::InvalidStart {
+                reason: "BUSINESS_ID_INVALID",
+                field: Some("/businessId".to_owned()),
+            }
+            .into());
+        }
+        return Ok(StartOptions::default());
+    };
+    let invalid = |field: &str| {
+        ApiError::from(sagat_application::error::AppError::InvalidStart {
+            reason: "BUSINESS_ID_INVALID",
+            field: Some(field.to_owned()),
+        })
+    };
+    let id =
+        sagat_domain::business_ids::BusinessId::new(text).map_err(|_| invalid("/businessId"))?;
+    let conflict = body
+        .business_id_conflict_policy
+        .as_deref()
+        .map(|policy| {
+            policy
+                .parse::<sagat_domain::business_ids::ConflictPolicy>()
+                .map_err(|()| invalid("/businessIdConflictPolicy"))
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let reuse = body
+        .business_id_reuse_policy
+        .as_deref()
+        .map(|policy| {
+            policy
+                .parse::<sagat_domain::business_ids::ReusePolicy>()
+                .map_err(|()| invalid("/businessIdReusePolicy"))
+        })
+        .transpose()?
+        .unwrap_or_default();
+    Ok(StartOptions {
+        business: Some(sagat_application::runs::BusinessStart {
+            id,
+            conflict,
+            reuse,
+            window: sagat_domain::business_ids::ReuseWindow::default(),
+        }),
+    })
+}
+
+/// A refusal because a business identifier is held names the holder, to a caller who may read runs
+/// and to nobody else: the identifier is theirs to use, the run behind it may not be.
+fn holder_for_readers(error: sagat_application::error::AppError, caller: &Caller) -> ApiError {
+    let may_read = caller
+        .session
+        .principal
+        .authorize(sagat_domain::identity::Permission::RunRead)
+        .is_ok();
+    name_the_holder(error, may_read)
+}
+
+/// The error of a refused start, with the holder named when `may_read`.
+fn name_the_holder(error: sagat_application::error::AppError, may_read: bool) -> ApiError {
+    use sagat_application::error::AppError;
+    let holder = match &error {
+        AppError::BusinessIdConflict { holder, .. } => Some(*holder),
+        _ => None,
+    };
+    let api = ApiError::from(error);
+    match holder {
+        Some(holder) if may_read => api.with_detail("runId", json!(holder.to_string())),
+        _ => api,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use sagat_application::error::AppError;
+    use sagat_domain::execution::RunId;
+
+    use super::name_the_holder;
+
+    fn conflict() -> (AppError, RunId) {
+        let holder = RunId::generate();
+        (
+            AppError::BusinessIdConflict {
+                reason: "BUSINESS_ID_IN_USE",
+                holder,
+                reusable_after: None,
+            },
+            holder,
+        )
+    }
+
+    #[test]
+    fn the_holder_is_named_to_a_caller_who_may_read_runs() {
+        let (error, holder) = conflict();
+        let named = name_the_holder(error, true);
+        let details = named.parts().details.clone().expect("details");
+        assert_eq!(details["reason"], "BUSINESS_ID_IN_USE");
+        assert_eq!(details["runId"], holder.to_string());
+    }
+
+    #[test]
+    fn the_holder_is_not_named_to_a_caller_who_may_not() {
+        let (error, holder) = conflict();
+        let unnamed = name_the_holder(error, false);
+        let details = unnamed.parts().details.clone().expect("details");
+        assert_eq!(details["reason"], "BUSINESS_ID_IN_USE");
+        assert!(details.get("runId").is_none(), "{details}");
+        assert!(!details.to_string().contains(&holder.to_string()));
+    }
+
+    #[test]
+    fn nothing_else_gets_a_holder() {
+        let named = name_the_holder(AppError::NotFound, true);
+        assert!(named.parts().details.is_none());
+    }
 }
 
 pub async fn list_runs<B: Exec>(
@@ -485,6 +640,20 @@ pub async fn list_runs<B: Exec>(
                 s.parse::<RunStatus>()
                     .map_err(|_| ApiError::validation("unknown run status"))
             })
+            .transpose()?,
+        business_id: query
+            .business_id
+            .as_deref()
+            .map(|text| {
+                business_text(text, "/businessId")?;
+                sagat_domain::business_ids::BusinessId::new(text)
+                    .map_err(|_| ApiError::from(sagat_application::error::AppError::Internal))
+            })
+            .transpose()?,
+        business_id_prefix: query
+            .business_id_prefix
+            .as_deref()
+            .map(|text| business_text(text, "/businessIdPrefix").map(|()| text.to_owned()))
             .transpose()?,
     };
     let namespace_name = namespace(&headers)?;

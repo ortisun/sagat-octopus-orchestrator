@@ -473,7 +473,7 @@ async fn trigger(w: &World, id: &str) {
 
 async fn rollback_and_acl_fence(w: &World, existing: RunId, publisher: &str) {
     use sagat_application::{
-        definitions::{Applied, Idempotency},
+        definitions::Idempotency,
         quotas::RunLimits,
         runs::{NewRun, RunStore},
     };
@@ -483,6 +483,7 @@ async fn rollback_and_acl_fence(w: &World, existing: RunId, publisher: &str) {
     info.root = info.run_id;
     let run = info.run_id;
     let new = NewRun {
+        business: None,
         schedule: None,
         retained: None,
         limits: RunLimits::of(&w.store, info.tenant_id, info.namespace_id)
@@ -507,7 +508,7 @@ async fn rollback_and_acl_fence(w: &World, existing: RunId, publisher: &str) {
         info,
     };
     let held = match w.store.create(new).await.unwrap() {
-        Applied::Done(tx) => tx,
+        sagat_application::runs::Admitted::Created(tx) => tx,
         _ => panic!("new run"),
     };
     let request = ctx();

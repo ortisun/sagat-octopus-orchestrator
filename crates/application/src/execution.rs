@@ -632,6 +632,9 @@ pub struct RunInfo {
     pub depth: u8,
     /// The run at the top of the tree this run belongs to (itself for a run started through the API).
     pub root: RunId,
+    /// The business identifier the run was started under (feature 018). Read by `get` and `list`
+    /// only; the rows a command transaction reads do not carry it. Its `Debug` hides it.
+    pub business_id: Option<sagat_domain::business_ids::BusinessId>,
 }
 
 /// Where a run sits in its continuation chain, when it belongs to one. A segment that ended into

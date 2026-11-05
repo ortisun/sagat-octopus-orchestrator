@@ -14,16 +14,17 @@
 
 use std::time::Duration as StdDuration;
 
-use sagat_application::runs::RunOperation;
+use sagat_application::runs::{BusinessStart, RunOperation, StartOptions, StartRun};
 use sagat_application::schedule_firing::Fired;
-use sagat_domain::execution::StepStatus;
+use sagat_domain::business_ids::{BusinessId, ConflictPolicy, ReusePolicy, ReuseWindow};
+use sagat_domain::execution::{RunId, StepStatus};
 use sagat_scheduler::SchedulerSettings;
 use serde_json::json;
 use sqlx::{Postgres, Transaction};
 use time::Duration;
 
 use crate::support::bounded::within;
-use crate::support::engine::chain;
+use crate::support::engine::{World, chain, ctx};
 use crate::support::scale::{scheduler, sleepers};
 use crate::support::schedules::{Fixture, fixture, hourly};
 
@@ -36,7 +37,7 @@ async fn aggregate_tables(f: &Fixture) -> Vec<String> {
     let names: Vec<String> = sqlx::query_scalar(
         "SELECT tablename::text FROM pg_tables \
          WHERE schemaname = current_schema() \
-           AND (tablename = 'schedules' OR tablename LIKE 'schedule\\_%' OR tablename LIKE 'batch\\_%') \
+           AND (tablename = 'schedules' OR tablename = 'business_ids' OR tablename LIKE 'schedule\\_%' OR tablename LIKE 'batch\\_%') \
          ORDER BY 1",
     )
     .fetch_all(&f.w.db.pool)
@@ -50,6 +51,7 @@ async fn aggregate_tables(f: &Fixture) -> Vec<String> {
         "schedule_obligations",
         "batch_jobs",
         "batch_items",
+        "business_ids",
     ] {
         assert!(
             names.iter().any(|name| name == known),
@@ -72,6 +74,37 @@ async fn lock(f: &Fixture, tables: &[String]) -> Transaction<'static, Postgres> 
     tx
 }
 
+/// A run that holds a business identifier: what it goes through must not touch the binding either.
+async fn bound(w: &World, workflow: sagat_domain::definition::WorkflowId, id: &str) -> RunId {
+    w.runs
+        .start_with_options(
+            &w.admin,
+            &StartRun {
+                namespace: "payments",
+                workflow,
+                version: None,
+                input: b"{}",
+                correlation_id: None,
+                deadline: None,
+                key: &format!("{id}-start-key"),
+            },
+            StartOptions {
+                business: Some(BusinessStart {
+                    id: BusinessId::new(id).expect("an identifier"),
+                    conflict: ConflictPolicy::Fail,
+                    reuse: ReusePolicy::AllowDuplicate,
+                    window: ReuseWindow::default(),
+                }),
+            },
+            &ctx(),
+        )
+        .await
+        .expect("start a run under an identifier")
+        .run
+        .info
+        .run_id
+}
+
 #[tokio::test]
 async fn no_run_driven_transition_touches_a_table_of_a_schedule_or_a_batch_job() {
     let f = fixture().await;
@@ -81,16 +114,16 @@ async fn no_run_driven_transition_touches_a_table_of_a_schedule_or_a_batch_job()
     // --- everything a transition needs is prepared before the locks are taken -----------------
     let (workflow, _) = w.publish(chain("run-driven-locks")).await;
     let session = w.session(&["act.a", "act.b"]).await;
-    let completes = w.start(workflow, &json!({})).await;
+    let completes = bound(w, workflow, "locks-completes").await;
     let complete_a = w.one_task(&session).await;
-    let fails = w.start(workflow, &json!({})).await;
+    let fails = bound(w, workflow, "locks-fails").await;
     let fail_a = w.one_task(&session).await;
-    let lapses = w.start(workflow, &json!({})).await;
+    let lapses = bound(w, workflow, "locks-lapses").await;
     w.one_task(&session).await;
     w.age_lease(lapses, "a").await;
-    let late = w.start(workflow, &json!({})).await;
+    let late = bound(w, workflow, "locks-late").await;
     w.age_run_deadline(late).await;
-    let cancelled = w.start(workflow, &json!({})).await;
+    let cancelled = bound(w, workflow, "locks-cancelled").await;
     let sleeper = sleepers(w, "run-driven-timer", 1).await[0];
     // an aggregate that has work waiting for it, for the control below
     let schedule = f.create("held", &hourly(), &json!({}), None).await;

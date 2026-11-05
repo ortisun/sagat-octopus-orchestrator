@@ -11,7 +11,7 @@
 use std::sync::{Arc, Mutex};
 
 use sagat_application::clock::{Clock, SystemClock};
-use sagat_application::definitions::{Applied, DefinitionStore, Idempotency};
+use sagat_application::definitions::{DefinitionStore, Idempotency};
 use sagat_application::dispatch::{
     CLAIM_LEASE, ClaimedEvent, CronSchedule, DeliveryRef, EventDispatchStore, EventView,
     StoredTrigger, WaitingStep, start_key,
@@ -23,7 +23,7 @@ use sagat_application::execution::{
     MAX_RUN_OUTPUT_BYTES, PathExecutionStore, PathExecutionTx, RunInfo, RunTx,
 };
 use sagat_application::quotas::RunLimits;
-use sagat_application::runs::{Lock, NewRun, RunStore};
+use sagat_application::runs::{Admitted, Lock, NewRun, RunStore};
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::events::{
     GIVE_UP_AFTER, MAX_DISPATCH_ATTEMPTS, capacity_backoff, dispatch_backoff,
@@ -434,6 +434,7 @@ where
             parent: None,
             depth: 0,
             root: run_id,
+            business_id: None,
         };
         let audit = AuditRecord::engine(
             tenant,
@@ -447,6 +448,7 @@ where
         let limits = RunLimits::of(&self.store, tenant, trigger.namespace_id).await?;
         let new = NewRun {
             schedule: None,
+            business: None,
             retained: None,
             limits,
             info,
@@ -462,8 +464,9 @@ where
         };
         match self.store.create(new).await {
             // An earlier dispatch of this event already started it.
-            Ok(Applied::Replayed(_)) => Ok(Started::No),
-            Ok(Applied::Done(mut tx)) => {
+            // (an event never carries a business identifier, so a holder is never returned)
+            Ok(Admitted::Replayed(_) | Admitted::Existing(_)) => Ok(Started::No),
+            Ok(Admitted::Created(mut tx)) => {
                 // An event leaves the evidence of its delivery with the run it starts.
                 if let Some(event) = firing.event {
                     let delivery = DeliveryRef::to_trigger(event, trigger.registration.id, run_id);

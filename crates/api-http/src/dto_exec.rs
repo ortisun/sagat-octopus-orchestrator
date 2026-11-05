@@ -255,6 +255,17 @@ pub struct StartRunBody {
     pub correlation_id: Option<String>,
     #[serde(default, with = "time::serde::rfc3339::option")]
     pub deadline: Option<OffsetDateTime>,
+    /// The caller's own identifier for the run: 1 to 200 visible ASCII characters. At most one open
+    /// execution holds it (feature 018).
+    #[serde(default)]
+    pub business_id: Option<String>,
+    /// What to do when an open execution holds the identifier: `FAIL` (default) or `USE_EXISTING`.
+    #[serde(default)]
+    pub business_id_conflict_policy: Option<String>,
+    /// What to do when a closed execution still remembers it: `ALLOW_DUPLICATE` (default),
+    /// `ALLOW_DUPLICATE_FAILED_ONLY` or `REJECT_DUPLICATE`.
+    #[serde(default)]
+    pub business_id_reuse_policy: Option<String>,
 }
 
 fn present_json<'de, D: serde::Deserializer<'de>>(
@@ -346,6 +357,9 @@ pub struct RunBody {
     /// The ended run this one was started again from (`RERUN_AS_NEW`), when it was.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rerun_of: Option<String>,
+    /// The business identifier the run was started under, when it was.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub business_id: Option<String>,
     /// How deeply nested the run is: 0 when started through the API.
     pub depth: u8,
     /// The run's segment in its continuation chain; absent for a run outside any chain. A segment
@@ -397,6 +411,7 @@ impl From<&RunRecord> for RunBody {
                 cancel_policy: p.cancel_policy.as_str(),
             }),
             rerun_of: r.info.rerun_of.map(|r| r.to_string()),
+            business_id: r.info.business_id.as_ref().map(|id| id.as_str().to_owned()),
             depth: r.info.depth,
             chain: r.chain.map(|segment| RunChainBody {
                 chain_id: segment.chain_id.to_string(),
@@ -1038,6 +1053,7 @@ mod switch_graph_tests {
                     parent: None,
                     depth: 0,
                     root: run_id,
+                    business_id: None,
                     origin: None,
                 },
                 status: RunStatus::Running,

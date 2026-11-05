@@ -1267,8 +1267,9 @@ impl ChainProgressStore for PgChainProgressStore {
             "INSERT INTO runs \
              (id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, run_version, \
               paused, input_digest, started_by, trace_id, deadline_at, created_at, updated_at, \
-              root_run_id, depth) \
-             VALUES ($1,$2,$3,$4,$5,'RUNNING',3,false,$6,$7,$8,$9,$10,$10,$1,0)",
+              root_run_id, depth, business_id) \
+             VALUES ($1,$2,$3,$4,$5,'RUNNING',3,false,$6,$7,$8,$9,$10,$10,$1,0, \
+                     (SELECT business_id FROM runs WHERE tenant_id = $2 AND id = $11))",
         )
         .bind(command.successor().as_uuid())
         .bind(command.scope().tenant_id().as_uuid())
@@ -1280,6 +1281,8 @@ impl ChainProgressStore for PgChainProgressStore {
         .bind(command.trace_id())
         .bind(chain.original_deadline)
         .bind(command.occurred_at())
+        // the segment carries the identifier of the one it continues
+        .bind(command.expected_head().as_uuid())
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
@@ -1748,9 +1751,10 @@ impl ChainProgressStore for PgChainProgressStore {
              (id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, run_version, \
               paused, input_digest, started_by, trace_id, deadline_at, created_at, updated_at, \
               root_run_id, depth, parent_run_id, parent_node, cancel_policy, trace_parent_span, \
-              parent_settled) \
+              parent_settled, business_id) \
              VALUES ($1,$2,$3,$4,$5,$17,3,false,$6,$7,$8,$9,$10,$10,$11,$12,$13,$14,$15,$16, \
-                     $13 IS NOT NULL)",
+                     $13 IS NOT NULL, \
+                     (SELECT business_id FROM runs WHERE tenant_id = $2 AND id = $18))",
         )
         .bind(command.successor().as_uuid())
         .bind(command.scope().tenant_id().as_uuid())
@@ -1769,6 +1773,8 @@ impl ChainProgressStore for PgChainProgressStore {
         .bind(run.cancel_policy.as_deref())
         .bind(run.trace_parent_span.as_deref())
         .bind(entry.run_status())
+        // the segment carries the identifier of the one it continues
+        .bind(command.expected_head().as_uuid())
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;

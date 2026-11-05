@@ -647,21 +647,68 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
 - [ ] T018-034 [US3] `BusinessIdStore` (insert-or-lock, holder status, claim in creation transaction,
   lookup, `runs.business_id`, purge) — `crates/infra-postgres/src/{business_ids.rs,execution.rs}` —
   store tests — FR-018-018, FR-018-021, FR-018-022.
+  *Part done (2026-11-05), the task stays open:* migration `20270103000000_business_ids` (the binding table, `runs.business_id`,
+  grants for `sagat_app`, a down that refuses while a binding exists, storage classification, the `sagat_quota_row_delta`
+  trigger); `crates/infra-postgres/src/business_ids.rs` claims inside `PgRunStore::create` in the Aggregate slot
+  (`INSERT ... ON CONFLICT DO NOTHING`, else `SELECT ... FOR UPDATE`, holder status through the chain, takeover of a closed
+  holder, a holder that is gone holds nothing); the run and every segment of a chain carry the copy (D1961, D1963). Real
+  PostgreSQL, `integration_schedules_bulk_operations` 249 passed in both passes (the owner role and `sagat_app`), 15 of
+  them in `business_ids.rs`; mutation checks killed the binding row not locked, a closed holder not replaced, the claim
+  ignoring an open holder, the copy on the run not written, the claim skipped, a gone holder counted as open, the options
+  left out of the fingerprint, a chain judged by its first run, and a handoff that drops the identifier; the one survivor is the plain `continue_as_new` copy (G1970).
+  Not done: the lookup `GET .../business-ids/{id}` and the call of `business_ids_purge` (G1968, G1969).
 - [ ] T018-035 [US3] Start options on `POST /runs` (`200` for `USE_EXISTING`), binding lookup, list
   filters, rerun `KEEP`/`DROP` — `crates/application/src/runs/business_id.rs`,
   `crates/api-http/src/routes/execution.rs`, `crates/api-http/src/dto.rs` — contract tests —
   FR-018-019, FR-018-020, FR-018-022, FR-018-040.
+  *Part done (2026-11-05), the task stays open:* `POST /runs` takes `businessId`, `businessIdConflictPolicy` (`FAIL`,
+  `USE_EXISTING`) and `businessIdReusePolicy` (`ALLOW_DUPLICATE`, `ALLOW_DUPLICATE_FAILED_ONLY`, `REJECT_DUPLICATE`); a held
+  identifier is `409` with `BUSINESS_ID_IN_USE`, a remembered one `409` with `BUSINESS_ID_REUSE_REJECTED` and the instant it
+  ends, `USE_EXISTING` answers `200` with the holder and creates nothing; an invalid identifier or option is `422` in
+  words and nothing is bound; the holder is named only to a caller with `run:read` (D1964); the options join the
+  idempotency fingerprint only when present (D1962); `GET /runs` filters by `businessId` and `businessIdPrefix` (a prefix has
+  no wildcards). Code is in `crates/application/src/runs.rs` (`StartOptions`, `start_with_options`) and
+  `crates/api-http/src/routes/execution.rs`, not in the `runs/business_id.rs` and `dto.rs` this line names. OpenAPI,
+  generated Studio types and `docs/reference/api.md` follow; `contract_schedules_bulk_operations` 3 passed (one is the
+  business-id contract on every answer), `integration` `business_ids_rest.rs` 6 passed. Not done: the lookup of a binding
+  and the rerun's `KEEP`/`DROP` of the identifier (G1969).
 - [ ] T018-036 [US3] 32-way race, policy table in/after window, terminal-commit race, chain continuity,
   key replay/reuse, harness vs signal paths — `tests/{integration,fault}/schedules-bulk-operations/business_ids.rs`
   — SC-018-006 — FR-018-018..021.
+  *Part done (2026-11-05), the task stays open:* in `business_ids.rs` 32 concurrent starts of one identifier give one
+  open run, 32 over the binding of a closed holder give one new run, 32 with `USE_EXISTING` all get the one run; the policy
+  table inside the window and the free identifier after it; a retry under the same key gets the same run and another
+  identifier under that key is a different request; namespaces and tenants are independent; the tenant is charged once for
+  the binding and once for the run; a chain holds the identifier until it ends and every segment carries it; a refused
+  start, and a start the admission refuses after the claim, leave no binding. `fault_schedules_bulk_operations` (31 passed)
+  proves that the transitions of a run that holds an identifier never touch a schedule, batch or binding table
+  (`run_driven_locks.rs`), and `batch_locks.rs` accepts a plan with the binding row in the Aggregate slot, after the schedule
+  row and before the runs it acts on (the order of D1961; it checks a declared plan, not the claim itself).
+  Not done: the terminal-commit race with a start that is claiming, the harness-versus-signal paths, and the crash points of
+  the claim in a fault matrix; T018-012's slot cases are still the ones that block the lock-order half of this task.
 - [ ] T018-037 [US3] Start delay (events, fenced release pass with `apply_if`, cancel/deadline, signal
   refused, Update admitted, quota; with 022 run-level concurrency the release acquires the permit or
   enqueues the run, FR-022-018) — `crates/scheduler/src/passes.rs`, `crates/infra-postgres/src/execution.rs`,
   `tests/{integration,fault}/schedules-bulk-operations/delay.rs` — SC-018-007 — FR-018-023, FR-018-050.
 - [ ] T018-038 [P] [US3] Studio business id, start fields, delayed status —
   `frontend/apps/studio/src/features/runs/` — component tests — FR-018-047.
+  *Part done (2026-11-05), the task stays open:* the start dialog has the optional identifier (checked in words before
+  anything is sent: 1 to 200 visible ASCII characters), the two policies once there is an identifier, only the policies that
+  are not the defaults are sent, the key changes with the identifier, and a `200` is announced as "already has an open run,
+  nothing was started" (the client now tells a caller the status of a success); the run list filters by the start of an
+  identifier (debounced, in the address, followed when the address changes by itself, cleared with the other filters) and
+  shows it on the row; the run header shows it as a fact. `npm test` 1342 passed (96 files), `npm run lint`, `typecheck`,
+  `build` and `check:api` clean; 14 mutants of this code, 13 killed and the survivor (a trim that the dialog already did)
+  removed. Not done: the delayed status, which needs the start delay of T018-037. `npm run typecheck --workspace @sagat/e2e`
+  needs the TypeScript SDK built first (`sdks/typescript/conformance/prepare.sh`) and was not run here.
 - [ ] T018-039 [US3] Business-id canaries absent from logs, spans, metrics, audit reasons, outbox —
   `tests/integration/schedules-bulk-operations/privacy.rs` — SC-018-014 — FR-018-042.
+  *Part done (2026-11-05), the task stays open:* `privacy.rs` takes a canary identifier through a start, a refusal, a returned
+  holder, a cancellation and the refusal of a reuse, and finds it, as text and as the hex of its bytes, in no table of the
+  schema except the binding and the run (audit trail, outbox, journal, dedupe records and payloads included), in no log line
+  at TRACE level, in no metric label and in the text of no error. The probe line proves the capture was listening, and the
+  tables are asserted after the run so a hit names the table. Not done: the spans exported over OTLP are not searched
+  (G1971).
 
 ## Phase 6: US04 — Signal-with-Start and Update-with-Start (P2)
 

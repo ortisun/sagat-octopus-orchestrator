@@ -146,6 +146,14 @@ pub(crate) async fn undo_to(db: &TestDb, target: i64) -> Result<(), sqlx::migrat
     if let Some(unlocked) = unlocked {
         unlocked.expect("release the migration advisory lock after a refusal");
     }
+    if result.is_err() {
+        // The rollback undoes the newest migration first and one at a time, so a refusal in an older one
+        // leaves the newer ones undone. A test that goes on after a refusal wants the schema it had: later
+        // features (a business id column on every run, for one) must not be missing from under it.
+        sagat_infra_postgres::migrate(&db.pool)
+            .await
+            .expect("bring back the migrations undone before the refusal");
+    }
     result
 }
 

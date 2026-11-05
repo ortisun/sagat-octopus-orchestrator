@@ -95,8 +95,8 @@ use sagat_application::execution::{
 };
 use sagat_application::primitives::CollectionFinish;
 use sagat_application::runs::{
-    ApprovalView, ChainView, GraphSnapshot, JournalEntry, Lock, NewRun, RunFilter, RunStore,
-    SagaView, StepView,
+    Admitted, ApprovalView, ChainView, GraphSnapshot, JournalEntry, Lock, NewRun, RunFilter,
+    RunStore, SagaView, StepView,
 };
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::definition::{Workflow, WorkflowId, WorkflowVersion, WorkflowVersionId};
@@ -972,7 +972,7 @@ impl RunStore for PgRunStore {
         Ok(result)
     }
 
-    async fn create(&self, mut new: NewRun) -> Result<Applied<PgRunTx>, StoreError> {
+    async fn create(&self, mut new: NewRun) -> Result<Admitted<PgRunTx>, StoreError> {
         let tenant = new.info.tenant_id;
         let hash = hash(&new.idempotency.fingerprint);
         let input_digest = Sha256::digest(&new.input).to_vec();
@@ -981,12 +981,38 @@ impl RunStore for PgRunStore {
             if let Some(existing) = replay(&mut tx, tenant, &new.idempotency, &hash).await? {
                 self.check_database_replay(&mut tx, tenant, &new.info.started_by, &existing)
                     .await?;
-                return Ok(Applied::Replayed(existing));
+                return Ok(Admitted::Replayed(existing));
             }
             // The action of a schedule takes its fence and the schedule row before any other
             // admission lock (ADR-0050 decision 7).
             if let Some(schedule) = &new.schedule {
                 crate::schedules::lock_for_admission(&mut tx, tenant, schedule).await?;
+            }
+            // The business identifier of the start is claimed next, in the same slot: after the
+            // schedule's row and before any run's (ADR-0050 decision 7). A refusal, or a holder
+            // returned in place of a new run, ends the transaction here so the binding's row is not
+            // held while the connection waits to be reused.
+            if let Some(business) = &new.business {
+                match crate::business_ids::claim(
+                    &mut tx,
+                    tenant,
+                    new.info.namespace_id,
+                    new.info.workflow_id.as_uuid(),
+                    new.info.run_id,
+                    business,
+                )
+                .await
+                {
+                    Ok(crate::business_ids::Claimed::Bound) => {}
+                    Ok(crate::business_ids::Claimed::Existing(holder)) => {
+                        let _ = tx.rollback().await;
+                        return Ok(Admitted::Existing(holder.to_string()));
+                    }
+                    Err(error) => {
+                        let _ = tx.rollback().await;
+                        return Err(error);
+                    }
+                }
             }
             // Advance the rerun FK's stable identity guard before admission locks.
             // This grants no authority over the source run's business state (ADR-0039).
@@ -1166,9 +1192,10 @@ impl RunStore for PgRunStore {
                  status, run_version, paused, input_digest, correlation_id, started_by, trace_id, \
                  deadline_at, created_at, updated_at, parent_run_id, parent_node, cancel_policy, \
                  depth, root_run_id, trace_parent_span, rerun_of, input_blob_id, origin, \
-                 schedule_id, schedule_nominal_at, schedule_action_kind, schedule_revision) \
+                 schedule_id, schedule_nominal_at, schedule_action_kind, schedule_revision, \
+                 business_id) \
                  VALUES ($1, $2, $3, $4, $5, 'RUNNING', 0, false, $6, $7, $8, $9, $10, $11, $11, \
-                         $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)",
+                         $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)",
             )
             .bind(info.run_id.as_uuid())
             .bind(tenant.as_uuid())
@@ -1198,6 +1225,7 @@ impl RunStore for PgRunStore {
                     .as_ref()
                     .map(|s| i32::try_from(s.revision).unwrap_or(i32::MAX)),
             )
+            .bind(new.business.as_ref().map(|b| b.id.as_str()))
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
@@ -1248,7 +1276,7 @@ impl RunStore for PgRunStore {
                         .replay_start(tenant, &new.info.started_by, &new.idempotency)
                         .await?
                 {
-                    return Ok(Applied::Replayed(existing));
+                    return Ok(Admitted::Replayed(existing));
                 }
                 return Err(error);
             }
@@ -1264,7 +1292,7 @@ impl RunStore for PgRunStore {
             {
                 let mut info = info.clone();
                 info.created_at = now;
-                return Ok(Applied::Done(PgRunTx {
+                return Ok(Admitted::Created(PgRunTx {
                     tx,
                     timer_read_states: BTreeMap::new(),
                     event_wait_read_states: BTreeMap::new(),
@@ -1359,7 +1387,7 @@ impl RunStore for PgRunStore {
             "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, run_version, \
                     stop_reason, paused, correlation_id, started_by, trace_id, deadline_at, \
                     created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, \
-                    cancel_policy, depth, trace_parent_span, rerun_of, origin, \
+                    cancel_policy, depth, trace_parent_span, rerun_of, origin, business_id, \
                     seg_chain_id, seg_index, seg_completion, seg_successor \
              FROM runs LEFT JOIN LATERAL ( \
                SELECT chain_id AS seg_chain_id, segment_index AS seg_index, \
@@ -1372,6 +1400,8 @@ impl RunStore for PgRunStore {
                AND ($4::uuid IS NULL OR runs.workflow_id = $4) \
                AND ($5::text IS NULL OR runs.status = $5) \
                AND ($7::text IS NULL OR runs.origin = $7) \
+               AND ($8::text IS NULL OR runs.business_id = $8) \
+               AND ($9::text IS NULL OR runs.business_id LIKE $9 ESCAPE '\\') \
              ORDER BY runs.id DESC LIMIT $6",
         )
         .bind(tenant.as_uuid())
@@ -1381,6 +1411,8 @@ impl RunStore for PgRunStore {
         .bind(filter.status.map(RunStatus::as_str))
         .bind(i64::from(limit))
         .bind(filter.origin.map(sagat_application::runs::RunOrigin::as_str))
+        .bind(filter.business_id.as_ref().map(|id| id.as_str()))
+        .bind(filter.business_id_prefix.as_deref().map(like_prefix))
         .fetch_all(&self.pool)
         .await
         .map_err(store_error)?
@@ -1792,7 +1824,8 @@ async fn claim_reservation(
 const RUN_SELECT: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, \
      run_version, stop_reason, paused, correlation_id, started_by, trace_id, deadline_at, \
      created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, cancel_policy, depth, \
-     trace_parent_span, rerun_of, origin, seg_chain_id, seg_index, seg_completion, seg_successor \
+     trace_parent_span, rerun_of, origin, business_id, \
+     seg_chain_id, seg_index, seg_completion, seg_successor \
      FROM runs LEFT JOIN LATERAL ( \
        SELECT chain_id AS seg_chain_id, segment_index AS seg_index, \
               completion_kind AS seg_completion, successor_run_id AS seg_successor \
@@ -1837,6 +1870,19 @@ fn parent_link(row: &PgRow) -> Result<Option<ParentLink>, StoreError> {
     }
 }
 
+/// A literal prefix as a `LIKE` pattern: `\`, `%` and `_` stand for themselves.
+fn like_prefix(prefix: &str) -> String {
+    let mut pattern = String::with_capacity(prefix.len() + 1);
+    for character in prefix.chars() {
+        if matches!(character, '\\' | '%' | '_') {
+            pattern.push('\\');
+        }
+        pattern.push(character);
+    }
+    pattern.push('%');
+    pattern
+}
+
 pub(crate) fn run_record(row: &PgRow) -> Result<RunRecord, StoreError> {
     let status: String = col(row, "status")?;
     let version: i64 = col(row, "run_version")?;
@@ -1861,6 +1907,14 @@ pub(crate) fn run_record(row: &PgRow) -> Result<RunRecord, StoreError> {
             parent: parent_link(row)?,
             depth: u8::try_from(col::<i16>(row, "depth")?).map_err(|_| corrupt("run depth"))?,
             root: RunId::new(col::<Uuid>(row, "root_run_id")?),
+            // only `get` and `list` select it: a row from a command transaction has none
+            business_id: match sqlx::Row::try_get::<Option<String>, _>(row, "business_id") {
+                Ok(Some(text)) => Some(
+                    sagat_domain::business_ids::BusinessId::new(&text)
+                        .map_err(|_| corrupt("run business identifier"))?,
+                ),
+                Ok(None) | Err(_) => None,
+            },
         },
         status: status.parse().map_err(|_| corrupt("run status"))?,
         version: u64::try_from(version).map_err(|_| corrupt("run version"))?,

@@ -143,7 +143,7 @@ Made from `specs/001-platform-foundation/contracts/openapi.yaml` (version 0.2.0)
 | `startDatabaseExecution` | `POST /namespaces/{namespaceId}/database-executions` | Retain and execute an ad hoc database step or workflow | 201 | yes | 017 |
 | `uploadRunInput` | `POST /run-input-blobs` | Stage a streaming run input owned by the authenticated uploader | 201 |  | 002 |
 | `listRuns` | `GET /runs` | List the runs of a namespace, newest first | 200 |  | 002 |
-| `startRun` | `POST /runs` | Start a run of a published version | 202 | yes | 002 |
+| `startRun` | `POST /runs` | Start a run of a published version | 200 | yes | 002 |
 | `getRun` | `GET /runs/{runId}` | Get run state | 200 |  | 002 |
 | `listRunAttempts` | `GET /runs/{runId}/attempts` | List the attempts of the run's steps as the journal tells them | 200 |  | 008 |
 | `listRunJournalEvents` | `GET /runs/{runId}/events` | List run journal events in sequence order | 200 |  | 002 |

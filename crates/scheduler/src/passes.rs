@@ -17,7 +17,7 @@ use sagat_application::chain_progress::{
 use sagat_application::collection_source::{
     CollectionItemSource, CollectionSource, CollectionSourceError, CollectionSourceRequest,
 };
-use sagat_application::definitions::{Applied, DefinitionStore, Idempotency};
+use sagat_application::definitions::{DefinitionStore, Idempotency};
 use sagat_application::entropy::Entropy;
 use sagat_application::error::StoreError;
 use sagat_application::execution::{
@@ -41,7 +41,7 @@ use sagat_application::primitives::{
     PrimitiveInputError, PrimitiveStoreError, SchedulerAuthority,
 };
 use sagat_application::quotas::RunLimits;
-use sagat_application::runs::{Lock, NewRun, RunStore};
+use sagat_application::runs::{Admitted, Lock, NewRun, RunStore};
 use sagat_application::scope_frontier::{
     CollectionFrontier, LoopFrontier, ScopeFrontierStore, ScopeMember,
 };
@@ -5188,6 +5188,7 @@ where
             }),
             depth: parent.info.depth.saturating_add(1),
             root: parent.info.root,
+            business_id: None,
         };
         let audit = AuditRecord::engine(
             tenant,
@@ -5201,6 +5202,7 @@ where
         let limits = RunLimits::of(&self.store, tenant, parent.info.namespace_id).await?;
         let new = NewRun {
             schedule: None,
+            business: None,
             retained: None,
             limits,
             info,
@@ -5218,7 +5220,8 @@ where
             },
         };
         match self.store.create(new).await {
-            Ok(Applied::Replayed(_)) => Ok((Outcome::Skipped, false)),
+            // (a child run never carries a business identifier, so a holder is never returned)
+            Ok(Admitted::Replayed(_) | Admitted::Existing(_)) => Ok((Outcome::Skipped, false)),
             // The parent step no longer waits for this run (cancelled, or created by a peer).
             Err(StoreError::MissingReference) => Ok((Outcome::Skipped, false)),
             Err(StoreError::DatabaseUnavailable | StoreError::DatabaseLimit) => {
@@ -5271,7 +5274,7 @@ where
                 true,
             )),
             Err(other) => Err(other.into()),
-            Ok(Applied::Done(mut tx)) => {
+            Ok(Admitted::Created(mut tx)) => {
                 // The fence, before anything is committed: a replica that lost the parent's shard
                 // while it was reading must not leave a child run behind (dropping rolls it back).
                 if !view.holds_child_start(&mut tx, &hold).await? {

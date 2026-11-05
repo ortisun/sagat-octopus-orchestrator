@@ -307,6 +307,7 @@ impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService
             parent: None,
             depth: 0,
             root: run_id,
+            business_id: None,
         };
         let audit = AuditRecord::by(
             principal,
@@ -341,6 +342,7 @@ impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService
             .await?;
         let new = NewRun {
             schedule: None,
+            business: None,
             limits: RunLimits::of(&self.store, principal.tenant_id(), request.namespace).await?,
             info,
             definition: Arc::new(parsed.definition),
@@ -356,10 +358,10 @@ impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService
             }),
         };
         let result = match self.store.create(new).await {
-            Ok(created) => {
-                self.finish_start(principal, run_id, created, false, ctx)
-                    .await
-            }
+            Ok(created) => self
+                .finish_start(principal, run_id, created, false, ctx)
+                .await
+                .map(|started| started.run),
             Err(error) => {
                 if matches!(
                     error,

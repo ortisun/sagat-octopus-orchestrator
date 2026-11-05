@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
+use sagat_domain::business_ids::{BusinessId, ConflictPolicy, ReusePolicy, ReuseWindow};
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::execution::{
     self, ExecutionError, ExecutionInstanceId, Progress, ReviewOutcome, RunEvent, RunId, RunStatus,
@@ -27,7 +28,7 @@ use sagat_domain::workflow::{NodeId, NodeKind, WorkflowDefinition};
 use time::OffsetDateTime;
 
 use crate::clock::Clock;
-use crate::definitions::{Applied, DefinitionStore, Idempotency};
+use crate::definitions::{DefinitionStore, Idempotency};
 use crate::error::{AppError, StoreError};
 use crate::execution::{
     Actor, DefinitionCache, Effects, Engine, EngineError, ExpressionEvaluator, MAX_PAYLOAD_BYTES,
@@ -54,6 +55,43 @@ pub enum Lock {
     SkipLocked,
 }
 
+/// The business identifier a start carries and what to do when it is held (feature 018,
+/// `FR-018-018..020`). Its `Debug` hides the identifier: it is customer text.
+#[derive(Debug, Clone)]
+pub struct BusinessStart {
+    pub id: BusinessId,
+    pub conflict: ConflictPolicy,
+    pub reuse: ReusePolicy,
+    /// The window the binding is frozen with when it is made.
+    pub window: ReuseWindow,
+}
+
+/// What a start can carry beyond its request (feature 018). `Default` is a start with none.
+#[derive(Debug, Clone, Default)]
+pub struct StartOptions {
+    pub business: Option<BusinessStart>,
+}
+
+/// What a start came to: the run, and whether it already existed (an open execution held the
+/// business identifier and the start asked for `USE_EXISTING`: nothing was created).
+#[derive(Debug, Clone)]
+pub struct Started {
+    pub run: RunRecord,
+    pub existing: bool,
+}
+
+/// What creating a run came to.
+#[derive(Debug)]
+pub enum Admitted<T> {
+    /// The run was created: here is its open transaction.
+    Created(T),
+    /// An earlier call with the same key and request created it; carries its id.
+    Replayed(String),
+    /// The business identifier is held by an open execution and the start asked for
+    /// `USE_EXISTING`: nothing was created; carries the holder's id.
+    Existing(String),
+}
+
 /// A run about to be created.
 #[derive(Debug, Clone)]
 pub struct NewRun {
@@ -69,6 +107,8 @@ pub struct NewRun {
     pub idempotency: Idempotency,
     /// The schedule action this run is the result of, committed with the run (feature 018).
     pub schedule: Option<crate::schedules::ScheduleAdmission>,
+    /// The business identifier claimed in the creation transaction (feature 018).
+    pub business: Option<BusinessStart>,
 }
 
 /// One journal entry as the API shows it.
@@ -196,6 +236,11 @@ pub struct RunFilter {
     pub workflow: Option<WorkflowId>,
     pub status: Option<RunStatus>,
     pub origin: Option<RunOrigin>,
+    /// The runs started under this business identifier, whole (feature 018, `FR-018-022`).
+    pub business_id: Option<BusinessId>,
+    /// The runs whose business identifier starts with this text. A literal: nothing in it is a
+    /// wildcard. Visible ASCII, at most 200 characters, like an identifier.
+    pub business_id_prefix: Option<String>,
 }
 
 /// Storage port for runs. Implemented by `sagat-infra-postgres`.
@@ -220,7 +265,7 @@ pub trait RunStore:
     fn create(
         &self,
         new: NewRun,
-    ) -> impl Future<Output = Result<Applied<Self::Tx>, StoreError>> + Send;
+    ) -> impl Future<Output = Result<Admitted<Self::Tx>, StoreError>> + Send;
 
     /// Private immutable document, only for its initiating actor's rerun.
     fn private_definition(
@@ -528,7 +573,34 @@ where
         request: &StartRun<'_>,
         ctx: &RequestContext,
     ) -> Result<RunRecord, AppError> {
-        self.start_with(principal, request, None, None, None, ctx)
+        self.start_with(
+            principal,
+            request,
+            StartOptions::default(),
+            None,
+            None,
+            None,
+            ctx,
+        )
+        .await
+        .map(|started| started.run)
+    }
+
+    /// Starts a run with the options of feature 018 (a business identifier). The answer says whether
+    /// the run already existed: with `USE_EXISTING` and an open holder nothing is created and the
+    /// holder is returned.
+    ///
+    /// # Errors
+    /// As [`Self::start`], and [`AppError::BusinessIdConflict`] when the identifier is held and the
+    /// policy refuses (`BUSINESS_ID_IN_USE`, `BUSINESS_ID_REUSE_REJECTED`).
+    pub async fn start_with_options(
+        &self,
+        principal: &Principal,
+        request: &StartRun<'_>,
+        options: StartOptions,
+        ctx: &RequestContext,
+    ) -> Result<Started, AppError> {
+        self.start_with(principal, request, options, None, None, None, ctx)
             .await
     }
 
@@ -549,8 +621,17 @@ where
         admission: crate::schedules::ScheduleAdmission,
         ctx: &RequestContext,
     ) -> Result<RunRecord, AppError> {
-        self.start_with(principal, request, None, None, Some(admission), ctx)
-            .await
+        self.start_with(
+            principal,
+            request,
+            StartOptions::default(),
+            None,
+            None,
+            Some(admission),
+            ctx,
+        )
+        .await
+        .map(|started| started.run)
     }
 
     /// Starts with a staged upload belonging to this principal. The external bytes stay opaque;
@@ -562,8 +643,17 @@ where
         id: sagat_domain::blobs::BlobId,
         ctx: &RequestContext,
     ) -> Result<RunRecord, AppError> {
-        self.start_with(principal, request, None, Some(id), None, ctx)
-            .await
+        self.start_with(
+            principal,
+            request,
+            StartOptions::default(),
+            None,
+            Some(id),
+            None,
+            ctx,
+        )
+        .await
+        .map(|started| started.run)
     }
 
     /// Starts a run again from an ended one (`RERUN_AS_NEW`): the same version of the same workflow,
@@ -626,23 +716,27 @@ where
                 deadline: None,
                 key,
             },
+            StartOptions::default(),
             Some(Rerun { of: id, reason }),
             None,
             None,
             ctx,
         )
         .await
+        .map(|started| started.run)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn start_with(
         &self,
         principal: &Principal,
         request: &StartRun<'_>,
+        options: StartOptions,
         rerun: Option<Rerun<'_>>,
         input_blob: Option<sagat_domain::blobs::BlobId>,
         scheduled: Option<crate::schedules::ScheduleAdmission>,
         ctx: &RequestContext,
-    ) -> Result<RunRecord, AppError> {
+    ) -> Result<Started, AppError> {
         principal.authorize(Permission::RunStart)?;
         if input_blob.is_none() && request.input.len() > MAX_PAYLOAD_BYTES {
             return Err(AppError::NotAllowed("the run input is larger than 256 KiB"));
@@ -657,6 +751,14 @@ where
             return Err(AppError::NotAllowed(
                 "the correlation id is too long or has control characters",
             ));
+        }
+        if options.business.is_some() && (rerun.is_some() || scheduled.is_some()) {
+            // a rerun keeps or drops the id of the run it repeats (T018-035), and a schedule's
+            // action never carries one: neither takes it from the caller
+            return Err(AppError::InvalidStart {
+                reason: "BUSINESS_ID_NOT_APPLICABLE",
+                field: Some("/businessId".to_owned()),
+            });
         }
         let namespace = self.namespace(principal, request.namespace).await?;
         let workflow = self
@@ -761,6 +863,7 @@ where
             parent: None,
             depth: 0,
             root: run_id,
+            business_id: None,
         };
         let audit = match rerun {
             None => AuditRecord::by(
@@ -800,6 +903,17 @@ where
                     .as_slice(),
             ]),
         };
+        // The options join the fingerprint only when there are any, so the fingerprint of a start
+        // that has none is what it always was and a retry made before an upgrade still replays.
+        if let Some(business) = &options.business {
+            idempotency.fingerprint.extend(fingerprint(&[
+                b"run.business",
+                business.id.as_str().as_bytes(),
+                business.conflict.as_str().as_bytes(),
+                business.reuse.as_str().as_bytes(),
+                &business.window.seconds().to_be_bytes(),
+            ]));
+        }
         if let Some(blob_idempotency) = blob_idempotency {
             idempotency = blob_idempotency;
         }
@@ -875,6 +989,7 @@ where
             audit,
             idempotency,
             schedule: scheduled,
+            business: options.business,
         };
         let scheduled_start = new.schedule.is_some();
         let created = match self.store.create(new).await {
@@ -893,24 +1008,20 @@ where
         &self,
         principal: &Principal,
         run_id: RunId,
-        created: Applied<S::Tx>,
+        created: Admitted<S::Tx>,
         scheduled: bool,
         ctx: &RequestContext,
-    ) -> Result<RunRecord, AppError> {
+    ) -> Result<Started, AppError> {
         match created {
             // the key of a scheduled time is the platform's own: nobody retries it, so a replay is
             // another process that acted on that time first
-            Applied::Replayed(_) if scheduled => Err(AppError::StateConflict(
+            Admitted::Replayed(_) if scheduled => Err(AppError::StateConflict(
                 "the schedule already acted on that time",
             )),
-            Applied::Replayed(existing) => {
-                let id = existing.parse::<RunId>().map_err(|_| AppError::Internal)?;
-                self.store
-                    .get(principal.tenant_id(), id)
-                    .await?
-                    .ok_or(AppError::Internal)
-            }
-            Applied::Done(mut tx) => {
+            Admitted::Replayed(existing) => self.known_start(principal, &existing, false).await,
+            // the holder of the business identifier, returned and nothing created
+            Admitted::Existing(holder) => self.known_start(principal, &holder, true).await,
+            Admitted::Created(mut tx) => {
                 let effects = Effects::by(
                     Actor::Principal(principal.subject().as_str().to_owned()),
                     ctx.trace_id.clone(),
@@ -924,10 +1035,8 @@ where
                     .await
                     .map_err(engine_error)?;
                 tx.commit().await?;
-                self.store
-                    .get(principal.tenant_id(), run_id)
-                    .await?
-                    .ok_or(AppError::Internal)
+                self.known_start(principal, &run_id.to_string(), false)
+                    .await
             }
         }
     }
@@ -985,12 +1094,24 @@ where
         &self,
         principal: &Principal,
         existing: &str,
-    ) -> Result<RunRecord, AppError> {
-        let id = existing.parse::<RunId>().map_err(|_| AppError::Internal)?;
-        self.store
+    ) -> Result<Started, AppError> {
+        self.known_start(principal, existing, false).await
+    }
+
+    /// The run a start came to without creating one, as the answer of the start.
+    async fn known_start(
+        &self,
+        principal: &Principal,
+        id: &str,
+        existing: bool,
+    ) -> Result<Started, AppError> {
+        let id = id.parse::<RunId>().map_err(|_| AppError::Internal)?;
+        let run = self
+            .store
             .get(principal.tenant_id(), id)
             .await?
-            .ok_or(AppError::Internal)
+            .ok_or(AppError::Internal)?;
+        Ok(Started { run, existing })
     }
 
     /// # Errors

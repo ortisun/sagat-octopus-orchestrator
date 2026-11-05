@@ -484,6 +484,31 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
   and the state of the item, so a replica that lost its lease, a job that was cancelled or an item that has ended does not
   touch the run (what is left is G1961). (11) The fencing metric counts lost leases only. (12) The selection runs under a
   10 s statement timeout and is tried again.
+- **D1961** (2026-11-05, T018-034/035) A business identifier is claimed inside `PgRunStore::create`, in the slot of
+  the run-creating aggregates (after the schedule's row, before any run's, ADR-0050 decision 7), by `INSERT ... ON
+  CONFLICT DO NOTHING` and, when the id exists, `SELECT ... FOR UPDATE` of its row: a concurrent claim that has not
+  committed makes the insert wait for its outcome, so of 32 starts of a free identifier exactly one binds it, and of 32
+  that find a closed holder exactly one takes the binding over (the row lock makes the others read the new, open
+  holder). The holder's status is read from `runs` and, when the run is the initial run of a chain, from
+  `execution_chains` (open until a final outcome; ended when the last segment did) and never copied, so no run-driven
+  transition touches `business_ids`. A holder that is gone reads as free. The result of creating a run is a dedicated
+  `Admitted { Created, Replayed, Existing }` instead of a third variant of the generic `Applied` (28 users, most
+  unrelated): `Existing` is `USE_EXISTING` returning the open holder, answered `200`.
+- **D1962** (2026-11-05, T018-035) The business options join the idempotency fingerprint of a start only when there are
+  any (a second length-prefixed group appended), so the fingerprint of a start without them is what it always was and a
+  retry made before an upgrade still replays. The same key with another identifier or policy is `IDEMPOTENCY_KEY_REUSED`.
+- **D1963** (2026-11-05, T018-034) `business_ids.execution_id` has no foreign key to `runs`: a holder purged by a
+  retention policy leaves a binding that reads as free and that `business_ids_purge` removes (it is also what a
+  migration to feature 020's erasure needs). The identifier is charged twice (the binding and the copy on the run),
+  both as content, by the ALWAYS accounting triggers; `runs.business_id` is immutable after the insert.
+- **D1964** (2026-11-05, T018-035) The refusal names the holder (`details.runId`) only to a caller who may read runs
+  (`run:read`), as `errors.md` says; the identifier is never in an error, a log line, a metric label or any table but
+  the two that keep it (`privacy::`, which searches every table of the schema as text and as hex).
+- **D1965** (2026-11-05, T018-035) The identifier of a start is refused with `422 BUSINESS_ID_INVALID` and the place
+  (`/businessId`, `/businessIdConflictPolicy`, `/businessIdReusePolicy`) when it is not 1 to 200 visible ASCII
+  characters, when a policy comes without an identifier, or when it comes with `inputBlobRef`; a rerun and a schedule's
+  action take the identifier from the run they repeat (T018-035, not built) or never carry one
+  (`BUSINESS_ID_NOT_APPLICABLE`). A prefix filter is a literal (`LIKE` with `\`, `%`, `_` escaped).
 - **D1955** (2026-11-04, T018-028) The actions of a schedule are purged by a bounded function, visiting schedules in
   turn. Nothing deleted them: an hourly schedule writes 8,700 rows a year and one every minute 525,000. FR-018-013
   keeps "at least the last 1,000 or 30 days": an action goes when it is older than 30 days **and** beyond the
@@ -540,6 +565,11 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
 | G1964 | `businessId: DROP` of `RERUN` is accepted and stored but the adapter does not read it: business ids are not bound to runs yet, so a rerun has none to keep or to drop. | It becomes a promise the code must keep when business ids land (US03). | Open |
 | G1965 | The control plane and the engine each have `SAGAT_BATCHES_ENABLED`. With it on in the control plane and off in the engine, jobs are accepted and never run, they stay `SELECTING` and hold their active-job places, and a cancellation waits for an engine to drain it. Turning the flag off in the control plane stops the routes, not the jobs already running; the engine's flag is the switch. | One flag per process kind is how schedules are gated too; the instance-capability registry of ADR-0050 decision 9 would refuse the mismatch and is not built. | Open |
 | G1966 | The Studio's backfill dialog has no preview of how many times the range holds: no route counts them without starting the backfill, so it states the bound (1,000 times, an end that is not in the future) and shows the platform's refusal in words. | A preview is a read of the schedule's spec over a range, which the platform alone computes (the Studio computes no time); it needs a route (`previewScheduleBackfill`) with the contract, the reference and the types. | Open |
+| G1967 | The reuse window of an identifier is the default (30 days) for every namespace: `ReuseWindow::default()` is frozen into each binding and no setting changes it. FR-018-020 makes it namespace-configurable up to 366 days. | A namespace setting is a table or a column of its own (and a Studio form); the binding already freezes the window it was made under, so adding the setting changes nothing that exists. | Open |
+| G1968 | `business_ids_purge(p_rows)` removes the bindings whose holder closed and whose window passed, and nothing calls it yet: closed bindings stay until it does. They hold nothing (the claim reads the holder, not the row), so what they cost is rows and charged bytes. | The maintenance pass that runs the purge of schedule actions is the place; it needs a settings entry and a test of its own. | Open |
+| G1969 | The lookup of a binding (`FR-018-022`: holder, open, last status, reusable after) is not built, nor is the rerun's `KEEP`/`DROP` of the identifier. A start with the identifier of an open run is told who holds it only through the refusal. | Each is a route (or a field of the rerun) with its contract, reference, types, battery entry and Studio use: a slice of its own. | Open |
+| G1970 | The plain `continue_as_new` of the chain store (the prepared handoff, used by tests; production uses `continue_evaluated`) copies the identifier to the successor too, and no test of it checks that. | Its callers are the unit tests of the continuation and the prepared-handoff integration test; the production path is under `a_chain_holds_the_identifier_until_it_ends_and_every_segment_carries_it` and a mutation that drops the copy fails it. | Open |
+| G1971 | The privacy check covers logs at every level, metrics, error texts and every table; the spans exported over OTLP are not searched. The code adds no span attribute and `BusinessId`'s `Debug` hides the text, so a span field would show `BusinessId(..)`. | A real OTLP export canary (SC-018-014) belongs with the observability gates of T018-071. | Open |
 | G1952 | A backfill step that the admission refuses (a full quota, no published version) waits and is tried again on every round of the pass, with no backoff, unlike a scheduled time (D1952). | A round is one poll of the database per owned shard and the step is one rolled-back transaction; harmless at the default poll but wasteful. Fix with a `retry_at` on the backfill (a migration). | Open |
 
 ## 5. Owner questions (the plan implements the recommended defaults)

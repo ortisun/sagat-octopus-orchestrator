@@ -354,7 +354,17 @@ export interface paths {
         /** List the runs of a namespace, newest first */
         get: operations["listRuns"];
         put?: never;
-        /** Start a run of a published version */
+        /**
+         * Start a run of a published version
+         * @description With a `businessId`, at most one open execution holds it at any commit. An open holder is a
+         *     `409` `CONFLICT` with `details.reason` `BUSINESS_ID_IN_USE` (`details.runId` names it when the
+         *     caller may read runs), or, with `businessIdConflictPolicy` `USE_EXISTING`, the answer is `200`
+         *     with the holder's run and nothing is created. A closed holder inside the reuse window (30 days)
+         *     is decided by `businessIdReusePolicy`; `REJECT_DUPLICATE` and `ALLOW_DUPLICATE_FAILED_ONLY` (for a
+         *     holder that succeeded) are a `409` with `details.reason` `BUSINESS_ID_REUSE_REJECTED` and
+         *     `details.reusableAfter`. An identifier or a policy that is none is `422` with `details.reason`
+         *     `BUSINESS_ID_INVALID` and `details.field`. Not combinable with `inputBlobRef`.
+         */
         post: operations["startRun"];
         delete?: never;
         options?: never;
@@ -3273,6 +3283,20 @@ export interface components {
              * @description Must be in the future and within a year; the run times out at this instant.
              */
             deadline?: string;
+            /** @description The caller's own identifier for the run: 1 to 200 visible ASCII characters. At most one open execution of a namespace holds it. Customer content: it is not echoed in an error, a log or a metric. */
+            businessId?: string;
+            /**
+             * @description What to do when an open execution holds the identifier. There is no policy that terminates it. Needs businessId.
+             * @default FAIL
+             * @enum {string}
+             */
+            businessIdConflictPolicy: "FAIL" | "USE_EXISTING";
+            /**
+             * @description What to do when a closed execution still remembers the identifier (30 days after it ended). Needs businessId.
+             * @default ALLOW_DUPLICATE
+             * @enum {string}
+             */
+            businessIdReusePolicy: "ALLOW_DUPLICATE" | "ALLOW_DUPLICATE_FAILED_ONLY" | "REJECT_DUPLICATE";
         } & (unknown | unknown);
         BlobDescriptor: {
             /** Format: uuid */
@@ -3335,6 +3359,8 @@ export interface components {
              * @description The ended run this one was started again from (RERUN_AS_NEW), when it was.
              */
             rerunOf?: string;
+            /** @description The business identifier the run was started under, when it was. Read by getRun and listRuns. */
+            businessId?: string;
             /** @description Nesting of child runs: 0 for a run started through the API. */
             depth?: number;
             /** @description Set when this run is the child of a `child` node of another run. */
@@ -6639,6 +6665,10 @@ export interface operations {
                 workflowId?: string;
                 origin?: components["schemas"]["DatabaseExecutionOrigin"];
                 status?: "RUNNING" | "WAITING" | "PAUSED" | "CANCELLING" | "COMPENSATING" | "MANUAL_REVIEW" | "SUCCEEDED" | "FAILED" | "CANCELLED" | "TIMED_OUT" | "COMPENSATED" | "PARTIAL" | "COMPENSATION_FAILED";
+                /** @description The runs started under this business identifier, whole. */
+                businessId?: string;
+                /** @description The runs whose business identifier starts with this text. A literal: nothing in it is a wildcard. */
+                businessIdPrefix?: string;
             };
             header: {
                 /** @description Namespace; authorization derives tenant from token, not header. */
@@ -6687,6 +6717,17 @@ export interface operations {
             };
         };
         responses: {
+            /** @description An open execution already holds the business identifier and the start asked for USE_EXISTING: nothing was created */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Run"];
+                };
+            };
             /** @description Run durably accepted: its first steps exist and workers can claim them */
             202: {
                 headers: {

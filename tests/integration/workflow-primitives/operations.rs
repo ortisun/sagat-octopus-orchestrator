@@ -210,6 +210,7 @@ async fn create_declared_run(
     let created = w
         .store
         .create(NewRun {
+            business: None,
             schedule: None,
             retained: None,
             limits: RunLimits::UNLIMITED,
@@ -230,6 +231,7 @@ async fn create_declared_run(
                 parent: None,
                 depth: 0,
                 root: run,
+                business_id: None,
             },
             definition: std::sync::Arc::new(declared.parsed().definition.clone()),
             input,
@@ -249,7 +251,7 @@ async fn create_declared_run(
             },
         })
         .await?;
-    let Applied::Done(tx) = created else {
+    let sagat_application::runs::Admitted::Created(tx) = created else {
         panic!("fresh run cannot replay");
     };
     tx.commit().await?;
