@@ -897,3 +897,31 @@ The other fixes were wording:
   container's `pids.max` and `memory.max` bound the forwarder, but the forwarder has no cap of its own. (4) No operation is served:
   `probe`, `icebergWrite`, `icebergRevert`, `objectWrite` and `browse` arrive with their tasks. (5) The Rust relay answers `CONTROL`
   with `400` until the driver serves it. *Exit condition:* each is closed by the task named, with a test.
+- **D035-082 — The Studio form for the Iceberg connection.** T035-046. Decided by: delegate.
+  - *Offered by the deployment.* A new connection can be Iceberg only if `GET /namespaces/{id}/database-drivers` lists
+    `iceberg` (the contract says the Studio and the SDKs never hard-code the list); a failed or PostgreSQL-only answer leaves
+    PostgreSQL alone. An existing connection keeps its kind.
+  - *Scope.* The form edits a REST catalog over S3-compatible storage, which is what the task names. A connection of another
+    catalog or storage type is listed and deleted but has no edit button until T035-078 (`editableIcebergOf` decides).
+  - *Credentials.* Catalog and storage credentials are an existing OpenBao secret or values entered once and written to OpenBao
+    first (017's flow), as the JSON of `data-model.md` "Credential secrets" (OAuth2 `clientId`/`clientSecret`, bearer `token`,
+    AWS keys). The secret is named `lake-catalog-<request id>` or `lake-storage-<request id>`; a retry reuses the id, changed
+    values take a new one, and the values leave the state once the write succeeds. The connection body carries references only.
+    Vended storage credentials need the catalog to delegate access, and then no storage secret is written, even if one was typed.
+  - *The ceiling.* `pii` is offered only to a session that holds `payload:reveal-pii`. That is a hint: the namespace reveal grant
+    is the server's decision (D035-074) and the save shows its answer through the error state.
+  - *Saving is not proof.* The form says that saving does not test the catalog or the storage, and shows no connectivity result.
+  - *Evidence.* `ConnectionsPage.test.tsx`: 30 tests (8 of the earlier behaviour, one of them adapted, and 22 new). The form was written
+    before its tests, so rule 18 was not followed to the letter; a mutation run is what shows that the tests catch it: 30 mutations
+    of the form, the editor and the page, 24 caught at once and six survivors (a storage secret written for vended credentials, the
+    vended state kept after the catalog stops delegating, `limits: {}` sent, more than 16 locations, an empty catalog URL, the
+    type chooser on an edit through the cached driver list). Each became a test and all six are now caught. `npm run lint`,
+    `typecheck`, `check:api`, `npm test` (87 files, 1,217 tests) and `npm run build` pass.
+- **G035-032 — What the Studio form leaves open.** (1) `GET .../database-drivers` returns PostgreSQL alone today, so no
+  deployment offers the form yet: the lake entries arrive with `lake.enabled` (T035-036) and the rest of T035-043. (2) The
+  per-check probe results of T035-046 need the probe (T035-045) and a field for them: `DatabaseConnectionProbe` in the OpenAPI
+  carries `run`, `revision` and `failureCode`, while T035-040 asks for `CATALOG_AUTH`, `WAREHOUSE` and `STORAGE_ACCESS` with the
+  tested revision and time. That is a contract amendment with T035-045; `ConnectionProbe` stays PostgreSQL-only until then.
+  (3) Other catalogs and stores (T035-078) and the browser journey (T035-074). (4) `remoteSigning` is kept on an edit and cannot
+  be set (D035-050). (5) The `@sagat/e2e` typecheck was not run here: it needs the TypeScript SDK built first
+  (`sdks/typescript/conformance/prepare.sh`), as in CI. *Exit condition:* each is closed by the task named, with a test.
