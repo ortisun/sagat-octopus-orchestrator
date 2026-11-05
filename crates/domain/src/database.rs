@@ -1,11 +1,17 @@
 //! Managed database targets and operations (feature 017). No driver or network I/O lives here.
 mod failure;
 mod iceberg;
+mod iceberg_write;
 pub use failure::DatabaseFailure;
 pub use iceberg::{
     AccessDelegation, AdlsStorage, GcsStorage, GlueCatalog, HiveCatalog, HiveTls, IcebergCatalog,
     IcebergConfig, JdbcCatalog, JdbcEngine, LakeConfigError, LakeLimits, LakeStorage, RestAuth,
     RestCatalog, S3Storage, StorageCredentials, StorageKind, WriteMode,
+};
+pub use iceberg_write::{
+    ColumnMapping, ICEBERG_REVERT_ACTIVITY, ICEBERG_WRITE_ACTIVITY, IcebergWrite,
+    IcebergWriteError, IcebergWriteParts, MAX_MAPPED_COLUMNS, MAX_MAPPING_DEPTH, MAX_RECORD_BLOBS,
+    RecordSource, TableIdentifier, WriteIntent,
 };
 
 use crate::{

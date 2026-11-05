@@ -975,3 +975,42 @@ The other fixes were wording:
   tests use `python:3.13-alpine` (`SAGAT_LAKE_ISOLATION_IMAGE` names another). (6) `/dev/shm` is a separate memory-backed
   scratch of the engine's default size that the profile does not set. *Exit condition:* each is closed by the task named, with a
   test; (1) needs a decision first.
+- **D035-084 — The `icebergWrite` node in the domain (append only).** T035-047 (its tests) and T035-052 (the type and the
+  node). Decided by: delegate.
+  - *Where.* `crates/domain/src/database/iceberg_write.rs` (`IcebergWrite`, `IcebergWriteParts`, `TableIdentifier`,
+    `ColumnMapping`, `RecordSource`, `WriteIntent`, the two reserved names and the ceilings) and `Node::iceberg` /
+    `Node::iceberg_write` in `workflow.rs`. The node stays an `Activity`, so no `NodeKind` variant changed and no exhaustive
+    match broke.
+  - *What an author cannot change.* The retry is `RetryPolicy::DEFAULT` (three attempts): the contract has no retry field and the
+    spec says retries are automatic because recovery looks the commit up by its effect key. The effect is high risk, and
+    irreversible unless the step declares `compensation: revert`; `check_node` recomputes it and refuses any other. A revert is
+    `compensate_with` on the reserved revert name, which only an Iceberg write may name, and the derived `<id>~c` runs it (derived
+    companions are built after the declared nodes are checked, so they never meet the reserved-name rule).
+  - *Root-only (G035-019).* `WorkflowError::IcebergNodeNotRoot` for a step in a body, beside a forEach, while or repeatUntil root
+    node, or under a continuation policy; saga, parallel and the other root nodes stay legal. The codes `INVALID_ICEBERG_NODE` and
+    `ICEBERG_NODE_NOT_ROOT` are mapped in `crates/application/src/definitions.rs`.
+  - *Bounds.* A mapped field is a JSON pointer (`/a/b`, no empty segment, at most 512 bytes), at most 16 segments deep; a column
+    is 1 to 255 bytes; at most 1,024 mapped columns (the hard ceilings of plan.md; the platform defaults of 256 and 8 are
+    publication settings). A table is 1 to 8 namespace levels and a name of 1 to 255 bytes; a ref is 1 to 255 bytes; no control
+    character anywhere; the limits are those of a connection (`LakeLimits`).
+  - *A rule the contract does not state.* A field is mapped once and a column is written once (`DuplicateField`,
+    `DuplicateColumn`): two fields into one column would make the write depend on record order. The schema has no
+    `uniqueItems` for it, so the contract is amended with the codec (G035-034).
+  - *Append only.* `WriteIntent` has one variant. Overwrite and upsert need options (a scope and a filter, key columns and a
+    delete marker) and tests of their own, so they arrive with user stories 4 and 5 (T035-080, T035-085); `recordSchema` arrives
+    with the codec (T035-053), which is where it is read.
+  - *Evidence.* 22 tests in `crates/domain/tests/iceberg_write.rs`, written first and seen failing (the types did not exist);
+    35 mutations of the module and of the changes in `workflow.rs`, all caught (three needed a better pattern to compile or
+    match, none survived); the whole `sagat-domain` suite, `cargo clippy --workspace --all-targets -- -D warnings` and
+    `cargo fmt --check` pass.
+- **G035-034 — What the domain node leaves open.** (1) The contract schema should say that a field and a column are each mapped
+  once (D035-084); until then the domain refuses what the schema accepts. (2) At most 32 record blobs is a constant
+  (`MAX_RECORD_BLOBS`): the count is known only when the expression is evaluated, so publication and the runner enforce it
+  (T035-054, T035-056). (3) The codec still refuses `icebergWrite` (`ICEBERG_WRITE_NOT_ENABLED`, T035-053), so no published
+  definition can carry the node yet. (4) Places that branch on a database node's presence and need an Iceberg decision, found
+  by a read-only survey on 2026-11-05: the fail-closed default of `DefinitionStore::check_database_access` (an Iceberg node
+  passes silently today), `infra-postgres` `definitions.rs:215`, `execution.rs:450` and `:1086`, `database/admission.rs:57` and
+  `:111`, `application/src/worker.rs:1006`, `:1078`, `:1270`, `:2156` and `managed_capabilities_allowed`, the scoped worker
+  paths, `api-http/src/dto_exec.rs:576` (the step type label), and `apps/database-runner` (`runner.rs:188`, `attempt.rs:42`).
+  (5) The HTTP reason, the CLI help (`apps/cli/src/diagnostics.rs`) and `docs/quickstarts/errors.md` for the two new codes come
+  with the publication checks (T035-054). *Exit condition:* each is closed by the task named, with a test.

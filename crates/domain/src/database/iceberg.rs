@@ -234,7 +234,7 @@ pub struct LakeLimits {
 }
 
 impl LakeLimits {
-    fn validate(self) -> Result<(), LakeConfigError> {
+    pub(super) fn validate(self) -> Result<(), LakeConfigError> {
         let inside = |value: Option<u32>, low: u32, high: u32| {
             value.is_none_or(|v| (low..=high).contains(&v))
         };

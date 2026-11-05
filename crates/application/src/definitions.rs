@@ -283,6 +283,8 @@ fn graph_rule(error: &WorkflowError) -> (&'static str, Option<String>) {
     use WorkflowError as E;
     match error {
         E::InvalidDatabaseNode => ("INVALID_DATABASE_NODE", None),
+        E::InvalidIcebergNode => ("INVALID_ICEBERG_NODE", None),
+        E::IcebergNodeNotRoot => ("ICEBERG_NODE_NOT_ROOT", None),
         E::InvalidNodeId(id) => ("INVALID_NODE_ID", Some(id.clone())),
         E::InvalidActivityName(_) => ("INVALID_ACTIVITY_NAME", None),
         E::InvalidEventType(_) => ("INVALID_EVENT_TYPE", None),
