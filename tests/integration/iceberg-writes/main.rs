@@ -6,5 +6,6 @@
 #[path = "../../support/mod.rs"]
 mod support;
 
+mod isolation;
 mod lake_fixture;
 mod lake_reader;
