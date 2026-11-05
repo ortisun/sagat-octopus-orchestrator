@@ -45,6 +45,20 @@ class CiRule(unittest.TestCase):
         for job in (*SCOPED_JOBS, *RELEASE_ONLY_JOBS):
             self.assertIn("needs: changes", job_block(self.text, job), f"job {job} must wait for the selection")
 
+    def test_the_rust_job_frees_the_disk_it_does_not_need_before_it_builds_everything(self):
+        """A build of the whole workspace and its tests ran a runner out of disk once ("No space left on device", on a
+        push that changed Cargo.lock). The step is the first of the job, only for a build of everything, and it leaves
+        the .NET SDK alone because some suites call it on the host."""
+        first = steps(job_block(self.text, "rust"))[0]
+        self.assertIn("free disk space", first)
+        self.assertRegex(
+            first,
+            r"(?m)^        if: needs\.changes\.outputs\.full == 'true' \|\| needs\.changes\.outputs\.crates == 'ALL'\s*$",
+        )
+        for path in ("/usr/local/lib/android", "/opt/ghc", "/usr/local/.ghcup", "/opt/hostedtoolcache/CodeQL"):
+            self.assertIn(path, first)
+        self.assertNotIn("/usr/share/dotnet", first)
+
     def test_the_lints_and_verification_jobs_run_only_for_a_release(self):
         for job in RELEASE_ONLY_JOBS:
             self.assertRegex(job_block(self.text, job), rf"(?m)^    if: {re.escape(FULL)}\s*$",
