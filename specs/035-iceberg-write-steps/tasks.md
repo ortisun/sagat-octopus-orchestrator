@@ -387,7 +387,7 @@ three conditions pass.
     or logged.
 
   Refs: D035-062, D035-067.
-- [ ] T035-018 [P] Write the failing configuration-hygiene tests in
+- [x] T035-018 [P] Write the failing configuration-hygiene tests in
   `runners/lake/tests/test_config_hygiene.py`, and the hostile REST catalog fixture in
   `tests/fixtures/lake/hostile-catalog/`. The fixture returns:
   - `py-io-impl`, `s3.endpoint`, `s3.proxy-uri` and signer settings;
@@ -395,6 +395,13 @@ three conditions pass.
 
   Expect: every override dropped, every such location refused, and each denial counted. Refs:
   FR-035-004, D035-050.
+
+  *2026-11-05, done:* `runners/lake/tests/test_config_hygiene.py` (93 cases) and the hostile catalog, which is
+  `runners/lake/tests/hostile_catalog.py` and not `tests/fixtures/lake/hostile-catalog/` (D035-076: the selector treats
+  `tests/fixtures` as shared by every suite). The catalog serves over loopback HTTP: the hostile `py-io-impl`,
+  `s3.endpoint`, `s3.proxy-uri`, region, role and signer keys, vended credentials, a table at `169.254.169.254`, one at
+  the platform database, and one whose properties move the data files. Written before the module and seen failing
+  (`No module named 'sagat_lake.config_hygiene'`); 21 mutations of the module are each caught.
 - [ ] T035-019 [P] Write the failing T-commit-once test in
   `tests/integration/iceberg-writes/commit_once.rs`: a commit-counting relay in front of the REST
   fixture sees exactly one commit request per search, even when the catalog answers 409, 5xx or times
@@ -550,7 +557,7 @@ three conditions pass.
   - it writes heartbeats and one result line, then exits 0.
 
   Add the pytest `runners/lake/tests/test_host_protocol.py`. T035-017 passes. Refs: D035-062, D035-067.
-- [ ] T035-033 Implement configuration hygiene in `runners/lake/sagat_lake/config_hygiene.py`:
+- [x] T035-033 Implement configuration hygiene in `runners/lake/sagat_lake/config_hygiene.py`:
   - an allowlist of `warehouse`, `prefix` and the declared storage type's vended credential keys;
   - `py-io-impl` and the FileIO implementation pinned;
   - remote signing refused unless declared;
@@ -558,6 +565,12 @@ three conditions pass.
   - GCS and Azure credentials passed explicitly, failing closed when missing.
 
   T035-018 passes. Refs: D035-050.
+
+  *2026-11-05, done:* `Hygiene` filters `/v1/config` and `LoadTable.config` to the allowlist, pins `py-io-impl`, refuses
+  signing unless declared, confines every location the catalog names to the declared prefixes, builds an allowlisted
+  environment with `AWS_EC2_METADATA_DISABLED=true`, and fails closed on a missing credential. `pytest` in
+  `runners/lake`: 151 passed (93 of them T035-018); `ruff check`, `ruff format --check` and `mypy` (strict) clean. The
+  host that calls it is T035-032. Where the host reports its denials is open (G035-028).
 - [ ] T035-034 Implement the conditional commit in `runners/lake/sagat_lake/commit.py`: set
   `commit.retry.num-retries = 0` in memory on the loaded table, and assert `assert-table-uuid` and
   `assert-ref-snapshot-id(ref, H)`. If T035-019 shows the override has no effect, build the updates and
