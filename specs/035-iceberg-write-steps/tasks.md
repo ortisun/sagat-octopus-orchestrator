@@ -154,7 +154,7 @@ contracts, so every later task has a place to put its failing test.
   exactly the case that guards it. Not done: the rows of a table that has been committed, and the summary of a real
   commit, because nothing in the repository writes to the lake yet; that case arrives with the first write-step test
   (T035-013) and this task is ticked then.
-- [ ] T035-006 [P] Create the lake runtime skeleton in `runners/lake/`:
+- [x] T035-006 [P] Create the lake runtime skeleton in `runners/lake/`:
   - `pyproject.toml`, with mypy strict and ruff;
   - `requirements.in`;
   - `requirements.lock`: the closure of `pyiceberg[pyarrow,s3fs,gcsfs,adlfs,hive,glue,sql-postgres]==0.12.0`,
@@ -183,10 +183,16 @@ contracts, so every later task has a place to put its failing test.
   read-only, read-only root) with no network and no capabilities; against the stock `python:3.12-slim` it failed 12
   and, once two checks that had passed for the wrong reason were tightened, it fails 14. A build with
   `--sbom=true` attaches an SPDX document of 179 packages (178 with a purl, PyIceberg and PyArrow among them).
-  Not done: the `ci.yml` jobs (pytest, mypy, ruff, pip-audit on every lock change and on a schedule, the image
-  build with the smoke script and the SBOM), because the scoped-gate rule of Constitution 4.1.0 (PR #90) changes the
-  same file and a gate for `runners/lake/**` has to be added to `scripts/select-test-targets.py` with it; and the
-  `linux/amd64` build, which only a CI runner builds (this machine is arm64).
+  *2026-11-05, done:* the CI is wired (PR #92). `scripts/select-test-targets.py` has a `lake` output: a change under
+  `runners/lake/` (Markdown aside) opens the gate and selects the lake suites, not every integration target (it did,
+  because `runners/` is a shared input); the job `lake-runtime` runs pytest and `pip-audit` on that gate and, for a
+  release (Constitution 4.1.0), mypy, ruff, the image build, `smoke-image.sh` and the SBOM check
+  (`runners/lake/tools/check_sbom.py`, tested on a synthetic archive and on a real BuildKit export); the lock is also
+  audited every Monday by `.github/workflows/lake-audit.yml`. So the task's "on every lock change and on a schedule" is
+  met, and mypy and ruff are for a release by the owner's rule. Evidence: the job passed on the `linux/amd64`
+  runner in 2 min 20 s (run 41944865468, job 126974540637), with the image built wheels-only and the 17 promises of
+  the smoke test holding; `dependency advisories` passed with the three documented ignores (job 126974540593).
+  46 selector tests (5 new), 14 workflow tests (5 new), 336 script tests and `actionlint` pass.
 - [x] T035-007 Write the failing contract tests in `tests/contract/iceberg-writes/`, with their
   fixtures under `tests/contract/iceberg-writes/fixtures/`:
   - `ir.rs`: the canonical `workflow.schema.json` accepts the valid IR samples and refuses the invalid
