@@ -136,6 +136,7 @@ internal static class BuildMode
                 Result = (string?)update["result"],
                 ResultSchema = update["resultSchema"] as JsonObject,
                 Disclosure = (string?)update["disclosure"],
+                ReapplyOnReset = (bool?)update["reapplyOnReset"] ?? false,
             };
         }
 

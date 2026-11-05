@@ -22,6 +22,11 @@ pub struct UpdateDefinition {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub validate: Option<String>,
     pub disclosure: Option<DisclosurePolicy>,
+    /// Keeps the arguments of every applied instance so a reset can validate and apply them again. It is
+    /// written into the document only when true (a document that does not opt in is the one made before
+    /// the field), and a server publishes it only when its capability is on.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub reapply_on_reset: bool,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]

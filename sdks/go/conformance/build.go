@@ -376,6 +376,7 @@ func builderOf(definition object) *workflow.Builder {
 				ArgsSchema: asObject(update["argsSchema"]), Validate: asString(update["validate"]),
 				State: asString(update["state"]), Result: asString(update["result"]),
 				ResultSchema: asObject(update["resultSchema"]), Disclosure: workflow.DisclosurePolicy(asString(update["disclosure"])),
+				ReapplyOnReset: update["reapplyOnReset"] != nil && asBool(update["reapplyOnReset"]),
 			}
 		}
 		b.State(workflow.StateDefinition{

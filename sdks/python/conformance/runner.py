@@ -219,6 +219,7 @@ def builder_of(definition: Obj) -> Any:
                 result=update.get("result"),
                 result_schema=update.get("resultSchema"),
                 disclosure=update.get("disclosure"),
+                reapply_on_reset=update.get("reapplyOnReset", False),
             )
             for name, update in (declared.get("updates") or {}).items()
         }

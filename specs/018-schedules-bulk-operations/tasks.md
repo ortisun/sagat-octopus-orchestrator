@@ -1168,10 +1168,27 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   test-tree refusals, restored rows skipped by 020 analytics, attribute fold on reset, `RUN_PURGED`
   before and during reset, `business_id` erasure — `tests/integration/schedules-bulk-operations/flow_visibility.rs`
   — SC-018-011, SC-018-012 — FR-018-050, FR-018-051, FR-018-021.
-- [ ] T018-078 IR field `reapplyOnReset` on Update declarations (capability-gated, ADR-0032) in the domain,
+- [x] T018-078 IR field `reapplyOnReset` on Update declarations (capability-gated, ADR-0032) in the domain,
   IR codec and five SDK builders, merged from `contracts/workflow-ir.fragment.schema.json` —
   `crates/domain/src/workflow.rs`, `crates/infra-ir/src/`, `specs/001-platform-foundation/contracts/workflow.schema.json`,
   `sdks/*/` — schema/codec tests and builder fixtures — FR-018-039, FR-018-046.
+  *Done 2026-11-05 (D1974, G1977):* the task text is amended: the Update declaration is in the IR codec
+  (`DeclaredUpdateDefinition`), not the domain crate, which is untouched, and the SDKs are six (D1040), not five.
+  Schema `$defs/update.reapplyOnReset` (boolean, default false) merged, the reference blessed after reading its one-line
+  diff, `ajv` validates the example. Codec: `crates/infra-ir/tests/reapply_on_reset.rs` (5) and
+  `reapply_on_reset_enabled.rs` (1): read by every parser, a non-boolean is a schema error, a new publication
+  (`parse` and `declared_state_publication`) is refused with `UnsupportedDeclaration { field: "reapplyOnReset" }` while the
+  capability is off, a stored version is still read, a document that does not write the field keeps the digest it had
+  (pinned `e6de3b4d…7354`, taken from the code before the change) and `false` equals not writing it; the switch is
+  `set_reset_reapply` of the process. Seven mutants of the codec killed (the two gates, the `== true` test, the refusal
+  itself, the inverted switch, the field never read, the digest without normalisation); the eighth, the codec's own
+  boolean check, is unreachable behind the schema's `type: boolean`. Six SDK builders write the field only when true, each
+  with tests and a mutant killed: TypeScript 134, Python (pytest, mypy, ruff), Go (`-race`, vet, gofmt), C# (`dotnet test`
+  and `format`), Java (`mvnw verify`), Rust (fmt, clippy, tests); the scenario `state-operation-builders` has the
+  workflow `retained-update` and `sdk_conformance` passes for its six languages against a golden that holds only the two
+  new entries. Server: infra-ir, application and cli unit suites, nine contract targets, `integration_workflow_primitives`
+  755, `integration_platform_foundation` 101, `integration_schedules_bulk_operations` 337, clippy over the workspace.
+  Nothing calls `set_reset_reapply` yet (G1977): a workflow cannot opt in on any deployment until T018-056.
 - [ ] T018-079 `REPIN` batch action when feature 019 is enabled (`BATCH_ACTION_UNAVAILABLE` otherwise;
   `deployment:manage` + `run:operate`; item = 019 single-run repin in slot order run → 019 fences → job →
   item; skip reasons) — `crates/application/src/batch.rs`,

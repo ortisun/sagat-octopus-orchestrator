@@ -431,7 +431,8 @@ public final class Runner {
                 updates.put(entry.getKey(), new UpdateDefinition(
                         update.get("argsSchema"), update.path("validate").textValue(),
                         update.path("state").textValue(), update.path("result").textValue(),
-                        update.get("resultSchema"), update.path("disclosure").textValue()));
+                        update.get("resultSchema"), update.path("disclosure").textValue(),
+                        update.path("reapplyOnReset").asBoolean(false)));
             });
             builder.state(new StateDefinition(state.get("schema"), state.path("initial").textValue(), queries, updates));
         }
