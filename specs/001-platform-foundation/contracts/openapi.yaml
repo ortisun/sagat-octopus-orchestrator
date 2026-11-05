@@ -558,6 +558,33 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /runs/update-with-start:
+    post:
+      operationId: updateWithStart
+      summary: Apply a declared Update to the open run of a business id, starting it if needed
+      tags: [Runs]
+      x-implemented: '018'
+      description: |
+        Needs `run:start` and `run:update`. One transaction: the run (when this request creates it), the Update's state, receipt, journal event, audit and outbox notification commit together. Under the binding of the `businessId`: an open holder receives the Update exactly as `updateRun` applies it (`started: false`; `businessIdConflictPolicy: FAIL` makes an open holder `409 BUSINESS_ID_IN_USE` instead); otherwise, subject to `businessIdReusePolicy`, a run is created and the Update applied to it after its initial reduction (`started: true`; with `startDelayMs` the run is held and still admits the Update). A business rejection (the validator said no, the expected revision is stale) is an answer, `200` with `outcome: REJECTED`, and leaves the run started with a stable receipt; a failure before admission creates nothing and reads as it does on `updateRun` (an undeclared operation is `404`, arguments the declaration does not accept are `422 INVALID_ARGUMENTS`, an update key reused with another request is `409 IDEMPOTENCY_KEY_REUSED`). The same `Idempotency-Key` with the same body answers what the first request did; with another body it is `409 IDEMPOTENCY_KEY_REUSED`. The result is business data: `Cache-Control: no-store` (ADR-0031).
+      parameters:
+        - {$ref: '#/components/parameters/Namespace'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateWithStartRequest'}
+      responses:
+        '200': {description: 'The Update was applied or rejected; the run was started when started is true', headers: {Cache-Control: {schema: {type: string, const: no-store}}, X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/UpdateWithStartResult'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /runs/{runId}:
     get:
       operationId: getRun
@@ -4825,6 +4852,47 @@ components:
         runId: {type: string, format: uuid}
         started: {type: boolean, description: 'Whether this request created the run.'}
         deliveredTo: {type: array, items: {type: string}, description: 'The nodes the signal woke.'}
+    UpdateWithStartRequest:
+      type: object
+      required: [workflowId, businessId, input, update]
+      additionalProperties: false
+      properties:
+        workflowId: {type: string, format: uuid}
+        versionId: {type: string, format: uuid}
+        businessId: {type: string, minLength: 1, maxLength: 200, pattern: '^[!-~]+$', description: 'The caller''s own identifier for the run. Customer content: it is not echoed in an error, a log or a metric.'}
+        businessIdConflictPolicy: {type: string, enum: [USE_EXISTING, FAIL], default: USE_EXISTING, description: 'What to do when an open execution holds the identifier: apply the Update to it, or refuse.'}
+        businessIdReusePolicy: {type: string, enum: [ALLOW_DUPLICATE, ALLOW_DUPLICATE_FAILED_ONLY, REJECT_DUPLICATE], default: ALLOW_DUPLICATE, description: 'What to do when a closed execution still remembers the identifier.'}
+        input: {type: object}
+        correlationId: {type: string, maxLength: 160}
+        deadline: {type: string, format: date-time}
+        startDelayMs: {type: integer, minimum: 1, maximum: 31622400000, description: 'Holds the entry of a new run; a declared Update is admitted to a run held this way.'}
+        update:
+          type: object
+          additionalProperties: false
+          required: [name, updateKey, args]
+          properties:
+            name: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9_.:-]*$'}
+            updateKey: {type: string, minLength: 1, maxLength: 128, pattern: '^[!-~]+$'}
+            args: {description: 'JSON value, at most 256 KiB, checked against the declared argument schema.'}
+            expectedStateRevision: {type: integer, minimum: 0}
+    UpdateWithStartResult:
+      type: object
+      required: [runId, started, update]
+      properties:
+        runId: {type: string, format: uuid}
+        started: {type: boolean, description: 'Whether this request created the run.'}
+        update:
+          oneOf:
+            - type: object
+              required: [outcome, receipt]
+              properties:
+                outcome: {const: APPLIED}
+                receipt: {$ref: '#/components/schemas/DeclaredUpdateResponse'}
+            - type: object
+              required: [outcome, reason]
+              properties:
+                outcome: {const: REJECTED}
+                reason: {type: string, enum: [UPDATE_REJECTED, REVISION_CONFLICT]}
     StartRunRequest:
       type: object
       required: [workflowId]

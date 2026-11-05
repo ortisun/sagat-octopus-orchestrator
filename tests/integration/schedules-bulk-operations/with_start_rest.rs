@@ -153,6 +153,43 @@ async fn an_entry_that_does_not_wait_for_the_signal_creates_nothing() {
 }
 
 #[tokio::test]
+async fn a_retry_after_the_caller_lost_the_right_is_refused_and_not_answered_again() {
+    let r = rig().await;
+    r.p.grant(r.p.tenant, "sam", sagat_domain::identity::Role::Operator)
+        .await;
+    let body = json!({
+        "workflowId": r.waiter,
+        "businessId": "cart-http-9",
+        "input": {"k": "s"},
+        "signal": {"name": "payment.confirmed", "payload": {"n": 1}}
+    });
+    let send = || {
+        r.p.api
+            .as_user(
+                Method::POST,
+                "/runs/signal-with-start",
+                "sam",
+                crate::support::worker::TENANT,
+            )
+            .header("x-octopus-namespace", "payments")
+            .header("idempotency-key", "with-start-key-0011")
+            .json(&body)
+            .send()
+    };
+
+    assert_eq!(send().await.expect("send").status(), 202);
+    r.p.demote("sam").await;
+    let retried = send().await.expect("send");
+
+    assert_eq!(
+        retried.status(),
+        403,
+        "a replay is judged by the right the caller has now"
+    );
+    assert_eq!(r.runs().await.len(), 1, "and nothing more was done");
+}
+
+#[tokio::test]
 async fn a_delay_cannot_go_with_a_signal_and_the_request_is_checked_in_words() {
     let r = rig().await;
 

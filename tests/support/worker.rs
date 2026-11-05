@@ -188,6 +188,17 @@ impl Platform {
             .expect("grant");
     }
 
+    /// Takes the right to act away from `sub` of acme: they become a viewer, as an administrator's
+    /// revocation does. A request they send afterwards is judged by the role they have now.
+    pub async fn demote(&self, sub: &str) {
+        sqlx::query("UPDATE memberships SET role = 'viewer' WHERE tenant_id = $1 AND subject = $2")
+            .bind(self.tenant.as_uuid())
+            .bind(sub)
+            .execute(&self.api.db.pool)
+            .await
+            .expect("demote");
+    }
+
     /// Outbox messages not yet delivered.
     pub async fn outbox_backlog(&self) -> u64 {
         use sagat_application::maintenance::OutboxStore;

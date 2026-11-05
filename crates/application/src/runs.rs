@@ -20,14 +20,16 @@ use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::business_ids::{BusinessId, ConflictPolicy, ReusePolicy, ReuseWindow};
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::execution::{
-    self, ExecutionError, ExecutionInstanceId, Progress, ReviewOutcome, RunEvent, RunId, RunStatus,
-    StepStatus, StopReason, WaitingOn,
+    self, ExecutionError, ExecutionInstanceId, OperationAddress, OperationScope, Progress,
+    ReviewOutcome, RunEvent, RunId, RunStatus, StepStatus, StopReason, UpdateKey, UpdateRequest,
+    WaitingOn,
 };
 use sagat_domain::identity::{Namespace, NamespaceId, Permission, Principal, TenantId};
-use sagat_domain::workflow::{NodeId, NodeKind, WorkflowDefinition};
+use sagat_domain::workflow::{ActivityName, Digest, NodeId, NodeKind, WorkflowDefinition};
 use time::OffsetDateTime;
 
 use crate::clock::Clock;
+use crate::declared_operations::{AppliedInTx, DeclaredOperationEvaluator, DeclaredUpdate};
 use crate::definitions::{DefinitionStore, Idempotency};
 use crate::error::{AppError, StoreError};
 use crate::execution::{
@@ -35,6 +37,7 @@ use crate::execution::{
     RunInfo, RunRecord, RunTx,
 };
 use crate::identity::{Page, PageRequest, RequestContext};
+use crate::operation_evaluation::DeclaredOperationArguments;
 use crate::quotas::{QuotaLookup, RunLimits};
 
 /// Longest a run may be given to finish.
@@ -106,6 +109,8 @@ pub struct Started {
     pub existing: bool,
     /// The steps a signal delivered with the start woke (Signal-with-Start); empty otherwise.
     pub delivered_to: Vec<NodeId>,
+    /// The declared Update applied with the start (Update-with-Start), or its stable rejection.
+    pub update: Option<AppliedInTx>,
 }
 
 /// The signal a Signal-with-Start request delivers (feature 018, `FR-018-024`).
@@ -121,6 +126,31 @@ pub struct SignalStarted {
     pub run: RunRecord,
     pub started: bool,
     pub delivered_to: Vec<NodeId>,
+}
+
+/// The declared Update an Update-with-Start request applies (feature 018, `FR-018-025`).
+#[derive(Debug, Clone, Copy)]
+pub struct UpdateAtStart<'a> {
+    pub operation: &'a ActivityName,
+    pub update_key: &'a UpdateKey,
+    pub arguments: &'a DeclaredOperationArguments,
+    pub expected_state_revision: Option<u64>,
+}
+
+/// What an Update-with-Start came to: the run, whether this request created it, and the Update's
+/// resolution (applied with its result, or a business rejection the run was started with).
+#[derive(Debug, Clone)]
+pub struct UpdateStarted {
+    pub run: RunRecord,
+    pub started: bool,
+    pub update: AppliedInTx,
+}
+
+/// What a start carries along besides its request.
+#[derive(Debug, Clone, Copy)]
+enum WithStart<'a> {
+    Signal(SignalAtStart<'a>),
+    Update(UpdateAtStart<'a>),
 }
 
 /// What a signal to a run that waits for nothing is refused with.
@@ -542,6 +572,8 @@ pub struct RunService<S, C, E> {
         crate::blobs::BlobService,
         Arc<dyn crate::blobs::RunInputChecker>,
     )>,
+    /// Evaluates the declared Update an Update-with-Start carries; absent, that request is refused.
+    declared_updates: Option<Arc<dyn DeclaredOperationEvaluator>>,
 }
 
 /// The state of a run's telemetry and what it is judged by.
@@ -573,7 +605,15 @@ where
             cache,
             lag_budget: Duration::from_secs(30),
             input_blobs: None,
+            declared_updates: None,
         }
+    }
+
+    /// Serves Update-with-Start: `evaluator` checks and evaluates the declared Update it carries.
+    #[must_use]
+    pub fn with_declared_updates(mut self, evaluator: Arc<dyn DeclaredOperationEvaluator>) -> Self {
+        self.declared_updates = Some(evaluator);
+        self
     }
 
     /// How late a run's spans may be before its telemetry is called behind (default 30 s).
@@ -708,7 +748,7 @@ where
                 None,
                 None,
                 None,
-                Some(signal),
+                Some(WithStart::Signal(signal)),
                 ctx,
             )
             .await?;
@@ -716,6 +756,52 @@ where
             run: started.run,
             started: !started.existing,
             delivered_to: started.delivered_to,
+        })
+    }
+
+    /// Update-with-Start (feature 018, `FR-018-025`): applies a declared Update to the open run of the
+    /// business identifier (`USE_EXISTING`) or, when there is none, creates the run and applies it in
+    /// the same transaction; with `FAIL` an open holder is a conflict. A business rejection (the
+    /// validator said no, the expected revision is stale) leaves the run started with a stable
+    /// `REJECTED` receipt. A failure before admission (an undeclared operation, arguments the
+    /// declaration does not accept, a key reused with another request) creates nothing.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `run:start` and `run:update`; the errors of
+    /// [`Self::start_with_options`]; [`AppError::DeclaredUpdate`] for what the declared Update refuses
+    /// before admission; [`AppError::NotAllowed`] when the instance does not serve declared Updates or
+    /// the request names no business identifier.
+    pub async fn update_with_start(
+        &self,
+        principal: &Principal,
+        request: &StartRun<'_>,
+        options: StartOptions,
+        update: UpdateAtStart<'_>,
+        ctx: &RequestContext,
+    ) -> Result<UpdateStarted, AppError> {
+        principal.authorize(Permission::RunUpdate)?;
+        if options.business.is_none() {
+            return Err(AppError::NotAllowed(
+                "an Update-with-Start request names the business identifier it acts on",
+            ));
+        }
+        let started = self
+            .start_with(
+                principal,
+                request,
+                options,
+                None,
+                None,
+                None,
+                Some(WithStart::Update(update)),
+                ctx,
+            )
+            .await?;
+        let applied = started.update.ok_or(AppError::Internal)?;
+        Ok(UpdateStarted {
+            run: started.run,
+            started: !started.existing,
+            update: applied,
         })
     }
 
@@ -913,11 +999,11 @@ where
         rerun: Option<Rerun<'_>>,
         input_blob: Option<sagat_domain::blobs::BlobId>,
         scheduled: Option<crate::schedules::ScheduleAdmission>,
-        with_signal: Option<SignalAtStart<'_>>,
+        with: Option<WithStart<'_>>,
         ctx: &RequestContext,
     ) -> Result<Started, AppError> {
         principal.authorize(Permission::RunStart)?;
-        if let Some(signal) = &with_signal
+        if let Some(WithStart::Signal(signal)) = &with
             && (signal.payload.len() > MAX_PAYLOAD_BYTES
                 || !self.engine.evaluator().is_json(signal.payload))
         {
@@ -1100,12 +1186,31 @@ where
         };
         // The options join the fingerprint only when there are any, so the fingerprint of a start
         // that has none is what it always was and a retry made before an upgrade still replays.
-        if let Some(signal) = &with_signal {
-            idempotency.fingerprint.extend(fingerprint(&[
-                b"run.signal_at_start",
-                signal.name.as_bytes(),
-                signal.payload,
-            ]));
+        match &with {
+            Some(WithStart::Signal(signal)) => {
+                idempotency.fingerprint.extend(fingerprint(&[
+                    b"run.signal_at_start",
+                    signal.name.as_bytes(),
+                    signal.payload,
+                ]));
+            }
+            Some(WithStart::Update(update)) => {
+                idempotency.fingerprint.extend(fingerprint(&[
+                    b"run.update_at_start",
+                    update.operation.as_str().as_bytes(),
+                    update.update_key.as_str().as_bytes(),
+                    update.arguments.canonical(),
+                    &update.expected_state_revision.map_or_else(
+                        || vec![0],
+                        |revision| {
+                            let mut bytes = vec![1];
+                            bytes.extend(revision.to_be_bytes());
+                            bytes
+                        },
+                    ),
+                ]));
+            }
+            None => {}
         }
         if let Some(delay) = options.start_delay {
             idempotency.fingerprint.extend(fingerprint(&[
@@ -1227,7 +1332,7 @@ where
             created,
             scheduled_start,
             held_until_us,
-            with_signal.map(|signal| (signal, request.key)),
+            with.map(|with| (with, request.key)),
             ctx,
         )
         .await
@@ -1241,7 +1346,7 @@ where
         created: Admitted<S::Tx>,
         scheduled: bool,
         held_until_us: Option<i64>,
-        with_signal: Option<(SignalAtStart<'_>, &str)>,
+        with: Option<(WithStart<'_>, &str)>,
         ctx: &RequestContext,
     ) -> Result<Started, AppError> {
         match created {
@@ -1252,37 +1357,69 @@ where
             )),
             Admitted::Replayed(existing) => {
                 let mut started = self.known_start(principal, &existing, false).await?;
-                if let Some((signal, key)) = with_signal {
-                    // what the first request delivered, from the receipt it left with the run
-                    started.delivered_to = self
-                        .delivered_before(principal, started.run.info.run_id, signal, key)
-                        .await?;
+                match with {
+                    Some((WithStart::Signal(signal), key)) => {
+                        // what the first request delivered, from the receipt it left with the run
+                        started.delivered_to = self
+                            .delivered_before(principal, started.run.info.run_id, signal, key)
+                            .await?;
+                    }
+                    Some((WithStart::Update(update), _)) => {
+                        // the receipt the first request left answers again, whatever the run is now
+                        started.update = Some(
+                            self.update_in_own_transaction(
+                                principal,
+                                started.run.info.run_id,
+                                started.run.info.namespace_id,
+                                update,
+                                ctx,
+                            )
+                            .await?,
+                        );
+                    }
+                    None => {}
                 }
                 Ok(started)
             }
             // the holder of the business identifier, returned and nothing created
             Admitted::Existing(holder) => {
                 let mut started = self.known_start(principal, &holder, true).await?;
-                if let Some((signal, key)) = with_signal {
-                    // an open holder is signalled exactly as `signalRun` would
-                    started.delivered_to = self
-                        .signal(
-                            principal,
-                            started.run.info.run_id,
-                            signal.name,
-                            signal.payload,
-                            key,
-                            ctx,
-                        )
-                        .await
-                        .map_err(|error| match error {
-                            AppError::StateConflict(NOT_WAITING_FOR_SIGNAL) => {
-                                AppError::SignalRefused {
-                                    reason: "NOT_WAITING",
+                match with {
+                    Some((WithStart::Signal(signal), key)) => {
+                        // an open holder is signalled exactly as `signalRun` would
+                        started.delivered_to = self
+                            .signal(
+                                principal,
+                                started.run.info.run_id,
+                                signal.name,
+                                signal.payload,
+                                key,
+                                ctx,
+                            )
+                            .await
+                            .map_err(|error| match error {
+                                AppError::StateConflict(NOT_WAITING_FOR_SIGNAL) => {
+                                    AppError::SignalRefused {
+                                        reason: "NOT_WAITING",
+                                    }
                                 }
-                            }
-                            other => other,
-                        })?;
+                                other => other,
+                            })?;
+                    }
+                    Some((WithStart::Update(update), _)) => {
+                        // an open holder gets the Update exactly as `updateRun` would apply it
+                        started.update = Some(
+                            self.update_in_own_transaction(
+                                principal,
+                                started.run.info.run_id,
+                                started.run.info.namespace_id,
+                                update,
+                                ctx,
+                            )
+                            .await?,
+                        );
+                    }
+                    None => {}
                 }
                 Ok(started)
             }
@@ -1305,7 +1442,22 @@ where
                     .await
                     .map_err(engine_error)?;
                 let mut delivered_to = Vec::new();
-                if let Some((signal, key)) = with_signal {
+                let mut update_applied = None;
+                if let Some((WithStart::Update(update), _)) = with {
+                    // the Update goes in the creation transaction, after the initial reduction: a
+                    // refusal before admission drops the transaction and nothing of the run exists; a
+                    // business rejection commits with the run, its receipt stable
+                    let evaluator = self.declared_evaluator()?;
+                    let command = self.declared_update(
+                        principal,
+                        tx.info().namespace_id,
+                        run_id,
+                        update,
+                        ctx,
+                    );
+                    update_applied = Some(tx.apply_declared_update(&command, evaluator).await?);
+                }
+                if let Some((WithStart::Signal(signal), key)) = with {
                     // the signal goes in the creation transaction, to every step that waits for it
                     // after the initial reduction; if none does, nothing is created at all
                     let idempotency = Idempotency {
@@ -1340,9 +1492,79 @@ where
                     .known_start(principal, &run_id.to_string(), false)
                     .await?;
                 started.delivered_to = delivered_to;
+                started.update = update_applied;
                 Ok(started)
             }
         }
+    }
+
+    /// The evaluator of declared Updates, or the refusal of a service that does not serve them.
+    fn declared_evaluator(&self) -> Result<&dyn DeclaredOperationEvaluator, AppError> {
+        self.declared_updates.as_deref().ok_or(AppError::NotAllowed(
+            "this instance does not serve declared updates",
+        ))
+    }
+
+    /// The declared Update addressed to `run`, with the audit and the outbox notification that
+    /// commit with it.
+    fn declared_update(
+        &self,
+        principal: &Principal,
+        namespace: sagat_domain::identity::NamespaceId,
+        run: RunId,
+        update: UpdateAtStart<'_>,
+        ctx: &RequestContext,
+    ) -> DeclaredUpdate {
+        let occurred_at = self.clock.now();
+        let audit = AuditRecord::by(
+            principal,
+            AuditAction::RunUpdated,
+            ResourceType::Run,
+            run.to_string(),
+            ctx.trace_id.clone(),
+            occurred_at,
+        );
+        let request = UpdateRequest::new(
+            OperationScope::new(principal.tenant_id(), namespace, OperationAddress::Run(run)),
+            run,
+            update.operation.clone(),
+            update.update_key.clone(),
+            Digest::new([0; 32]),
+            update.expected_state_revision,
+            principal.subject().clone(),
+        );
+        DeclaredUpdate::new(
+            request,
+            update.arguments.clone(),
+            audit,
+            uuid::Uuid::now_v7(),
+            occurred_at,
+        )
+    }
+
+    /// Applies the Update to a run that exists, in a transaction of its own: the open holder of a
+    /// business identifier, or the run a retry of the same request finds already started (the receipt
+    /// the first request left answers again).
+    async fn update_in_own_transaction(
+        &self,
+        principal: &Principal,
+        run: RunId,
+        namespace: sagat_domain::identity::NamespaceId,
+        update: UpdateAtStart<'_>,
+        ctx: &RequestContext,
+    ) -> Result<AppliedInTx, AppError> {
+        let evaluator = self.declared_evaluator()?;
+        let Some(mut tx) = self
+            .store
+            .begin(principal.tenant_id(), run, Lock::Wait)
+            .await?
+        else {
+            return Err(AppError::Internal);
+        };
+        let command = self.declared_update(principal, namespace, run, update, ctx);
+        let applied = tx.apply_declared_update(&command, evaluator).await?;
+        tx.commit().await?;
+        Ok(applied)
     }
 
     async fn audit_database_denial(
@@ -1419,6 +1641,7 @@ where
             run,
             existing,
             delivered_to: Vec::new(),
+            update: None,
         })
     }
 

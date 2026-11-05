@@ -177,6 +177,12 @@ pub enum AppError {
     /// created). A signal is never buffered.
     #[error("signal refused: {reason}")]
     SignalRefused { reason: &'static str },
+    /// A declared Update that an Update-with-Start request carried was refused before the run was
+    /// admitted (feature 018, `FR-018-025`): an undeclared operation, arguments the declaration
+    /// does not accept, a key reused with another request, a run that no longer admits updates.
+    /// Nothing was created. The API translates it as the declared-operations routes do.
+    #[error("declared update refused: {0}")]
+    DeclaredUpdate(#[from] crate::declared_operations::DeclaredOperationStoreError),
     /// A business identifier that an open or remembered execution holds (`BUSINESS_ID_IN_USE`,
     /// `BUSINESS_ID_REUSE_REJECTED`). `holder` names the execution; the API shows it only to a caller
     /// who may read runs. `reusable_after` is when a remembered id is free again.

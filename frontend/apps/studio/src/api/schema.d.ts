@@ -400,6 +400,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/runs/update-with-start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply a declared Update to the open run of a business id, starting it if needed
+         * @description Needs `run:start` and `run:update`. One transaction: the run (when this request creates it), the Update's state, receipt, journal event, audit and outbox notification commit together. Under the binding of the `businessId`: an open holder receives the Update exactly as `updateRun` applies it (`started: false`; `businessIdConflictPolicy: FAIL` makes an open holder `409 BUSINESS_ID_IN_USE` instead); otherwise, subject to `businessIdReusePolicy`, a run is created and the Update applied to it after its initial reduction (`started: true`; with `startDelayMs` the run is held and still admits the Update). A business rejection (the validator said no, the expected revision is stale) is an answer, `200` with `outcome: REJECTED`, and leaves the run started with a stable receipt; a failure before admission creates nothing and reads as it does on `updateRun` (an undeclared operation is `404`, arguments the declaration does not accept are `422 INVALID_ARGUMENTS`, an update key reused with another request is `409 IDEMPOTENCY_KEY_REUSED`). The same `Idempotency-Key` with the same body answers what the first request did; with another body it is `409 IDEMPOTENCY_KEY_REUSED`. The result is business data: `Cache-Control: no-store` (ADR-0031).
+         */
+        post: operations["updateWithStart"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/runs/{runId}": {
         parameters: {
             query?: never;
@@ -3343,6 +3363,55 @@ export interface components {
             started: boolean;
             /** @description The nodes the signal woke. */
             deliveredTo: string[];
+        };
+        UpdateWithStartRequest: {
+            /** Format: uuid */
+            workflowId: string;
+            /** Format: uuid */
+            versionId?: string;
+            /** @description The caller's own identifier for the run. Customer content: it is not echoed in an error, a log or a metric. */
+            businessId: string;
+            /**
+             * @description What to do when an open execution holds the identifier: apply the Update to it, or refuse.
+             * @default USE_EXISTING
+             * @enum {string}
+             */
+            businessIdConflictPolicy: "USE_EXISTING" | "FAIL";
+            /**
+             * @description What to do when a closed execution still remembers the identifier.
+             * @default ALLOW_DUPLICATE
+             * @enum {string}
+             */
+            businessIdReusePolicy: "ALLOW_DUPLICATE" | "ALLOW_DUPLICATE_FAILED_ONLY" | "REJECT_DUPLICATE";
+            input: Record<string, never>;
+            correlationId?: string;
+            /** Format: date-time */
+            deadline?: string;
+            /** @description Holds the entry of a new run; a declared Update is admitted to a run held this way. */
+            startDelayMs?: number;
+            update: {
+                name: string;
+                updateKey: string;
+                /** @description JSON value, at most 256 KiB, checked against the declared argument schema. */
+                args: unknown;
+                expectedStateRevision?: number;
+            };
+        };
+        UpdateWithStartResult: {
+            /** Format: uuid */
+            runId: string;
+            /** @description Whether this request created the run. */
+            started: boolean;
+            update: {
+                /** @constant */
+                outcome: "APPLIED";
+                receipt: components["schemas"]["DeclaredUpdateResponse"];
+            } | {
+                /** @constant */
+                outcome: "REJECTED";
+                /** @enum {string} */
+                reason: "UPDATE_REJECTED" | "REVISION_CONFLICT";
+            };
         };
         StartRunRequest: {
             /** Format: uuid */
@@ -6897,6 +6966,46 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SignalWithStartResult"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    updateWithStart: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Namespace; authorization derives tenant from token, not header. */
+                "X-Octopus-Namespace": components["parameters"]["Namespace"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateWithStartRequest"];
+            };
+        };
+        responses: {
+            /** @description The Update was applied or rejected; the run was started when started is true */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpdateWithStartResult"];
                 };
             };
             400: components["responses"]["BadRequest"];

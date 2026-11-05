@@ -13,7 +13,7 @@ use sagat_application::api_admission::{
 use sagat_application::clock::Clock;
 use sagat_application::declared_operations::{
     DeclaredOperationEvaluator, DeclaredOperationStore, DeclaredOperationStoreError, DeclaredQuery,
-    DeclaredUpdate,
+    DeclaredUpdate, update_argument_error,
 };
 use sagat_application::error::AppError;
 use sagat_application::identity::IdentityStore;
@@ -274,20 +274,7 @@ fn operation_error(error: OperationError) -> ApiError {
     }
 }
 
-fn update_argument_error(error: OperationEvaluationError) -> OperationError {
-    match error {
-        OperationEvaluationError::MalformedJson {
-            field: OperationDataField::Arguments,
-        }
-        | OperationEvaluationError::SchemaMismatch {
-            field: OperationDataField::Arguments,
-        }
-        | OperationEvaluationError::ArgumentsTooLarge => OperationError::InvalidArguments,
-        _ => OperationError::EvaluationFailed,
-    }
-}
-
-fn store_error(error: DeclaredOperationStoreError, permission: Permission) -> ApiError {
+pub(crate) fn store_error(error: DeclaredOperationStoreError, permission: Permission) -> ApiError {
     match error {
         DeclaredOperationStoreError::NotFound
         | DeclaredOperationStoreError::DefinitionUnavailable => ApiError::not_found(),

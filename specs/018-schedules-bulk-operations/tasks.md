@@ -791,10 +791,35 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   new run that 022's permit would queue (022 is not approved) and the timeout race at the creation instant (G1973). The
   task names `crates/application/src/runs/with_start.rs`, which was not created: the code is in `runs.rs` next to `signal`,
   whose core (`deliver_signal`) it shares.
-- [ ] T018-041 [US4] Update-with-Start (`USE_EXISTING`/`FAIL`, ADR-0031 receipts, `REJECTED` keeps the
+- [x] T018-041 [US4] Update-with-Start (`USE_EXISTING`/`FAIL`, ADR-0031 receipts, `REJECTED` keeps the
   run, nothing on pre-admission failure, `no-store`) — same files — US04 cases + replay — FR-018-025.
-- [ ] T018-042 [US4] With-start idempotency and authorization (fingerprint, replay after current auth,
+  *Done 2026-11-05 (D1970; the code is in `runs.rs`, `declared_operations.rs` of the application and of
+  infra-postgres, and `execution.rs` of the routes, not in the `runs/with_start.rs` the task names):*
+  `POST /runs/update-with-start`. Service tests `update_with_start::` (11) and REST tests
+  `update_with_start_rest::` (8) pass against a real PostgreSQL, both modes: the run and the Update in one
+  transaction (journal `run.started` then `state.updated`, audit, outbox, receipt, `verify_run`), an open holder
+  updated with no second run, `FAIL` as `BUSINESS_ID_IN_USE`, a validator that says no and a stale revision as a
+  `REJECTED` receipt that keeps the run, an undeclared operation and arguments the declaration refuses creating
+  nothing (the identifier stays free), replay with the same key and `IDEMPOTENCY_KEY_REUSED` for another
+  argument, update key, expected revision or a plain start under the key (and the other way round), a held run
+  admitting the Update (closes G1972), `run:start` and `run:update`, typed validation, `no-store`. Crash matrix
+  `fault_schedules_bulk_operations update_with_start`: the backend killed after each of the 43 writes of an
+  applied request and the 36 of a rejected one leaves every table as it was, and sending it again makes one
+  run and one receipt. Contract: path and schemas in the platform OpenAPI, reference blessed, Studio types
+  regenerated, cross-tenant battery, one token per request. 13 mutants: 12 killed (among them the Update in a
+  second transaction, killed by the crash matrix, and a commit after a refusal) and one equivalent (the handler's
+  own `no-store`, which the API sets on every response; removed). Open: a new run that 022's permit would queue
+  (blocked), and the two races of G1974.
+- [x] T018-042 [US4] With-start idempotency and authorization (fingerprint, replay after current auth,
   cross-tenant `NOT_FOUND`) — `tests/integration/schedules-bulk-operations/with_start.rs` — FR-018-026, FR-018-041.
+  *Done 2026-11-05:* the fingerprint of both requests covers every field (the signal; the Update's operation,
+  key, arguments and expected revision) and neither is a retry of a plain start under the same key
+  (`with_start::a_key_used_by_a_plain_start...`, `update_with_start::the_same_key_replays...` and
+  `a_key_used_by_a_plain_start...`, which kill the mutants that take the Update or the signal out of
+  the fingerprint); a retry
+  after the caller lost the right is refused `403` and writes nothing
+  (`with_start_rest::` and `update_with_start_rest::a_retry_after_the_caller_lost_the_right...`); another
+  tenant's workflow is `404` for both routes in the cross-tenant battery (`body_of`).
 - [ ] T018-043 [US4] Write `via` on `wait.satisfied`; retain Update arguments on `state.updated` only for
   Updates declared `reapplyOnReset` — `crates/application/src/{runs.rs,chain_progress.rs,declared_operations.rs}`,
   `crates/scheduler/src/events.rs`, `crates/infra-postgres/src/event_codec.rs` — old/new codec round-trip,

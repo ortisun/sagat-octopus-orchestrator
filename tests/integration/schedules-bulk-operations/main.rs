@@ -38,5 +38,7 @@ mod service;
 mod store;
 mod store_support;
 mod trigger;
+mod update_with_start;
+mod update_with_start_rest;
 mod with_start;
 mod with_start_rest;

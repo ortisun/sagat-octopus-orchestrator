@@ -504,7 +504,8 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         SystemClock,
         Engine::new(JsonEvaluator),
         cache,
-    );
+    )
+    .with_declared_updates(Arc::new(sagat_infra_ir::JsonDeclaredOperationEvaluator));
     if let Some(blobs) = &blobs {
         runs = runs.with_input_blobs(blobs.clone(), Arc::new(sagat_infra_schema::Schemas));
     }

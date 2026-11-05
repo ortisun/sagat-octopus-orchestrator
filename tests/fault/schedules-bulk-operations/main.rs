@@ -17,3 +17,4 @@ mod delay;
 mod firing;
 mod run_driven_locks;
 mod tripwire;
+mod update_with_start;

@@ -41,6 +41,10 @@ fn body_of(operation: &str) -> Option<Value> {
             "workflowId": "{workflowId}", "businessId": "battery-probe", "input": {},
             "signal": {"name": "battery.probe", "payload": {}}
         }),
+        "updateWithStart" => json!({
+            "workflowId": "{workflowId}", "businessId": "battery-probe", "input": {},
+            "update": {"name": "battery.probe", "updateKey": "battery-probe-0001", "args": {}}
+        }),
         "operateRun" => json!({"action": "CANCEL", "reason": "cross-tenant battery probe"}),
         "inspectRunPayload" | "discloseRunPayload" => json!({"source": "input"}),
         "signalRun" => json!({"paid": true}),
@@ -569,7 +573,7 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
             .any(is_resource_id)
             || matches!(
                 operation.as_str(),
-                "startRun" | "signalWithStart" | "recordScriptRunnerIncident"
+                "startRun" | "signalWithStart" | "updateWithStart" | "recordScriptRunnerIncident"
             );
         let body = body_of(&operation).map(|b| {
             // A body that names the victim's workflow (startRun) or namespace (a report from a

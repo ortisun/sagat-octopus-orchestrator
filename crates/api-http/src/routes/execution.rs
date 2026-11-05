@@ -18,14 +18,15 @@ use sagat_application::api_admission::{ApiOperation, ApiTarget};
 use sagat_application::definitions::DiffRef;
 use sagat_application::error::AppError;
 use sagat_application::identity::{Page, PageRequest};
+use sagat_application::operation_evaluation::DeclaredOperationArguments;
 use sagat_application::runs::{
     GraphChanges, RerunBusinessId, ReviewAction, RunFilter, RunOperation, StartOptions, StartRun,
 };
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::execution::{
-    ExecutionInstanceId, FailureCode, InstancePath, ReviewOutcome, RunId, RunStatus,
+    ExecutionInstanceId, FailureCode, InstancePath, ReviewOutcome, RunId, RunStatus, UpdateKey,
 };
-use sagat_domain::workflow::NodeId;
+use sagat_domain::workflow::{ActivityName, NodeId};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio_stream::wrappers::ReceiverStream;
@@ -36,9 +37,10 @@ use crate::dto::PageBody;
 use crate::dto_exec::{
     BusinessBindingBody, CreateWorkflowBody, JournalEventBody, OperationBody, OperationResultBody,
     PublishBody, PublishedBody, RerunBusinessIdBody, RunBody, SignalResultBody,
-    SignalWithStartBody, SignalWithStartResultBody, StartRunBody, UpdateDraftBody, ValidateBody,
-    VersionBody, VersionSummary, WorkflowBody, compensation_plans_body, diff_body,
-    graph_changes_body, runtime_graph, validation_body,
+    SignalWithStartBody, SignalWithStartResultBody, StartRunBody, UpdateDraftBody,
+    UpdateOutcomeBody, UpdateWithStartBody, UpdateWithStartResultBody, ValidateBody, VersionBody,
+    VersionSummary, WorkflowBody, compensation_plans_body, diff_body, graph_changes_body,
+    runtime_graph, validation_body,
 };
 use crate::error::ApiError;
 use crate::exec::Exec;
@@ -480,6 +482,7 @@ pub async fn start_run<B: Exec>(
             run,
             existing: false,
             delivered_to: Vec::new(),
+            update: None,
         }
     } else {
         state
@@ -790,6 +793,149 @@ pub async fn signal_with_start<B: Exec>(
             delivered_to: done.delivered_to.iter().map(ToString::to_string).collect(),
         }),
     ))
+}
+
+/// `POST /runs/update-with-start` (feature 018, `FR-018-025`): applies a declared Update to the open run
+/// of the business identifier, or starts one and applies it in the same transaction. A business
+/// rejection leaves the run started with a stable `REJECTED` receipt (`200`); a failure before
+/// admission creates nothing. The result is business data: `Cache-Control: no-store` (ADR-0031).
+pub async fn update_with_start<B: Exec>(
+    caller: Caller,
+    State(state): State<B>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<UpdateWithStartBody>,
+) -> Result<Json<UpdateWithStartResultBody>, ApiError> {
+    use sagat_application::error::AppError;
+    let invalid = |field: &str| {
+        ApiError::from(AppError::InvalidStart {
+            reason: "BUSINESS_ID_INVALID",
+            field: Some(field.to_owned()),
+        })
+    };
+    let id = sagat_domain::business_ids::BusinessId::new(&body.business_id)
+        .map_err(|_| invalid("/businessId"))?;
+    let conflict = body
+        .business_id_conflict_policy
+        .as_deref()
+        .map(|policy| {
+            policy
+                .parse::<sagat_domain::business_ids::ConflictPolicy>()
+                .map_err(|()| invalid("/businessIdConflictPolicy"))
+        })
+        .transpose()?
+        // an Update goes to the open holder unless the caller says an open holder is a conflict
+        .unwrap_or(sagat_domain::business_ids::ConflictPolicy::UseExisting);
+    let reuse = body
+        .business_id_reuse_policy
+        .as_deref()
+        .map(|policy| {
+            policy
+                .parse::<sagat_domain::business_ids::ReusePolicy>()
+                .map_err(|()| invalid("/businessIdReusePolicy"))
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let operation = ActivityName::parse(&body.update.name).map_err(|_| {
+        ApiError::validation("update.name is not an operation name")
+            .with_reason("UNDECLARED_OPERATION")
+    })?;
+    let update_key = UpdateKey::parse(&body.update.update_key).map_err(|_| {
+        ApiError::validation("updateKey must be 1..128 printable ASCII characters without spaces")
+            .with_reason("INVALID_UPDATE_KEY")
+    })?;
+    let arguments = serde_json::to_vec(&body.update.args)
+        .map_err(|_| ApiError::from(AppError::Internal))
+        .and_then(|bytes| {
+            DeclaredOperationArguments::parse(&bytes).map_err(|_| {
+                ApiError::validation("operation arguments do not match the declared schema")
+                    .with_reason("INVALID_ARGUMENTS")
+            })
+        })?;
+    let input = to_bytes(&body.input)?;
+    let version = body
+        .version_id
+        .as_deref()
+        .map(parse_id::<WorkflowVersionId>)
+        .transpose()?;
+    let request = StartRun {
+        namespace: namespace(&headers)?,
+        workflow: parse_id::<WorkflowId>(&body.workflow_id)?,
+        version,
+        input: &input,
+        correlation_id: body.correlation_id.as_deref(),
+        deadline: body.deadline,
+        key: idempotency_key(&headers)?,
+    };
+    admit(
+        &state,
+        &caller,
+        ApiOperation::RunStart,
+        ApiTarget::NamespaceSlug(namespace_slug(request.namespace)?),
+    )
+    .await?;
+    let options = StartOptions {
+        business: Some(sagat_application::runs::BusinessStart {
+            id,
+            conflict,
+            reuse,
+            window: sagat_domain::business_ids::ReuseWindow::default(),
+        }),
+        start_delay: body.start_delay_ms.map(std::time::Duration::from_millis),
+    };
+    let done = state
+        .runs()
+        .update_with_start(
+            &caller.session.principal,
+            &request,
+            options,
+            sagat_application::runs::UpdateAtStart {
+                operation: &operation,
+                update_key: &update_key,
+                arguments: &arguments,
+                expected_state_revision: body.update.expected_state_revision,
+            },
+            &caller.ctx,
+        )
+        .await
+        .map_err(|error| holder_for_readers(error, &caller))?;
+    let outcome = update_outcome(&done.update)?;
+    // `Cache-Control: no-store` is the API's policy for every response (`context::finalize`), so the
+    // result of an Update, which is business data, is never stored (ADR-0031).
+    Ok(Json(UpdateWithStartResultBody {
+        run_id: done.run.info.run_id.to_string(),
+        started: done.started,
+        update: outcome,
+    }))
+}
+
+/// What an applied or rejected Update says to the caller.
+fn update_outcome(
+    applied: &sagat_application::declared_operations::AppliedInTx,
+) -> Result<UpdateOutcomeBody, ApiError> {
+    use sagat_domain::execution::UpdateReceiptStatus;
+    let receipt = applied.resolution.receipt();
+    if receipt.status() == UpdateReceiptStatus::Rejected {
+        let details = crate::dto_declared_operations::RejectedUpdateDetails::from_receipt(
+            receipt,
+            applied.resolution.replayed(),
+        );
+        return Ok(UpdateOutcomeBody::Rejected {
+            reason: details.reason,
+        });
+    }
+    let result = applied
+        .result
+        .as_ref()
+        .ok_or_else(|| ApiError::from(sagat_application::error::AppError::Internal))?;
+    let result = serde_json::from_slice(result.content())
+        .map_err(|_| ApiError::from(sagat_application::error::AppError::Internal))?;
+    Ok(UpdateOutcomeBody::Applied {
+        receipt: crate::dto_declared_operations::DeclaredUpdateResponseBody::applied(
+            receipt,
+            result,
+            applied.resolution.replayed(),
+        ),
+    })
 }
 
 /// `GET /namespaces/{namespaceId}/business-ids/{businessId}`: who holds a business identifier and how

@@ -310,6 +310,64 @@ pub struct SignalWithStartResultBody {
     pub delivered_to: Vec<String>,
 }
 
+/// `POST /runs/update-with-start`: a start with a business identifier, and the declared Update that goes
+/// with it (feature 018, `UpdateWithStartRequest`).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateWithStartBody {
+    pub workflow_id: String,
+    #[serde(default)]
+    pub version_id: Option<String>,
+    pub input: Value,
+    #[serde(default)]
+    pub correlation_id: Option<String>,
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub deadline: Option<OffsetDateTime>,
+    pub business_id: String,
+    /// What to do when an open execution holds the identifier: `USE_EXISTING` (default, the Update
+    /// goes to the holder) or `FAIL`.
+    #[serde(default)]
+    pub business_id_conflict_policy: Option<String>,
+    #[serde(default)]
+    pub business_id_reuse_policy: Option<String>,
+    /// Holds the entry of a new run; a declared Update is admitted to a run held this way.
+    #[serde(default)]
+    pub start_delay_ms: Option<u64>,
+    pub update: UpdateAtStartBody,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateAtStartBody {
+    pub name: String,
+    pub update_key: String,
+    pub args: Value,
+    #[serde(default)]
+    pub expected_state_revision: Option<u64>,
+}
+
+/// What an Update-with-Start came to (`UpdateWithStartResult`): the run, whether this request
+/// created it, and the Update's outcome.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateWithStartResultBody {
+    pub run_id: String,
+    pub started: bool,
+    pub update: UpdateOutcomeBody,
+}
+
+/// `APPLIED` with the receipt of the Update, or `REJECTED` with why a business rule said no.
+#[derive(Debug, Serialize)]
+#[serde(tag = "outcome", rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum UpdateOutcomeBody {
+    Applied {
+        receipt: crate::dto_declared_operations::DeclaredUpdateResponseBody,
+    },
+    Rejected {
+        reason: &'static str,
+    },
+}
+
 fn present_json<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<Value>, D::Error> {

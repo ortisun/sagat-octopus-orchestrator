@@ -3664,6 +3664,18 @@ fn micros(duration: Duration) -> i64 {
 }
 
 impl RunTx for PgRunTx {
+    async fn apply_declared_update<'a>(
+        &'a mut self,
+        update: &'a sagat_application::declared_operations::DeclaredUpdate,
+        evaluator: &'a dyn sagat_application::declared_operations::DeclaredOperationEvaluator,
+    ) -> Result<
+        sagat_application::declared_operations::AppliedInTx,
+        sagat_application::declared_operations::DeclaredOperationStoreError,
+    > {
+        crate::declared_operations::apply_declared_update_in_tx(&mut self.tx, update, evaluator)
+            .await
+    }
+
     fn info(&self) -> &RunInfo {
         &self.info
     }

@@ -684,7 +684,9 @@ pub async fn serve_with_admin(
         Engine::new(JsonEvaluator),
         cache,
     )
-    .with_lag_budget(serve.telemetry_lag_budget);
+    .with_lag_budget(serve.telemetry_lag_budget)
+    // Update-with-Start applies a declared Update in the transaction that creates the run
+    .with_declared_updates(Arc::new(JsonDeclaredOperationEvaluator));
     if let Some(settings) = &serve.blobs {
         let backend = sagat_infra_blobstore::build_backend(&settings.store, settings.part_size)
             .map_err(|_| RunError::Refused("could not set up the object store (SAGAT_BLOB_*)"))?;

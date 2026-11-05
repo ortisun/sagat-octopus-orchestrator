@@ -676,6 +676,11 @@ impl ApiError {
                 });
                 e
             }
+            // what a declared Update refuses before admission reads as it does on `updateRun`
+            AppError::DeclaredUpdate(error) => crate::routes::declared_operations::store_error(
+                error,
+                sagat_domain::identity::Permission::RunUpdate,
+            ),
             AppError::SignalRefused { reason } => {
                 let mut e = Self::new(
                     StatusCode::CONFLICT,

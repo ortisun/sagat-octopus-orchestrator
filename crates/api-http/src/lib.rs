@@ -1062,6 +1062,10 @@ where
             "/runs/signal-with-start",
             axum::routing::post(ex::signal_with_start::<B<S, C, P, X, E>>),
         )
+        .route(
+            "/runs/update-with-start",
+            axum::routing::post(ex::update_with_start::<B<S, C, P, X, E>>),
+        )
         .route("/runs/{run_id}", get(ex::get_run::<B<S, C, P, X, E>>))
         .route(
             "/namespaces/{namespace_id}/business-ids/{business_id}",

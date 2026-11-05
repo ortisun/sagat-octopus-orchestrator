@@ -698,6 +698,33 @@ pub fn declared_chain_update_request_hash(
     Digest::new(hash.finalize().into())
 }
 
+/// What an argument check of an Update that the evaluator refused means for the request: arguments
+/// that do not match the declared schema, or any other failure of the evaluation.
+#[must_use]
+pub fn update_argument_error(
+    error: crate::operation_evaluation::OperationEvaluationError,
+) -> OperationError {
+    use crate::operation_evaluation::{OperationDataField, OperationEvaluationError};
+    match error {
+        OperationEvaluationError::MalformedJson {
+            field: OperationDataField::Arguments,
+        }
+        | OperationEvaluationError::SchemaMismatch {
+            field: OperationDataField::Arguments,
+        }
+        | OperationEvaluationError::ArgumentsTooLarge => OperationError::InvalidArguments,
+        _ => OperationError::EvaluationFailed,
+    }
+}
+
+/// A declared Update applied inside a transaction that someone else commits (Update-with-Start,
+/// feature 018): the stable resolution, and the checked result bytes when it was applied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppliedInTx {
+    pub resolution: UpdateResolution,
+    pub result: Option<EvaluatedOperationWrite>,
+}
+
 /// Safe failure categories of the declared-operation transaction boundary.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DeclaredOperationStoreError {

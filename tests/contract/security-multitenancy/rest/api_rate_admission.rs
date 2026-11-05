@@ -655,6 +655,46 @@ async fn a_binding_lookup_consumes_one_token_whether_it_finds_the_identifier_or_
 }
 
 #[tokio::test]
+async fn an_update_with_start_consumes_one_token_even_when_the_engine_refuses_it() {
+    let (api, tenant, namespace) = world().await;
+    // the workflow declares no Update, so every request below is refused with a 404 after it was
+    // admitted and after the run it would have started was dropped
+    let workflow = create_and_publish_workflow(&api, "orders").await;
+    set_rate(&api, &namespace, 10).await;
+    seed_bucket(&api, tenant, &namespace, 10).await;
+
+    let send = || {
+        api.as_user(Method::POST, "/runs/update-with-start", "alice", "acme")
+            .header("x-octopus-namespace", "payments")
+            .header("idempotency-key", uuid::Uuid::now_v7().to_string())
+            .json(&json!({
+                "workflowId": workflow,
+                "businessId": "order-10",
+                "input": {},
+                "update": {"name": "balance.replace", "updateKey": "update-key-0001", "args": {}}
+            }))
+            .send()
+    };
+    assert_eq!(
+        send().await.expect("refused").status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        tokens(&api, tenant, &namespace).await,
+        Some(19 * MICROTOKENS),
+        "a request the engine refuses was still a request of the namespace"
+    );
+    assert_eq!(
+        send().await.expect("refused again").status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        tokens(&api, tenant, &namespace).await,
+        Some(18 * MICROTOKENS)
+    );
+}
+
+#[tokio::test]
 async fn a_signal_with_start_consumes_one_token_even_when_the_engine_refuses_it() {
     let (api, tenant, namespace) = world().await;
     // the workflow starts with an activity: nothing in a new run waits for a signal, so every

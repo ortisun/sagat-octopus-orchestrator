@@ -97,6 +97,7 @@ fn app_error_variant(error: &AppError) -> &'static str {
         AppError::InvalidStart { .. } => "InvalidStart",
         AppError::BusinessIdConflict { .. } => "BusinessIdConflict",
         AppError::SignalRefused { .. } => "SignalRefused",
+        AppError::DeclaredUpdate(_) => "DeclaredUpdate",
         AppError::OutcomeUnresolved => "OutcomeUnresolved",
         AppError::Invalid(_) => "Invalid",
         AppError::InvalidScript(_) => "InvalidScript",

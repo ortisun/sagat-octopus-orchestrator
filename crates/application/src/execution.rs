@@ -985,6 +985,33 @@ pub trait RunTx: Send {
         async { Err(scoped_execution_adapter_required()) }
     }
 
+    /// Applies a declared Update to this run inside this transaction, which the caller then commits
+    /// (a business rejection leaves its receipt with the run) or drops (nothing of it persists):
+    /// Update-with-Start, feature 018. Whatever the Update needs to read it reads here, so the
+    /// initial reduction of a run just created is visible to it. An adapter that cannot do this
+    /// refuses; the failure is the wiring's, not the caller's.
+    fn apply_declared_update<'a>(
+        &'a mut self,
+        _update: &'a crate::declared_operations::DeclaredUpdate,
+        _evaluator: &'a dyn crate::declared_operations::DeclaredOperationEvaluator,
+    ) -> impl Future<
+        Output = Result<
+            crate::declared_operations::AppliedInTx,
+            crate::declared_operations::DeclaredOperationStoreError,
+        >,
+    > + Send
+    + 'a {
+        async {
+            Err(
+                crate::declared_operations::DeclaredOperationStoreError::Storage(
+                    StoreError::Internal {
+                        detail: "this adapter cannot apply a declared Update inside a start".into(),
+                    },
+                ),
+            )
+        }
+    }
+
     /// The database clock sampled after the required run lock is acquired: deadlines must not be
     /// backdated by time spent waiting for a writer. All instances use the database's clock.
     fn now(&self) -> OffsetDateTime;
