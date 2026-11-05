@@ -15,7 +15,8 @@
 
 The rule is in the constitution (Development Workflow, CI gates) and is checked by `scripts/tests/test_ci_workflow.py`.
 
-**A pull request, and a push to `develop`,** runs only the tests of what it changes:
+**A pull request** runs only the tests of what it changes (a merge into `develop` starts no run, since the push that
+merges a pull request would prove again what the pull request proved):
 
 - the unit tests of the workspace packages that contain a changed file (`cargo test -p <package>`), and every package when
   `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/`, `clippy.toml`, `rustfmt.toml` or `vendor/` changes;
