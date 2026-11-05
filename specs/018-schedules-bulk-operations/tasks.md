@@ -931,6 +931,15 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
 - [ ] T018-073 Runbooks/docs (`docs/runbooks/{schedules,batch-operations,run-reset}.md`, cron section of
   `docs/runbooks/events.md`, entry-wait pattern, business-id privacy warning) — review + link check —
   FR-018-049.
+  *Part done 2026-11-05 (task stays open: `run-reset.md`, the cron section of `events.md`, the entry-wait pattern and the
+  business-id warning belong to US03, US06 and US07).* `docs/runbooks/schedules.md` (what a schedule is and the nine
+  decisions a time can become, the two flags that must agree and their settings, the order to look in when a schedule did not
+  start a run, the signals, the input that is never returned, what is not built) and `docs/runbooks/batch-operations.md`
+  (what a job promises and what it does not, the limits, the two flags, how to read a job and its items, what to look at when
+  a job does not move, the signals, what is not built). Every setting, default, reason code, audit action and metric they name
+  was read from the code (engine and control-plane settings, `Limits`, the quota defaults, the audit table, the roles); a link
+  check of the relative links of both found none missing, and `check-design-docs.py` and `check-agent-config.py` pass. Not
+  done: a review by an operator.
 - [ ] T018-074 Real-browser e2e of schedule, batch and reset flows, keyboard only, WCAG AA, failure states
   — `tests/e2e/schedules-bulk-operations/` — SC-018-015 — FR-018-047.
 - [ ] T018-076 Barrier test: every run-driven transition (completion, failure, timer, wait timeout,
