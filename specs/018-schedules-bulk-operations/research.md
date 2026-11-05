@@ -606,6 +606,22 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
   an answer to the caller here and a rejection in the metrics). The platform's own update keys (`batch:`, `schedule:`) are
   refused to callers of `updateRun` and `updateWithStart` (`INVALID_UPDATE_KEY`), so a caller cannot make the item of a
   batch job fail by taking its key first.
+- **D1973** (2026-11-05, T018-033, `FR-018-042`) The input of a schedule is disclosed by `POST …/schedules/{scheduleId}/input-disclosures`
+  (`discloseScheduleInput`), through the policy of feature 016 and not a copy of it: `ServiceEvaluator` of
+  `payload_disclosure.rs` takes the permission that reads the owner of the payload (`schedule:read` here, `run:read` for a
+  run) and the labels of the answer from a `DisclosureSubject`, and everything else, the audiences, the reveal grant, the
+  projection, the structural fallback, is the same code. The store (`ScheduleInputStore`, `PgScheduleStore` in
+  `payload_disclosure.rs`) reads the head revision of the schedule and the version its action would use now (the one it pins,
+  or the workflow's `active_version_id`) in one transaction, rechecks the role and the reveal grant there, calls the
+  evaluator under the open transaction and appends the audit before it commits. The task's contract named
+  `PayloadDisclosureNode` as the response; the answer is `ScheduleInputDisclosure`, the envelope of `PayloadDisclosure` with
+  `scheduleId` and `revision` in place of the run's identifiers (the caller and the result variants are the same), because a
+  bare tree could not say which levels the caller saw or why a value is withheld. Audit: `schedule.input_disclosed` (collapsing
+  identical reads within five minutes, as the action was defined) for what an internal reader or an inspector got, and
+  `payload.pii_revealed` on the schedule for a reveal of personal data, which must never collapse with another; a refused reveal
+  is `payload.reveal_denied`. A reader who is shown only public values leaves no record, as for a run. The request is at
+  most 1 KiB and every response, a refusal for size included, is `private, no-store`. A deleted schedule, one of another
+  namespace and one of another tenant are the same `404`.
 - **D1972** (2026-11-05, T018-047, `FR-018-030`, `FR-018-031`) The `UPDATE` action of a batch applies the declared Update
   to each run through the use case Update-with-Start uses for an existing run (`update_in_own_transaction`: begin on the
   run under its lock, `apply_declared_update`, commit), as the creator with the role they hold now. The key of the item,

@@ -547,8 +547,8 @@ pub async fn serve_with_admin(
     {
         let ceilings = sagat_domain::schedules::Ceilings::default();
         let schedules = || sagat_infra_postgres::PgScheduleStore::new(pool.clone());
-        governance =
-            governance.with_schedules(Arc::new(sagat_application::schedule_api::ScheduleApi::new(
+        governance = governance
+            .with_schedules(Arc::new(sagat_application::schedule_api::ScheduleApi::new(
                 sagat_application::schedules::ScheduleService::new(
                     schedules(),
                     sagat_infra_ir::schedule_calendar::SpecCalendar,
@@ -569,7 +569,16 @@ pub async fn serve_with_admin(
                     ),
                     ceilings,
                 ),
-            )));
+            )))
+            // the values of a schedule's input come out only through this audited read (FR-018-042)
+            .with_schedule_input_disclosures(Arc::new(
+                sagat_application::schedule_disclosure::ScheduleInputDisclosureService::new(
+                    schedules(),
+                    SystemClock,
+                    sagat_infra_schema::classification::Classifier::default(),
+                    sagat_infra_ir::JsonPayloadProjector,
+                ),
+            ));
     }
     if serve.batches_enabled
         && let Some(clock) = schedule_clock.clone()

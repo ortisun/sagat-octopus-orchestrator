@@ -412,6 +412,14 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
             sagat_domain::schedules::Ceilings::default(),
         ),
     )))
+    .with_schedule_input_disclosures(Arc::new(
+        sagat_application::schedule_disclosure::ScheduleInputDisclosureService::new(
+            sagat_infra_postgres::PgScheduleStore::new(api_pool.clone()),
+            SystemClock,
+            sagat_infra_schema::classification::Classifier::default(),
+            sagat_infra_ir::JsonPayloadProjector,
+        ),
+    ))
     .with_batches(Arc::new(sagat_application::batch::BatchService::new(
         sagat_infra_postgres::PgBatchStore::new(api_pool.clone()),
         SystemClock,

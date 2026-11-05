@@ -594,6 +594,22 @@ where
                 .layer(RequestBodyLimitLayer::new(sc::SCHEDULE_MAX_BODY_BYTES)),
         );
     }
+    // The input of a schedule is disclosed only where the service for it is wired (feature 018).
+    if serves_schedules && state.schedule_input_disclosures().is_some() {
+        router = router.merge(
+            Router::new()
+                .route(
+                    "/namespaces/{namespace_id}/schedules/{schedule_id}/input-disclosures",
+                    axum::routing::post(routes::schedules::disclose_schedule_input::<B<S, C, G>>),
+                )
+                .layer(RequestBodyLimitLayer::new(
+                    routes::payload_disclosure::DISCLOSURE_MAX_BODY_BYTES,
+                ))
+                .route_layer(axum::middleware::from_fn(
+                    routes::payload_disclosure::no_store,
+                )),
+        );
+    }
     // Batch operations are deployment-gated: without the service the routes are not there at all.
     if serves_batches {
         use routes::batch as ba;

@@ -640,11 +640,29 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   role and label queries and the `jsx-a11y` lint rules, not by a contrast measurement (there is no axe harness in the
   Studio and no new colour was added); `npm run typecheck --workspace @sagat/e2e` needs the TypeScript SDK built first
   (`sdks/typescript/conformance/prepare.sh`) and was not run here, the one edit in `smoke.spec.ts` is a menu list.
-- [ ] T018-033 [P] [US2] Schedule input disclosure (016 audiences, `no-store`, audit) —
+- [x] T018-033 [P] [US2] Schedule input disclosure (016 audiences, `no-store`, audit) —
   `tests/integration/schedules-bulk-operations/disclosure.rs` — per-level cases — FR-018-042.
-  *Not started (2026-11-04).* It needs the route `discloseScheduleInput`
-  (`contracts/rest.openapi.yaml`, `/schedules/{scheduleId}/input-disclosures`), so it changes the canonical OpenAPI, the
-  generated reference and the Studio types and wires the route; it is done with the other REST leftovers.
+  *Done 2026-11-05 (D1973):* `POST /namespaces/{namespaceId}/schedules/{scheduleId}/input-disclosures`. Service tests
+  `disclosure::` (6) and REST tests `disclosure_rest::` (3) pass against a real PostgreSQL: each level to the audience that
+  may see it (a viewer the public values, a developer also the internal ones, nobody a secret, and no canary in a debug
+  print of the answer), personal data only with the explicit reveal and the grant (`PII_REVEAL_NOT_GRANTED`, the refusal
+  audited, each granted reveal its own record), the audit `schedule.input_disclosed` for an internal read and none for a
+  public one, the classification of the version the schedule pins against the one it follows, no schema to classify by
+  (structure for an inspector, nothing for a reader), another tenant, another namespace, a deleted and an unknown schedule
+  all `404`, `private, no-store`, the 1 KiB limit, an ordinary read of the schedule with no value in it, one token of the
+  namespace per request. Contract: path and schemas in the platform OpenAPI, reference blessed, Studio types regenerated
+  (`npm run check:api` passes), battery, runbook, and eleven answers of the live conformance test
+  `contract_schedules_bulk_operations rest::` (200 for an administrator and a viewer, 403 for a reveal nobody is granted,
+  422/400 for a request the contract does not take, 413 over 1 KiB, 401, 404 for another tenant and an unknown schedule),
+  which now counts thirteen implemented schedule operations. Gates: `integration_schedules_bulk_operations` 337 and
+  `fault_schedules_bulk_operations` 37 in both modes, `integration_payload_classification` 41 (the evaluator
+  refactor) and `integration_platform_foundation` 101 and `integration_security_multitenancy` 126 in both modes,
+  contract targets, clippy over the workspace. Mutants (9, over the query filters, the pinned version, the reveal grant, the audit action of a
+  reveal, the reveal parsing, admission, the 1 KiB limit and the permission of the policy): 8 killed (the deleted
+  schedule, the namespace filter, the pinned version, the grant taken as given, the collapsing reveal, the reveal never
+  asked for, the missing admission and the missing body limit); 1 equivalent today: the policy reading with `run:read` in
+  place of `schedule:read`, because every built-in role has both or neither (`Role::permissions`), so no role can tell
+  them apart; the day a role splits them that line needs a test.
 
 ## Phase 5: US03 — Business identifiers and start delay (P1)
 

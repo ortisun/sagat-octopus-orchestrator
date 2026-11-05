@@ -2829,6 +2829,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/namespaces/{namespaceId}/schedules/{scheduleId}/input-disclosures": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Disclose the values of the input of a schedule under the classification of its target
+         * @description Needs `schedule:read`. The input of a schedule is customer content: an ordinary read returns its digest and size, never its values. This is the one read that returns them. They are projected exactly as `discloseRunPayload` projects the input of a run, under the classification carrier of the input schema of the version the schedule would start now (the version it pins, or the workflow's active one) and for the same audiences: `public` is visible to every reader, `internal` also needs `payload:read-internal`, `pii` is returned only when `reveal: [pii]` is explicit and the caller has a namespace reveal grant, and `secret` is never returned. A workflow with no version to classify against, or an input the carrier does not fit, is answered with the structure only (to a caller with `run:payload:inspect`) or as not disclosable. The read is audited `schedule.input_disclosed` in the transaction that reads, before any value leaves; a refused reveal is audited `payload.reveal_denied`. The request is limited to 1 KiB and every response is `Cache-Control: private, no-store`. A schedule that is deleted, of another namespace or of another tenant is `404`.
+         */
+        post: operations["discloseScheduleInput"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/namespaces/{namespaceId}/schedules/{scheduleId}/actions": {
         parameters: {
             query?: never;
@@ -3169,6 +3189,41 @@ export interface components {
             contentKind: "json" | "text" | "binary" | "other";
             /** @constant */
             reason: "EXTERNAL_CONTENT_NOT_INSPECTED";
+        } | {
+            /** @constant */
+            kind: "unavailable";
+            /** @enum {string} */
+            reason: "NO_RETAINED_PAYLOAD" | "UNSUPPORTED_FORMAT" | "NOT_DISCLOSABLE";
+            sizeBytes?: number;
+        });
+        ScheduleInputDisclosureRequest: {
+            reveal?: "pii"[];
+        };
+        ScheduleInputDisclosure: {
+            /** Format: uuid */
+            scheduleId: string;
+            /** @description The head revision of the schedule whose input this is. */
+            revision: number;
+            /** @constant */
+            policy: "classified-v1";
+            caller: components["schemas"]["PayloadDisclosureCaller"];
+        } & ({
+            /** @constant */
+            kind: "disclosed";
+            schema: components["schemas"]["PayloadClassificationSchema"];
+            /** @description Size of the whole stored input. Present only for a caller with `run:payload:inspect`, because it includes personal and secret fields. */
+            sizeBytes?: number;
+            truncated: boolean;
+            tree: components["schemas"]["PayloadDisclosureNode"];
+        } | {
+            /** @constant */
+            kind: "structure-only";
+            schema?: components["schemas"]["PayloadClassificationSchema"];
+            sizeBytes: number;
+            truncated: boolean;
+            /** @enum {string} */
+            reason: "NO_SCHEMA" | "SCHEMA_MISMATCH" | "LEGACY_VERSION" | "SCHEMA_UNUSABLE";
+            tree: components["schemas"]["PayloadStructure"];
         } | {
             /** @constant */
             kind: "unavailable";
@@ -12076,6 +12131,45 @@ export interface operations {
             409: components["responses"]["Conflict"];
             422: components["responses"]["ValidationError"];
             429: components["responses"]["QuotaExceeded"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    discloseScheduleInput: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                scheduleId: components["parameters"]["ScheduleId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScheduleInputDisclosureRequest"];
+            };
+        };
+        responses: {
+            /** @description A classified projection, structural fallback or unavailable state */
+            200: {
+                headers: {
+                    "Cache-Control"?: "private, no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleInputDisclosure"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            413: components["responses"]["PayloadTooLarge"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
             default: components["responses"]["InternalError"];
         };

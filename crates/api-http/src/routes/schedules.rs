@@ -10,6 +10,7 @@ use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
+use axum::response::Response;
 use sagat_application::api_admission::{ApiOperation, ApiTarget};
 use sagat_application::schedules::{
     ActionCursor, ScheduleFilter, ScheduleOrigin, ScheduleState, ScheduleUseCase,
@@ -30,6 +31,32 @@ use crate::extract::{ApiJson, Caller};
 use crate::governance::Governance;
 
 use super::execution::idempotency_key;
+use super::payload_disclosure::{disclosure_error, disclosure_response, encode_schedule_input};
+
+/// The body of `discloseScheduleInput`: whether the PII reveal is asked for. Nothing else is accepted.
+#[derive(Debug, Deserialize)]
+pub struct ScheduleInputDisclosureBody {
+    reveal: Option<Vec<String>>,
+    #[serde(flatten)]
+    unexpected: std::collections::BTreeMap<String, serde::de::IgnoredAny>,
+}
+
+impl ScheduleInputDisclosureBody {
+    fn reveal_pii(self) -> Result<bool, ApiError> {
+        if !self.unexpected.is_empty() {
+            return Err(ApiError::bad_request(
+                "request body contains an unknown field",
+            ));
+        }
+        match self.reveal.as_deref() {
+            None | Some([]) => Ok(false),
+            Some([level]) if level == "pii" => Ok(true),
+            Some(_) => Err(ApiError::validation(
+                "reveal may contain only the single value pii",
+            )),
+        }
+    }
+}
 
 /// Largest body of the schedule routes: the input of the runs (64 KiB) and room for the spec, the
 /// policies and the envelope. An input over its own limit is refused by the service with a reason.
@@ -275,6 +302,34 @@ pub async fn get_schedule<B: Governance>(
         )
         .await?;
     Ok(Json(ScheduleDescriptionBody::from(&description)))
+}
+
+/// `POST …/schedules/{scheduleId}/input-disclosures` (`FR-018-042`): the values of the input of a
+/// schedule, projected for the audiences of feature 016 and audited as `schedule.input_disclosed` in
+/// the read's transaction. Every response is `private, no-store`.
+pub async fn disclose_schedule_input<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((namespace, id)): Path<(String, String)>,
+    ApiJson(body): ApiJson<ScheduleInputDisclosureBody>,
+) -> Result<Response, ApiError> {
+    let reveal_pii = body.reveal_pii()?;
+    let disclosures = state
+        .schedule_input_disclosures()
+        .ok_or_else(ApiError::not_found)?;
+    let id =
+        admitted_schedule(&state, &caller, &namespace, &id, ApiOperation::ScheduleRead).await?;
+    let disclosure = disclosures
+        .disclose_input(
+            &caller.session.principal,
+            namespace_id(&namespace)?,
+            id,
+            reveal_pii,
+            &caller.ctx,
+        )
+        .await
+        .map_err(disclosure_error)?;
+    Ok(disclosure_response(encode_schedule_input(&disclosure)?))
 }
 
 pub async fn update_schedule<B: Governance>(

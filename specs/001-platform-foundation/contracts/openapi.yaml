@@ -3987,6 +3987,33 @@ paths:
         '429': {$ref: '#/components/responses/QuotaExceeded'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/schedules/{scheduleId}/input-disclosures:
+    post:
+      operationId: discloseScheduleInput
+      summary: Disclose the values of the input of a schedule under the classification of its target
+      tags: [Schedules]
+      x-implemented: '018'
+      description: |
+        Needs `schedule:read`. The input of a schedule is customer content: an ordinary read returns its digest and size, never its values. This is the one read that returns them. They are projected exactly as `discloseRunPayload` projects the input of a run, under the classification carrier of the input schema of the version the schedule would start now (the version it pins, or the workflow's active one) and for the same audiences: `public` is visible to every reader, `internal` also needs `payload:read-internal`, `pii` is returned only when `reveal: [pii]` is explicit and the caller has a namespace reveal grant, and `secret` is never returned. A workflow with no version to classify against, or an input the carrier does not fit, is answered with the structure only (to a caller with `run:payload:inspect`) or as not disclosable. The read is audited `schedule.input_disclosed` in the transaction that reads, before any value leaves; a refused reveal is audited `payload.reveal_denied`. The request is limited to 1 KiB and every response is `Cache-Control: private, no-store`. A schedule that is deleted, of another namespace or of another tenant is `404`.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScheduleId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ScheduleInputDisclosureRequest'}
+      responses:
+        '200': {description: 'A classified projection, structural fallback or unavailable state', headers: {Cache-Control: {schema: {type: string, const: 'private, no-store'}}, X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScheduleInputDisclosure'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /namespaces/{namespaceId}/schedules/{scheduleId}/actions:
     get:
       operationId: listScheduleActions
@@ -4619,6 +4646,48 @@ components:
                 sizeBytes: {type: integer, minimum: 0}
                 contentKind: {type: string, enum: [json, text, binary, other]}
                 reason: {type: string, const: EXTERNAL_CONTENT_NOT_INSPECTED}
+            - type: object
+              required: [kind, reason]
+              properties:
+                kind: {type: string, const: unavailable}
+                reason: {type: string, enum: [NO_RETAINED_PAYLOAD, UNSUPPORTED_FORMAT, NOT_DISCLOSABLE]}
+                sizeBytes: {type: integer, minimum: 0}
+      unevaluatedProperties: false
+    ScheduleInputDisclosureRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        reveal:
+          type: array
+          maxItems: 1
+          items: {type: string, const: pii}
+    ScheduleInputDisclosure:
+      allOf:
+        - type: object
+          required: [scheduleId, revision, policy, caller]
+          properties:
+            scheduleId: {type: string, format: uuid}
+            revision: {type: integer, minimum: 1, description: 'The head revision of the schedule whose input this is.'}
+            policy: {type: string, const: classified-v1}
+            caller: {$ref: '#/components/schemas/PayloadDisclosureCaller'}
+        - oneOf:
+            - type: object
+              required: [kind, schema, truncated, tree]
+              properties:
+                kind: {type: string, const: disclosed}
+                schema: {$ref: '#/components/schemas/PayloadClassificationSchema'}
+                sizeBytes: {type: integer, minimum: 0, description: 'Size of the whole stored input. Present only for a caller with `run:payload:inspect`, because it includes personal and secret fields.'}
+                truncated: {type: boolean}
+                tree: {$ref: '#/components/schemas/PayloadDisclosureNode'}
+            - type: object
+              required: [kind, sizeBytes, truncated, reason, tree]
+              properties:
+                kind: {type: string, const: structure-only}
+                schema: {$ref: '#/components/schemas/PayloadClassificationSchema'}
+                sizeBytes: {type: integer, minimum: 0}
+                truncated: {type: boolean}
+                reason: {type: string, enum: [NO_SCHEMA, SCHEMA_MISMATCH, LEGACY_VERSION, SCHEMA_UNUSABLE]}
+                tree: {$ref: '#/components/schemas/PayloadStructure'}
             - type: object
               required: [kind, reason]
               properties:

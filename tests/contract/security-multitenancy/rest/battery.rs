@@ -41,6 +41,8 @@ fn body_of(operation: &str) -> Option<Value> {
             "workflowId": "{workflowId}", "businessId": "battery-probe", "input": {},
             "signal": {"name": "battery.probe", "payload": {}}
         }),
+        // Feature 018: the attacker asks for the values of the input of the victim's schedule.
+        "discloseScheduleInput" => json!({}),
         "updateWithStart" => json!({
             "workflowId": "{workflowId}", "businessId": "battery-probe", "input": {},
             "update": {"name": "battery.probe", "updateKey": "battery-probe-0001", "args": {}}

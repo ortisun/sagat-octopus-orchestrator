@@ -507,6 +507,12 @@ pub struct PgScheduleStore {
 }
 
 impl PgScheduleStore {
+    /// The pool, for the reads of this crate that cross the schedule and other tables (the input
+    /// disclosure of `payload_disclosure.rs`).
+    pub(crate) const fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
