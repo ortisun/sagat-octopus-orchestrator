@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use crate::batch_executor::{create, everything, live, write};
 use crate::firing::{Fixture, fixture, hourly};
+use crate::support::bounded;
 
 /// Puts the next time of a schedule `seconds` ago (a negative number: ahead), by the clock of the
 /// database, which the monitor reads. The fixture's own clock is a fixed day.
@@ -80,8 +81,24 @@ async fn a_batch_job_is_late_when_the_pass_would_take_it_and_has_not() {
     live(&f);
     let job = create(&f, write(Action::Cancel, everything()), "lag-job-is-due").await;
     let id = job.id;
-    age_job(&f, id, 45).await;
-    let late = f.w.store.sample().await.expect("sample");
+    // The server is shared with the tests running beside this one, and the horizon a selecting job waits
+    // for is the oldest open transaction of the whole server, not of this database: look again, bounded,
+    // until the transactions of the others have ended, with the job due the same 45 s each time.
+    let late = bounded::within(
+        "wait for the open transactions of other tests to end",
+        std::time::Duration::from_secs(120),
+        async {
+            loop {
+                age_job(&f, id, 45).await;
+                let sample = f.w.store.sample().await.expect("sample");
+                if sample.overdue.batches > 0.0 {
+                    break sample;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        },
+    )
+    .await;
     assert!(
         (44.0..120.0).contains(&late.overdue.batches),
         "a job due 45 s ago: {}",
