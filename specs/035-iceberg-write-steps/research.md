@@ -622,12 +622,17 @@ The other fixes were wording:
     its marker to `x-implemented: '035'` and removes it from the list. The contract test accepts either marker, so it
     does not need a change when the route lands.
   - *"Every existing operation is byte-identical"* is a digest of each operation and of the parameters of its path,
-    taken from the canonical file before the merge (`fixtures/openapi-operations.json`, 170 operations). *"No number is
-    reused"* is the same for the protocol (`fixtures/worker-proto-fields.json`, 28 messages and enums): a number that
-    exists keeps its name and type, a new one may be added. A deliberate change re-blesses with
-    `SAGAT_CONTRACT_BASELINE_BLESS=1` after the diff is read (rule 18).
+    taken from the canonical file before the merge (`fixtures/openapi-operations.json`, 170 operations). A deliberate
+    change re-blesses with `SAGAT_CONTRACT_BASELINE_BLESS=1` after the diff is read (rule 18). *"No number is reused"*
+    already has an owner: `crates/api-grpc/tests/compatibility.rs` with `worker.baseline.json` (a number that exists
+    keeps its name and type, a new one may be added). A first version of the contract tests carried a second baseline
+    for it; it was removed as a duplicate, and the new messages joined `worker.baseline.json` (344 lines added, none
+    removed).
   - *Errors.* Each code of the table in errors.md is an entry of `sdks/error-catalog.json` with the table's retry flag
-    (D035-042). Each refusal reason (the `VALIDATION_FAILED` reasons, `UNSUPPORTED_NODE`, `CREDENTIAL_IN_URI`) is written
+    (D035-042); that needs a typed constant in each of the six SDKs, whose own tests require one per code, so it is
+    T035-024's work and not the contract merge's: the entries are drafted in `contracts/error-catalog.fragment.json`,
+    checked against the table now, and the case that reads the catalog is `#[ignore]`d with that reason until
+    T035-024. Each refusal reason (the `VALIDATION_FAILED` reasons, `UNSUPPORTED_NODE`, `CREDENTIAL_IN_URI`) is written
     in the OpenAPI `Error` schema, where the reasons of the existing codes are; a reason refines a code and is not a
     new `Error.code`. The existing step failure codes of 017 (`DATABASE_*`) are not in the catalog today, so the table's
     `OUTCOME_UNKNOWN` joins it with the new ones; T035-024 chooses the entry shape.

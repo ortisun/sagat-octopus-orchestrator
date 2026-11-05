@@ -5601,6 +5601,7 @@ dependencies = [
  "prost",
  "prost-types",
  "protox",
+ "rustls",
  "sagat-api-http",
  "sagat-application",
  "sagat-domain",

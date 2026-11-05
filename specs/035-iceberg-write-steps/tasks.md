@@ -187,7 +187,7 @@ contracts, so every later task has a place to put its failing test.
   build with the smoke script and the SBOM), because the scoped-gate rule of Constitution 4.1.0 (PR #90) changes the
   same file and a gate for `runners/lake/**` has to be added to `scripts/select-test-targets.py` with it; and the
   `linux/amd64` build, which only a CI runner builds (this machine is arm64).
-- [ ] T035-007 Write the failing contract tests in `tests/contract/iceberg-writes/`, with their
+- [x] T035-007 Write the failing contract tests in `tests/contract/iceberg-writes/`, with their
   fixtures under `tests/contract/iceberg-writes/fixtures/`:
   - `ir.rs`: the canonical `workflow.schema.json` accepts the valid IR samples and refuses the invalid
     ones. Use at least the 14 IR cases checked at planning.
@@ -204,9 +204,9 @@ contracts, so every later task has a place to put its failing test.
 
   Refs: FR-035-008, FR-035-029, FR-035-033.
 
-  *2026-11-04, written, left unticked until T035-008 turns the red ones green:* `tests/contract/iceberg-writes/`
-  holds `ir.rs`, `receipts.rs`, `openapi.rs`, `proto.rs`, `errors.rs`, `main.rs` and the fixtures (8 IR documents,
-  6 receipts, two blessed baselines); the amendments of the task text are D035-073 and G035-027. `cargo test -p
+  *2026-11-04, done:* `tests/contract/iceberg-writes/` holds `ir.rs`, `receipts.rs`, `openapi.rs`, `proto.rs`,
+  `errors.rs`, `main.rs` and the fixtures (8 IR documents, 6 receipts, the baseline of the existing operations); the
+  amendments of the task text are D035-073 and G035-027. **Red state, before T035-008:** `cargo test -p
   sagat-tests --test contract_iceberg_writes --locked`: 11 passed, 10 failed, each for the reason the merge removes:
   the canonical schema has no `icebergWrite` (7 of the 8 samples are refused, and 19 of the 35 refusal cases have a
   base it refuses) and does not read `destinations` on a root activity (14 cases are accepted that must be refused;
@@ -217,9 +217,14 @@ contracts, so every later task has a place to put its failing test.
   change: the fragments themselves (receipts accept 6 samples and refuse 17 edits and an injected field in all 6; the
   fragment accepts the sample nodes and refuses the edited ones), body placement, the 170 existing operations and the
   28 messages and enums. Four mutations of the contracts (`unevaluatedProperties`, the ceilings of 8, an operation's
-  summary, a field number) each failed the guard that owns them, and the files were restored. `cargo clippy -p
-  sagat-tests --all-targets --locked -- -D warnings` clean.
-- [ ] T035-008 Merge the fragments into the canonical contracts, then regenerate the derived files.
+  summary, a field number) each failed the guard that owns them, and the files were restored.
+  **Now:** `cargo test -p sagat-tests --test contract_iceberg_writes --locked` is 21 passed, 0 failed, 1 ignored. The
+  ignored case reads the SDK error catalog and is pending T035-024 by D035-073: a code in the catalog also needs a
+  typed constant in each of the six SDKs. Its 25 entries are drafted in `contracts/error-catalog.fragment.json` and
+  a case that runs checks them against errors.md. A first version of `proto.rs` carried a second baseline of the
+  protocol; it duplicated `crates/api-grpc/tests/compatibility.rs` and was removed. `cargo clippy --workspace
+  --all-targets --locked -- -D warnings` clean.
+- [x] T035-008 Merge the fragments into the canonical contracts, then regenerate the derived files.
   Merges:
   - [contracts/workflow-lake.schema.json](contracts/workflow-lake.schema.json) into
     `specs/001-platform-foundation/contracts/workflow.schema.json`;
@@ -236,6 +241,31 @@ contracts, so every later task has a place to put its failing test.
   - each SDK's generated protobuf stubs.
 
   T035-007 passes. Refs: FR-035-008, FR-035-033, D035-043.
+
+  *2026-11-04, done in three commits:*
+  - **Workflow schema** (+702 lines, none removed): `icebergWrite` joins the root-only nodes and `activity` and
+    `database` accept `destinations`; the fragment's helpers are renamed (`lake*`, `stepDestination`) because
+    `expression` and `limits` exist. ajv (`--strict=false`) validates the CI example and the 8 lake samples. The
+    publication codec refused `icebergWrite` only as an unknown node and **accepted and dropped `destinations`**
+    on an activity and on a database node; it now refuses both as `UNSUPPORTED_NODE` (4 tests, failing first) until
+    the domain parses them. `docs/reference/workflow-document.md` blessed after reading the diff.
+  - **OpenAPI** (+337/-12): `DatabaseConnection.config` and the connection write request take a union discriminated by
+    `driver` (4 closed variants, each with `egressCeiling`), the driver list gains the lake drivers as a second item
+    shape, two catalog-browse operations (`x-planned: '035'`, listed in the battery as not built), subscription
+    `purpose` and `egressCeiling`, the refusal reasons in `Error`. The 170 existing operations are byte-identical.
+    Redocly lint valid; the live security battery (17 tests) and the webhook contract suite pass;
+    `docs/reference/api.md` blessed (172 operations; planned ones read "035 (planned)"); Studio types regenerated
+    and `check:api` passes; the Studio crashed on a union config, fixed with a test first (lint, typecheck, build and
+    1195 unit tests pass).
+  - **Protocol** (+76 lines): `IcebergConnection`, `ObjectStorageConnection`, `ClickHouseConnection` and their parts;
+    `ResolvedDatabase` fields 13 to 15; `worker.baseline.json` +344 lines, none removed. The new messages hold
+    credential bytes: their `Debug` is skipped and redacted (4 tests, failing first). Adding `iceberg-storage-opendal`
+    to the tests crate made rustls see both `aws-lc-rs` and `ring` (`cargo tree -e features`), so **3 gRPC TLS tests failed on
+    this branch**; `serve` now installs the `ring` provider like the other eight TLS sites. All six
+    SDKs synced and checked: Go (`go test -race`, vet, gofmt), Python (264 tests, mypy, ruff), TypeScript (131),
+    Java (`./mvnw -q verify`), .NET (450 tests, `dotnet format`), Rust (fmt, clippy, tests).
+  - Not done here, by decision: the catalog codes (T035-024, D035-073); `operateRun` and the redrive for destination
+    steps (G035-027 item 5); the `linux/amd64` builds and the six-language conformance run, which CI runs.
 
 ---
 

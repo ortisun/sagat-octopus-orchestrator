@@ -18,12 +18,43 @@ class DatabaseTlsMode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     DATABASE_TLS_UNSPECIFIED: _ClassVar[DatabaseTlsMode]
     DATABASE_TLS_VERIFY_FULL: _ClassVar[DatabaseTlsMode]
     DATABASE_TLS_DEVELOPMENT_PLAINTEXT: _ClassVar[DatabaseTlsMode]
+
+class EgressCeiling(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    EGRESS_CEILING_UNSPECIFIED: _ClassVar[EgressCeiling]
+    EGRESS_CEILING_PUBLIC: _ClassVar[EgressCeiling]
+    EGRESS_CEILING_INTERNAL: _ClassVar[EgressCeiling]
+    EGRESS_CEILING_PII: _ClassVar[EgressCeiling]
+
+class LakeRestAuth(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    LAKE_REST_AUTH_UNSPECIFIED: _ClassVar[LakeRestAuth]
+    LAKE_REST_AUTH_OAUTH2: _ClassVar[LakeRestAuth]
+    LAKE_REST_AUTH_BEARER: _ClassVar[LakeRestAuth]
+    LAKE_REST_AUTH_SIGV4: _ClassVar[LakeRestAuth]
+
+class LakeConditionalCreate(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    LAKE_CONDITIONAL_CREATE_UNKNOWN: _ClassVar[LakeConditionalCreate]
+    LAKE_CONDITIONAL_CREATE_SUPPORTED: _ClassVar[LakeConditionalCreate]
+    LAKE_CONDITIONAL_CREATE_UNSUPPORTED: _ClassVar[LakeConditionalCreate]
 DATABASE_OPERATION_UNSPECIFIED: DatabaseOperationKind
 DATABASE_QUERY: DatabaseOperationKind
 DATABASE_EXECUTE: DatabaseOperationKind
 DATABASE_TLS_UNSPECIFIED: DatabaseTlsMode
 DATABASE_TLS_VERIFY_FULL: DatabaseTlsMode
 DATABASE_TLS_DEVELOPMENT_PLAINTEXT: DatabaseTlsMode
+EGRESS_CEILING_UNSPECIFIED: EgressCeiling
+EGRESS_CEILING_PUBLIC: EgressCeiling
+EGRESS_CEILING_INTERNAL: EgressCeiling
+EGRESS_CEILING_PII: EgressCeiling
+LAKE_REST_AUTH_UNSPECIFIED: LakeRestAuth
+LAKE_REST_AUTH_OAUTH2: LakeRestAuth
+LAKE_REST_AUTH_BEARER: LakeRestAuth
+LAKE_REST_AUTH_SIGV4: LakeRestAuth
+LAKE_CONDITIONAL_CREATE_UNKNOWN: LakeConditionalCreate
+LAKE_CONDITIONAL_CREATE_SUPPORTED: LakeConditionalCreate
+LAKE_CONDITIONAL_CREATE_UNSUPPORTED: LakeConditionalCreate
 
 class WorkerCapabilities(_message.Message):
     __slots__ = ("languages", "activities", "pools", "max_inflight", "protocol_version")
@@ -409,8 +440,199 @@ class DatabaseLimits(_message.Message):
     idle_timeout_ms: int
     def __init__(self, max_statement_bytes: _Optional[int] = ..., max_parameters: _Optional[int] = ..., max_parameter_bytes: _Optional[int] = ..., max_rows: _Optional[int] = ..., max_result_bytes: _Optional[int] = ..., timeout_ms: _Optional[int] = ..., connect_timeout_ms: _Optional[int] = ..., pool_size: _Optional[int] = ..., idle_timeout_ms: _Optional[int] = ...) -> None: ...
 
+class LakeLimits(_message.Message):
+    __slots__ = ("max_record_bytes", "max_records", "timeout_ms")
+    MAX_RECORD_BYTES_FIELD_NUMBER: _ClassVar[int]
+    MAX_RECORDS_FIELD_NUMBER: _ClassVar[int]
+    TIMEOUT_MS_FIELD_NUMBER: _ClassVar[int]
+    max_record_bytes: int
+    max_records: int
+    timeout_ms: int
+    def __init__(self, max_record_bytes: _Optional[int] = ..., max_records: _Optional[int] = ..., timeout_ms: _Optional[int] = ...) -> None: ...
+
+class IcebergRestCatalog(_message.Message):
+    __slots__ = ("uri", "warehouse", "prefix", "auth", "token_uri", "scope", "region", "signing_name", "vended_credentials", "remote_signing")
+    URI_FIELD_NUMBER: _ClassVar[int]
+    WAREHOUSE_FIELD_NUMBER: _ClassVar[int]
+    PREFIX_FIELD_NUMBER: _ClassVar[int]
+    AUTH_FIELD_NUMBER: _ClassVar[int]
+    TOKEN_URI_FIELD_NUMBER: _ClassVar[int]
+    SCOPE_FIELD_NUMBER: _ClassVar[int]
+    REGION_FIELD_NUMBER: _ClassVar[int]
+    SIGNING_NAME_FIELD_NUMBER: _ClassVar[int]
+    VENDED_CREDENTIALS_FIELD_NUMBER: _ClassVar[int]
+    REMOTE_SIGNING_FIELD_NUMBER: _ClassVar[int]
+    uri: str
+    warehouse: str
+    prefix: str
+    auth: LakeRestAuth
+    token_uri: str
+    scope: str
+    region: str
+    signing_name: str
+    vended_credentials: bool
+    remote_signing: bool
+    def __init__(self, uri: _Optional[str] = ..., warehouse: _Optional[str] = ..., prefix: _Optional[str] = ..., auth: _Optional[_Union[LakeRestAuth, str]] = ..., token_uri: _Optional[str] = ..., scope: _Optional[str] = ..., region: _Optional[str] = ..., signing_name: _Optional[str] = ..., vended_credentials: _Optional[bool] = ..., remote_signing: _Optional[bool] = ...) -> None: ...
+
+class IcebergGlueCatalog(_message.Message):
+    __slots__ = ("region", "catalog_id", "role_arn", "external_id")
+    REGION_FIELD_NUMBER: _ClassVar[int]
+    CATALOG_ID_FIELD_NUMBER: _ClassVar[int]
+    ROLE_ARN_FIELD_NUMBER: _ClassVar[int]
+    EXTERNAL_ID_FIELD_NUMBER: _ClassVar[int]
+    region: str
+    catalog_id: str
+    role_arn: str
+    external_id: str
+    def __init__(self, region: _Optional[str] = ..., catalog_id: _Optional[str] = ..., role_arn: _Optional[str] = ..., external_id: _Optional[str] = ...) -> None: ...
+
+class IcebergHiveCatalog(_message.Message):
+    __slots__ = ("uris", "tls_required")
+    URIS_FIELD_NUMBER: _ClassVar[int]
+    TLS_REQUIRED_FIELD_NUMBER: _ClassVar[int]
+    uris: _containers.RepeatedScalarFieldContainer[str]
+    tls_required: bool
+    def __init__(self, uris: _Optional[_Iterable[str]] = ..., tls_required: _Optional[bool] = ...) -> None: ...
+
+class IcebergJdbcCatalog(_message.Message):
+    __slots__ = ("host", "port", "database", "tls", "ca_pem", "engine")
+    HOST_FIELD_NUMBER: _ClassVar[int]
+    PORT_FIELD_NUMBER: _ClassVar[int]
+    DATABASE_FIELD_NUMBER: _ClassVar[int]
+    TLS_FIELD_NUMBER: _ClassVar[int]
+    CA_PEM_FIELD_NUMBER: _ClassVar[int]
+    ENGINE_FIELD_NUMBER: _ClassVar[int]
+    host: str
+    port: int
+    database: str
+    tls: DatabaseTlsMode
+    ca_pem: str
+    engine: str
+    def __init__(self, host: _Optional[str] = ..., port: _Optional[int] = ..., database: _Optional[str] = ..., tls: _Optional[_Union[DatabaseTlsMode, str]] = ..., ca_pem: _Optional[str] = ..., engine: _Optional[str] = ...) -> None: ...
+
+class LakeS3Storage(_message.Message):
+    __slots__ = ("region", "endpoint", "path_style", "role_arn", "external_id")
+    REGION_FIELD_NUMBER: _ClassVar[int]
+    ENDPOINT_FIELD_NUMBER: _ClassVar[int]
+    PATH_STYLE_FIELD_NUMBER: _ClassVar[int]
+    ROLE_ARN_FIELD_NUMBER: _ClassVar[int]
+    EXTERNAL_ID_FIELD_NUMBER: _ClassVar[int]
+    region: str
+    endpoint: str
+    path_style: bool
+    role_arn: str
+    external_id: str
+    def __init__(self, region: _Optional[str] = ..., endpoint: _Optional[str] = ..., path_style: _Optional[bool] = ..., role_arn: _Optional[str] = ..., external_id: _Optional[str] = ...) -> None: ...
+
+class LakeGcsStorage(_message.Message):
+    __slots__ = ("project", "endpoint")
+    PROJECT_FIELD_NUMBER: _ClassVar[int]
+    ENDPOINT_FIELD_NUMBER: _ClassVar[int]
+    project: str
+    endpoint: str
+    def __init__(self, project: _Optional[str] = ..., endpoint: _Optional[str] = ...) -> None: ...
+
+class LakeAdlsStorage(_message.Message):
+    __slots__ = ("account", "endpoint_suffix")
+    ACCOUNT_FIELD_NUMBER: _ClassVar[int]
+    ENDPOINT_SUFFIX_FIELD_NUMBER: _ClassVar[int]
+    account: str
+    endpoint_suffix: str
+    def __init__(self, account: _Optional[str] = ..., endpoint_suffix: _Optional[str] = ...) -> None: ...
+
+class LakeStorage(_message.Message):
+    __slots__ = ("s3", "gcs", "adls", "vended_credentials")
+    S3_FIELD_NUMBER: _ClassVar[int]
+    GCS_FIELD_NUMBER: _ClassVar[int]
+    ADLS_FIELD_NUMBER: _ClassVar[int]
+    VENDED_CREDENTIALS_FIELD_NUMBER: _ClassVar[int]
+    s3: LakeS3Storage
+    gcs: LakeGcsStorage
+    adls: LakeAdlsStorage
+    vended_credentials: bool
+    def __init__(self, s3: _Optional[_Union[LakeS3Storage, _Mapping]] = ..., gcs: _Optional[_Union[LakeGcsStorage, _Mapping]] = ..., adls: _Optional[_Union[LakeAdlsStorage, _Mapping]] = ..., vended_credentials: _Optional[bool] = ...) -> None: ...
+
+class IcebergConnection(_message.Message):
+    __slots__ = ("rest", "glue", "hive", "jdbc", "storage", "warehouse_locations", "allowed_modes", "egress_ceiling", "limits", "credentials")
+    class CredentialsEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: bytes
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[bytes] = ...) -> None: ...
+    REST_FIELD_NUMBER: _ClassVar[int]
+    GLUE_FIELD_NUMBER: _ClassVar[int]
+    HIVE_FIELD_NUMBER: _ClassVar[int]
+    JDBC_FIELD_NUMBER: _ClassVar[int]
+    STORAGE_FIELD_NUMBER: _ClassVar[int]
+    WAREHOUSE_LOCATIONS_FIELD_NUMBER: _ClassVar[int]
+    ALLOWED_MODES_FIELD_NUMBER: _ClassVar[int]
+    EGRESS_CEILING_FIELD_NUMBER: _ClassVar[int]
+    LIMITS_FIELD_NUMBER: _ClassVar[int]
+    CREDENTIALS_FIELD_NUMBER: _ClassVar[int]
+    rest: IcebergRestCatalog
+    glue: IcebergGlueCatalog
+    hive: IcebergHiveCatalog
+    jdbc: IcebergJdbcCatalog
+    storage: LakeStorage
+    warehouse_locations: _containers.RepeatedScalarFieldContainer[str]
+    allowed_modes: _containers.RepeatedScalarFieldContainer[str]
+    egress_ceiling: EgressCeiling
+    limits: LakeLimits
+    credentials: _containers.ScalarMap[str, bytes]
+    def __init__(self, rest: _Optional[_Union[IcebergRestCatalog, _Mapping]] = ..., glue: _Optional[_Union[IcebergGlueCatalog, _Mapping]] = ..., hive: _Optional[_Union[IcebergHiveCatalog, _Mapping]] = ..., jdbc: _Optional[_Union[IcebergJdbcCatalog, _Mapping]] = ..., storage: _Optional[_Union[LakeStorage, _Mapping]] = ..., warehouse_locations: _Optional[_Iterable[str]] = ..., allowed_modes: _Optional[_Iterable[str]] = ..., egress_ceiling: _Optional[_Union[EgressCeiling, str]] = ..., limits: _Optional[_Union[LakeLimits, _Mapping]] = ..., credentials: _Optional[_Mapping[str, bytes]] = ...) -> None: ...
+
+class ObjectStorageConnection(_message.Message):
+    __slots__ = ("storage", "prefix", "formats", "conditional_create", "egress_ceiling", "limits", "credentials")
+    class CredentialsEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: bytes
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[bytes] = ...) -> None: ...
+    STORAGE_FIELD_NUMBER: _ClassVar[int]
+    PREFIX_FIELD_NUMBER: _ClassVar[int]
+    FORMATS_FIELD_NUMBER: _ClassVar[int]
+    CONDITIONAL_CREATE_FIELD_NUMBER: _ClassVar[int]
+    EGRESS_CEILING_FIELD_NUMBER: _ClassVar[int]
+    LIMITS_FIELD_NUMBER: _ClassVar[int]
+    CREDENTIALS_FIELD_NUMBER: _ClassVar[int]
+    storage: LakeStorage
+    prefix: str
+    formats: _containers.RepeatedScalarFieldContainer[str]
+    conditional_create: LakeConditionalCreate
+    egress_ceiling: EgressCeiling
+    limits: LakeLimits
+    credentials: _containers.ScalarMap[str, bytes]
+    def __init__(self, storage: _Optional[_Union[LakeStorage, _Mapping]] = ..., prefix: _Optional[str] = ..., formats: _Optional[_Iterable[str]] = ..., conditional_create: _Optional[_Union[LakeConditionalCreate, str]] = ..., egress_ceiling: _Optional[_Union[EgressCeiling, str]] = ..., limits: _Optional[_Union[LakeLimits, _Mapping]] = ..., credentials: _Optional[_Mapping[str, bytes]] = ...) -> None: ...
+
+class ClickHouseConnection(_message.Message):
+    __slots__ = ("url", "database", "ca_pem", "egress_ceiling", "limits", "credentials")
+    class CredentialsEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: bytes
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[bytes] = ...) -> None: ...
+    URL_FIELD_NUMBER: _ClassVar[int]
+    DATABASE_FIELD_NUMBER: _ClassVar[int]
+    CA_PEM_FIELD_NUMBER: _ClassVar[int]
+    EGRESS_CEILING_FIELD_NUMBER: _ClassVar[int]
+    LIMITS_FIELD_NUMBER: _ClassVar[int]
+    CREDENTIALS_FIELD_NUMBER: _ClassVar[int]
+    url: str
+    database: str
+    ca_pem: str
+    egress_ceiling: EgressCeiling
+    limits: LakeLimits
+    credentials: _containers.ScalarMap[str, bytes]
+    def __init__(self, url: _Optional[str] = ..., database: _Optional[str] = ..., ca_pem: _Optional[str] = ..., egress_ceiling: _Optional[_Union[EgressCeiling, str]] = ..., limits: _Optional[_Union[LakeLimits, _Mapping]] = ..., credentials: _Optional[_Mapping[str, bytes]] = ...) -> None: ...
+
 class ResolvedDatabase(_message.Message):
-    __slots__ = ("connection_id", "connection_revision", "postgres", "operation", "statement", "parameters", "limits", "credential", "lease_expires_at_epoch_ms", "namespace_id", "connection_name", "tenant_id")
+    __slots__ = ("connection_id", "connection_revision", "postgres", "operation", "statement", "parameters", "limits", "credential", "lease_expires_at_epoch_ms", "namespace_id", "connection_name", "tenant_id", "iceberg", "object_storage", "clickhouse")
     CONNECTION_ID_FIELD_NUMBER: _ClassVar[int]
     CONNECTION_REVISION_FIELD_NUMBER: _ClassVar[int]
     POSTGRES_FIELD_NUMBER: _ClassVar[int]
@@ -423,6 +645,9 @@ class ResolvedDatabase(_message.Message):
     NAMESPACE_ID_FIELD_NUMBER: _ClassVar[int]
     CONNECTION_NAME_FIELD_NUMBER: _ClassVar[int]
     TENANT_ID_FIELD_NUMBER: _ClassVar[int]
+    ICEBERG_FIELD_NUMBER: _ClassVar[int]
+    OBJECT_STORAGE_FIELD_NUMBER: _ClassVar[int]
+    CLICKHOUSE_FIELD_NUMBER: _ClassVar[int]
     connection_id: str
     connection_revision: int
     postgres: PostgresConnection
@@ -435,4 +660,7 @@ class ResolvedDatabase(_message.Message):
     namespace_id: str
     connection_name: str
     tenant_id: str
-    def __init__(self, connection_id: _Optional[str] = ..., connection_revision: _Optional[int] = ..., postgres: _Optional[_Union[PostgresConnection, _Mapping]] = ..., operation: _Optional[_Union[DatabaseOperationKind, str]] = ..., statement: _Optional[str] = ..., parameters: _Optional[_Iterable[_Union[DatabaseValue, _Mapping]]] = ..., limits: _Optional[_Union[DatabaseLimits, _Mapping]] = ..., credential: _Optional[_Union[ResolvedSecret, _Mapping]] = ..., lease_expires_at_epoch_ms: _Optional[int] = ..., namespace_id: _Optional[str] = ..., connection_name: _Optional[str] = ..., tenant_id: _Optional[str] = ...) -> None: ...
+    iceberg: IcebergConnection
+    object_storage: ObjectStorageConnection
+    clickhouse: ClickHouseConnection
+    def __init__(self, connection_id: _Optional[str] = ..., connection_revision: _Optional[int] = ..., postgres: _Optional[_Union[PostgresConnection, _Mapping]] = ..., operation: _Optional[_Union[DatabaseOperationKind, str]] = ..., statement: _Optional[str] = ..., parameters: _Optional[_Iterable[_Union[DatabaseValue, _Mapping]]] = ..., limits: _Optional[_Union[DatabaseLimits, _Mapping]] = ..., credential: _Optional[_Union[ResolvedSecret, _Mapping]] = ..., lease_expires_at_epoch_ms: _Optional[int] = ..., namespace_id: _Optional[str] = ..., connection_name: _Optional[str] = ..., tenant_id: _Optional[str] = ..., iceberg: _Optional[_Union[IcebergConnection, _Mapping]] = ..., object_storage: _Optional[_Union[ObjectStorageConnection, _Mapping]] = ..., clickhouse: _Optional[_Union[ClickHouseConnection, _Mapping]] = ...) -> None: ...

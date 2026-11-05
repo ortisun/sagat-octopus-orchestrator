@@ -1,29 +1,36 @@
 //! The worker protocol additions of feature 035 (contracts/worker-protocol.md): `ResolvedDatabase` gains three
-//! connection kinds, additively, and no field or enum number that exists today is reused, renumbered or retyped.
+//! connection kinds, additively.
 //!
-//! The baseline (`fixtures/worker-proto-fields.json`) lists every message field and enum value of the protocol
-//! before the feature. A number added later is fine; a number that moved is not. After a deliberate change, read
-//! the diff and rerun with `SAGAT_CONTRACT_BASELINE_BLESS=1`, then without it.
-
-use std::collections::BTreeMap;
-use std::fs;
-use std::path::PathBuf;
+//! That no existing number is reused, renumbered or retyped is the job of the compatibility test of the protocol
+//! (`crates/api-grpc/tests/compatibility.rs`, with `worker.baseline.json` next to the contract), which this feature's
+//! messages are now part of. The twelve fields `ResolvedDatabase` had before the feature are written out below, so a
+//! change to one of them fails here with the feature's name on it.
 
 use prost_types::{DescriptorProto, FileDescriptorSet, field_descriptor_proto};
-use serde_json::json;
 
-use super::{fixtures, read_json, repository_root};
+use super::repository_root;
 
 const PACKAGE: &str = "sagat_octopus_orchestrator.v1";
 
-type Numbers = BTreeMap<String, BTreeMap<String, String>>;
-
-fn contracts() -> PathBuf {
-    repository_root().join("specs/001-platform-foundation/contracts")
-}
+/// `ResolvedDatabase` before feature 035: number and name.
+const OLD_FIELDS: [(i32, &str); 12] = [
+    (1, "connection_id"),
+    (2, "connection_revision"),
+    (3, "postgres"),
+    (4, "operation"),
+    (5, "statement"),
+    (6, "parameters"),
+    (7, "limits"),
+    (8, "credential"),
+    (9, "lease_expires_at_epoch_ms"),
+    (10, "namespace_id"),
+    (11, "connection_name"),
+    (12, "tenant_id"),
+];
 
 fn descriptors() -> FileDescriptorSet {
-    protox::compile(["worker.proto"], [contracts()]).expect("canonical worker.proto compiles")
+    let contracts = repository_root().join("specs/001-platform-foundation/contracts");
+    protox::compile(["worker.proto"], [contracts]).expect("canonical worker.proto compiles")
 }
 
 fn message<'a>(set: &'a FileDescriptorSet, name: &str) -> &'a DescriptorProto {
@@ -34,112 +41,19 @@ fn message<'a>(set: &'a FileDescriptorSet, name: &str) -> &'a DescriptorProto {
         .unwrap_or_else(|| panic!("worker.proto has no message {name}"))
 }
 
-fn collect_message(prefix: &str, message: &DescriptorProto, numbers: &mut Numbers) {
-    let name = format!("message {prefix}.{}", message.name());
-    let fields = message
-        .field
-        .iter()
-        .map(|field| {
-            (
-                field.number().to_string(),
-                format!(
-                    "{} {:?} {:?} {}",
-                    field.name(),
-                    field.label(),
-                    field.r#type(),
-                    field.type_name()
-                ),
-            )
-        })
-        .collect();
-    numbers.insert(name.clone(), fields);
-    let scope = format!("{prefix}.{}", message.name());
-    for nested in &message.nested_type {
-        collect_message(&scope, nested, numbers);
-    }
-    for enumeration in &message.enum_type {
-        collect_enum(&scope, enumeration, numbers);
-    }
-}
-
-fn collect_enum(
-    prefix: &str,
-    enumeration: &prost_types::EnumDescriptorProto,
-    numbers: &mut Numbers,
-) {
-    numbers.insert(
-        format!("enum {prefix}.{}", enumeration.name()),
-        enumeration
-            .value
-            .iter()
-            .map(|value| (value.number().to_string(), value.name().to_string()))
-            .collect(),
-    );
-}
-
-/// Every message field and enum value of the protocol: container, then number to what it is called and typed.
-fn numbers(set: &FileDescriptorSet) -> Numbers {
-    let mut numbers = Numbers::new();
-    for file in &set.file {
-        for message in &file.message_type {
-            collect_message(file.package(), message, &mut numbers);
-        }
-        for enumeration in &file.enum_type {
-            collect_enum(file.package(), enumeration, &mut numbers);
-        }
-    }
-    numbers
-}
-
 #[test]
-fn no_existing_number_is_reused_renumbered_or_retyped() {
-    let current = numbers(&descriptors());
-    let baseline_path = fixtures().join("worker-proto-fields.json");
-    if std::env::var_os("SAGAT_CONTRACT_BASELINE_BLESS").is_some() {
-        let text = serde_json::to_string_pretty(&json!({"numbers": current})).expect("JSON");
-        fs::write(&baseline_path, text + "\n").expect("write the baseline");
-    }
-    let baseline: Numbers = serde_json::from_value(read_json(&baseline_path)["numbers"].clone())
-        .expect("the baseline maps containers to numbers");
-    assert!(
-        baseline.len() >= 28,
-        "the baseline holds the whole protocol as it was"
-    );
-
-    let mut broken = Vec::new();
-    for (container, fields) in &baseline {
-        let Some(now) = current.get(container) else {
-            broken.push(format!("removed: {container}"));
-            continue;
-        };
-        for (number, what) in fields {
-            match now.get(number) {
-                None => broken.push(format!("{container}: number {number} ({what}) is gone")),
-                Some(found) if found != what => broken.push(format!(
-                    "{container}: number {number} was `{what}`, is now `{found}`"
-                )),
-                Some(_) => {}
-            }
-        }
-    }
-    assert!(
-        broken.is_empty(),
-        "the protocol is additive:\n{}",
-        broken.join("\n")
-    );
-}
-
-#[test]
-fn resolved_database_gains_the_three_connection_kinds_without_touching_the_old_fields() {
+fn resolved_database_keeps_its_old_fields_and_gains_the_three_connection_kinds() {
     let set = descriptors();
     let resolved = message(&set, "ResolvedDatabase");
 
-    let baseline: Numbers = serde_json::from_value(
-        read_json(&fixtures().join("worker-proto-fields.json"))["numbers"].clone(),
-    )
-    .expect("the baseline maps containers to numbers");
-    let old = &baseline[&format!("message {PACKAGE}.ResolvedDatabase")];
-    assert_eq!(old.len(), 12, "twelve fields before the feature");
+    for (number, name) in OLD_FIELDS {
+        let field = resolved
+            .field
+            .iter()
+            .find(|field| field.number() == number)
+            .unwrap_or_else(|| panic!("ResolvedDatabase lost field {number} ({name})"));
+        assert_eq!(field.name(), name, "number {number} keeps its name");
+    }
 
     for (field_name, type_name) in [
         ("iceberg", "IcebergConnection"),
@@ -163,7 +77,9 @@ fn resolved_database_gains_the_three_connection_kinds_without_touching_the_old_f
             "{field_name} is optional: an old runner never sets it"
         );
         assert!(
-            !old.contains_key(&field.number().to_string()),
+            OLD_FIELDS
+                .iter()
+                .all(|(number, _)| *number != field.number()),
             "{field_name} takes number {}, which an old field already holds",
             field.number()
         );

@@ -228,6 +228,78 @@ message DatabaseLimits {
   uint32 pool_size = 8;
   uint32 idle_timeout_ms = 9;
 }
+
+// Lake connections (feature 035), additive: the lake runner's `ResolveDatabase` answers with the message of the
+// connection's kind set in `ResolvedDatabase` and `postgres` unset. Each connection message holds the pinned non-secret
+// settings of one revision and `credentials`, one entry per secret of the connection (an Iceberg connection has
+// `catalog` and `storage`), resolved through the same two-phase path as the PostgreSQL credential and compared, pinned
+// and audited separately. Values are write-only to the runner, which zeroises them when the attempt ends. The protocol
+// minor that carries these is assigned when the first lake activity is registered (D035-043).
+enum EgressCeiling { EGRESS_CEILING_UNSPECIFIED = 0; EGRESS_CEILING_PUBLIC = 1; EGRESS_CEILING_INTERNAL = 2; EGRESS_CEILING_PII = 3; }
+enum LakeRestAuth { LAKE_REST_AUTH_UNSPECIFIED = 0; LAKE_REST_AUTH_OAUTH2 = 1; LAKE_REST_AUTH_BEARER = 2; LAKE_REST_AUTH_SIGV4 = 3; }
+enum LakeConditionalCreate { LAKE_CONDITIONAL_CREATE_UNKNOWN = 0; LAKE_CONDITIONAL_CREATE_SUPPORTED = 1; LAKE_CONDITIONAL_CREATE_UNSUPPORTED = 2; }
+message LakeLimits { uint32 max_record_bytes = 1; uint32 max_records = 2; uint32 timeout_ms = 3; }
+message IcebergRestCatalog {
+  string uri = 1;
+  string warehouse = 2;
+  string prefix = 3;
+  LakeRestAuth auth = 4;
+  string token_uri = 5;
+  string scope = 6;
+  string region = 7;
+  string signing_name = 8;
+  bool vended_credentials = 9;
+  bool remote_signing = 10;
+}
+message IcebergGlueCatalog { string region = 1; string catalog_id = 2; string role_arn = 3; string external_id = 4; }
+message IcebergHiveCatalog { repeated string uris = 1; bool tls_required = 2; }
+message IcebergJdbcCatalog { string host = 1; uint32 port = 2; string database = 3; DatabaseTlsMode tls = 4; string ca_pem = 5; string engine = 6; }
+message LakeS3Storage { string region = 1; string endpoint = 2; bool path_style = 3; string role_arn = 4; string external_id = 5; }
+message LakeGcsStorage { string project = 1; string endpoint = 2; }
+message LakeAdlsStorage { string account = 1; string endpoint_suffix = 2; }
+message LakeStorage {
+  oneof kind {
+    LakeS3Storage s3 = 1;
+    LakeGcsStorage gcs = 2;
+    LakeAdlsStorage adls = 3;
+  }
+  // The catalog vends the storage credentials to the sandboxed attempt; none travel here.
+  bool vended_credentials = 4;
+}
+message IcebergConnection {
+  oneof catalog {
+    IcebergRestCatalog rest = 1;
+    IcebergGlueCatalog glue = 2;
+    IcebergHiveCatalog hive = 3;
+    IcebergJdbcCatalog jdbc = 4;
+  }
+  LakeStorage storage = 5;
+  // Every table, data, delete and metadata location must start with one of these.
+  repeated string warehouse_locations = 6;
+  // append, overwrite, upsert.
+  repeated string allowed_modes = 7;
+  EgressCeiling egress_ceiling = 8;
+  LakeLimits limits = 9;
+  map<string, bytes> credentials = 10;
+}
+message ObjectStorageConnection {
+  LakeStorage storage = 1;
+  string prefix = 2;
+  // parquet, ndjson.
+  repeated string formats = 3;
+  LakeConditionalCreate conditional_create = 4;
+  EgressCeiling egress_ceiling = 5;
+  LakeLimits limits = 6;
+  map<string, bytes> credentials = 7;
+}
+message ClickHouseConnection {
+  string url = 1;
+  string database = 2;
+  string ca_pem = 3;
+  EgressCeiling egress_ceiling = 4;
+  LakeLimits limits = 5;
+  map<string, bytes> credentials = 6;
+}
 message ResolvedDatabase {
   string connection_id = 1;
   uint32 connection_revision = 2;
@@ -243,4 +315,8 @@ message ResolvedDatabase {
   string connection_name = 11;
   // Trusted identity scope for audit-correlated executor telemetry; not a metric label.
   string tenant_id = 12;
+  // Feature 035, lake profile: the connection of the matching kind. Never set together with `postgres`.
+  IcebergConnection iceberg = 13;
+  ObjectStorageConnection object_storage = 14;
+  ClickHouseConnection clickhouse = 15;
 }

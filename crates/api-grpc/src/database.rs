@@ -24,6 +24,10 @@ pub(crate) fn response(resolved: ResolvedDatabase) -> Result<pb::ResolvedDatabas
     let l = resolved.operation.limits;
     Ok(pb::ResolvedDatabase {
         tenant_id: resolved.connection.tenant_id.to_string(),
+        // The lake kinds are answered by the lake profile (feature 035); a PostgreSQL connection sets none of them.
+        iceberg: None,
+        object_storage: None,
+        clickhouse: None,
         namespace_id: resolved.connection.namespace_id.to_string(),
         connection_name: resolved.connection.name.to_string(),
         connection_id: resolved.connection.id.to_string(),
