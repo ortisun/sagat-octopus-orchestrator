@@ -464,3 +464,72 @@ async fn another_tenant_probing_a_binding_finds_nothing_and_the_probe_is_on_reco
         "the probe of another tenant is recorded against it"
     );
 }
+
+// --- a start with a delay ----------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_start_with_a_delay_makes_a_waiting_run_that_says_until_when() {
+    let r = rig().await;
+
+    let (status, run) = r.start(json!({"startDelayMs": 3_600_000})).await;
+
+    assert_eq!(status, 202, "{run}");
+    assert_eq!(run["status"], "WAITING");
+    let until = run["startDelayedUntil"].as_str().expect("until when");
+    let id = run["runId"].as_str().expect("id").to_owned();
+    let read = r.run(&id).await;
+    assert_eq!(read["status"], "WAITING");
+    assert_eq!(read["startDelayedUntil"], until, "the run says the same");
+    let listed = r.runs("").await;
+    assert_eq!(
+        listed[0]["startDelayedUntil"], until,
+        "and so does the list"
+    );
+
+    // a run that was not delayed says nothing of it
+    let (_, plain) = r.start(json!({})).await;
+    assert!(plain.get("startDelayedUntil").is_none(), "{plain}");
+
+    // cancelled while it waits it ends, and no longer says it is held
+    r.cancel(&id).await;
+    let ended = r.run(&id).await;
+    assert_eq!(ended["status"], "CANCELLED");
+}
+
+#[tokio::test]
+async fn a_delay_out_of_range_is_refused_in_words_and_nothing_is_started() {
+    let r = rig().await;
+    for delay in [
+        json!(0),
+        json!(31_622_400_001_u64),
+        json!(-5),
+        json!("soon"),
+    ] {
+        let (status, refused) = r.start(json!({"startDelayMs": delay})).await;
+        assert_eq!(status, 422, "{delay}: {refused}");
+        if delay.is_number() && delay.as_i64().is_some_and(|n| n >= 0) {
+            assert_eq!(reason(&refused), "START_DELAY_INVALID", "{refused}");
+            assert_eq!(refused["details"]["field"], "/startDelayMs");
+        }
+    }
+    assert!(r.runs("").await.is_empty(), "nothing was started");
+    let (status, longest) = r.start(json!({"startDelayMs": 31_622_400_000_u64})).await;
+    assert_eq!(status, 202, "366 days is the longest delay: {longest}");
+}
+
+#[tokio::test]
+async fn a_delayed_run_holds_its_identifier_until_it_ends() {
+    let r = rig().await;
+    let (_, run) = r
+        .start(json!({"businessId": "delayed-http-1", "startDelayMs": 3_600_000}))
+        .await;
+    let id = run["runId"].as_str().expect("id").to_owned();
+
+    let (status, refused) = r.start(json!({"businessId": "delayed-http-1"})).await;
+    assert_eq!(status, 409, "{refused}");
+    assert_eq!(reason(&refused), "BUSINESS_ID_IN_USE");
+
+    r.cancel(&id).await;
+    let (status, again) = r.start(json!({"businessId": "delayed-http-1"})).await;
+    assert_eq!(status, 202, "{again}");
+}

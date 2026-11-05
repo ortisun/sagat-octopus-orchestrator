@@ -852,6 +852,16 @@ pub enum RunEvent {
     },
     RunPaused,
     RunResumed,
+    /// A run created with a start delay holds its entry until `until_us` (microseconds since the
+    /// epoch): journaled right after `run.started`, nothing is released and the run waits
+    /// (feature 018, `FR-018-023`).
+    StartDelayed {
+        until_us: i64,
+    },
+    /// The entry of a delayed run is released, once, as `start_run` would have released it.
+    StartReleased {
+        until_us: i64,
+    },
     RunStopRequested {
         reason: StopReason,
         code: Option<FailureCode>,
@@ -1026,6 +1036,8 @@ impl RunEvent {
             Self::ContinuationSelected { .. } => "continuation.selected",
             Self::RunPaused => "run.paused",
             Self::RunResumed => "run.resumed",
+            Self::StartDelayed { .. } => "run.start_delayed",
+            Self::StartReleased { .. } => "run.start_released",
             Self::RunStopRequested { .. } => "run.stop_requested",
             Self::RunFinished { .. } => "run.finished",
         }
@@ -1096,6 +1108,8 @@ impl RunEvent {
             | Self::RunContinued { .. }
             | Self::RunPaused
             | Self::RunResumed
+            | Self::StartDelayed { .. }
+            | Self::StartReleased { .. }
             | Self::RunStopRequested { .. }
             | Self::RunFinished { .. } => None,
         }

@@ -495,8 +495,19 @@ pub async fn start_run<B: Exec>(
     Ok((status, Json(RunBody::from(&started.run))))
 }
 
-/// The options of a start: the business identifier and what to do when it is held.
+/// The options of a start: the business identifier and what to do when it is held, and the delay.
 fn start_options(body: &StartRunBody) -> Result<StartOptions, ApiError> {
+    let start_delay = body.start_delay_ms.map(|ms| {
+        // beyond the longest delay is as invalid as zero: the service says which in words
+        std::time::Duration::from_millis(ms)
+    });
+    let mut options = business_options(body)?;
+    options.start_delay = start_delay;
+    Ok(options)
+}
+
+/// The business identifier of a start and what to do when it is held.
+fn business_options(body: &StartRunBody) -> Result<StartOptions, ApiError> {
     let Some(text) = body.business_id.as_deref() else {
         if body.business_id_conflict_policy.is_some() || body.business_id_reuse_policy.is_some() {
             return Err(sagat_application::error::AppError::InvalidStart {
@@ -542,6 +553,7 @@ fn start_options(body: &StartRunBody) -> Result<StartOptions, ApiError> {
             reuse,
             window: sagat_domain::business_ids::ReuseWindow::default(),
         }),
+        start_delay: None,
     })
 }
 

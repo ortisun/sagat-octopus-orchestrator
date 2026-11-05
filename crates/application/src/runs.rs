@@ -66,10 +66,16 @@ pub struct BusinessStart {
     pub window: ReuseWindow,
 }
 
+/// The longest start delay (feature 018, `FR-018-023`): 366 days.
+pub const MAX_START_DELAY: Duration = Duration::from_secs(366 * 86_400);
+
 /// What a start can carry beyond its request (feature 018). `Default` is a start with none.
 #[derive(Debug, Clone, Default)]
 pub struct StartOptions {
     pub business: Option<BusinessStart>,
+    /// The run is created `WAITING` and releases its entry once, this long after it was created
+    /// (1 ms to 366 days). It counts toward the quotas and holds its business identifier meanwhile.
+    pub start_delay: Option<Duration>,
 }
 
 /// How a business identifier stands (feature 018, `FR-018-022`): who holds it, whether that
@@ -800,6 +806,7 @@ where
                     reuse: ReusePolicy::AllowDuplicate,
                     window: ReuseWindow::default(),
                 }),
+                start_delay: None,
             },
             _ => StartOptions::default(),
         };
@@ -860,6 +867,14 @@ where
             return Err(AppError::InvalidStart {
                 reason: "BUSINESS_ID_NOT_APPLICABLE",
                 field: Some("/businessId".to_owned()),
+            });
+        }
+        if let Some(delay) = options.start_delay
+            && !(Duration::from_millis(1)..=MAX_START_DELAY).contains(&delay)
+        {
+            return Err(AppError::InvalidStart {
+                reason: "START_DELAY_INVALID",
+                field: Some("/startDelayMs".to_owned()),
             });
         }
         let namespace = self.namespace(principal, request.namespace).await?;
@@ -1007,6 +1022,12 @@ where
         };
         // The options join the fingerprint only when there are any, so the fingerprint of a start
         // that has none is what it always was and a retry made before an upgrade still replays.
+        if let Some(delay) = options.start_delay {
+            idempotency.fingerprint.extend(fingerprint(&[
+                b"run.start_delay",
+                &delay.as_millis().to_be_bytes(),
+            ]));
+        }
         if let Some(business) = &options.business {
             idempotency.fingerprint.extend(fingerprint(&[
                 b"run.business",
@@ -1097,6 +1118,16 @@ where
             business: options.business,
         };
         let scheduled_start = new.schedule.is_some();
+        // The instant the entry is held until, to the microsecond: the journal and the column hold
+        // the same number, so a replay of the one is the other.
+        let held_until_us = options
+            .start_delay
+            .map(|delay| {
+                now.checked_add(time::Duration::try_from(delay).map_err(|_| AppError::Internal)?)
+                    .and_then(|at| i64::try_from(at.unix_timestamp_nanos() / 1_000).ok())
+                    .ok_or(AppError::Internal)
+            })
+            .transpose()?;
         let created = match self.store.create(new).await {
             Ok(created) => created,
             Err(error) => {
@@ -1105,8 +1136,15 @@ where
                 return Err(error.into());
             }
         };
-        self.finish_start(principal, run_id, created, scheduled_start, ctx)
-            .await
+        self.finish_start(
+            principal,
+            run_id,
+            created,
+            scheduled_start,
+            held_until_us,
+            ctx,
+        )
+        .await
     }
 
     async fn finish_start(
@@ -1115,6 +1153,7 @@ where
         run_id: RunId,
         created: Admitted<S::Tx>,
         scheduled: bool,
+        held_until_us: Option<i64>,
         ctx: &RequestContext,
     ) -> Result<Started, AppError> {
         match created {
@@ -1133,7 +1172,12 @@ where
                 );
                 self.engine
                     .run(&mut tx, effects, |def, state, now| {
-                        let (started, progress) = execution::start_run(def, run_id, now)?;
+                        let (started, progress) = match held_until_us {
+                            Some(until_us) => {
+                                execution::start_run_delayed(def, run_id, now, until_us)?
+                            }
+                            None => execution::start_run(def, run_id, now)?,
+                        };
                         *state = started;
                         Ok(((), progress))
                     })

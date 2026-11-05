@@ -27,6 +27,7 @@ fn options(id: &str, conflict: ConflictPolicy, reuse: ReusePolicy) -> StartOptio
             reuse,
             window: ReuseWindow::default(),
         }),
+        ..StartOptions::default()
     }
 }
 

@@ -423,6 +423,29 @@ impl MaintenanceStore for PgRunStore {
         Ok(out)
     }
 
+    async fn due_start_releases(&self, window: &Window) -> Result<Vec<RunRef>, StoreError> {
+        let (limit, shards, exclude) = window_params(window);
+        sqlx::query(
+            "SELECT t.tenant_id, t.id FROM unnest($2::smallint[]) AS sh(s) \
+             CROSS JOIN LATERAL ( \
+                 SELECT tenant_id, id, start_delayed_until FROM runs \
+                 WHERE run_shard(id) = sh.s AND start_delayed_until IS NOT NULL \
+                   AND status = 'WAITING' AND start_delayed_until <= now() \
+                   AND tenant_id <> ALL($3::uuid[]) \
+                 ORDER BY start_delayed_until LIMIT $1) t \
+             ORDER BY t.start_delayed_until LIMIT $1",
+        )
+        .bind(limit)
+        .bind(shards)
+        .bind(exclude)
+        .fetch_all(self.pool())
+        .await
+        .map_err(store_error)?
+        .iter()
+        .map(run_ref)
+        .collect()
+    }
+
     async fn overdue_runs(&self, window: &Window) -> Result<Vec<RunRef>, StoreError> {
         let (limit, shards, exclude) = window_params(window);
         sqlx::query(

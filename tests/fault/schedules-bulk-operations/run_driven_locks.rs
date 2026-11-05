@@ -131,6 +131,7 @@ async fn bound_input(
                     reuse: ReusePolicy::AllowDuplicate,
                     window: ReuseWindow::default(),
                 }),
+                ..StartOptions::default()
             },
             &ctx(),
         )
@@ -253,7 +254,7 @@ async fn no_run_driven_transition_touches_a_table_of_a_schedule_or_a_batch_job()
 
 /// A scheduler that owns the shards, as the hand-off of a chain needs; reused across ticks, since a
 /// new placement per tick would starve the later ones.
-async fn shard_owner(f: &Fixture) -> crate::support::engine::Sched {
+pub(crate) async fn shard_owner(f: &Fixture) -> crate::support::engine::Sched {
     let placement = sagat_scheduler::Placement::new(format!("run-driven-{}", uuid::Uuid::now_v7()));
     sagat_scheduler::Keeper::new(
         f.w.store.clone(),

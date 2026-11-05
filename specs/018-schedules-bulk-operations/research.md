@@ -529,6 +529,22 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
   segment that carries the work, `lastStatus` how the holder ended and `reusableAfter` when `REJECT_DUPLICATE` stops
   applying; the last two are absent while it is open. `listRuns` also filters by `scheduleId` (the runs a schedule started,
   whatever the kind of action), the third filter `FR-018-022` names.
+- **D1968** (2026-11-05, T018-006/037, `FR-018-023`) A start delay is two journal events and one column. `run.start_delayed
+  {until_us}` follows `run.started` in the creation transaction (the reducer accepts it only there, once) and
+  `run.start_released {until_us}` releases the entry, once, at that same instant; `RunState` holds `start_delayed_until_us`,
+  so a replay of the journal equals the stored projection (`verify_run`). While it is set the planner is idle, which is the
+  whole hold: the entry stays `PENDING`, no timer starts, no wait begins and no worker is offered a step; a stop is planned
+  before the hold, so a cancellation or a deadline still ends the run with no step having run, and the status is `WAITING`
+  until then. `runs.start_delayed_until` mirrors the state (written with the two events, in the same transaction) so the
+  release pass finds the due ones by a partial index on `(run_shard(id), start_delayed_until) WHERE ... status = 'WAITING'`;
+  a trigger lets it be set once and cleared, never changed. The pass (`start_releases`, after the deadlines) applies
+  `release_start` under the run's lock with the condition read again there (still delayed, due by the database clock,
+  not stopped, not paused), so a run cancelled since the candidate query is skipped; it is fenced by the run's shard lease
+  like every other pass. A signal is refused because nothing waits for it yet (the entry has not begun). Whether a declared Update is admitted to a
+  held run, as FR-018-023 says, is not tested yet (G1972). A schedule's action and a rerun never take the options of a start, so they cannot carry a delay;
+  the delay joins the idempotency fingerprint only when present (D1962). The run `WAITING` while held is a status that
+  already existed, and `startDelayedUntil` says why. The release of 022's run-level permit is the half this does not do
+  (T018-037, blocked on 022).
 - **D1955** (2026-11-04, T018-028) The actions of a schedule are purged by a bounded function, visiting schedules in
   turn. Nothing deleted them: an hourly schedule writes 8,700 rows a year and one every minute 525,000. FR-018-013
   keeps "at least the last 1,000 or 30 days": an action goes when it is older than 30 days **and** beyond the
@@ -590,6 +606,7 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
 | G1969 | The Studio does not use the lookup of a binding (D1967): the run list filters by the whole identifier and by its prefix, which finds the same run. The lookup (holder, open, last status, reusable after) and the rerun's `KEEP`/`DROP` (D1966) are built. | A screen that shows `reusableAfter` or the chain behind an identifier is a design choice for the owner, not a gap in the contract. | Open (Studio only) |
 | G1970 | The plain `continue_as_new` of the chain store (the prepared handoff, used by tests; production uses `continue_evaluated`) copies the identifier to the successor too, and no test of it checks that. | Its callers are the unit tests of the continuation and the prepared-handoff integration test; the production path is under `a_chain_holds_the_identifier_until_it_ends_and_every_segment_carries_it` and a mutation that drops the copy fails it. | Open |
 | G1971 | The privacy check covers logs at every level, the fields of every span (created and closed, 2026-11-05), metrics, error texts and every table; what is not searched is the OTLP wire conversion of a span, which carries the same fields. `BusinessId`'s `Debug` hides the text, so a span field would show `BusinessId(..)`. | A real OTLP export canary (SC-018-014) belongs with the observability gates of T018-071. | Open (export only) |
+| G1972 | A declared Update on a delayed run (FR-018-023: "declared Updates are admitted") has no test: the fixtures of the declared operations create their runs with `NewRun` and a retained state, not through a start with options. Nothing in the reducer reads the hold when it applies an update, so the clause is believed, not proved. | A start with a delay and a declared initial state needs its own fixture; it belongs with Update-with-Start (T018-041), which needs the same one. | Open |
 | G1952 | A backfill step that the admission refuses (a full quota, no published version) waits and is tried again on every round of the pass, with no backoff, unlike a scheduled time (D1952). | A round is one poll of the database per owned shard and the step is one rolled-back transaction; harmless at the default poll but wasteful. Fix with a `retry_at` on the backfill (a migration). | Open |
 
 ## 5. Owner questions (the plan implements the recommended defaults)

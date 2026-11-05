@@ -266,6 +266,10 @@ pub struct StartRunBody {
     /// `ALLOW_DUPLICATE_FAILED_ONLY` or `REJECT_DUPLICATE`.
     #[serde(default)]
     pub business_id_reuse_policy: Option<String>,
+    /// Holds the entry of the run for this many milliseconds (1 to 366 days): the run is created
+    /// `WAITING` and released once, at the instant (feature 018).
+    #[serde(default)]
+    pub start_delay_ms: Option<u64>,
 }
 
 fn present_json<'de, D: serde::Deserializer<'de>>(
@@ -408,6 +412,13 @@ pub struct RunBody {
     /// The ended run this one was started again from (`RERUN_AS_NEW`), when it was.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rerun_of: Option<String>,
+    /// The instant the entry of the run is held until, for a run started with a delay that has not
+    /// been released (feature 018).
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        with = "time::serde::rfc3339::option"
+    )]
+    pub start_delayed_until: Option<OffsetDateTime>,
     /// The business identifier the run was started under, when it was.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub business_id: Option<String>,
@@ -462,6 +473,7 @@ impl From<&RunRecord> for RunBody {
                 cancel_policy: p.cancel_policy.as_str(),
             }),
             rerun_of: r.info.rerun_of.map(|r| r.to_string()),
+            start_delayed_until: r.start_delayed_until,
             business_id: r.info.business_id.as_ref().map(|id| id.as_str().to_owned()),
             depth: r.info.depth,
             chain: r.chain.map(|segment| RunChainBody {
@@ -1113,6 +1125,7 @@ mod switch_graph_tests {
                 paused: false,
                 updated_at: now,
                 finished_at: None,
+                start_delayed_until: None,
                 chain: None,
             },
             definition: std::sync::Arc::new(definition),

@@ -419,6 +419,10 @@ pub(crate) fn encode(event: &RunEvent) -> Encoded {
         | RunEvent::StepSkipped { .. }
         | RunEvent::RunPaused
         | RunEvent::RunResumed => json!({}),
+        // the instant the entry is held until, in microseconds like the other instants of a detail
+        RunEvent::StartDelayed { until_us } | RunEvent::StartReleased { until_us } => {
+            json!({ "until_us": until_us })
+        }
     };
     Encoded {
         event_type: event.name(),
@@ -774,6 +778,12 @@ pub(crate) fn decode(event_type: &str, node: Option<&str>, detail: &Value) -> Op
         "step.cancelled" => RunEvent::StepCancelled { node: node_id()? },
         "run.paused" => RunEvent::RunPaused,
         "run.resumed" => RunEvent::RunResumed,
+        "run.start_delayed" => RunEvent::StartDelayed {
+            until_us: d.get("until_us")?.as_i64()?,
+        },
+        "run.start_released" => RunEvent::StartReleased {
+            until_us: d.get("until_us")?.as_i64()?,
+        },
         "saga.entered" => RunEvent::SagaEntered {
             node: node_id()?,
             begin: NodeId::parse_stored(text(d, "begin")?).ok()?,

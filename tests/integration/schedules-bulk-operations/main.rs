@@ -24,6 +24,7 @@ mod cancel_other;
 mod catchup;
 mod changes;
 mod counted;
+mod delay;
 mod firing;
 mod lag;
 mod limits;

@@ -658,6 +658,9 @@ pub struct RunRecord {
     pub paused: bool,
     pub updated_at: OffsetDateTime,
     pub finished_at: Option<OffsetDateTime>,
+    /// The instant the entry of the run is held until, for a run created with a start delay that has
+    /// not been released (feature 018, `FR-018-023`); `None` otherwise.
+    pub start_delayed_until: Option<OffsetDateTime>,
     /// Set by the reads that serve the API (`get`, `list`); `None` for a run outside any chain and
     /// for a record loaded inside a command transaction.
     pub chain: Option<RunSegment>,

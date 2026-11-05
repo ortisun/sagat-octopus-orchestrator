@@ -25,6 +25,7 @@ fn under(id: &str) -> StartOptions {
             reuse: ReusePolicy::AllowDuplicate,
             window: ReuseWindow::default(),
         }),
+        ..StartOptions::default()
     }
 }
 

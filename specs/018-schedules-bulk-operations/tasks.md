@@ -63,6 +63,10 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   and US06 reset) and it adds variants to `RunEvent`, which is matched exhaustively in about nine crates (event codec,
   projection, DTOs, telemetry) and in `execution/{mod,state}.rs`, files another session was changing for 014 (PR #59 has
   since merged). It follows US01 and US02, after a fresh merge of `develop`.
+  *Part done 2026-11-05, the task stays open:* the two events of the start delay, `run.start_delayed` and
+  `run.start_released` (D1968), are built with their reducer, command, planner hold and event codec: `start_delay.rs` in
+  `crates/domain/tests` 8 passed, and a replay of the journal equals the stored projection (`verify_run`) in every delay test.
+  Not done: `run.reset`, `wait.satisfied.via`, `ResetPlan` and the eligibility of a reset.
 - [ ] T018-007 Permissions, audit actions and quota resources of the plan —
   `crates/domain/src/{identity.rs,audit.rs,quota.rs}` — role-grant and range tests — FR-018-041, FR-018-045.
   *Part done 2026-10-29 (task stays open).* Done: the four permissions (`schedule:read|write|operate`,
@@ -728,7 +732,18 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   refused, Update admitted, quota; with 022 run-level concurrency the release acquires the permit or
   enqueues the run, FR-022-018) — `crates/scheduler/src/passes.rs`, `crates/infra-postgres/src/execution.rs`,
   `tests/{integration,fault}/schedules-bulk-operations/delay.rs` — SC-018-007 — FR-018-023, FR-018-050.
-- [ ] T018-038 [P] [US3] Studio business id, start fields, delayed status —
+  *Part done 2026-11-05, the task stays open:* a start with `startDelayMs` (1 ms to 366 days) creates the run `WAITING`
+  with its entry held and `startDelayedUntil` on the run, a fenced pass of the run shards releases the entry once at the
+  instant (D1968; migration `20270104000000_start_delay`, `RunStore`/`MaintenanceStore::due_start_releases`, the pass
+  `start_releases` with the condition read again under the run's lock), and a cancellation or a deadline ends it with no step
+  having run. `delay.rs` (integration) 9 passed in both modes: held entry and no task offered, released once and not
+  before, cancelled, past its deadline, a signal refused and then delivered, the active-run quota and the identifier,
+  the range in words, the key and its replay, and the race with a run that stopped qualifying between the candidate query and
+  the lock; `delay.rs` (fault) kills the release after each of its writing statements and the next pass releases it once;
+  the REST start and its refusals in `business_ids_rest.rs`. All 13 mutants of the domain, the store, the pass and the
+  application were killed (one needed the race test). Not done: a declared Update on a held run (G1972) and the release that
+  acquires or enqueues 022's run-level permit (blocked on feature 022, which is not approved).
+- [x] T018-038 [P] [US3] Studio business id, start fields, delayed status —
   `frontend/apps/studio/src/features/runs/` — component tests — FR-018-047.
   *Part done (2026-11-05), the task stays open:* the start dialog has the optional identifier (checked in words before
   anything is sent: 1 to 200 visible ASCII characters), the two policies once there is an identifier, only the policies that
@@ -738,7 +753,13 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   shows it on the row; the run header shows it as a fact; the rerun dialog of a run that has an identifier offers to keep it
   (the default) or to start without it, and a held identifier is told in words with nothing to refresh. `npm test` 1346 passed (96 files), `npm run lint`, `typecheck`,
   `build` and `check:api` clean; 14 mutants of this code, 13 killed and the survivor (a trim that the dialog already did)
-  removed. Not done: the delayed status, which needs the start delay of T018-037. `npm run typecheck --workspace @sagat/e2e`
+  removed.
+  *Done 2026-11-05 (ticked):* the delayed status landed with the start delay. The start dialog has an optional "Start after"
+  (a whole number of minutes, hours or days, at most 366 days, checked in words before anything is sent, sent as
+  `startDelayMs`, part of what a key stands for, and announced as "waits 1 hour before it starts"); a waiting run that has
+  `startDelayedUntil` says "Starts <time>" under its id in the list, and its header says so as a fact with the words "held
+  by its start delay" instead of the generic wait. `npm test` 1358 passed (97 files), `lint`, `typecheck`, `build` and
+  `check:api` clean. `npm run typecheck --workspace @sagat/e2e`
   needs the TypeScript SDK built first (`sdks/typescript/conformance/prepare.sh`) and was not run here.
 - [x] T018-039 [US3] Business-id canaries absent from logs, spans, metrics, audit reasons, outbox —
   `tests/integration/schedules-bulk-operations/privacy.rs` — SC-018-014 — FR-018-042.

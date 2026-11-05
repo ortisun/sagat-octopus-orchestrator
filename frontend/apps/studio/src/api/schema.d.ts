@@ -364,6 +364,14 @@ export interface paths {
          *     holder that succeeded) are a `409` with `details.reason` `BUSINESS_ID_REUSE_REJECTED` and
          *     `details.reusableAfter`. An identifier or a policy that is none is `422` with `details.reason`
          *     `BUSINESS_ID_INVALID` and `details.field`. Not combinable with `inputBlobRef`.
+         *
+         *     With `startDelayMs` (1 ms to 366 days) the run is created `WAITING` with `startDelayedUntil`, and
+         *     its entry is held: no step is released, no timer starts, no worker is offered it. It counts toward
+         *     the active-run quotas and holds its business identifier meanwhile. A scheduler pass releases the
+         *     entry once, at the instant. Cancelled, or past its deadline, while it waits, it ends `CANCELLED` or
+         *     `TIMED_OUT` with no step having run; a signal is refused (`409`, nothing waits for it yet). A
+         *     delay out of range is `422` with `details.reason` `START_DELAY_INVALID` and `details.field`
+         *     `/startDelayMs`. The same key with another delay is another request (`409 IDEMPOTENCY_KEY_REUSED`).
          */
         post: operations["startRun"];
         delete?: never;
@@ -3317,6 +3325,8 @@ export interface components {
              * @enum {string}
              */
             businessIdReusePolicy: "ALLOW_DUPLICATE" | "ALLOW_DUPLICATE_FAILED_ONLY" | "REJECT_DUPLICATE";
+            /** @description Holds the entry of the run for this many milliseconds (1 ms to 366 days): the run is created WAITING with startDelayedUntil and released once, at the instant. */
+            startDelayMs?: number;
         } & (unknown | unknown);
         BlobDescriptor: {
             /** Format: uuid */
@@ -3379,6 +3389,11 @@ export interface components {
              * @description The ended run this one was started again from (RERUN_AS_NEW), when it was.
              */
             rerunOf?: string;
+            /**
+             * Format: date-time
+             * @description The instant the entry of the run is held until, for a run started with startDelayMs that has not been released. Absent otherwise.
+             */
+            startDelayedUntil?: string;
             /** @description The business identifier the run was started under, when it was. Read by getRun and listRuns. */
             businessId?: string;
             /** @description Nesting of child runs: 0 for a run started through the API. */

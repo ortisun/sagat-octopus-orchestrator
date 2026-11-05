@@ -136,6 +136,8 @@ pub struct Report {
     pub retries_released: u32,
     pub leases_expired: u32,
     pub deadlines_enforced: u32,
+    /// Delayed starts whose entry was released (feature 018).
+    pub starts_released: u32,
     pub hints_renewed: u32,
     pub children_started: u32,
     pub children_finished: u32,
@@ -305,6 +307,7 @@ impl Report {
             + self.retries_released
             + self.leases_expired
             + self.deadlines_enforced
+            + self.starts_released
             + self.hints_renewed
             + self.children_started
             + self.children_finished
@@ -329,6 +332,9 @@ enum Condition<'a> {
     RetainedFits {
         bytes: usize,
     },
+    /// The run's entry is still held by a start delay that has ended *now*, by the database clock,
+    /// and nothing has stopped or paused the run meanwhile.
+    StartDue,
 }
 
 impl Condition<'_> {
@@ -336,7 +342,7 @@ impl Condition<'_> {
     const fn refused(&self) -> Outcome {
         match self {
             Self::RetainedFits { .. } => Outcome::DoesNotFit,
-            Self::Always | Self::LeaseLost { .. } => Outcome::Skipped,
+            Self::Always | Self::LeaseLost { .. } | Self::StartDue => Outcome::Skipped,
         }
     }
 
@@ -356,6 +362,20 @@ impl Condition<'_> {
             Self::RetainedFits { bytes } => {
                 let retained = tx.logical_output_bytes().await?;
                 Ok(!output_increment_exceeds_limit(retained, *bytes))
+            }
+            Self::StartDue => {
+                let now_us =
+                    i64::try_from(tx.now().unix_timestamp_nanos() / 1_000).map_err(|_| {
+                        StoreError::Internal {
+                            detail: "an instant out of range".to_owned(),
+                        }
+                    })?;
+                let (_, state) = tx.parts();
+                Ok(state
+                    .start_delayed_until_us()
+                    .is_some_and(|until| until <= now_us)
+                    && state.stop_reason().is_none()
+                    && !state.is_paused())
             }
         }
     }
@@ -634,6 +654,7 @@ where
         self.retries(&self.view(), &mut report).await;
         self.leases(&self.view(), &mut report).await;
         self.deadlines(&self.view(), &mut report).await;
+        self.start_releases(&self.view(), &mut report).await;
         self.stopped_runs(&self.view(), &mut report).await;
         self.hints(&self.view(), &mut report).await;
         self.children_start(&self.view(), &mut report).await;
@@ -4945,6 +4966,37 @@ where
             .await;
         for outcome in outcomes {
             Self::tally(report, outcome, |r| r.deadlines_enforced += 1);
+        }
+    }
+
+    /// Releases the entry of every run whose start delay has ended, once (feature 018, `FR-018-023`):
+    /// the run's own shard lease fences it, and the condition is read again under the run's lock, so a
+    /// run cancelled, stopped or paused since the candidate query is left alone.
+    async fn start_releases(&self, view: &View, report: &mut Report) {
+        let due = self
+            .pick(
+                view,
+                "start_releases",
+                report,
+                |r: &RunRef| r.tenant_id,
+                |r| r.run_id,
+                |store, window| async move { store.due_start_releases(&window).await },
+            )
+            .await;
+        let outcomes = self
+            .each(due, |run| {
+                self.apply_if(
+                    view,
+                    run,
+                    "start_release",
+                    Condition::StartDue,
+                    self.effects(),
+                    |def, state, now| Ok(((), execution::release_start(def, state, now)?)),
+                )
+            })
+            .await;
+        for outcome in outcomes {
+            Self::tally(report, outcome, |r| r.starts_released += 1);
         }
     }
 

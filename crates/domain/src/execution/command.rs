@@ -308,6 +308,45 @@ pub fn start_run(
     Ok((state, progress))
 }
 
+/// Creates the state of a new run whose entry is held until `until_us` (microseconds since the
+/// epoch): `run.started` and `run.start_delayed`, and nothing released (feature 018, `FR-018-023`).
+///
+/// # Errors
+/// [`ExecutionError`] only on an internal inconsistency.
+pub fn start_run_delayed(
+    def: &WorkflowDefinition,
+    run_id: RunId,
+    now: OffsetDateTime,
+    until_us: i64,
+) -> Result<(RunState, Progress), ExecutionError> {
+    let mut state = RunState::new(run_id);
+    let started = RunEvent::RunStarted {
+        entrypoint: def.entrypoint().clone(),
+    };
+    state.apply(&started)?;
+    let delayed = RunEvent::StartDelayed { until_us };
+    state.apply(&delayed)?;
+    let progress = settle(def, &mut state, now, vec![started, delayed])?;
+    Ok((state, progress))
+}
+
+/// Releases the entry of a delayed run, as `start_run` would have released it at the start.
+///
+/// # Errors
+/// [`ExecutionError::Invariant`] when the run is not held by a start delay.
+pub fn release_start(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    now: OffsetDateTime,
+) -> Result<Progress, ExecutionError> {
+    let until_us = state
+        .start_delayed_until_us()
+        .ok_or(ExecutionError::Invariant(
+            "only a delayed run is released, at the instant it waits for",
+        ))?;
+    apply_then_settle(def, state, now, RunEvent::StartReleased { until_us })
+}
+
 /// Grants the lease on a ready step. The caller must already hold the run's row lock.
 ///
 /// # Errors

@@ -306,6 +306,15 @@ impl PgRunStore {
             steps,
             sagas,
             record.version,
+        )
+        .with_start_delayed_until_us(
+            record
+                .start_delayed_until
+                .map(|at| {
+                    i64::try_from(at.unix_timestamp_nanos() / 1_000)
+                        .map_err(|_| corrupt("run start delay"))
+                })
+                .transpose()?,
         );
         let definition = self
             .definition(&mut tx, tenant, record.info.version_id)
@@ -1388,7 +1397,7 @@ impl RunStore for PgRunStore {
                     stop_reason, paused, correlation_id, started_by, trace_id, deadline_at, \
                     created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, \
                     cancel_policy, depth, trace_parent_span, rerun_of, origin, business_id, \
-                    seg_chain_id, seg_index, seg_completion, seg_successor \
+                    start_delayed_until, seg_chain_id, seg_index, seg_completion, seg_successor \
              FROM runs LEFT JOIN LATERAL ( \
                SELECT chain_id AS seg_chain_id, segment_index AS seg_index, \
                       completion_kind AS seg_completion, successor_run_id AS seg_successor \
@@ -1839,7 +1848,7 @@ async fn claim_reservation(
 const RUN_SELECT: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, \
      run_version, stop_reason, paused, correlation_id, started_by, trace_id, deadline_at, \
      created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, cancel_policy, depth, \
-     trace_parent_span, rerun_of, origin, business_id, \
+     trace_parent_span, rerun_of, origin, business_id, start_delayed_until, \
      seg_chain_id, seg_index, seg_completion, seg_successor \
      FROM runs LEFT JOIN LATERAL ( \
        SELECT chain_id AS seg_chain_id, segment_index AS seg_index, \
@@ -1856,7 +1865,8 @@ macro_rules! run_columns_sql {
             "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, \
      status, run_version, stop_reason, stop_code, paused, input_digest, correlation_id, started_by, \
      trace_id, deadline_at, created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, \
-     cancel_policy, depth, trace_parent_span, rerun_of, origin, clock_timestamp() AS db_now \
+     cancel_policy, depth, trace_parent_span, rerun_of, origin, start_delayed_until, \
+     clock_timestamp() AS db_now \
      FROM runs WHERE tenant_id = $1 AND id = $2",
             $tail
         )
@@ -1944,6 +1954,13 @@ pub(crate) fn run_record(row: &PgRow) -> Result<RunRecord, StoreError> {
         paused: col(row, "paused")?,
         updated_at: col(row, "updated_at")?,
         finished_at: col(row, "finished_at")?,
+        // tolerant like `business_id`: a read that does not select the column has no delay to show
+        start_delayed_until: sqlx::Row::try_get::<Option<OffsetDateTime>, _>(
+            row,
+            "start_delayed_until",
+        )
+        .ok()
+        .flatten(),
         chain: run_segment(row)?,
     })
 }
@@ -4724,6 +4741,27 @@ impl RunTx for PgRunTx {
                 return Err(StoreError::Internal {
                     detail: "the run changed while its row was locked".into(),
                 });
+            }
+            // The start delay is a column of its own so that the pass that releases it finds the due
+            // ones by index; it follows the two events that set and clear it, in this transaction.
+            for event in events {
+                let until = match event {
+                    RunEvent::StartDelayed { until_us } => Some(
+                        OffsetDateTime::from_unix_timestamp_nanos(i128::from(*until_us) * 1_000)
+                            .map_err(|_| corrupt("run start delay"))?,
+                    ),
+                    RunEvent::StartReleased { .. } => None,
+                    _ => continue,
+                };
+                sqlx::query(
+                    "UPDATE runs SET start_delayed_until = $3 WHERE tenant_id = $1 AND id = $2",
+                )
+                .bind(tenant.as_uuid())
+                .bind(run.as_uuid())
+                .bind(until)
+                .execute(&mut *self.tx)
+                .await
+                .map_err(store_error)?;
             }
         }
         self.persisted = version;

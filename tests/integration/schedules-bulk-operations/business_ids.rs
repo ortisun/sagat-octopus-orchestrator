@@ -24,6 +24,7 @@ pub(crate) fn business(id: &str, conflict: ConflictPolicy, reuse: ReusePolicy) -
             reuse,
             window: ReuseWindow::default(),
         }),
+        ..StartOptions::default()
     }
 }
 
@@ -603,7 +604,7 @@ async fn the_identifier_is_charged_to_the_tenant_once_in_the_binding_and_once_on
 
 /// A scheduler that holds every shard: the handoff of a chain is its work. One placement for the whole
 /// test, or the lease of the first tick keeps the shards from the next.
-async fn scheduler_of(f: &Fixture) -> crate::support::engine::Sched {
+pub(crate) async fn scheduler_of(f: &Fixture) -> crate::support::engine::Sched {
     let placement = sagat_scheduler::Placement::new(format!("business-chain-{}", Uuid::now_v7()));
     sagat_scheduler::Keeper::new(
         f.w.store.clone(),
