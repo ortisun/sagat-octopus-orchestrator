@@ -70,6 +70,18 @@ describe('the run page: header', () => {
     expect(document.querySelector('time[title="2099-01-01 00:00:00 UTC"]')).not.toBeNull();
   });
 
+  it('shows the business identifier of the run, and no such fact for a run without one', async () => {
+    await open({ run: runOf({ businessId: 'order-1001' }) });
+    expect(await screen.findByText('Business id')).toBeInTheDocument();
+    expect(screen.getByText('order-1001')).toBeInTheDocument();
+  });
+
+  it('has no business identifier fact when the run has none', async () => {
+    await open();
+    await screen.findByText('Started by');
+    expect(screen.queryByText('Business id')).not.toBeInTheDocument();
+  });
+
   it('says "no trace" and "none" for what the run does not have', async () => {
     await open({ run: runOf({ traceId: null, correlationId: null, deadline: null, startedBy: undefined }) });
     expect(await screen.findByText('no trace')).toBeInTheDocument();

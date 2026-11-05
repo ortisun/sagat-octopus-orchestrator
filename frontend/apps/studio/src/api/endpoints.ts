@@ -75,7 +75,7 @@ export function endpoints(api: ApiClient) {
     versions: (id: string, query: { cursor?: string; limit?: number } = {}, signal?: AbortSignal) => api.get<Page<VersionSummary>>(path`/workflows/${id}/versions`, { query, signal }),
     version: (id: string, number: number, signal?: AbortSignal) => api.get<VersionDocument>(path`/workflows/${id}/versions/${number}`, { signal, safeNumbers: true }),
 
-    listRuns: (query: { cursor?: string; limit?: number; workflowId?: string; status?: string; origin?: string } = {}, signal?: AbortSignal) => api.get<Page<Run>>('/runs', { query, signal }),
+    listRuns: (query: { cursor?: string; limit?: number; workflowId?: string; status?: string; origin?: string; businessIdPrefix?: string } = {}, signal?: AbortSignal) => api.get<Page<Run>>('/runs', { query, signal }),
     startRun: (workflowId: string, input: unknown) => api.post<Run>('/runs', { body: { workflowId, input } }),
     getRun: (id: string, signal?: AbortSignal) => api.get<Run>(path`/runs/${id}`, { signal }),
     graph: (id: string, signal?: AbortSignal) => api.get<RuntimeGraph>(path`/runs/${id}/graph`, { signal }),

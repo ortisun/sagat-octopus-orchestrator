@@ -17,7 +17,13 @@ function Where() {
   return <output data-testid="where">{pathname}</output>;
 }
 
-async function mount({ permissions = ['run:start'], choices = WORKFLOWS, initialId, failures = 0 }: { permissions?: string[]; choices?: typeof WORKFLOWS; initialId?: string; failures?: number } = {}) {
+async function mount({
+  permissions = ['run:start'],
+  choices = WORKFLOWS,
+  initialId,
+  failures = 0,
+  status = 202,
+}: { permissions?: string[]; choices?: typeof WORKFLOWS; initialId?: string; failures?: number; status?: number } = {}) {
   let remaining = failures;
   const platform = fakePlatform({
     'POST /runs': () => {
@@ -25,7 +31,7 @@ async function mount({ permissions = ['run:start'], choices = WORKFLOWS, initial
         remaining -= 1;
         return new Response(JSON.stringify({ code: 'UNAVAILABLE', message: 'Try again.', retryable: true }), { status: 503, headers: { 'content-type': 'application/json' } });
       }
-      return new Response(JSON.stringify({ runId: RUN_ID }), { status: 202, headers: { 'content-type': 'application/json' } });
+      return new Response(JSON.stringify({ runId: RUN_ID }), { status, headers: { 'content-type': 'application/json' } });
     },
   });
   const app = createApp({ fetch: platform.fetcher });
@@ -168,5 +174,107 @@ describe('Start run', () => {
     await mount({ choices: [WORKFLOWS[0]!], initialId: WORKFLOWS[0]!.id });
     const button = screen.getByRole('button', { name: 'Start run… of order-saga' });
     expect(button).toHaveTextContent('Start run…');
+  });
+});
+
+describe('Start run with a business identifier', () => {
+  const open = async (user: ReturnType<typeof userEvent.setup>) => {
+    await user.click(screen.getByRole('button', { name: 'Start run…' }));
+    await screen.findByRole('dialog', { name: 'Start a run' });
+  };
+
+  it('asks for none, and shows what to do with a held one only once there is an identifier', async () => {
+    const { user } = await mount();
+    await open(user);
+    expect(screen.getByLabelText('Business identifier (optional)')).toHaveValue('');
+    expect(screen.queryByLabelText('If an open run already has it')).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText('Business identifier (optional)'), 'order-1001');
+    expect(screen.getByLabelText('If an open run already has it')).toHaveValue('FAIL');
+    expect(screen.getByLabelText('If a finished run still remembers it')).toHaveValue('ALLOW_DUPLICATE');
+  });
+
+  it('sends the identifier and the policies that are not the defaults, trimmed', async () => {
+    const { user, platform } = await mount();
+    await open(user);
+    await user.type(screen.getByLabelText('Business identifier (optional)'), '  order-1001  ');
+    await user.selectOptions(screen.getByLabelText('If an open run already has it'), 'USE_EXISTING');
+    await user.selectOptions(screen.getByLabelText('If a finished run still remembers it'), 'REJECT_DUPLICATE');
+    await user.click(screen.getByRole('button', { name: 'Start run' }));
+    await waitFor(() => expect(platform.calls).toHaveLength(1));
+    expect(bodyOf(platform, 0)).toEqual({
+      workflowId: WORKFLOWS[0]!.id,
+      input: {},
+      businessId: 'order-1001',
+      businessIdConflictPolicy: 'USE_EXISTING',
+      businessIdReusePolicy: 'REJECT_DUPLICATE',
+    });
+  });
+
+  it('sends no identifier field at all without one', async () => {
+    const { user, platform } = await mount();
+    await open(user);
+    await user.click(screen.getByRole('button', { name: 'Start run' }));
+    await waitFor(() => expect(platform.calls).toHaveLength(1));
+    expect(bodyOf(platform, 0)).toEqual({ workflowId: WORKFLOWS[0]!.id, input: {} });
+  });
+
+  it('refuses an identifier that cannot be one, in words, before asking the platform', async () => {
+    const { user, platform } = await mount();
+    await open(user);
+    const field = screen.getByLabelText('Business identifier (optional)');
+    await user.type(field, 'has a space');
+    await user.click(screen.getByRole('button', { name: 'Start run' }));
+    expect(await screen.findByText(/no space, no accent/)).toBeVisible();
+    expect(platform.calls).toHaveLength(0);
+  });
+
+  it('says nothing was started when the platform returned the open run that has the identifier', async () => {
+    const { user, platform } = await mount({ status: 200 });
+    await open(user);
+    await user.type(screen.getByLabelText('Business identifier (optional)'), 'order-1001');
+    await user.selectOptions(screen.getByLabelText('If an open run already has it'), 'USE_EXISTING');
+    await user.click(screen.getByRole('button', { name: 'Start run' }));
+    await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent(`/runs/${RUN_ID}`));
+    expect(platform.calls).toHaveLength(1);
+    expect(await screen.findByText(/already has an open run/)).toBeInTheDocument();
+  });
+
+  it('keeps the key of an unchanged request and changes it with the identifier', async () => {
+    const { user, platform } = await mount({ failures: 2 });
+    await open(user);
+    const field = screen.getByLabelText('Business identifier (optional)');
+    await user.type(field, 'order-1');
+    await user.click(screen.getByRole('button', { name: 'Start run' }));
+    await screen.findByText(/Starting the run/);
+    await user.click(screen.getByRole('button', { name: 'Start run' }));
+    await waitFor(() => expect(platform.calls).toHaveLength(2));
+    expect(key(platform, 1)).toBe(key(platform, 0));
+    // another identifier is another request, and a retry of the first must not answer for it
+    await screen.findByText(/Starting the run/);
+    await user.clear(field);
+    await user.type(field, 'order-2');
+    await user.click(screen.getByRole('button', { name: 'Start run' }));
+    await waitFor(() => expect(platform.calls).toHaveLength(3));
+    expect(key(platform, 2)).not.toBe(key(platform, 0));
+  });
+
+  it('shows the platform’s refusal of a held identifier', async () => {
+    const platform = fakePlatform({
+      'POST /runs': () =>
+        new Response(JSON.stringify({ code: 'CONFLICT', message: 'another open execution holds this business identifier', retryable: false, details: { reason: 'BUSINESS_ID_IN_USE', runId: RUN_ID } }), {
+          status: 409,
+          headers: { 'content-type': 'application/json' },
+        }),
+    });
+    const app = createApp({ fetch: platform.fetcher });
+    await app.session.signIn(TOKEN, () => Promise.resolve({ ...AUTH_CONTEXT, permissions: ['run:start'] } as never));
+    app.namespace.set('payments');
+    renderApp(<StartRun choices={WORKFLOWS} />, { app });
+    const user = userEvent.setup();
+    await open(user);
+    await user.type(screen.getByLabelText('Business identifier (optional)'), 'order-1001');
+    await user.click(screen.getByRole('button', { name: 'Start run' }));
+    expect(await screen.findByText(/Starting the run failed/)).toBeVisible();
+    expect(screen.getByText('BUSINESS_ID_IN_USE', { selector: 'code' })).toBeVisible();
   });
 });

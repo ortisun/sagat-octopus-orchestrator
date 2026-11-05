@@ -26,6 +26,8 @@ export interface RequestOptions {
   /** Use this key instead of a new one (a retry of the same intent keeps its key). */
   key?: string;
   headers?: Record<string, string>;
+  /** Told the status of a successful answer, for the few operations whose `200` and `202` mean different things. */
+  onStatus?: (status: number) => void;
 }
 
 type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -170,6 +172,7 @@ export class ApiClient {
       if (error.code === 'UNAUTHENTICATED') this.#config.onUnauthenticated();
       throw error;
     }
+    options.onStatus?.(response.status);
     return parsed as T;
   }
 }
