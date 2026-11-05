@@ -4353,6 +4353,21 @@ impl RunState {
                 }
                 self.start_delayed_until_us = None;
             }
+            RunEvent::RunReset {
+                source_sequence, ..
+            } => {
+                // the events before it are the restored prefix of the source, so the run has started and is
+                // open, and a prefix has at least its `run.started`
+                if !self.has_started()
+                    || *source_sequence == 0
+                    || self.stop.is_some()
+                    || !matches!(self.status, RunStatus::Running | RunStatus::Waiting)
+                {
+                    return Err(ExecutionError::Invariant(
+                        "a reset follows the restored prefix of a run that has started and is open",
+                    ));
+                }
+            }
             RunEvent::RunStopRequested { reason, code } => {
                 if self.stop.is_some() {
                     return Err(ExecutionError::AlreadyStopping);

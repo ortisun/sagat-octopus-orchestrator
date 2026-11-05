@@ -15,6 +15,7 @@ mod instance;
 mod operations;
 mod path_state;
 mod plan;
+mod reset;
 mod sagas;
 mod scoped_controls;
 mod scoped_event_waits;
@@ -59,8 +60,8 @@ pub use error::ExecutionError;
 pub use event::{
     AddressedRunEvent, Cause, ChildOutcome, CollectionDrainReason, CollectionOutcome,
     CorrelationKey, EventAddressError, FailureCode, Fence, JoinOutcome, LoopContinuation,
-    LoopDrainReason, LoopKind, LoopOutcome, PlannedEntry, ReconcileResult, ReviewOutcome, RunEvent,
-    ScopedPlannedEntry, StopReason, SwitchSelection, WaitVia,
+    LoopDrainReason, LoopKind, LoopOutcome, PlannedEntry, ReconcileResult, ResetReapply,
+    ReviewOutcome, RunEvent, ScopedPlannedEntry, StopReason, SwitchSelection, WaitVia,
 };
 pub use instance::{
     ExecutionInstanceId, InstanceIdentityError, InstancePath, MAX_ITERATION_INDEX, MAX_SCOPE_DEPTH,
@@ -77,6 +78,11 @@ pub use path_state::{
     PathLoopState, PathScopeSagaState,
 };
 pub use plan::{AddressedPlan, Evaluation, Plan, plan, plan_addressed, plan_path};
+pub use reset::{
+    EffectMarkers, RULES as RESET_RULES, ReexecutedStep, ResetBlock, ResetPlan, ResetPoint,
+    ResetPoints, ResetRefusal, ResetRule, RestoredStep, reset_plan, reset_points, rule_by_name,
+    rule_of,
+};
 pub use scoped_controls::{resolve_control_instance, resolve_control_path_instance};
 pub use scoped_event_waits::{
     satisfy_event_wait_instance, satisfy_event_wait_path_instance, scoped_event_wait_since,

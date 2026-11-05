@@ -450,6 +450,53 @@ impl WaitVia {
     }
 }
 
+/// What a reset delivers again after the point (feature 018, `FR-018-039`): the signals recorded `via:
+/// signal` after it, the Updates whose declaration kept their arguments (`reapplyOnReset`), both, or nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ResetReapply {
+    #[default]
+    None,
+    Signals,
+    Updates,
+    All,
+}
+
+impl ResetReapply {
+    /// The closed name written to the journal and the API.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "NONE",
+            Self::Signals => "SIGNALS",
+            Self::Updates => "UPDATES",
+            Self::All => "ALL",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "NONE" => Some(Self::None),
+            "SIGNALS" => Some(Self::Signals),
+            "UPDATES" => Some(Self::Updates),
+            "ALL" => Some(Self::All),
+            _ => Option::None,
+        }
+    }
+
+    /// Whether signals are delivered again.
+    #[must_use]
+    pub const fn signals(self) -> bool {
+        matches!(self, Self::Signals | Self::All)
+    }
+
+    /// Whether Updates are applied again.
+    #[must_use]
+    pub const fn updates(self) -> bool {
+        matches!(self, Self::Updates | Self::All)
+    }
+}
+
 /// How a `parallel` node ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JoinOutcome {
@@ -904,6 +951,16 @@ pub enum RunEvent {
     StartReleased {
         until_us: i64,
     },
+    /// The events `1..source_sequence` of the source run were re-emitted under this run and the work
+    /// goes on from there: the reset run's own journal starts here (feature 018, `FR-018-037`).
+    /// `prefix_sha256` is the digest of the canonical encoding of the source rows `1..source_sequence`, so
+    /// a reader can verify the copy against a retained source.
+    RunReset {
+        source_run_id: RunId,
+        source_sequence: u64,
+        prefix_digest: Digest,
+        reapply: ResetReapply,
+    },
     RunStopRequested {
         reason: StopReason,
         code: Option<FailureCode>,
@@ -1080,6 +1137,7 @@ impl RunEvent {
             Self::RunResumed => "run.resumed",
             Self::StartDelayed { .. } => "run.start_delayed",
             Self::StartReleased { .. } => "run.start_released",
+            Self::RunReset { .. } => "run.reset",
             Self::RunStopRequested { .. } => "run.stop_requested",
             Self::RunFinished { .. } => "run.finished",
         }
@@ -1152,6 +1210,7 @@ impl RunEvent {
             | Self::RunResumed
             | Self::StartDelayed { .. }
             | Self::StartReleased { .. }
+            | Self::RunReset { .. }
             | Self::RunStopRequested { .. }
             | Self::RunFinished { .. } => None,
         }

@@ -56,7 +56,7 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   machine is the diagram of `data-model.md`; a cancelling job does not fail (the cancel wins). The retry
   backoff (5 s doubling to 5 min, 10 attempts within 1 h) is D1045. Not here: selection, the horizon wait and
   the item adapters (T018-045..047).
-- [ ] T018-006 [P] Domain reset and events `run.start_delayed`, `run.start_released`, `run.reset`,
+- [x] T018-006 [P] Domain reset and events `run.start_delayed`, `run.start_released`, `run.reset`,
   `wait.satisfied.via`; eligibility over `RunState::replay` + suffix facts; `ResetPlan` —
   `crates/domain/src/execution/{reset.rs,event.rs,mod.rs}` — per-cause tests — FR-018-023, FR-018-035..039.
   *Deferred 2026-10-29 (reordered, not dropped).* It is not on the US01 path (it serves US03 start delay, US04 `via`
@@ -66,7 +66,12 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   *Part done 2026-11-05, the task stays open:* the two events of the start delay, `run.start_delayed` and
   `run.start_released` (D1968), are built with their reducer, command, planner hold and event codec: `start_delay.rs` in
   `crates/domain/tests` 8 passed, and a replay of the journal equals the stored projection (`verify_run`) in every delay test.
-  Not done: `run.reset`, `wait.satisfied.via`, `ResetPlan` and the eligibility of a reset.
+  *Done 2026-11-05 (D1975, D1976):* `wait.satisfied.via` (T018-043: `RunEvent::WaitSatisfied { node, via }`, written by
+  the signal, the chain signal, the event dispatch and Signal-with-Start), `run.reset` (`RunEvent::RunReset`, its reducer
+  arm, `ResetReapply`, the event codec with a closed detail and a round-trip test) and, in `reset.rs`, the eligibility of
+  a reset over the addressed journal (`reset_points`) and `ResetPlan` (`reset_plan`). Evidence: `cargo test -p
+  sagat-domain --test reset` 15 passed and the module unit tests (2), `event_codec` unit tests 26 passed, fifteen mutants
+  of the module and the reducer killed, clippy over the workspace.
 - [ ] T018-007 Permissions, audit actions and quota resources of the plan —
   `crates/domain/src/{identity.rs,audit.rs,quota.rs}` — role-grant and range tests — FR-018-041, FR-018-045.
   *Part done 2026-10-29 (task stays open).* Done: the four permissions (`schedule:read|write|operate`,
@@ -1076,6 +1081,13 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   parallel, saga, approval, collection, loop, child, unknown outcome, later compensation, one row per
   rule kind) — `crates/domain/src/execution/reset.rs`, `crates/domain/tests/reset.rs` — every point
   classified as the registry says — FR-018-035, FR-018-036.
+  *Part done 2026-11-05 (D1976, G1979), the task stays open:* the registry (66 event types, `rule_of` exhaustive, `RULES`
+  by name, a test that reads the names out of `RunEvent::name()`, a test typed from the contract) and the eligibility and
+  the plan over a corpus of: a sequential run, a parallel fork, a timer and a wait, a saga that aborts, a failure that is
+  resolved later, an unknown outcome inside and after its window, a paused run, a child, a collection, and the plan with
+  its effect markers. Not done: an approval run and a loop run in the corpus (their completions are not points under the
+  literal D1022 list, G1979, which asks the owner), and an end-to-end journal for the clause "compensated later", which
+  the reducer does not let exist (the predicate is unit-tested). The error `RESET_RULE_MISSING` is T018-054's.
 - [ ] T018-053 [US6] Reset store (prefix read/digest outside, verify and re-emit inside with `restored`,
   `reset_of`, `run.reset`, `rerun_of` + `reset_sequence`, guard after business-id row, `purged_at`/`test_tree`
   read, 022 permit acquire-or-refuse, 020 attribute fold) — `crates/infra-postgres/src/{resets.rs,execution.rs}`

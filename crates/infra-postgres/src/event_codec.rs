@@ -8,8 +8,8 @@ use sagat_domain::execution::{
     ApprovalDecision, ApprovalReasonCode, ApprovalReceiptId, ApprovalRequestId, ChildOutcome,
     CollectionDrainReason, CollectionOutcome, CorrelationKey, ExecutionInstanceId, FailureCode,
     Fence, InstancePath, JoinOutcome, LoopContinuation, LoopDrainReason, LoopKind, LoopOutcome,
-    PlannedEntry, ReconcileResult, ReviewOutcome, RunEvent, RunId, RunStatus, ScopedPlannedEntry,
-    StopReason, SwitchSelection, WaitVia,
+    PlannedEntry, ReconcileResult, ResetReapply, ReviewOutcome, RunEvent, RunId, RunStatus,
+    ScopedPlannedEntry, StopReason, SwitchSelection, WaitVia,
 };
 use sagat_domain::identity::Subject;
 use sagat_domain::saga::{ReconcileVerdict, SagaOutcome};
@@ -437,6 +437,19 @@ pub(crate) fn encode(event: &RunEvent) -> Encoded {
         RunEvent::StartDelayed { until_us } | RunEvent::StartReleased { until_us } => {
             json!({ "until_us": until_us })
         }
+        // the closed detail of a reset (feature 018): where the prefix came from, how far it goes, the digest
+        // of its canonical encoding and what was delivered again
+        RunEvent::RunReset {
+            source_run_id,
+            source_sequence,
+            prefix_digest,
+            reapply,
+        } => json!({
+            "source_run_id": source_run_id.to_string(),
+            "source_sequence": source_sequence,
+            "prefix_sha256": prefix_digest.to_hex(),
+            "reapply": reapply.as_str(),
+        }),
     };
     Encoded {
         event_type: event.name(),
@@ -802,6 +815,12 @@ pub(crate) fn decode(event_type: &str, node: Option<&str>, detail: &Value) -> Op
         },
         "run.start_released" => RunEvent::StartReleased {
             until_us: d.get("until_us")?.as_i64()?,
+        },
+        "run.reset" => RunEvent::RunReset {
+            source_run_id: text(d, "source_run_id")?.parse::<RunId>().ok()?,
+            source_sequence: number(d, "source_sequence")?,
+            prefix_digest: Digest::from_hex(text(d, "prefix_sha256")?)?,
+            reapply: ResetReapply::parse(text(d, "reapply")?)?,
         },
         "saga.entered" => RunEvent::SagaEntered {
             node: node_id()?,
@@ -1378,6 +1397,57 @@ mod tests {
             "retained": "maybe",
         });
         assert_eq!(decode("state.updated", None, &odd), Some(update(None)));
+    }
+
+    #[test]
+    fn a_reset_event_has_a_closed_detail_and_round_trips() {
+        use sagat_domain::execution::ResetReapply;
+        let source = sagat_domain::execution::RunId::generate();
+        for reapply in [
+            ResetReapply::None,
+            ResetReapply::Signals,
+            ResetReapply::Updates,
+            ResetReapply::All,
+        ] {
+            let event = RunEvent::RunReset {
+                source_run_id: source,
+                source_sequence: 12,
+                prefix_digest: Digest::new([9; 32]),
+                reapply,
+            };
+            let encoded = encode(&event);
+            assert_eq!(encoded.event_type, "run.reset");
+            assert_eq!(encoded.node, None);
+            assert_eq!(
+                encoded.detail,
+                json!({
+                    "source_run_id": source.to_string(),
+                    "source_sequence": 12,
+                    "prefix_sha256": Digest::new([9; 32]).to_hex(),
+                    "reapply": reapply.as_str(),
+                })
+            );
+            assert_eq!(
+                decode(encoded.event_type, None, &encoded.detail),
+                Some(event)
+            );
+        }
+        // a row that does not say all of it is not a reset: the event is not guessed
+        for missing in [
+            "source_run_id",
+            "source_sequence",
+            "prefix_sha256",
+            "reapply",
+        ] {
+            let mut detail = json!({
+                "source_run_id": source.to_string(),
+                "source_sequence": 12,
+                "prefix_sha256": Digest::new([9; 32]).to_hex(),
+                "reapply": "ALL",
+            });
+            detail.as_object_mut().expect("object").remove(missing);
+            assert!(decode("run.reset", None, &detail).is_none(), "{missing}");
+        }
     }
 
     #[test]
