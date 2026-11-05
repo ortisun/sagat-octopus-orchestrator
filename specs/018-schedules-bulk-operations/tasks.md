@@ -465,10 +465,21 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   (system note, `schedule.auto_paused` audit), `a_cancelled_run_does_not_pause_a_schedule_that_pauses_on_failure`; in
   `trigger.rs`, `trigger_now_does_not_use_up_a_remaining_action` and
   `a_waiting_trigger_starts_when_the_run_ends_and_uses_up_nothing` (only a scheduled start decrements).
-- [ ] T018-028 [US2] Describe (next N, recent, counters), actions route, action purge keeping `BUFFERED`
+- [x] T018-028 [US2] Describe (next N, recent, counters), actions route, action purge keeping `BUFFERED`
   — `crates/infra-postgres/src/maintenance.rs` — contract + purge tests — FR-018-013.
-  *Part done 2026-11-04 (task stays open: the actions route, `listScheduleActions`, changes the canonical OpenAPI and
-  waits for the REST work; describe is built, T018-018).* Nothing deleted actions. Now
+  *Done 2026-11-04 (the purge first, the route after).* The route `listScheduleActions` (`GET
+  /namespaces/{id}/schedules/{id}/actions`, `schedule:read`, `cursor`, `limit`, `outcome`) lists the decisions of a schedule
+  newest first, by the instant of the decision and then by the key of the action (origin, nominal time), so a page ends
+  where the next begins even when several decisions were made in the same instant; an outcome this version does not know
+  is refused 400 (the contract's enum), as is a cursor this build did not hand out. It is merged into the platform
+  contract (`x-implemented: '018'`, `ScheduleActionPage`), the reference and the Studio types are regenerated.
+  Evidence: `actions::` 3 passed in `integration_schedules_bulk_operations` (six decisions with a three-way tie on the
+  instant, listed 1, 2, 3, 4 and 100 at a time: the same listing every time, none skipped, none twice, in the order of the
+  key; one outcome at a time; another tenant is `NotFound` and a viewer reads); `action_cursor` 2 passed (what is handed
+  out comes back, thirteen strings that were not are not cursors); the schedule contract test now exercises the twelfth
+  operation (a page of one, the next page, the outcome filter, a viewer, another tenant, an anonymous caller, a bad cursor, a
+  bad outcome, an unknown schedule); the cross-tenant battery covers it. Removing the tie-breaking from the keyset makes
+  the paging test fail. The earlier work of this task follows. Nothing deleted actions. Now
   `schedule_purge_actions(schedules, rows)` keeps an action while it is among the newest 1,000 of its schedule or younger
   than 30 days and never deletes a `BUFFERED` one, runs through the housekeeping of the scheduler (a few schedules at a
   time, at most 5,000 rows a call) and visits schedules in turn (decision D1955, migration
@@ -548,10 +559,34 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `a_delete_at_a_stale_revision_deletes_nothing_and_at_the_head_deletes`; and
   `firing::a_waiting_action_keeps_the_revision_it_was_taken_under` (an update while an action waits: the run starts under
   revision 1 and the head is 2).
-- [ ] T018-032 [P] [US2] Studio schedules (list, detail, form with server-computed next times,
+- [x] T018-032 [P] [US2] Studio schedules (list, detail, form with server-computed next times,
   pause/resume, trigger, backfill preview; tokens, WCAG AA, tables) —
   `frontend/apps/studio/src/features/schedules/`, `frontend/apps/studio/src/api/endpoints.ts` —
   component tests — FR-018-047.
+  *Done 2026-11-04, except the backfill preview (G1966).* `/schedules` (list, paged by cursor), `/schedules/new` and
+  `/schedules/:id/edit` (one form: an interval or cron expressions, time zone, jitter, bounds, overlap and catch-up
+  rules, limit on actions, note), `/schedules/:id` (the platform's own next times with the jitter shown, the open runs,
+  the counters, the decisions by outcome and page, the backfills with start and cancel, pause, resume, run now, delete),
+  a `Schedules` entry in the menu (`Shell.test.tsx`, `smoke.spec.ts`), a README. The Studio computes no time. Each control
+  is behind the permissions the platform asks for; a retry keeps its idempotency key and a changed request has a new one;
+  an edit saves against the revision it was opened at (the copy is never refetched under the person nor kept after the
+  page); what the form does not show (catch-up window, buffer limit, DST rule, interval offset, pinned version, run
+  timeout) is carried, not reset; a schedule with calendars, exclusions or several rules, or one a cron trigger owns, is
+  not edited there; the input is never shown and a number the browser would round is refused.
+  Evidence (`frontend/`): `src/features/schedules` 4 files, 84 tests passed (`model.test.ts` 26: the request, the draft,
+  the words; `SchedulesPage` 9; `ScheduleFormPage` 15; `SchedulePage` 34), the whole Studio suite 95 files and 1,317
+  tests passed, `npm run lint` clean, `tsc --noEmit` clean for the Studio, `npm run build` built, `npm run check:api`
+  matches the contract. Mutation checks, each reverted: 11 of the model (a dropped `dst`, `bufferLimit` or offset, an end
+  equal to the start, exhausted not first, the units tried smallest first, a future end, an array input, an eleventh cron
+  expression, editable exclusions, a name counted in UTF-16) and 18 of the pages (a dropped permission, a delete for a
+  trigger-owned schedule, a delete without its revision, an untrimmed note, a pause of a paused schedule, a key never
+  kept and a key kept for a changed request, no `expectedRevision`, unpublished workflows offered, a form not a fresh
+  copy, the problem ignored, a future end, a cancel for an ended backfill, the outcome filter not sent, recent actions
+  asked for, the digest in full, a next time while paused, creating without `run:start`): all caught (the one that
+  survived, the fresh copy, got its test). Not done: the backfill preview (G1966); WCAG AA is by the platform's tokens,
+  role and label queries and the `jsx-a11y` lint rules, not by a contrast measurement (there is no axe harness in the
+  Studio and no new colour was added); `npm run typecheck --workspace @sagat/e2e` needs the TypeScript SDK built first
+  (`sdks/typescript/conformance/prepare.sh`) and was not run here, the one edit in `smoke.spec.ts` is a menu list.
 - [ ] T018-033 [P] [US2] Schedule input disclosure (016 audiences, `no-store`, audit) —
   `tests/integration/schedules-bulk-operations/disclosure.rs` — per-level cases — FR-018-042.
   *Not started (2026-11-04).* It needs the route `discloseScheduleInput`
