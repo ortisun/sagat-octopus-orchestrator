@@ -63,3 +63,22 @@ pub fn capture_at(level: tracing::Level) -> (DefaultGuard, Captured) {
     tracing::callsite::rebuild_interest_cache();
     (guard, captured)
 }
+
+/// Like [`capture_at`], and every span is written out with its fields when it is created and when it
+/// closes, whether or not an event happens inside it: what a span carries is what a trace exporter
+/// would send, so a test can search the spans of a flow for a value that must not be in them.
+pub fn capture_with_spans(level: tracing::Level) -> (DefaultGuard, Captured) {
+    let captured = Captured::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(captured.clone())
+        .with_ansi(false)
+        .with_max_level(level)
+        .with_span_events(
+            tracing_subscriber::fmt::format::FmtSpan::NEW
+                | tracing_subscriber::fmt::format::FmtSpan::CLOSE,
+        )
+        .finish();
+    let guard = tracing::subscriber::set_default(subscriber);
+    tracing::callsite::rebuild_interest_cache();
+    (guard, captured)
+}

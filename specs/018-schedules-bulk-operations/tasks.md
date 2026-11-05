@@ -740,14 +740,18 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `build` and `check:api` clean; 14 mutants of this code, 13 killed and the survivor (a trim that the dialog already did)
   removed. Not done: the delayed status, which needs the start delay of T018-037. `npm run typecheck --workspace @sagat/e2e`
   needs the TypeScript SDK built first (`sdks/typescript/conformance/prepare.sh`) and was not run here.
-- [ ] T018-039 [US3] Business-id canaries absent from logs, spans, metrics, audit reasons, outbox —
+- [x] T018-039 [US3] Business-id canaries absent from logs, spans, metrics, audit reasons, outbox —
   `tests/integration/schedules-bulk-operations/privacy.rs` — SC-018-014 — FR-018-042.
   *Part done (2026-11-05), the task stays open:* `privacy.rs` takes a canary identifier through a start, a refusal, a returned
   holder, a cancellation and the refusal of a reuse, and finds it, as text and as the hex of its bytes, in no table of the
   schema except the binding and the run (audit trail, outbox, journal, dedupe records and payloads included), in no log line
   at TRACE level, in no metric label and in the text of no error. The probe line proves the capture was listening, and the
-  tables are asserted after the run so a hit names the table. Not done: the spans exported over OTLP are not searched
-  (G1971).
+  tables are asserted after the run so a hit names the table.
+  *Done 2026-11-05 (ticked):* the spans are searched too. The capture (`capture_with_spans` in `tests/support/logs.rs`) writes
+  every span with its fields when it is created and when it closes, whether or not an event happens inside it, which is the
+  attribute set a trace exporter sends; the test proves it was listening with a span of its own, and the flow now includes the
+  lookup. A mutant that creates a span carrying the identifier is killed. What is left of G1971 is the wire conversion of an
+  OTLP exporter, which carries the same fields and belongs to T018-071's export canary.
 
 ## Phase 6: US04 — Signal-with-Start and Update-with-Start (P2)
 

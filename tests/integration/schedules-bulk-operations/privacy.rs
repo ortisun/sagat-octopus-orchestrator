@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::firing::fixture;
 use crate::support::engine::ctx;
-use crate::support::logs::capture_at;
+use crate::support::logs::capture_with_spans;
 
 fn options(id: &str, conflict: ConflictPolicy, reuse: ReusePolicy) -> StartOptions {
     StartOptions {
@@ -42,9 +42,11 @@ fn an_identifier_reaches_only_the_binding_and_the_run() {
         .enable_all()
         .build()
         .expect("runtime");
-    let (guard, logs) = capture_at(tracing::Level::TRACE);
-    // the capture is alive: a line of ours is in it, so an empty log means the platform logged nothing
+    let (guard, logs) = capture_with_spans(tracing::Level::TRACE);
+    // the capture is alive: a line and a span of ours are in it, so an empty log means the platform
+    // logged nothing, and no span line means no span was seen
     tracing::warn!(probe = "privacy-probe", "the capture is on");
+    drop(tracing::info_span!("privacy_span_probe", probe = "kept"));
     let said = metrics::with_local_recorder(&recorder, || {
         runtime.block_on(async {
             let f = fixture().await;
@@ -163,8 +165,8 @@ fn an_identifier_reaches_only_the_binding_and_the_run() {
         );
     }
     assert!(
-        logs.text().contains("privacy-probe"),
-        "the log capture was listening"
+        logs.text().contains("privacy-probe") && logs.text().contains("privacy_span_probe"),
+        "the log capture was listening, spans included"
     );
     assert!(
         !logs.text().contains(&canary),
