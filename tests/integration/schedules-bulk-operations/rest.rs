@@ -881,6 +881,10 @@ async fn a_backfill_is_asked_for_listed_and_stopped_over_http() {
         )
         .await;
     assert_eq!(status, 429, "{busy}");
+    assert_eq!(
+        busy["details"]["reason"], "BACKFILL_CONCURRENCY",
+        "the ceiling says which it is: {busy}"
+    );
 
     let cancel = format!("{backfills}/{backfill}/cancel");
     let (status, stopped) = r

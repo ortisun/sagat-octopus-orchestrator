@@ -122,6 +122,78 @@ impl ErrorCode {
             (Self::Conflict, "RUN_CONTINUED") => {
                 "Address the current chain head explicitly if the update is meant for its successor."
             }
+            // feature 018: the sentences of `specs/018-schedules-bulk-operations/contracts/errors.md`,
+            // which a contract test keeps equal to this table
+            (Self::ValidationFailed, "SCHEDULE_SPEC_INVALID") => {
+                "A spec field is outside its domain or ceiling; `details.field` names the JSON pointer."
+            }
+            (Self::ValidationFailed, "SCHEDULE_NEVER_FIRES") => {
+                "The spec has no occurrence between `startAt` and `endAt`."
+            }
+            (Self::ValidationFailed, "SCHEDULE_TOO_FREQUENT") => {
+                "Two occurrences are closer than the minimum spacing; widen the spec."
+            }
+            (Self::ValidationFailed, "SCHEDULE_ZONE_UNKNOWN") => {
+                "Use an IANA zone name known to the platform."
+            }
+            (Self::ValidationFailed, "SCHEDULE_INPUT_INVALID") => {
+                "The input does not match the target version's input schema (no excerpt)."
+            }
+            (Self::ValidationFailed, "BACKFILL_RANGE_INVALID") => {
+                "`start` must be before `end` and `end` not after now."
+            }
+            (Self::ValidationFailed, "BACKFILL_LIMIT") => {
+                "The range holds more nominal times than one backfill may act on; split it."
+            }
+            (Self::Conflict, "SCHEDULE_TRIGGER_OWNED") => {
+                "Change the cron trigger in the workflow definition and publish it."
+            }
+            (Self::Conflict, "SCHEDULE_TRIGGER_HANDOVER_PENDING") => {
+                "The legacy cron pass still runs; the operator completes the handover once every engine is upgraded."
+            }
+            (Self::QuotaExceeded, "SCHEDULE_LIMIT" | "BACKFILL_CONCURRENCY" | "BATCH_LIMIT") => {
+                "A namespace or tenant ceiling is reached; free capacity or ask an administrator."
+            }
+            (Self::ValidationFailed, "BUSINESS_ID_INVALID") => "1 to 200 visible ASCII characters.",
+            (Self::Conflict, "BUSINESS_ID_IN_USE") => {
+                "Another open execution holds this id; `details.runId` names it when the caller may read runs."
+            }
+            (Self::Conflict, "BUSINESS_ID_REUSE_REJECTED") => {
+                "The reuse policy forbids a new run while the previous one is remembered; `details.reusableAfter` says until when."
+            }
+            (Self::ValidationFailed, "START_DELAY_INVALID") => "1 ms to 366 days.",
+            (Self::ValidationFailed, "START_DELAY_WITH_SIGNAL") => {
+                "A delayed run cannot accept a signal at creation; start, then signal later."
+            }
+            (Self::Conflict, "NOT_WAITING") => {
+                "No step of the run waits for this signal now; signals are never buffered."
+            }
+            (Self::Conflict, "SIGNAL_NOT_ACCEPTED_AT_START") => {
+                "The workflow's entry does not wait for this signal, or feature 022 would queue the new run; nothing was created."
+            }
+            (Self::ValidationFailed, "BATCH_SELECTOR_INVALID") => {
+                "The filter or run-id list is malformed or over its ceiling."
+            }
+            (Self::ValidationFailed, "QUERY_UNSUPPORTED_OPERATOR") => "Use the structured filter.",
+            (Self::ValidationFailed, "BATCH_ACTION_UNAVAILABLE") => {
+                "Enable the feature or choose another action."
+            }
+            (Self::ValidationFailed, "BATCH_LIMITS_INVALID") => {
+                "`maxItems` is 1 to 100,000 and `itemsPerSecond` above 0 and at most 200."
+            }
+            (Self::ValidationFailed, "BATCH_REASON_INVALID") => {
+                "The reason is 8 to 2,000 characters of plain text once trimmed: no control character, a new line included."
+            }
+            (Self::ValidationFailed, "BATCH_PAYLOAD_INVALID" | "BATCH_PAYLOAD_TOO_LARGE") => {
+                "The payload must be a JSON object (a signal) and at most 256 KiB."
+            }
+            (Self::ValidationFailed, "BATCH_SELECTOR_UNSUPPORTED") => {
+                "Business ids are not bound to runs yet; select by the other filters or by run ids."
+            }
+            (Self::ValidationFailed, "BATCH_ACTION_PARAMETERS") => {
+                "The action needs (or refuses) `stepId`, `signal` or `update`; a signal name is 1 to 128 characters of letters, digits and `_ . : -`; a step id is a step of the workflow."
+            }
+            (Self::Conflict, "BATCH_NOT_CANCELLABLE") => "The job already ended.",
             (Self::NotFound, "ROUTE_NOT_FOUND") | (Self::BadRequest, "METHOD_NOT_ALLOWED") => {
                 "This server does not have that call: check the path and method, and the version of the API it speaks."
             }
@@ -154,6 +226,27 @@ impl ErrorCode {
                 "Try again once; if it happens again, report the trace id to the operator of the platform."
             }
         }
+    }
+}
+
+/// The `details.reason` of a refusal at one of the ceilings feature 018 adds; the other limits carry
+/// only `details.limit`.
+fn quota_reason(limit: &str) -> Option<&'static str> {
+    use sagat_domain::quota::QuotaResource;
+    // The label is the one the refusing store passes: a resource's `limit_name`, or the one ceiling of
+    // a backfill per schedule, which is not a resource of its own.
+    if limit == QuotaResource::Schedules.limit_name() {
+        Some("SCHEDULE_LIMIT")
+    } else if limit == QuotaResource::ScheduleBackfills.limit_name()
+        || limit == "schedule_backfills_per_schedule"
+    {
+        Some("BACKFILL_CONCURRENCY")
+    } else if limit == QuotaResource::BatchJobs.limit_name()
+        || limit == QuotaResource::TenantBatchJobs.limit_name()
+    {
+        Some("BATCH_LIMIT")
+    } else {
+        None
     }
 }
 
@@ -758,7 +851,11 @@ impl ApiError {
                     ErrorCode::QuotaExceeded,
                     "a limit was reached; release something and retry",
                 );
-                e.parts.details = Some(json!({ "limit": what }));
+                // the ceilings of feature 018 say which they are (`contracts/errors.md`)
+                e.parts.details = Some(match quota_reason(what) {
+                    Some(reason) => json!({ "limit": what, "reason": reason }),
+                    None => json!({ "limit": what }),
+                });
                 e
             }
             AppError::Unavailable => Self::unavailable(),

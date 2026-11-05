@@ -11,6 +11,7 @@ use sagat_application::identity::{PageRequest, RequestContext};
 use sagat_domain::batch::{Action, Filter, ItemState, JobState, Justification, Rate, Selector};
 use sagat_domain::execution::RunStatus;
 use sagat_domain::identity::Role;
+use sagat_domain::quota::QuotaResource;
 use sagat_infra_postgres::PgBatchStore;
 use serde_json::json;
 use time::Duration;
@@ -395,7 +396,7 @@ async fn active_jobs_are_limited_per_namespace_and_a_limit_of_zero_refuses_befor
     create(&f, cancel(), "batch-two").await.expect("two");
     let third = create(&f, cancel(), "batch-three").await;
     assert!(
-        matches!(third, Err(AppError::QuotaExceeded(_))),
+        matches!(third, Err(AppError::QuotaExceeded(what)) if what == QuotaResource::BatchJobs.limit_name()),
         "two active jobs per namespace by default: {third:?}"
     );
     assert_eq!(jobs_stored(&f).await, 2);
@@ -430,7 +431,7 @@ async fn the_active_jobs_of_a_tenant_are_limited_too() {
     let second = create(&f, cancel(), "second-key").await;
 
     assert!(
-        matches!(second, Err(AppError::QuotaExceeded(_))),
+        matches!(second, Err(AppError::QuotaExceeded(what)) if what == QuotaResource::TenantBatchJobs.limit_name()),
         "the namespace has room, the tenant has none: {second:?}"
     );
 }

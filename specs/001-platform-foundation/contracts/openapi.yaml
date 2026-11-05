@@ -4677,6 +4677,16 @@ components:
             `CLASSIFICATION`, `UNKNOWN_SUBJECT`, `ROLE_CANNOT_REVEAL` and `GRANT_LIMIT`;
             compensation safety (feature 037) refines `CONFLICT` with `OUTCOME_UNRESOLVED` (another
             attempt was asked of a step whose last outcome is unknown);
+            schedules, batch operations, business identifiers and start options (feature 018) refine
+            `VALIDATION_FAILED` with `SCHEDULE_SPEC_INVALID`, `SCHEDULE_NEVER_FIRES`, `SCHEDULE_TOO_FREQUENT`,
+            `SCHEDULE_ZONE_UNKNOWN`, `SCHEDULE_INPUT_INVALID`, `BACKFILL_RANGE_INVALID`, `BACKFILL_LIMIT`,
+            `BUSINESS_ID_INVALID`, `START_DELAY_INVALID`, `START_DELAY_WITH_SIGNAL`, `BATCH_SELECTOR_INVALID`,
+            `QUERY_UNSUPPORTED_OPERATOR`, `BATCH_ACTION_UNAVAILABLE`, `BATCH_LIMITS_INVALID`,
+            `BATCH_REASON_INVALID`, `BATCH_PAYLOAD_INVALID`, `BATCH_PAYLOAD_TOO_LARGE`,
+            `BATCH_SELECTOR_UNSUPPORTED` and `BATCH_ACTION_PARAMETERS`, `CONFLICT` with `SCHEDULE_TRIGGER_OWNED`,
+            `SCHEDULE_TRIGGER_HANDOVER_PENDING`, `BUSINESS_ID_IN_USE`, `BUSINESS_ID_REUSE_REJECTED`,
+            `NOT_WAITING`, `SIGNAL_NOT_ACCEPTED_AT_START` and `BATCH_NOT_CANCELLABLE`, and `QUOTA_EXCEEDED` with
+            `SCHEDULE_LIMIT`, `BACKFILL_CONCURRENCY` and `BATCH_LIMIT`;
             they do not add a new `Error.code` value. An `UNSUPPORTED_NODE` for a combination the design accepts
             but whose prerequisite is not built yet also carries `dependency`, a closed name of what has to exist
             first (`SCOPED_COMPENSATION`: an approval inside a collection or loop body), next to `node` and `kind`.

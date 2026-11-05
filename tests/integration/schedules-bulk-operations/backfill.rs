@@ -8,6 +8,7 @@ use sagat_application::identity::RequestContext;
 use sagat_application::schedule_firing::Fired;
 use sagat_application::schedules::{BackfillRecord, BackfillRequest, BackfillState, DueBackfill};
 use sagat_domain::identity::{Principal, Role, Subject};
+use sagat_domain::quota::QuotaResource;
 use sagat_domain::schedules::Overlap;
 use serde_json::json;
 use time::{Duration, OffsetDateTime};
@@ -127,7 +128,13 @@ async fn a_backfill_is_recorded_with_its_range_and_the_buffering_default() {
     )
     .await
     .expect_err("one at a time");
-    assert!(matches!(own, AppError::QuotaExceeded(_)), "{own:?}");
+    assert!(
+        matches!(
+            own,
+            AppError::QuotaExceeded("schedule_backfills_per_schedule")
+        ),
+        "{own:?}"
+    );
 }
 
 #[tokio::test]
@@ -197,7 +204,13 @@ async fn a_schedule_runs_one_backfill_at_a_time_and_a_namespace_four() {
     let second = request(&f, first.id, &five_hours())
         .await
         .expect_err("a second on the same schedule");
-    assert!(matches!(second, AppError::QuotaExceeded(_)), "{second:?}");
+    assert!(
+        matches!(
+            second,
+            AppError::QuotaExceeded("schedule_backfills_per_schedule")
+        ),
+        "{second:?}"
+    );
     f.service
         .cancel_backfill(&f.w.admin, first.id, held.id, &RequestContext::default())
         .await
@@ -217,7 +230,10 @@ async fn a_schedule_runs_one_backfill_at_a_time_and_a_namespace_four() {
     let full = request(&f, last.id, &five_hours())
         .await
         .expect_err("the namespace is full");
-    assert!(matches!(full, AppError::QuotaExceeded(_)), "{full:?}");
+    assert!(
+        matches!(full, AppError::QuotaExceeded(what) if what == QuotaResource::ScheduleBackfills.limit_name()),
+        "{full:?}"
+    );
 }
 
 #[tokio::test]

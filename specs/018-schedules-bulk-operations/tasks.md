@@ -824,8 +824,15 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   Updates declared `reapplyOnReset` — `crates/application/src/{runs.rs,chain_progress.rs,declared_operations.rs}`,
   `crates/scheduler/src/events.rs`, `crates/infra-postgres/src/event_codec.rs` — old/new codec round-trip,
   no payload written for undeclared Updates, content charge — FR-018-039.
-- [ ] T018-044 [US4] Error reasons and remediation rows — `crates/api-http/src/error.rs`,
+- [x] T018-044 [US4] Error reasons and remediation rows — `crates/api-http/src/error.rs`,
   `docs/quickstarts/errors.md` — `errors-018` contract test — FR-018-043.
+  *Done 2026-11-05 (D1971, G1975), for the reasons the built operations raise:* 29 reasons have a row of their own
+  in `ErrorCode::remediation`, each with the sentence of the contract's table, and are named in the OpenAPI;
+  `contract_schedules_bulk_operations errors::` (3 tests) fails when a sentence, a row, the OpenAPI mention or the
+  classification of a table row drifts (6 mutants killed), and `crates/api-http/tests/quota_reasons.rs` plus the
+  tightened quota assertions of `limits.rs`, `backfill.rs`, `batch.rs` and `rest.rs` tie the three ceilings'
+  `details.reason` to the labels the stores really pass. `docs/quickstarts/errors.md` is for definition
+  problems and is not touched (D1971). The reasons of reset, 020, 022, 029 and 031 are added with the tasks that raise them.
 
 ## Phase 7: US05 — Batch operations (P2)
 
