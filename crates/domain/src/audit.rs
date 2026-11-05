@@ -92,7 +92,8 @@ pub enum AuditAction {
     DatabaseConnectionChanged,
     DatabaseDenied,
     DatabaseResultRead,
-    /// A catalog was browsed (feature 035). It names the connection and the level asked for, never a table.
+    /// A catalog was browsed (feature 035). It names the connection and the level asked for, never a table. Every
+    /// browse is one row: it does not collapse repeats (D035-075).
     DatabaseCatalogBrowsed,
     /// An operator retried, skipped or resolved a destination step (feature 035).
     DestinationDecided,
@@ -252,7 +253,6 @@ impl AuditAction {
                 | Self::SecretDenied
                 | Self::SecretDeliveryRefused
                 | Self::DatabaseDenied
-                | Self::DatabaseCatalogBrowsed
                 | Self::EventRejected
                 | Self::ScriptViolation
                 | Self::AuditRead
@@ -277,7 +277,6 @@ impl AuditAction {
             Self::AuditRead
             | Self::PublicationDenied
             | Self::DatabaseDenied
-            | Self::DatabaseCatalogBrowsed
             | Self::PayloadInspected
             | Self::PayloadInspectionDenied
             | Self::PayloadDisclosed

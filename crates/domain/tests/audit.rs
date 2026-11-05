@@ -183,11 +183,11 @@ fn payload_disclosure_audits_have_the_decided_repeat_semantics() {
     }
 }
 
-/// Feature 035 (D035-066). A browse is a read that a developer can repeat as often as they like, so repeats of the
-/// same one collapse like the other reads; a decision about a step, or a request to revert a commit, is an event
-/// each time and never collapses.
+/// Feature 035 (D035-066, D035-075). "Every browse is audited" (contracts/connections.md): a repeat is not collapsed, and
+/// the trail is bounded by the browse limit of the API (30 a minute for an actor), not by a dedupe that would hide how
+/// much of a catalog someone walked. A decision about a step and a request to revert a commit are events each time.
 #[test]
-fn the_audit_actions_of_the_lake_have_stable_names_and_the_decided_repeat_semantics() {
+fn the_audit_actions_of_the_lake_have_stable_names_and_none_collapses_repeats() {
     assert_eq!(
         AuditAction::DatabaseCatalogBrowsed.as_str(),
         "database.catalog_browsed"
@@ -201,12 +201,8 @@ fn the_audit_actions_of_the_lake_have_stable_names_and_the_decided_repeat_semant
         "iceberg.revert_requested"
     );
 
-    assert!(AuditAction::DatabaseCatalogBrowsed.collapses_repeats());
-    assert_eq!(
-        AuditAction::DatabaseCatalogBrowsed.repeat_window(),
-        Some(std::time::Duration::from_secs(300))
-    );
     for action in [
+        AuditAction::DatabaseCatalogBrowsed,
         AuditAction::DestinationDecided,
         AuditAction::IcebergRevertRequested,
     ] {

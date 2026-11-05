@@ -345,21 +345,59 @@ fn database_browse_is_held_by_developers_and_admins_only() {
     }
 }
 
-/// The permissions a built-in role grants to nobody on purpose; every other permission is held by a role that the
-/// matrix above names. A permission added to `ALL` without either decision fails here, not in production.
+/// The permissions only the admin role holds, decided one by one (the admin list is "everything but the PII reveal", so
+/// it would call any new permission decided).
+const ADMIN_ONLY: [Permission; 13] = [
+    Permission::WorkspaceCreate,
+    Permission::NamespaceCreate,
+    Permission::MembershipManage,
+    Permission::AuditRead,
+    Permission::QuotaManage,
+    Permission::SecretManage,
+    Permission::EgressManage,
+    Permission::WorkerBind,
+    Permission::SagaOverride,
+    Permission::PublicationManage,
+    Permission::DatabaseManage,
+    Permission::DatabaseWrite,
+    Permission::DatabaseResultRead,
+];
+
+/// The permissions a built-in role grants to nobody on purpose.
 const GRANTED_TO_NO_BUILTIN_ROLE: [Permission; 1] = [Permission::PayloadRevealPii];
 
+const OTHER_ROLES: [Role; 6] = [
+    Role::Developer,
+    Role::Operator,
+    Role::Viewer,
+    Role::Worker,
+    Role::Runner,
+    Role::DatabaseRunner,
+];
+
+/// A permission added to `ALL` is held by a role of the hand-written matrix, or is admin-only, or is granted to nobody,
+/// and it is named here. Without that it fails in this test and not in production.
 #[test]
 fn every_permission_has_a_role_decision() {
     for permission in Permission::ALL {
-        let decided = ALL_ROLES
+        let held_by_another_role = OTHER_ROLES
             .into_iter()
-            .any(|role| expected(role).contains(&permission))
+            .any(|role| expected(role).contains(&permission));
+        let decided = held_by_another_role
+            || ADMIN_ONLY.contains(&permission)
             || GRANTED_TO_NO_BUILTIN_ROLE.contains(&permission);
         assert!(
             decided,
             "{permission} is in Permission::ALL and in no role decision"
         );
+    }
+    for permission in ADMIN_ONLY {
+        for role in OTHER_ROLES {
+            assert!(
+                !expected(role).contains(&permission),
+                "{permission} is listed as admin-only and {role} holds it"
+            );
+        }
     }
 }
 

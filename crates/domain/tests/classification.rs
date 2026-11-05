@@ -154,15 +154,21 @@ fn an_audience_cannot_reveal_pii_without_reading_internal() {
 
 // ---- Classification at egress (feature 035: FR-035-025, D035-051) -----------------------------------------------
 
-/// `secret` is always refused; any other level may leave when it does not exceed the ceiling.
+/// `secret` is always refused; any other level may leave when it does not exceed the ceiling. The table is written
+/// out, rows are the level of the field and columns the ceiling, both in the order public, internal, pii, secret.
 #[test]
 fn within_holds_for_every_pair_of_the_four_levels() {
-    for level in Level::ALL {
-        for ceiling in Level::ALL {
-            let expected = level != Level::Secret && level <= ceiling;
+    const TABLE: [[bool; 4]; 4] = [
+        [true, true, true, true],
+        [false, true, true, true],
+        [false, false, true, true],
+        [false, false, false, false],
+    ];
+    for (row, level) in Level::ALL.into_iter().enumerate() {
+        for (column, ceiling) in Level::ALL.into_iter().enumerate() {
             assert_eq!(
                 within(level, ceiling),
-                expected,
+                TABLE[row][column],
                 "{level} against a ceiling of {ceiling}"
             );
         }
@@ -176,28 +182,41 @@ fn a_secret_field_is_within_no_ceiling() {
     }
 }
 
+/// The level of a written field is the stricter of the level it inherits from its source and the one a record schema
+/// declares. A source that carries no annotation is `pii` under 016 (unmarked), so it is an inherited `pii`, not an
+/// absent level: a declaration can only raise a level.
 #[test]
 fn the_written_level_is_the_stricter_of_the_inherited_and_the_declared_level() {
-    let options = [
-        None,
-        Some(Level::Public),
-        Some(Level::Internal),
-        Some(Level::Pii),
-        Some(Level::Secret),
+    use Level::{Internal, Pii, Public, Secret};
+    // (inherited, declared, written)
+    let cases: [(Option<Level>, Option<Level>, Level); 20] = [
+        (None, None, Pii),
+        (None, Some(Public), Pii),
+        (None, Some(Internal), Pii),
+        (None, Some(Pii), Pii),
+        (None, Some(Secret), Secret),
+        (Some(Public), None, Public),
+        (Some(Public), Some(Public), Public),
+        (Some(Public), Some(Internal), Internal),
+        (Some(Public), Some(Pii), Pii),
+        (Some(Public), Some(Secret), Secret),
+        (Some(Internal), None, Internal),
+        (Some(Internal), Some(Public), Internal),
+        (Some(Internal), Some(Pii), Pii),
+        (Some(Pii), None, Pii),
+        (Some(Pii), Some(Public), Pii),
+        (Some(Pii), Some(Internal), Pii),
+        (Some(Secret), None, Secret),
+        (Some(Secret), Some(Public), Secret),
+        (Some(Secret), Some(Pii), Secret),
+        (Some(Internal), Some(Secret), Secret),
     ];
-    for inherited in options {
-        for declared in options {
-            let expected = match (inherited, declared) {
-                (None, None) => Level::UNMARKED,
-                (Some(level), None) | (None, Some(level)) => level,
-                (Some(a), Some(b)) => a.max(b),
-            };
-            assert_eq!(
-                written_level(inherited, declared),
-                expected,
-                "inherited {inherited:?}, declared {declared:?}"
-            );
-        }
+    for (inherited, declared, written) in cases {
+        assert_eq!(
+            written_level(inherited, declared),
+            written,
+            "inherited {inherited:?}, declared {declared:?}"
+        );
     }
 }
 
@@ -216,6 +235,17 @@ fn a_public_declaration_never_lowers_an_inherited_pii_field() {
         written_level(Some(Level::Pii), Some(Level::Public)),
         Level::Internal
     ));
+}
+
+/// FR-035-025 reads an unannotated field as `pii` (016, restrictive), so a `public` or `internal` record schema cannot
+/// make a field of a source that never classified it leave through a `public` or `internal` ceiling.
+#[test]
+fn a_declaration_cannot_lower_a_field_whose_source_is_unannotated() {
+    for declared in [Level::Public, Level::Internal] {
+        let level = written_level(None, Some(declared));
+        assert_eq!(level, Level::Pii, "declared {declared}");
+        assert!(!within(level, Level::Internal));
+    }
 }
 
 #[test]
@@ -264,18 +294,16 @@ fn the_default_ceiling_is_internal_and_only_pii_needs_the_reveal_grant() {
 
 #[test]
 fn a_ceiling_admits_exactly_the_levels_up_to_it() {
-    for ceiling in [
-        EgressCeiling::Public,
-        EgressCeiling::Internal,
-        EgressCeiling::Pii,
+    use Level::{Internal, Pii, Public};
+    for (ceiling, admitted) in [
+        (EgressCeiling::Public, vec![Public]),
+        (EgressCeiling::Internal, vec![Public, Internal]),
+        (EgressCeiling::Pii, vec![Public, Internal, Pii]),
     ] {
-        for level in Level::ALL {
-            assert_eq!(
-                ceiling.admits(level),
-                within(level, ceiling.as_level()),
-                "{level} / {ceiling:?}"
-            );
-        }
+        let admits: Vec<Level> = Level::ALL
+            .into_iter()
+            .filter(|level| ceiling.admits(*level))
+            .collect();
+        assert_eq!(admits, admitted, "{ceiling:?}");
     }
-    assert!(!EgressCeiling::Pii.admits(Level::Secret));
 }

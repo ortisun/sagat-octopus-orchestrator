@@ -365,7 +365,7 @@ pub enum Permission {
     DatabaseWrite,
     DatabaseResultRead,
     /// Browse the catalog of an Iceberg connection: namespaces, tables and the shape of a table (feature 035). A
-    /// customer's metadata, so it is not part of `database:use`; held by the roles that manage connections.
+    /// customer's metadata, so it is not part of `database:use`; held by developers and admins (D035-066).
     DatabaseBrowse,
     /// Resolve only a leased managed database capability; additionally requires the machine role.
     DatabaseExecute,

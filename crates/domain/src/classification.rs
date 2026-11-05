@@ -98,13 +98,21 @@ pub const fn within(level: Level, ceiling: Level) -> bool {
 }
 
 /// The level of a written field: the stricter of the level it inherits from its source and the one a record schema
-/// declares, so a declaration can raise a level and never lower it; a field with neither is `pii` (D035-051).
+/// declares, so a declaration can raise a level and never lower it (D035-051).
+///
+/// `inherited` is the level the source step's output schema gives the field, or `None` when the source carries no
+/// annotation. An unannotated field is `pii` under 016 (FR-035-025: "an undeclared field counts as `pii`"), so `None`
+/// is an inherited `pii`, not an absent level: a `public` declaration of the record schema must not lower it. A field
+/// with neither level is therefore `pii`.
 #[must_use]
 pub const fn written_level(inherited: Option<Level>, declared: Option<Level>) -> Level {
-    match (inherited, declared) {
-        (Some(inherited), Some(declared)) => inherited.stricter(declared),
-        (Some(level), None) | (None, Some(level)) => level,
-        (None, None) => Level::UNMARKED,
+    let inherited = match inherited {
+        Some(level) => level,
+        None => Level::UNMARKED,
+    };
+    match declared {
+        Some(declared) => inherited.stricter(declared),
+        None => inherited,
     }
 }
 
