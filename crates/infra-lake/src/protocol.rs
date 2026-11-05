@@ -68,6 +68,11 @@ impl RelayToken {
     pub fn new(token: impl Into<String>) -> Self {
         Self(token.into())
     }
+
+    /// For the comparison the relay makes; the token is never shown or logged.
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
 }
 
 impl fmt::Debug for RelayToken {
