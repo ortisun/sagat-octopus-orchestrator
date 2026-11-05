@@ -6,6 +6,7 @@ mod cleanup_retention;
 mod consumers;
 mod executor;
 mod key_rotation;
+mod lake;
 mod output;
 mod output_blobs;
 mod policies;
@@ -263,6 +264,8 @@ async fn managed_secret_lifecycle(progress: Progress) {
     connection_catalog(&w).await;
     progress.enter("egress ceiling and the reveal grant");
     Box::pin(egress_ceiling_needs_the_reveal_grant(&w)).await;
+    progress.enter("the Iceberg connection");
+    Box::pin(lake::run(&w)).await;
     progress.enter("ad_hoc::run");
     Box::pin(ad_hoc::run(&w)).await;
     progress.enter("admission::run");

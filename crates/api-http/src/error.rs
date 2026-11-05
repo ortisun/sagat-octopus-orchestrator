@@ -98,6 +98,48 @@ impl ErrorCode {
             (Self::ValidationFailed, "INVALID_ARGUMENTS") => {
                 "Send arguments that match the argument schema the operation declares."
             }
+            (Self::ValidationFailed, "INVALID_URI") => {
+                "Send an http or https address with a host, and no space or control character."
+            }
+            (Self::ValidationFailed, "CREDENTIAL_IN_URI") => {
+                "Remove the user name, the password and the query from the address: a credential belongs in a secret, which the connection refers to by name."
+            }
+            (Self::ValidationFailed, "INVALID_CATALOG") => {
+                "Check the catalog settings: the REST warehouse and prefix, the Glue region and catalog id, 1 to 4 thrift:// addresses for Hive, or the JDBC target."
+            }
+            (Self::ValidationFailed, "INVALID_STORAGE") => {
+                "Check the storage settings: the region, the account name and the endpoint of the storage type."
+            }
+            (Self::ValidationFailed, "VENDED_NEEDS_DELEGATION") => {
+                "Vended credentials need a REST catalog whose accessDelegation is vended-credentials; otherwise use static credentials."
+            }
+            (Self::ValidationFailed, "STORAGE_SECRET_WITH_VENDED") => {
+                "Remove the storage secret: with vended credentials the catalog supplies them and the platform never holds them."
+            }
+            (Self::ValidationFailed, "STORAGE_SECRET_REQUIRED") => {
+                "Name the secret that holds the storage credentials, or use vended credentials with a REST catalog that delegates access."
+            }
+            (Self::ValidationFailed, "CATALOG_SECRET_REQUIRED") => {
+                "Name the secret that holds the catalog credentials."
+            }
+            (Self::ValidationFailed, "CATALOG_SECRET_FORBIDDEN") => {
+                "Remove the catalog secret: a Hive metastore has no credentials."
+            }
+            (Self::ValidationFailed, "INVALID_LOCATIONS") => {
+                "Send 1 to 16 distinct warehouse locations, each without a query, a fragment, user information or a .. segment."
+            }
+            (Self::ValidationFailed, "LOCATION_SCHEME_MISMATCH") => {
+                "Use the scheme of the storage type for every warehouse location: s3:// for S3, gs:// for GCS, abfss:// for ADLS."
+            }
+            (Self::ValidationFailed, "INVALID_MODES") => {
+                "Allow at least one of append, overwrite and upsert, each once."
+            }
+            (Self::ValidationFailed, "INVALID_LIMITS") => {
+                "Keep each limit inside its range, or leave it out; zero does not mean unlimited."
+            }
+            (Self::ValidationFailed, "UNAUTHENTICATED_METASTORE_NOT_ALLOWED") => {
+                "This deployment does not allow a Hive metastore without TLS: use tls required, or ask the operator to allow it."
+            }
             (Self::ValidationFailed, "INVALID_UPDATE_KEY") => {
                 "Use an update key of 1 to 128 printable ASCII characters without spaces, and keep it for retries."
             }
@@ -636,6 +678,13 @@ impl ApiError {
             AppError::StateConflict(message) => {
                 let mut e = Self::new(StatusCode::CONFLICT, ErrorCode::Conflict, message);
                 e.parts.details = Some(json!({ "reason": "STATE_CONFLICT" }));
+                e
+            }
+            AppError::InvalidConnection { reason } => {
+                let mut e = Self::validation(format!(
+                    "the connection settings are not acceptable: {reason}"
+                ));
+                e.parts.details = Some(json!({ "reason": reason }));
                 e
             }
             AppError::InvalidSchedule { reason, field } => {

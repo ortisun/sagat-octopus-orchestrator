@@ -135,6 +135,10 @@ pub enum AppError {
     /// A request the *current state* of the resource cannot accept (cancelling a finished run).
     #[error("conflict with the current state: {0}")]
     StateConflict(&'static str),
+    /// A connection (feature 035) whose settings are not acceptable: `reason` is the closed `details.reason` of the
+    /// contract (`CREDENTIAL_IN_URI`, ...). It names a rule and never a value of the request.
+    #[error("the connection settings are not acceptable: {reason}")]
+    InvalidConnection { reason: &'static str },
     /// A schedule (feature 018) that is not acceptable: `reason` is the closed `details.reason`
     /// of the contract and `field` the place of the request it concerns. Never a payload.
     #[error("invalid schedule: {reason}")]

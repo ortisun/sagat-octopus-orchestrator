@@ -1,5 +1,6 @@
 //! Connection heads, immutable revisions and receipts. No customer database I/O.
 mod admission;
+mod iceberg;
 pub(crate) mod policy;
 use crate::{
     execution::PgRunStore,
@@ -42,41 +43,73 @@ pub(crate) async fn current_permission(
         .ok_or(StoreError::MissingReference)?;
     Ok(role)
 }
-fn config_json(config: &ConnectionConfig) -> Value {
-    let ConnectionConfig::Postgres {
-        host,
-        port,
-        database,
-        tls,
-        secret,
-        limits,
-        egress_ceiling,
-    } = config;
-    let tls = match tls {
+fn tls_json(tls: &TlsPolicy) -> Value {
+    match tls {
         TlsPolicy::VerifyFull { ca_pem } => json!({"mode":"verify-full", "caPem":ca_pem}),
         TlsPolicy::DevelopmentPlaintext => json!({"mode":"development-plaintext"}),
+    }
+}
+fn tls_from(value: &Value) -> Result<TlsPolicy, StoreError> {
+    match value["mode"].as_str() {
+        Some("verify-full") => Ok(TlsPolicy::VerifyFull {
+            ca_pem: match &value["caPem"] {
+                Value::Null => None,
+                Value::String(pem) => Some(pem.clone()),
+                _ => return Err(corrupt("database trust")),
+            },
+        }),
+        Some("development-plaintext") => Ok(TlsPolicy::DevelopmentPlaintext),
+        _ => Err(corrupt("database TLS")),
+    }
+}
+fn config_json(config: &ConnectionConfig) -> Value {
+    let mut json = match config {
+        ConnectionConfig::Postgres {
+            host,
+            port,
+            database,
+            tls,
+            secret,
+            limits,
+            ..
+        } => {
+            json!({"driver":"postgresql", "host":host,"port":port,"database":database,"tls":tls_json(tls),"secretName":secret.as_str(),"limits":{
+                "maxStatementBytes":limits.max_statement_bytes,"maxParameters":limits.max_parameters,"maxParameterBytes":limits.max_parameter_bytes,
+                "maxRows":limits.max_rows,"maxResultBytes":limits.max_result_bytes,"timeoutMs":limits.timeout_ms,
+                "connectTimeoutMs":limits.connect_timeout_ms,"poolSize":limits.pool_size,"idleTimeoutMs":limits.idle_timeout_ms
+            }})
+        }
+        ConnectionConfig::Iceberg(iceberg) => iceberg::to_json(iceberg),
     };
-    let mut json = json!({"driver":"postgresql", "host":host,"port":port,"database":database,"tls":tls,"secretName":secret.as_str(),"limits":{
-        "maxStatementBytes":limits.max_statement_bytes,"maxParameters":limits.max_parameters,"maxParameterBytes":limits.max_parameter_bytes,
-        "maxRows":limits.max_rows,"maxResultBytes":limits.max_result_bytes,"timeoutMs":limits.timeout_ms,
-        "connectTimeoutMs":limits.connect_timeout_ms,"poolSize":limits.pool_size,"idleTimeoutMs":limits.idle_timeout_ms
-    }});
     // The default is not written: a revision stored before feature 035 has no ceiling and reads as `internal`, and the
     // idempotent replay of a write compares the stored JSON with the new one, so both must stay byte-identical.
-    if *egress_ceiling != EgressCeiling::default() {
+    let egress_ceiling = config.egress_ceiling();
+    if egress_ceiling != EgressCeiling::default() {
         json["egressCeiling"] = json!(egress_ceiling.as_str());
     }
     json
 }
 pub(crate) fn config_from(value: &Value) -> Result<ConnectionConfig, StoreError> {
+    let config = match value["driver"].as_str() {
+        Some("postgresql") => postgres_from(value)?,
+        Some("iceberg") => iceberg::from_json(value)?,
+        _ => return Err(corrupt("database driver")),
+    };
+    let egress_ceiling = match &value["egressCeiling"] {
+        Value::Null => EgressCeiling::default(),
+        Value::String(name) => name
+            .parse::<EgressCeiling>()
+            .map_err(|_| corrupt("database egress ceiling"))?,
+        _ => return Err(corrupt("database egress ceiling")),
+    };
+    Ok(config.with_egress_ceiling(egress_ceiling))
+}
+fn postgres_from(value: &Value) -> Result<ConnectionConfig, StoreError> {
     let text = |name: &str| {
         value[name]
             .as_str()
             .ok_or_else(|| corrupt("database connection settings"))
     };
-    if text("driver")? != "postgresql" {
-        return Err(corrupt("database driver"));
-    }
     let limit = |name: &str| {
         value["limits"][name]
             .as_u64()
@@ -94,24 +127,6 @@ pub(crate) fn config_from(value: &Value) -> Result<ConnectionConfig, StoreError>
         pool_size: limit("poolSize")?,
         idle_timeout_ms: limit("idleTimeoutMs")?,
     };
-    let tls = match value["tls"]["mode"].as_str() {
-        Some("verify-full") => TlsPolicy::VerifyFull {
-            ca_pem: match &value["tls"]["caPem"] {
-                Value::Null => None,
-                Value::String(pem) => Some(pem.clone()),
-                _ => return Err(corrupt("database trust")),
-            },
-        },
-        Some("development-plaintext") => TlsPolicy::DevelopmentPlaintext,
-        _ => return Err(corrupt("database TLS")),
-    };
-    let egress_ceiling = match &value["egressCeiling"] {
-        Value::Null => EgressCeiling::default(),
-        Value::String(name) => name
-            .parse::<EgressCeiling>()
-            .map_err(|_| corrupt("database egress ceiling"))?,
-        _ => return Err(corrupt("database egress ceiling")),
-    };
     ConnectionConfig::postgres(
         text("host")?,
         value["port"]
@@ -119,11 +134,10 @@ pub(crate) fn config_from(value: &Value) -> Result<ConnectionConfig, StoreError>
             .and_then(|n| u16::try_from(n).ok())
             .ok_or_else(|| corrupt("database port"))?,
         text("database")?,
-        tls,
+        tls_from(&value["tls"])?,
         SecretName::parse(text("secretName")?).map_err(|_| corrupt("database secret reference"))?,
         limits,
     )
-    .map(|config| config.with_egress_ceiling(egress_ceiling))
     .map_err(|_| corrupt("database connection settings"))
 }
 pub(crate) fn from_row(row: &PgRow) -> Result<ConnectionRecord, StoreError> {
@@ -185,14 +199,7 @@ impl ConnectionStore for PgRunStore {
                 .await
                 .map_err(store_error)?;
         let environment = environment.ok_or(StoreError::MissingReference)?;
-        if matches!(
-            &write.config,
-            ConnectionConfig::Postgres {
-                tls: TlsPolicy::DevelopmentPlaintext,
-                ..
-            }
-        ) && environment != "dev"
-        {
+        if write.config.requires_development() && environment != "dev" {
             return Err(StoreError::StateConflict(
                 "plaintext database transport requires a development namespace",
             ));
@@ -260,16 +267,20 @@ impl ConnectionStore for PgRunStore {
                 .map_err(|_| StoreError::RevealGrantRequired)?;
         }
         if write.status != ConnectionStatus::Deleted {
-            let authority: Option<String> = sqlx::query_scalar("SELECT authority FROM secrets WHERE tenant_id=$1 AND namespace_id=$2 AND name=$3 FOR SHARE")
-                .bind(principal.tenant_id().as_uuid()).bind(namespace.as_uuid()).bind(write.config.secret().as_str()).fetch_optional(&mut *tx).await.map_err(store_error)?;
-            match authority.as_deref() {
-                Some("openbao") => (),
-                Some("local") => {
-                    return Err(StoreError::StateConflict(
-                        "migrate the selected secret to OpenBao first",
-                    ));
+            // Every secret the connection refers to (one for PostgreSQL; a catalog's and a storage's for Iceberg) must exist
+            // with OpenBao as its authority, and stays locked until the revision commits.
+            for name in write.config.secrets() {
+                let authority: Option<String> = sqlx::query_scalar("SELECT authority FROM secrets WHERE tenant_id=$1 AND namespace_id=$2 AND name=$3 FOR SHARE")
+                    .bind(principal.tenant_id().as_uuid()).bind(namespace.as_uuid()).bind(name.as_str()).fetch_optional(&mut *tx).await.map_err(store_error)?;
+                match authority.as_deref() {
+                    Some("openbao") => (),
+                    Some("local") => {
+                        return Err(StoreError::StateConflict(
+                            "migrate the selected secret to OpenBao first",
+                        ));
+                    }
+                    _ => return Err(StoreError::MissingReference),
                 }
-                _ => return Err(StoreError::MissingReference),
             }
         }
         let id = if let Some((id, _, _)) = current {

@@ -197,19 +197,14 @@ async fn check_definition(
             let id: Uuid = row.try_get("id").map_err(store_error)?;
             let revision: i32 = row.try_get("revision").map_err(store_error)?;
             let config = super::config_from(&row.try_get("config").map_err(store_error)?)?;
-            if matches!(
-                &config,
-                sagat_domain::database::ConnectionConfig::Postgres {
-                    tls: sagat_domain::database::TlsPolicy::DevelopmentPlaintext,
-                    ..
-                }
-            ) && environment != "dev"
-            {
+            // A SQL node can only use a SQL connection; a lake connection is unusable here.
+            let sql_secret = config.sql_secret().ok_or(StoreError::DatabaseUnavailable)?;
+            if config.requires_development() && environment != "dev" {
                 return Err(StoreError::DatabaseUnavailable);
             }
             let secret: Uuid = sqlx::query_scalar(
                 "SELECT id FROM secrets WHERE tenant_id=$1 AND namespace_id=$2 AND name=$3 AND authority='openbao' FOR SHARE")
-                .bind(tenant.as_uuid()).bind(namespace.as_uuid()).bind(config.secret().as_str())
+                .bind(tenant.as_uuid()).bind(namespace.as_uuid()).bind(sql_secret.as_str())
                 .fetch_optional(&mut *conn).await.map_err(store_error)?.ok_or(StoreError::DatabaseUnavailable)?;
             let granted: Vec<String> =
                 sqlx::query_scalar("SELECT subject FROM public.sagat_lock_secret_access($1,$2,$3)")
@@ -237,7 +232,7 @@ async fn check_definition(
         let mut effective = operation.clone();
         effective.limits = effective
             .limits
-            .intersect(config.limits())
+            .intersect(config.sql_limits().ok_or(StoreError::DatabaseUnavailable)?)
             .intersect(policy.limits);
         effective
             .validate()
