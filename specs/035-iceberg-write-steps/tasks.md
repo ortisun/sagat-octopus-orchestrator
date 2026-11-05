@@ -402,9 +402,18 @@ three conditions pass.
 - [ ] T035-020 [P] Write the failing rollout tests in `tests/integration/iceberg-writes/rollout.rs`:
   with `lake.enabled` off (the default), both publication and admission refuse with
   `VALIDATION_FAILED`, reason `LAKE_DISABLED`. Refs: D035-059.
-- [ ] T035-021 [P] Write the failing telemetry tests in `crates/telemetry/src/metrics.rs`: every label
+- [x] T035-021 [P] Write the failing telemetry tests in `crates/telemetry/src/metrics.rs`: every label
   of the plan's Observability metrics takes values only from its closed set, and none takes a
   connection, table, run or tenant identifier. Refs: FR-035-030, NFR-035-OBS.
+
+  *2026-11-05, done:* the 4 cases are in `crates/telemetry/tests/lake_vocabulary.rs`, next to the existing
+  `primitive_vocabulary.rs` and not in `metrics.rs`, because a test of the public vocabulary belongs in `tests/`. They
+  pin the names and label keys of the nine families of the plan, the absence of any label that could carry an
+  identifier, every closed set (the two the contract leaves open, sandbox exits and relay denials, are derived from
+  the ways `lake-runtime.md` says a container ends and what the relay policy refuses), and read the Prometheus page
+  back after recording every combination: each series has exactly its family's keys with values from the sets, and the
+  phase latency is a histogram. They did not compile before the module; two mutations (a recorder adding a `table`
+  label, a value added to a set) each failed the case that owns them.
 
 ### Implementation
 
@@ -556,8 +565,14 @@ three conditions pass.
 - [ ] T035-036 [P] Add the `lake.enabled` setting, off by default, to the control-plane and
   execution-engine configuration. Check it in `crates/application/src/publishing.rs` and at run
   admission in `crates/application/src/runs.rs`. T035-020 passes. Refs: D035-059.
-- [ ] T035-037 [P] Register the metric families of plan.md "Observability" in
+- [x] T035-037 [P] Register the metric families of plan.md "Observability" in
   `crates/telemetry/src/metrics.rs`. T035-021 passes. Refs: FR-035-030.
+
+  *2026-11-05, done:* `crates/telemetry/src/lake.rs`, a module of its own like the other vocabularies of the crate,
+  holds the nine families (`LakeMetric`), the eleven closed label sets (one macro builds each enum and its `ALL`) and
+  typed recorders (`record_write`, `record_phase`, ...), so a value outside a set cannot be passed. The families
+  reach the page when a runner records them (T035-035, T035-030); the runbook that lists them is the one of
+  `docs/runbooks/lake-destinations.md`. `cargo test -p sagat-telemetry`: all pass; workspace clippy clean.
 
 **Checkpoint**: G035-018 (REST and S3 clients), G035-020 and G035-022 are closed with evidence in
 research.md. User stories can start.
