@@ -720,12 +720,40 @@ async fn a_chain_holds_the_identifier_until_it_ends_and_every_segment_carries_it
                 Some(first.as_uuid()),
                 "the chain's initial run keeps the binding"
             );
+            // the lookup says the same: held by the chain, whose current run is the segment now
+            let binding = crate::business_id_lookup::lookup(&f, id)
+                .await
+                .expect("the binding of the chain");
+            let head: Uuid = sqlx::query_scalar(
+                "SELECT current_run_id FROM execution_chains WHERE chain_id = $1",
+            )
+            .bind(first.as_uuid())
+            .fetch_one(&f.w.db.pool)
+            .await
+            .expect("the head");
+            assert!(binding.open, "segment {segment}");
+            assert_eq!(binding.execution_id, first);
+            assert_eq!(binding.current_run_id.as_uuid(), head);
+            assert_eq!(binding.last_status, None);
         }
     }
     assert!(
         ended().await.is_some(),
         "the chain reached its limit and ended"
     );
+    let remembered = crate::business_id_lookup::lookup(&f, id)
+        .await
+        .expect("the chain that ended is remembered");
+    assert!(!remembered.open);
+    assert_eq!(remembered.execution_id, first);
+    assert_eq!(
+        remembered
+            .last_status
+            .map(|status| status.as_str().to_owned()),
+        ended().await,
+        "it says how the chain ended"
+    );
+    assert!(remembered.reusable_after.is_some());
     // every segment of the chain says what it was started under
     let segments: Vec<Uuid> = sqlx::query_scalar(
         "SELECT run_id FROM chain_segments WHERE chain_id = $1 ORDER BY segment_index",

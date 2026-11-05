@@ -389,6 +389,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/namespaces/{namespaceId}/business-ids/{businessId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * How a business identifier stands in a namespace
+         * @description Needs `run:read`. Says who holds the identifier (a run, or the initial run of a continuation chain, with the run that carries the work now), whether that execution is still open, how it ended, and until when a closed holder is remembered (`reusableAfter`, the end plus the reuse window). An identifier that is unbound, whose holder is gone, or that has been free for longer than its window is `404`, as is one that cannot be an identifier and a namespace of another tenant.
+         */
+        get: operations["getBusinessIdBinding"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/runs/{runId}/queries/{operationName}": {
         parameters: {
             query?: never;
@@ -3869,6 +3889,32 @@ export interface components {
              */
             businessId?: "KEEP" | "DROP";
         };
+        BusinessIdBinding: {
+            businessId: string;
+            /**
+             * Format: uuid
+             * @description The run that holds the identifier, or the initial run of the continuation chain that does.
+             */
+            executionId: string;
+            /**
+             * Format: uuid
+             * @description The run that carries the work now: the run itself, or the current segment of the chain.
+             */
+            currentRunId: string;
+            /** @description The holder has not reached a final outcome (a chain is open until it has one). */
+            open: boolean;
+            /** @description How the holder ended. Absent while it is open. */
+            lastStatus?: string;
+            /** Format: uuid */
+            workflowId: string;
+            /** Format: date-time */
+            boundAt: string;
+            /**
+             * Format: date-time
+             * @description When REJECT_DUPLICATE stops applying to a closed holder. Absent while it is open.
+             */
+            reusableAfter?: string;
+        };
         OperationResult: {
             /**
              * Format: uuid
@@ -6674,6 +6720,8 @@ export interface operations {
                 businessId?: string;
                 /** @description The runs whose business identifier starts with this text. A literal: nothing in it is a wildcard. */
                 businessIdPrefix?: string;
+                /** @description The runs this schedule started, whatever the kind of action (scheduled time, trigger now or backfill). */
+                scheduleId?: string;
             };
             header: {
                 /** @description Namespace; authorization derives tenant from token, not header. */
@@ -6775,6 +6823,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Run"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    getBusinessIdBinding: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                /** @description The business identifier, percent-encoded (1 to 200 visible ASCII characters). */
+                businessId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The binding */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BusinessIdBinding"];
                 };
             };
             401: components["responses"]["Unauthorized"];

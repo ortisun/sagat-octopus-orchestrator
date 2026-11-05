@@ -23,7 +23,8 @@ async fn a_start_with_a_business_identifier_conforms_to_the_contract_on_every_an
     let api = start().await;
     api.tenant("acme", "alice").await;
     let ws = api.create_workspace("alice", "acme", "platform").await;
-    api.create_namespace("alice", "acme", &ws, "payments", "dev")
+    let namespace = api
+        .create_namespace("alice", "acme", &ws, "payments", "dev")
         .await;
     let flow = json!({
         "apiVersion": "sagat-octopus-orchestrator.io/v1", "kind": "Workflow",
@@ -164,5 +165,37 @@ async fn a_start_with_a_business_identifier_conforms_to_the_contract_on_every_an
                 "{query}: {page}"
             );
         }
+    }
+
+    // and the binding can be read: held, then not there
+    let (_, _, _, binding) = check_body(
+        &api,
+        &spec,
+        &scenario(
+            "GET",
+            "/namespaces/{namespaceId}/business-ids/{businessId}",
+            &format!("/namespaces/{namespace}/business-ids/order-1001"),
+            alice.clone(),
+            None,
+            200,
+        ),
+    )
+    .await;
+    assert_eq!(binding["executionId"], run["runId"]);
+    assert_eq!(binding["open"], true);
+    for absent in ["order-9999", "has%20space"] {
+        check_body(
+            &api,
+            &spec,
+            &scenario(
+                "GET",
+                "/namespaces/{namespaceId}/business-ids/{businessId}",
+                &format!("/namespaces/{namespace}/business-ids/{absent}"),
+                alice.clone(),
+                None,
+                404,
+            ),
+        )
+        .await;
     }
 }

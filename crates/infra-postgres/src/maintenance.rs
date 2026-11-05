@@ -694,6 +694,17 @@ impl MaintenanceStore for PgRunStore {
         Ok(u64::try_from(removed).unwrap_or(0))
     }
 
+    async fn purge_business_ids(&self, rows: u32) -> Result<u64, StoreError> {
+        // the runtime role may not delete a binding; it may run this bounded function, which removes
+        // only those whose holder closed and whose window passed, or whose holder is gone
+        let removed: i64 = sqlx::query_scalar("SELECT business_ids_purge($1)")
+            .bind(i32::try_from(rows).unwrap_or(i32::MAX))
+            .fetch_one(self.pool())
+            .await
+            .map_err(store_error)?;
+        Ok(u64::try_from(removed).unwrap_or(0))
+    }
+
     async fn purge_sessions(&self) -> Result<u64, StoreError> {
         // Kept for an hour after expiry so a late report still finds its session's identity.
         sqlx::query("DELETE FROM worker_sessions WHERE expires_at < now() - interval '1 hour'")

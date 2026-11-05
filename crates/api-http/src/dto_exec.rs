@@ -342,6 +342,45 @@ pub struct SignalResultBody {
     pub delivered_to: Vec<String>,
 }
 
+/// How a business identifier stands in a namespace (`BusinessIdBinding`, `FR-018-022`).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BusinessBindingBody {
+    pub business_id: String,
+    /// The run that holds it, or the initial run of the continuation chain that does.
+    pub execution_id: String,
+    /// The run that carries the work now.
+    pub current_run_id: String,
+    pub open: bool,
+    /// How the holder ended, when it has.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_status: Option<&'static str>,
+    pub workflow_id: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub bound_at: OffsetDateTime,
+    /// When `REJECT_DUPLICATE` stops applying to a closed holder.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        with = "time::serde::rfc3339::option"
+    )]
+    pub reusable_after: Option<OffsetDateTime>,
+}
+
+impl From<&sagat_application::runs::BusinessBinding> for BusinessBindingBody {
+    fn from(binding: &sagat_application::runs::BusinessBinding) -> Self {
+        Self {
+            business_id: binding.business_id.as_str().to_owned(),
+            execution_id: binding.execution_id.to_string(),
+            current_run_id: binding.current_run_id.to_string(),
+            open: binding.open,
+            last_status: binding.last_status.map(|status| status.as_str()),
+            workflow_id: binding.workflow_id.to_string(),
+            bound_at: binding.bound_at,
+            reusable_after: binding.reusable_after,
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunBody {

@@ -34,10 +34,10 @@ use uuid::Uuid;
 use crate::admission::{admit, namespace_slug};
 use crate::dto::PageBody;
 use crate::dto_exec::{
-    CreateWorkflowBody, JournalEventBody, OperationBody, OperationResultBody, PublishBody,
-    PublishedBody, RerunBusinessIdBody, RunBody, SignalResultBody, StartRunBody, UpdateDraftBody,
-    ValidateBody, VersionBody, VersionSummary, WorkflowBody, compensation_plans_body, diff_body,
-    graph_changes_body, runtime_graph, validation_body,
+    BusinessBindingBody, CreateWorkflowBody, JournalEventBody, OperationBody, OperationResultBody,
+    PublishBody, PublishedBody, RerunBusinessIdBody, RunBody, SignalResultBody, StartRunBody,
+    UpdateDraftBody, ValidateBody, VersionBody, VersionSummary, WorkflowBody,
+    compensation_plans_body, diff_body, graph_changes_body, runtime_graph, validation_body,
 };
 use crate::error::ApiError;
 use crate::exec::Exec;
@@ -116,6 +116,8 @@ pub struct ListQuery {
     pub business_id: Option<String>,
     #[serde(rename = "businessIdPrefix")]
     pub business_id_prefix: Option<String>,
+    #[serde(rename = "scheduleId")]
+    pub schedule_id: Option<String>,
 }
 
 /// An identifier or a prefix of one: visible ASCII, at most 200 characters. A prefix is not empty either.
@@ -655,6 +657,14 @@ pub async fn list_runs<B: Exec>(
             .as_deref()
             .map(|text| business_text(text, "/businessIdPrefix").map(|()| text.to_owned()))
             .transpose()?,
+        schedule: query
+            .schedule_id
+            .as_deref()
+            .map(|text| {
+                text.parse::<sagat_domain::schedules::ScheduleId>()
+                    .map_err(|_| ApiError::validation("scheduleId is not a schedule id"))
+            })
+            .transpose()?,
     };
     let namespace_name = namespace(&headers)?;
     admit(
@@ -674,6 +684,32 @@ pub async fn list_runs<B: Exec>(
         )
         .await?;
     Ok(page(&result))
+}
+
+/// `GET /namespaces/{namespaceId}/business-ids/{businessId}`: who holds a business identifier and how
+/// it stands (`FR-018-022`). An identifier that cannot be one, one that is not bound and a namespace
+/// of another tenant are all as absent as one that never existed.
+pub async fn get_business_binding<B: Exec>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((namespace, business_id)): Path<(String, String)>,
+) -> Result<Json<BusinessBindingBody>, ApiError> {
+    let namespace: sagat_domain::identity::NamespaceId =
+        namespace.parse().map_err(|_| ApiError::not_found())?;
+    admit(
+        &state,
+        &caller,
+        ApiOperation::RunRead,
+        ApiTarget::Namespace(namespace),
+    )
+    .await?;
+    let id = sagat_domain::business_ids::BusinessId::new(&business_id)
+        .map_err(|_| ApiError::not_found())?;
+    let binding = state
+        .runs()
+        .business_binding(&caller.session.principal, namespace, &id)
+        .await?;
+    Ok(Json(BusinessBindingBody::from(&binding)))
 }
 
 pub async fn get_run<B: Exec>(

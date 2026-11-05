@@ -10,11 +10,15 @@
 //! span: a refusal carries the holder's id and the instant the id is free, not the identifier.
 
 use sagat_application::error::StoreError;
-use sagat_application::runs::BusinessStart;
-use sagat_domain::business_ids::{Admission, Binding, Held, HolderStatus, ReuseWindow, admit};
+use sagat_application::runs::{BusinessBinding, BusinessStart};
+use sagat_domain::business_ids::{
+    Admission, Binding, BusinessId, Held, HolderStatus, ReuseWindow, admit,
+};
+use sagat_domain::definition::WorkflowId;
 use sagat_domain::execution::{RunId, RunStatus};
 use sagat_domain::identity::{NamespaceId, TenantId};
-use sqlx::PgConnection;
+use sqlx::postgres::PgRow;
+use sqlx::{PgConnection, PgPool};
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
@@ -55,17 +59,23 @@ async fn holder_status(
     let Some(row) = row else {
         return Ok(None);
     };
+    Ok(Some(read_holder(&row)?))
+}
+
+/// The holder of a row of [`holder_status`]'s shape: the run, its chain when it begins one, and the
+/// last segment's finish.
+fn read_holder(row: &PgRow) -> Result<(HolderStatus, Option<OffsetDateTime>), StoreError> {
     let parse = |text: &str| -> Result<RunStatus, StoreError> {
         text.parse::<RunStatus>().map_err(|_| StoreError::Internal {
             detail: "a stored run status is not one".to_owned(),
         })
     };
-    let chained: bool = col(&row, "chained")?;
-    let status: String = col(&row, "status")?;
-    let finished: Option<OffsetDateTime> = col(&row, "finished_at")?;
-    let outcome: Option<String> = col(&row, "final_outcome")?;
-    let chain_finished: Option<OffsetDateTime> = col(&row, "chain_finished_at")?;
-    Ok(Some(if chained {
+    let chained: bool = col(row, "chained")?;
+    let status: String = col(row, "status")?;
+    let finished: Option<OffsetDateTime> = col(row, "finished_at")?;
+    let outcome: Option<String> = col(row, "final_outcome")?;
+    let chain_finished: Option<OffsetDateTime> = col(row, "chain_finished_at")?;
+    Ok(if chained {
         match outcome {
             Some(outcome) => (
                 HolderStatus::of(parse(&outcome)?, chain_finished),
@@ -75,6 +85,69 @@ async fn holder_status(
         }
     } else {
         (HolderStatus::of(parse(&status)?, finished), finished)
+    })
+}
+
+/// How an identifier stands in a namespace (`FR-018-022`), read without a lock: the holder, whether
+/// it is open, how it ended and until when it is remembered. `None` for an identifier that is
+/// unbound, whose holder is gone, or that has been free for longer than its window, the same three
+/// cases in which a start finds it free.
+pub(crate) async fn binding(
+    pool: &PgPool,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    id: &BusinessId,
+) -> Result<Option<BusinessBinding>, StoreError> {
+    let Some(row) = sqlx::query(
+        "SELECT b.execution_id, b.workflow_id, b.bound_at, b.reuse_window_s, \
+                r.status, r.finished_at, c.chain_id IS NOT NULL AS chained, c.final_outcome, \
+                c.current_run_id, cr.finished_at AS chain_finished_at, \
+                clock_timestamp() AS looked_at \
+         FROM business_ids b \
+         JOIN runs r ON r.tenant_id = b.tenant_id AND r.id = b.execution_id \
+         LEFT JOIN execution_chains c ON c.tenant_id = r.tenant_id AND c.chain_id = r.id \
+         LEFT JOIN runs cr ON cr.tenant_id = c.tenant_id AND cr.id = c.current_run_id \
+         WHERE b.tenant_id = $1 AND b.namespace_id = $2 AND b.business_id = $3",
+    )
+    .bind(tenant.as_uuid())
+    .bind(namespace.as_uuid())
+    .bind(id.as_str())
+    .fetch_optional(pool)
+    .await
+    .map_err(store_error)?
+    else {
+        return Ok(None);
+    };
+    let (holder, _) = read_holder(&row)?;
+    let window: i32 = col(&row, "reuse_window_s")?;
+    let window = ReuseWindow::from_seconds(u32::try_from(window).unwrap_or(0)).map_err(|_| {
+        StoreError::Internal {
+            detail: "a stored reuse window is out of range".to_owned(),
+        }
+    })?;
+    let held = Held {
+        binding: Binding::new(window),
+        holder,
+    };
+    let reusable_after = held.reusable_after();
+    let looked_at: OffsetDateTime = col(&row, "looked_at")?;
+    if reusable_after.is_some_and(|until| looked_at >= until) {
+        return Ok(None);
+    }
+    let execution: Uuid = col(&row, "execution_id")?;
+    let current: Option<Uuid> = col(&row, "current_run_id")?;
+    Ok(Some(BusinessBinding {
+        business_id: id.clone(),
+        execution_id: RunId::new(execution),
+        current_run_id: RunId::new(current.unwrap_or(execution)),
+        open: matches!(holder, HolderStatus::Open),
+        last_status: match holder {
+            HolderStatus::Open => None,
+            HolderStatus::Closed { status, .. } => Some(status),
+        },
+        workflow_id: WorkflowId::new(col::<Uuid>(&row, "workflow_id")?),
+        bound_at: col(&row, "bound_at")?,
+        reusable_after,
     }))
 }
 

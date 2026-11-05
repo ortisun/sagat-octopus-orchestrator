@@ -1060,6 +1060,10 @@ where
         )
         .route("/runs/{run_id}", get(ex::get_run::<B<S, C, P, X, E>>))
         .route(
+            "/namespaces/{namespace_id}/business-ids/{business_id}",
+            get(ex::get_business_binding::<B<S, C, P, X, E>>),
+        )
+        .route(
             "/runs/{run_id}/events",
             get(ex::run_journal::<B<S, C, P, X, E>>),
         )

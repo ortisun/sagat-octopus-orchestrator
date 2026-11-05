@@ -11,6 +11,7 @@ use std::time::Duration as StdDuration;
 use sagat_application::error::AppError;
 use sagat_application::runs::{BusinessStart, RunOperation, StartOptions, StartRun};
 use sagat_domain::business_ids::{BusinessId, ConflictPolicy, ReusePolicy, ReuseWindow};
+use sagat_domain::identity::NamespaceId;
 use sagat_telemetry::Metrics;
 use uuid::Uuid;
 
@@ -74,6 +75,22 @@ fn an_identifier_reaches_only_the_binding_and_the_run() {
             let first = start(ConflictPolicy::Fail, ReusePolicy::AllowDuplicate)
                 .await
                 .expect("the first start");
+            // the binding as the lookup reads it, and a lookup that finds nothing
+            let id = BusinessId::new(&canary).expect("an identifier");
+            let binding = f
+                .w
+                .runs
+                .business_binding(&f.w.admin, f.w.namespace.id(), &id)
+                .await
+                .expect("the binding");
+            said.push(("the binding as read", format!("{binding:?}")));
+            let nothing = f
+                .w
+                .runs
+                .business_binding(&f.w.admin, NamespaceId::generate(), &id)
+                .await
+                .expect_err("another namespace holds nothing");
+            said.push(("a lookup that finds nothing", format!("{nothing} {nothing:?}")));
             // a refusal, and the text of the error as a client or a log would see it
             let refused = start(ConflictPolicy::Fail, ReusePolicy::AllowDuplicate)
                 .await

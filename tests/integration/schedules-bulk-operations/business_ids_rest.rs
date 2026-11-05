@@ -317,3 +317,150 @@ async fn the_identifier_choice_of_an_operation_is_checked() {
     assert_eq!(status, 422, "{refused}");
     assert_eq!(r.runs("businessId=rerun-http-3").await.len(), 1);
 }
+
+// --- the lookup of a binding -------------------------------------------------------------------
+
+/// A path segment: everything that is not unreserved is percent-encoded, so an identifier with a
+/// `/`, a `%`, a `#` or a `?` in it arrives whole.
+fn segment(text: &str) -> String {
+    text.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                char::from(b).to_string()
+            }
+            other => format!("%{other:02X}"),
+        })
+        .collect()
+}
+
+impl Rig {
+    async fn binding(&self, id: &str) -> (u16, Value) {
+        let ns = self.p.namespace_id().await;
+        self.p
+            .rest(
+                Method::GET,
+                &format!("/namespaces/{ns}/business-ids/{}", segment(id)),
+                None,
+            )
+            .await
+    }
+}
+
+#[tokio::test]
+async fn a_binding_is_read_by_its_identifier_open_and_then_closed() {
+    let r = rig().await;
+    let (_, run) = r.start(json!({"businessId": "lookup-http-1"})).await;
+    let run = run["runId"].as_str().expect("id").to_owned();
+
+    let (status, open) = r.binding("lookup-http-1").await;
+    assert_eq!(status, 200, "{open}");
+    assert_eq!(open["businessId"], "lookup-http-1");
+    assert_eq!(open["executionId"], run);
+    assert_eq!(open["currentRunId"], run);
+    assert_eq!(open["open"], true);
+    assert!(open["lastStatus"].is_null(), "{open}");
+    assert!(open["reusableAfter"].is_null(), "{open}");
+    assert!(open["workflowId"].is_string() && open["boundAt"].is_string());
+
+    r.cancel(&run).await;
+    let (status, closed) = r.binding("lookup-http-1").await;
+    assert_eq!(status, 200, "{closed}");
+    assert_eq!(closed["open"], false);
+    assert_eq!(closed["lastStatus"], "CANCELLED");
+    assert!(
+        closed["reusableAfter"].is_string(),
+        "it says until when it is remembered: {closed}"
+    );
+}
+
+#[tokio::test]
+async fn an_identifier_with_reserved_characters_is_read_whole() {
+    let r = rig().await;
+    let odd = "a/b%c#d?e+f&g";
+    let (status, run) = r.start(json!({"businessId": odd})).await;
+    assert_eq!(status, 202, "{run}");
+
+    let (status, binding) = r.binding(odd).await;
+    assert_eq!(status, 200, "{binding}");
+    assert_eq!(binding["businessId"], odd);
+    assert_eq!(binding["executionId"], run["runId"]);
+}
+
+#[tokio::test]
+async fn an_unbound_identifier_and_a_namespace_that_is_not_one_are_not_found() {
+    let r = rig().await;
+    r.start(json!({"businessId": "lookup-http-2"})).await;
+
+    let (status, absent) = r.binding("never-bound").await;
+    assert_eq!(status, 404, "{absent}");
+    assert_eq!(absent["code"], "NOT_FOUND");
+    assert_ne!(
+        absent["details"]["reason"], "ROUTE_NOT_FOUND",
+        "the route exists and the identifier does not"
+    );
+    assert!(
+        !absent.to_string().contains("never-bound"),
+        "the identifier is not echoed: {absent}"
+    );
+
+    for namespace in ["not-a-namespace", &uuid::Uuid::now_v7().to_string()] {
+        let (status, other) =
+            r.p.rest(
+                Method::GET,
+                &format!("/namespaces/{namespace}/business-ids/lookup-http-2"),
+                None,
+            )
+            .await;
+        assert_eq!(status, 404, "{namespace}: {other}");
+        assert_ne!(other["details"]["reason"], "ROUTE_NOT_FOUND", "{namespace}");
+    }
+}
+
+#[tokio::test]
+async fn another_tenant_probing_a_binding_finds_nothing_and_the_probe_is_on_record() {
+    let r = rig().await;
+    let (_, run) = r.start(json!({"businessId": "probe-1"})).await;
+    let namespace = r.p.namespace_id().await;
+    let denials = || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM audit_records a JOIN tenants t ON t.id = a.tenant_id \
+             WHERE t.slug = 'globex' AND a.action = 'access.denied.cross_tenant'",
+        )
+        .fetch_one(&r.p.api.db.pool)
+        .await
+        .expect("count")
+    };
+    let before = denials().await;
+
+    let response =
+        r.p.api
+            .as_user(
+                Method::GET,
+                &format!("/namespaces/{namespace}/business-ids/probe-1"),
+                "bob",
+                "globex",
+            )
+            .send()
+            .await
+            .expect("send");
+
+    assert_eq!(response.status().as_u16(), 404);
+    let body = response.text().await.expect("body");
+    assert!(
+        !body.contains("probe-1") && !body.contains(run["runId"].as_str().expect("id")),
+        "the answer shows nothing of the victim: {body}"
+    );
+    let mut recorded = denials().await;
+    for _ in 0..50 {
+        if recorded > before {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        recorded = denials().await;
+    }
+    assert_eq!(
+        recorded,
+        before + 1,
+        "the probe of another tenant is recorded against it"
+    );
+}

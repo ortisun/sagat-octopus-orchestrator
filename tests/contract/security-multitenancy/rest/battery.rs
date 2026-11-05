@@ -232,6 +232,7 @@ fn is_resource_id(name: &str) -> bool {
             | "workflowId"
             | "runId"
             | "scheduleId"
+            | "businessId"
             | "batchId"
             | "scriptId"
             | "executionId"
@@ -378,7 +379,10 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
         "POST",
         "/runs",
         alice,
-        Some(&json!({"workflowId": wf, "input": {"victim": true}})),
+        Some(&json!({
+            "workflowId": wf, "input": {"victim": true},
+            "businessId": "victim-order-4471"
+        })),
     )
     .await;
     assert_eq!(status, 202, "{run}");
@@ -507,6 +511,7 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
     let victim = Victim {
         ids: BTreeMap::from([
             ("scheduleId", schedule.clone()),
+            ("businessId", "victim-order-4471".to_owned()),
             ("batchId", batch.clone()),
             ("backfillId", Uuid::now_v7().to_string()),
             ("scriptId", script.clone()),
@@ -635,6 +640,7 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
                 "victim-pool",
                 "victim-script",
                 "victim-source",
+                "victim-order-4471",
             ] {
                 assert!(
                     !text.contains(needle),

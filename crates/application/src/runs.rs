@@ -72,6 +72,26 @@ pub struct StartOptions {
     pub business: Option<BusinessStart>,
 }
 
+/// How a business identifier stands (feature 018, `FR-018-022`): who holds it, whether that
+/// execution is still open, how it ended, and until when a closed holder is remembered. Its `Debug`
+/// hides the identifier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BusinessBinding {
+    pub business_id: BusinessId,
+    /// The execution that holds the identifier: the run, or the initial run of a continuation chain.
+    pub execution_id: RunId,
+    /// The run that carries the work now: the run itself, or the current segment of the chain.
+    pub current_run_id: RunId,
+    /// The holder has not reached a final outcome (a chain is open until it has one).
+    pub open: bool,
+    /// How the holder ended, when it has.
+    pub last_status: Option<RunStatus>,
+    pub workflow_id: WorkflowId,
+    pub bound_at: OffsetDateTime,
+    /// When `REJECT_DUPLICATE` stops applying to a closed holder.
+    pub reusable_after: Option<OffsetDateTime>,
+}
+
 /// What a start came to: the run, and whether it already existed (an open execution held the
 /// business identifier and the start asked for `USE_EXISTING`: nothing was created).
 #[derive(Debug, Clone)]
@@ -241,6 +261,8 @@ pub struct RunFilter {
     /// The runs whose business identifier starts with this text. A literal: nothing in it is a
     /// wildcard. Visible ASCII, at most 200 characters, like an identifier.
     pub business_id_prefix: Option<String>,
+    /// The runs this schedule started, whatever the kind of action (feature 018, `FR-018-022`).
+    pub schedule: Option<sagat_domain::schedules::ScheduleId>,
 }
 
 /// Storage port for runs. Implemented by `sagat-infra-postgres`.
@@ -306,6 +328,15 @@ pub trait RunStore:
         before: Option<RunId>,
         limit: u32,
     ) -> impl Future<Output = Result<Vec<RunRecord>, StoreError>> + Send;
+
+    /// How the business identifier stands in the namespace, `None` when it is unbound, when its
+    /// holder is gone, or when it was closed for longer than its window (it is free then).
+    fn business_binding(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        id: &BusinessId,
+    ) -> impl Future<Output = Result<Option<BusinessBinding>, StoreError>> + Send;
 
     /// What a run is started again from: the namespace it ran in, the input it was given. `None`
     /// when the run does not exist.
@@ -666,6 +697,24 @@ where
         )
         .await
         .map(|started| started.run)
+    }
+
+    /// How a business identifier stands in a namespace: who holds it and how, `FR-018-022`.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `run:read`; [`AppError::NotFound`] for an identifier that is
+    /// unbound, whose holder is gone, or that has been free for longer than its window.
+    pub async fn business_binding(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        id: &BusinessId,
+    ) -> Result<BusinessBinding, AppError> {
+        principal.authorize(Permission::RunRead)?;
+        self.store
+            .business_binding(principal.tenant_id(), namespace, id)
+            .await?
+            .ok_or(AppError::NotFound)
     }
 
     /// Starts a run again from an ended one (`RERUN_AS_NEW`): the same version of the same workflow,

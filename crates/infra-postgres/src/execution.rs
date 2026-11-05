@@ -1402,6 +1402,7 @@ impl RunStore for PgRunStore {
                AND ($7::text IS NULL OR runs.origin = $7) \
                AND ($8::text IS NULL OR runs.business_id = $8) \
                AND ($9::text IS NULL OR runs.business_id LIKE $9 ESCAPE '\\') \
+               AND ($10::uuid IS NULL OR runs.schedule_id = $10) \
              ORDER BY runs.id DESC LIMIT $6",
         )
         .bind(tenant.as_uuid())
@@ -1413,6 +1414,11 @@ impl RunStore for PgRunStore {
         .bind(filter.origin.map(sagat_application::runs::RunOrigin::as_str))
         .bind(filter.business_id.as_ref().map(|id| id.as_str()))
         .bind(filter.business_id_prefix.as_deref().map(like_prefix))
+        .bind(
+            filter
+                .schedule
+                .map(sagat_domain::schedules::ScheduleId::as_uuid),
+        )
         .fetch_all(&self.pool)
         .await
         .map_err(store_error)?
@@ -1524,6 +1530,15 @@ impl RunStore for PgRunStore {
             })
             .collect::<Result<Vec<_>, StoreError>>()
             .map(Some)
+    }
+
+    async fn business_binding(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        id: &sagat_domain::business_ids::BusinessId,
+    ) -> Result<Option<sagat_application::runs::BusinessBinding>, StoreError> {
+        crate::business_ids::binding(&self.pool, tenant, namespace, id).await
     }
 
     async fn rerun_source(

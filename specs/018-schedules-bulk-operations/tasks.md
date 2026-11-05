@@ -644,7 +644,7 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
 
 ## Phase 5: US03 — Business identifiers and start delay (P1)
 
-- [ ] T018-034 [US3] `BusinessIdStore` (insert-or-lock, holder status, claim in creation transaction,
+- [x] T018-034 [US3] `BusinessIdStore` (insert-or-lock, holder status, claim in creation transaction,
   lookup, `runs.business_id`, purge) — `crates/infra-postgres/src/{business_ids.rs,execution.rs}` —
   store tests — FR-018-018, FR-018-021, FR-018-022.
   *Part done (2026-11-05), the task stays open:* migration `20270103000000_business_ids` (the binding table, `runs.business_id`,
@@ -656,8 +656,20 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   them in `business_ids.rs`; mutation checks killed the binding row not locked, a closed holder not replaced, the claim
   ignoring an open holder, the copy on the run not written, the claim skipped, a gone holder counted as open, the options
   left out of the fingerprint, a chain judged by its first run, and a handoff that drops the identifier; the one survivor is the plain `continue_as_new` copy (G1970).
-  Not done: the lookup `GET .../business-ids/{id}` and the call of `business_ids_purge` (G1968, G1969).
-- [ ] T018-035 [US3] Start options on `POST /runs` (`200` for `USE_EXISTING`), binding lookup, list
+  *Update 2026-11-05 (lookup):* the lookup is built (`GET /namespaces/{ns}/business-ids/{id}`, D1967): the store reads the
+  holder, the chain's current run, how it ended and `reusableAfter` without a lock, and answers nothing in the three cases in
+  which a start finds the identifier free. `business_id_lookup.rs` 6 passed (open holder, closed holder with its end and
+  window, past the window, unbound / purged holder / another namespace, a viewer, another tenant's principal with the
+  victim's namespace id), and the chain test checks the lookup on every segment. 7 of 9 mutants were killed on the first
+  pass; the 2 survivors each got a test and were then killed: the store's tenant filter
+  (`the_binding_of_a_tenant_is_not_read_by_another_even_with_its_namespace_id`) and the route's admission
+  (`a_binding_lookup_consumes_one_token_whether_it_finds_the_identifier_or_not`: the lookup debits the namespace's bucket
+  once, found or not).
+  *Update 2026-11-05 (purge):* housekeeping calls `business_ids_purge` (G1968, closed): `business_ids_purge.rs` 4 passed in
+  both modes (only a binding that holds nothing is purged: open, closed inside its window, closed past it, a holder that
+  is gone; a purge is bounded and goes on where it stopped; housekeeping makes it; the runtime role may run the function and
+  has no `DELETE` of its own), seen failing first with a stub that purged nothing.
+- [x] T018-035 [US3] Start options on `POST /runs` (`200` for `USE_EXISTING`), binding lookup, list
   filters, rerun `KEEP`/`DROP` — `crates/application/src/runs/business_id.rs`,
   `crates/api-http/src/routes/execution.rs`, `crates/api-http/src/dto.rs` — contract tests —
   FR-018-019, FR-018-020, FR-018-022, FR-018-040.
@@ -675,8 +687,16 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `businessId` of the operation request for `RERUN_AS_NEW` (422 for any other operation), the `dropBusinessId` of a batch
   `RERUN` job, a held identifier failing the item as `CONFLICT`. `business_id_rerun.rs` 8 passed (seen failing first: 5 of
   them, with the API stub that changed nothing), `business_ids_rest.rs` 9 passed (3 new over HTTP), 5 of 6 mutants killed and
-  the survivor, a fingerprint marker for `DROP`, removed because it distinguished nothing. Not done: the lookup of a
-  binding `GET .../business-ids/{id}` (G1969).
+  the survivor, a fingerprint marker for `DROP`, removed because it distinguished nothing.
+  *Done 2026-11-05 (ticked):* the last two parts landed. The binding lookup `GET /namespaces/{ns}/business-ids/{id}`
+  (`getBusinessIdBinding`, D1967; over HTTP in `business_ids_rest.rs`: open and closed, an identifier with `/ % # ? + &` in it,
+  unbound, a namespace that is not one, another tenant's probe finds nothing and is recorded; the cross-tenant battery gives
+  the victim a real identifier and attacks the operation; the contract test checks its 200 and 404 against the schema) and
+  the `scheduleId` filter of `GET /runs` (`rest::the_runs_a_schedule_started_are_listed_by_it`, seen failing first: the
+  filter was ignored and 3 runs came back). The code is in `RunService::start_with_options`, `rerun_with` and
+  `business_binding` and in `crates/api-http/src/routes/execution.rs`, not in the `runs/business_id.rs` and `dto.rs` this
+  line names (D1961). Ticked from: `contract_schedules_bulk_operations` 3, `contract_rest_security_multitenancy` 18,
+  `business_ids_rest.rs` 13, `business_id_rerun.rs` 8, `business_id_lookup.rs` 6.
 - [ ] T018-036 [US3] 32-way race, policy table in/after window, terminal-commit race, chain continuity,
   key replay/reuse, harness vs signal paths — `tests/{integration,fault}/schedules-bulk-operations/business_ids.rs`
   — SC-018-006 — FR-018-018..021.

@@ -227,6 +227,12 @@ pub trait MaintenanceStore: Send + Sync {
         rows: u32,
     ) -> impl Future<Output = Result<u64, StoreError>> + Send;
 
+    /// Deletes up to `rows` bindings of business identifiers that are free again: the holder
+    /// closed and its window passed, or the holder is gone; returns how many. A binding whose
+    /// holder is open, or closed inside its window, is never deleted (`FR-018-018`).
+    fn purge_business_ids(&self, rows: u32)
+    -> impl Future<Output = Result<u64, StoreError>> + Send;
+
     /// Deletes up to `limit` outbox messages delivered more than `older_than` ago; returns how
     /// many. Undelivered messages are never deleted.
     fn purge_outbox(

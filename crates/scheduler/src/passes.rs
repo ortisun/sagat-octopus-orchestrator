@@ -3515,6 +3515,28 @@ where
                 "purged schedule actions past their retention"
             );
         }
+        // The bindings of business identifiers that are free again hold nothing but a row.
+        let mut bindings = 0u64;
+        for _ in 0..PURGE_ROUNDS {
+            match self.store.purge_business_ids(PURGE_BATCH).await {
+                Ok(n) => {
+                    bindings += n;
+                    if n < u64::from(PURGE_BATCH) {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "could not purge business identifier bindings");
+                    break;
+                }
+            }
+        }
+        if bindings > 0 {
+            tracing::info!(
+                removed = bindings,
+                "purged business identifier bindings that are free again"
+            );
+        }
         // One bounded statement at a time, so a backlog never holds a long one, repeated until the
         // backlog is gone (or this call has done its share): the purge must outrun what is written.
         let mut removed = 0u64;

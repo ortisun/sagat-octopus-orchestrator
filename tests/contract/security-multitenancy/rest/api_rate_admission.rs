@@ -608,3 +608,48 @@ async fn admission_database_failure_fails_closed_before_the_handler_runs() {
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     blocker.rollback().await.expect("release admission table");
 }
+
+#[tokio::test]
+async fn a_binding_lookup_consumes_one_token_whether_it_finds_the_identifier_or_not() {
+    let (api, tenant, namespace) = world().await;
+    let workflow = create_and_publish_workflow(&api, "orders").await;
+    let started = api
+        .as_user(Method::POST, "/runs", "alice", "acme")
+        .header("x-octopus-namespace", "payments")
+        .header("idempotency-key", uuid::Uuid::now_v7().to_string())
+        .json(&json!({ "workflowId": workflow, "input": {}, "businessId": "order-1" }))
+        .send()
+        .await
+        .expect("start a run under an identifier");
+    assert_eq!(started.status(), StatusCode::ACCEPTED);
+    set_rate(&api, &namespace, 10).await;
+    seed_bucket(&api, tenant, &namespace, 10).await;
+
+    let lookup = |id: &'static str| {
+        api.as_user(
+            Method::GET,
+            &format!("/namespaces/{namespace}/business-ids/{id}"),
+            "alice",
+            "acme",
+        )
+        .send()
+    };
+    assert_eq!(
+        lookup("order-1").await.expect("found").status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        tokens(&api, tenant, &namespace).await,
+        Some(19 * MICROTOKENS),
+        "a lookup is a request of the namespace"
+    );
+    assert_eq!(
+        lookup("order-2").await.expect("absent").status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        tokens(&api, tenant, &namespace).await,
+        Some(18 * MICROTOKENS),
+        "and so is one that finds nothing"
+    );
+}
