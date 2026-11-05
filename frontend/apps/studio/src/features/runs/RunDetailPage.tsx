@@ -134,8 +134,8 @@ function RunDetail({ runId }: { runId: string }) {
   }, [status, queries, runId]);
 
   const facts: RunFacts | undefined = useMemo(
-    () => (status === undefined ? undefined : { status, paused: status === 'PAUSED' || run.data?.paused === true, version: run.data?.version }),
-    [status, run.data?.paused, run.data?.version],
+    () => (status === undefined ? undefined : { status, paused: status === 'PAUSED' || run.data?.paused === true, version: run.data?.version, businessId: run.data?.businessId }),
+    [status, run.data?.paused, run.data?.version, run.data?.businessId],
   );
 
   const [tab, setTab] = useState<TabId | undefined>(undefined);
