@@ -200,9 +200,9 @@ async fn an_update_cut_off_at_every_await_point_commits_whole_or_not_at_all() {
         "only {cut_rounds} cut points: the test proves little"
     );
     // The early cuts landed before the commit. How many cuts land after it is not the test's to say: it is the number
-    // of awaits after the commit that return pending, which the scheduler decides (a connection that was cut is handed
-    // back to the pool by a task of its own, so whether the next acquire waits for it varies). It measured 10 of 34 on
-    // a laptop and none in one run on a loaded CI runner, so a guard on it failed for a reason that is not a defect.
+    // of awaits after the commit that return pending, which the scheduler decides (for instance, whether a cut
+    // connection has already been handed back to the pool; which await it was is not established). It measured 10 of 34
+    // on a laptop and none in one run on a loaded CI runner, so a guard on it failed for a reason that is not a defect.
     // The late side is the next round instead, which does not depend on where a poll falls.
     assert!(
         committed_when_cut < cut_rounds,
