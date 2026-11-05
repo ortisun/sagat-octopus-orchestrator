@@ -775,3 +775,5 @@ mod tests {
         ));
     }
 }
+
+// CI probe: a leaf-crate change; delete this branch.
