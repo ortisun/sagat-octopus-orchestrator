@@ -1800,3 +1800,43 @@ run). The owner decides whether to delete the branch and keep or drop the patch.
 - Whether to delete `feature/014-bounded-execution`.
 
 Refs: T014-014, T014-015, T014-016, T014-017, T014-040, T014-042, T014-043, T014-044, T033-007.
+
+
+## Delegated decisions — 2026-11-04
+
+The owner delegated the open decisions of the entry above ("Tome as decisoes por mim. Que os melhores
+especialistas em arquitetura, dados, banco de dados, decidam."). Three independent read-only reviewers
+gave opinions; the assistant decided from them. The rows are OD-2026-11-04-3 to OD-2026-11-04-9 in
+[owner-decisions.md](../../docs/owner-decisions.md), `Decided by: delegate` and reversible, and the
+opinions are in [the evidence](evidence/delegated-decisions-20261104/README.md). **This entry changes
+no task state and lowers no acceptance criterion.** Nothing was run.
+
+Outcome of the four items of "Needs the owner":
+
+- **ADR-0075** is accepted for the ChildRoot worker-lease guard only, with the amendments of the
+  architecture and PostgreSQL reviews. The guard stays off, and no membership may be created, until
+  the twelve conditions of its Activation gate hold. The code does not conform to the amended ADR in
+  one respect: the worker claim locks G before it knows the member is the holder
+  (`crates/infra-postgres/src/execution/worker_capacity.rs`), which can starve a native Acquire on a
+  vacant group. That is activation condition (j).
+- **G721** needs its own lock-graph ADR before any production caller. ADR-0075 does not close it.
+- **O460, O463 and O464** are answered (collection and loop ceilings, 20,000 waits per replica,
+  G520 a documented limitation). T014-042 keeps its original criteria.
+- **`feature/014-bounded-execution`** is deleted; a verified bundle and the patch are in
+  `~/Documents/Projects/sagat-worktree-archive-2026-11-02/`.
+- The first full-stack run since 2026-10-17 is a manual rehearsal of the whole stack on `develop`
+  before `release/0.3.0` is cut (the owner's rule of 2026-11-04 already puts the full run at release).
+
+New work these decisions create, none of it started:
+
+1. The lock-graph ADR (G721), drafted by the capacity lane and accepted before any caller.
+2. Conform the worker claim to the unlocked-header-first rule, with a test that a vacant group's
+   Acquire is not starved (activation condition (j)).
+3. The `scheduler_tick_seconds` metric and its two alerts, and the runbook and release-notes text for
+   the published ceilings.
+4. Re-run the T014-042 workloads on one release-candidate commit with the method of the data review,
+   including the burst of 5,000 approval starts from a definition of at least 100 KB.
+5. The activation-gate items (b) to (i) and (k) to (l) of ADR-0075, which are the nested-capacity
+   work of increments 3 and 4.
+
+Refs: T014-014, T014-015, T014-040, T014-042, T014-043.
