@@ -248,6 +248,14 @@ pub struct SchedulePageBody {
     pub next_cursor: Option<String>,
 }
 
+/// One page of the decisions of a schedule, newest first.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduleActionPageBody {
+    pub items: Vec<ScheduleActionBody>,
+    pub next_cursor: Option<String>,
+}
+
 /// A time a schedule will act on next.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

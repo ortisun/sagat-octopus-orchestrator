@@ -17,6 +17,7 @@ const ONE: &str = "/namespaces/{namespaceId}/schedules/{scheduleId}";
 const PAUSE: &str = "/namespaces/{namespaceId}/schedules/{scheduleId}/pause";
 const RESUME: &str = "/namespaces/{namespaceId}/schedules/{scheduleId}/resume";
 const TRIGGER: &str = "/namespaces/{namespaceId}/schedules/{scheduleId}/trigger";
+const ACTIONS: &str = "/namespaces/{namespaceId}/schedules/{scheduleId}/actions";
 const BACKFILLS: &str = "/namespaces/{namespaceId}/schedules/{scheduleId}/backfills";
 const CANCEL_BACKFILL: &str =
     "/namespaces/{namespaceId}/schedules/{scheduleId}/backfills/{backfillId}/cancel";
@@ -202,6 +203,98 @@ async fn every_schedule_operation_conforms_to_the_contract_on_its_normal_and_err
         let (m, t, s, _) =
             check_body(&api, &spec, &scenario("GET", ONE, &path, who, None, expect)).await;
         record((m, t, s));
+    }
+
+    // ---- the decisions the schedule has made, newest first
+    sqlx::query(
+        "INSERT INTO schedule_actions \
+         (tenant_id, schedule_id, origin, nominal_at, kind, revision, outcome, decided_at) \
+         SELECT s.tenant_id, s.id, 'SPEC', now() - g * interval '1 hour', 'SCHEDULED', 1, \
+                CASE WHEN g % 2 = 0 THEN 'SKIPPED_OVERLAP' ELSE 'DROPPED_BUFFER_FULL' END, \
+                now() - g * interval '1 hour' \
+         FROM schedules s, generate_series(1, 3) g WHERE s.id = $1",
+    )
+    .bind(id.parse::<uuid::Uuid>().expect("uuid"))
+    .execute(&api.db.pool)
+    .await
+    .expect("seed the decisions");
+    let actions = format!("{one}/actions");
+    let (m, t, s, page) = check_body(
+        &api,
+        &spec,
+        &scenario(
+            "GET",
+            ACTIONS,
+            &format!("{actions}?limit=1"),
+            alice.clone(),
+            None,
+            200,
+        ),
+    )
+    .await;
+    record((m, t, s));
+    assert_eq!(page["items"].as_array().expect("items").len(), 1);
+    let cursor = page["nextCursor"]
+        .as_str()
+        .expect("there is a next page")
+        .to_owned();
+    let (m, t, s, second) = check_body(
+        &api,
+        &spec,
+        &scenario(
+            "GET",
+            ACTIONS,
+            &format!("{actions}?limit=5&cursor={cursor}"),
+            alice.clone(),
+            None,
+            200,
+        ),
+    )
+    .await;
+    record((m, t, s));
+    assert!(second["nextCursor"].is_null(), "that was the last page");
+    assert_ne!(
+        second["items"][0]["nominalTime"], page["items"][0]["nominalTime"],
+        "the second page begins after the first"
+    );
+    for (path, who, expect) in [
+        (
+            format!("{actions}?outcome=SKIPPED_OVERLAP"),
+            alice.clone(),
+            200,
+        ),
+        (actions.clone(), vera.clone(), 200),
+        (actions.clone(), bob.clone(), 404),
+        (actions.clone(), As::Anonymous, 401),
+        (format!("{actions}?cursor=nonsense"), alice.clone(), 400),
+        (
+            format!("{actions}?outcome=NOT_AN_OUTCOME"),
+            alice.clone(),
+            400,
+        ),
+        (
+            format!("{list}/0194f5e2-7b1c-7000-8000-000000000009/actions"),
+            alice.clone(),
+            404,
+        ),
+    ] {
+        let (m, t, s, body) = check_body(
+            &api,
+            &spec,
+            &scenario("GET", ACTIONS, &path, who, None, expect),
+        )
+        .await;
+        record((m, t, s));
+        if path.contains("outcome=SKIPPED_OVERLAP") {
+            assert!(
+                body["items"]
+                    .as_array()
+                    .expect("items")
+                    .iter()
+                    .all(|action| action["outcome"] == "SKIPPED_OVERLAP"),
+                "only the outcome asked for: {body}"
+            );
+        }
     }
 
     // ---- replace
@@ -473,8 +566,8 @@ async fn every_schedule_operation_conforms_to_the_contract_on_its_normal_and_err
         .collect();
     assert_eq!(
         implemented.len(),
-        11,
-        "the contract names eleven schedule operations"
+        12,
+        "the contract names twelve schedule operations"
     );
     for operation in &implemented {
         assert!(

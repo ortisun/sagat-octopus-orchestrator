@@ -6,6 +6,7 @@
 #[path = "../../support/mod.rs"]
 mod support;
 
+mod actions;
 mod admission;
 mod authority;
 mod backfill;

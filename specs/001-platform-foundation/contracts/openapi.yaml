@@ -3889,6 +3889,29 @@ paths:
         '429': {$ref: '#/components/responses/QuotaExceeded'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/schedules/{scheduleId}/actions:
+    get:
+      operationId: listScheduleActions
+      summary: The decisions a schedule has made, newest first
+      tags: [Schedules]
+      x-implemented: '018'
+      description: |
+        Needs `schedule:read`. Every nominal time the schedule acted on has a decision (a run started, a time buffered, skipped, coalesced or missed), whether or not it started a run. Ordered by the instant of the decision, then by the key of the action, so a page ends where the next one begins. An outcome this version does not know is "another outcome".
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScheduleId'}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+        - {name: outcome, in: query, schema: {$ref: '#/components/schemas/ScheduleActionOutcome'}}
+      responses:
+        '200': {description: 'A page of decisions', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScheduleActionPage'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /namespaces/{namespaceId}/schedules/{scheduleId}/backfills:
     get:
       operationId: listScheduleBackfills
@@ -7196,6 +7219,12 @@ components:
       required: [items]
       properties:
         items: {type: array, items: {$ref: '#/components/schemas/Schedule'}}
+        nextCursor: {type: [string, 'null']}
+    ScheduleActionPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/ScheduleActionRecord'}}
         nextCursor: {type: [string, 'null']}
     ScheduleActionOutcome:
       type: string

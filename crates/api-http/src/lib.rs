@@ -575,6 +575,10 @@ where
                     axum::routing::post(sc::resume_schedule::<B<S, C, G>>),
                 )
                 .route(
+                    "/namespaces/{namespace_id}/schedules/{schedule_id}/actions",
+                    get(sc::list_schedule_actions::<B<S, C, G>>),
+                )
+                .route(
                     "/namespaces/{namespace_id}/schedules/{schedule_id}/trigger",
                     axum::routing::post(sc::trigger_schedule::<B<S, C, G>>),
                 )

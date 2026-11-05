@@ -12,7 +12,7 @@ use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::identity::{NamespaceId, Permission, Principal, TenantId};
 use sagat_domain::quota::QuotaResource;
 use sagat_domain::schedules::{
-    ActionKind, Ceilings, Note, Origin, Overlap, Policies, RemainingActions, ScheduleId,
+    ActionKind, Ceilings, Note, Origin, Outcome, Overlap, Policies, RemainingActions, ScheduleId,
     ScheduleName, ScheduleSpec, ScheduleTarget, actual_time, jitter_offset_ms, jitter_seed,
 };
 use serde_json::{Value, json};
@@ -586,6 +586,65 @@ pub struct ActionView {
     pub decided_at: OffsetDateTime,
 }
 
+/// Where a page of decisions stopped: the instant of the decision, then the key of the action
+/// (its origin and nominal time), the order the newest-first listing is kept in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ActionCursor {
+    pub decided_at: OffsetDateTime,
+    pub origin: Origin,
+    pub nominal_at: OffsetDateTime,
+}
+
+impl ActionCursor {
+    /// The cursor that continues after `action`.
+    #[must_use]
+    pub const fn after(action: &ActionView) -> Self {
+        Self {
+            decided_at: action.decided_at,
+            origin: action.origin,
+            nominal_at: action.nominal_at,
+        }
+    }
+
+    /// `{decided}.{S|M}.{nominal}`, the instants in microseconds since the epoch.
+    #[must_use]
+    pub fn encode(&self) -> String {
+        let micros = |at: OffsetDateTime| at.unix_timestamp_nanos() / 1_000;
+        let origin = match self.origin {
+            Origin::Spec => 'S',
+            Origin::Manual => 'M',
+        };
+        format!(
+            "{}.{origin}.{}",
+            micros(self.decided_at),
+            micros(self.nominal_at)
+        )
+    }
+
+    /// The cursor `text` stands for, or `None` for a string this build did not hand out.
+    #[must_use]
+    pub fn decode(text: &str) -> Option<Self> {
+        let mut parts = text.split('.');
+        let (decided, origin, nominal) = (parts.next()?, parts.next()?, parts.next()?);
+        if parts.next().is_some() {
+            return None;
+        }
+        let instant = |micros: &str| {
+            let micros: i128 = micros.parse().ok()?;
+            OffsetDateTime::from_unix_timestamp_nanos(micros.checked_mul(1_000)?).ok()
+        };
+        Some(Self {
+            decided_at: instant(decided)?,
+            origin: match origin {
+                "S" => Origin::Spec,
+                "M" => Origin::Manual,
+                _ => return None,
+            },
+            nominal_at: instant(nominal)?,
+        })
+    }
+}
+
 /// The counters of a schedule and its latest decisions.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ScheduleActivity {
@@ -830,6 +889,16 @@ pub trait ScheduleStore: Send + Sync {
         id: ScheduleId,
         recent: u32,
     ) -> impl Future<Output = Result<ScheduleActivity, StoreError>> + Send;
+
+    /// The decisions of a schedule, newest first, optionally of one outcome, after `after`.
+    fn actions(
+        &self,
+        tenant: TenantId,
+        id: ScheduleId,
+        outcome: Option<Outcome>,
+        after: Option<ActionCursor>,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<ActionView>, StoreError>> + Send;
 }
 
 // --- the service --------------------------------------------------------------------------------
@@ -1269,6 +1338,34 @@ where
         })
     }
 
+    /// The decisions a schedule has made, newest first, a page after `after`, optionally of one
+    /// outcome.
+    ///
+    /// # Errors
+    /// As [`Self::get`].
+    pub async fn actions(
+        &self,
+        principal: &Principal,
+        id: ScheduleId,
+        outcome: Option<Outcome>,
+        after: Option<ActionCursor>,
+        limit: u32,
+    ) -> Result<Vec<ActionView>, AppError> {
+        principal.authorize(Permission::ScheduleRead)?;
+        // a schedule of another tenant is as absent as one that never existed
+        self.load(principal, id).await?;
+        Ok(self
+            .store
+            .actions(
+                principal.tenant_id(),
+                id,
+                outcome,
+                after,
+                limit.clamp(1, 201),
+            )
+            .await?)
+    }
+
     /// The namespace a schedule is in. The route has already admitted the caller to a namespace;
     /// this is what it compares with, so a schedule of another namespace is as absent as one of
     /// another tenant.
@@ -1696,6 +1793,15 @@ pub trait ScheduleUseCase: Send + Sync {
         next: u32,
         recent: u32,
     ) -> ScheduleFuture<'a, ScheduleDescription>;
+
+    fn actions<'a>(
+        &'a self,
+        principal: &'a Principal,
+        id: ScheduleId,
+        outcome: Option<Outcome>,
+        after: Option<ActionCursor>,
+        limit: u32,
+    ) -> ScheduleFuture<'a, Vec<ActionView>>;
 
     fn list<'a>(
         &'a self,

@@ -2751,6 +2751,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/namespaces/{namespaceId}/schedules/{scheduleId}/actions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The decisions a schedule has made, newest first
+         * @description Needs `schedule:read`. Every nominal time the schedule acted on has a decision (a run started, a time buffered, skipped, coalesced or missed), whether or not it started a run. Ordered by the instant of the decision, then by the key of the action, so a page ends where the next one begins. An outcome this version does not know is "another outcome".
+         */
+        get: operations["listScheduleActions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/namespaces/{namespaceId}/schedules/{scheduleId}/backfills": {
         parameters: {
             query?: never;
@@ -5705,6 +5725,10 @@ export interface components {
         };
         SchedulePage: {
             items: components["schemas"]["Schedule"][];
+            nextCursor?: string | null;
+        };
+        ScheduleActionPage: {
+            items: components["schemas"]["ScheduleActionRecord"][];
             nextCursor?: string | null;
         };
         /**
@@ -11702,6 +11726,44 @@ export interface operations {
             409: components["responses"]["Conflict"];
             422: components["responses"]["ValidationError"];
             429: components["responses"]["QuotaExceeded"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listScheduleActions: {
+        parameters: {
+            query?: {
+                /** @description Opaque cursor returned as `nextCursor` by the previous page. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size; values outside 1..200 are clamped. */
+                limit?: components["parameters"]["Limit"];
+                outcome?: components["schemas"]["ScheduleActionOutcome"];
+            };
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                scheduleId: components["parameters"]["ScheduleId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of decisions */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleActionPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
             default: components["responses"]["InternalError"];
         };

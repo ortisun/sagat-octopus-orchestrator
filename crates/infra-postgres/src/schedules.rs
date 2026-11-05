@@ -12,10 +12,11 @@ use sagat_application::schedule_codec::{
     target_to_json,
 };
 use sagat_application::schedules::{
-    AUTHORITY_REVOKED, ActionDedupe, ActionView, BackfillProgress, BackfillRecord, BackfillState,
-    BufferedAction, DueBackfill, DueSchedule, NewBackfill, NewSchedule, Obligation, Reconcile,
-    RecordedAction, Revise, ScheduleActivity, ScheduleAdmission, ScheduleDecision, ScheduleOrigin,
-    ScheduleRecord, ScheduleState, ScheduleStore, ShardFence, StateChange, TargetCheck,
+    AUTHORITY_REVOKED, ActionCursor, ActionDedupe, ActionView, BackfillProgress, BackfillRecord,
+    BackfillState, BufferedAction, DueBackfill, DueSchedule, NewBackfill, NewSchedule, Obligation,
+    Reconcile, RecordedAction, Revise, ScheduleActivity, ScheduleAdmission, ScheduleDecision,
+    ScheduleOrigin, ScheduleRecord, ScheduleState, ScheduleStore, ShardFence, StateChange,
+    TargetCheck,
 };
 use sagat_domain::audit::AuditRecord;
 use sagat_domain::execution::{RunId, RunStatus};
@@ -1309,6 +1310,37 @@ impl ScheduleStore for PgScheduleStore {
             .map(action_view)
             .collect::<Result<Vec<_>, StoreError>>()?;
         Ok(ScheduleActivity { counters, recent })
+    }
+
+    async fn actions(
+        &self,
+        tenant: TenantId,
+        id: ScheduleId,
+        outcome: Option<Outcome>,
+        after: Option<ActionCursor>,
+        limit: u32,
+    ) -> Result<Vec<ActionView>, StoreError> {
+        // newest decision first; the key of an action breaks the ties, so a page ends where the next
+        // one begins whatever is decided in between
+        let rows = sqlx::query(
+            "SELECT nominal_at, actual_at, kind, origin, revision, outcome, reason, run_id, backfill_id, \
+                    summary_count, summary_last_at, decided_at \
+             FROM schedule_actions WHERE tenant_id = $1 AND schedule_id = $2 \
+               AND ($3::text IS NULL OR outcome = $3) \
+               AND ($4::timestamptz IS NULL OR (decided_at, origin, nominal_at) < ($4, $5, $6)) \
+             ORDER BY decided_at DESC, origin DESC, nominal_at DESC LIMIT $7",
+        )
+        .bind(tenant.as_uuid())
+        .bind(id.as_uuid())
+        .bind(outcome.map(Outcome::as_str))
+        .bind(after.map(|cursor| cursor.decided_at))
+        .bind(after.map(|cursor| cursor.origin.as_str()))
+        .bind(after.map(|cursor| cursor.nominal_at))
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_error)?;
+        rows.iter().map(action_view).collect()
     }
 
     async fn due_schedules(
