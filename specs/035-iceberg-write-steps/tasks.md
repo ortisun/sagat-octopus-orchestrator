@@ -814,6 +814,13 @@ one commit carries the key.
   - the step is `high_risk` and irreversible unless it declares `compensation: revert`.
 
   Refs: FR-035-008, FR-035-009, FR-035-034, G035-019.
+
+  *2026-11-05, partly done, left unticked (D035-084, G035-034):* `crates/domain/tests/iceberg_write.rs` has 22 tests, written
+  first and seen failing, that cover every bullet but one: the node parses; it is refused beside a forEach, while or
+  repeatUntil, inside a body and under a continuation policy, and allowed beside saga and parallel nodes; an ordinary activity
+  cannot forge the reserved names; one record source; the mapping ceilings; high risk and irreversible unless it reverts.
+  Not covered: "at most 32 blobs" is pinned as a constant only, because the count exists when the expression is evaluated
+  (G035-034).
 - [ ] T035-048 [P] [US02] Write the failing publication tests in
   `tests/integration/iceberg-writes/publication.rs`:
   - publishing needs `database:use` and `database:write` (admin);
@@ -890,6 +897,11 @@ one commit carries the key.
 - [ ] T035-052 [US02] Add the `IcebergWrite` type and `Node.iceberg` to
   `crates/domain/src/{database.rs,workflow.rs}`, with root-only validation and the reserved activity.
   T035-047 passes. Refs: FR-035-008, D035-038.
+
+  *2026-11-05, partly done, left unticked (D035-084, G035-034):* `IcebergWrite` and `Node::iceberg` are in the domain with the
+  root-only rule, the reserved activities, a fixed retry and effect, and a derived revert compensation; T035-047 passes
+  (22 tests, 35 mutations caught). Append only: overwrite and upsert come with T035-080 and T035-085, and `recordSchema` with
+  the codec (T035-053). The task text names `database.rs`; the type is in `database/iceberg_write.rs`.
 - [ ] T035-053 [US02] Add the codec in `crates/infra-ir/src/lake.rs` and `crates/infra-ir/src/convert.rs`.
   A field outside the contract is refused, and canonical bytes are stable across two publications.
   Refs: FR-035-008, FR-035-033.

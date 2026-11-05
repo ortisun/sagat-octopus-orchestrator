@@ -28,7 +28,8 @@ use std::fmt;
 use std::time::Duration;
 
 use crate::database::{
-    DatabaseOperation, MANAGED_DATABASE_ACTIVITY, MANAGED_DATABASE_PREFIX, OperationKind,
+    DatabaseOperation, ICEBERG_REVERT_ACTIVITY, ICEBERG_WRITE_ACTIVITY, IcebergWrite,
+    MANAGED_DATABASE_ACTIVITY, MANAGED_DATABASE_PREFIX, OperationKind,
 };
 use crate::execution::{ApprovalPolicy, ExecutionInstanceId};
 use crate::identity::{Slug, clip};
@@ -67,6 +68,12 @@ const MAX_EXPRESSION_LEN: usize = 2048;
 pub enum WorkflowError {
     #[error("invalid managed database node or reserved activity name")]
     InvalidDatabaseNode,
+    #[error("invalid iceberg write node or reserved activity name")]
+    InvalidIcebergNode,
+    #[error(
+        "an iceberg write is a root-level node: not in a body, beside a loop or under a continuation policy"
+    )]
+    IcebergNodeNotRoot,
     #[error("invalid node id '{0}'")]
     InvalidNodeId(String),
     #[error("invalid activity name '{0}'")]
@@ -773,6 +780,7 @@ pub struct Node {
     effect: EffectPolicy,
     origin: NodeOrigin,
     database: Option<DatabaseOperation>,
+    iceberg: Option<IcebergWrite>,
 }
 
 impl Node {
@@ -787,6 +795,7 @@ impl Node {
             effect: EffectPolicy::NONE,
             origin: NodeOrigin::Declared,
             database: None,
+            iceberg: None,
         }
     }
 
@@ -821,6 +830,32 @@ impl Node {
     #[must_use]
     pub const fn database_operation(&self) -> Option<&DatabaseOperation> {
         self.database.as_ref()
+    }
+
+    /// An Iceberg write is a high-risk activity on a reserved name. Its retries are automatic, because recovery looks the
+    /// commit up by its effect key; it is irreversible unless it declares a revert, which is a derived compensation.
+    #[must_use]
+    pub fn iceberg(id: NodeId, write: IcebergWrite) -> Self {
+        let revert = write.revert();
+        let mut node = Self::new(
+            id,
+            NodeKind::Activity {
+                activity: ActivityName(ICEBERG_WRITE_ACTIVITY.to_owned()),
+                retry: RetryPolicy::DEFAULT,
+                compensate_with: revert.then(|| ActivityName(ICEBERG_REVERT_ACTIVITY.to_owned())),
+                reconcile_with: None,
+                idempotency_template: None,
+                secrets: Vec::new(),
+            },
+        )
+        .with_effect(iceberg_effect(revert));
+        node.iceberg = Some(write);
+        node
+    }
+
+    #[must_use]
+    pub const fn iceberg_write(&self) -> Option<&IcebergWrite> {
+        self.iceberg.as_ref()
     }
 
     /// What the author says about the effect of this activity (irreversible, high risk, how its
@@ -1253,6 +1288,14 @@ impl WorkflowDefinition {
         if managed_body || (managed_root && (scoped_root || continuation_policy.is_some())) {
             return Err(WorkflowError::InvalidDatabaseNode);
         }
+        // The same boundary for a lake write (G035-019): its credential pins are root-only too.
+        let iceberg_root = nodes.iter().any(|node| node.iceberg_write().is_some());
+        let iceberg_body = bodies
+            .iter()
+            .any(|body| body.nodes().any(|node| node.iceberg_write().is_some()));
+        if iceberg_body || (iceberg_root && (scoped_root || continuation_policy.is_some())) {
+            return Err(WorkflowError::IcebergNodeNotRoot);
+        }
         let graph = DefinitionGraph::new(entrypoint, nodes, kind)?;
         if kind == GraphKind::StructuredContinuation
             && !graph
@@ -1551,6 +1594,11 @@ impl WorkflowDefinition {
                 .nodes()
                 .filter_map(Node::database_operation)
                 .map(DatabaseOperation::footprint)
+                .sum::<usize>()
+            + self
+                .nodes()
+                .filter_map(Node::iceberg_write)
+                .map(IcebergWrite::footprint)
                 .sum::<usize>()
             + self
                 .bodies
@@ -2036,6 +2084,15 @@ fn check_body_references(
     Ok(())
 }
 
+/// What an Iceberg write is, whatever its author says: high risk, and irreversible unless a revert undoes it.
+fn iceberg_effect(revert: bool) -> EffectPolicy {
+    EffectPolicy {
+        high_risk: true,
+        irreversible: !revert,
+        ..EffectPolicy::NONE
+    }
+}
+
 fn check_node(node: &Node) -> Result<(), WorkflowError> {
     if let NodeKind::Activity {
         activity,
@@ -2047,11 +2104,32 @@ fn check_node(node: &Node) -> Result<(), WorkflowError> {
     } = &node.kind
     {
         let reserved = |a: &ActivityName| a.as_str().starts_with(MANAGED_DATABASE_PREFIX);
-        if compensate_with.as_ref().is_some_and(reserved)
+        // Only a managed node carries a reserved name, and only an Iceberg write names the revert in `compensateWith`.
+        if node.database.is_some() && node.iceberg.is_some() {
+            return Err(WorkflowError::InvalidDatabaseNode);
+        }
+        if (compensate_with.as_ref().is_some_and(reserved) && node.iceberg.is_none())
             || reconcile_with.as_ref().is_some_and(reserved)
-            || (reserved(activity) && node.database.is_none())
+            || (reserved(activity) && node.database.is_none() && node.iceberg.is_none())
         {
             return Err(WorkflowError::InvalidDatabaseNode);
+        }
+        if let Some(write) = &node.iceberg {
+            write
+                .validate()
+                .map_err(|_| WorkflowError::InvalidIcebergNode)?;
+            let revert = write.revert();
+            if activity.as_str() != ICEBERG_WRITE_ACTIVITY
+                || *retry != RetryPolicy::DEFAULT
+                || !secrets.is_empty()
+                || compensate_with.as_ref().map(ActivityName::as_str)
+                    != revert.then_some(ICEBERG_REVERT_ACTIVITY)
+                || reconcile_with.is_some()
+                || idempotency_template.is_some()
+                || node.effect != iceberg_effect(revert)
+            {
+                return Err(WorkflowError::InvalidIcebergNode);
+            }
         }
         if let Some(operation) = &node.database {
             operation
@@ -2079,6 +2157,8 @@ fn check_node(node: &Node) -> Result<(), WorkflowError> {
         }
     } else if node.database.is_some() {
         return Err(WorkflowError::InvalidDatabaseNode);
+    } else if node.iceberg.is_some() {
+        return Err(WorkflowError::InvalidIcebergNode);
     }
     if let Some(timeout) = node.timeout {
         duration_in_range(&node.id, "timeout", timeout)?;
