@@ -6,6 +6,7 @@ use crate::{
     identity::{col, corrupt, insert_audit, store_error},
     pool::BeginSafely,
     quotas::lock_secrets,
+    reveal_grants::has_effective_payload_reveal_grant,
 };
 pub(crate) use admission::{admit_definition, admit_node, run_actors};
 use sagat_application::{
@@ -238,6 +239,26 @@ impl ConnectionStore for PgRunStore {
                 what: "connection revisions",
             });
         }
+        // FR-035-005 (D035-074): a connection that is active at the `pii` ceiling is set by someone who holds the
+        // reveal grant of the namespace, checked here, in the transaction that writes the revision, so a revocation
+        // cannot commit between the check and the write. A write that pauses or deletes carries the ceiling the
+        // connection already had and needs nothing: a revoked grant must not strand a `pii` connection. Un-pausing
+        // is an active write, so it is checked. A retry of a write already accepted was answered above.
+        if write.status == ConnectionStatus::Active
+            && write.config.egress_ceiling().requires_reveal_grant()
+        {
+            let holds_grant = has_effective_payload_reveal_grant(
+                &mut tx,
+                principal.tenant_id(),
+                namespace,
+                principal.subject(),
+            )
+            .await?;
+            write
+                .config
+                .authorize_egress_ceiling(holds_grant)
+                .map_err(|_| StoreError::RevealGrantRequired)?;
+        }
         if write.status != ConnectionStatus::Deleted {
             let authority: Option<String> = sqlx::query_scalar("SELECT authority FROM secrets WHERE tenant_id=$1 AND namespace_id=$2 AND name=$3 FOR SHARE")
                 .bind(principal.tenant_id().as_uuid()).bind(namespace.as_uuid()).bind(write.config.secret().as_str()).fetch_optional(&mut *tx).await.map_err(store_error)?;
@@ -347,11 +368,25 @@ mod tests {
         }
     }
 
+    /// A revision as feature 017 stored it, written by hand and not by `config_json`: it must read as `internal`
+    /// and serialize back to the same value, or the replay of a write made before the feature would be refused as a
+    /// reused key. A change of the stored shape fails here and not in production.
     #[test]
-    fn a_revision_stored_without_a_ceiling_reads_as_internal() {
-        let json = config_json(&connection());
-        let read = config_from(&json).expect("a stored configuration");
+    fn a_revision_stored_before_the_ceiling_existed_reads_as_internal_and_serializes_back_unchanged()
+     {
+        let stored = json!({
+            "driver": "postgresql", "host": "db.example.com", "port": 5432, "database": "orders",
+            "tls": {"mode": "verify-full", "caPem": null}, "secretName": "orders-access",
+            "limits": {
+                "maxStatementBytes": 16384, "maxParameters": 64, "maxParameterBytes": 65536, "maxRows": 1000,
+                "maxResultBytes": 1_048_576, "timeoutMs": 10_000, "connectTimeoutMs": 5000, "poolSize": 4,
+                "idleTimeoutMs": 30_000
+            }
+        });
+        let read = config_from(&stored).expect("a stored configuration");
         assert_eq!(read.egress_ceiling(), EgressCeiling::Internal);
+        assert_eq!(read, connection());
+        assert_eq!(config_json(&read), stored);
     }
 
     #[test]

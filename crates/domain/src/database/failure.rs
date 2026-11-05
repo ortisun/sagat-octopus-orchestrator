@@ -21,9 +21,10 @@ macro_rules! failures {
                 }
             }
 
-            /// Whether the step may be retried automatically after this failure. The codes of feature 017 keep
-            /// being reported as not retryable, as the runner does today; those of feature 035 follow the table of
-            /// `contracts/errors.md`. An unknown outcome is never repeated blindly.
+            /// The retry flag the contract gives this code. Nothing reads it in production yet (G035-027 item 8):
+            /// the worker takes the flag that the runner reports with a failure, and the runner reports the codes of
+            /// feature 017 as not retryable, which is why they stay `false` here; the codes of feature 035 follow the
+            /// table of `contracts/errors.md`. An unknown outcome is never repeated blindly.
             #[must_use]
             pub const fn retryable(self) -> bool {
                 match self {

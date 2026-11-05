@@ -63,6 +63,10 @@ pub enum StoreError {
     DatabaseUnavailable,
     #[error("database operation exceeds connection limits")]
     DatabaseLimit,
+    /// The write sets a `pii` egress ceiling and the actor does not hold the namespace's reveal grant (FR-035-005).
+    /// It is a refusal of the actor, not of the resource: the actor does manage connections, so nothing is hidden.
+    #[error("setting the pii egress ceiling needs the payload reveal grant")]
+    RevealGrantRequired,
     #[error("conflict with the current state: {0}")]
     StateConflict(&'static str),
     #[error("uniqueness conflict")]
@@ -241,6 +245,9 @@ impl From<StoreError> for AppError {
             StoreError::DatabaseLimit => {
                 Self::NotAllowed("database operation exceeds connection limits")
             }
+            StoreError::RevealGrantRequired => Self::Forbidden {
+                permission: Permission::PayloadRevealPii,
+            },
             StoreError::StateConflict(reason) => Self::StateConflict(reason),
             StoreError::Conflict(kind) => Self::Conflict(kind),
             StoreError::MissingReference => Self::NotFound,
