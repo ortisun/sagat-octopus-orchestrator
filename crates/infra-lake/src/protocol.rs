@@ -63,10 +63,45 @@ pub enum Operation {
 #[derive(Clone, PartialEq, Eq)]
 pub struct RelayToken(String);
 
+/// Why a relay token is not one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum TokenError {
+    #[error("a relay token is 32 to 128 characters of letters, digits, '-' and '_'")]
+    Shape,
+    #[error("no entropy for a relay token")]
+    Entropy,
+}
+
 impl RelayToken {
-    #[must_use]
-    pub fn new(token: impl Into<String>) -> Self {
-        Self(token.into())
+    /// A token the relay compares and the host presents on one line, so it has no space, newline or separator, and it
+    /// is long enough not to be guessed: 32 to 128 characters of `A-Z a-z 0-9 - _`.
+    pub fn new(token: impl Into<String>) -> Result<Self, TokenError> {
+        let token = token.into();
+        let shape = (32..=128).contains(&token.len())
+            && token
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_');
+        if shape {
+            Ok(Self(token))
+        } else {
+            Err(TokenError::Shape)
+        }
+    }
+
+    /// A fresh token: 32 bytes from the operating system's random source as 64 hexadecimal digits.
+    pub fn generate() -> Result<Self, TokenError> {
+        let mut bytes = [0_u8; 32];
+        getrandom::fill(&mut bytes).map_err(|_| TokenError::Entropy)?;
+        let mut token = String::with_capacity(64);
+        for byte in bytes {
+            token.push_str(&format!("{byte:02x}"));
+        }
+        Self::new(token)
+    }
+
+    /// For the comparison the relay makes; the token is never shown or logged.
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        self.0.as_bytes()
     }
 }
 

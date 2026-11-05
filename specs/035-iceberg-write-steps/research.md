@@ -734,6 +734,47 @@ The other fixes were wording:
     imports). 25 mutations of the codec were applied one at a time and all are caught; the first run let one survive
     (an object-storage receipt that accepts unknown fields: the test only tried the Iceberg receipt) and a test now
     covers both kinds.
+- **D035-078 — The relay's wire protocol and policy.** T035-016 and T035-030 (the Rust half), which left the wire format to
+  the implementation. Decided by: delegate.
+  - *Wire.* One connection per tunnel to the attempt's Unix socket. Line 1 is `SAGAT-RELAY/1 <token>`; anything else, or a
+    wrong token, a preface over 256 bytes or one that is late, closes the connection with no reply, so a process that is
+    not the attempt's host learns nothing. Line 2 is `CONNECT host:port HTTP/1.1` with its headers (an HTTP proxy tunnel)
+    or `TCP <name>` (a mapping the connection declared, for Hive and a catalog database). `CONTROL`, the conversation of
+    `sagat.lake.v1`, is served by the attempt driver (T035-035) and is refused here. Replies: `200`, `403`, `502` or `400`
+    with no body for a tunnel; `OK` or `DENIED` for a mapping. A reply never repeats the target. The request is read a byte
+    at a time and no more than 8 KiB, so bytes a client sends right behind the request reach the destination.
+  - *Policy, in this order.* The name (a host and port the connection declared, or an S3 regional endpoint of its region
+    and buckets, compared exactly: no wildcard, no suffix) before anything is resolved; then one resolution, as a fully
+    qualified name; then every address of the answer against the managed executor's policy and the operator's networks;
+    then a connection to the address that was checked (an IPv4 address when the answer has one, an IPv4-mapped address
+    as the IPv4 it was checked as). An answer with one forbidden address is refused as a whole.
+  - *Counts.* `RelayDenials`, by the five closed kinds of `LakeRelayDenial`; its total is the `relayDenials` of the result
+    line. A destination that was allowed and could not be reached is a `502` and is not a denial.
+  - *Evidence.* `cargo test -p sagat-infra-lake`: 34 relay cases, written first; clippy `-D warnings` clean. 24 mutations of
+    the first version, all caught (one survived the first run because a test case ended the request in a way that was
+    refused for another reason; the case now isolates the rule).
+- **D035-079 — What the independent security review of the relay changed.** An independent read of `relay.rs` found seven
+  things; four were fixed with tests, one hardened, two are left to the attempt driver (G035-029). Decided by: delegate.
+  - *The relay was open by default.* `RelayConfig::new` took no list of networks, so a driver that forgot `with_deny` let a
+    tenant point a declared name at the cluster's own addresses (a service IP, the PostgreSQL pod). The operator's allowed
+    networks are now a required argument, as for the managed database executor: an address outside them is refused and an
+    empty list reaches nothing. `with_deny` stays for the platform's own networks inside an allowed range.
+  - *Slots leaked and nothing was bounded.* A `JoinSet` kept every finished connection until shutdown, and the number of
+    connections, the resolution and the connect had no limit. Now a slot is taken before a connection is accepted (64 by
+    default, the rest wait in the kernel's backlog), a `TaskTracker` keeps nothing of a finished connection, the name server
+    and the destination share one admission timeout (10 s), and a shutdown ends a connection at any point.
+  - *Search domains.* The name went to the resolver without its trailing dot, so `ndots` could turn `catalog.example` into
+    `catalog.example.<namespace>.svc.cluster.local`. It is asked for as a fully qualified name.
+  - *Weak tokens.* `RelayToken::new` accepted an empty token and one with a newline, which breaks the line. It takes 32 to 128
+    characters of `A-Z a-z 0-9 - _` and returns an error otherwise; `RelayToken::generate` draws 32 bytes from the operating
+    system and writes 64 hex digits.
+  - *Defense in depth.* `with_peer_uid` refuses a peer whose user id, read by the kernel, is not the container slot's. An
+    IPv6 authority needs its brackets, and the denial counters stop at the maximum instead of wrapping.
+  - *Evidence.* 34 relay cases, 33 protocol cases and a unit test; 15 more mutations (the allowed networks ignored, the name
+    without its dot, no resolution timeout, no connect timeout, no shutdown, no connection limit, no user id check, a wrapping
+    counter, an unbracketed authority, a zero limit, mapping names, a short token, any character in a token, a constant
+    token), all caught. The gaps the reviewer listed in the tests were closed: an IPv4-mapped answer is connected to as
+    IPv4, a mapped metadata address through a mapping is refused, spellings of an undeclared name are refused.
 - **G035-027 — Places where the contract fragments do not yet fit the canonical shapes or the code.** Found while writing
   the contract tests; none is pinned by a test yet, each is settled by the task that implements it.
   1. `connections.md` names `ConnectionProbeResult.checks[]`, but the canonical OpenAPI has no such schema: the probe
@@ -770,3 +811,13 @@ The other fixes were wording:
   into `relayDenials` and lose the kind. A location or credential denial already fails the attempt with its code; the
   dropped keys are the part that would be invisible. *Exit condition:* T035-032 decides and a test shows the count
   reaching the audit.
+- **G035-029 — What the attempt driver must do with the relay.** The relay is a library until the driver (T035-035) builds it
+  from a pinned connection; these are the review's findings that only the driver can close, each with the test that
+  closes it. (1) Pass the operator's allowed networks and the platform's state networks from the deployment, and never
+  an unconditional `0.0.0.0/0`. (2) Set `development(true)` only from the deployment's development profile, since it
+  allows the loopback interface. (3) Create the socket in a directory only the runner and the slot's user can reach, set
+  `with_peer_uid` to the slot's user id, and write `relay.token` mode 0400 from `RelayToken::generate`. (4) The container's
+  forwarder (`runners/lake/sagat_lake/forwarder.py`, T035-030) is not written. (5) Reading the request a byte at a time
+  costs up to 8 K system calls per connection; the connection limit and the handshake timeout bound it, and a buffered
+  reader that hands its unread bytes to the tunnel would be cheaper. *Exit condition:* closed by T035-035 and T035-030
+  with the integration tests of T035-031.
