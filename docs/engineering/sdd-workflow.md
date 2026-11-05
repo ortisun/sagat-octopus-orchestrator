@@ -45,3 +45,5 @@ The usual criticism of spec-driven tooling is that the documents govern by conve
 - Ticking a task from an agent's summary. Run the gate on the merged tree.
 - Ticking a task of a superseded file, or in two places. A converted feature has one task list.
 - Leaving a placeholder that looks like a guarantee. Mark it as a pending decision or test.
+
+<!-- CI probe: a Markdown-only change; delete this branch. -->
