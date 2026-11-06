@@ -68,15 +68,28 @@ impl ClassificationLocationIndex {
         carrier: &CarrierPointer,
         location: &[ClassificationSegment],
     ) -> ClassificationResolution {
+        self.resolve_matched(carrier, location).0
+    }
+
+    /// As [`Self::resolve`], and the location of the carrier that answered when one did: the one asked for, or the one that
+    /// governs a property or an item it does not name (with `AdditionalProperty` or `RemainingItem` in its place). It is
+    /// `None` when nothing answered and the `pii` floor did, so a caller that wants everything below the answer knows
+    /// there is no location to look below.
+    #[must_use]
+    pub fn resolve_matched(
+        &self,
+        carrier: &CarrierPointer,
+        location: &[ClassificationSegment],
+    ) -> (ClassificationResolution, Option<Vec<ClassificationSegment>>) {
         if let Some(failure) = self.status.failure(carrier) {
-            return ClassificationResolution::Incomplete(failure.clone());
+            return (ClassificationResolution::Incomplete(failure.clone()), None);
         }
         let Some(paths) = self.by_path.get(carrier) else {
-            return ClassificationResolution::AbsentCarrier;
+            return (ClassificationResolution::AbsentCarrier, None);
         };
         let find = |path: &[ClassificationSegment]| paths.get(path).map(|&at| &self.ordered[at]);
         let Some(mut current) = find(&[]) else {
-            return ClassificationResolution::AbsentCarrier;
+            return (ClassificationResolution::AbsentCarrier, None);
         };
         let mut selected: Vec<ClassificationSegment> = Vec::with_capacity(location.len());
         let mut location_present = true;
@@ -91,21 +104,24 @@ impl ClassificationLocationIndex {
                 ClassificationSegment::Property(_) => ClassificationSegment::AdditionalProperty,
                 ClassificationSegment::Index(_) => ClassificationSegment::RemainingItem,
                 ClassificationSegment::AdditionalProperty
-                | ClassificationSegment::RemainingItem => return floor(current),
+                | ClassificationSegment::RemainingItem => return (floor(current), None),
             };
             selected.push(fallback);
             if let Some(found) = find(&selected) {
                 current = found;
                 location_present = false;
             } else {
-                return floor(current);
+                return (floor(current), None);
             }
         }
-        ClassificationResolution::Resolved {
-            level: current.level,
-            source_path: current.source_path.clone(),
-            location_present,
-        }
+        (
+            ClassificationResolution::Resolved {
+                level: current.level,
+                source_path: current.source_path.clone(),
+                location_present,
+            },
+            Some(selected),
+        )
     }
 }
 

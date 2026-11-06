@@ -204,7 +204,6 @@ fn an_expression_that_is_not_a_plain_reference_is_pii_even_over_a_public_schema(
         "input.rows[0]",
         "input.rows + []",
         "input.rows == input.rows",
-        "input",
         "steps.fetch",
         "other.rows",
     ] {
@@ -354,15 +353,167 @@ fn a_version_read_back_from_the_store_is_classified_the_same_way() {
 
 #[test]
 fn the_levels_are_not_part_of_the_canonical_document_or_its_digest() {
-    // Two documents that differ only in a schema annotation the step reads have different bytes, as before; and the
-    // derived levels never leak into the bytes, so a version published before this change keeps its digest.
-    let with_levels = JsonIrCodec
-        .parse(&flow(
-            Some(rows_schema()),
-            step(json!({"inline": "input.rows"}), &["/id"]),
-        ))
-        .expect("parsed");
-    let text = String::from_utf8(with_levels.canonical).expect("utf8");
-    assert!(!text.contains("egress"), "{text}");
-    assert!(!text.contains("level"), "{text}");
+    // The levels are derived. The canonical bytes are the document and nothing more, so a version published before the
+    // levels existed keeps its digest, and a restore that computes them again changes nothing.
+    let bytes = flow(
+        Some(rows_schema()),
+        step(json!({"inline": "input.rows"}), &["/id", "/email"]),
+    );
+    let original: Value = serde_json::from_slice(&bytes).expect("json");
+    let parsed = JsonIrCodec.parse(&bytes).expect("parsed");
+    let canonical: Value = serde_json::from_slice(&parsed.canonical).expect("canonical json");
+    assert_eq!(
+        canonical, original,
+        "the canonical document is the document"
+    );
+    let restored = JsonIrCodec
+        .parse_stored(&parsed.canonical)
+        .expect("restored");
+    assert_eq!(restored.canonical, parsed.canonical);
+    assert_eq!(restored.digest, parsed.digest);
+}
+
+#[test]
+fn the_input_itself_is_the_list_when_the_schema_says_so() {
+    let schema = json!({"type": "array", "x-sagat-classification": "public",
+        "items": {"type": "object", "properties": {"id": {"type": "string"}}}});
+    let bytes = flow(Some(schema), step(json!({"inline": "input"}), &["/id"]));
+    assert_eq!(levels_of(&bytes), levels(&[("/id", Level::Public)]));
+}
+
+/// The item schema of the reviews' scenarios, in a workflow that maps the given fields.
+fn items_of(item: Value, fields: &[&str]) -> Vec<(String, Level)> {
+    let schema = json!({"type": "object", "x-sagat-classification": "public",
+        "properties": {"rows": {"type": "array", "items": item}}});
+    mapped(fields, Some(schema))
+}
+
+#[test]
+fn a_numeric_segment_reads_everything_under_the_list_it_indexes() {
+    // `/tokens/0` may be the first element of the list or a property named `0`: either way it is as strict as anything
+    // that list can hold. Here the elements are secret while the list itself is only pii.
+    let item = json!({"type": "object", "properties": {
+        "tokens": {"type": "array", "x-sagat-classification": "pii",
+            "items": {"type": "string", "x-sagat-classification": "secret"}}}});
+    assert_eq!(
+        items_of(item, &["/tokens/0"]),
+        levels(&[("/tokens/0", Level::Secret)])
+    );
+}
+
+#[test]
+fn a_tuple_record_is_read_at_the_strictest_of_its_positions() {
+    let item = json!({"type": "array", "prefixItems": [
+        {"type": "string", "x-sagat-classification": "pii"},
+        {"type": "string", "x-sagat-classification": "secret"}], "items": {"type": "string"}});
+    assert_eq!(
+        items_of(item, &["/0", "/1"]),
+        levels(&[("/0", Level::Secret), ("/1", Level::Secret)])
+    );
+}
+
+#[test]
+fn a_property_the_schema_leaves_to_additional_properties_is_as_strict_as_what_that_schema_holds() {
+    // `customer` is not named: `additionalProperties` governs it, and that schema has a pii child.
+    let item = json!({"type": "object", "additionalProperties": {
+        "type": "object", "x-sagat-classification": "internal",
+        "properties": {"ssn": {"type": "string", "x-sagat-classification": "pii"}}}});
+    assert_eq!(
+        items_of(item, &["/customer"]),
+        levels(&[("/customer", Level::Pii)])
+    );
+}
+
+#[test]
+fn a_whole_record_over_an_open_object_counts_the_keys_the_schema_does_not_name_as_pii() {
+    // Nothing closes the object, so a record may carry a key nobody classified; 016 reads such a key as pii.
+    let item = json!({"type": "object", "properties": {
+        "id": {"type": "string"},
+        "total": {"type": "integer", "x-sagat-classification": "internal"}}});
+    assert_eq!(items_of(item, &[]), levels(&[("", Level::Pii)]));
+}
+
+#[test]
+fn a_structure_column_over_an_open_object_counts_the_keys_the_schema_does_not_name_as_pii() {
+    let item = json!({"type": "object", "properties": {
+        "customer": {"type": "object", "properties": {
+            "name": {"type": "string", "x-sagat-classification": "internal"}}}}});
+    assert_eq!(
+        items_of(item, &["/customer", "/customer/name"]),
+        levels(&[
+            ("/customer", Level::Pii),
+            ("/customer/name", Level::Internal)
+        ])
+    );
+}
+
+#[test]
+fn a_schema_with_a_great_many_positions_is_read_in_bounded_time_and_as_pii() {
+    // 16000 positions and 1024 mapped columns: a reading that tried every position for every column would not finish.
+    let positions: Vec<Value> = (0..16000).map(|_| json!({})).collect();
+    let schema = json!({"type": "object", "x-sagat-classification": "public",
+        "properties": {"rows": {"type": "array", "prefixItems": positions,
+            "items": {"type": "object"}}}});
+    let fields: Vec<String> = (0..1024).map(|n| format!("/f{n}")).collect();
+    let refs: Vec<&str> = fields.iter().map(String::as_str).collect();
+    let bytes = flow(Some(schema), step(json!({"inline": "input.rows"}), &refs));
+
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(levels_of(&bytes));
+    });
+    let found = receiver
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the levels of a schema with many positions must be computed in bounded time");
+    assert_eq!(found.len(), 1024);
+    assert!(
+        found.iter().all(|(_, level)| *level >= Level::Pii),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn a_list_reached_through_an_unnamed_property_is_read_where_the_schema_describes_it() {
+    // `rows` is not named: `additionalProperties` governs it, and that list describes its first position apart, as pii.
+    let schema = json!({"type": "object", "x-sagat-classification": "public", "additionalProperties": {
+        "type": "array",
+        "prefixItems": [{"type": "object", "properties": {"id": {"type": "string", "x-sagat-classification": "pii"}}}],
+        "items": {"type": "object", "properties": {"id": {"type": "string"}}}}});
+    assert_eq!(
+        mapped(&["/id"], Some(schema)),
+        levels(&[("/id", Level::Pii)])
+    );
+}
+
+#[test]
+fn a_secret_below_an_unnamed_property_is_found_not_hidden_behind_the_pii_of_its_container() {
+    let item = json!({"type": "object", "additionalProperties": {
+        "type": "object", "x-sagat-classification": "internal",
+        "properties": {"token": {"type": "string", "x-sagat-classification": "secret"}}}});
+    assert_eq!(
+        items_of(item, &["/customer"]),
+        levels(&[("/customer", Level::Secret)])
+    );
+}
+
+#[test]
+fn a_schema_that_says_nothing_of_its_type_is_not_a_scalar() {
+    let item = json!({"type": "object", "properties": {
+        "untyped": {"x-sagat-classification": "internal"},
+        "typed": {"type": "string", "x-sagat-classification": "internal"}}});
+    assert_eq!(
+        items_of(item, &["/untyped", "/typed"]),
+        levels(&[("/untyped", Level::Pii), ("/typed", Level::Internal)])
+    );
+}
+
+#[test]
+fn a_type_that_is_a_list_is_a_scalar_only_when_every_type_in_it_is() {
+    let item = json!({"type": "object", "properties": {
+        "maybe": {"type": ["integer", "null"], "x-sagat-classification": "internal"},
+        "either": {"type": ["string", "object"], "x-sagat-classification": "internal"}}});
+    assert_eq!(
+        items_of(item, &["/maybe", "/either"]),
+        levels(&[("/maybe", Level::Internal), ("/either", Level::Pii)])
+    );
 }
