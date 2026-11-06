@@ -13,6 +13,7 @@ which would have started a run on `develop`. The assistant recorded it; the rule
 |---|---|---|---|---|
 | OD-2026-11-05-1 | "Desativar o ci para merges na develop. Deixar o ci somente para merges de release" | owner | Decided | docs/constitution.md, .github/workflows/ci.yml |
 | OD-2026-11-06-1 | "O que deve ter é execucao de testes do que foi alterado ou modificado e seus dependentes, e integração também só do que foi alterado" | owner | Decided | docs/constitution.md (4.3.0), scripts/select-test-targets.py |
+| OD-2026-11-06-2 | "Sim. Rodar os testes somente dos arquivos alterados e suas dependencias." (the answer to: should a shared input, that is a contract, `tests/support`, `tests/fixtures`, `runners/`, a dependency of `tests/Cargo.toml`, select no suite in a pull request and leave all to the release?) | owner | Decided | scripts/select-test-targets.py, docs/test-strategy.md, tests/AGENTS.md |
 
 Read as the owner wrote it: the CI that a *merge* into `develop` starts (the `push` event) is turned off. The CI of a *pull
 request* is not a merge and keeps the rule of 4.1.0 (the tests of what it changes; the whole stack for a pull request into
@@ -27,6 +28,15 @@ ran for about an hour and three quarters (the assistant cancelled four runs of i
 run the tests of what was changed and of its dependents, and the integration suites only for what was changed. From 4.3.0 the unit tests of a changed package and of every package that depends on it run, and an
 integration suite runs only when it was itself changed (its files, its `[[test]]` entry or a harness it drives). A
 release still runs everything, and a merge into `develop` still starts no run.
+
+Row OD-2026-11-06-2 closes what 4.3.0 left: it still selected every integration suite when a file that all of them share
+(`tests/support`, `tests/fixtures`, a `runners/` directory, a contract under `specs/`, a dependency of `tests/Cargo.toml`)
+changed. Pull request 98 of feature 018 changes the OpenAPI contract and the test support, so it was selected as "every
+target" (about ninety suites, two hours a run, two heads in a row). The assistant put the question to the owner, who said yes.
+From now on those files select no suite; the unit tests of the packages they belong to (and of their dependents) still run,
+`Cargo.lock` and the toolchain files still select the unit tests of every package, and the release runs every suite. The
+price, as the owner was told: an error in the support or in a contract that no changed suite exercises is found by the
+release and not by the pull request.
 
 ## 2026-11-05 — The lake containers share the runner's group
 

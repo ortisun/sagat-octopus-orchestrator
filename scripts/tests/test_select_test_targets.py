@@ -151,13 +151,23 @@ class Scope(unittest.TestCase):
         self.commit()
         self.assertEqual(self.chosen(), {"integration_a", "fault_b"})
 
-    def test_shared_support_and_fixtures_select_every_target(self):
+    def test_shared_support_and_fixtures_select_no_suite(self):
+        # They are used by every suite, and no suite was changed: the release runs them all.
         for rel in ("tests/support/mod.rs", "tests/fixtures/data.json"):
             with self.subTest(rel=rel):
                 self.write(rel, "changed " + rel + "\n")
                 self.commit()
-                self.assertEqual(self.chosen(), set(TARGETS))
+                decision = self.decide()
+                self.assertEqual(decision["targets"], "")
+                self.assertEqual(decision["any"], "false")
+                self.assertEqual(decision["full"], "false")
                 self.base = git(self.root, "rev-parse", "HEAD")
+
+    def test_a_shared_file_changed_with_a_suite_selects_that_suite_only(self):
+        self.write("tests/support/mod.rs", "// changed\n")
+        self.write("tests/integration/a/main.rs", "// changed\n")
+        self.commit()
+        self.assertEqual(self.chosen(), {"integration_a"})
 
     # -- the lake runtime (runners/lake) is not a shared input of the suites -------------------
     def test_a_change_under_runners_lake_opens_the_lake_gate_and_selects_only_the_lake_suites(self):
@@ -168,13 +178,13 @@ class Scope(unittest.TestCase):
         self.assertEqual(set(decision["targets"].split()), LAKE_SUITE_NAMES)
         self.assertEqual(decision["all"], "false")
 
-    def test_the_other_runners_still_select_every_target_and_leave_the_lake_gate_closed(self):
+    def test_the_other_runners_select_no_suite_and_leave_the_lake_gate_closed(self):
         for rel in ("runners/go/Dockerfile", "runners/dotnet/Dockerfile.runtime"):
             with self.subTest(rel=rel):
                 self.write(rel, "FROM scratch\n")
                 self.commit()
                 decision = self.decide()
-                self.assertEqual(set(decision["targets"].split()), set(TARGETS))
+                self.assertEqual(decision["targets"], "")
                 self.assertEqual(decision["lake"], "false")
 
     def test_a_markdown_file_of_the_lake_runtime_selects_nothing(self):
@@ -196,14 +206,20 @@ class Scope(unittest.TestCase):
             with self.subTest(**kwargs):
                 self.assertEqual(self.decide(**kwargs)["lake"], "true")
 
-    def test_runners_and_contract_files_select_every_target(self):
+    def test_runners_and_contract_files_select_no_suite(self):
         for rel in ("runners/go/Dockerfile", "specs/001-platform-foundation/contracts/openapi.yaml"):
             with self.subTest(rel=rel):
                 self.write(rel, "changed " + rel + "\n")
                 self.commit()
-                self.assertEqual(self.chosen(), set(TARGETS))
+                self.assertEqual(self.chosen(), set())
                 self.assertEqual(self.decide()["full"], "false")
                 self.base = git(self.root, "rev-parse", "HEAD")
+
+    def test_a_contract_file_changed_with_the_suite_that_checks_it_selects_that_suite_only(self):
+        self.write("specs/001-platform-foundation/contracts/openapi.yaml", "changed\n")
+        self.write("tests/fault/b/x.rs", "// x\n")
+        self.commit()
+        self.assertEqual(self.chosen(), {"fault_b"})
 
     def test_documentation_selects_nothing_at_all(self):
         self.write("README.md", "changed\n")
@@ -253,10 +269,16 @@ class Scope(unittest.TestCase):
         self.commit()
         self.assertEqual(self.chosen(), set())
 
-    def test_a_dependency_change_selects_every_target(self):
+    def test_a_dependency_change_selects_no_target_that_was_not_itself_changed(self):
         self.write("tests/Cargo.toml", manifest(dependency='tempfile = "4"'))
         self.commit()
-        self.assertEqual(self.chosen(), set(TARGETS))
+        self.assertEqual(self.chosen(), set())
+
+    def test_a_dependency_change_with_a_changed_entry_selects_that_target_only(self):
+        moved = dict(TARGETS, fault_b="fault/b2/main.rs")
+        self.write("tests/Cargo.toml", manifest(moved, dependency='tempfile = "4"'))
+        self.commit()
+        self.assertEqual(self.chosen(), {"fault_b"})
 
     def test_an_unparseable_base_manifest_selects_every_target(self):
         self.write("tests/Cargo.toml", "not [valid toml")
@@ -303,7 +325,7 @@ class Scope(unittest.TestCase):
         self.commit()
         self.assertEqual(set(self.decide()["crates"].split()), {"sagat-leaf", "sagat-cli"})
 
-    def test_a_workspace_wide_input_selects_every_package_and_every_target(self):
+    def test_a_workspace_wide_input_selects_every_package_and_no_suite(self):
         for rel in ("Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml", "vendor/rskafka/src/lib.rs"):
             with self.subTest(rel=rel):
                 self.write(rel, "changed " + rel + "\n")
@@ -311,7 +333,8 @@ class Scope(unittest.TestCase):
                 decision = self.decide()
                 self.assertEqual(decision["crates"], "ALL")
                 self.assertEqual(decision["all"], "true")
-                self.assertEqual(set(decision["targets"].split()), set(TARGETS))
+                self.assertEqual(decision["targets"], "")
+                self.assertEqual(decision["any"], "false")
                 self.assertEqual(decision["full"], "false")
                 self.base = git(self.root, "rev-parse", "HEAD")
 
