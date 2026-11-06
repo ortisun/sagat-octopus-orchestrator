@@ -999,6 +999,10 @@ one commit carries the key.
   because PyIceberg imports and calls the class a table property names. The security review added the metadata locations,
   branch-only refs, a stricter path rule and a size lookup that stays inside the warehouse (D035-092); what it found about the table's
   properties reaching the file IO is G035-041 and is not fixed.
+
+  *2026-11-06, third part done, left unticked (D035-095, G035-044):* `attempt.py` pins the directory of an attempt in memory and deletes
+  exactly its files when a commit is refused (for PyIceberg's own file IO; ADLS is G035-044). Still not done: `modes/append.py`, the
+  conditional commit around the append, the readers of NDJSON and Parquet, and `priorAttemptMayHaveLeftFiles`.
 - [ ] T035-058 [US02] Add the activity `sagat.database.iceberg.write` to
   `apps/database-runner/src/lake.rs`: rebuild the receipt, report `CompleteStep` or `FailStep`, and
   audit relay denials. Refs: FR-035-023, FR-035-027.

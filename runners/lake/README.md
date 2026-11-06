@@ -14,7 +14,8 @@ the table, lossless or refused; the table is published in `docs/guides/iceberg-t
 the effect key, D035-030) and `compat.py` (whether the table can be written, FR-035-011). `table_facts.py` reads their
 inputs from a table PyIceberg loaded and from nothing else (D035-092). `commit.py` makes PyIceberg send the commit once
 instead of repeating a refused one on its own (D035-093); `tests/counting_catalog.py` is the REST catalog that counts the
-commit requests it receives.
+commit requests it receives. `attempt.py` puts the data files of an attempt in a directory of their own and deletes
+exactly those when a commit is refused (D035-095).
 
 ## Interface
 
