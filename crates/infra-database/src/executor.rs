@@ -64,7 +64,12 @@ impl PostgresExecutor {
         config
             .validate()
             .map_err(|_| ExecutionError::InvalidConfiguration)?;
-        operation.limits = operation.limits.intersect(config.limits());
+        // This executor runs SQL and nothing else: a lake connection is not its to use.
+        let (ConnectionConfig::Postgres { .. }, Some(sql_limits)) = (config, config.sql_limits())
+        else {
+            return Err(ExecutionError::InvalidConfiguration);
+        };
+        operation.limits = operation.limits.intersect(sql_limits);
         operation
             .validate()
             .map_err(|_| ExecutionError::InvalidConfiguration)?;
@@ -91,7 +96,10 @@ impl PostgresExecutor {
             database,
             tls,
             ..
-        } = config;
+        } = config
+        else {
+            return Err(ExecutionError::InvalidConfiguration);
+        };
         let exceeded = Arc::new(AtomicBool::new(false));
         let connect = async {
             let address = self

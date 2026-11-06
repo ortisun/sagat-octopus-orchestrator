@@ -457,7 +457,10 @@ impl PgRunStore {
             .ok_or(StoreError::MissingReference)?;
         let info = run_record(&row)?.info;
         let definition = self.definition(conn, tenant, info.version_id).await?;
-        if definition.nodes().any(|n| n.database_operation().is_some()) {
+        if definition
+            .nodes()
+            .any(|n| n.database_operation().is_some() || n.iceberg_write().is_some())
+        {
             let mut actors = crate::database::run_actors(conn, &info).await?;
             // a schedule that replays the key of a time stands on the member that authorized it
             let subject = crate::database::authority_of(conn, tenant, subject).await?;
@@ -1143,7 +1146,7 @@ impl RunStore for PgRunStore {
             let bindings = if new
                 .definition
                 .nodes()
-                .any(|n| n.database_operation().is_some())
+                .any(|n| n.database_operation().is_some() || n.iceberg_write().is_some())
             {
                 let actors = crate::database::run_actors(&mut tx, &new.info).await?;
                 crate::database::admit_definition(

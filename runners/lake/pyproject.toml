@@ -1,0 +1,32 @@
+# The lake runtime: the Python host of the Iceberg write steps and destinations (feature 035, D035-026).
+#
+# This file is tool configuration and metadata only. What the image installs is `requirements.lock`, made from
+# `requirements.in`; the host is copied to /opt/sagat/lake, not built into a wheel. The version follows the platform.
+[project]
+name = "sagat-lake"
+version = "0.2.0"
+description = "Iceberg semantics through PyIceberg for the lake runner, inside a per-attempt sandbox."
+requires-python = ">=3.12,<3.13"
+license = "MIT"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+filterwarnings = ["error"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+files = ["sagat_lake", "tests", "tools"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+extend-exclude = [".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "ASYNC", "PT"]
+
+[tool.ruff.lint.isort]
+# `lockfile` and `dockerfile` are the helper modules of tests/.
+known-first-party = ["sagat_lake", "lockfile", "dockerfile", "hostile_catalog", "relay_double", "tools"]

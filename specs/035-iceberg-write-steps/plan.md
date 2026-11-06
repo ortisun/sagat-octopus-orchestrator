@@ -142,7 +142,7 @@ specs/035-iceberg-write-steps/
 | `crates/domain/src/database/failure.rs` | new `DatabaseFailure` codes ([errors](contracts/errors.md)) and a test pinning the set |
 | `crates/domain/src/workflow.rs` | `Node.iceberg`, `Node.destinations`, `NodeOrigin::Destination`, derivation at parse before region analysis, root-only validation, `revert` admitted in `compensate_with` (D035-056) |
 | `crates/domain/src/classification.rs` | `within(level, ceiling)` and the stricter-of rule (D035-051) |
-| `crates/domain/src/{outbound.rs,identity.rs}` | `OutboundKind::StepOutput`, subscription purpose and ceiling, permission `database:browse` (49 entries), runner binding profile |
+| `crates/domain/src/{outbound.rs,identity.rs}` | `OutboundKind::StepOutput`, subscription purpose and ceiling, permission `database:browse` (53 entries; written as 49, D035-071), runner binding profile |
 | `crates/application/src/{database.rs,definitions.rs,publishing.rs}` | validation per kind; publication checks (access, modes, ceilings, root-only, broker sources, filter depth, `lake.enabled`) |
 | `crates/application/src/worker/{database.rs,output.rs}`, `worker.rs` | profile-bound activities and resolution, both secrets pinned; completion schedules destination steps and broker payloads and envelopes; shard-owner settlement of `WAITING(DELIVERY)` steps |
 | `crates/application/src/{lake.rs,runs.rs,runs/ad_hoc.rs}` | browse and probe admission (`CATALOG_BROWSE` origin), receipt rebuilding, skip widened to destination steps, ad hoc destination redrive |

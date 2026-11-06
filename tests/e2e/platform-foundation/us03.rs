@@ -41,6 +41,7 @@ fn serve_config(jwks_uri: &str) -> ServeConfig {
         schedules_enabled: false,
         batches_enabled: false,
         reset_reapply_enabled: false,
+        lake_enabled: false,
         openbao: Default::default(),
         bind_addr: "127.0.0.1:0".parse().expect("addr"),
         tls: None,
@@ -937,4 +938,101 @@ async fn an_operator_can_provision_a_real_tenant_in_production_and_its_admin_can
         provision_tenant(&prod, &bad).await,
         Err(RunError::Config(_))
     ));
+}
+
+/// The operator's switch reaches the services that publish (`SAGAT_LAKE_ENABLED`, feature 035): the process that
+/// `serve` starts refuses an Apache Iceberg write with `LAKE_DISABLED` while the lake is off, and does not once it is
+/// on (the store then decides, and fails closed until its checks exist). Without this, a switch that does nothing
+/// would pass every test of the services on their own.
+#[tokio::test]
+async fn the_lake_switch_reaches_the_services_that_publish() {
+    use crate::support::engine::document;
+    use serde_json::json;
+
+    // Given a development tenant with a namespace, and a workflow draft that holds an Iceberg write
+    let db = migrated_db().await;
+    let cfg = config(&db, Environment::Dev);
+    let seed = SeedConfig {
+        tenant_slug: "dev".into(),
+        admin_subject: "dev-admin".into(),
+    };
+    seed_dev(&cfg, &seed).await.expect("tenant");
+    sagat_control_plane::seed_dev_namespace(
+        &cfg,
+        &seed,
+        &sagat_control_plane::config::NamespaceSeed {
+            workspace_slug: "dev".into(),
+            namespace_slug: "payments".into(),
+            environment: "dev".into(),
+        },
+    )
+    .await
+    .expect("namespace");
+    let idp = TestIdp::start().await;
+
+    let publish_reason = |lake_enabled: bool| {
+        let cfg = cfg.clone();
+        let idp = &idp;
+        async move {
+            let mut serve_cfg = serve_config(&idp.jwks_url());
+            serve_cfg.lake_enabled = lake_enabled;
+            let api = Running::start(cfg, serve_cfg).await;
+            let name = format!("lake-switch-{lake_enabled}");
+            let ir = document(
+                &name,
+                "save",
+                vec![json!({
+                    "id": "save", "type": "icebergWrite", "connectionRef": {"name": "lake-main"},
+                    "table": {"namespace": ["sales"], "name": "orders"}, "mode": "append",
+                    "records": {"inline": "input.rows"}
+                })],
+            );
+            let token = idp.token("dev-admin", "dev").build();
+            let created = Client::new()
+                .post(api.url("/workflows"))
+                .bearer_auth(&token)
+                .header("x-octopus-namespace", "payments")
+                .header("idempotency-key", uuid::Uuid::now_v7().to_string())
+                .json(&json!({"name": name, "ir": ir}))
+                .send()
+                .await
+                .expect("create");
+            let created_status = created.status();
+            let created: serde_json::Value = created.json().await.expect("json");
+            assert_eq!(
+                created_status, 201,
+                "a draft may hold the node either way: {created}"
+            );
+            let published = Client::new()
+                .post(api.url(&format!(
+                    "/workflows/{}/publish",
+                    created["id"].as_str().expect("id")
+                )))
+                .bearer_auth(&token)
+                .header("idempotency-key", uuid::Uuid::now_v7().to_string())
+                .json(&json!({"draftRevision": created["draftRevision"]}))
+                .send()
+                .await
+                .expect("publish");
+            let status = published.status();
+            let body: serde_json::Value = published.json().await.expect("json");
+            api.stop().await.expect("clean shutdown");
+            (status, body)
+        }
+    };
+
+    // When the lake is off (the default), publication is refused and says why
+    let (status, body) = publish_reason(false).await;
+    assert_eq!(status, 422, "{body}");
+    assert_eq!(body["code"], "VALIDATION_FAILED", "{body}");
+    assert_eq!(body["details"]["reason"], "LAKE_DISABLED", "{body}");
+    assert_eq!(body["details"]["node"], "save", "{body}");
+
+    // And when the operator turns it on, the refusal is no longer the switch's
+    let (status, body) = publish_reason(true).await;
+    assert_ne!(
+        body["details"]["reason"], "LAKE_DISABLED",
+        "{status} {body}"
+    );
+    assert_ne!(status, 201, "the store still fails closed: {body}");
 }

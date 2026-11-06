@@ -197,13 +197,13 @@ const ALL_ROLES: [Role; 7] = [
 /// The authoritative matrix, written out by hand (not derived from `Role::permissions`).
 fn expected(role: Role) -> Vec<Permission> {
     use Permission::{
-        ApprovalDecide, ApprovalRead, DatabaseAdHoc, DatabaseUse, DefinitionPublish,
-        DefinitionRead, DefinitionWrite, EventManage, EventPublish, EventRead, NamespaceRead,
-        OpsRead, PayloadReadInternal, PublicationApprove, QuotaRead, RunBatch, RunOperate,
-        RunPayloadInspect, RunQuery, RunRead, RunSignal, RunStart, RunUpdate, ScheduleOperate,
-        ScheduleRead, ScheduleWrite, ScriptBuild, ScriptExecute, ScriptPublish, ScriptRead,
-        ScriptWrite, SecretRead, SecretUse, VersionActivate, WorkerExecute, WorkerManage,
-        WorkspaceRead,
+        ApprovalDecide, ApprovalRead, DatabaseAdHoc, DatabaseBrowse, DatabaseUse,
+        DefinitionPublish, DefinitionRead, DefinitionWrite, EventManage, EventPublish, EventRead,
+        NamespaceRead, OpsRead, PayloadReadInternal, PublicationApprove, QuotaRead, RunBatch,
+        RunOperate, RunPayloadInspect, RunQuery, RunRead, RunSignal, RunStart, RunUpdate,
+        ScheduleOperate, ScheduleRead, ScheduleWrite, ScriptBuild, ScriptExecute, ScriptPublish,
+        ScriptRead, ScriptWrite, SecretRead, SecretUse, VersionActivate, WorkerExecute,
+        WorkerManage, WorkspaceRead,
     };
     match role {
         Role::Admin => Role::ADMIN_PERMISSIONS.to_vec(),
@@ -211,6 +211,7 @@ fn expected(role: Role) -> Vec<Permission> {
             vec![
                 DatabaseUse,
                 DatabaseAdHoc,
+                DatabaseBrowse,
                 WorkspaceRead,
                 NamespaceRead,
                 DefinitionRead,
@@ -285,7 +286,7 @@ fn expected(role: Role) -> Vec<Permission> {
 
 #[test]
 fn payload_permissions_are_fail_closed_for_builtin_roles() {
-    assert_eq!(Permission::ALL.len(), 52);
+    assert_eq!(Permission::ALL.len(), 53);
     assert_eq!(
         Permission::PayloadReadInternal.as_str(),
         "payload:read-internal"
@@ -325,6 +326,76 @@ fn role_permission_matrix_is_exactly_as_specified() {
                 role.grants(permission),
                 allowed.contains(&permission),
                 "role {role} / permission {permission}"
+            );
+        }
+    }
+}
+
+/// Feature 035 (D035-066): browsing the catalog of an Iceberg connection reads a customer's metadata, so it is a
+/// permission of its own, held by the roles that manage connections and by no machine role.
+#[test]
+fn database_browse_is_held_by_developers_and_admins_only() {
+    assert_eq!(Permission::DatabaseBrowse.as_str(), "database:browse");
+    for role in ALL_ROLES {
+        assert_eq!(
+            role.grants(Permission::DatabaseBrowse),
+            matches!(role, Role::Admin | Role::Developer),
+            "{role}"
+        );
+    }
+}
+
+/// The permissions only the admin role holds, decided one by one (the admin list is "everything but the PII reveal", so
+/// it would call any new permission decided).
+const ADMIN_ONLY: [Permission; 13] = [
+    Permission::WorkspaceCreate,
+    Permission::NamespaceCreate,
+    Permission::MembershipManage,
+    Permission::AuditRead,
+    Permission::QuotaManage,
+    Permission::SecretManage,
+    Permission::EgressManage,
+    Permission::WorkerBind,
+    Permission::SagaOverride,
+    Permission::PublicationManage,
+    Permission::DatabaseManage,
+    Permission::DatabaseWrite,
+    Permission::DatabaseResultRead,
+];
+
+/// The permissions a built-in role grants to nobody on purpose.
+const GRANTED_TO_NO_BUILTIN_ROLE: [Permission; 1] = [Permission::PayloadRevealPii];
+
+const OTHER_ROLES: [Role; 6] = [
+    Role::Developer,
+    Role::Operator,
+    Role::Viewer,
+    Role::Worker,
+    Role::Runner,
+    Role::DatabaseRunner,
+];
+
+/// A permission added to `ALL` is held by a role of the hand-written matrix, or is admin-only, or is granted to nobody,
+/// and it is named here. Without that it fails in this test and not in production.
+#[test]
+fn every_permission_has_a_role_decision() {
+    for permission in Permission::ALL {
+        let held_by_another_role = OTHER_ROLES
+            .into_iter()
+            .any(|role| expected(role).contains(&permission));
+        let decided = held_by_another_role
+            || ADMIN_ONLY.contains(&permission)
+            || GRANTED_TO_NO_BUILTIN_ROLE.contains(&permission);
+        assert!(
+            decided,
+            "{permission} is in Permission::ALL and in no role decision"
+        );
+    }
+    for permission in ADMIN_ONLY {
+        for role in OTHER_ROLES {
+            assert!(
+                !expected(role).contains(&permission),
+                "{permission} is listed as admin-only and {role} holds it"
             );
         }
     }

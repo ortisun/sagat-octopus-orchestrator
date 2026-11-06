@@ -354,6 +354,8 @@ fn operations_outside_the_approved_additions_and_event_extensions_are_byte_stabl
                 || operation["x-implemented"] == "017"
                 // Feature 018 adds its operations after the T016-007 baseline, the same way.
                 || operation["x-implemented"] == "018"
+                // Feature 035 merges its contract before its routes: the catalog-browse operations are planned.
+                || operation["x-planned"] == "035"
             {
                 continue;
             }

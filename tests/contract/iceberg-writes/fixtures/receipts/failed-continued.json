@@ -1,0 +1,6 @@
+{
+  "kind": "clickhouse",
+  "outcome": "FAILED_CONTINUED",
+  "failureCode": "DESTINATION_UNAVAILABLE",
+  "effectKey": "run-7f3a/extract~d.events/1"
+}

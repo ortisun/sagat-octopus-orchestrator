@@ -1,0 +1,8 @@
+{
+  "kind": "broker_stream",
+  "outcome": "DELIVERED",
+  "effectKey": "run-7f3a/extract~d.notify/1",
+  "foundByLookup": false,
+  "messages": "1",
+  "attempts": "2"
+}

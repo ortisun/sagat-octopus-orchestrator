@@ -92,6 +92,13 @@ pub enum AuditAction {
     DatabaseConnectionChanged,
     DatabaseDenied,
     DatabaseResultRead,
+    /// A catalog was browsed (feature 035). It names the connection and the level asked for, never a table. Every
+    /// browse is one row: it does not collapse repeats (D035-075).
+    DatabaseCatalogBrowsed,
+    /// An operator retried, skipped or resolved a destination step (feature 035).
+    DestinationDecided,
+    /// Someone asked for the commit of an Iceberg write to be reverted (feature 035).
+    IcebergRevertRequested,
     SecretDeleted,
     /// Someone was allowed to reference a secret from workflows, or no longer is.
     SecretAccessGranted,
@@ -338,6 +345,9 @@ impl AuditAction {
             Self::SecretAttemptPinsReleased => "secret.attempt_pins_released",
             Self::DatabaseConnectionChanged => "database.connection_changed",
             Self::DatabaseResultRead => "database.result_read",
+            Self::DatabaseCatalogBrowsed => "database.catalog_browsed",
+            Self::DestinationDecided => "destination.decided",
+            Self::IcebergRevertRequested => "iceberg.revert_requested",
             Self::DatabaseDenied => "database.denied",
             Self::SecretDeleted => "secret.deleted",
             Self::SecretAccessGranted => "secret.access_granted",

@@ -1007,6 +1007,36 @@ fn delivering_signals_and_updates_again_after_a_reset_is_an_explicit_strict_oper
 }
 
 #[test]
+fn the_lake_is_an_explicit_strict_operator_switch_and_off_by_default() {
+    assert!(
+        !ServeConfig::from_lookup(&env(&OIDC))
+            .expect("defaults")
+            .lake_enabled,
+        "a deployment without the lake publishes no Apache Iceberg write"
+    );
+    let mut values = OIDC.to_vec();
+    values.push(("SAGAT_LAKE_ENABLED", "true"));
+    assert!(
+        ServeConfig::from_lookup(&env(&values))
+            .expect("activated")
+            .lake_enabled
+    );
+    values.pop();
+    values.push(("SAGAT_LAKE_ENABLED", "false"));
+    assert!(
+        !ServeConfig::from_lookup(&env(&values))
+            .expect("stated off")
+            .lake_enabled
+    );
+    values.pop();
+    values.push(("SAGAT_LAKE_ENABLED", "maybe"));
+    assert!(
+        ServeConfig::from_lookup(&env(&values)).is_err(),
+        "anything but true or false is refused"
+    );
+}
+
+#[test]
 fn redis_callback_activation_is_an_explicit_strict_operator_switch() {
     assert!(
         !ServeConfig::from_lookup(&env(&OIDC))

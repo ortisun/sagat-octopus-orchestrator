@@ -378,6 +378,10 @@ pub struct ServeConfig {
     /// an Update with `reapplyOnReset` (`SAGAT_RESET_REAPPLY_ENABLED`, off by default until the feature is
     /// released). The engine has no such setting: it reads the versions it was given (D1990).
     pub reset_reapply_enabled: bool,
+    /// Whether a workflow may hold an Apache Iceberg write (`SAGAT_LAKE_ENABLED`, feature 035, off by default).
+    /// With it off, publishing such a workflow is refused with `LAKE_DISABLED`. With it on, publication still
+    /// waits for the checks of access, allowed modes and data classification.
+    pub lake_enabled: bool,
     /// Native TLS identity is required for the mTLS webhook profile; no forwarded headers are trusted.
     pub tls: Option<sagat_api_http::HttpTlsConfig>,
     pub webhook_oidc: Vec<sagat_api_http::auth::WebhookOidcConfig>,
@@ -576,6 +580,7 @@ impl ServeConfig {
             schedules_enabled: flag(get, "SAGAT_SCHEDULES_ENABLED")?,
             batches_enabled: flag(get, "SAGAT_BATCHES_ENABLED")?,
             reset_reapply_enabled: flag(get, "SAGAT_RESET_REAPPLY_ENABLED")?,
+            lake_enabled: flag(get, "SAGAT_LAKE_ENABLED")?,
             tls,
             webhook_oidc,
             webhook_oidc_development: environment == Environment::Dev,

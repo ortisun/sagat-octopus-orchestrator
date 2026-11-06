@@ -1286,6 +1286,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/namespaces/{namespaceId}/connections/{connectionName}/catalog-browse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                connectionName: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start browsing the catalog of an Iceberg connection
+         * @description Needs `database:browse`. Browsing needs I/O in the managed executor, so it is admitted like the connection probe
+         *     (a fixed, platform-defined operation as an ad hoc run with the origin `CATALOG_BROWSE`) and answered later by
+         *     `getCatalogBrowse`. A replay with the same idempotency key, tenant, namespace and actor returns the same
+         *     `browseId`. Every browse is audited without naming tables beyond the requested level. Another tenant's
+         *     connection is a `404`.
+         */
+        post: operations["startCatalogBrowse"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/catalog-browses/{browseId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                browseId: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Read a catalog browse
+         * @description Needs `database:browse`, and only the actor who started the browse can read it: anyone else gets the same
+         *     `404` as for a missing browse. A page holds at most 200 entries. The result expires 10 minutes after the browse
+         *     completes. Browse runs are left out of run lists and run reads for every role.
+         */
+        get: operations["getCatalogBrowse"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/namespaces/{namespaceId}/database-drivers": {
         parameters: {
             query?: never;
@@ -3342,7 +3394,7 @@ export interface components {
             requestId?: string;
             /** @description What can be done about it, in a sentence from a closed table: the same for every error of a `code`, refined by `details.reason` when that changes what to do. It never carries a payload, a secret or another tenant's data. Absent from the errors of a platform older than feature 008. */
             remediation?: string;
-            /** @description Extra, safe context. `reason` is a stable machine-readable refinement of `code` (for example `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`). A call the server does not have is `NOT_FOUND` with the reason `ROUTE_NOT_FOUND` (an unknown path) or `BAD_REQUEST` with `METHOD_NOT_ALLOWED` (a known path, another method): an SDK newer than the server tells that from a resource that does not exist, which is `NOT_FOUND` without those reasons. Structured workflow capabilities refine existing codes with `INVALID_SCOPE`, `INVALID_OPERATION_STATE`, `NOT_ELIGIBLE`, `INITIATOR_CANNOT_DECIDE`, `CHAIN_HEAD_CHANGED`, `RUN_NOT_MUTABLE`, `RUN_CONTINUED`, `INVALID_ARGUMENTS`, `INVALID_UPDATE_KEY`, `INVALID_DECISION_KEY`, `INVALID_REASON_CODE`, `REVISION_CONFLICT` and `UPDATE_REJECTED`; payload classification refines existing codes with `PII_REVEAL_NOT_GRANTED`, `CLASSIFICATION`, `UNKNOWN_SUBJECT`, `ROLE_CANNOT_REVEAL` and `GRANT_LIMIT`; compensation safety (feature 037) refines `CONFLICT` with `OUTCOME_UNRESOLVED` (another attempt was asked of a step whose last outcome is unknown); schedules, batch operations, business identifiers and start options (feature 018) refine `VALIDATION_FAILED` with `SCHEDULE_SPEC_INVALID`, `SCHEDULE_NEVER_FIRES`, `SCHEDULE_TOO_FREQUENT`, `SCHEDULE_ZONE_UNKNOWN`, `SCHEDULE_INPUT_INVALID`, `BACKFILL_RANGE_INVALID`, `BACKFILL_LIMIT`, `BUSINESS_ID_INVALID`, `START_DELAY_INVALID`, `START_DELAY_WITH_SIGNAL`, `BATCH_SELECTOR_INVALID`, `QUERY_UNSUPPORTED_OPERATOR`, `BATCH_ACTION_UNAVAILABLE`, `BATCH_LIMITS_INVALID`, `BATCH_REASON_INVALID`, `BATCH_PAYLOAD_INVALID`, `BATCH_PAYLOAD_TOO_LARGE`, `BATCH_SELECTOR_UNSUPPORTED`, `BATCH_ACTION_PARAMETERS`, `RESET_NOT_SUPPORTED_FOR_SOURCE`, `RESET_POINT_NOT_ELIGIBLE`, `RESET_PREFIX_TOO_LONG`, `RESET_REEXECUTION_NOT_ACKNOWLEDGED`, `RESET_RULE_MISSING`, `RESET_REAPPLY_NOT_AVAILABLE` and `RESET_REAPPLY_TOO_MANY`, `CONFLICT` with `SCHEDULE_TRIGGER_OWNED`, `SCHEDULE_TRIGGER_HANDOVER_PENDING`, `BUSINESS_ID_IN_USE`, `BUSINESS_ID_REUSE_REJECTED`, `NOT_WAITING`, `SIGNAL_NOT_ACCEPTED_AT_START`, `BATCH_NOT_CANCELLABLE` and `RESET_SOURCE_NOT_TERMINAL`, and `QUOTA_EXCEEDED` with `SCHEDULE_LIMIT`, `BACKFILL_CONCURRENCY` and `BATCH_LIMIT`; they do not add a new `Error.code` value. An `UNSUPPORTED_NODE` for a combination the design accepts but whose prerequisite is not built yet also carries `dependency`, a closed name of what has to exist first (`SCOPED_COMPENSATION`: an approval inside a collection or loop body), next to `node` and `kind`. */
+            /** @description Extra, safe context. `reason` is a stable machine-readable refinement of `code` (for example `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`). A call the server does not have is `NOT_FOUND` with the reason `ROUTE_NOT_FOUND` (an unknown path) or `BAD_REQUEST` with `METHOD_NOT_ALLOWED` (a known path, another method): an SDK newer than the server tells that from a resource that does not exist, which is `NOT_FOUND` without those reasons. Structured workflow capabilities refine existing codes with `INVALID_SCOPE`, `INVALID_OPERATION_STATE`, `NOT_ELIGIBLE`, `INITIATOR_CANNOT_DECIDE`, `CHAIN_HEAD_CHANGED`, `RUN_NOT_MUTABLE`, `RUN_CONTINUED`, `INVALID_ARGUMENTS`, `INVALID_UPDATE_KEY`, `INVALID_DECISION_KEY`, `INVALID_REASON_CODE`, `REVISION_CONFLICT` and `UPDATE_REJECTED`; payload classification refines existing codes with `PII_REVEAL_NOT_GRANTED`, `CLASSIFICATION`, `UNKNOWN_SUBJECT`, `ROLE_CANNOT_REVEAL` and `GRANT_LIMIT`; compensation safety (feature 037) refines `CONFLICT` with `OUTCOME_UNRESOLVED` (another attempt was asked of a step whose last outcome is unknown); schedules, batch operations, business identifiers and start options (feature 018) refine `VALIDATION_FAILED` with `SCHEDULE_SPEC_INVALID`, `SCHEDULE_NEVER_FIRES`, `SCHEDULE_TOO_FREQUENT`, `SCHEDULE_ZONE_UNKNOWN`, `SCHEDULE_INPUT_INVALID`, `BACKFILL_RANGE_INVALID`, `BACKFILL_LIMIT`, `BUSINESS_ID_INVALID`, `START_DELAY_INVALID`, `START_DELAY_WITH_SIGNAL`, `BATCH_SELECTOR_INVALID`, `QUERY_UNSUPPORTED_OPERATOR`, `BATCH_ACTION_UNAVAILABLE`, `BATCH_LIMITS_INVALID`, `BATCH_REASON_INVALID`, `BATCH_PAYLOAD_INVALID`, `BATCH_PAYLOAD_TOO_LARGE`, `BATCH_SELECTOR_UNSUPPORTED`, `BATCH_ACTION_PARAMETERS`, `RESET_NOT_SUPPORTED_FOR_SOURCE`, `RESET_POINT_NOT_ELIGIBLE`, `RESET_PREFIX_TOO_LONG`, `RESET_REEXECUTION_NOT_ACKNOWLEDGED`, `RESET_RULE_MISSING`, `RESET_REAPPLY_NOT_AVAILABLE` and `RESET_REAPPLY_TOO_MANY`, `CONFLICT` with `SCHEDULE_TRIGGER_OWNED`, `SCHEDULE_TRIGGER_HANDOVER_PENDING`, `BUSINESS_ID_IN_USE`, `BUSINESS_ID_REUSE_REJECTED`, `NOT_WAITING`, `SIGNAL_NOT_ACCEPTED_AT_START`, `BATCH_NOT_CANCELLABLE` and `RESET_SOURCE_NOT_TERMINAL`, and `QUOTA_EXCEEDED` with `SCHEDULE_LIMIT`, `BACKFILL_CONCURRENCY` and `BATCH_LIMIT`; Iceberg writes and step-output destinations (feature 035) refine `VALIDATION_FAILED` with `ICEBERG_NODE_NOT_ROOT`, `DESTINATION_NOT_ROOT`, `MODE_NOT_ALLOWED`, `CLASSIFICATION_EGRESS_REFUSED`, `UNKNOWN_CONNECTION_KIND`, `BROKER_SOURCE_NOT_INLINE`, `FILTER_TOO_DEEP` (more than 8 levels or 64 comparisons), `LAKE_DISABLED` (the deployment's lake switch is off) and `CREDENTIAL_IN_URI` (a connection URI that carries user information or query credentials); they do not add a new `Error.code` value. An `UNSUPPORTED_NODE` for a combination the design accepts but whose prerequisite is not built yet also carries `dependency`, a closed name of what has to exist first (`SCOPED_COMPENSATION`: an approval inside a collection or loop body), next to `node` and `kind`. */
             details?: {
                 [key: string]: unknown;
             };
@@ -4448,7 +4500,10 @@ export interface components {
             mode: "development-plaintext";
         };
         PostgresConnectionConfig: {
-            /** @constant */
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
             driver: "postgresql";
             /** @description Bare DNS hostname or IP, never a URL or credentials */
             host: string;
@@ -4457,7 +4512,192 @@ export interface components {
             tls: components["schemas"]["DatabaseTls"];
             secretName: string;
             limits?: components["schemas"]["DatabaseLimits"];
+            egressCeiling?: components["schemas"]["EgressCeiling"];
         };
+        /**
+         * @description The highest classification level a step may write to this connection or subscription. `secret` is never a value. A revision without the field reads as `internal`. Setting `pii` needs the payload-disclosure reveal grant for the namespace.
+         * @default internal
+         * @enum {string}
+         */
+        EgressCeiling: "public" | "internal" | "pii";
+        /** @description Ceilings for one write. The effective value is the minimum of the platform, namespace, connection and step values, and zero is not unlimited. */
+        LakeLimits: {
+            maxRecordBytes?: number;
+            maxRecords?: number;
+            timeoutMs?: number;
+        };
+        /** @description A URI that carries user information or query credentials is refused with `VALIDATION_FAILED` and the reason `CREDENTIAL_IN_URI`. HTTPS is required outside development. */
+        IcebergRestCatalog: {
+            /** Format: uri */
+            uri: string;
+            warehouse: string;
+            prefix?: string;
+            auth: {
+                /** @constant */
+                type: "oauth2";
+                /** Format: uri */
+                tokenUri: string;
+                scope?: string;
+            } | {
+                /** @constant */
+                type: "bearer";
+            } | {
+                /** @constant */
+                type: "sigv4";
+                region: string;
+                signingName: string;
+            };
+            /**
+             * @default none
+             * @enum {string}
+             */
+            accessDelegation: "none" | "vended-credentials";
+            /** @default false */
+            remoteSigning: boolean;
+        };
+        /** @description The member that matches `type` is required and no other is allowed. */
+        IcebergCatalog: {
+            /** @enum {string} */
+            type: "rest" | "glue" | "hive" | "jdbc";
+            rest?: components["schemas"]["IcebergRestCatalog"];
+            glue?: {
+                region: string;
+                catalogId: string;
+                roleArn?: string;
+                externalId?: string;
+            };
+            hive?: {
+                uris: string[];
+                /**
+                 * @description `none` is accepted only when the deployment sets `allowUnauthenticatedMetastore`.
+                 * @enum {string}
+                 */
+                tls: "required" | "none";
+            };
+            jdbc?: {
+                host: string;
+                port: number;
+                database: string;
+                tls: components["schemas"]["DatabaseTls"];
+                /** @enum {string} */
+                engine: "postgresql";
+            };
+        } & ({
+            /** @constant */
+            type?: "rest";
+        } | {
+            /** @constant */
+            type?: "glue";
+        } | {
+            /** @constant */
+            type?: "hive";
+        } | {
+            /** @constant */
+            type?: "jdbc";
+        });
+        /** @description The member that matches `type` is required and no other is allowed. `vended` credentials are valid only with a REST catalog that delegates access. */
+        LakeStorage: {
+            /** @enum {string} */
+            type: "s3" | "gcs" | "adls";
+            s3?: {
+                region: string;
+                /** Format: uri */
+                endpoint?: string;
+                /** @default false */
+                pathStyle: boolean;
+                roleArn?: string;
+                externalId?: string;
+            };
+            gcs?: {
+                project?: string;
+                /**
+                 * Format: uri
+                 * @description An emulator; development only.
+                 */
+                endpoint?: string;
+            };
+            adls?: {
+                account: string;
+                endpointSuffix?: string;
+            };
+            /**
+             * @default static
+             * @enum {string}
+             */
+            credentials: "static" | "vended";
+        } & ({
+            /** @constant */
+            type?: "s3";
+        } | {
+            /** @constant */
+            type?: "gcs";
+        } | {
+            /** @constant */
+            type?: "adls";
+        });
+        /** @description Every table, data, delete and metadata location must start with one of `warehouseLocations`. The platform never creates a bucket, a namespace or a table. */
+        IcebergConnectionConfig: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            driver: "iceberg";
+            catalog: components["schemas"]["IcebergCatalog"];
+            storage: components["schemas"]["LakeStorage"];
+            warehouseLocations: string[];
+            /**
+             * @default [
+             *       "append"
+             *     ]
+             */
+            allowedModes: ("append" | "overwrite" | "upsert")[];
+            catalogSecret?: string;
+            /** @description Absent when the storage credentials are `vended`. */
+            storageSecret?: string;
+            egressCeiling?: components["schemas"]["EgressCeiling"];
+            limits?: components["schemas"]["LakeLimits"];
+        };
+        ObjectStorageConnectionConfig: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            driver: "object_storage";
+            storage: components["schemas"]["LakeStorage"];
+            /** @description One URI prefix, without `..`. */
+            prefix: string;
+            storageSecret?: string;
+            formats: ("parquet" | "ndjson")[];
+            /** @description Found by the probe and recorded with its result; never authored. */
+            readonly conditionalCreate?: boolean | "unknown";
+            egressCeiling?: components["schemas"]["EgressCeiling"];
+            limits?: components["schemas"]["LakeLimits"];
+        };
+        /** @description The database named here is the only one a destination may target. */
+        ClickHouseConnectionConfig: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            driver: "clickhouse";
+            /**
+             * Format: uri
+             * @description HTTPS; plain HTTP only in development.
+             */
+            url: string;
+            database: string;
+            tls: {
+                /** @constant */
+                mode: "verify-full";
+                /** @description Optional public CA certificates, never a private key */
+                caPem?: string;
+            };
+            secret: string;
+            egressCeiling?: components["schemas"]["EgressCeiling"];
+            limits?: components["schemas"]["LakeLimits"];
+        };
+        /** @description The configuration of a connection, discriminated by `driver`. Every variant is closed. */
+        DatabaseConnectionConfig: components["schemas"]["PostgresConnectionConfig"] | components["schemas"]["IcebergConnectionConfig"] | components["schemas"]["ObjectStorageConnectionConfig"] | components["schemas"]["ClickHouseConnectionConfig"];
         DatabaseConnection: {
             /** Format: uuid */
             id: string;
@@ -4467,21 +4707,80 @@ export interface components {
             revision: number;
             /** @enum {string} */
             status: "ACTIVE" | "PAUSED" | "DELETED";
-            config: components["schemas"]["PostgresConnectionConfig"];
+            config: components["schemas"]["DatabaseConnectionConfig"];
             /** Format: date-time */
             createdAt: string;
             /** Format: date-time */
             updatedAt: string;
         };
+        CatalogTableIdentifier: {
+            namespace: string[];
+            name: string;
+        };
+        /** @description `NAMESPACES` and `TABLES` list the entries under `parent` (the root when absent); `TABLE` reads one table and needs `table`. */
+        CatalogBrowseRequest: {
+            /** @enum {string} */
+            level: "NAMESPACES" | "TABLES" | "TABLE";
+            parent?: string[];
+            table?: components["schemas"]["CatalogTableIdentifier"];
+            pageToken?: string;
+        };
+        CatalogBrowseAccepted: {
+            /** Format: uuid */
+            browseId: string;
+        };
+        CatalogBrowse: {
+            /** Format: uuid */
+            browseId: string;
+            /** @enum {string} */
+            state: "PENDING" | "DONE" | "FAILED";
+            page?: {
+                items: {
+                    namespace: string[];
+                    /** @description Present for a table, absent for a namespace. */
+                    name?: string;
+                }[];
+                nextPageToken?: string;
+            };
+            table?: {
+                schema: {
+                    [key: string]: unknown;
+                };
+                partitionSpec: {
+                    [key: string]: unknown;
+                };
+                identifierFields: string[];
+                refs: {
+                    [key: string]: {
+                        [key: string]: unknown;
+                    };
+                };
+                formatVersion: number;
+            };
+            failure?: {
+                /** @description A code of the typed failure set of the lake (docs/reference). */
+                code: string;
+            };
+        };
         DatabaseDriverList: {
-            items: {
-                /** @enum {string} */
-                id: "postgresql";
-                operations: ("query" | "execute")[];
-                parameterTypes: ("null" | "boolean" | "integer" | "decimal" | "float" | "text" | "timestamp" | "date" | "binary" | "json")[];
-                defaultLimits: components["schemas"]["DatabaseLimits"];
-                maximumLimits: components["schemas"]["DatabaseLimits"];
-            }[];
+            items: (components["schemas"]["DatabaseDriver"] | components["schemas"]["LakeDatabaseDriver"])[];
+        };
+        DatabaseDriver: {
+            /** @enum {string} */
+            id: "postgresql";
+            operations: ("query" | "execute")[];
+            parameterTypes: ("null" | "boolean" | "integer" | "decimal" | "float" | "text" | "timestamp" | "date" | "binary" | "json")[];
+            defaultLimits: components["schemas"]["DatabaseLimits"];
+            maximumLimits: components["schemas"]["DatabaseLimits"];
+        };
+        /** @description A driver of the lake deployment (feature 035), so the Studio and the SDKs never hard-code the list. */
+        LakeDatabaseDriver: {
+            /** @enum {string} */
+            id: "iceberg" | "object_storage" | "clickhouse";
+            catalogTypes?: ("rest" | "glue" | "hive" | "jdbc")[];
+            storageTypes?: ("s3" | "gcs" | "adls")[];
+            modes?: ("append" | "overwrite" | "upsert")[];
+            formats?: ("parquet" | "ndjson")[];
         };
         DatabaseConnectionList: {
             items: components["schemas"]["DatabaseConnection"][];
@@ -4490,7 +4789,7 @@ export interface components {
             /** Format: uuid */
             requestId: string;
             expectedRevision: number;
-            config: components["schemas"]["PostgresConnectionConfig"];
+            config: components["schemas"]["DatabaseConnectionConfig"];
             /** @enum {string} */
             status: "ACTIVE" | "PAUSED";
         };
@@ -4922,6 +5221,13 @@ export interface components {
              * @enum {string}
              */
             status: "ACTIVE" | "PAUSED" | "DISABLED";
+            /**
+             * @description Absent on a platform older than feature 035, which means `RUN_EVENTS`.
+             * @enum {string}
+             */
+            purpose?: "RUN_EVENTS" | "STEP_OUTPUT";
+            /** @description Carried by `STEP_OUTPUT` subscriptions only. */
+            egressCeiling?: components["schemas"]["EgressCeiling"];
             health: {
                 consecutiveDead: number;
                 /** Format: date-time */
@@ -4953,6 +5259,14 @@ export interface components {
              * @enum {string}
              */
             status: "ACTIVE" | "PAUSED";
+            /**
+             * @description A `STEP_OUTPUT` subscription is the target of a broker-stream destination and selects no run-event kinds.
+             * @default RUN_EVENTS
+             * @enum {string}
+             */
+            purpose: "RUN_EVENTS" | "STEP_OUTPUT";
+            /** @description Carried by `STEP_OUTPUT` subscriptions only. `pii` needs the payload-disclosure reveal grant. */
+            egressCeiling?: components["schemas"]["EgressCeiling"];
         };
         UpdateWebhookSubscriptionRequest: {
             url: string;
@@ -8860,6 +9174,79 @@ export interface operations {
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    startCatalogBrowse: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                connectionName: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CatalogBrowseRequest"];
+            };
+        };
+        responses: {
+            /** @description The browse is admitted */
+            202: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogBrowseAccepted"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    getCatalogBrowse: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                browseId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The browse */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogBrowse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
             default: components["responses"]["InternalError"];

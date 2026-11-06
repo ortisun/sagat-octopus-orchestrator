@@ -1759,6 +1759,58 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/connections/{connectionName}/catalog-browse:
+    parameters:
+      - {$ref: '#/components/parameters/NamespaceId'}
+      - {name: connectionName, in: path, required: true, schema: {type: string, minLength: 3, maxLength: 63, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}}
+    post:
+      operationId: startCatalogBrowse
+      summary: Start browsing the catalog of an Iceberg connection
+      description: |
+        Needs `database:browse`. Browsing needs I/O in the managed executor, so it is admitted like the connection probe
+        (a fixed, platform-defined operation as an ad hoc run with the origin `CATALOG_BROWSE`) and answered later by
+        `getCatalogBrowse`. A replay with the same idempotency key, tenant, namespace and actor returns the same
+        `browseId`. Every browse is audited without naming tables beyond the requested level. Another tenant's
+        connection is a `404`.
+      tags: [Runs]
+      x-planned: '035'
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/CatalogBrowseRequest'}}}
+      responses:
+        '202': {description: 'The browse is admitted', headers: {Cache-Control: {schema: {type: string, const: no-store}}, X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/CatalogBrowseAccepted'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/catalog-browses/{browseId}:
+    parameters:
+      - {$ref: '#/components/parameters/NamespaceId'}
+      - {name: browseId, in: path, required: true, schema: {type: string, format: uuid}}
+    get:
+      operationId: getCatalogBrowse
+      summary: Read a catalog browse
+      description: |
+        Needs `database:browse`, and only the actor who started the browse can read it: anyone else gets the same
+        `404` as for a missing browse. A page holds at most 200 entries. The result expires 10 minutes after the browse
+        completes. Browse runs are left out of run lists and run reads for every role.
+      tags: [Runs]
+      x-planned: '035'
+      responses:
+        '200': {description: 'The browse', headers: {Cache-Control: {schema: {type: string, const: no-store}}, X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/CatalogBrowse'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /namespaces/{namespaceId}/database-drivers:
     parameters:
       - $ref: '#/components/parameters/NamespaceId'
@@ -4868,6 +4920,11 @@ components:
             `NOT_WAITING`, `SIGNAL_NOT_ACCEPTED_AT_START`, `BATCH_NOT_CANCELLABLE` and
             `RESET_SOURCE_NOT_TERMINAL`, and `QUOTA_EXCEEDED` with
             `SCHEDULE_LIMIT`, `BACKFILL_CONCURRENCY` and `BATCH_LIMIT`;
+            Iceberg writes and step-output destinations (feature 035) refine `VALIDATION_FAILED` with
+            `ICEBERG_NODE_NOT_ROOT`, `DESTINATION_NOT_ROOT`, `MODE_NOT_ALLOWED`, `CLASSIFICATION_EGRESS_REFUSED`,
+            `UNKNOWN_CONNECTION_KIND`, `BROKER_SOURCE_NOT_INLINE`, `FILTER_TOO_DEEP` (more than 8 levels or 64
+            comparisons), `LAKE_DISABLED` (the deployment's lake switch is off) and `CREDENTIAL_IN_URI` (a connection
+            URI that carries user information or query credentials);
             they do not add a new `Error.code` value. An `UNSUPPORTED_NODE` for a combination the design accepts
             but whose prerequisite is not built yet also carries `dependency`, a closed name of what has to exist
             first (`SCOPED_COMPENSATION`: an approval inside a collection or loop body), next to `node` and `kind`.
@@ -6059,6 +6116,190 @@ components:
         tls: {$ref: '#/components/schemas/DatabaseTls'}
         secretName: {type: string, pattern: '^[a-z][a-z0-9_.-]{0,63}$'}
         limits: {$ref: '#/components/schemas/DatabaseLimits'}
+        egressCeiling: {$ref: '#/components/schemas/EgressCeiling'}
+    EgressCeiling:
+      type: string
+      enum: [public, internal, pii]
+      default: internal
+      description: The highest classification level a step may write to this connection or subscription. `secret` is never a value. A revision without the field reads as `internal`. Setting `pii` needs the payload-disclosure reveal grant for the namespace.
+    LakeLimits:
+      type: object
+      additionalProperties: false
+      description: Ceilings for one write. The effective value is the minimum of the platform, namespace, connection and step values, and zero is not unlimited.
+      properties:
+        maxRecordBytes: {type: integer, minimum: 1024, maximum: 2147483648}
+        maxRecords: {type: integer, minimum: 1, maximum: 100000000}
+        timeoutMs: {type: integer, minimum: 1000, maximum: 3600000}
+    IcebergRestCatalog:
+      type: object
+      additionalProperties: false
+      required: [uri, warehouse, auth]
+      description: A URI that carries user information or query credentials is refused with `VALIDATION_FAILED` and the reason `CREDENTIAL_IN_URI`. HTTPS is required outside development.
+      properties:
+        uri: {type: string, format: uri, maxLength: 2048}
+        warehouse: {type: string, minLength: 1, maxLength: 1024}
+        prefix: {type: string, maxLength: 255}
+        auth:
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [type, tokenUri]
+              properties:
+                type: {type: string, const: oauth2}
+                tokenUri: {type: string, format: uri, maxLength: 2048}
+                scope: {type: string, maxLength: 1024}
+            - type: object
+              additionalProperties: false
+              required: [type]
+              properties:
+                type: {type: string, const: bearer}
+            - type: object
+              additionalProperties: false
+              required: [type, region, signingName]
+              properties:
+                type: {type: string, const: sigv4}
+                region: {type: string, minLength: 1, maxLength: 63}
+                signingName: {type: string, minLength: 1, maxLength: 63}
+        accessDelegation: {type: string, enum: [none, vended-credentials], default: none}
+        remoteSigning: {type: boolean, default: false}
+    IcebergCatalog:
+      type: object
+      additionalProperties: false
+      required: [type]
+      description: The member that matches `type` is required and no other is allowed.
+      properties:
+        type: {type: string, enum: [rest, glue, hive, jdbc]}
+        rest: {$ref: '#/components/schemas/IcebergRestCatalog'}
+        glue:
+          type: object
+          additionalProperties: false
+          required: [region, catalogId]
+          properties:
+            region: {type: string, minLength: 1, maxLength: 63}
+            catalogId: {type: string, minLength: 1, maxLength: 255}
+            roleArn: {type: string, maxLength: 2048}
+            externalId: {type: string, maxLength: 1224}
+        hive:
+          type: object
+          additionalProperties: false
+          required: [uris, tls]
+          properties:
+            uris: {type: array, minItems: 1, maxItems: 4, items: {type: string, pattern: '^thrift://[^@/?#\s]+:[0-9]{1,5}$'}}
+            tls: {type: string, enum: [required, none], description: '`none` is accepted only when the deployment sets `allowUnauthenticatedMetastore`.'}
+        jdbc:
+          type: object
+          additionalProperties: false
+          required: [host, port, database, tls, engine]
+          properties:
+            host: {type: string, minLength: 1, maxLength: 253}
+            port: {type: integer, minimum: 1, maximum: 65535}
+            database: {type: string, minLength: 1, maxLength: 63}
+            tls: {$ref: '#/components/schemas/DatabaseTls'}
+            engine: {type: string, enum: [postgresql]}
+      oneOf:
+        - {required: [rest], properties: {type: {const: rest}}}
+        - {required: [glue], properties: {type: {const: glue}}}
+        - {required: [hive], properties: {type: {const: hive}}}
+        - {required: [jdbc], properties: {type: {const: jdbc}}}
+    LakeStorage:
+      type: object
+      additionalProperties: false
+      required: [type]
+      description: The member that matches `type` is required and no other is allowed. `vended` credentials are valid only with a REST catalog that delegates access.
+      properties:
+        type: {type: string, enum: [s3, gcs, adls]}
+        s3:
+          type: object
+          additionalProperties: false
+          required: [region]
+          properties:
+            region: {type: string, minLength: 1, maxLength: 63}
+            endpoint: {type: string, format: uri, maxLength: 2048}
+            pathStyle: {type: boolean, default: false}
+            roleArn: {type: string, maxLength: 2048}
+            externalId: {type: string, maxLength: 1224}
+        gcs:
+          type: object
+          additionalProperties: false
+          properties:
+            project: {type: string, maxLength: 255}
+            endpoint: {type: string, format: uri, maxLength: 2048, description: 'An emulator; development only.'}
+        adls:
+          type: object
+          additionalProperties: false
+          required: [account]
+          properties:
+            account: {type: string, minLength: 3, maxLength: 24}
+            endpointSuffix: {type: string, maxLength: 255}
+        credentials: {type: string, enum: [static, vended], default: static}
+      oneOf:
+        - {required: [s3], properties: {type: {const: s3}}}
+        - {required: [gcs], properties: {type: {const: gcs}}}
+        - {required: [adls], properties: {type: {const: adls}}}
+    IcebergConnectionConfig:
+      type: object
+      additionalProperties: false
+      required: [driver, catalog, storage, warehouseLocations]
+      description: Every table, data, delete and metadata location must start with one of `warehouseLocations`. The platform never creates a bucket, a namespace or a table.
+      properties:
+        driver: {type: string, const: iceberg}
+        catalog: {$ref: '#/components/schemas/IcebergCatalog'}
+        storage: {$ref: '#/components/schemas/LakeStorage'}
+        warehouseLocations: {type: array, minItems: 1, maxItems: 16, uniqueItems: true, items: {type: string, maxLength: 1024, pattern: '^(s3|gs|abfss)://[^?#@\s]+$'}}
+        allowedModes: {type: array, minItems: 1, uniqueItems: true, items: {type: string, enum: [append, overwrite, upsert]}, default: [append]}
+        catalogSecret: {type: string, pattern: '^[a-z][a-z0-9_.-]{0,63}$'}
+        storageSecret: {type: string, pattern: '^[a-z][a-z0-9_.-]{0,63}$', description: 'Absent when the storage credentials are `vended`.'}
+        egressCeiling: {$ref: '#/components/schemas/EgressCeiling'}
+        limits: {$ref: '#/components/schemas/LakeLimits'}
+    ObjectStorageConnectionConfig:
+      type: object
+      additionalProperties: false
+      required: [driver, storage, prefix, formats]
+      properties:
+        driver: {type: string, const: object_storage}
+        storage: {$ref: '#/components/schemas/LakeStorage'}
+        prefix: {type: string, minLength: 1, maxLength: 1024, pattern: '^(s3|gs|abfss)://[^?#@\s]+$', not: {pattern: '\.\.'}, description: 'One URI prefix, without `..`.'}
+        storageSecret: {type: string, pattern: '^[a-z][a-z0-9_.-]{0,63}$'}
+        formats: {type: array, minItems: 1, uniqueItems: true, items: {type: string, enum: [parquet, ndjson]}}
+        conditionalCreate:
+          readOnly: true
+          description: Found by the probe and recorded with its result; never authored.
+          oneOf: [{type: boolean}, {type: string, const: unknown}]
+        egressCeiling: {$ref: '#/components/schemas/EgressCeiling'}
+        limits: {$ref: '#/components/schemas/LakeLimits'}
+    ClickHouseConnectionConfig:
+      type: object
+      additionalProperties: false
+      required: [driver, url, database, tls, secret]
+      description: The database named here is the only one a destination may target.
+      properties:
+        driver: {type: string, const: clickhouse}
+        url: {type: string, format: uri, maxLength: 2048, description: 'HTTPS; plain HTTP only in development.'}
+        database: {type: string, minLength: 1, maxLength: 255}
+        tls:
+          type: object
+          additionalProperties: false
+          required: [mode]
+          properties:
+            mode: {type: string, const: verify-full}
+            caPem: {type: string, maxLength: 65536, description: 'Optional public CA certificates, never a private key'}
+        secret: {type: string, pattern: '^[a-z][a-z0-9_.-]{0,63}$'}
+        egressCeiling: {$ref: '#/components/schemas/EgressCeiling'}
+        limits: {$ref: '#/components/schemas/LakeLimits'}
+    DatabaseConnectionConfig:
+      description: The configuration of a connection, discriminated by `driver`. Every variant is closed.
+      oneOf:
+        - {$ref: '#/components/schemas/PostgresConnectionConfig'}
+        - {$ref: '#/components/schemas/IcebergConnectionConfig'}
+        - {$ref: '#/components/schemas/ObjectStorageConnectionConfig'}
+        - {$ref: '#/components/schemas/ClickHouseConnectionConfig'}
+      discriminator:
+        propertyName: driver
+        mapping:
+          postgresql: '#/components/schemas/PostgresConnectionConfig'
+          iceberg: '#/components/schemas/IcebergConnectionConfig'
+          object_storage: '#/components/schemas/ObjectStorageConnectionConfig'
+          clickhouse: '#/components/schemas/ClickHouseConnectionConfig'
     DatabaseConnection:
       type: object
       additionalProperties: false
@@ -6069,9 +6310,74 @@ components:
         name: {type: string}
         revision: {type: integer, minimum: 1}
         status: {type: string, enum: [ACTIVE, PAUSED, DELETED]}
-        config: {$ref: '#/components/schemas/PostgresConnectionConfig'}
+        config: {$ref: '#/components/schemas/DatabaseConnectionConfig'}
         createdAt: {type: string, format: date-time}
         updatedAt: {type: string, format: date-time}
+    CatalogTableIdentifier:
+      type: object
+      additionalProperties: false
+      required: [namespace, name]
+      properties:
+        namespace: {type: array, minItems: 1, maxItems: 8, items: {type: string, minLength: 1, maxLength: 255}}
+        name: {type: string, minLength: 1, maxLength: 255}
+    CatalogBrowseRequest:
+      type: object
+      additionalProperties: false
+      required: [level]
+      description: '`NAMESPACES` and `TABLES` list the entries under `parent` (the root when absent); `TABLE` reads one table and needs `table`.'
+      properties:
+        level: {type: string, enum: [NAMESPACES, TABLES, TABLE]}
+        parent: {type: array, maxItems: 8, items: {type: string, minLength: 1, maxLength: 255}}
+        table: {$ref: '#/components/schemas/CatalogTableIdentifier'}
+        pageToken: {type: string, maxLength: 1024}
+      if: {required: [level], properties: {level: {const: TABLE}}}
+      then: {required: [table]}
+      else: {not: {required: [table]}}
+    CatalogBrowseAccepted:
+      type: object
+      additionalProperties: false
+      required: [browseId]
+      properties:
+        browseId: {type: string, format: uuid}
+    CatalogBrowse:
+      type: object
+      additionalProperties: false
+      required: [browseId, state]
+      properties:
+        browseId: {type: string, format: uuid}
+        state: {type: string, enum: [PENDING, DONE, FAILED]}
+        page:
+          type: object
+          additionalProperties: false
+          required: [items]
+          properties:
+            items:
+              type: array
+              maxItems: 200
+              items:
+                type: object
+                additionalProperties: false
+                required: [namespace]
+                properties:
+                  namespace: {type: array, minItems: 1, maxItems: 8, items: {type: string}}
+                  name: {type: string, description: 'Present for a table, absent for a namespace.'}
+            nextPageToken: {type: string, maxLength: 1024}
+        table:
+          type: object
+          additionalProperties: false
+          required: [schema, partitionSpec, identifierFields, refs, formatVersion]
+          properties:
+            schema: {type: object, additionalProperties: true}
+            partitionSpec: {type: object, additionalProperties: true}
+            identifierFields: {type: array, items: {type: string}}
+            refs: {type: object, additionalProperties: {type: object, additionalProperties: true}}
+            formatVersion: {type: integer, minimum: 1}
+        failure:
+          type: object
+          additionalProperties: false
+          required: [code]
+          properties:
+            code: {type: string, description: 'A code of the typed failure set of the lake (docs/reference).'}
     DatabaseDriverList:
       type: object
       additionalProperties: false
@@ -6079,17 +6385,32 @@ components:
       properties:
         items:
           type: array
-          maxItems: 1
+          maxItems: 4
           items:
-            type: object
-            additionalProperties: false
-            required: [id, operations, parameterTypes, defaultLimits, maximumLimits]
-            properties:
-              id: {type: string, enum: [postgresql]}
-              operations: {type: array, items: {type: string, enum: [query, execute]}}
-              parameterTypes: {type: array, items: {type: string, enum: ["null", boolean, integer, decimal, float, text, timestamp, date, binary, json]}}
-              defaultLimits: {$ref: '#/components/schemas/DatabaseLimits'}
-              maximumLimits: {$ref: '#/components/schemas/DatabaseLimits'}
+            oneOf:
+              - {$ref: '#/components/schemas/DatabaseDriver'}
+              - {$ref: '#/components/schemas/LakeDatabaseDriver'}
+    DatabaseDriver:
+      type: object
+      additionalProperties: false
+      required: [id, operations, parameterTypes, defaultLimits, maximumLimits]
+      properties:
+        id: {type: string, enum: [postgresql]}
+        operations: {type: array, items: {type: string, enum: [query, execute]}}
+        parameterTypes: {type: array, items: {type: string, enum: ["null", boolean, integer, decimal, float, text, timestamp, date, binary, json]}}
+        defaultLimits: {$ref: '#/components/schemas/DatabaseLimits'}
+        maximumLimits: {$ref: '#/components/schemas/DatabaseLimits'}
+    LakeDatabaseDriver:
+      type: object
+      additionalProperties: false
+      required: [id]
+      description: A driver of the lake deployment (feature 035), so the Studio and the SDKs never hard-code the list.
+      properties:
+        id: {type: string, enum: [iceberg, object_storage, clickhouse]}
+        catalogTypes: {type: array, items: {type: string, enum: [rest, glue, hive, jdbc]}}
+        storageTypes: {type: array, items: {type: string, enum: [s3, gcs, adls]}}
+        modes: {type: array, items: {type: string, enum: [append, overwrite, upsert]}}
+        formats: {type: array, items: {type: string, enum: [parquet, ndjson]}}
     DatabaseConnectionList:
       type: object
       additionalProperties: false
@@ -6103,7 +6424,7 @@ components:
       properties:
         requestId: {type: string, format: uuid}
         expectedRevision: {type: integer, minimum: 0, maximum: 2147483646}
-        config: {$ref: '#/components/schemas/PostgresConnectionConfig'}
+        config: {$ref: '#/components/schemas/DatabaseConnectionConfig'}
         status: {type: string, enum: [ACTIVE, PAUSED]}
     DeleteDatabaseConnectionRequest:
       type: object
@@ -6520,6 +6841,8 @@ components:
         ratePerSecond: {type: integer}
         timeoutMs: {type: integer}
         status: {type: string, enum: [ACTIVE, PAUSED, DISABLED], description: 'DISABLED is set by the platform after 20 deliveries in a row were set aside; set ACTIVE to turn it back on.'}
+        purpose: {type: string, enum: [RUN_EVENTS, STEP_OUTPUT], description: 'Absent on a platform older than feature 035, which means `RUN_EVENTS`.'}
+        egressCeiling: {$ref: '#/components/schemas/EgressCeiling', description: 'Carried by `STEP_OUTPUT` subscriptions only.'}
         health:
           type: object
           required: [consecutiveDead]
@@ -6548,6 +6871,8 @@ components:
         ratePerSecond: {type: integer, minimum: 1, maximum: 100, default: 10}
         timeoutMs: {type: integer, minimum: 1000, maximum: 30000, default: 10000}
         status: {type: string, enum: [ACTIVE, PAUSED], default: ACTIVE}
+        purpose: {type: string, enum: [RUN_EVENTS, STEP_OUTPUT], default: RUN_EVENTS, description: 'A `STEP_OUTPUT` subscription is the target of a broker-stream destination and selects no run-event kinds.'}
+        egressCeiling: {$ref: '#/components/schemas/EgressCeiling', description: 'Carried by `STEP_OUTPUT` subscriptions only. `pii` needs the payload-disclosure reveal grant.'}
     UpdateWebhookSubscriptionRequest:
       type: object
       additionalProperties: false

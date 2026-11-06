@@ -74,7 +74,12 @@ file. Codes:
   `UNSUPPORTED_PROTOCOL` (registration refused the version);
 - raised by the SDK itself: `TRANSPORT` (no answer: connection refused, reset, timed out),
   `CANCELLED` (the caller's own cancellation), `PROTOCOL` (an answer that does not match the
-  contract), `PAYLOAD_TOO_LARGE` (an output over 256 KiB, before it is sent).
+  contract), `PAYLOAD_TOO_LARGE` (an output over 256 KiB, before it is sent);
+- reported by the database runner for a managed step (feature 035, `contracts/errors.md`): `ICEBERG_*`,
+  `CATALOG_UNAVAILABLE`, `STORAGE_UNAVAILABLE`, `DESTINATION_*`, `LAKE_HOST_PROTOCOL`, `LAKE_SANDBOX_UNAVAILABLE`,
+  `CLASSIFICATION_EGRESS_REFUSED` and `OUTCOME_UNKNOWN` (25 codes, origin `worker`, no HTTP status). They arrive as
+  the code of a failed step; `ICEBERG_COMMIT_CONFLICT`, `CATALOG_UNAVAILABLE`, `STORAGE_UNAVAILABLE`,
+  `DESTINATION_UNAVAILABLE`, `LAKE_HOST_PROTOCOL` and `LAKE_SANDBOX_UNAVAILABLE` are retryable by default.
 
 gRPC mapping (the trailer `x-sagat-error` wins when present): `UNAUTHENTICATED` → `UNAUTHENTICATED`;
 `PERMISSION_DENIED` → `NOT_BOUND` / `SECRET_NOT_USABLE` / `FORBIDDEN`; `INVALID_ARGUMENT` →
