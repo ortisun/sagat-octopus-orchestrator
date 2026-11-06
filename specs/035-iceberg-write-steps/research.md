@@ -1158,3 +1158,17 @@ The other fixes were wording:
   ACL excludes the publisher has no test of its own; it is the same code the SQL path runs. *Exit condition:* points 1 and 3 by T035-055;
   point 2 by the next slice of T035-054 with a test of a `databaseResult` that names a later or missing step; point 4 when a role
   other than an administrator can hold `database:write`.
+- **D035-090 — A database result is read from a database step that runs before the write, and the graph checks it.** Closes point 2 of
+  G035-035 and G035-038. **Decided by: delegate** (the owner delegated the decisions of this feature).
+  - *The rule.* `records.databaseResult` names a node of the same graph. It has to exist, to be a managed database step, and control has
+    to be able to pass from it to the write along the edges of the graph, so its result is there when the write starts. A node that
+    does not exist, one that is not a database step, the write itself, a database step after the write, and one on another branch
+    (the two arms of a condition) are refused as `INVALID_ICEBERG_NODE`. It is a rule of the graph, so it is checked where the graph is
+    built (`DefinitionGraph::new`, after the acyclic and reachable checks), for the codec and for any caller of
+    `WorkflowDefinition::new`; the help of `INVALID_ICEBERG_NODE` says it.
+  - *What it does not prove.* That a database step reaches the write does not mean it ran on every path (a condition can skip it), so the
+    attempt that runs the write still has to cope with a result that is not there; that is not publication's to prove.
+  - *Cost.* The search keeps the set of nodes it has been to; without it a chain of branches has an exponential number of paths, a risk
+    at publication. A test builds forty diamonds with a limit of ten seconds.
+  - *Evidence.* 9 tests in `crates/domain/tests/iceberg_source.rs` and one in `crates/infra-ir/tests/iceberg_write.rs`, written first (the five
+    refusals failed). 7 mutations of the check; one survived the first tests (the visited set) and the linear-time test caught it.

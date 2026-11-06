@@ -29,7 +29,7 @@ use std::time::Duration;
 
 use crate::database::{
     DatabaseOperation, EgressField, ICEBERG_REVERT_ACTIVITY, ICEBERG_WRITE_ACTIVITY, IcebergWrite,
-    MANAGED_DATABASE_ACTIVITY, MANAGED_DATABASE_PREFIX, OperationKind,
+    MANAGED_DATABASE_ACTIVITY, MANAGED_DATABASE_PREFIX, OperationKind, RecordSource,
 };
 use crate::execution::{ApprovalPolicy, ExecutionInstanceId};
 use crate::identity::{Slug, clip};
@@ -1760,6 +1760,7 @@ impl DefinitionGraph {
         }
         check_acyclic(&map)?;
         check_reachable(&map, &entrypoint)?;
+        check_iceberg_sources(&map)?;
         let regions = parallel_regions(&map)?;
         let saga_regions = saga_regions(&map)?;
         let scopes = innermost_scopes(&regions, &saga_regions);
@@ -1804,6 +1805,44 @@ fn scope_error(node: &NodeId, reason: &'static str) -> WorkflowError {
         node: node.clone(),
         reason,
     }
+}
+
+/// The database step an Apache Iceberg write reads its records from runs before the write: it exists, it is a managed
+/// database step, and control can pass from it to the write, so its result is there when the write starts (G035-035 point 2).
+fn check_iceberg_sources(map: &BTreeMap<NodeId, Node>) -> Result<(), WorkflowError> {
+    for node in map.values() {
+        let Some(RecordSource::DatabaseResult(source)) =
+            node.iceberg_write().map(IcebergWrite::records)
+        else {
+            continue;
+        };
+        let runs_before = map
+            .get(source)
+            .is_some_and(|origin| origin.database_operation().is_some())
+            && can_reach(map, source, &node.id);
+        if !runs_before {
+            return Err(WorkflowError::InvalidIcebergNode);
+        }
+    }
+    Ok(())
+}
+
+/// Whether control can pass from `from` to `to` along the edges of the graph (which `check_acyclic` has shown finite).
+fn can_reach(map: &BTreeMap<NodeId, Node>, from: &NodeId, to: &NodeId) -> bool {
+    let mut seen = BTreeSet::new();
+    let mut pending = vec![from];
+    while let Some(current) = pending.pop() {
+        if current == to {
+            return true;
+        }
+        if !seen.insert(current) {
+            continue;
+        }
+        if let Some(node) = map.get(current) {
+            pending.extend(node.successors());
+        }
+    }
+    false
 }
 
 fn check_graph_kind(node: &Node, kind: GraphKind) -> Result<(), WorkflowError> {

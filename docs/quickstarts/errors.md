@@ -95,7 +95,7 @@ Apache Iceberg write is still refused until the checks of access, allowed modes 
 
 ### INVALID_ICEBERG_NODE
 
-Check the connection reference, the table, the record source (exactly one of inline, blobs or a database result), the mapping and the limits. An Apache Iceberg write cannot declare its own retries or effect, impersonate an ordinary activity, or name a field and a column twice.
+Check the connection reference, the table, the record source (exactly one of inline, blobs or a database result), the mapping and the limits. A database result must name a database step that runs before the write. An Apache Iceberg write cannot declare its own retries or effect, impersonate an ordinary activity, or name a field and a column twice.
 
 ### MODE_NOT_ALLOWED
 
