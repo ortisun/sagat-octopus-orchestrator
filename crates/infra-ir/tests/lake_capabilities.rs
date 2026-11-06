@@ -3,7 +3,9 @@
 //! The schema is the editor-time gate. A workflow that the schema accepts but the engine would run without the
 //! step (a destination that is dropped, a write that never happens) must not be published: the codec refuses it with
 //! `IrError::Unsupported`, which the API reports as `UNSUPPORTED_NODE`. The domain tasks that parse these nodes
-//! (T035-093 and the tasks before it) replace these refusals with acceptance tests.
+//! (T035-093 and the tasks before it) replace these refusals with acceptance tests. The Iceberg write step left this
+//! file with T035-053: the codec parses it (`iceberg_write.rs`) and the definition service decides whether a
+//! deployment may publish it.
 #![allow(clippy::expect_used, clippy::panic)]
 
 use sagat_application::definitions::{IrCodec, IrError};
@@ -27,17 +29,6 @@ fn unsupported(nodes: Value) -> (String, String) {
         Err(IrError::Unsupported { node, kind, .. }) => (node, kind),
         other => panic!("expected an unsupported capability, got {other:?}"),
     }
-}
-
-#[test]
-fn an_iceberg_write_step_is_not_enabled_by_the_runtime_yet() {
-    let (node, kind) = unsupported(json!([
-        {"id": "first", "type": "icebergWrite", "connectionRef": {"name": "lake-main"},
-         "table": {"namespace": ["sales"], "name": "orders"}, "mode": "append",
-         "records": {"inline": "input.rows"}, "next": "done"},
-        {"id": "done", "type": "end"}
-    ]));
-    assert_eq!((node.as_str(), kind.as_str()), ("first", "icebergWrite"));
 }
 
 #[test]

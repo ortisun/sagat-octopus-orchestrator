@@ -54,6 +54,11 @@ pub(crate) async fn admit_definition(
     pinned: Option<RunId>,
     run_info: Option<&RunInfo>,
 ) -> Result<Vec<(NodeId, ConnectionId, u32)>, StoreError> {
+    // An Iceberg write has no admission yet (T035-054, T035-055: access, allowed modes, ceiling, credential pins). Until it
+    // has, a definition that holds one is refused, as a connection the author may not use is, instead of passing unchecked.
+    if definition.nodes().any(|n| n.iceberg_write().is_some()) {
+        return Err(StoreError::DatabaseUnavailable);
+    }
     if !definition.nodes().any(|n| n.database_operation().is_some()) {
         return Ok(Vec::new());
     }

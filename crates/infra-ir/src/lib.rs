@@ -20,6 +20,7 @@ pub mod schedule_calendar;
 pub use database_result::JsonDatabaseResultValidator;
 mod diff;
 mod evaluator;
+mod lake;
 mod operation_evaluator;
 mod schema;
 
@@ -35,6 +36,7 @@ pub use operation_evaluator::{
 
 use sagat_application::definitions::{IrCodec, IrError, MAX_IR_BYTES, ParsedDefinition};
 use sagat_application::operation_evaluation::OperationEvaluationError;
+use sagat_domain::database::RecordSource;
 use sagat_domain::workflow::{NodeKind, WorkflowDefinition};
 use sagat_infra_expr::{Compiled, Template};
 use serde_json::Value;
@@ -367,6 +369,13 @@ fn check_node_expressions<'a>(
                     })?;
                 }
             }
+        }
+        if let Some(write) = node.iceberg_write()
+            && let RecordSource::Inline(expression) | RecordSource::Blobs(expression) =
+                write.records()
+        {
+            Compiled::compile(expression.as_str())
+                .map_err(|_| expression_error(id, "records", "invalid record expression"))?;
         }
         match node.kind() {
             NodeKind::Condition { expression, .. } => {
