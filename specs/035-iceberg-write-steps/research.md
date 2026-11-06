@@ -1426,3 +1426,43 @@ The other fixes were wording:
     hang, which is a legitimate catch of a loop that never ends); two survived the first tests and each got one (the unbounded `readline`, which
     only a spy can see, and the Unicode blanks). `runners/lake`: 531 passed, 1 skipped; `ruff check`, `ruff format --check` and strict
     `mypy` clean.
+- **D035-098 — The mapped rows reach PyIceberg as Arrow batches built against a storage schema and cast to the table's own.** T035-057, fifth
+  part (D035-033). **Decided by: delegate** (the owner delegated the decisions of this feature).
+  - *Measured* (2026-11-06, PyIceberg 0.12.0, pyarrow 26.0.1). `RecordBatch.from_pylist` cannot build Arrow's uuid extension type from Python
+    values (`ArrowNotImplementedError`), but it builds the fixed binary of 16 that the type is stored as from a `uuid.UUID`, and a cast of
+    that storage to the extension type works at the top level and inside a struct, a list and a map. So `batches.to_batches` builds the rows
+    against a **storage schema** (every uuid a `binary(16)`, nested positions included) and casts each batch to `schema_to_pyarrow` of the
+    **table's own schema**, which carries the uuid type and the field ids PyIceberg checks. The ids are the table's, not those of the schema a
+    table was created from: `create_table` renumbers nested fields, and an Arrow schema built from the old numbers is refused by the append.
+  - *Evidence of fidelity.* A row of every Iceberg type (boolean to uuid, struct, list, map, a list of structs with a uuid inside, a map with
+    uuid values and one with uuid keys, the edges of every range, `NaN` and the infinities, the earliest and latest date and timestamp) is
+    mapped, batched, appended and scanned back, and what comes back equals what went in.
+  - *Bounded.* A batch is cut at `max_rows` (1,024) or when it has taken `max_bytes` (32 MiB) of what the reader spent on its rows, read
+    from a `meter` (the `Budget` of D035-097); a row past the limit is a batch of one; rows are taken as they are needed, which a test checks.
+  - *Evidence.* 28 tests in `test_batches.py`, written first and seen failing (the module did not exist); 28 mutations, all caught after the
+    survivors asked for three things: a test of the byte limit at its edge and of a meter that does not start at zero, and the removal of code
+    that did nothing (the explicit uuid-to-bytes conversion, which pyarrow does itself and the round trip proves, the field metadata of the
+    storage schema, which the cast restores, and the copy of each row).
+- **D035-099 — A map key is primitive.** Found by the batches work. A struct, a list or a map is a legal key in the format and an unhashable
+  one in Python: `mapping._map` looks for the same key twice with a set and crashed with `TypeError: unhashable type: 'dict'`, which would
+  have ended the attempt with the wrong failure. A key of another type than a primitive is now `ICEBERG_SCHEMA_MISMATCH`, `TYPE`, with the
+  column, for a non-empty and an empty map alike (the table cannot be written either way). 3 cases written first, 4 mutations, all caught.
+- **G035-045 — PyIceberg 0.12 streams a write only into an unpartitioned table.** `Transaction.append` accepts a `RecordBatchReader` and
+  microbatches it by `write.target-file-size-bytes`, but passing one for a partitioned table raises `NotImplementedError` (a test shows
+  both). The only partition transforms the runtime applies are `identity` and `void` (G035-040), and an identity-partitioned table is
+  partitioned: for it the append builds a whole Arrow table in memory. D035-033 and D035-046 say append streams; for a partitioned table it
+  does not, so its effective ceiling is the lower one that overwrite and upsert have. *Exit condition:* the append mode of T035-057
+  chooses the stream or the table by the partition spec, and the effective ceiling of the step says which (T035-046).
+- **G035-046 — PyIceberg 0.12 writes a null list of structs and a null map with struct values as empty.** Found by the round trip. The
+  projection that PyIceberg runs on every write rebuilds a list whose elements are structs with
+  `LargeListArray.from_arrays(list_array.offsets, value_array)` and a map whose values are structs with `MapArray.from_arrays(...)`
+  (`io/pyarrow.py`, `ArrowProjectionVisitor.list` and `.map`, citing apache/arrow#38809), and neither keeps the validity of the container: a
+  null becomes `[]` in the **data file**, not only in a scan. A null list of integers, a null struct and a null map of integers are kept;
+  so is a null element of a list of lists of structs, but a null at the top, inside a struct, is lost. `batches.to_batches` refuses a null
+  wherever the type is a list of structs or a map with struct values, with the column (`points`, `box.points`, `grid[]`, `index{}`), as
+  `ICEBERG_SCHEMA_MISMATCH`, `TYPE`: the contract has no reason that fits better, and `TYPE` is in its closed set. The refusal is
+  wider than what was measured because one too wide costs a failed step and one too narrow costs a value. **It also refuses a record that
+  leaves such a column out**, since an optional column that is absent is null. A premise test fails when a newer PyIceberg keeps the null.
+  *Exit condition:* either a PyIceberg that keeps the validity, or the host patches the two methods with the mask (a pinned version, a
+  version guard and the same round trip), or the host writes its data files itself; until then a table with an optional list of structs
+  takes only records that name the column.
