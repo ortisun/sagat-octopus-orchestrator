@@ -25,11 +25,12 @@ TABLE_NOT_FOUND = "ICEBERG_TABLE_NOT_FOUND"
 
 # The format versions of the Iceberg specification that PyIceberg writes. Version 3 (and anything newer) is refused.
 SUPPORTED_FORMAT_VERSIONS = (1, 2)
-# The transforms the runtime can apply when it writes. PyIceberg 0.12 needs the ``pyiceberg-core`` package to apply any
-# other, and the runtime image does not have it (``requirements.lock``): writing to a table partitioned by ``year``,
-# ``month``, ``day``, ``hour``, ``bucket`` or ``truncate`` fails with ``NotInstalledError``. Those tables are refused,
-# with the reason ``TRANSFORM``, rather than failing in the middle of a write (G035-040).
-_TRANSFORM = re.compile(r"identity|void")
+# The transforms the runtime can apply when it writes: all those of the format. PyIceberg 0.12 applies ``identity`` and
+# ``void`` itself and every other with the ``pyiceberg-core`` package, which ``requirements.lock`` holds (G035-040,
+# D035-103); ``tests/test_transforms_write.py`` writes to a table of each. ``bucket[N]`` and ``truncate[W]`` take a
+# positive integer of 32 bits, written without a leading zero.
+_TRANSFORM = re.compile(r"identity|void|year|month|day|hour|(?:bucket|truncate)\[([1-9][0-9]{0,9})\]")
+_INT32_MAX = 2**31 - 1
 
 
 @dataclass(frozen=True)
@@ -71,12 +72,18 @@ def check(
         raise Failure(UNSUPPORTED_TABLE, reason="FORMAT_VERSION")
     if table.default_file_format.lower() != "parquet":
         raise Failure(UNSUPPORTED_TABLE, reason="FILE_FORMAT")
-    if any(not _TRANSFORM.fullmatch(name) for name in table.partition_transforms):
+    if any(not _applies(name) for name in table.partition_transforms):
         raise Failure(UNSUPPORTED_TABLE, reason="TRANSFORM")
     if table.location_provider is not None:
         raise Failure(LOCATION_NOT_ALLOWED)
     if any(not inside(location, warehouse_locations) for location in table.locations):
         raise Failure(LOCATION_NOT_ALLOWED)
+
+
+def _applies(name: str) -> bool:
+    """Whether the runtime can apply the partition transform called ``name``."""
+    match = _TRANSFORM.fullmatch(name)
+    return match is not None and (match.group(1) is None or int(match.group(1)) <= _INT32_MAX)
 
 
 def inside(location: str, allowed: Sequence[str]) -> bool:

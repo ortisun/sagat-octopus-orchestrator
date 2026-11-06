@@ -8,7 +8,7 @@ import pytest
 
 from lockfile import Requirement, normalise, parse_lock
 
-DECIDED_REQUIREMENT = "pyiceberg[pyarrow,s3fs,gcsfs,adlfs,hive,glue,sql-postgres]==0.12.0"
+DECIDED_REQUIREMENT = "pyiceberg[pyarrow,pyiceberg-core,s3fs,gcsfs,adlfs,hive,glue,sql-postgres]==0.12.0"
 GOOD_HASH = "sha256:" + "ab" * 32
 
 
@@ -26,6 +26,7 @@ def test_the_lock_pins_pyiceberg_to_the_decided_version(lock: list[Requirement])
     "package",
     [
         "pyarrow",  # extra pyarrow
+        "pyiceberg-core",  # extra pyiceberg-core: the partition transforms but identity and void (G035-040)
         "s3fs",  # extra s3fs
         "gcsfs",  # extra gcsfs
         "adlfs",  # extra adlfs

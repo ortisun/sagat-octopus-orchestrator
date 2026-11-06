@@ -27,7 +27,7 @@ from pyiceberg.io.pyarrow import schema_to_pyarrow
 from pyiceberg.partitioning import PartitionField, PartitionSpec
 from pyiceberg.schema import Schema
 from pyiceberg.table import Table
-from pyiceberg.transforms import BucketTransform, IdentityTransform
+from pyiceberg.transforms import IdentityTransform
 from pyiceberg.types import DecimalType, LongType, NestedField, StringType
 
 import counting_catalog
@@ -431,16 +431,16 @@ def test_a_budget_that_is_too_small_is_a_limit_exceeded_and_leaves_no_file(rig: 
 
 
 def test_a_table_the_host_cannot_write_is_refused_before_any_file(rig: Rig) -> None:
-    spec = PartitionSpec(PartitionField(source_id=1, field_id=1000, transform=BucketTransform(4), name="id_bucket"))
-    rig.sql.create_table("sales.bucketed", schema=SCHEMA, partition_spec=spec)
+    # a table whose files are not Parquet: the host writes Parquet only
+    rig.sql.create_table("sales.orc", schema=SCHEMA, properties={"write.format.default": "orc"})
 
     def load() -> Table:
         table: Table = RestCatalog("r", uri=rig.rest.uri).load_table(NAME)
-        table.metadata = rig.sql.load_table("sales.bucketed").metadata
+        table.metadata = rig.sql.load_table("sales.orc").metadata
         return table
 
     failure = failure_of(rig, request(rig), load)
-    assert (failure.code, failure.reason) == ("ICEBERG_UNSUPPORTED_TABLE", "TRANSFORM")
+    assert (failure.code, failure.reason) == ("ICEBERG_UNSUPPORTED_TABLE", "FILE_FORMAT")
     assert rig.rest.commits == []
     assert rig.data_files() == []
 

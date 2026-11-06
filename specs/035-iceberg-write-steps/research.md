@@ -1252,6 +1252,7 @@ The other fixes were wording:
   of the image (the Dockerfile installs wheels only), and run `pip-audit` and the SBOM check, since it puts a native (Rust) wheel in the
   sandbox image. *Exit condition:* the owner decides; then `_TRANSFORM` in `compat.py` accepts the transforms that a test of
   writing to a table of each shows the runtime applies.
+  *2026-11-06, closed by D035-103: the owner said to follow the recommendation, `pyiceberg-core` is in the lock and `compat.py` accepts every transform.*
 - **D035-092 — The host reads the facts of a table from the table PyIceberg loaded, and refuses a table that names its own location
   provider.** T035-057, second part. **Decided by: delegate** (the owner delegated the decisions of this feature).
   - *The adapters.* `runners/lake/sagat_lake/table_facts.py` builds the inputs of `compat.check` and `lookup.lookup` from a loaded
@@ -1572,3 +1573,45 @@ The other fixes were wording:
     tests (an exact message for the timeout check, which urllib3 would otherwise match, and the pin when the caller did not name the IO);
     one, a timeout of `0` from a caller replaced by the default, is an equivalent mutant because urllib3 refuses `0`. `runners/lake`: 683
     passed, 1 skipped; `ruff check`, `ruff format --check` and strict `mypy` clean.
+- **D035-103 — The runtime has `pyiceberg-core`, and every partition transform is written.** Closes G035-040. **Decided by: owner**
+  (2026-11-06, "Seguir as recomendações", after being asked: "Porque precisamos do pyiceberg core?").
+  - *Why.* PyIceberg 0.12 computes the partition value of each row while it writes. It does `identity` and `void` itself and delegates
+    `year`, `month`, `day`, `hour`, `bucket[n]` and `truncate[n]` to the native package `pyiceberg-core`, which is the iceberg-rust
+    transforms compiled for Python (its home page is `rust.iceberg.apache.org`). Without it the host refused almost every real table,
+    which is partitioned by day or month. Reimplementing the transforms in Python was rejected: `bucket` is a murmur3 hash and an error
+    would put rows into the wrong partition without a sign.
+  - *What changed.* `requirements.in` gains the extra (`pyiceberg[pyarrow,pyiceberg-core,...]==0.12.0`); both locks were regenerated with the
+    command of their header and the same `--exclude-newer`, and the diff of each is exactly `pyiceberg-core==0.10.1` and its six wheel
+    hashes (no other package moved; the lock is now 79 packages). `compat.py` accepts all transforms of the format: `bucket[N]` and
+    `truncate[W]` with a positive 32-bit integer without a leading zero, and still refuses a name that is not one.
+  - *Evidence.* (1) `tests/test_transforms_write.py` writes to a table of each transform (ten cases, on timestamp, string and long columns),
+    scans it back, and asks the rule about the same table: eight of the ten failed with `NotInstalledError` before the lock changed, and
+    pass now. (2) `test_package.py` imports the native module and checks the values of `bucket`, `truncate`, `day`, `month` and `year`
+    against numbers worked out in the test (19,000 days after 1970-01-01 is 2022-01-08), so a wheel that imports and computes the wrong
+    partition fails. (3) `uv pip install --dry-run --python-platform {x86_64,aarch64}-manylinux_2_28 --only-binary :all: --require-hashes`
+    resolves `pyiceberg-core==0.10.1` as a wheel for both Linux platforms, which is what the Dockerfile installs. (4) `pip-audit -r
+    requirements.lock --require-hashes --disable-pip` (the command of the CI): no known vulnerabilities. (5) `runners/lake`: 859 passed, 1
+    skipped; `ruff` and strict `mypy` clean.
+  - *Not run here.* The image build, `smoke-image.sh` (a line was added that loads the native transforms inside the read-only container) and
+    the SBOM check need Docker and run in the release CI. The SBOM check names the packages it requires in
+    `.github/workflows/ci.yml`; `pyiceberg-core` should be added to that list at the next change of the workflow, which this change
+    does not make because a change of `.github/workflows` runs the whole stack.
+  - *Cost.* A native (Rust) wheel in the sandbox image. It is built by the Apache Iceberg project from the same source as the crate in
+    `tests/Cargo.toml`, is hash-locked, and the sandbox has no network and a read-only root.
+- **D035-104 — The choice of PyIceberg over iceberg-rust is reviewed again, and stands.** Asked by the owner on 2026-11-06 ("Reavalie o
+  iceberg rust"). **Decided by: owner** (told the result, "Seguir com o plano então").
+  - *What was checked* (2026-11-06; releases, the pull requests D035-026 named, the epic and two files of the source through the GitHub API).
+    iceberg-rust is at **v0.11.0 (2026-11-03)**. Its notes add variant, the reading of v3 deletion vectors, encryption, the endpoints of
+    `/v1/config`, an `AuthManager`, and `write.metadata.path`, and no write action. FastAppend is still the only transaction action;
+    `FastAppendAction` has no branch parameter (its methods are `with_check_duplicate`, `add_data_files`, `set_commit_uuid` and
+    `set_snapshot_properties`, and its tests fix `MAIN_BRANCH`). The overwrite action (PR #3300) is open, updated on 2026-11-06, waiting for
+    #3564 and the refactor #3266. RowDelta (#2203) is open, copy-on-write over data files only (`add_delete_files` returns
+    `FeatureUnsupported`) and in conflict with `main`. The epic of the missing write actions (#2269) was closed as not planned on
+    2026-10-03. The Hive Metastore catalog's `update_table` still returns `FeatureUnsupported`.
+  - *Against the scope* (modes append, overwrite and upsert; named branches; REST, Glue, Hive and JDBC catalogs; the commit under our
+    control; credentials vended by the REST catalog): iceberg-rust covers append to `main` with snapshot properties and nothing else of it.
+    D035-026 and ADR-0071 stand.
+  - *Trigger to look again:* a published release with the overwrite action, a branch on the commit actions and a Hive `update_table`. The
+    gain would be an image without Python and one language in the platform. Look at each release of iceberg-rust.
+  - *Not verified:* the Glue and JDBC catalogs, ADLS and GCS through OpenDAL, and the use of REST `storage-credentials` in the code (only
+    its absence from the release notes).
