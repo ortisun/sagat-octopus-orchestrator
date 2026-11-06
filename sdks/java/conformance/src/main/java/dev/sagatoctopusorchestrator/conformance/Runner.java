@@ -35,6 +35,7 @@ import dev.sagatoctopusorchestrator.sdk.SagatException;
 import dev.sagatoctopusorchestrator.sdk.SagatSdk;
 import dev.sagatoctopusorchestrator.sdk.SignalResult;
 import dev.sagatoctopusorchestrator.sdk.StartOptions;
+import dev.sagatoctopusorchestrator.sdk.StartedRun;
 import dev.sagatoctopusorchestrator.sdk.WaitOptions;
 import dev.sagatoctopusorchestrator.sdk.worker.WorkerConfig;
 import dev.sagatoctopusorchestrator.sdk.worker.WorkerHost;
@@ -536,6 +537,13 @@ public final class Runner {
         if (run.rerunOf() != null) {
             out.put("rerunOf", run.rerunOf());
         }
+        // Present only for a run started under a business identifier, or held by a start delay.
+        if (run.businessId() != null) {
+            out.put("businessId", run.businessId());
+        }
+        if (run.startDelayedUntil() != null) {
+            out.put("startDelayedUntil", Json.instant(run.startDelayedUntil()));
+        }
         return out;
     }
 
@@ -662,8 +670,21 @@ public final class Runner {
             }
         }
 
-        for (JsonNode step : scenario.path("steps")) {
-            SagatClient client = clients.get(step.path("token").asText("default"));
+        for (JsonNode given : scenario.path("steps")) {
+            SagatClient client = clients.get(given.path("token").asText("default"));
+            JsonNode step;
+            try {
+                step = Operations.refs(given, config, results);
+            } catch (RuntimeException error) {
+                // A reference to a step that failed is a failure of this step, recorded like any other.
+                ObjectNode failed = F.objectNode();
+                failed.put("id", given.get("id").asText());
+                failed.put("op", given.get("op").asText());
+                failed.put("ok", false);
+                failed.set("error", errorJson(error));
+                observations.add(failed);
+                continue;
+            }
             ObjectNode observation = F.objectNode();
             observation.put("id", step.get("id").asText());
             observation.put("op", step.get("op").asText());
@@ -728,7 +749,7 @@ public final class Runner {
         return result;
     }
 
-    private static String runOf(JsonNode step, Map<String, JsonNode> results) {
+    static String runOf(JsonNode step, Map<String, JsonNode> results) {
         if (step.path("page").isTextual()) {
             // A segment of a page of listChainRuns, by position.
             JsonNode listed = results.get(step.get("page").asText());
@@ -808,7 +829,27 @@ public final class Runner {
                 if (step.has("deadlineInMs")) {
                     options.deadlineIn(Duration.ofMillis(step.get("deadlineInMs").asLong()));
                 }
-                return runJson(client.start(workflow.get("workflowId").asText(), step.has("input") ? step.get("input") : F.objectNode(), options));
+                if (step.has("businessId")) {
+                    options.businessId(step.get("businessId").asText());
+                }
+                if (step.has("businessIdConflictPolicy")) {
+                    options.businessIdConflictPolicy(step.get("businessIdConflictPolicy").asText());
+                }
+                if (step.has("businessIdReusePolicy")) {
+                    options.businessIdReusePolicy(step.get("businessIdReusePolicy").asText());
+                }
+                if (step.has("startDelayMs")) {
+                    // The scenario gives milliseconds; the SDK takes a Duration and drops what is below a millisecond.
+                    options.startDelay(Operations.millis(step.get("startDelayMs")));
+                }
+                StartedRun started = client.start(
+                        workflow.get("workflowId").asText(), step.has("input") ? step.get("input") : F.objectNode(), options);
+                ObjectNode result = runJson(started.run());
+                // "started" only when the step asked for a business identifier: the other observations stay as they were.
+                if (step.has("businessId")) {
+                    result.put("started", started.started());
+                }
+                return result;
             }
             case "startWithBlob": {
                 JsonNode workflow = config.path("workflows").path(step.get("workflow").asText());
@@ -835,7 +876,7 @@ public final class Runner {
                 if (step.has("idempotencyKey")) {
                     options.idempotencyKey(step.get("idempotencyKey").asText());
                 }
-                return runJson(client.start(name, step.has("input") ? step.get("input") : F.objectNode(), options));
+                return runJson(client.start(name, step.has("input") ? step.get("input") : F.objectNode(), options).run());
             }
             case "get":
                 return runJson(client.get(runOf(step, results)));
@@ -1232,6 +1273,9 @@ public final class Runner {
                 return null;
             }
             default:
+                if (Operations.handles(step.get("op").asText())) {
+                    return Operations.play(step, client, config, results);
+                }
                 throw new IllegalArgumentException("unknown step op " + step.get("op").asText());
         }
     }

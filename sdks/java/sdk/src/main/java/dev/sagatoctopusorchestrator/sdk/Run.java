@@ -28,6 +28,10 @@ import java.time.Instant;
  *                      successor: it is not the process outcome, which is the chain's final outcome
  * @param rerunOf       the ended run this one was started again from ({@link OperateAction#RERUN_AS_NEW}); null for a
  *                      run that is not a rerun
+ * @param businessId    the business identifier the run was started under, exactly as it was given; null for a run that
+ *                      has none
+ * @param startDelayedUntil the instant (UTC) the entry of a run started with a delay is held until; null for a run that
+ *                      was never held
  * @param raw           the answer as sent
  */
 public record Run(
@@ -49,7 +53,34 @@ public record Run(
         Parent parent,
         ChainSegmentOfRun chain,
         String rerunOf,
+        String businessId,
+        Instant startDelayedUntil,
         JsonNode raw) {
+
+    /** A run with no business identifier and no start delay. */
+    public Run(
+            String runId,
+            String workflowId,
+            String versionId,
+            RunStatus status,
+            String statusText,
+            long version,
+            boolean paused,
+            String startedBy,
+            Instant createdAt,
+            Instant updatedAt,
+            Instant finishedAt,
+            Instant deadline,
+            String traceId,
+            String correlationId,
+            int depth,
+            Parent parent,
+            ChainSegmentOfRun chain,
+            String rerunOf,
+            JsonNode raw) {
+        this(runId, workflowId, versionId, status, statusText, version, paused, startedBy, createdAt, updatedAt,
+                finishedAt, deadline, traceId, correlationId, depth, parent, chain, rerunOf, null, null, raw);
+    }
 
     /** A run that is not a rerun. */
     public Run(
