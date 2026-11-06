@@ -24,8 +24,8 @@ deleted that a landed commit may reference (D035-100). `request.py` checks the r
 - `Dockerfile`, stage `lake-runtime`: Python 3.12 slim pinned by digest; the closure of `requirements.lock` installed
   from wheels with `--require-hashes --no-deps --only-binary=:all:`; pip and setuptools removed; no compiler; the host
   at `/opt/sagat/lake`, read-only; user `65534`.
-- `requirements.in` is the one decided requirement (`pyiceberg[pyarrow,s3fs,gcsfs,adlfs,hive,glue,sql-postgres]==0.12.0`);
-  `requirements.lock` is its closure with hashes (78 packages). `requirements-dev.in` and `requirements-dev.lock` add
+- `requirements.in` is the one decided requirement (`pyiceberg[pyarrow,pyiceberg-core,s3fs,gcsfs,adlfs,hive,glue,sql-postgres]==0.12.0`);
+  `requirements.lock` is its closure with hashes (79 packages). `requirements-dev.in` and `requirements-dev.lock` add
   pytest, mypy, ruff and pip-audit for CI and for you.
 - `sagat_lake/`: the host package. `host.py` is the entry point (`python3 -I -X utf8 /opt/sagat/lake/sagat_lake/host.py
   --attempt-dir <dir>`); `forwarder.py` turns an HTTP proxy port and a TCP port per mapping into connections to the relay;

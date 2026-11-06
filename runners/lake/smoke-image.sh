@@ -47,6 +47,12 @@ for module in pyiceberg.io.pyarrow s3fs gcsfs adlfs pyiceberg.catalog.rest pyice
     must_succeed "$module imports" python -B -c "import importlib; importlib.import_module('$module')"
 done
 
+must_succeed "the native transforms of pyiceberg-core load and compute in the image" python -B -c '
+import pyarrow
+from pyiceberg_core import transform
+assert transform.bucket(pyarrow.array([1, 2, 3]), 16).to_pylist() == [4, 4, 3]
+'
+
 must_fail "pip is gone" python -m pip --version
 must_succeed "the bundled pip that could restore it is gone" sh -c 'test ! -e /usr/local/lib/python3.12/ensurepip'
 must_fail "setuptools is gone" python -B -c "import setuptools"

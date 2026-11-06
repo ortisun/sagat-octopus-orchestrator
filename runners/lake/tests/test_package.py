@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import importlib
 import importlib.metadata
 import tomllib
@@ -33,7 +34,23 @@ def test_the_environment_has_the_pinned_pyiceberg() -> None:
         "pyiceberg.catalog.glue",  # extra glue: boto3
         "pyiceberg.catalog.sql",  # extra sql-postgres: SQLAlchemy and psycopg2
         "psycopg2",
+        "pyiceberg_core",  # extra pyiceberg-core: the native partition transforms
     ],
 )
 def test_every_storage_and_catalog_extra_imports(module: str) -> None:
     importlib.import_module(module)
+
+
+def test_the_native_transforms_compute_the_values_of_the_specification() -> None:
+    # a wheel that imports but computes nothing, or a different hash, would write rows into the wrong partitions
+    import pyarrow as pa  # type: ignore[import-untyped]
+    from pyiceberg_core import transform  # type: ignore[import-untyped]
+
+    assert transform.bucket(pa.array([1, 2, 3]), 16).to_pylist() == [4, 4, 3]
+    assert transform.truncate(pa.array(["alphabet", "ab"]), 4).to_pylist() == ["alph", "ab"]
+    # 19,000 days after 1970-01-01 is 2022-01-08, worked out here and not by the library
+    days = pa.array([19_000], pa.date32())
+    assert datetime.date(1970, 1, 1) + datetime.timedelta(days=19_000) == datetime.date(2022, 1, 8)
+    assert transform.day(days).to_pylist() == [datetime.date(2022, 1, 8)]
+    assert transform.month(days).to_pylist() == [(2022 - 1970) * 12]
+    assert transform.year(days).to_pylist() == [2022 - 1970]
