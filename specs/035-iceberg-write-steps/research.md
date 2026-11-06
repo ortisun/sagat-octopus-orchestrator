@@ -1196,5 +1196,5 @@ The other fixes were wording:
     at publication. A test builds forty diamonds with a limit of ten seconds.
   - *Evidence.* 15 tests in `crates/domain/tests/iceberg_source.rs` and one in `crates/infra-ir/tests/iceberg_write.rs`, written first (the
     refusals failed; so did the parallel, saga and failed-source cases once a review asked for them). Two rounds of mutation: 7 of the
-    first version (one survived: the visited set, caught by the linear-time test) and 13 of the version that follows a join and drops
+    first version (one survived: the visited set, caught by the linear-time test) and 14 of the version that follows a join and drops
     the error edge of the source (one survived and showed a call that nothing needed, which is removed); all caught.
