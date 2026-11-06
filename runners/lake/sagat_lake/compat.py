@@ -24,8 +24,11 @@ TABLE_NOT_FOUND = "ICEBERG_TABLE_NOT_FOUND"
 
 # The format versions of the Iceberg specification that PyIceberg writes. Version 3 (and anything newer) is refused.
 SUPPORTED_FORMAT_VERSIONS = (1, 2)
-# The transforms PyIceberg can apply when it writes. `void` and a transform it does not know are refused.
-_TRANSFORM = re.compile(r"identity|year|month|day|hour|bucket\[[1-9][0-9]*\]|truncate\[[1-9][0-9]*\]")
+# The transforms the runtime can apply when it writes. PyIceberg 0.12 needs the ``pyiceberg-core`` package to apply any
+# other, and the runtime image does not have it (``requirements.lock``): writing to a table partitioned by ``year``,
+# ``month``, ``day``, ``hour``, ``bucket`` or ``truncate`` fails with ``NotInstalledError``. Those tables are refused,
+# with the reason ``TRANSFORM``, rather than failing in the middle of a write (G035-040).
+_TRANSFORM = re.compile(r"identity|void")
 
 
 @dataclass(frozen=True)

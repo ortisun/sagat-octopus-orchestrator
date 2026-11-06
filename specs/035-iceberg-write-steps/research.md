@@ -1221,8 +1221,8 @@ The other fixes were wording:
     specification). A key on the target ref wins even when the same commit is visible from another ref. A snapshot exactly at the
     start minus five minutes is not older than the window, so the walk goes on to its parent.
   - *Compatibility.* Format versions 1 and 2 are written, 3 and anything newer are not; the default file format is Parquet,
-    read without regard to case; the transforms are identity, year, month, day, hour, bucket[n] and truncate[n] with n positive,
-    and `void` or an unknown name is refused; a location is inside the warehouse by path and not by text (`warehouse-evil` is not
+    read without regard to case; the transforms are `identity` and `void` only, because those are the ones the runtime
+    can apply (G035-040; the first version of this decision accepted year, month, day, hour, bucket and truncate and was wrong); a location is inside the warehouse by path and not by text (`warehouse-evil` is not
     below `warehouse`), a `..` segment is inside nothing, and an empty root allows nothing rather than everything. The checks
     run in a fixed order: the size of the metadata, the ref, the format version, the file format, the transforms, the locations.
   - *Evidence.* 64 tests of the mapping, 25 of the lookup and 45 of the compatibility, written first and seen failing (the modules
@@ -1238,3 +1238,16 @@ The other fixes were wording:
   identifier fields) are not in `compat.py`; they come with T035-082 and T035-088. (4) The type table names the types the
   Iceberg v1 and v2 formats have; `timestamp_ns`, `variant` and the geometry types are v3 and refused with the version.
   *Exit condition:* points 1 and 2 by the append path of T035-057; point 3 by the tasks named.
+- **G035-040 — The runtime cannot write a table partitioned by anything but identity or void.** Found 2026-11-06 by writing to
+  a table of each transform with the packages the runtime image holds. `identity` and `void` write. `year`, `month`, `day`,
+  `hour`, `bucket[n]` and `truncate[n]` fail with `NotInstalledError: pyiceberg_core needs to be installed`: PyIceberg 0.12 applies
+  them with the optional package `pyiceberg-core`, and `runners/lake/requirements.in` is
+  `pyiceberg[pyarrow,s3fs,gcsfs,adlfs,hive,glue,sql-postgres]==0.12.0`, with no `pyiceberg-core`. Until that changes, `compat.py`
+  refuses such a table before any file (`ICEBERG_UNSUPPORTED_TABLE`, reason `TRANSFORM`), which is the contract's own rule ("partition
+  transforms PyIceberg cannot apply") applied to the runtime as it is. **This is a large limit:** most tables a lake holds are
+  partitioned by day or month, so until it is lifted most real tables are refused. *Recommendation (a dependency change, not made
+  here):* add the `pyiceberg-core` extra to `requirements.in`, regenerate the hash lock the way its header says (`uv pip compile
+  ... --generate-hashes --universal --python-version 3.12 --exclude-newer <date>`), check that it ships wheels for the platforms
+  of the image (the Dockerfile installs wheels only), and run `pip-audit` and the SBOM check, since it puts a native (Rust) wheel in the
+  sandbox image. *Exit condition:* the owner decides; then `_TRANSFORM` in `compat.py` accepts the transforms that a test of
+  writing to a table of each shows the runtime applies.
