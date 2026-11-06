@@ -1,7 +1,7 @@
 """Guards the CI rule (run: python3 -m unittest discover scripts/tests).
 
-The rule (docs/constitution.md, CI gates): a pull request runs only the unit tests of the changed packages and the
-integration suites that touch the affected code, a merge into develop starts no run, and a release runs the whole
+The rule (docs/constitution.md, CI gates): a pull request runs only the unit tests of the changed packages and of
+their dependents and the integration suites that were themselves changed, a merge into develop starts no run, and a release runs the whole
 stack, lints included. The job `changes` runs scripts/select-test-targets.py and every other job is gated by its outputs. A step
 that ran a lint, a verification job or an integration suite without that gate would bring the full cost back on
 every pull request, or hide the release check.
