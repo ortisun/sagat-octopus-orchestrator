@@ -72,9 +72,22 @@ type Run struct {
 	// RerunOf is the ended run this one was started again from (ActionRerunAsNew), or empty for a
 	// run that is not a rerun.
 	RerunOf string
+	// BusinessID is the business identifier the run was started under, as it was given, or empty.
+	BusinessID string
+	// StartDelayedUntil is the instant the entry of a run started with a delay is held until. It is the
+	// zero time.Time for a run that was never held, and stays set once the run is released.
+	StartDelayedUntil time.Time
 	// Raw is the answer as the server sent it, member by member, so that a field of a newer server
 	// is reachable.
 	Raw map[string]json.RawMessage
+}
+
+// StartedRun is the answer to Start: the run, and whether this call created it. Started is false when
+// an open run already held the business identifier and the call asked for BusinessIDUseExisting
+// (HTTP 200, nothing was created); it is true for a run this call created (HTTP 202).
+type StartedRun struct {
+	*Run
+	Started bool
 }
 
 // SegmentCompletionKind says how a chain segment ended.
@@ -382,6 +395,8 @@ func runOf(m map[string]json.RawMessage) (*Run, error) {
 	run.TraceID, _ = jsonx.String(m, "traceId")
 	run.CorrelationID, _ = jsonx.String(m, "correlationId")
 	run.RerunOf, _ = jsonx.String(m, "rerunOf")
+	run.BusinessID, _ = jsonx.String(m, "businessId")
+	run.StartDelayedUntil, _ = jsonx.Time(m, "startDelayedUntil")
 	depth, _ := jsonx.Int(m, "depth")
 	run.Depth = int(depth)
 	if raw, present := m["parent"]; present && !jsonx.IsNull(raw) {

@@ -58,6 +58,13 @@ func runJSON(run *client.Run) object {
 	if run.RerunOf != "" {
 		observed["rerunOf"] = run.RerunOf
 	}
+	// Present only for a run started under a business identifier, or held by a start delay.
+	if run.BusinessID != "" {
+		observed["businessId"] = run.BusinessID
+	}
+	if !run.StartDelayedUntil.IsZero() {
+		observed["startDelayedUntil"] = iso(run.StartDelayedUntil)
+	}
 	return observed
 }
 
@@ -157,6 +164,17 @@ func run(scenario, config object) (object, error) {
 	}
 
 	results := map[string]object{}
+	// The ids of the steps that produced a result, in the order they did.
+	var produced []string
+	// stepOfRun is the id of the step whose result holds this run, or ? for a run no step of the scenario started.
+	stepOfRun := func(runID string) string {
+		for _, id := range produced {
+			if results[id]["runId"] == runID || results[id]["newRunId"] == runID {
+				return id
+			}
+		}
+		return "?"
+	}
 	runOf := func(step object) (string, error) {
 		if page := asString(step["page"]); page != "" {
 			// A segment of a page of listChainRuns, by position.
@@ -201,18 +219,31 @@ func run(scenario, config object) (object, error) {
 
 	observations := []any{}
 	for _, item := range asList(scenario["steps"]) {
-		step := asObject(item)
-		id, op := asString(step["id"]), asString(step["op"])
-		tokenName := asString(step["token"])
+		given := asObject(item)
+		tokenName := asString(given["token"])
 		if tokenName == "" {
 			tokenName = "default"
 		}
 		c, ok := clients[tokenName]
 		if !ok {
-			return nil, fmt.Errorf("step %s: unknown token %q", id, tokenName)
+			return nil, fmt.Errorf("step %s: unknown token %q", asString(given["id"]), tokenName)
 		}
+		// A reference to a step that failed is a failure of this step, recorded like any other.
+		resolved, refErr := resolveRefs(given, config, results, time.Now())
+		if refErr != nil {
+			observations = append(observations, object{
+				"id": given["id"], "op": given["op"], "ok": false, "error": object{"code": "UNEXPECTED", "message": "Error"},
+			})
+			continue
+		}
+		step := resolved.(object)
+		id, op := asString(step["id"]), asString(step["op"])
 		observation := object{"id": id, "op": op}
-		result, err := playStep(ctx, step, op, c, config, unique, p, hosts, startWorker, stopWorker, runOf, approvalOf, results)
+		ops := &operations{
+			client: c, config: config, results: results, runOf: runOf, stepOfRun: stepOfRun,
+			workflowFor: func(key string) string { return asString(asObject(asObject(config["workflows"])[key])["workflowId"]) },
+		}
+		result, err := playStep(ctx, step, op, c, config, unique, p, hosts, startWorker, stopWorker, runOf, approvalOf, results, ops)
 		if err != nil {
 			var unexpected *runnerError
 			if errors.As(err, &unexpected) {
@@ -225,6 +256,7 @@ func run(scenario, config object) (object, error) {
 			if result != nil {
 				observation["result"] = result
 				results[id] = result
+				produced = append(produced, id)
 			}
 		}
 		observations = append(observations, observation)
@@ -261,7 +293,7 @@ func broken(format string, args ...any) error { return &runnerError{fmt.Sprintf(
 
 func playStep(ctx context.Context, step object, op string, c *client.Client, config object, unique string, p *plan,
 	hosts map[string]*hostEntry, startWorker func(string) (object, error), stopWorker func(*hostEntry, time.Duration),
-	runOf func(object) (string, error), approvalOf func(object) (string, error), results map[string]object) (object, error) {
+	runOf func(object) (string, error), approvalOf func(object) (string, error), results map[string]object, ops *operations) (object, error) {
 	workflowOf := func(key string) (name, id string) {
 		w := asObject(asObject(config["workflows"])[key])
 		return asString(w["name"]), asString(w["workflowId"])
@@ -304,11 +336,33 @@ func playStep(ctx context.Context, step object, op string, c *client.Client, con
 		if v, ok := step["deadlineInMs"]; ok {
 			opts = append(opts, client.WithDeadlineIn(asMillis(v)))
 		}
-		run, err := c.Start(ctx, workflowID, startInput(step), opts...)
+		businessID, hasBusinessID := step["businessId"]
+		if hasBusinessID {
+			opts = append(opts, client.WithBusinessID(asString(businessID)))
+		}
+		if v := asString(step["businessIdConflictPolicy"]); v != "" {
+			opts = append(opts, client.WithBusinessIDConflictPolicy(client.BusinessIDConflictPolicy(v)))
+		}
+		if v := asString(step["businessIdReusePolicy"]); v != "" {
+			opts = append(opts, client.WithBusinessIDReusePolicy(client.BusinessIDReusePolicy(v)))
+		}
+		if v, ok := step["startDelayMs"]; ok {
+			delay, err := delayOf(v)
+			if err != nil {
+				return nil, err
+			}
+			opts = append(opts, client.WithStartDelay(delay))
+		}
+		started, err := c.Start(ctx, workflowID, startInput(step), opts...)
 		if err != nil {
 			return nil, err
 		}
-		return runJSON(run), nil
+		observed := runJSON(started.Run)
+		// "started" only when the step asked for a business identifier: the other observations stay as they were.
+		if hasBusinessID {
+			observed["started"] = started.Started
+		}
+		return observed, nil
 	case "startWithBlob":
 		_, workflowID := workflowOf(asString(step["workflow"]))
 		opts := callOpts
@@ -342,11 +396,11 @@ func playStep(ctx context.Context, step object, op string, c *client.Client, con
 		return runJSON(run), nil
 	case "workflowByName":
 		name, _ := workflowOf(asString(step["workflow"]))
-		run, err := c.Start(ctx, name, startInput(step), callOpts...)
+		started, err := c.Start(ctx, name, startInput(step), callOpts...)
 		if err != nil {
 			return nil, err
 		}
-		return runJSON(run), nil
+		return runJSON(started.Run), nil
 	case "get":
 		id, err := runOf(step)
 		if err != nil {
@@ -857,6 +911,9 @@ func playStep(ctx context.Context, step object, op string, c *client.Client, con
 		}
 		return nil, nil
 	default:
+		if result, handled, err := ops.play(ctx, step, op, callOpts); handled {
+			return result, err
+		}
 		return nil, broken("unknown step op %q", op)
 	}
 }

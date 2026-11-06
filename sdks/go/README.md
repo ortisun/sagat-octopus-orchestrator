@@ -7,7 +7,7 @@ module, alongside the optional `otelbridge` adapter:
 
 | Package | What it is |
 |---|---|
-| `client` | The REST client: start, read, list, operate, cancel and signal runs, publish events, wait for a run to finish. |
+| `client` | The REST client: start, read, list, operate, cancel and signal runs, publish events, wait for a run to finish; schedules, business identifiers, batch jobs and the reset of a run. |
 | `worker` | The worker host (gRPC): registers activities, compensations and reconcilers, takes leases, heartbeats, reports. |
 | `workflow` | Typed, side-effect-free builders of the workflow IR (`step`, `sleep`, `waitForEvent`, `invokeChild`, `parallel`, `saga`...). |
 | `sagat` (the module root) | What they share: `*sagat.Error`, the error catalog, token sources, the retry policy, W3C `traceparent` helpers. |
@@ -71,6 +71,55 @@ For a large run input, call `UploadRunInput(ctx, onePassReader, options)`, then 
 `client.BlobDescriptor` to `StartWithBlob`. The upload is streamed once and never retried; the descriptor
 is accepted only after source EOF and matching local size/SHA-256. `StartWithBlob` uses the same call options
 and idempotency behavior as `Start`.
+
+### Business identifiers and a delayed start
+
+`Start` answers a `*client.StartedRun`: the run (every field of `*client.Run` is reachable through it) and `Started`,
+which is true when this call created the run.
+
+```go
+started, err := c.Start(ctx, "order-flow", input,
+	client.WithBusinessID("order-o-1"),                                    // sent as given: no trimming, no case folding
+	client.WithBusinessIDConflictPolicy(client.BusinessIDUseExisting),     // an open holder: its run, started == false
+	client.WithBusinessIDReusePolicy(client.BusinessIDRejectDuplicate),    // a closed holder that is still remembered
+	client.WithStartDelay(10*time.Minute))                                 // whole milliseconds, truncated toward zero, once
+```
+
+Without these options a `Start` sends exactly what it always sent. `Run.BusinessID` and `Run.StartDelayedUntil`
+(the zero time once the run is released) say how a run was started. `c.SignalWithStart` and `c.UpdateWithStart`
+signal, or apply a declared Update to, the open run of a business identifier and start it first when none is open;
+a rejection of the Update's validator is an answer (`Update.Outcome == "REJECTED"`), not an error. The Update's
+`UpdateKey` is the caller's and is checked before anything is sent. `c.BusinessIDs.Get(ctx, namespaceID, id)`
+reads who holds an identifier (percent-encoded in the path; only a value that is not 1 to 200 visible ASCII
+characters, or is exactly `.` or `..`, is refused locally, with nothing sent).
+
+### Schedules, batch jobs and reset
+
+The groups `c.Schedules`, `c.Batch` and `c.BusinessIDs` take the namespace by its id (a UUID, as all the ids that
+become path segments: a schedule, a backfill, a batch job, a reset, a run). Every call that changes something
+carries one `Idempotency-Key`, given with `client.WithIdempotencyKey` or generated once per call and reused by its
+retries.
+
+```go
+schedule, err := c.Schedules.Create(ctx, nsID, client.ScheduleWrite{
+	Name:   "nightly",
+	Spec:   client.ScheduleSpec{Cron: []string{"0 9 * * *"}, Timezone: "UTC", StartAt: from}, // instants are sent in UTC
+	Action: client.ScheduleAction{WorkflowID: wf, Input: map[string]any{"kind": "nightly"}},
+})
+record, err := c.Schedules.Trigger(ctx, nsID, schedule.ScheduleID, client.WithOverlap(client.OverlapSkip))
+for s, err := range c.Schedules.ListAll(ctx, nsID, client.ScheduleListFilter{State: "ACTIVE"}) { ... }
+
+job, err := c.Batch.Create(ctx, nsID, client.BatchRequest{
+	Selector: client.BatchSelector{RunIDs: ids}, Action: "CANCEL", Reason: "clean up the day",
+})
+points, err := c.ResetPoints(ctx, runID, client.ResetPointsOptions{})
+plan, err := c.PreviewReset(ctx, runID, points.Items[1].Sequence, "")
+reset, err := c.Reset(ctx, runID, client.ResetRequest{Sequence: plan.Sequence, Reason: "run it again", AcknowledgeReexecution: true})
+```
+
+An enumerated value in an answer (`Outcome`, `State`, `Kind`, an item `Reason`...) is the string the server sent; one
+this SDK does not know is never an error. Every typed answer keeps the JSON object it was read from in `Raw`. An
+instant or a string the server sent as null is the zero value; a number that can be null is a pointer.
 
 A token is a `sagat.TokenSource`: `sagat.StaticToken(s)`, or `sagat.TokenFunc(func(ctx) (string, error))`,
 asked before every request so a rotated token is used at once. The tenant is never configured: it is the
