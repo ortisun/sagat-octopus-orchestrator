@@ -1818,3 +1818,26 @@ O381 is answered “hold for both” at product level. At this decision point th
 correction was not implemented. Delivery 1 is now implementation in verification; O380 scope-level
 policy fields remain deferred, earlier D63/D66 and other dated evidence remain historical, and no
 acceptance is claimed by this note.
+
+
+## Delegated decisions — 2026-11-04 (O460, O463, O464)
+
+The owner delegated these questions (rows OD-2026-11-04-5 to OD-2026-11-04-7 of
+[owner-decisions.md](../../docs/owner-decisions.md)); they are `Decided by: delegate` and reversible.
+Opinion and method: [the data review](evidence/delegated-decisions-20261104/data-review.md). Nothing
+was run for these answers; the figures are the report's, measured on older source (see the review's
+provenance section).
+
+- **O460 and O464 — answered.** Collections publish `maxItems` 10,000 if the T014-042 acceptance run
+  on the release candidate meets its thresholds, otherwise 1,000. Loops publish `maxIterations` 1,000
+  unless a 10,000-iteration loop completes within 1,800 s on that run; none ever has (the best reached
+  8,806 iterations in 1,800 s). G520 (the worker report restores the whole run) is a documented
+  limitation for root-task reports and whole-run reads, not a release blocker; scoped tasks are
+  already bounded in the current source. The limit is stated in the runbook and the release notes and
+  bounded by the tenant quota; validation keeps accepting up to 10,000.
+- **O463 — answered.** The ceiling is 20,000 pending waits per scheduler replica at the default
+  500 ms interval, observed by a new `scheduler_tick_seconds` metric with a slow-tick alert and an
+  alert above 16,000 waits per replica. Index-only discovery (the `node_kind` column) is required only
+  if the acceptance run fails the idle-tick thresholds. Not built.
+- **T014-042 is not lowered.** Its original criteria stand, including the nested 100,000-instance
+  workload, which cannot be measured while nested scopes are closed.

@@ -40,7 +40,9 @@ These explicit answers are recorded in `docs/owner-decisions.md`; they are not e
 - [x] Record the actual O705/O706 answers and identify cross-session ownership.
 - [x] Inventory current capacity readers/writers and claim/discovery gates; define an ADR
   for the group lock position and caller boundaries before adding a production caller (G721).
-  ADR-0075 is proposed; root/scoped `WorkerService` are the two `LeaseGrant` producers.
+  ADR-0075 was proposed here and was accepted on 2026-11-04 for the worker-lease guard only
+  (OD-2026-11-04-3); G721 still needs its own lock-graph ADR (OD-2026-11-04-4). Root/scoped
+  `WorkerService` are the two `LeaseGrant` producers.
   The activation/source inventory fitness check passes, with five negative/positive tests.
   This text scan is not a general Rust call-graph proof and does not close runtime G721.
 - [x] Add the pure worker-possession prerequisite, independently of runnable-work eligibility.

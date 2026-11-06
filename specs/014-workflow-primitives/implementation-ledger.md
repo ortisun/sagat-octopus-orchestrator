@@ -1677,6 +1677,169 @@ Full corrected CI is pending. No release or primitive task is closed here.
 
 Refs: T014-043.
 
+## Reconciliation with develop and EGM drift report — 2026-11-04
+
+Owner request: reconcile this ledger with what is merged and check it with EGM. Baseline
+`origin/develop@62cc6045` (merge of #90, CI green). **This entry changes no task state.** The
+eight canonical tasks and T033-007 stay unticked, the seven increments above stay unticked, and
+nothing below is a test result: no build, test or gate was run for it. Findings come from reading
+the code and the documents. The full EGM report, with its limits, is
+[the drift report](evidence/egm-drift-20261104/2026-11-04_DRIFT_REPORT.md).
+
+### Merged to develop since the runtime entries above
+
+- #56 (2026-10-29) integrated workflows, Redis Streams and the Rust SDK.
+- #58 bounded capacity candidate discovery, #59 durable dormant ChildRoot Vacate, #65 dormant
+  ChildRoot Acquire (all 2026-10-29).
+- #66 worker lease possession guard, #67 bounded ChildRoot holder hints (both 2026-10-30).
+- #61 (`feature/014-capacity-protocol`) was closed as superseded: its domain gates and design
+  are on develop as `9db325db`, `8913cfca` and `59b5023d`, and its files are identical or older
+  than develop's. The branch was deleted on 2026-11-04.
+- Open and not part of 0.3.0: #86, #88, #91 (feature 018) and #92 (feature 035).
+
+### `feature/014-bounded-execution`
+
+Local only (no remote), tip `4f70bd08` of 2026-10-17, 110 commits not on develop, 80 with no
+patch-equivalent. Compared by content, not by commit id, because develop's merges are squashed:
+54 of the 80 have at least 90% of their added lines on develop, 21 have 60–90%, 5 have less; of
+the 1032 functions, structs and enums the 80 define, 1006 (97.5%) exist on develop. Of the 26
+that do not, 25 are the payload-classification interpreter (feature 016, released in 0.2.0),
+which develop split from one 1169-line file into `numbers.rs`, `walk.rs`, `cache.rs` and
+`publication.rs` with the same guards under new names; the one execution item,
+`local_scope_saga`, is now `PathScopeSagaState` in `path_state.rs`. **Nothing of feature 014 is
+unique to the branch**; it is superseded. It was not deleted. The uncommitted edits the
+initial inventory told us to preserve (7 files, of 2026-10-17) were saved on 2026-11-02, when
+the sibling worktrees were removed, as `014-bounded-execution.uncommitted.patch` in
+`~/Documents/Projects/sagat-worktree-archive-2026-11-02/`. By the same content test, 5 of the
+6 files with added source lines are 87–100% on develop and no definition the patch adds is
+missing from develop; the sixth, the bounded loading of scope sagas by owner path in
+`crates/infra-postgres/src/execution.rs` (24%), is now in `execution/path_read.rs` (read, not
+run). The owner decides whether to delete the branch and keep or drop the patch.
+
+### Increments, as read from the code
+
+1. **Collection compatibility frontier — open.** The released-v0.2 profiles exist (applied,
+   in-flight, selector, output quota) but every recorded pass is at schema 23 or 24 and the code
+   now asserts 31; none was repeated on the integrated source.
+2. **Broader scoped bodies — open.** Publication accepts bodies of 1..8 steps of Activity,
+   Condition, Switch, Timer and WaitEvent plus one Return. Children, approvals and nesting are
+   still refused (`crates/infra-ir/src/convert.rs`, `is_collection_body`).
+3. **Capacity protocol — open.** Discovery, holder discovery, Vacate, Acquire, Finish and the
+   worker possession guard exist with native tests and no stubs. **No production code calls any
+   of them**, nothing creates groups or members (`sagat_app` has no INSERT on them), the scheduler
+   has no capacity pass, and `WorkerService::new` sets `child_root_capacity_guard: false`
+   (`crates/application/src/worker.rs:536`). ADR-0075 is still `Proposed`.
+4. **Quota projection, mixed writers, one nested public shape — open, not started in the
+   product.** No join, no tenant-unit accounting for nested members (D703–D705), and none of the
+   G706 nested limit-1 tests; the only tenant gate remains `tenant_active >= tenant_limit`.
+5. **Common SDK fixtures — open.** Builders and goldens exist; every recorded acceptance pass is
+   five-language, and feature 034 makes Rust the sixth (`docs/sdk-compatibility.md:100-101`).
+6. **Fault/security matrix and measurements — open.** The 10,000-item collection runs at widths
+   1/16/256 and the 10,000 approvals have measured numbers, all dated 2026-10-17 on an older
+   source; "256" is a logical width on one serial in-process driver. There is no nested
+   100,000-instance workload (nested scopes are closed), no isolated PostgreSQL resource
+   measurement, and the ceilings O460 and O463 are still open questions.
+7. **Close-out — open.** No all-green gate run is recorded at the current head; the last full
+   one is CI 39057216527 on `7d7868ff`. Since #87 and #90 the whole `sagat-tests` set runs on
+   release events, not on every change.
+
+### Canonical tasks, EGM deliverable counts (DONE / PARTIAL / ABSENT, per reviewer extraction)
+
+| Task | D / P / A | Largest remaining piece |
+|---|---|---|
+| T014-014 | 6 / 4 / 2 | nested admission, shared budget, limit-one/join/reduce-to-zero cases (nested is refused at publication); the named `tests/integration/workflow-primitives/collections.rs` does not exist (the cases live in other files) |
+| T014-015 | 10 / 2 / 1 | nested possession and caller wiring; a run deadline over an open collection fails closed (O382) |
+| T014-016 | 10 / 3 / 2 | broader source and body families refused; no proof plan for them |
+| T014-017 | 6 / 4 / 2 | uncertain-COMMIT and expired-authority compositions of the released-source profiles; the six profile runs on integrated source; `collections.rs` fault target has 2 tests |
+| T014-040 | 9 / 4 / 1 | no run on the integrated source (the evidence is the 87/87 fault run at `7d7868ff`, CI 39057216527); no held-lock race and no secret-marker scan for collections; no seeds retained |
+| T014-042 | 6 / 4 / 4 | nested 100,000-instance workload, isolated PostgreSQL measurement, a rerun on current source, accepted ceilings |
+| T014-043 | 1 / 9 / 0 | no all-green gate run at head; runbook contradicts itself on approvals (`docs/runbooks/workflow-primitives.md:343` against `:17`) and has no capacity guidance |
+| T014-044 | 3 / 1 / 1 | `docs/traceability.md` section 014 is dated 2026-10-17, has no requirement→test→contract→metric/log→demo columns, and its counts (139 integration, 26 contract, 25 fault tests) predate most of the work; a static count of test attributes in the current tree finds about 697 integration, 49 contract and 81 fault (top-level files of each target only, nothing executed) |
+| T033-007 | 3 / 3 / 0 | no gate recorded on the final tree; the Redis AOF/healthcheck proof is a manual transcript; no 033 row in the roadmap table; no Redis entry in `docs/releases/unreleased.md` |
+
+### Documents that are behind the code (EGM-reported; not re-checked one by one)
+
+- Eight scoped-event documents (waits, storage, receipt, receiver, scheduling, entry, drain,
+  deadlines) still say public event-wait bodies stay closed; publication accepts `waitEvent`.
+  `scoped-event-waits.md` also describes root-only discovery guards that no longer exist.
+- `control-entry-admission.md` says a zero iteration quota is rejected with 422; the code accepts
+  zero (decision O701), and its required test
+  `public_control_entries_remain_outside_the_frozen_ordinary_leaf_profile` does not exist.
+- `capacity-acquire.md`, `capacity-holder-discovery.md` and `capacity-coordinator.md` have stale
+  checklists; two comments still say Acquire is reserved (migration `20261226000000` and
+  `storage-classification.json`).
+- The `release-upgrade-*.md` documents name five overlays where the code has six, schema 20→23
+  where the code asserts 20→31, and (`release-upgrade-output-quota.md`) a runner script that no
+  longer exists.
+
+### Possible defects, not document drift (leads, to be confirmed by a failing test first)
+
+- `a_cancellation_racing_the_scheduler_that_stops_the_scope_for_a_failure_ends_consistently`
+  (`tests/fault/workflow-primitives/scope_compensation.rs`) interleaves with `yield_now`, not a
+  held lock or barrier (rule 18). Confirmed by reading.
+- Public scoped event waits are published, but the document requires an enforced old-dispatcher
+  fence before scoped creation opens; the only artefact is an `#[ignore]`d operator-sequence test
+  (`release_upgrade_cutover.rs:21`). Reported, not re-checked.
+- The scoped timer fire pass appears to need no lease while the event deadline pass requires one
+  (`crates/scheduler/src/passes.rs`). No lease check was found inside `timers()`; helpers were not
+  traced.
+- `capacity-vacate-acquire.md` says `finality()` becomes a three-way verdict (D708) and that
+  `confirmed_abort` has its own unit test; the reviewer found neither. It also lists no test with
+  a RUNNING step, none for Vacate racing Finish, and candidate selection that ignores possession
+  (G715). Reported, not re-checked.
+
+### Needs the owner
+
+- Accept or reject ADR-0075 (worker leases retain ChildRoot possession) and decide the
+  lock-position ADR (G721) before any capacity activation.
+- O460 (is a quadratic collection acceptable for the first release) and O463 (idle tick cost
+  ceiling) gate the acceptance of T014-042.
+- Whether the first full-stack run since 2026-10-17 may be the release event itself, given that
+  the recorded profile passes are at schema 23/24 and the head is at 31.
+- Whether to delete `feature/014-bounded-execution`.
+
+Refs: T014-014, T014-015, T014-016, T014-017, T014-040, T014-042, T014-043, T014-044, T033-007.
+
+
+## Delegated decisions — 2026-11-04
+
+The owner delegated the open decisions of the entry above ("Tome as decisoes por mim. Que os melhores
+especialistas em arquitetura, dados, banco de dados, decidam."). Three independent read-only reviewers
+gave opinions; the assistant decided from them. The rows are OD-2026-11-04-3 to OD-2026-11-04-9 in
+[owner-decisions.md](../../docs/owner-decisions.md), `Decided by: delegate` and reversible, and the
+opinions are in [the evidence](evidence/delegated-decisions-20261104/README.md). **This entry changes
+no task state and lowers no acceptance criterion.** Nothing was run.
+
+Outcome of the four items of "Needs the owner":
+
+- **ADR-0075** is accepted for the ChildRoot worker-lease guard only, with the amendments of the
+  architecture and PostgreSQL reviews. The guard stays off, and no membership may be created, until
+  the twelve conditions of its Activation gate hold. The code does not conform to the amended ADR in
+  one respect: the worker claim locks G before it knows the member is the holder
+  (`crates/infra-postgres/src/execution/worker_capacity.rs`), which can starve a native Acquire on a
+  vacant group. That is activation condition (j).
+- **G721** needs its own lock-graph ADR before any production caller. ADR-0075 does not close it.
+- **O460, O463 and O464** are answered (collection and loop ceilings, 20,000 waits per replica,
+  G520 a documented limitation). T014-042 keeps its original criteria.
+- **`feature/014-bounded-execution`** is deleted; a verified bundle and the patch are in
+  `~/Documents/Projects/sagat-worktree-archive-2026-11-02/`.
+- The first full-stack run since 2026-10-17 is a manual rehearsal of the whole stack on `develop`
+  before `release/0.3.0` is cut (the owner's rule of 2026-11-04 already puts the full run at release).
+
+New work these decisions create, none of it started:
+
+1. The lock-graph ADR (G721), drafted by the capacity lane and accepted before any caller.
+2. Conform the worker claim to the unlocked-header-first rule, with a test that a vacant group's
+   Acquire is not starved (activation condition (j)).
+3. The `scheduler_tick_seconds` metric and its two alerts, and the runbook and release-notes text for
+   the published ceilings.
+4. Re-run the T014-042 workloads on one release-candidate commit with the method of the data review,
+   including the burst of 5,000 approval starts from a definition of at least 100 KB.
+5. The activation-gate items (b) to (i) and (k) to (l) of ADR-0075, which are the nested-capacity
+   work of increments 3 and 4.
+
+Refs: T014-014, T014-015, T014-040, T014-042, T014-043.
+
 ## ADR-0075 activation condition (j): unlocked header first — 2026-11-05
 
 Owner instruction, 2026-11-05: implement every remaining task (the first option of the release
