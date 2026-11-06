@@ -429,6 +429,10 @@ three conditions pass.
   `tests/integration/iceberg-writes/commit_once.rs`: a commit-counting relay in front of the REST
   fixture sees exactly one commit request per search, even when the catalog answers 409, 5xx or times
   out. Refs: FR-035-018, D035-030, G035-020.
+
+  *2026-11-06, the client half measured, left unticked (D035-093):* `runners/lake/tests/test_commit.py` counts the commit requests a
+  REST catalog receives from PyIceberg 0.12.0 for every answer, with and without the override. The Rust test of this task, with the
+  relay in front of the fixture, is not written.
 - [ ] T035-020 [P] Write the failing rollout tests in `tests/integration/iceberg-writes/rollout.rs`:
   with `lake.enabled` off (the default), both publication and admission refuse with
   `VALIDATION_FAILED`, reason `LAKE_DISABLED`. Refs: D035-059.
@@ -645,6 +649,10 @@ three conditions pass.
   `assert-ref-snapshot-id(ref, H)`. If T035-019 shows the override has no effect, build the updates and
   call the catalog's commit directly. Record the result in research.md, closing G035-020. Refs:
   D035-030, G035-020.
+
+  *2026-11-06, the override done and proved, left unticked (D035-093):* `commit.pin_commit_once` sets the retry to zero in memory and
+  the request counts show it works, so the fallback of this task is not needed; G035-020 is answered for PyIceberg 0.12.0. The
+  conditional commit around the append comes with the append mode.
 - [ ] T035-035 Implement the lake attempt driver in `apps/database-runner/src/lake.rs`:
   - create `/work/<attempt-id>/`;
   - stream inline records, `ReadBlob` blobs and 017 results into `in/`, checking the effective limit
