@@ -1714,3 +1714,58 @@ reread is unchanged and its existing cases pass, but no barrier test injects a h
 the two reads; that belongs to condition (e)), and any throughput effect.
 
 Refs: T014-014, T014-015 (activation condition j of ADR-0075).
+
+## ADR-0075 activation condition (d): a capacity-aware candidate window — 2026-11-06
+
+Stacked on the entry above (`feature/014-candidate-window`). It closes **activation condition (d)**
+as the ADR words it ("non-holders cannot crowd out other runs") and **no canonical task**. It does
+**not** close G715 in the sense of `capacity-vacate-acquire.md`: the shared runnable predicate the
+sweeper's Acquire needs, with its differential test over every wake and step status, belongs to
+condition (b) and is still open. The guard stays off.
+
+The poll asks for `min(4 * wanted, 64)` candidates, oldest first (`CLAIMABLE`). With the guard on,
+`wanted = 1` and four older ACTIVE ChildRoot non-holders, the window held only runs the claim
+certainly refuses and the holder was never offered. The window now has three parts, selected by a
+new bind `$7` of the same query text (0 every run, 1 eligible, 2 ineligible): *ineligible* is an
+ACTIVE ChildRoot member whose group is not HELD by it. A guarded poll takes the eligible window
+first and then a bounded sample of four ineligible runs behind it; an unguarded poll takes mode 0,
+which is the previous window. The filter is a hint and is never stricter than
+`worker_capacity::available`: stale-head, finished-history and `SCOPED_PATH` refusals are not
+repeated in it, so those runs stay in the eligible part and the claim still refuses them.
+
+**The first design was wrong and is recorded because the gates caught it.** It dropped the
+ineligible runs outright. The full regression then failed three tests that passed before:
+`worker_leases::preflight::internal_input_limit_failure_commits_even_with_vacant_and_busy_group`,
+`worker_leases::preflight::scoped_internal_input_limit_failure_also_ignores_vacant_and_busy_group`
+and `runtime_privileges::every_statement_the_stores_issue_is_within_the_runtime_roles_privileges`
+(756 passed / 2 failed and 100 passed / 1 failed). The first two exposed a real conflict: a run the
+prerequisite refuses still needs its claim transaction, because failing a step whose input is over
+the limit is deterministic internal progress that ADR-0075 and O706 say must stay ungated. Hence the
+sample. The third was the audit's extractor, which models a macro only as a fixed prefix plus one
+trailing `$tail`; the two-argument macro of the first attempt truncated the template and the audit
+read `FROM candidates` without its CTE. The final form keeps `claimable_query!` unchanged and adds a
+fixed no-argument fragment, `capacity_window!()`, like `pool_refused!()`.
+
+Cost of the single-text design: `CLAIMABLE_SQL` now has a seventh bind, so three tests of other
+features that execute it were changed to bind mode 0 (`identity_storage.rs`, `hardening.rs`,
+`breaker.rs`). The legacy path adds `$7 = 0 OR ...`, constant in a custom plan; no plan or latency
+measurement of the guarded variants was made, and condition (i) still needs one. A guarded poll runs
+one more bounded query. The sample means internal progress of a stuck non-holder waits behind the
+eligible work of the poll and behind older ineligible runs; it is bounded, not starved for ever,
+because Acquire turns members into holders one at a time.
+
+Red first, native, `SAGAT_TEST_AS_RUNTIME_ROLE=1`: `a_guarded_poll_is_not_crowded_out_by_older_nonholders`
+returned 0 tasks for 1 expected, and the window test saw `[peer, holder, nonmember]` where
+`[holder, nonmember]` was expected. Green on the final tree, same profile:
+
+- `-- worker_leases::` 16 passed (the 14 of the entry above, the two new window tests included, and
+  the two preflights that the first design broke); `identity_storage` 5; `runtime_privileges` 43;
+  `hardening` 16 (its `steps_ready_idx`, no-`Aggregate` plan assertion still holds); `breaker` 15.
+- Full runs: `integration_workflow_primitives` 758 passed, 0 failed, 22 ignored, 2051 s;
+  `integration_platform_foundation` 101 passed, 108 s; `integration_durable_execution` 179 passed,
+  210 s; `integration_sagas_compensations` 82 passed, 1 ignored, 81 s. `cargo fmt --check` and
+  `cargo clippy --workspace --all-targets --locked -- -D warnings` exit 0.
+- Not run: the scoped-claim and SDK suites outside these targets, `integration_security_multitenancy`
+  (no permission or API surface changed) and any CI job.
+
+Refs: T014-014, T014-015 (activation condition d of ADR-0075).
