@@ -1305,6 +1305,8 @@ The other fixes were wording:
   *Still open, exit condition:* the loader that builds the REST catalog hands PyIceberg `AcceptedTable.properties` and not the
   document's own (it does not exist yet); and for a catalog that reads the metadata file itself (Glue, Hive, SQL) the loader builds the
   table's IO from the host's own properties, or that catalog type is refused until it does.
+  *2026-11-06, the REST half is closed end to end by D035-102 (`LakeRestCatalog` hands PyIceberg the accepted properties); Glue, Hive
+  and JDBC remain.*
 - **G035-042 — Table properties that size the write are not bounded.** Found by the same review. The retry loop reads
   `commit.retry.num-retries`, `.max-wait-ms` and `.total-timeout-ms` from the table (2026-11-06, measured: a table that says 6
   retries gets 7 commit requests; see T035-034), and the write reads `write.target-file-size-bytes` and the Parquet row-group, page,
@@ -1542,3 +1544,31 @@ The other fixes were wording:
     their edge from both sides, what the platform publishes up to its limits, the repr, the failure), written first and seen failing
     (the module did not exist); 68 mutations, all caught after the corrections that the survivors asked for (a mapping that is not a list,
     the limits taken from the domain). One mutation, a time with an offset, is an equivalent mutant: the next step refuses it anyway.
+- **D035-102 — The REST catalog of the host believes nothing the catalog says about itself, its tables or its credentials.** T035-018
+  follow-up, closing the REST half of G035-041 and G035-043 with a real client. **Decided by: delegate** (the owner delegated the decisions
+  of this feature).
+  - *`rest_catalog.LakeRestCatalog`* is PyIceberg 0.12.0's `RestCatalog` with three changes, each where an answer would otherwise be used
+    before anyone looked at it. (1) `/v1/config` is read through `Hygiene.catalog_config` (only `warehouse` and `prefix` are taken) and
+    the result is overridden by what the connection declares, with the file IO pinned. (2) A table's response goes through
+    `Hygiene.accept_table` and the new `Hygiene.storage_credentials` before `_response_to_table` builds its file IO: the locations must lie in
+    the warehouse, the table's properties pass the allowlist of D035-094, the config and the vended credentials keep only the keys of the
+    declared storage, and a credential for a prefix outside the warehouse is dropped and counted. (3) Every request of the session has a time
+    limit unless the caller names one (`session.request` is wrapped, since PyIceberg posts a commit with `session.post(url, data=...)` and
+    no timeout).
+  - *Measured with PyIceberg's own client against a catalog that lies, over real HTTP.* The overrides of `/v1/config` win over the client's
+    own properties: `uri` moved the client to another host and `py-io-impl` was replaced, in a plain `RestCatalog` (a test says so, and
+    fails when a newer PyIceberg stops doing it). A table whose properties name `py-io-impl` gets that class built by a plain client and
+    not by this one. Against a catalog that does not answer, `load_table` and the first request of the constructor end in
+    `ReadTimeout` within the limit instead of waiting without end.
+  - *`_fetch_config` is a copy* of PyIceberg's with the filtering (the one place where `self.uri` and the properties are set from the
+    response); the version is pinned in the lock and the tests above show the behaviour, so an upgrade that changes it is noticed.
+  - *Left open.* The loader that builds the properties of this catalog from the connection (`auth` oauth2, bearer or sigv4, the storage
+    block, the credentials) and the `icebergWrite` operation of `host.py` are not here (G035-047). Glue, Hive and JDBC catalogs read the
+    metadata file themselves and do not pass through `accept_table`: G035-041 stays open for them. A request timeout for those
+    catalogs' own clients is also open.
+  - *Evidence.* 16 tests in `test_rest_catalog.py` (the lying config, the lying table, the vended credentials declared and not, the storage
+    credentials of the warehouse and of others, the time limits, the pin when the caller forgot it) and 13 more in `test_config_hygiene.py`
+    for `storage_credentials`, written first and seen failing (the module did not exist); 26 mutations, 25 caught in the end after three
+    tests (an exact message for the timeout check, which urllib3 would otherwise match, and the pin when the caller did not name the IO);
+    one, a timeout of `0` from a caller replaced by the default, is an equivalent mutant because urllib3 refuses `0`. `runners/lake`: 683
+    passed, 1 skipped; `ruff check`, `ruff format --check` and strict `mypy` clean.
