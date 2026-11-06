@@ -24,12 +24,13 @@ Each attempt runs in its own container started by `apps/sandbox-runner` with the
 feature-005 driver (ADR-0013):
 
 - own user, pid, mount and network namespaces; no network interface but loopback; a distinct UID per
-  slot; read-only root; all capabilities dropped; `no-new-privileges`; the default seccomp profile;
+  slot, in the lake runner's group (a process identity, not a boundary between attempts: D035-086); read-only root; all capabilities dropped; `no-new-privileges`; the default seccomp profile;
   core dumps disabled; `PR_SET_DUMPABLE=0` set by the host as its first action;
 - cgroup `memory.max` (the attempt's memory budget), `pids.max`, CPU quota, wall-clock deadline;
 - mounts: the runtime image's `/opt/sagat/lake` (read-only), the attempt directory
-  `/work/<attempt-id>` (read-write, size-limited) holding `relay.sock` and `relay.token` (mode 0400,
-  owned by the container's UID); nothing else (no runner token, no other attempt, no container engine
+  `/work/<attempt-id>` (read-write, size-limited) holding `relay.sock` (mode 0660) and `relay.token` (mode 0640),
+  in a directory of mode 0770, all owned by the lake runner's user and group; the container runs as its slot's UID in that
+  group, which is what lets it read them (D035-086); nothing else (no runner token, no other attempt, no container engine
   socket);
 - environment: `PATH`, `HOME`, `TMPDIR`, `AWS_EC2_METADATA_DISABLED=true`; no credential variable.
 
@@ -51,7 +52,7 @@ the metadata service and the engine socket all fail (G035-022).
    017 database result as `result.json`. It checks the total against the effective limit while
    streaming; going over fails `ICEBERG_LIMIT_EXCEEDED` before any container starts.
 3. It opens the relay socket, writes a fresh per-attempt token to `relay.token`, and asks the sandbox
-   runner for a `lake` container running `python3 -I -X utf8 /opt/sagat/lake/host.py`. The start
+   runner for a `lake` container running `python3 -I -X utf8 /opt/sagat/lake/sagat_lake/host.py --attempt-dir /work/<attempt-id>`. The start
    request carries no credential.
 4. The host authenticates on the relay socket with the token and reads **one JSON request line**,
    served by the lake runner over that socket, so credentials never transit the sandbox runner:

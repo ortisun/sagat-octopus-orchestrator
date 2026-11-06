@@ -26,6 +26,7 @@ fn spec() -> LakeSpec {
         image: "sagat/lake-runtime@sha256:0000000000000000000000000000000000000000000000000000000000000000".to_owned(),
         attempt_id: ATTEMPT.to_owned(),
         slot: 3,
+        group: 10_001,
         mount: AttemptMount {
             volume: "sagat-lake-work".to_owned(),
         },
@@ -46,7 +47,9 @@ fn host(body: &ContainerCreateBody) -> &bollard::models::HostConfig {
 fn the_attempt_runs_as_the_unprivileged_user_of_its_slot() {
     let body = config();
     let uid = uid_for_slot(3).expect("slot 3 exists");
-    assert_eq!(body.user.as_deref(), Some(format!("{uid}:{uid}").as_str()));
+    // The user of the slot and the group of the lake runner (D035-086): the files the runner leaves in the attempt
+    // directory are readable by that group, so the group is what lets the container read them.
+    assert_eq!(body.user.as_deref(), Some(format!("{uid}:10001").as_str()));
     assert!(
         uid >= 10_000,
         "an id below 10000 can be a system account: {uid}"
@@ -389,4 +392,21 @@ fn a_volume_name_starts_with_a_letter_or_a_digit() {
         candidate.mount.volume = ok.to_owned();
         assert!(container_config(&candidate).is_ok(), "{ok:?}");
     }
+}
+
+#[test]
+fn the_group_of_the_container_is_the_one_the_spec_names_and_never_root() {
+    for group in [1, 10_001, 65_534] {
+        let mut candidate = spec();
+        candidate.group = group;
+        let body = container_config(&candidate).expect("a valid group");
+        let uid = uid_for_slot(3).expect("slot");
+        assert_eq!(
+            body.user.as_deref(),
+            Some(format!("{uid}:{group}").as_str())
+        );
+    }
+    let mut root = spec();
+    root.group = 0;
+    assert_eq!(container_config(&root).err(), Some(LakeProfileError::Group));
 }

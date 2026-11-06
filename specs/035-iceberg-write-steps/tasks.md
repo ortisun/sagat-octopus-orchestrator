@@ -572,6 +572,8 @@ three conditions pass.
   If no co-location passes, stop and ask the owner to choose between a node-local deployment and a
   per-attempt Kubernetes Job (plan.md Risks). Refs: G035-022, D035-048.
 
+  *2026-11-05 (D035-086):* the question of who gives a file to the user of a slot is settled by the owner: nobody does; the
+  containers run in the runner's group (OD-2026-11-05-2).
   *2026-11-05, half done, left unticked (D035-083, G035-033):* the Docker/Compose half passes (T035-015 against a real
   engine), and it found two things: a memory-backed work volume lives only while a container has it mounted, and handing a file
   to the user of a slot needs `CAP_CHOWN`, which the lake runner as `USER 10001` does not have (G035-033, point 1, a decision
