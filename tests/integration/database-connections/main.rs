@@ -6,6 +6,7 @@ mod cleanup_retention;
 mod consumers;
 mod executor;
 mod key_rotation;
+mod lake;
 mod output;
 mod output_blobs;
 mod policies;
@@ -261,6 +262,10 @@ async fn managed_secret_lifecycle(progress: Progress) {
     Box::pin(managed_http_facade(provider.clone())).await;
     progress.enter("connection catalog");
     connection_catalog(&w).await;
+    progress.enter("egress ceiling and the reveal grant");
+    Box::pin(egress_ceiling_needs_the_reveal_grant(&w)).await;
+    progress.enter("the Iceberg connection");
+    Box::pin(lake::run(&w, &service)).await;
     progress.enter("ad_hoc::run");
     Box::pin(ad_hoc::run(&w)).await;
     progress.enter("admission::run");
@@ -625,6 +630,195 @@ async fn connection_catalog(w: &support::engine::World) {
         Err(AppError::NotFound)
     ));
     assert!(catalog.list(&w.admin, ns, &ctx()).await.unwrap().is_empty());
+}
+
+/// Feature 035 (FR-035-005, D035-074). The `pii` egress ceiling of a connection is set only by someone who holds the
+/// reveal grant of the namespace, checked in the transaction that writes the revision. A write that leaves the connection
+/// paused or deleted needs nothing more, so a revoked grant never strands a connection that already carries `pii`.
+async fn egress_ceiling_needs_the_reveal_grant(w: &support::engine::World) {
+    use sagat_application::{
+        database::{ConnectionService, ConnectionWrite},
+        reveal_grants::RevealGrantService,
+    };
+    use sagat_domain::{
+        classification::EgressCeiling,
+        database::{ConnectionConfig, ConnectionStatus, DatabaseLimits, TlsPolicy},
+        identity::{Permission, Slug},
+        secrets::SecretName,
+    };
+    let catalog = ConnectionService::new(w.store.clone(), SystemClock);
+    let grants = RevealGrantService::new(w.store.clone(), SystemClock);
+    let ns = w.namespace.id();
+    let name = Slug::parse("lake-pii-db").unwrap();
+    let write = |expected_revision: u32, ceiling: EgressCeiling, status: ConnectionStatus| {
+        ConnectionWrite {
+            name: name.clone(),
+            expected_revision,
+            request_id: Uuid::new_v4(),
+            config: ConnectionConfig::postgres(
+                "db.example.com",
+                5432,
+                "lake",
+                TlsPolicy::VerifyFull { ca_pem: None },
+                SecretName::parse("db-credentials").unwrap(),
+                DatabaseLimits::default(),
+            )
+            .unwrap()
+            .with_egress_ceiling(ceiling),
+            status,
+        }
+    };
+    let needs_the_grant = |result: &Result<_, AppError>| {
+        matches!(
+            result,
+            Err(AppError::Forbidden {
+                permission: Permission::PayloadRevealPii
+            })
+        )
+    };
+    let stored_ceiling = |revision: i64| {
+        let pool = w.db.pool.clone();
+        let tenant = w.admin.tenant_id().as_uuid();
+        async move {
+            sqlx::query_scalar::<_, Option<String>>(
+                "SELECT r.config->>'egressCeiling' FROM database_connection_revisions r \
+                 JOIN database_connections c ON c.tenant_id=r.tenant_id AND c.namespace_id=r.namespace_id \
+                  AND c.id=r.connection_id \
+                 WHERE r.tenant_id=$1 AND c.name='lake-pii-db' AND r.revision=$2",
+            )
+            .bind(tenant)
+            .bind(revision)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+
+    // Without the grant, `pii` is refused and nothing is written, not even the connection head.
+    let refused = catalog
+        .put(
+            &w.admin,
+            ns,
+            write(0, EgressCeiling::Pii, ConnectionStatus::Active),
+            &ctx(),
+        )
+        .await;
+    assert!(needs_the_grant(&refused), "{refused:?}");
+    let heads: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM database_connections WHERE tenant_id=$1 AND name='lake-pii-db'",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .unwrap();
+    assert_eq!(heads, 0);
+
+    // The other ceilings need nothing more than the right to manage connections, and the default is not stored.
+    let internal = catalog
+        .put(
+            &w.admin,
+            ns,
+            write(0, EgressCeiling::Internal, ConnectionStatus::Active),
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(internal.config.egress_ceiling(), EgressCeiling::Internal);
+    assert_eq!(stored_ceiling(1).await, None);
+    let public = catalog
+        .put(
+            &w.admin,
+            ns,
+            write(1, EgressCeiling::Public, ConnectionStatus::Active),
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(public.config.egress_ceiling(), EgressCeiling::Public);
+    assert_eq!(stored_ceiling(2).await.as_deref(), Some("public"));
+
+    // Raising it to `pii` is still refused, and the head stays on the revision it had.
+    let refused = catalog
+        .put(
+            &w.admin,
+            ns,
+            write(2, EgressCeiling::Pii, ConnectionStatus::Active),
+            &ctx(),
+        )
+        .await;
+    assert!(needs_the_grant(&refused), "{refused:?}");
+    let current = catalog
+        .get(&w.admin, ns, &name, None, &ctx())
+        .await
+        .unwrap();
+    assert_eq!(current.revision, 2);
+
+    // With the grant it is accepted, stored as `pii`, and a retry of the same write is answered from its receipt.
+    let scope = grants.prepare(&w.admin, ns, &ctx()).await.unwrap();
+    grants
+        .grant(&scope, w.admin.subject().as_str(), &ctx())
+        .await
+        .unwrap();
+    let pii_write = write(2, EgressCeiling::Pii, ConnectionStatus::Active);
+    let pii = catalog
+        .put(&w.admin, ns, pii_write.clone(), &ctx())
+        .await
+        .unwrap();
+    assert_eq!(pii.revision, 3);
+    assert_eq!(pii.config.egress_ceiling(), EgressCeiling::Pii);
+    assert_eq!(stored_ceiling(3).await.as_deref(), Some("pii"));
+
+    // Once the grant is revoked a new revision cannot make the connection active at `pii`, but a retry of the write that
+    // was already accepted still returns its receipt.
+    assert!(
+        grants
+            .revoke(&scope, w.admin.subject().as_str(), &ctx())
+            .await
+            .unwrap()
+    );
+    let retry = catalog.put(&w.admin, ns, pii_write, &ctx()).await.unwrap();
+    assert_eq!(retry, pii);
+    let refused = catalog
+        .put(
+            &w.admin,
+            ns,
+            write(3, EgressCeiling::Pii, ConnectionStatus::Active),
+            &ctx(),
+        )
+        .await;
+    assert!(needs_the_grant(&refused), "{refused:?}");
+
+    // Pausing and deleting a connection that carries `pii` need no grant: nobody is stranded with it.
+    let paused = catalog
+        .put(
+            &w.admin,
+            ns,
+            write(3, EgressCeiling::Pii, ConnectionStatus::Paused),
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(paused.status, ConnectionStatus::Paused);
+    assert_eq!(paused.config.egress_ceiling(), EgressCeiling::Pii);
+    let refused = catalog
+        .put(
+            &w.admin,
+            ns,
+            write(4, EgressCeiling::Pii, ConnectionStatus::Active),
+            &ctx(),
+        )
+        .await;
+    assert!(needs_the_grant(&refused), "{refused:?}");
+    let deleted = catalog
+        .put(
+            &w.admin,
+            ns,
+            write(4, EgressCeiling::Pii, ConnectionStatus::Deleted),
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(deleted.status, ConnectionStatus::Deleted);
 }
 
 #[tokio::test]

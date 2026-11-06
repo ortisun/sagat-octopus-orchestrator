@@ -4,6 +4,47 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-05 — A merge into `develop` starts no CI
+
+The owner gave the instruction in the Claude session while the assistant was merging a stack of pull requests, each of
+which would have started a run on `develop`. The assistant recorded it; the rule is Constitution 4.2.0 (CI gates).
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-05-1 | "Desativar o ci para merges na develop. Deixar o ci somente para merges de release" | owner | Decided | docs/constitution.md, .github/workflows/ci.yml |
+| OD-2026-11-06-1 | "O que deve ter é execucao de testes do que foi alterado ou modificado e seus dependentes, e integração também só do que foi alterado" | owner | Decided | docs/constitution.md (4.3.0), scripts/select-test-targets.py |
+
+Read as the owner wrote it: the CI that a *merge* into `develop` starts (the `push` event) is turned off. The CI of a *pull
+request* is not a merge and keeps the rule of 4.1.0 (the tests of what it changes; the whole stack for a pull request into
+a release branch). If the owner meant that a pull request into `develop` should start no CI either, that is one more
+amendment and one more line of the workflow.
+
+## 2026-11-06 — A pull request runs what it changed, its dependents' unit tests, and only the integration it changed
+
+Row OD-2026-11-06-1 states what a pull request runs. The CI of a pull request selected every integration suite whose sources
+name an affected package; with `sagat-application` changed that was nearly all of them, and each pull request of feature 035
+ran for about an hour and three quarters (the assistant cancelled four runs of it). The owner said that a pull request should
+run the tests of what was changed and of its dependents, and the integration suites only for what was changed. From 4.3.0 the unit tests of a changed package and of every package that depends on it run, and an
+integration suite runs only when it was itself changed (its files, its `[[test]]` entry or a harness it drives). A
+release still runs everything, and a merge into `develop` still starts no run.
+
+## 2026-11-05 — The lake containers share the runner's group
+
+Feature 035. The relay token of an Iceberg attempt is meant to be readable by the attempt's container alone, which takes
+`CAP_CHOWN` in a runner that the contract says is a plain user (`USER 10001`) and runs with `no-new-privileges`. The assistant put
+three options to the owner: the runner runs as root with that one capability, the sandbox runner prepares the directory, or the
+slots share a group. The owner chose the third, in the Claude session.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-05-2 | "Vamos com a letra C. As vagas compartilham um grupo." | owner | Decided | specs/035-iceberg-write-steps/contracts/lake-runtime.md, crates/infra-sandbox/src/lake.rs |
+
+What the choice costs, as the owner was told: no privilege is added to the process that holds the credentials, and the user id of a
+slot stops protecting the files between attempts. What keeps two attempts apart is the mount (a container is given its own
+sub-path only, which the isolation tests show) and the token on the relay. If the engine failed to keep a container to its sub-path,
+the files of another attempt would be readable to it. The test `the_user_of_a_slot_is_not_a_boundary_between_attempts` states
+this and fails on the day the user becomes a boundary again.
+
 ## 2026-11-05 — A correction to a delegated decision
 
 The row below corrects OD-2026-11-04-3 under the same delegation. It is `Decided by: delegate` and reversible.
@@ -93,6 +134,25 @@ does not accept a `delegate` row as an owner gate or as the acceptance of a find
 | OD-2026-11-03-36 | AA. Leave the design `Draft`: no finding is accepted on the owner's behalf, and rows 9 to 31 stay `delegate` (a delegate cannot become the owner by editing a cell). | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
 | OD-2026-11-03-37 | AB. Merge PR 1 and then PR 2 with merge commits once CI is green, on the owner's delegation. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
 | OD-2026-11-03-38 | AC. Keep ADR-0077 `Proposed`: the ADR rules say a person accepts. | delegate | Decided | docs/designs/constitution-4.0.0-egm.md#decisions |
+
+## 2026-11-02 — Feature 035 implementation gates (Iceberg writes and step-output destinations)
+
+The owner answered the four questions below in the Claude session that took over feature 035, each
+by the recommended option. They open task T035-001 of `specs/035-iceberg-write-steps/tasks.md`;
+nothing here is built.
+
+| # | Item | Decision | Recorded in | Status |
+|---|---|---|---|---|
+| 1 | ADR-0071 | **Accepted** (“Aceitar (Recomendado)”): the platform-owned Python lake runtime, pinned by hash and confined to `lake` sandbox containers, extends the technology baseline. The three constitution-V conditions (T-isolation, relay and hostile-catalog canaries, T-commit-once) still gate the end of I1. | `docs/adr/ADR-0071-…` (status line) | Decided; not built |
+| 2 | O035-003 ceilings | **The plan's “Finite ceilings” table is approved as written** (D035-045), including the reference environment of SC-035-009. | `specs/035-iceberg-write-steps/research.md` (D035-070) | Decided; not built |
+| 3 | O035-004 failure policy | **`hold` is the default** for synchronous destinations (D035-023): an unproven outcome waits for a person. | `specs/035-iceberg-write-steps/research.md` (D035-070) | Decided; not built |
+| 4 | O035-005 020 sinks | **020's `OBJECT_STORAGE` and `CLICKHOUSE` sinks reference the new 017 connection kinds** `object_storage` and `clickhouse`; a destination is configured once for both modes. 020 is still a draft in PR #53's lineage. | `specs/035-iceberg-write-steps/research.md` (D035-070) | Decided; 020 not updated |
+| 5 | Audit gate for the independent reader | **Ignore RUSTSEC-2026-0194, RUSTSEC-2026-0195 and RUSTSEC-2024-0436, documented** (“Ignorar os 3, documentados”): the `iceberg` crates are test-only dev-dependencies of `sagat-tests`, enforced by `scripts/check-architecture.py`; re-evaluate on 2026-12-02. | `.cargo/audit.toml`; `specs/035-iceberg-write-steps/research.md` (G035-024, D035-072); `specs/001-platform-foundation/research.md` (G035-024) | Decided; ignores in place |
+
+Not asked, because neither blocks I0–I1: O035-002 (priority of ORC/Avro and Kerberos Hive) stays open
+for a later delivery; and developers may **not** publish writes, which keeps D035-066 (admin-only
+`database:write`) and ADR-0036 decision 5 unchanged. Either can be reopened by the owner.
+
 
 ## 2026-11-01 — Feature 037 delivery, B01 split and upgrade compatibility
 

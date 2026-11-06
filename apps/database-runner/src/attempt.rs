@@ -159,10 +159,13 @@ async fn execute(
     };
     let (capability, executor, scope) = prepared;
     tracing::Span::current().record("tenant_id", tracing::field::display(capability.tenant_id));
-    let _permit = slots.acquire(
-        (task.namespace, capability.connection_id),
-        capability.config.limits().pool_size,
-    )?;
+    // The SQL profile runs SQL connections only; a lake connection is answered by the lake profile (feature 035).
+    let pool_size = capability
+        .config
+        .sql_limits()
+        .ok_or(DatabaseFailure::Configuration)?
+        .pool_size;
+    let _permit = slots.acquire((task.namespace, capability.connection_id), pool_size)?;
     let kind = capability.operation.kind;
     let result = executor
         .execute(

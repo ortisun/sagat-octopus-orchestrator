@@ -447,7 +447,10 @@ impl PgRunStore {
             .ok_or(StoreError::MissingReference)?;
         let info = run_record(&row)?.info;
         let definition = self.definition(conn, tenant, info.version_id).await?;
-        if definition.nodes().any(|n| n.database_operation().is_some()) {
+        if definition
+            .nodes()
+            .any(|n| n.database_operation().is_some() || n.iceberg_write().is_some())
+        {
             let mut actors = crate::database::run_actors(conn, &info).await?;
             if subject != sagat_domain::identity::Subject::engine().as_str()
                 && !actors.iter().any(|s| s == subject)
@@ -1083,7 +1086,7 @@ impl RunStore for PgRunStore {
             let bindings = if new
                 .definition
                 .nodes()
-                .any(|n| n.database_operation().is_some())
+                .any(|n| n.database_operation().is_some() || n.iceberg_write().is_some())
             {
                 let actors = crate::database::run_actors(&mut tx, &new.info).await?;
                 crate::database::admit_definition(

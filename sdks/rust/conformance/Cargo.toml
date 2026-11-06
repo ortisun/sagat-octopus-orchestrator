@@ -8,7 +8,7 @@ publish = false
 sagat-octopus-orchestrator-sdk = { path = ".." }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "=1.0.151", features = ["arbitrary_precision"] }
-tokio = { version = "=1.53.2", features = ["rt-multi-thread", "macros", "time", "sync"] }
+tokio = { version = "=1.53.3", features = ["rt-multi-thread", "macros", "time", "sync"] }
 futures-util = "=0.3.34"
 time = "=0.3.55"
 reqwest = { version = "=0.13.5", default-features = false, features = ["json"] }

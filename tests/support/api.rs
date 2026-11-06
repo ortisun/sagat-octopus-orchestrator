@@ -598,6 +598,10 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         .expect("bind api");
     let addr = listener.local_addr().expect("addr");
     let server = options.server;
+    // The server closes a connection that sends no request head for `header_read_timeout`, idle keep-alive ones included.
+    // A client that keeps an idle connection longer sends its next request into the close and gets `IncompleteMessage`
+    // (it failed a request after a long wait on a held gate), so the client forgets an idle connection after half of it.
+    let idle_limit = server.header_read_timeout / 2;
     let https = options.http_tls.is_some();
     let http_server = tokio::spawn(async move {
         if let Some(tls) = options.http_tls {
@@ -608,7 +612,9 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         }
     });
 
-    let mut client = Client::builder().timeout(Duration::from_secs(10));
+    let mut client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .pool_idle_timeout(idle_limit);
     if let Some(root) = options.http_tls_ca {
         client = client
             .add_root_certificate(reqwest::Certificate::from_pem(&root).expect("HTTP TLS root"));

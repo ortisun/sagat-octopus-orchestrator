@@ -9,6 +9,7 @@ Trusted builder and runtime hosts for isolated inline C#, Go, and Java scripts.
 - [dotnet](dotnet/README.md) — The C# script contract and separate trusted Roslyn builder and assembly runtime hosts.
 - [go](go/README.md) — Trusted Go build/cache/runtime commands and the octopus host-call package embedded into inline programs.
 - [java](java/README.md) — The Java inline-script API and separate trusted compilation and runtime hosts.
+- [lake](lake/README.md) — The Python runtime image (PyIceberg, locked with hashes) of the Iceberg write steps and destinations.
 
 ## Invariants
 

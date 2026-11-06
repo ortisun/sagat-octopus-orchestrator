@@ -1677,7 +1677,6 @@ Full corrected CI is pending. No release or primitive task is closed here.
 
 Refs: T014-043.
 
-
 ## Reconciliation with develop and EGM drift report — 2026-11-04
 
 Owner request: reconcile this ledger with what is merged and check it with EGM. Baseline
@@ -1841,7 +1840,6 @@ New work these decisions create, none of it started:
 
 Refs: T014-014, T014-015, T014-040, T014-042, T014-043.
 
-
 ## Lock-graph ADR drafted — 2026-11-05
 
 Gap G721 required an ADR before any production caller of the capacity commands, and the delegated
@@ -1878,3 +1876,134 @@ Needs a person: accept or decline ADR-0078, and confirm the delegate rows OD-202
 OD-2026-11-05-1.
 
 Refs: T014-014, T014-015.
+
+## ADR-0075 activation condition (j): unlocked header first — 2026-11-05
+
+Owner instruction, 2026-11-05: implement every remaining task (the first option of the release
+question). This is the first increment of that run, on `feature/014-claim-header-first`, cut from
+`origin/develop@074e0246`. It closes **one activation condition** of ADR-0075 and **no canonical
+task**; the guard stays off and no membership may be created.
+
+`worker_capacity::available` locked the group header G (`FOR UPDATE SKIP LOCKED`) before it knew
+whether the claiming member was the holder. With the group vacant every member is a non-holder, so
+each member poller held G until its commit and the NOWAIT native Acquire answered `Busy`. It now
+reads `possession` and `holder_member_id` without a lock and refuses `capacity_not_holder` unless
+the group is HELD by this member; only then does it take G with `SKIP LOCKED` and reread. A stale
+unlocked answer cannot grant a lease: a refusal grants nothing and a grant still needs the locked
+reread. The metric reason for a busy non-holder group changes from `capacity_group_busy` to
+`capacity_not_holder`; a busy group of the actual holder still reports `capacity_group_busy`.
+
+Red first, native, `SAGAT_TEST_AS_RUNTIME_ROLE=1`: `a_peer_poll_on_a_vacant_group_does_not_starve_native_acquire`
+failed with `Err(Busy)` and `a_nonholder_refusal_takes_no_row_lock_on_g` failed with SQLSTATE `55P03`
+(0 passed, 2 failed, 3.50 s). Both hold a peer's claim transaction open (no sleep) and probe G with the
+real Acquire or `FOR UPDATE NOWAIT`. Green after the change, same profile:
+
+- `integration_workflow_primitives -- worker_leases::`: 14 passed, 0 failed, 18.32 s (includes
+  `a_lease_retains_group_possession_while_waiting_for_activity_admission`, so a holder still keeps G
+  through the lease commit, and the scoped and input-limit cases).
+- `integration_workflow_primitives -- capacity`: 114 passed, 0 failed, 158.87 s.
+- `integration_platform_foundation`: 101 passed, 0 failed, owner 78.30 s and runtime role 62.87 s.
+- `integration_security_multitenancy`: 126 passed, 0 failed, owner 129.04 s and runtime role 156.50 s.
+- `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings` (exit 0),
+  `check-architecture.py` (25 crates, layers respected, no cycles), `check-agent-config.py` and
+  `check-capacity-activation.py`: all passed. No SDK or contract file changed, so no SDK or contract
+  suite was run.
+
+Not proven here: the race between the unlocked read and a concurrent Acquire or Vacate (the locked
+reread is unchanged and its existing cases pass, but no barrier test injects a holder change between
+the two reads; that belongs to condition (e)), and any throughput effect.
+
+Refs: T014-014, T014-015 (activation condition j of ADR-0075).
+
+## ADR-0075 activation condition (d): a capacity-aware candidate window — 2026-11-06
+
+Stacked on the entry above (`feature/014-candidate-window`). It closes **activation condition (d)**
+only for the case its tests show (older ACTIVE ChildRoot non-holders no longer hide the holder from
+the eligible window) and **no canonical task**. An independent review after the pull request opened
+found two ways the window is still crowded, **G724** and **G725** below: both block turning the
+guard on, so (d) is not to be counted as closed for activation until they are. It does
+**not** close G715 in the sense of `capacity-vacate-acquire.md`: the shared runnable predicate the
+sweeper's Acquire needs, with its differential test over every wake and step status, belongs to
+condition (b) and is still open. The guard stays off.
+
+The poll asks for `min(4 * wanted, 64)` candidates, oldest first (`CLAIMABLE`). With the guard on,
+`wanted = 1` and four older ACTIVE ChildRoot non-holders, the window held only runs the claim
+certainly refuses and the holder was never offered. The window now has three parts, selected by a
+new bind `$7` of the same query text (0 every run, 1 eligible, 2 ineligible): *ineligible* is an
+ACTIVE ChildRoot member whose group is not HELD by it. A guarded poll takes the eligible window
+first and then a bounded sample of four ineligible runs behind it; an unguarded poll takes mode 0,
+which is the previous window. The filter is a hint and is never stricter than
+`worker_capacity::available`: stale-head, finished-history and `SCOPED_PATH` refusals are not
+repeated in it, so those runs stay in the eligible part and the claim still refuses them.
+
+**The first design was wrong and is recorded because the gates caught it.** It dropped the
+ineligible runs outright. The full regression then failed three tests that passed before:
+`worker_leases::preflight::internal_input_limit_failure_commits_even_with_vacant_and_busy_group`,
+`worker_leases::preflight::scoped_internal_input_limit_failure_also_ignores_vacant_and_busy_group`
+and `runtime_privileges::every_statement_the_stores_issue_is_within_the_runtime_roles_privileges`
+(756 passed / 2 failed and 100 passed / 1 failed). The first two exposed a real conflict: a run the
+prerequisite refuses still needs its claim transaction, because failing a step whose input is over
+the limit is deterministic internal progress that ADR-0075 and O706 say must stay ungated. Hence the
+sample. The third was the audit's extractor, which models a macro only as a fixed prefix plus one
+trailing `$tail`; the two-argument macro of the first attempt truncated the template and the audit
+read `FROM candidates` without its CTE. The final form keeps `claimable_query!` unchanged and adds a
+fixed no-argument fragment, `capacity_window!()`, like `pool_refused!()`.
+
+Cost of the single-text design: `CLAIMABLE_SQL` now has a seventh bind, so three tests of other
+features that execute it were changed to bind mode 0 (`identity_storage.rs`, `hardening.rs`,
+`breaker.rs`). The legacy path adds `$7 = 0 OR ...`, constant in a custom plan; no plan or latency
+measurement of the guarded variants was made, and condition (i) still needs one. A guarded poll runs
+one more bounded query. The sample means internal progress of a stuck non-holder waits behind the
+eligible work of the poll and behind older ineligible runs. This entry first said that this is
+bounded because Acquire turns members into holders one at a time; that holds only when the holder
+changes, and a long-lived holder with continuous work never lets it happen (G724).
+
+Red first, native, `SAGAT_TEST_AS_RUNTIME_ROLE=1`: `a_guarded_poll_is_not_crowded_out_by_older_nonholders`
+returned 0 tasks for 1 expected, and the window test saw `[peer, holder, nonmember]` where
+`[holder, nonmember]` was expected. Green on the final tree, same profile:
+
+- `-- worker_leases::` 16 passed (the 14 of the entry above, the two new window tests included, and
+  the two preflights that the first design broke); `identity_storage` 5; `runtime_privileges` 43;
+  `hardening` 16 (its `steps_ready_idx`, no-`Aggregate` plan assertion still holds); `breaker` 15.
+- Full runs: `integration_workflow_primitives` 758 passed, 0 failed, 22 ignored, 2051 s;
+  `integration_platform_foundation` 101 passed, 108 s; `integration_durable_execution` 179 passed,
+  210 s; `integration_sagas_compensations` 82 passed, 1 ignored, 81 s. `cargo fmt --check` and
+  `cargo clippy --workspace --all-targets --locked -- -D warnings` exit 0.
+- Not run: the scoped-claim and SDK suites outside these targets, `integration_security_multitenancy`
+  (no permission or API surface changed) and any CI job.
+
+### Review after the pull request opened (2026-11-06)
+
+A read-only correctness reviewer read the diff of this entry and of the one above. It found no wrong
+lease grant, no change on the unguarded path (mode 0 has the same rows, order and limits), no
+tenant-boundary or `sagat_app` privilege problem, and no case in which the filter is stricter than
+`worker_capacity::available`. It read the code and ran nothing. The author re-read the code for G724
+and G725 (`crates/application/src/worker.rs`, `crates/infra-postgres/src/workers.rs`); G726 is a
+lead, not reproduced. Nothing is built for them here: the guard is off and no membership can be
+created, so none of this is reachable in production today.
+
+- **G724 (open, blocks activation).** The ineligible sample is the four oldest ineligible runs, the
+  same four on every poll, and the claim loop stops as soon as the eligible work fills `wanted`.
+  With a long-lived holder that always has work and five or more non-holders, the fifth is never
+  offered, so a step with an over-limit input is never failed there, although ADR-0075 and O706 say
+  that failure must stay ungated. No test has more than four ineligible runs. Likely fix: rotate the
+  sample (an order that changes per poll, or a cursor) and test it with five ineligible runs while the
+  holder keeps filling `wanted`; or fail over-limit inputs of non-holders in a sweep (D714).
+- **G725 (open, blocks activation).** The eligible window can still be filled by runs the claim
+  refuses and the filter does not repeat: a stale head, a finished-only chain, a `SCOPED_PATH`
+  `original_run_id`, an ambiguous membership. Four or more older ones with `wanted = 1` hide the
+  holder, the defect this entry fixes for non-holders. Likely fix: move the cheap refusals to the
+  ineligible side, or share the predicate with the sweeper (G715).
+- **G726 (open, lead).** (a) A guarded poll opens up to four extra run transactions on the same runs
+  for every worker, empty polls included, and takes their row locks; condition (i) has no measurement.
+  (b) The plan assertions bind or inline `$7 = 0`, but production uses prepared statements and may
+  reach a generic plan after a few executions, where the `OR` with a correlated `EXISTS` can change
+  the `steps_ready_idx` walk; the scalability test already has `force_generic_plan`. (c) The two
+  window queries are separate statements, so a run can be in both or in neither for one poll (a
+  hint, harmless, untested). (d) Nothing tests a holder change between the unlocked read of
+  condition (j) and its locked reread; the code refuses in every interleaving the reviewer traced.
+  (e) After condition (j) a stale unlocked read reports `capacity_not_holder` for the true holder on
+  that poll, and `docs/runbooks/workflow-primitives.md` (around line 746) still describes the older
+  meaning of the reasons.
+
+Refs: T014-014, T014-015 (activation condition d of ADR-0075).

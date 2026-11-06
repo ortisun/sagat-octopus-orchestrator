@@ -34,7 +34,7 @@ Made from `specs/001-platform-foundation/contracts/workflow.schema.json`. A work
 
 ## Nodes
 
-Every node has the fields below; each kind adds its own. The kinds: [`activity`](#activity), [`database`](#database), [`timer`](#timer), [`waitEvent`](#waitEvent), [`condition`](#condition), [`parallel`](#parallel), [`child`](#child), [`saga`](#saga), [`script`](#script), [`foreach`](#foreach), [`humanApproval`](#humanApproval), [`end`](#end), [`forEach`](#forEach), [`while`](#while), [`repeatUntil`](#repeatUntil), [`approval`](#approval), [`switch`](#switch), [`continueAsNew`](#continueAsNew).
+Every node has the fields below; each kind adds its own. The kinds: [`activity`](#activity), [`database`](#database), [`icebergWrite`](#icebergWrite), [`timer`](#timer), [`waitEvent`](#waitEvent), [`condition`](#condition), [`parallel`](#parallel), [`child`](#child), [`saga`](#saga), [`script`](#script), [`foreach`](#foreach), [`humanApproval`](#humanApproval), [`end`](#end), [`forEach`](#forEach), [`while`](#while), [`repeatUntil`](#repeatUntil), [`approval`](#approval), [`switch`](#switch), [`continueAsNew`](#continueAsNew).
 
 ### base
 
@@ -54,6 +54,7 @@ Every node has the fields below; each kind adds its own. The kinds: [`activity`]
 | `compensateWith` | string |  | The activity that undoes this one. It runs when a saga around this node compensates, or, for a step in the body of a collection or loop, when that scope stops (a failed iteration, a cancellation) with iterations that completed: inside one iteration in reverse dependency order, between collection iterations in no order, and across loop iterations last iteration first. It must be idempotent. Feature 037: it is planned only for an effect that succeeded (or that a person settled as having happened); an effect whose outcome is unknown waits for review instead of being compensated defensively. |
 | `compensationRetry` | [`retry`](#retry) |  | The retry budget of the compensation (compensateWith). Five attempts, exponential from two seconds to five minutes, with jitter when absent. |
 | `compensationTimeoutMs` | integer (min 1) |  | Longest one attempt of the compensation may take. |
+| `destinations` | [`stepDestinations`](#stepDestinations) |  | Synchronous step-output destinations (feature 035). Refused inside structured bodies; at most 8 per step. |
 | `highRisk` | boolean |  | Informational since feature 037. Every activity's attempt whose outcome is unknown (lease lost, timeout, OUTCOME_UNKNOWN) is never retried or compensated blindly, whether or not it is high risk: it is reconciled when reconcileWith says how, and otherwise waits for an operator. |
 | `idempotencyTemplate` | string |  |  |
 | `irreversible` | boolean |  | The effect cannot be undone once it has happened. A saga, or the collection or loop that owns the body, that has to compensate past it ends PARTIAL. Cannot be combined with compensateWith. |
@@ -70,6 +71,7 @@ Every node has the fields below; each kind adds its own. The kinds: [`activity`]
 | `connectionRef` | object | yes |  |
 | `connectionRef.name` | string (pattern `^[a-z][a-z0-9-]{2,63}$`) | yes |  |
 | `connectionRef.revision` | integer (min 1, max 2147483647) |  |  |
+| `destinations` | [`stepDestinations`](#stepDestinations) |  | Synchronous step-output destinations (feature 035). Refused inside structured bodies; at most 8 per step. |
 | `id` | string (min length 1) | yes |  |
 | `limits` | [`databaseLimits`](#databaseLimits) |  |  |
 | `next` | string |  |  |
@@ -79,6 +81,28 @@ Every node has the fields below; each kind adds its own. The kinds: [`activity`]
 | `statement` | string (min length 1, max length 65536) | yes |  |
 | `timeoutMs` | integer (min 1, max 60000) |  |  |
 | `type` | `"database"` | yes |  |
+
+### icebergWrite
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `compensation` | one of `"revert"` |  |  |
+| `connectionRef` | [`lakeConnectionRef`](#lakeConnectionRef) | yes |  |
+| `id` | string | yes |  |
+| `ignoreUnknownFields` | boolean |  |  |
+| `limits` | [`lakeLimits`](#lakeLimits) |  |  |
+| `mapping` | [`lakeMapping`](#lakeMapping) |  |  |
+| `mode` | one of `"append"`, `"overwrite"`, `"upsert"` | yes |  |
+| `name` | string |  |  |
+| `next` | string |  |  |
+| `onError` | string |  |  |
+| `overwrite` | [`lakeOverwrite`](#lakeOverwrite) |  |  |
+| `recordSchema` | [`lakeRecordSchema`](#lakeRecordSchema) |  |  |
+| `records` | [`lakeRecords`](#lakeRecords) | yes |  |
+| `ref` | string (min length 1, max length 255) |  |  |
+| `table` | [`lakeTableIdentifier`](#lakeTableIdentifier) | yes |  |
+| `type` | `"icebergWrite"` | yes |  |
+| `upsert` | [`lakeUpsert`](#lakeUpsert) |  |  |
 
 ### timer
 
@@ -447,6 +471,77 @@ integer
 
 string
 
+### lakeConnectionRef
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string (pattern `^[a-z][a-z0-9-]{0,62}$`) | yes |  |
+| `revision` | integer (min 1) |  |  |
+
+### lakeExpression
+
+string
+
+### lakeFilter
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `and` | array of [`lakeFilter`](#lakeFilter) (min items 2, max items 16) |  |  |
+| `compare` | object |  |  |
+| `compare.column` | string (min length 1, max length 255) | yes |  |
+| `compare.op` | one of `"eq"`, `"ne"`, `"lt"`, `"le"`, `"gt"`, `"ge"`, `"in"`, `"isNull"`, `"notNull"` | yes |  |
+| `compare.value` | [`lakeExpression`](#lakeExpression) |  |  |
+| `not` | [`lakeFilter`](#lakeFilter) |  |  |
+| `or` | array of [`lakeFilter`](#lakeFilter) (min items 2, max items 16) |  |  |
+
+### lakeLimits
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `maxRecordBytes` | integer (min 1024, max 2147483648) |  |  |
+| `maxRecords` | integer (min 1, max 100000000) |  |  |
+| `timeoutMs` | integer (min 1000, max 3600000) |  |  |
+
+### lakeMapping
+
+array of object
+
+### lakeOverwrite
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `allowEmpty` | boolean |  |  |
+| `filter` | [`lakeFilter`](#lakeFilter) |  |  |
+| `scope` | one of `"batchPartitions"`, `"filter"`, `"table"` | yes |  |
+
+### lakeRecordSchema
+
+object
+
+### lakeRecords
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `blobs` | [`lakeExpression`](#lakeExpression) |  | Evaluates to 1..32 blob descriptors of record files (application/x-ndjson or application/vnd.apache.parquet) committed by earlier steps of the same run. |
+| `databaseResult` | string |  | Id of an earlier root-level database node of the same run. |
+| `inline` | [`lakeExpression`](#lakeExpression) |  |  |
+| `output` | `true` |  | Destinations only: the source node's output is one record. |
+| `outputPath` | string (max length 512, pattern `^(/[^/]+)+$`) |  | Destinations only: JSON pointer to an array of records in the source node's output. |
+
+### lakeTableIdentifier
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string (min length 1, max length 255) | yes |  |
+| `namespace` | array of string (min items 1, max items 8) | yes |  |
+
+### lakeUpsert
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `deleteMarker` | string (max length 512, pattern `^(/[^/]+)+$`) |  |  |
+| `keyColumns` | array of string (min items 1, max items 16) |  |  |
+
 ### limits
 
 | Field | Type | Required | Description |
@@ -501,6 +596,36 @@ any
 | `queries` | object |  |  |
 | `schema` | [`resultSchema`](#resultSchema) | yes |  |
 | `updates` | object |  |  |
+
+### stepDestination
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `connectionRef` | [`lakeConnectionRef`](#lakeConnectionRef) |  |  |
+| `effectKeyColumn` | string (max length 63) |  |  |
+| `ignoreUnknownFields` | boolean |  |  |
+| `keyColumn` | string (max length 63) |  | postgresql insert: the constraint-backed column (a record field or the effect key column). |
+| `kind` | one of `"iceberg"`, `"postgresql"`, `"object_storage"`, `"clickhouse"`, `"broker_stream"` | yes |  |
+| `limits` | [`lakeLimits`](#lakeLimits) |  |  |
+| `mapping` | [`lakeMapping`](#lakeMapping) |  |  |
+| `mode` | one of `"append"`, `"overwrite"`, `"upsert"`, `"insert"` |  |  |
+| `name` | string (pattern `^[a-z][a-z0-9-]{0,30}$`) | yes |  |
+| `onFailure` | one of `"hold"`, `"fail"`, `"continue"` |  |  |
+| `overwrite` | [`lakeOverwrite`](#lakeOverwrite) |  |  |
+| `recordSchema` | [`lakeRecordSchema`](#lakeRecordSchema) |  |  |
+| `records` | [`lakeRecords`](#lakeRecords) | yes |  |
+| `subscriptionRef` | string (pattern `^[a-z][a-z0-9-]{0,62}$`) |  | broker_stream only: a subscription whose purpose is STEP_OUTPUT. |
+| `target` | object | yes |  |
+| `target.format` | one of `"parquet"`, `"ndjson"` |  |  |
+| `target.ref` | string (max length 255) |  |  |
+| `target.relation` | string (max length 63) |  |  |
+| `target.schema` | string (max length 63) |  |  |
+| `target.table` | [`lakeTableIdentifier`](#lakeTableIdentifier) |  |  |
+| `upsert` | [`lakeUpsert`](#lakeUpsert) |  |  |
+
+### stepDestinations
+
+array of [`stepDestination`](#stepDestination)
 
 ### subject
 

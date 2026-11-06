@@ -119,6 +119,19 @@ pub enum IrError {
         dependency: &'static str,
         reason: &'static str,
     },
+    /// The definition holds an Apache Iceberg write and this deployment has not turned the lake on
+    /// (`lake.enabled`, off by default; the contract code is `LAKE_DISABLED`).
+    #[error(
+        "node '{node}' is an Apache Iceberg write, and this deployment has not enabled the lake"
+    )]
+    LakeDisabled { node: String },
+    /// The settings of the connection of an Apache Iceberg write refuse it: a mode it does not allow, or fields above its
+    /// ceiling (`MODE_NOT_ALLOWED`, `CLASSIFICATION_EGRESS_REFUSED`). The paths and classes are in the details.
+    #[error("{}", lake_refusal_message(node, refusal))]
+    LakeWriteRefused {
+        node: String,
+        refusal: sagat_domain::database::LakeRefusal,
+    },
     #[error("declaration '{field}' is not supported yet: {reason}")]
     UnsupportedDeclaration {
         field: &'static str,
@@ -218,6 +231,24 @@ impl Validation {
     }
 }
 
+/// The most problems one refused step reports, so the answer stays short however many fields it maps.
+const MAX_LAKE_REFUSAL_PROBLEMS: usize = 20;
+
+/// The message of a refused step. It names the node and the mode and never a field: the paths and classes travel in the
+/// details and in the problems.
+fn lake_refusal_message(node: &str, refusal: &sagat_domain::database::LakeRefusal) -> String {
+    use sagat_domain::database::LakeRefusal;
+    match refusal {
+        LakeRefusal::ModeNotAllowed(mode) => format!(
+            "node '{node}' writes in mode '{}', which its connection does not allow",
+            mode.as_str()
+        ),
+        LakeRefusal::Egress(_) => {
+            format!("node '{node}' writes fields its connection does not accept")
+        }
+    }
+}
+
 /// The problems that make `error` unpublishable, one per thing wrong that the codec found.
 #[must_use]
 pub fn problems_of(error: &IrError) -> Vec<Problem> {
@@ -252,6 +283,10 @@ pub fn problems_of(error: &IrError) -> Vec<Problem> {
         IrError::Unsupported { node, .. } | IrError::Pending { node, .. } => {
             vec![Problem::error("UNSUPPORTED_NODE", error.to_string()).at_node(node.clone())]
         }
+        IrError::LakeDisabled { node } => {
+            vec![Problem::error("LAKE_DISABLED", error.to_string()).at_node(node.clone())]
+        }
+        IrError::LakeWriteRefused { node, refusal } => lake_refusal_problems(node, refusal),
         IrError::UnsupportedDeclaration { field, .. } => {
             vec![Problem::error("UNSUPPORTED_NODE", error.to_string()).at_path(format!("/{field}"))]
         }
@@ -283,6 +318,8 @@ fn graph_rule(error: &WorkflowError) -> (&'static str, Option<String>) {
     use WorkflowError as E;
     match error {
         E::InvalidDatabaseNode => ("INVALID_DATABASE_NODE", None),
+        E::InvalidIcebergNode => ("INVALID_ICEBERG_NODE", None),
+        E::IcebergNodeNotRoot => ("ICEBERG_NODE_NOT_ROOT", None),
         E::InvalidNodeId(id) => ("INVALID_NODE_ID", Some(id.clone())),
         E::InvalidActivityName(_) => ("INVALID_ACTIVITY_NAME", None),
         E::InvalidEventType(_) => ("INVALID_EVENT_TYPE", None),
@@ -338,6 +375,37 @@ fn warning_problem(warning: &DefinitionWarning) -> Problem {
         message: warning.to_string(),
         node: Some(node),
         path: None,
+    }
+}
+
+/// The problems of a refused Apache Iceberg write: one for a mode, one for each field above the ceiling (bounded).
+fn lake_refusal_problems(
+    node: &str,
+    refusal: &sagat_domain::database::LakeRefusal,
+) -> Vec<Problem> {
+    use sagat_domain::database::{EgressRefusal, LakeRefusal};
+    match refusal {
+        LakeRefusal::ModeNotAllowed(_) => vec![
+            Problem::error("MODE_NOT_ALLOWED", lake_refusal_message(node, refusal))
+                .at_node(node.to_owned()),
+        ],
+        LakeRefusal::Egress(refusals) => refusals
+            .iter()
+            .take(MAX_LAKE_REFUSAL_PROBLEMS)
+            .map(|each| {
+                let message = match each {
+                    EgressRefusal::Field { path, level } => format!(
+                        "field '{path}' is {} and its connection does not accept that",
+                        level.as_str()
+                    ),
+                    EgressRefusal::NotComputed => {
+                        "the fields of this step were never classified, so its connection cannot vouch for them"
+                            .to_owned()
+                    }
+                };
+                Problem::error("CLASSIFICATION_EGRESS_REFUSED", message).at_node(node.to_owned())
+            })
+            .collect(),
     }
 }
 
@@ -534,9 +602,10 @@ pub trait DefinitionStore: QuotaLookup + SecretAccessLookup + ScriptLookup + Sen
         definition: &WorkflowDefinition,
     ) -> impl Future<Output = Result<(), StoreError>> + Send {
         async move {
+            // An Iceberg write has no admission yet (T035-054): an adapter without lake support refuses it too.
             if definition
                 .nodes()
-                .any(|node| node.database_operation().is_some())
+                .any(|node| node.database_operation().is_some() || node.iceberg_write().is_some())
             {
                 Err(StoreError::DatabaseUnavailable)
             } else {
@@ -685,6 +754,8 @@ pub struct DefinitionService<S, C, X> {
     store: S,
     clock: C,
     codec: X,
+    /// `lake.enabled`: whether a definition may hold an Apache Iceberg write. Off unless the deployment says so.
+    lake_enabled: bool,
 }
 
 impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
@@ -693,7 +764,27 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
             store,
             clock,
             codec,
+            lake_enabled: false,
         }
+    }
+
+    /// Lets a definition hold an Apache Iceberg write (the deployment's `lake.enabled`). The store still decides
+    /// whether this one may be published.
+    #[must_use]
+    pub const fn with_lake_enabled(mut self, enabled: bool) -> Self {
+        self.lake_enabled = enabled;
+        self
+    }
+
+    /// The first Iceberg write of a definition that this deployment may not publish, if there is one.
+    fn refused_lake_node<'a>(&self, definition: &'a WorkflowDefinition) -> Option<&'a NodeId> {
+        if self.lake_enabled {
+            return None;
+        }
+        definition
+            .nodes()
+            .find(|node| node.iceberg_write().is_some())
+            .map(sagat_domain::workflow::Node::id)
     }
 
     /// A draft is any JSON object up to [`MAX_IR_BYTES`]; full validation happens at publish.
@@ -931,6 +1022,13 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                 },
             )));
         }
+        if let Some(node) = self.refused_lake_node(&parsed.definition) {
+            return Err(AppError::InvalidDefinition(Box::new(
+                IrError::LakeDisabled {
+                    node: node.as_str().to_owned(),
+                },
+            )));
+        }
         self.check_secrets(principal, &record, &parsed.definition, ctx)
             .await?;
         let database_check = self
@@ -1101,6 +1199,11 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                 .await?,
         );
         problems.extend(self.unknown_scripts(principal, &parsed.definition).await?);
+        if let Some(node) = self.refused_lake_node(&parsed.definition) {
+            problems.extend(problems_of(&IrError::LakeDisabled {
+                node: node.as_str().to_owned(),
+            }));
+        }
         match self
             .store
             .check_database_access(
@@ -1119,6 +1222,9 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                 "DATABASE_LIMIT_EXCEEDED",
                 "a database operation exceeds connection limits",
             )),
+            Err(StoreError::LakeRefused { node, refusal }) => {
+                problems.extend(lake_refusal_problems(&node, &refusal));
+            }
             Err(error) => return Err(error.into()),
         }
         let valid = problems.is_empty();

@@ -10,7 +10,13 @@ pub(crate) fn response(resolved: ResolvedDatabase) -> Result<pb::ResolvedDatabas
         database,
         tls,
         ..
-    } = resolved.connection.config;
+    } = resolved.connection.config
+    else {
+        // The lake kinds are answered by the lake profile (feature 035, T035-026); the SQL profile has no answer for them.
+        return Err(AppError::NotAllowed(
+            "this connection is not served by the SQL profile",
+        ));
+    };
     let (tls, ca_pem) = match tls {
         TlsPolicy::VerifyFull { ca_pem } => (
             pb::DatabaseTlsMode::DatabaseTlsVerifyFull,
@@ -24,6 +30,10 @@ pub(crate) fn response(resolved: ResolvedDatabase) -> Result<pb::ResolvedDatabas
     let l = resolved.operation.limits;
     Ok(pb::ResolvedDatabase {
         tenant_id: resolved.connection.tenant_id.to_string(),
+        // The lake kinds are answered by the lake profile (feature 035); a PostgreSQL connection sets none of them.
+        iceberg: None,
+        object_storage: None,
+        clickhouse: None,
         namespace_id: resolved.connection.namespace_id.to_string(),
         connection_name: resolved.connection.name.to_string(),
         connection_id: resolved.connection.id.to_string(),

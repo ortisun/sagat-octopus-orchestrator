@@ -149,3 +149,21 @@ heartbeat/result retries reconnect with their normal fencing and idempotency sem
 transport does not replay a handler or release its durable lease. tonic/h2 does not expose a
 per-response reset through this adapter once flow control stops body polling. The real zero-window
 HTTP/2 regression checks held caps, bounded cleanup and watchdog disarming on a healthy connection.
+
+### Terminal hint margin
+
+A window that ends with credit left over (the unused input budget is smaller than the smallest task, so the producer keeps
+looking until the window is over) ends with the terminal hint. The producer stops claiming and queues the hint 250 ms before
+the hard end of the five-second window; a session token that expires first has no margin, because the stream is cut at its
+expiry. The body discards whatever is still queued when its own deadline fires, with one exception: a terminal hint (a frame with no
+task and a positive `retry_after_ms`) that the producer queued before the deadline is still handed over, because it carries no
+lease and a reader that was merely late to come for it should see what a reader that kept up sees. A queued frame that carries
+a task is discarded as before, so a stalled transport exposes no old frame afterwards. Without the exception, a reader late by
+more than the margin got `DeadlineExceeded` instead of the hint.
+
+The margin was 10 ms until 2026-11-05. Under CPU load the hint took up to 15 ms to reach a reader that was keeping up, and
+`task_stream_byte_credit_is_cumulative_across_frames` lost it twice in 34 loaded runs (and once in a full CI run). The margin is
+now 250 ms, 5% of the window and more than sixteen times the longest delay measured; it is `TERMINAL_HINT_MARGIN` in
+`crates/api-grpc/src/service.rs`, and a unit test pins it between 100 ms and a tenth of the window. The margin covers a producer
+that wakes late; the exception covers a reader that comes late. One failure in 110 loaded runs after the margin alone was not
+captured, which is why the exception was added.
