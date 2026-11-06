@@ -1590,7 +1590,7 @@ The other fixes were wording:
     against numbers worked out in the test (19,000 days after 1970-01-01 is 2022-01-08), so a wheel that imports and computes the wrong
     partition fails. (3) `uv pip install --dry-run --python-platform {x86_64,aarch64}-manylinux_2_28 --only-binary :all: --require-hashes`
     resolves `pyiceberg-core==0.10.1` as a wheel for both Linux platforms, which is what the Dockerfile installs. (4) `pip-audit -r
-    requirements.lock --require-hashes --disable-pip` (the command of the CI): no known vulnerabilities. (5) `runners/lake`: 857 passed, 1
+    requirements.lock --require-hashes --disable-pip` (the command of the CI): no known vulnerabilities. (5) `runners/lake`: 859 passed, 1
     skipped; `ruff` and strict `mypy` clean.
   - *Not run here.* The image build, `smoke-image.sh` (a line was added that loads the native transforms inside the read-only container) and
     the SBOM check need Docker and run in the release CI. The SBOM check names the packages it requires in
