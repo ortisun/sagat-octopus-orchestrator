@@ -57,6 +57,30 @@ pub struct StartOptions {
     pub version_id: Option<String>,
     pub correlation_id: Option<String>,
     pub deadline: Option<RunDeadline>,
+    /// The caller's own identifier for the run (1 to 200 visible ASCII characters), sent as given:
+    /// no trimming, no case folding. At most one open execution of a namespace holds it.
+    pub business_id: Option<String>,
+    /// What to do when an open execution holds `business_id`; the server's default is `FAIL`.
+    pub business_id_conflict_policy: Option<BusinessIdConflictPolicy>,
+    /// What to do when a closed execution still remembers `business_id`.
+    pub business_id_reuse_policy: Option<BusinessIdReusePolicy>,
+    /// Holds the entry of the run for this long. Converted once, before the first attempt, to
+    /// integer milliseconds (truncated toward zero); the range is the server's to judge.
+    pub start_delay: Option<Duration>,
+}
+/// A run as `start` answers it. `started` is false when an open run already held the business
+/// identifier and `USE_EXISTING` was asked: nothing was created by this call. It reads as the
+/// `Run` it holds.
+#[derive(Clone, Debug)]
+pub struct StartedRun {
+    pub run: Run,
+    pub started: bool,
+}
+impl std::ops::Deref for StartedRun {
+    type Target = Run;
+    fn deref(&self) -> &Run {
+        &self.run
+    }
 }
 impl From<CallOptions> for StartOptions {
     fn from(call: CallOptions) -> Self {
@@ -294,6 +318,7 @@ struct WireRequest {
     key: Option<String>,
     repeatable: bool,
     expected: u16,
+    also: Option<u16>,
 }
 impl WireRequest {
     fn new(method: Method, path: &[&str], expected: u16) -> Self {
@@ -306,7 +331,13 @@ impl WireRequest {
             key: None,
             repeatable,
             expected,
+            also: None,
         }
+    }
+    /// A second status that is a success of this request too (`200` of a `USE_EXISTING` start).
+    fn also(mut self, status: u16) -> Self {
+        self.also = Some(status);
+        self
     }
     fn operation(&self) -> &'static str {
         let path: Vec<_> = self.path.iter().map(String::as_str).collect();
@@ -314,6 +345,8 @@ impl WireRequest {
             ["runs"] if self.method == Method::POST => "start",
             ["runs"] => "list",
             ["workflows"] => "resolve_workflow",
+            ["runs", "signal-with-start"] => "signal_with_start",
+            ["runs", "update-with-start"] => "update_with_start",
             ["runs", _] => "get",
             ["runs", _, "operations"] => "operate",
             ["runs", _, "signals", _] => "signal",
@@ -329,6 +362,34 @@ impl WireRequest {
             ["namespaces", _, "chains", _, "cancel"] => "cancel_chain",
             ["namespaces", _, "chains", _, "runs"] => "list_chain_runs",
             ["namespaces", _, "chains", _] => "inspect_chain",
+            ["runs", _, "reset-points"] => "reset_points",
+            ["runs", _, "reset-previews"] => "preview_reset",
+            ["runs", _, "resets"] if self.method == Method::POST => "reset",
+            ["runs", _, "resets"] => "list_resets",
+            ["runs", _, "resets", _] => "get_reset",
+            ["namespaces", _, "business-ids", _] => "get_business_id",
+            ["namespaces", _, "schedules"] if self.method == Method::POST => "create_schedule",
+            ["namespaces", _, "schedules"] => "list_schedules",
+            ["namespaces", _, "schedules", _] if self.method == Method::PUT => "update_schedule",
+            ["namespaces", _, "schedules", _] if self.method == Method::DELETE => "delete_schedule",
+            ["namespaces", _, "schedules", _] => "get_schedule",
+            ["namespaces", _, "schedules", _, "pause"] => "pause_schedule",
+            ["namespaces", _, "schedules", _, "resume"] => "resume_schedule",
+            ["namespaces", _, "schedules", _, "trigger"] => "trigger_schedule",
+            ["namespaces", _, "schedules", _, "actions"] => "list_schedule_actions",
+            ["namespaces", _, "schedules", _, "backfills"] if self.method == Method::POST => {
+                "create_schedule_backfill"
+            }
+            ["namespaces", _, "schedules", _, "backfills"] => "list_schedule_backfills",
+            ["namespaces", _, "schedules", _, "backfills", _, "cancel"] => {
+                "cancel_schedule_backfill"
+            }
+            ["namespaces", _, "batch-operations", "preview"] => "preview_batch",
+            ["namespaces", _, "batch-operations"] if self.method == Method::POST => "create_batch",
+            ["namespaces", _, "batch-operations"] => "list_batches",
+            ["namespaces", _, "batch-operations", _] => "get_batch",
+            ["namespaces", _, "batch-operations", _, "cancel"] => "cancel_batch",
+            ["namespaces", _, "batch-operations", _, "items"] => "list_batch_items",
             _ => "request",
         }
     }
@@ -469,27 +530,38 @@ impl Client {
         error.details = Box::new(json!({"reason":"WORKFLOW_NOT_FOUND"}));
         Err(error)
     }
+    /// Starts a run of a published workflow, given by id or by name. With none of the business
+    /// identifier or start delay options the request is what it always was.
     pub async fn start(
         &self,
         workflow_id: &str,
         input: &Value,
         options: impl Into<StartOptions>,
-    ) -> Result<Run, SagatError> {
+    ) -> Result<StartedRun, SagatError> {
         if !input.is_object() {
             return Err(validation());
         }
         let options = options.into();
         let mut body = start_body(workflow_id, &options)?;
         let request_key = key(&options.call)?;
+        business_fields(&mut body, &options);
         body["workflowId"] = self
             .resolve_workflow(workflow_id, options.call.clone())
             .await?
             .into();
         body["input"] = input.clone();
-        let request = WireRequest::new(Method::POST, &["runs"], 202)
+        let mut request = WireRequest::new(Method::POST, &["runs"], 202)
             .json(&body)?
             .keyed(request_key);
-        self.execute(request, options.call).await?.parse(Run::parse)
+        if options.business_id_conflict_policy == Some(BusinessIdConflictPolicy::UseExisting) {
+            request = request.also(200);
+        }
+        let reply = self.execute(request, options.call).await?;
+        let started = reply.status != 200;
+        Ok(StartedRun {
+            run: reply.parse(Run::parse)?,
+            started,
+        })
     }
     pub async fn get(&self, run_id: &str, options: CallOptions) -> Result<Run, SagatError> {
         uuid(run_id)?;
@@ -942,13 +1014,14 @@ impl Client {
             _=options.cancel.cancelled()=>return Err(cancelled()),
             result=tokio::time::timeout_at(deadline,builder.send())=>result.map_err(|_|transport())?.map_err(|_|transport())?,
         };
-        self.consume_response(response, request.expected, deadline, &options.cancel)
+        let accepted = [request.expected, request.also.unwrap_or(request.expected)];
+        self.consume_response(response, &accepted, deadline, &options.cancel)
             .await
     }
     async fn consume_response(
         &self,
         response: reqwest::Response,
-        expected: u16,
+        accepted: &[u16],
         deadline: tokio::time::Instant,
         cancel: &CancellationToken,
     ) -> Result<WireReply, SagatError> {
@@ -981,7 +1054,7 @@ impl Client {
             if !(200..300).contains(&status) {
                 return Err(SagatError::from_http(status, &headers, &bytes));
             }
-            if status != expected {
+            if !accepted.contains(&status) {
                 return Err(protocol());
             }
             let value = if bytes.is_empty() {
@@ -1099,7 +1172,7 @@ mod response_cancellation_tests {
             client
                 .consume_response(
                     response.into(),
-                    200,
+                    &[200],
                     tokio::time::Instant::now() + Duration::from_secs(10),
                     &signal,
                 )
@@ -1157,3 +1230,51 @@ fn start_body(workflow: &str, options: &StartOptions) -> Result<Value, SagatErro
 }
 mod blobs;
 pub use blobs::UploadRunInputOptions;
+
+mod wire;
+pub use wire::Moment;
+
+mod business;
+pub use business::{
+    BusinessIdBinding, BusinessIdConflictPolicy, BusinessIdReusePolicy, BusinessIds,
+    SignalWithStartResult, UpdateWithStartOptions, UpdateWithStartOutcome, UpdateWithStartResult,
+    WithStartOptions,
+};
+
+mod schedules;
+pub use schedules::{
+    CatchupMode, DstPolicy, OverlapPolicy, Schedule, ScheduleAction, ScheduleActionDefinition,
+    ScheduleActionFilter, ScheduleActionRecord, ScheduleBackfill, ScheduleCalendar,
+    ScheduleDescribeOptions, ScheduleDescription, ScheduleInterval, ScheduleListFilter,
+    SchedulePolicies, ScheduleRange, ScheduleSpec, ScheduleWrite, Schedules, UpcomingAction,
+    VersionPolicy,
+};
+
+mod batch;
+pub use batch::{
+    BatchFilter, BatchItem, BatchJob, BatchJobCounts, BatchListFilter, BatchOperations,
+    BatchPreview, BatchRequest, BatchSelector, BatchSignal, BatchUpdate,
+};
+
+mod resets;
+pub use resets::{
+    BusinessIdDisposition, ReapplyPolicy, ReexecutedStep, Reset, ResetPlan, ResetPoint,
+    ResetRequest, RestoredStep, SourcePolicy,
+};
+
+/// The business identifier and start delay fields of a start request. Nothing is added when none
+/// of them is given, so a call that never asked for them sends what it always sent.
+fn business_fields(body: &mut Value, options: &StartOptions) {
+    if let Some(id) = &options.business_id {
+        body["businessId"] = json!(id);
+    }
+    if let Some(policy) = &options.business_id_conflict_policy {
+        body["businessIdConflictPolicy"] = json!(policy.as_str());
+    }
+    if let Some(policy) = &options.business_id_reuse_policy {
+        body["businessIdReusePolicy"] = json!(policy.as_str());
+    }
+    if let Some(delay) = options.start_delay {
+        body["startDelayMs"] = json!(wire::delay_millis(delay));
+    }
+}
