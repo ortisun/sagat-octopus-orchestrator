@@ -45,6 +45,14 @@ run (`workflow_dispatch`), a change of `.github/workflows`, or any run with no u
 that adds the types and lint, the image build, the smoke test of the image and its SBOM; its lock is also audited every
 week by `.github/workflows/lake-audit.yml`.
 
+**Mutation testing** is not part of a pull request, of a merge or of the CI (OD-2026-11-06-2). It runs when a release is
+closed, by whoever closes it, over the guards that the release added or changed: each is weakened once, in a throw-away
+copy of the tree, and a named test must fail. A survivor gets a test, or the code it guards is removed as unneeded, and an
+equivalent mutant is said to be one. The repository has no mutation tooling, and the scripts are written for the occasion;
+run each mutant with bytecode off (`PYTHONDONTWRITEBYTECODE=1`), because two mutants of the same size written within a second
+share a bytecode cache entry and the second is then judged by the first one's code. The result goes in the release's
+validation report. Until then the tests of a change are written first and seen failing, and nothing more is claimed for them.
+
 What this costs, so it is not forgotten: a violation of a lint or of an architecture rule reaches `develop` and is found when
 a release is closed, and a suite that reaches the code only over HTTP, without naming its package, is not selected for a
 change to that package. Run the lints and the suites you affect before the pull request (`/verify`). Measured on the
