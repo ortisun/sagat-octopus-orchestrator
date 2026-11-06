@@ -213,6 +213,75 @@ def test_the_table_properties_that_move_the_data_files_are_checked_too() -> None
     assert "attacker-bucket" not in str(refused.value)
 
 
+def test_the_file_io_keys_a_table_carries_in_its_own_properties_are_dropped_and_counted() -> None:
+    # PyIceberg builds the file IO of a table from the catalog's properties overridden by the table's own, so a table
+    # could name the class to import (`py-io-impl`) or move the endpoint, the proxy, the signer and the region
+    with hostile.serve() as url:
+        document = hostile.fetch(url, "/v1/namespaces/hostile/tables/io-in-properties")
+    hygiene = s3(vended=True)
+
+    accepted = hygiene.accept_table(document)
+
+    assert accepted.properties == hostile.HONEST_PROPERTIES
+    assert hygiene.denied[Denial.KEY_NOT_ALLOWED] == len(hostile.HOSTILE_KEYS)
+    assert hygiene.denials == len(hostile.HOSTILE_KEYS)
+
+
+def test_a_table_with_no_properties_keeps_none() -> None:
+    document = hostile.table_response("s3://lake/warehouse/sales/orders", config={}, properties={})
+    hygiene = s3()
+    assert hygiene.accept_table(document).properties == {}
+    assert hygiene.denials == 0
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "write",  # a family without a key
+        "write.",  # an empty key
+        "writer.format",  # a longer family name
+        "x.write.format.default",  # the family is not at the start
+        "Write.format.default",  # case is not folded: PyIceberg reads the exact key
+        "py-io-impl",
+        "s3.endpoint",
+        "client.region",
+        "uri",
+        "warehouse",
+        "token",
+        "credential",
+        "rest.signing-name",
+        "write.format.default\n",  # nothing after the key
+    ],
+)
+def test_only_the_families_of_properties_the_host_needs_are_kept(key: str) -> None:
+    document = hostile.table_response("s3://lake/warehouse/sales/orders", config={}, properties={key: "x"})
+    hygiene = s3()
+    assert hygiene.accept_table(document).properties == {}
+    assert hygiene.denied[Denial.KEY_NOT_ALLOWED] == 1
+
+
+@pytest.mark.parametrize("family", ["write", "commit", "gc", "history", "read", "schema"])
+def test_every_family_the_host_needs_is_kept(family: str) -> None:
+    properties = {f"{family}.a-b_c": "x"}
+    document = hostile.table_response("s3://lake/warehouse/sales/orders", config={}, properties=properties)
+    assert s3().accept_table(document).properties == properties
+
+
+def test_a_property_that_is_not_text_is_dropped_and_counted() -> None:
+    document = hostile.table_response("s3://lake/warehouse/sales/orders", config={})
+    as_dict(document["metadata"])["properties"] = {"write.format.default": 5, "commit.retry.min-wait-ms": None}
+    hygiene = s3()
+    assert hygiene.accept_table(document).properties == {}
+    assert hygiene.denied[Denial.KEY_NOT_ALLOWED] == 2
+
+
+def test_the_location_provider_a_table_names_is_kept_so_the_compatibility_check_can_refuse_it() -> None:
+    # dropping it would hand the table a default placement without anyone having said no; D035-092 refuses it
+    properties = {"write.py-location-provider.impl": "evil.module.Provider"}
+    document = hostile.table_response("s3://lake/warehouse/sales/orders", config={}, properties=properties)
+    assert s3().accept_table(document).properties == properties
+
+
 @pytest.mark.parametrize(
     "field",
     ["snapshots", "metadata-log", "statistics", "partition-statistics"],

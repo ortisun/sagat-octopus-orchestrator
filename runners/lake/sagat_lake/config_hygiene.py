@@ -26,6 +26,12 @@ MAX_LOCATIONS = 16
 _MAX_VALUE = 1024
 _PREFIX = re.compile(r"[A-Za-z0-9._~/-]{1,256}")
 _ENCODED = re.compile(r"%(2e|2f|5c|00)", re.IGNORECASE)
+# The properties of a table the host lets PyIceberg see. PyIceberg builds the file IO of a table from the catalog's
+# properties *overridden by the table's own*, so a table that carries `py-io-impl`, `s3.endpoint`, a proxy, a signer or
+# a credential would beat what the host pinned, and it would do so inside `load_table`, before any fact is read
+# (G035-041). Only the families a write needs are kept; the rest of a table's properties stay in the catalog and are
+# not shown to PyIceberg. The key is matched whole and in exact case, as PyIceberg reads it.
+_TABLE_PROPERTY = re.compile(r"(write|commit|gc|history|read|schema)\.[A-Za-z0-9._-]{1,200}")
 
 
 class StorageType(StrEnum):
@@ -145,10 +151,12 @@ class Declaration:
 
 @dataclass(frozen=True, slots=True)
 class AcceptedTable:
-    """A `LoadTable` response that passed: the table location and the config that survived the filter."""
+    """A `LoadTable` response that passed: the table location, the config and the table properties that survived."""
 
     location: str
     config: dict[str, str]
+    # The properties of the table PyIceberg may see; the loader hands PyIceberg these and not the document's own.
+    properties: dict[str, str]
 
 
 class Hygiene:
@@ -252,7 +260,19 @@ class Hygiene:
                 self._check_named(item.get(field), required=False)
         config = document.get("config", {})
         accepted = self.table_config(config if isinstance(config, Mapping) else {})
-        return AcceptedTable(location, accepted)
+        return AcceptedTable(location, accepted, self.table_properties(properties))
+
+    def table_properties(self, properties: Mapping[str, object]) -> dict[str, str]:
+        """The properties of a table the host lets PyIceberg see; every other key, and a value that is not text, is
+        dropped and counted. A normal table carries a few the host does not need (an owner, a comment), so the count is
+        a trend for the audit of a connection and not an alarm by itself."""
+        accepted: dict[str, str] = {}
+        for key, value in properties.items():
+            if isinstance(value, str) and _TABLE_PROPERTY.fullmatch(key):
+                accepted[key] = value
+            else:
+                self._deny(Denial.KEY_NOT_ALLOWED)
+        return accepted
 
     def _items(self, value: object) -> list[Mapping[str, object]]:
         if value is None:
