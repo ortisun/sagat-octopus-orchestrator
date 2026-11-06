@@ -9,7 +9,9 @@ use crate::{
     quotas::lock_secrets,
     reveal_grants::has_effective_payload_reveal_grant,
 };
-pub(crate) use admission::{admit_definition, admit_node, run_actors};
+pub(crate) use admission::{
+    admit_definition, admit_node, authority_of, database_writes, run_actors,
+};
 use sagat_application::{
     database::{ConnectionRecord, ConnectionStore, ConnectionWrite},
     error::StoreError,

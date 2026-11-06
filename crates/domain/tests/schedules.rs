@@ -6,8 +6,9 @@ use sagat_domain::execution::RunStatus;
 use sagat_domain::schedules::{
     ActionKind, Calendar, CalendarFields, CatchUp, CatchupMode, Ceilings, Decision, Dst,
     DstAmbiguous, DstGap, Field, Interval, Note, Origin, Outcome, Overlap, Policies, Range, Reason,
-    Release, RemainingActions, ScheduleError, ScheduleSpec, SpecParts, Standing, Summary,
-    actual_time, decide, failure_pauses, jitter_offset_ms, jitter_seed, plan_catch_up, release,
+    Recovery, RecoveryStep, Release, RemainingActions, SUMMARY_CHUNK, ScheduleError, ScheduleSpec,
+    SpecParts, Standing, Summary, actual_time, decide, failure_pauses, jitter_offset_ms,
+    jitter_seed, plan_catch_up, plan_recovery_step, recovery_slice, release,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -777,6 +778,162 @@ fn summary(count: u32, first: i64, last: i64) -> Summary {
         first: at(first),
         last: at(last),
     }
+}
+
+fn ceiling_of(acts: u32) -> Ceilings {
+    Ceilings {
+        catchup_actions: acts,
+        ..Ceilings::default()
+    }
+}
+
+#[test]
+fn a_recovery_that_fits_in_what_may_be_acted_on_needs_no_memory() {
+    let now = at(10 * HOUR);
+    let due = [at(8 * HOUR), at(9 * HOUR), at(10 * HOUR)];
+    let policies = catch_up_policies(CatchupMode::All, DAY);
+    assert_eq!(
+        plan_recovery_step(&due, now, None, &policies, &ceiling_of(5)),
+        RecoveryStep::Act {
+            time: at(8 * HOUR),
+            settle: false,
+            then: None
+        },
+        "three times, five actions: each step acts on the earliest and plans again"
+    );
+    assert_eq!(
+        plan_recovery_step(&due[2..], now, None, &policies, &ceiling_of(5)),
+        RecoveryStep::Act {
+            time: at(10 * HOUR),
+            settle: true,
+            then: None
+        },
+        "the last time owed is the last action: nothing is left to summarize"
+    );
+}
+
+#[test]
+fn a_backlog_longer_than_the_ceiling_starts_a_recovery_that_counts_its_actions() {
+    let now = at(10 * HOUR);
+    let due: Vec<_> = (0..4).map(|i| at(10 * HOUR - 3 * 60 + i * 60)).collect();
+    let policies = catch_up_policies(CatchupMode::All, DAY);
+    let first = plan_recovery_step(&due, now, None, &policies, &ceiling_of(2));
+    assert_eq!(
+        first,
+        RecoveryStep::Act {
+            time: due[0],
+            settle: false,
+            then: Some(Recovery {
+                until: now,
+                acts_left: 1
+            })
+        }
+    );
+    let second = plan_recovery_step(
+        &due[1..],
+        now,
+        Some(Recovery {
+            until: now,
+            acts_left: 1,
+        }),
+        &policies,
+        &ceiling_of(2),
+    );
+    assert_eq!(
+        second,
+        RecoveryStep::Act {
+            time: due[1],
+            settle: true,
+            then: None
+        },
+        "the last action of the recovery summarizes the rest"
+    );
+}
+
+#[test]
+fn mode_one_makes_the_first_action_the_last() {
+    let now = at(10 * HOUR);
+    let due = [at(8 * HOUR), at(9 * HOUR), at(10 * HOUR)];
+    assert_eq!(
+        plan_recovery_step(
+            &due,
+            now,
+            None,
+            &catch_up_policies(CatchupMode::One, DAY),
+            &ceiling_of(100)
+        ),
+        RecoveryStep::Act {
+            time: at(8 * HOUR),
+            settle: true,
+            then: None
+        }
+    );
+}
+
+#[test]
+fn times_older_than_the_window_are_summarized_before_anything_is_acted_on() {
+    let now = at(10 * HOUR);
+    let due = [at(2 * HOUR), at(3 * HOUR), at(9 * HOUR + 30 * 60)];
+    let policies = catch_up_policies(CatchupMode::One, 2 * HOUR);
+    assert_eq!(
+        plan_recovery_step(&due, now, None, &policies, &ceiling_of(5)),
+        RecoveryStep::Missed(summary(2, 2 * HOUR, 3 * HOUR))
+    );
+    assert_eq!(
+        recovery_slice(at(2 * HOUR), now, None, &policies, &ceiling_of(5)),
+        SUMMARY_CHUNK,
+        "a step that only summarizes looks at a chunk of times"
+    );
+    assert_eq!(
+        recovery_slice(at(9 * HOUR + 30 * 60), now, None, &policies, &ceiling_of(5)),
+        3,
+        "a step that acts needs one more than what may be acted on, and one for the rest"
+    );
+}
+
+#[test]
+fn a_recovery_with_no_actions_left_summarizes_and_one_with_nothing_owed_is_forgotten() {
+    let now = at(10 * HOUR);
+    let policies = catch_up_policies(CatchupMode::All, DAY);
+    let spent = Recovery {
+        until: now,
+        acts_left: 0,
+    };
+    assert_eq!(
+        plan_recovery_step(&[at(9 * HOUR)], now, Some(spent), &policies, &ceiling_of(5)),
+        RecoveryStep::Coalesce
+    );
+    assert_eq!(
+        plan_recovery_step(&[], now, Some(spent), &policies, &ceiling_of(5)),
+        RecoveryStep::Finished
+    );
+    assert_eq!(
+        plan_recovery_step(&[], now, None, &policies, &ceiling_of(5)),
+        RecoveryStep::Idle
+    );
+}
+
+#[test]
+fn what_falls_due_after_a_recovery_began_is_not_part_of_it() {
+    let now = at(10 * HOUR);
+    let begun = Recovery {
+        until: at(9 * HOUR),
+        acts_left: 3,
+    };
+    let policies = catch_up_policies(CatchupMode::All, DAY);
+    // 9:30 fell due after the recovery's end: only 8:00 and 9:00 are its times
+    let due = [at(8 * HOUR), at(9 * HOUR), at(9 * HOUR + 30 * 60)];
+    assert_eq!(
+        plan_recovery_step(&due, now, Some(begun), &policies, &ceiling_of(5)),
+        RecoveryStep::Act {
+            time: at(8 * HOUR),
+            settle: false,
+            then: Some(Recovery {
+                until: at(9 * HOUR),
+                acts_left: 2
+            })
+        }
+    );
 }
 
 #[test]

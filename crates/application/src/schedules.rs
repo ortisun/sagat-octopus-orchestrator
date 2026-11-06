@@ -192,6 +192,9 @@ pub struct ScheduleRecord {
     pub retry_at: Option<OffsetDateTime>,
     /// When the runs that hold back a waiting action are looked at again.
     pub recheck_at: Option<OffsetDateTime>,
+    /// The recovery of an outage that is being carried out step by step, with the limits it was
+    /// planned under (`FR-018-008`); `None` when the schedule is not in the middle of one.
+    pub recovery: Option<sagat_domain::schedules::Recovery>,
     pub tracked_runs: Vec<Uuid>,
     pub buffered: u32,
     pub created_at: OffsetDateTime,
@@ -213,6 +216,9 @@ pub struct ScheduleAfter {
     pub next_actual_at: Option<OffsetDateTime>,
     /// The new count of actions that may still start a run; `None` for a schedule with no limit.
     pub remaining_actions: Option<u32>,
+    /// The recovery the schedule remembers after the action (`None`: none). An action that is not
+    /// one of the schedule's own times (trigger-now, a backfill) leaves the stored one alone.
+    pub recovery: Option<sagat_domain::schedules::Recovery>,
     /// Rows recorded in the same transaction: the summaries of the times a recovery did not act on.
     pub extra: Vec<RecordedAction>,
 }
@@ -256,6 +262,36 @@ pub struct ScheduleDecision {
     pub dedupe: Option<ActionDedupe>,
     /// Set by a step of a backfill: where it got to, committed with the decision.
     pub backfill: Option<BackfillProgress>,
+    /// The open runs a `CANCEL_OTHER` action that waits owes an ordinary cancellation, recorded in
+    /// the same transaction as the waiting action (`FR-018-006`).
+    pub obligations: Vec<NewObligation>,
+}
+
+/// A cancellation that a waiting action owes an open run, recorded with that action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewObligation {
+    pub run: Uuid,
+    /// The idempotency key of the cancel, [`obligation_key`], so that paying twice cancels once.
+    pub key: String,
+}
+
+/// A cancellation owed, as the pass reads it back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Obligation {
+    /// The nominal time of the action that waits, with the run: the identity of the debt.
+    pub nominal_at: OffsetDateTime,
+    pub run: Uuid,
+    pub key: String,
+}
+
+/// The key under which `run` is cancelled for the action that waits at `nominal`: the same however
+/// many times, and by however many processes, the debt is paid.
+#[must_use]
+pub fn obligation_key(schedule: ScheduleId, nominal: OffsetDateTime, run: Uuid) -> String {
+    format!(
+        "schedule:{schedule}:cancel:{}:{run}",
+        nominal.unix_timestamp_nanos().div_euclid(1_000)
+    )
 }
 
 /// A pause the platform makes, with the system note that says why.
@@ -291,12 +327,35 @@ pub struct BufferedAction {
     pub revision: u32,
 }
 
+/// `CANCEL_OTHER` cancels runs, so whoever writes the rule, resumes the schedule or asks for it by a
+/// request holds `run:operate`, as one who cancels a run by hand does; a developer, who does not,
+/// may write every other rule (D1953). The authority is looked at again at every action.
+///
+/// # Errors
+/// [`AppError::Forbidden`] without `run:operate` when the rule is `CANCEL_OTHER`.
+pub fn authorize_cancelling(principal: &Principal, overlap: Overlap) -> Result<(), AppError> {
+    if overlap == Overlap::CancelOther {
+        principal.authorize(Permission::RunOperate)?;
+    }
+    Ok(())
+}
+
+/// The reason the admission of a schedule's run is refused when the subject it acts for no longer
+/// holds the authority (`FR-018-015`): a [`StoreError::StateConflict`](crate::error::StoreError) with
+/// this text, which the firing tells apart from "another process acted first".
+pub const AUTHORITY_REVOKED: &str = "the subject the action acts for no longer holds its authority";
+
 /// An action of a schedule that starts a run (`FR-018-005`). It rides on the creation of the run, so
 /// the fence check, the compare-and-swap on the schedule, the run, the action row and the new state
 /// of the schedule commit together or not at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScheduleAdmission {
     pub schedule: ScheduleId,
+    /// The subject whose authority the action acts under: `authorizedBy` for a scheduled time, the
+    /// requester of a backfill, the caller of trigger-now. The transaction that admits the run locks
+    /// its membership and checks `run:start` again (and, for a workflow with managed database steps,
+    /// its feature 017 authority), so a revocation that has returned stops the run (`FR-018-015`).
+    pub authority: String,
     /// With the origin of `kind`, the identity of the action: at most one per schedule.
     pub nominal_at: OffsetDateTime,
     pub kind: sagat_domain::schedules::ActionKind,
@@ -646,6 +705,25 @@ pub trait ScheduleStore: Send + Sync {
         &self,
         decision: &ScheduleDecision,
         audit: Option<&AuditRecord>,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// The oldest cancellation the schedule still owes, if any.
+    fn pending_obligation(
+        &self,
+        tenant: TenantId,
+        id: ScheduleId,
+    ) -> impl Future<Output = Result<Option<Obligation>, StoreError>> + Send;
+
+    /// Records a cancellation as paid, under the fence of the shard. Paying is idempotent (the
+    /// cancel is keyed), so a lost lease costs a repeated cancel, not a second one: a stale fence is
+    /// a `StateConflict` and the new owner pays again.
+    fn complete_obligation(
+        &self,
+        tenant: TenantId,
+        id: ScheduleId,
+        obligation: &Obligation,
+        fence: Option<&ShardFence>,
+        at: OffsetDateTime,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
 
     /// Forgets tracked runs that ended and pauses the schedule when asked, under the same fence.
@@ -1066,6 +1144,7 @@ where
     ) -> Result<ScheduleRecord, AppError> {
         principal.authorize(Permission::ScheduleWrite)?;
         principal.authorize(Permission::RunStart)?;
+        authorize_cancelling(principal, write.policies.overlap())?;
         let now = self.clock.now();
         let input = self.check(principal, namespace, &write, now).await?;
         let id = ScheduleId::generate();
@@ -1103,6 +1182,7 @@ where
             next_actual_at,
             retry_at: None,
             recheck_at: None,
+            recovery: None,
             tracked_runs: Vec::new(),
             buffered: 0,
             created_at: now,
@@ -1256,6 +1336,7 @@ where
     ) -> Result<ScheduleRecord, AppError> {
         principal.authorize(Permission::ScheduleWrite)?;
         principal.authorize(Permission::RunStart)?;
+        authorize_cancelling(principal, write.policies.overlap())?;
         let current = self.load(principal, id).await?;
         if current.origin == ScheduleOrigin::Trigger {
             return Err(AppError::ScheduleConflict {
@@ -1413,6 +1494,9 @@ where
         }
         let now = self.clock.now();
         let resuming = state == ScheduleState::Active;
+        if resuming {
+            authorize_cancelling(principal, current.policies.overlap())?;
+        }
         let (next_action_at, next_actual_at) = if resuming {
             self.next_times(id, &current.spec, now)?
         } else {
@@ -1466,6 +1550,9 @@ where
     ) -> Result<BackfillRecord, AppError> {
         principal.authorize(Permission::ScheduleOperate)?;
         principal.authorize(Permission::RunStart)?;
+        if let Some(overlap) = request.overlap {
+            authorize_cancelling(principal, overlap)?;
+        }
         let schedule = self.load(principal, id).await?;
         if schedule.origin == ScheduleOrigin::Trigger {
             return Err(AppError::ScheduleConflict {

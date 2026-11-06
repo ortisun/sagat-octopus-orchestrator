@@ -198,6 +198,15 @@ impl Subject {
         Self(format!("system:schedule:{schedule}"))
     }
 
+    /// The schedule a stored subject stands for, when it is `system:schedule:<id>` (the inverse of
+    /// [`Subject::schedule`]). Anything else, including a malformed id, is `None`.
+    #[must_use]
+    pub fn schedule_of(subject: &str) -> Option<::uuid::Uuid> {
+        subject
+            .strip_prefix("system:schedule:")
+            .and_then(|id| ::uuid::Uuid::parse_str(id).ok())
+    }
+
     /// Validates and wraps a subject.
     ///
     /// # Errors

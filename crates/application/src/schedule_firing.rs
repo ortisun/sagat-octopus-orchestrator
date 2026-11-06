@@ -15,21 +15,31 @@ use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::execution::{RunId, RunStatus};
 use sagat_domain::identity::{Permission, Principal, Subject};
 use sagat_domain::schedules::{
-    ActionKind, Ceilings, Decision, Origin, Outcome, Reason, Release, ScheduleId, Standing,
-    VersionPolicy, decide, failure_pauses, plan_catch_up, release,
+    ActionKind, Ceilings, Decision, Origin, Outcome, Overlap, Reason, Recovery, RecoveryStep,
+    Release, ScheduleId, Standing, Summary, VersionPolicy, decide, failure_pauses,
+    plan_recovery_step, recovery_slice, release,
 };
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
+
+/// How many calls of the calendar one step makes to count the times a recovery summarizes: with
+/// the most a call returns, a million times, which is a year of a schedule every 30 seconds. What
+/// is past it is left to the next step of the recovery, which keeps summarizing.
+const TALLY_CALLS: usize = 100;
+
+/// The reason recorded with the cancellation `CANCEL_OTHER` asks of an open run.
+const CANCEL_OTHER_REASON: &str = "the overlap rule of the schedule is CANCEL_OTHER";
 
 use crate::clock::Clock;
 use crate::definitions::Idempotency;
 use crate::error::{AppError, StoreError};
 use crate::identity::{IdentityStore, RequestContext};
+use crate::runs::NO_PUBLISHED_VERSION;
 use crate::schedules::{
-    ActionDedupe, ActionView, AutoPause, BackfillProgress, DueBackfill, DueSchedule, ManualRequest,
-    Reconcile, RecordedAction, ScheduleAdmission, ScheduleAfter, ScheduleCalendar,
-    ScheduleDecision, ScheduleOrigin, ScheduleRecord, ScheduleState, ScheduleStore, ShardFence,
-    next_times,
+    AUTHORITY_REVOKED, ActionDedupe, ActionView, AutoPause, BackfillProgress, DueBackfill,
+    DueSchedule, ManualRequest, NewObligation, Obligation, Reconcile, RecordedAction,
+    ScheduleAdmission, ScheduleAfter, ScheduleCalendar, ScheduleDecision, ScheduleOrigin,
+    ScheduleRecord, ScheduleState, ScheduleStore, ShardFence, next_times, obligation_key,
 };
 
 /// What a schedule starts, as the run service needs it.
@@ -51,6 +61,21 @@ pub trait ScheduledStarts: Send + Sync {
         admission: ScheduleAdmission,
         ctx: &RequestContext,
     ) -> impl Future<Output = Result<RunId, AppError>> + Send;
+
+    /// Cancels `run` through the ordinary cancel use case, as the schedule (`CANCEL_OTHER`). The cancel
+    /// is idempotent under `key`: a repeat of it, by this process or another, changes nothing more.
+    ///
+    /// # Errors
+    /// As the cancel use case: [`AppError::Forbidden`] without `run:operate`, [`AppError::NotFound`],
+    /// and [`AppError::StateConflict`] for a run that has ended.
+    fn cancel_run(
+        &self,
+        principal: &Principal,
+        run: Uuid,
+        reason: &str,
+        key: &str,
+        ctx: &RequestContext,
+    ) -> impl Future<Output = Result<(), AppError>> + Send;
 }
 
 /// How a call to [`ScheduleFiring::fire`] ended.
@@ -213,6 +238,7 @@ where
         let policies = request
             .overlap
             .map_or(record.policies, |o| record.policies.with_overlap(o));
+        crate::schedules::authorize_cancelling(caller, policies.overlap())?;
         let dedupe = ActionDedupe {
             idempotency: idempotency.clone(),
             resource: format!(
@@ -234,6 +260,7 @@ where
             next_action_at: record.next_action_at,
             next_actual_at: record.next_actual_at,
             remaining_actions: record.remaining_actions,
+            recovery: record.recovery,
             extra: Vec::new(),
         };
         match decide(&policies, &standing, &self.ceilings) {
@@ -245,6 +272,7 @@ where
                 );
                 let admission = ScheduleAdmission {
                     schedule: record.id,
+                    authority: caller.subject().as_str().to_owned(),
                     nominal_at: nominal,
                     kind: ActionKind::Triggered,
                     revision: record.revision,
@@ -254,7 +282,16 @@ where
                     manual: Some(ManualRequest { dedupe, audit }),
                     backfill: None,
                 };
-                self.start_run(&record, &principal, admission, ctx).await?;
+                match self.start_run(&record, &principal, admission, ctx).await {
+                    Ok(_) => {}
+                    // the caller lost `run:start` while the request was being admitted
+                    Err(AppError::StateConflict(AUTHORITY_REVOKED)) => {
+                        return Err(AppError::Forbidden {
+                            permission: Permission::RunStart,
+                        });
+                    }
+                    Err(other) => return Err(other),
+                }
                 self.committed_action(caller, idempotency).await
             }
             // nothing is left to give cannot happen: the count was not given
@@ -267,6 +304,11 @@ where
                     }
                     Decision::Buffer { .. } => (Outcome::Buffered, None),
                     _ => (Outcome::DroppedBufferFull, None),
+                };
+                let obligations = if matches!(other, Decision::Buffer { cancel_open: true }) {
+                    self.obligations_for(&record, nominal).await?
+                } else {
+                    Vec::new()
                 };
                 let decision = ScheduleDecision {
                     tenant_id: record.tenant_id,
@@ -286,6 +328,7 @@ where
                     at: now,
                     dedupe: Some(dedupe),
                     backfill: None,
+                    obligations,
                 };
                 self.store.record_decision(&decision, Some(&audit)).await?;
                 self.committed_action(caller, idempotency).await
@@ -296,11 +339,17 @@ where
     /// How many of the runs the schedule tracks are still open: an ended one, or one that is gone,
     /// is closed even if the pass has not forgotten it yet.
     async fn open_runs(&self, record: &ScheduleRecord) -> Result<u32, AppError> {
+        let open = self.open_run_ids(record).await?.len();
+        Ok(u32::try_from(open).unwrap_or(u32::MAX))
+    }
+
+    /// The runs the schedule tracks that are still open, by looking at their status.
+    async fn open_run_ids(&self, record: &ScheduleRecord) -> Result<Vec<Uuid>, AppError> {
         let statuses = self
             .store
             .run_statuses(record.tenant_id, &record.tracked_runs)
             .await?;
-        let open = record
+        Ok(record
             .tracked_runs
             .iter()
             .filter(|run| {
@@ -309,8 +358,8 @@ where
                     .find(|(s, _)| s == *run)
                     .is_some_and(|(_, status)| !status.is_terminal())
             })
-            .count();
-        Ok(u32::try_from(open).unwrap_or(u32::MAX))
+            .copied()
+            .collect())
     }
 
     /// Takes the next step of a backfill (`FR-018-011`): the first nominal time of the range after
@@ -356,17 +405,7 @@ where
             Err(_) => None,
         };
         let Some(membership) = authorized else {
-            let audit = self.audit(
-                &record,
-                &system,
-                AuditAction::ScheduleBackfillCancelled,
-                "authority revoked",
-                now,
-            );
-            self.store
-                .cancel_backfill(record.tenant_id, record.id, backfill.id, now, &audit)
-                .await?;
-            return Ok(Fired::Acted);
+            return self.stop_backfill(&record, backfill.id, now).await;
         };
 
         let after = backfill
@@ -397,12 +436,14 @@ where
                 next_action_at: record.next_action_at,
                 next_actual_at: record.next_actual_at,
                 remaining_actions: record.remaining_actions,
+                recovery: record.recovery,
                 extra: Vec::new(),
             },
             pause: None,
             at: now,
             dedupe: None,
             backfill: Some(progress),
+            obligations: Vec::new(),
         };
         let Some(&time) = next.first() else {
             // no time is left in the range
@@ -437,6 +478,7 @@ where
                 let principal = Principal::new(record.tenant_id, system.clone(), membership.role());
                 let admission = ScheduleAdmission {
                     schedule: record.id,
+                    authority: backfill.requested_by.clone(),
                     nominal_at: time,
                     kind: ActionKind::Backfill,
                     revision: record.revision,
@@ -446,6 +488,7 @@ where
                         next_action_at: record.next_action_at,
                         next_actual_at: record.next_actual_at,
                         remaining_actions: record.remaining_actions,
+                        recovery: record.recovery,
                         extra: Vec::new(),
                     },
                     manual: None,
@@ -456,6 +499,10 @@ where
                     .await
                 {
                     Ok(_) => Ok(Fired::Acted),
+                    // the requester lost the authority while the run was being admitted
+                    Err(AppError::StateConflict(AUTHORITY_REVOKED)) => {
+                        self.stop_backfill(&record, backfill.id, now).await
+                    }
                     // another process acted first, or the lease is gone: nothing was committed
                     Err(AppError::StateConflict(reason)) => Ok(Fired::Refused(reason)),
                     // the backfill waits and tries this time again
@@ -490,11 +537,11 @@ where
                     summary: None,
                 };
                 let step = progress(time, Some(outcome.as_str()), false);
-                self.committed(
-                    self.store
-                        .record_decision(&decision(vec![action], step), None)
-                        .await,
-                )
+                let mut owing = decision(vec![action], step);
+                if matches!(other, Decision::Buffer { cancel_open: true }) {
+                    owing.obligations = self.obligations_for(&record, time).await?;
+                }
+                self.committed(self.store.record_decision(&owing, None).await)
             }
         }
     }
@@ -553,7 +600,13 @@ where
                 None => ended.push((*id, RunStatus::Cancelled)),
             }
         }
-        let open = record.tracked_runs.len() - ended.len();
+        let open_ids: Vec<Uuid> = record
+            .tracked_runs
+            .iter()
+            .copied()
+            .filter(|id| !ended.iter().any(|(gone, _)| gone == id))
+            .collect();
+        let open = open_ids.len();
         if !ended.is_empty() {
             let failed =
                 record.policies.pause_on_failure() && ended.iter().any(|(_, s)| failure_pauses(*s));
@@ -590,47 +643,28 @@ where
                 .identity
                 .find_membership(record.tenant_id, &subject)
                 .await?
-                .filter(|m| m.role().grants(Permission::RunStart)),
+                .filter(|m| {
+                    m.role().grants(Permission::RunStart)
+                        && (record.policies.overlap() != Overlap::CancelOther
+                            || m.role().grants(Permission::RunOperate))
+                }),
             Err(_) => None,
         };
         let Some(membership) = authorized else {
-            let nominal = record.next_action_at.unwrap_or(now);
-            let decision = ScheduleDecision {
-                tenant_id: record.tenant_id,
-                schedule: record.id,
-                expected_state_version: record.state_version,
-                fence,
-                actions: vec![RecordedAction {
-                    nominal_at: nominal,
-                    kind: ActionKind::Scheduled,
-                    revision: record.revision,
-                    outcome: Outcome::AuthorityRevoked,
-                    reason: Some("AUTHORITY_REVOKED"),
-                    summary: None,
-                }],
-                after: ScheduleAfter {
-                    next_action_at: None,
-                    next_actual_at: None,
-                    remaining_actions: record.remaining_actions,
-                    extra: Vec::new(),
-                },
-                pause: Some(AutoPause {
-                    note: "the authorizing subject can no longer start runs".to_owned(),
-                }),
-                at: now,
-                dedupe: None,
-                backfill: None,
-            };
-            let audit = self.audit(
-                &record,
-                &system,
-                AuditAction::ScheduleAutoPaused,
-                "authority revoked",
-                now,
-            );
-            return self.committed(self.store.record_decision(&decision, Some(&audit)).await);
+            return self.revoke_authority(&record, fence, now).await;
         };
         let principal = Principal::new(record.tenant_id, system.clone(), membership.role());
+
+        // 2b. a cancellation the schedule owes an open run (`CANCEL_OTHER`) is paid before anything else
+        if let Some(owed) = self
+            .store
+            .pending_obligation(record.tenant_id, record.id)
+            .await?
+        {
+            return self
+                .pay_obligation(&record, &principal, owed, fence, now, &ctx)
+                .await;
+        }
 
         // 3. an action that was waiting goes first once nothing is open
         let standing = Standing {
@@ -646,6 +680,7 @@ where
         {
             let admission = ScheduleAdmission {
                 schedule: record.id,
+                authority: record.authorized_by.clone(),
                 nominal_at: waiting.nominal_at,
                 kind: waiting.kind,
                 revision: waiting.revision,
@@ -658,6 +693,7 @@ where
                     remaining_actions: record.remaining_actions.map(|n| {
                         n.saturating_sub(u32::from(waiting.kind == ActionKind::Scheduled))
                     }),
+                    recovery: record.recovery,
                     extra: Vec::new(),
                 },
                 manual: None,
@@ -686,72 +722,110 @@ where
         let Some(first) = record.next_action_at.filter(|_| time_due) else {
             return Ok(Fired::Idle);
         };
-        let ceiling = usize::try_from(self.ceilings.catchup_actions).unwrap_or(usize::MAX);
+        // The recovery is planned once and remembered: its end and the actions it may still take hold
+        // across the steps that carry it out, so a backlog longer than the ceiling is acted on up to
+        // the ceiling however many steps and processes it takes (FR-018-008).
+        let kept = record.recovery;
+        let end = kept.map_or(now, |r| r.until.min(now));
         let due_times = self
             .calendar
             .occurrences(
                 &record.spec,
                 first - Duration::milliseconds(1),
-                Some(now),
-                ceiling
-                    .saturating_add(2)
+                Some(end),
+                recovery_slice(first, now, kept, &record.policies, &self.ceilings)
                     .min(crate::schedules::MAX_OCCURRENCES_PER_CALL),
             )
             .map_err(|_| AppError::Internal)?;
-        let plan = plan_catch_up(&due_times, now, &record.policies, &self.ceilings);
-        if let Some(missed) = plan.missed {
-            let next = next_times(&self.calendar, record.id, &record.spec, missed.last)
-                .map_err(|_| AppError::Internal)?;
-            let decision = ScheduleDecision {
-                tenant_id: record.tenant_id,
-                schedule: record.id,
-                expected_state_version: record.state_version,
-                fence,
-                actions: vec![RecordedAction {
-                    nominal_at: missed.first,
-                    kind: ActionKind::Scheduled,
-                    revision: record.revision,
-                    outcome: Outcome::MissedCatchupWindow,
-                    reason: None,
-                    summary: Some((missed.count, missed.last)),
-                }],
-                after: ScheduleAfter {
-                    next_action_at: next.0,
-                    next_actual_at: next.1,
-                    remaining_actions: record.remaining_actions,
-                    extra: Vec::new(),
-                },
-                pause: None,
-                at: now,
-                dedupe: None,
-                backfill: None,
-            };
-            return self.committed(self.store.record_decision(&decision, None).await);
-        }
-        let Some(time) = plan.act.first().copied() else {
-            return Ok(Fired::Idle);
+        let summary_row = |summary: Summary, outcome: Outcome| RecordedAction {
+            nominal_at: summary.first,
+            kind: ActionKind::Scheduled,
+            revision: record.revision,
+            outcome,
+            reason: None,
+            summary: Some((summary.count, summary.last)),
         };
-        let last_act = plan.act.len() == 1;
-        let coalesced = if last_act { plan.coalesced } else { None };
+        let (time, coalesced, recovery_after) =
+            match plan_recovery_step(&due_times, now, kept, &record.policies, &self.ceilings) {
+                RecoveryStep::Idle => return Ok(Fired::Idle),
+                RecoveryStep::Finished => {
+                    let after = ScheduleAfter {
+                        next_action_at: record.next_action_at,
+                        next_actual_at: record.next_actual_at,
+                        remaining_actions: record.remaining_actions,
+                        recovery: None,
+                        extra: Vec::new(),
+                    };
+                    return self.record(&record, fence, Vec::new(), after, now).await;
+                }
+                // too old for the window: a summary of up to a chunk of them; the recovery goes on
+                RecoveryStep::Missed(missed) => {
+                    let next = next_times(&self.calendar, record.id, &record.spec, missed.last)
+                        .map_err(|_| AppError::Internal)?;
+                    let after = ScheduleAfter {
+                        next_action_at: next.0,
+                        next_actual_at: next.1,
+                        remaining_actions: record.remaining_actions,
+                        recovery: kept,
+                        extra: Vec::new(),
+                    };
+                    let action = summary_row(missed, Outcome::MissedCatchupWindow);
+                    return self.record(&record, fence, vec![action], after, now).await;
+                }
+                // the actions of the recovery are used up: the times that remain are one more summary
+                RecoveryStep::Coalesce => {
+                    let (rest, reached) =
+                        self.tally(&record, first - Duration::milliseconds(1), end)?;
+                    let Some(rest) = rest else {
+                        let after = ScheduleAfter {
+                            next_action_at: record.next_action_at,
+                            next_actual_at: record.next_actual_at,
+                            remaining_actions: record.remaining_actions,
+                            recovery: None,
+                            extra: Vec::new(),
+                        };
+                        return self.record(&record, fence, Vec::new(), after, now).await;
+                    };
+                    let next = next_times(&self.calendar, record.id, &record.spec, rest.last)
+                        .map_err(|_| AppError::Internal)?;
+                    let after = ScheduleAfter {
+                        next_action_at: next.0,
+                        next_actual_at: next.1,
+                        remaining_actions: record.remaining_actions,
+                        recovery: if reached { None } else { kept },
+                        extra: Vec::new(),
+                    };
+                    let action = summary_row(rest, Outcome::Coalesced);
+                    return self.record(&record, fence, vec![action], after, now).await;
+                }
+                RecoveryStep::Act { time, settle, then } => {
+                    if settle {
+                        // the last action of the recovery: every time after it up to the end of the
+                        // recovery is one summary, counted here because the step looked at a slice
+                        let (rest, reached) = self.tally(&record, time, end)?;
+                        let left = (!reached).then(|| Recovery {
+                            until: kept.map_or(now, |r| r.until),
+                            acts_left: 0,
+                        });
+                        (time, rest, left)
+                    } else {
+                        (time, None, then)
+                    }
+                }
+            };
         let covers = coalesced.map_or(time, |c| c.last);
         let (next_action_at, next_actual_at) =
             next_times(&self.calendar, record.id, &record.spec, covers)
                 .map_err(|_| AppError::Internal)?;
         let extra: Vec<RecordedAction> = coalesced
-            .map(|c| RecordedAction {
-                nominal_at: c.first,
-                kind: ActionKind::Scheduled,
-                revision: record.revision,
-                outcome: Outcome::Coalesced,
-                reason: None,
-                summary: Some((c.count, c.last)),
-            })
+            .map(|c| summary_row(c, Outcome::Coalesced))
             .into_iter()
             .collect();
         let mut after = ScheduleAfter {
             next_action_at,
             next_actual_at,
             remaining_actions: record.remaining_actions,
+            recovery: recovery_after,
             extra,
         };
         match decide(&record.policies, &standing, &self.ceilings) {
@@ -759,6 +833,7 @@ where
                 after.remaining_actions = record.remaining_actions.map(|n| n.saturating_sub(1));
                 let admission = ScheduleAdmission {
                     schedule: record.id,
+                    authority: record.authorized_by.clone(),
                     nominal_at: time,
                     kind: ActionKind::Scheduled,
                     revision: record.revision,
@@ -774,6 +849,7 @@ where
                 // nothing is left to give: the schedule acts as paused, with no next time
                 after.next_action_at = None;
                 after.next_actual_at = None;
+                after.recovery = None;
                 self.record(&record, fence, Vec::new(), after, now).await
             }
             other
@@ -793,9 +869,64 @@ where
                     reason,
                     summary: None,
                 };
-                self.record(&record, fence, vec![action], after, now).await
+                // `CANCEL_OTHER` owes every run it found open an ordinary cancellation, recorded
+                // with the action that waits for them
+                let obligations = if matches!(other, Decision::Buffer { cancel_open: true }) {
+                    open_ids
+                        .iter()
+                        .map(|run| NewObligation {
+                            run: *run,
+                            key: obligation_key(record.id, time, *run),
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                self.record_owing(&record, fence, vec![action], after, obligations, now)
+                    .await
             }
         }
+    }
+
+    /// The times after `after` up to `until` as one summary, and whether the summary reached
+    /// `until`. It looks at a bounded number of them ([`TALLY_CALLS`] calls of the calendar, a
+    /// million times of the densest schedule in a year's window): what is past the bound is left to
+    /// the next step of the recovery, which goes on summarizing instead of acting again.
+    fn tally(
+        &self,
+        record: &ScheduleRecord,
+        after: OffsetDateTime,
+        until: OffsetDateTime,
+    ) -> Result<(Option<Summary>, bool), AppError> {
+        let mut cursor = after;
+        let (mut count, mut first, mut last) = (0u32, None, None);
+        let summary = |count, first: Option<OffsetDateTime>, last: Option<OffsetDateTime>| {
+            first
+                .zip(last)
+                .map(|(first, last)| Summary { count, first, last })
+        };
+        for _ in 0..TALLY_CALLS {
+            let times = self
+                .calendar
+                .occurrences(
+                    &record.spec,
+                    cursor,
+                    Some(until),
+                    crate::schedules::MAX_OCCURRENCES_PER_CALL,
+                )
+                .map_err(|_| AppError::Internal)?;
+            let (Some(head), Some(tail)) = (times.first().copied(), times.last().copied()) else {
+                return Ok((summary(count, first, last), true));
+            };
+            first.get_or_insert(head);
+            last = Some(tail);
+            count = count.saturating_add(u32::try_from(times.len()).unwrap_or(u32::MAX));
+            cursor = tail;
+            if times.len() < crate::schedules::MAX_OCCURRENCES_PER_CALL {
+                return Ok((summary(count, first, last), true));
+            }
+        }
+        Ok((summary(count, first, last), false))
     }
 
     async fn record(
@@ -804,6 +935,20 @@ where
         fence: Option<ShardFence>,
         actions: Vec<RecordedAction>,
         after: ScheduleAfter,
+        now: OffsetDateTime,
+    ) -> Result<Fired, AppError> {
+        self.record_owing(record, fence, actions, after, Vec::new(), now)
+            .await
+    }
+
+    /// Records a decision that starts no run, with the cancellations it owes.
+    async fn record_owing(
+        &self,
+        record: &ScheduleRecord,
+        fence: Option<ShardFence>,
+        actions: Vec<RecordedAction>,
+        after: ScheduleAfter,
+        obligations: Vec<NewObligation>,
         now: OffsetDateTime,
     ) -> Result<Fired, AppError> {
         let decision = ScheduleDecision {
@@ -817,8 +962,59 @@ where
             at: now,
             dedupe: None,
             backfill: None,
+            obligations,
         };
         self.committed(self.store.record_decision(&decision, None).await)
+    }
+
+    /// The cancellations the action that waits at `nominal` owes the runs that are still open.
+    async fn obligations_for(
+        &self,
+        record: &ScheduleRecord,
+        nominal: OffsetDateTime,
+    ) -> Result<Vec<NewObligation>, AppError> {
+        Ok(self
+            .open_run_ids(record)
+            .await?
+            .into_iter()
+            .map(|run| NewObligation {
+                run,
+                key: obligation_key(record.id, nominal, run),
+            })
+            .collect())
+    }
+
+    /// Pays one cancellation the schedule owes (`CANCEL_OTHER`, `FR-018-006`) through the ordinary
+    /// cancel use case, under the key of the debt, and records it paid under the fence of the shard.
+    /// The first commit wins: a run that ended by itself, or is gone, leaves nothing to cancel and
+    /// the debt is paid. The cancel is idempotent, so a lease lost between the cancel and the
+    /// record costs a repeat that changes nothing: the fence guards the record.
+    async fn pay_obligation(
+        &self,
+        record: &ScheduleRecord,
+        principal: &Principal,
+        owed: Obligation,
+        fence: Option<ShardFence>,
+        now: OffsetDateTime,
+        ctx: &RequestContext,
+    ) -> Result<Fired, AppError> {
+        match self
+            .starts
+            .cancel_run(principal, owed.run, CANCEL_OTHER_REASON, &owed.key, ctx)
+            .await
+        {
+            Ok(()) | Err(AppError::StateConflict(_) | AppError::NotFound) => {}
+            // the subject the schedule acts for may not cancel runs any more
+            Err(AppError::Forbidden { .. }) => {
+                return self.revoke_authority(record, fence, now).await;
+            }
+            Err(other) => return Err(other),
+        }
+        self.committed(
+            self.store
+                .complete_obligation(record.tenant_id, record.id, &owed, fence.as_ref(), now)
+                .await,
+        )
     }
 
     /// Starts the run of an action. A refusal to admit it keeps the time owed.
@@ -831,14 +1027,23 @@ where
         ctx: &RequestContext,
     ) -> Result<Fired, AppError> {
         let nominal = admission.nominal_at;
+        let fence = admission.fence.clone();
         match self.start_run(record, principal, admission, ctx).await {
             Ok(_) => Ok(Fired::Acted),
+            // the membership was locked and read again where the run is admitted, and the subject
+            // the schedule acts for no longer holds the authority: nothing was committed
+            Err(AppError::StateConflict(AUTHORITY_REVOKED)) => {
+                self.revoke_authority(record, fence, now).await
+            }
             // another process acted first, or the lease is gone: nothing was committed
-            Err(AppError::StateConflict(reason)) => Ok(Fired::Refused(reason)),
+            Err(AppError::StateConflict(reason)) if reason != NO_PUBLISHED_VERSION => {
+                Ok(Fired::Refused(reason))
+            }
             // no room, a store that is down, a workflow with no published version: the time stays
             // owed and is tried again under the same key
             Err(
-                AppError::QuotaExceeded(_)
+                AppError::StateConflict(_)
+                | AppError::QuotaExceeded(_)
                 | AppError::Unavailable
                 | AppError::Busy { .. }
                 | AppError::NotAllowed(_),
@@ -892,6 +1097,77 @@ where
         self.starts
             .start_scheduled(principal, &request, admission, ctx)
             .await
+    }
+
+    /// The requester of a backfill can no longer start runs: the backfill is stopped, with an audit
+    /// record, and starts nothing more.
+    async fn stop_backfill(
+        &self,
+        record: &ScheduleRecord,
+        backfill: Uuid,
+        now: OffsetDateTime,
+    ) -> Result<Fired, AppError> {
+        let system = Subject::schedule(record.id.as_uuid());
+        let audit = self.audit(
+            record,
+            &system,
+            AuditAction::ScheduleBackfillCancelled,
+            "authority revoked",
+            now,
+        );
+        self.store
+            .cancel_backfill(record.tenant_id, record.id, backfill, now, &audit)
+            .await?;
+        Ok(Fired::Acted)
+    }
+
+    /// The subject the schedule acts for no longer holds the authority to start runs: the next time
+    /// is recorded `AUTHORITY_REVOKED` and the schedule is paused with a system note and an audit
+    /// record, in one transaction. Nothing starts (`FR-018-015`, `SC-018-004`).
+    async fn revoke_authority(
+        &self,
+        record: &ScheduleRecord,
+        fence: Option<ShardFence>,
+        now: OffsetDateTime,
+    ) -> Result<Fired, AppError> {
+        let system = Subject::schedule(record.id.as_uuid());
+        let nominal = record.next_action_at.unwrap_or(now);
+        let decision = ScheduleDecision {
+            tenant_id: record.tenant_id,
+            schedule: record.id,
+            expected_state_version: record.state_version,
+            fence,
+            actions: vec![RecordedAction {
+                nominal_at: nominal,
+                kind: ActionKind::Scheduled,
+                revision: record.revision,
+                outcome: Outcome::AuthorityRevoked,
+                reason: Some("AUTHORITY_REVOKED"),
+                summary: None,
+            }],
+            after: ScheduleAfter {
+                next_action_at: None,
+                next_actual_at: None,
+                remaining_actions: record.remaining_actions,
+                recovery: None,
+                extra: Vec::new(),
+            },
+            pause: Some(AutoPause {
+                note: "the authorizing subject can no longer start runs".to_owned(),
+            }),
+            at: now,
+            dedupe: None,
+            backfill: None,
+            obligations: Vec::new(),
+        };
+        let audit = self.audit(
+            record,
+            &system,
+            AuditAction::ScheduleAutoPaused,
+            "authority revoked",
+            now,
+        );
+        self.committed(self.store.record_decision(&decision, Some(&audit)).await)
     }
 
     fn committed(&self, result: Result<(), StoreError>) -> Result<Fired, AppError> {

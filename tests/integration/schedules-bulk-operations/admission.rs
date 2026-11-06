@@ -6,7 +6,8 @@
 use sagat_application::error::AppError;
 use sagat_application::runs::StartRun;
 use sagat_application::schedules::{
-    NewSchedule, ScheduleAdmission, ScheduleAfter, ScheduleRecord, ScheduleStore, ShardFence,
+    AUTHORITY_REVOKED, NewSchedule, ScheduleAdmission, ScheduleAfter, ScheduleRecord,
+    ScheduleStore, ShardFence,
 };
 use sagat_application::shards::Lease;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
@@ -85,6 +86,7 @@ impl Fixture {
         let next = nominal + Duration::days(1);
         ScheduleAdmission {
             schedule: self.schedule.id,
+            authority: self.schedule.authorized_by.clone(),
             nominal_at: nominal,
             kind: ActionKind::Scheduled,
             revision: self.schedule.revision,
@@ -94,6 +96,7 @@ impl Fixture {
                 next_action_at: Some(next),
                 next_actual_at: Some(next),
                 remaining_actions: self.schedule.remaining_actions.map(|n| n - 1),
+                recovery: None,
                 extra: vec![],
             },
             manual: None,
@@ -224,6 +227,44 @@ async fn the_same_nominal_time_never_starts_a_second_run() {
         f.schedule.state_version + 1,
         "the schedule moved once"
     );
+}
+
+async fn demote_the_authority(f: &Fixture) {
+    sqlx::query("UPDATE memberships SET role = 'viewer' WHERE tenant_id = $1 AND subject = $2")
+        .bind(f.schedule.tenant_id.as_uuid())
+        .bind(&f.schedule.authorized_by)
+        .execute(&f.w.db.pool)
+        .await
+        .expect("demote the authority of the schedule");
+}
+
+#[tokio::test]
+async fn an_admission_whose_authority_no_longer_holds_run_start_commits_nothing() {
+    let f = fixture().await;
+    demote_the_authority(&f).await;
+    let refused = f
+        .fire(f.admission(nominal()))
+        .await
+        .expect_err("the subject cannot start runs any more");
+    assert_eq!(refused, AppError::StateConflict(AUTHORITY_REVOKED));
+    assert_eq!((f.actions().await, f.runs_of_the_schedule().await), (0, 0));
+    assert_eq!(f.reread().await.state_version, f.schedule.state_version);
+}
+
+#[tokio::test]
+async fn the_replay_of_a_time_is_told_the_same_whatever_became_of_the_authority() {
+    let f = fixture().await;
+    f.fire(f.admission(nominal())).await.expect("first");
+    demote_the_authority(&f).await;
+    let again = f
+        .fire(f.admission(nominal()))
+        .await
+        .expect_err("the time was already acted on");
+    assert!(
+        matches!(&again, AppError::StateConflict(reason) if *reason != AUTHORITY_REVOKED),
+        "a replay is answered before the authority is looked at: {again:?}"
+    );
+    assert_eq!(f.runs_of_the_schedule().await, 1);
 }
 
 #[tokio::test]

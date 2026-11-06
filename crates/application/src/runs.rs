@@ -40,6 +40,10 @@ pub const MAX_RUN_DEADLINE: Duration = Duration::from_secs(366 * 24 * 60 * 60);
 /// Longest correlation id accepted at start.
 pub const MAX_CORRELATION_ID: usize = 160;
 
+/// Why a run cannot start from a workflow none of whose versions is published
+/// ([`AppError::StateConflict`]). A schedule keeps such a time owed and tries it again.
+pub const NO_PUBLISHED_VERSION: &str = "the workflow has no published version";
+
 /// How a run is opened for a command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lock {
@@ -694,9 +698,9 @@ where
         }
         let version_id = match request.version {
             Some(id) => id,
-            None => workflow.active_version().ok_or(AppError::StateConflict(
-                "the workflow has no published version",
-            ))?,
+            None => workflow
+                .active_version()
+                .ok_or(AppError::StateConflict(NO_PUBLISHED_VERSION))?,
         };
         let version = self
             .store
@@ -1718,5 +1722,27 @@ where
         )
         .await?;
         Ok(started.info.run_id)
+    }
+
+    async fn cancel_run(
+        &self,
+        principal: &Principal,
+        run: uuid::Uuid,
+        reason: &str,
+        key: &str,
+        ctx: &RequestContext,
+    ) -> Result<(), AppError> {
+        RunService::operate(
+            self,
+            principal,
+            RunId::new(run),
+            RunOperation::Cancel,
+            reason,
+            None,
+            key,
+            ctx,
+        )
+        .await
+        .map(|_| ())
     }
 }

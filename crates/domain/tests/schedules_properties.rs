@@ -4,8 +4,8 @@
 
 use proptest::prelude::*;
 use sagat_domain::schedules::{
-    CatchupMode, Ceilings, Decision, Outcome, Overlap, Policies, Release, Standing, decide,
-    jitter_offset_ms, plan_catch_up, release,
+    CatchupMode, Ceilings, Decision, Outcome, Overlap, Policies, Recovery, RecoveryStep, Release,
+    Standing, decide, jitter_offset_ms, plan_catch_up, plan_recovery_step, recovery_slice, release,
 };
 use time::OffsetDateTime;
 
@@ -165,6 +165,93 @@ proptest! {
         if let Some(s) = plan.coalesced {
             prop_assert!(plan.act.iter().all(|t| *t < s.first));
         }
+    }
+
+    /// A recovery carried out one step at a time, as the pass does, honours the ceiling of the
+    /// recovery however long the backlog and however small the slice a step looks at: it acts on
+    /// the earliest times inside the window, never on more than the mode allows, and every due
+    /// time is acted on, summarized as coalesced or summarized as missed exactly once.
+    #[test]
+    fn a_recovery_in_steps_keeps_its_ceiling_and_counts_every_time_once(
+        mut seconds in proptest::collection::vec(1..2_000_000i64, 1..400),
+        window in 10..=1_000_000i64,
+        all in any::<bool>(),
+        ceiling in 1..=40u32,
+    ) {
+        seconds.sort_unstable();
+        seconds.dedup();
+        let times: Vec<_> = seconds.iter().map(|s| at(*s)).collect();
+        let now = at(2_000_000);
+        let mode = if all { CatchupMode::All } else { CatchupMode::One };
+        let policies = Policies::new(
+            Overlap::AllowAll,
+            u64::try_from(window).expect("window") * 1000,
+            mode,
+            false,
+            100,
+            &Ceilings::default(),
+        ).expect("policies");
+        let ceilings = Ceilings { catchup_actions: ceiling, ..Ceilings::default() };
+
+        let (mut acted, mut coalesced, mut missed) = (Vec::new(), 0usize, 0usize);
+        let mut recovery: Option<Recovery> = None;
+        let mut cursor = 0usize; // the times before it are settled
+        let mut steps = 0usize;
+        loop {
+            steps += 1;
+            prop_assert!(steps <= times.len() + 3, "the steps end");
+            let end = recovery.map_or(now, |r| r.until);
+            let owed: Vec<_> = times[cursor..].iter().copied().filter(|t| *t <= end).collect();
+            let Some(first) = owed.first().copied() else {
+                // nothing is owed: a remembered recovery is forgotten, none does nothing
+                let step = plan_recovery_step(&[], now, recovery, &policies, &ceilings);
+                prop_assert_eq!(step, if recovery.is_some() { RecoveryStep::Finished } else { RecoveryStep::Idle });
+                break;
+            };
+            let slice: Vec<_> = owed
+                .iter()
+                .copied()
+                .take(recovery_slice(first, now, recovery, &policies, &ceilings))
+                .collect();
+            match plan_recovery_step(&slice, now, recovery, &policies, &ceilings) {
+                RecoveryStep::Idle | RecoveryStep::Finished => break,
+                RecoveryStep::Missed(summary) => {
+                    missed += summary.count as usize;
+                    cursor += owed.iter().take_while(|t| **t <= summary.last).count();
+                }
+                RecoveryStep::Act { time, settle, then } => {
+                    prop_assert_eq!(time, first);
+                    acted.push(time);
+                    cursor += 1;
+                    if settle {
+                        // the pass counts every time after it up to the end of the recovery
+                        coalesced += owed.len() - 1;
+                        cursor += owed.len() - 1;
+                        recovery = None;
+                    } else {
+                        recovery = then;
+                    }
+                }
+                RecoveryStep::Coalesce => {
+                    coalesced += owed.len();
+                    cursor += owed.len();
+                    recovery = None;
+                }
+            }
+        }
+
+        let allowed = if all { ceiling as usize } else { 1 };
+        // the times inside the window, in order: the acted-on ones are the earliest of them
+        let inside: Vec<_> = times
+            .iter()
+            .copied()
+            .filter(|t| (now - *t).whole_milliseconds() <= i128::from(window) * 1000)
+            .collect();
+        prop_assert!(acted.len() <= allowed, "{} actions, at most {}", acted.len(), allowed);
+        prop_assert_eq!(&acted[..], &inside[..acted.len()]);
+        prop_assert_eq!(acted.len(), inside.len().min(allowed));
+        prop_assert_eq!(acted.len() + coalesced + missed, times.len());
+        prop_assert_eq!(missed, times.len() - inside.len());
     }
 
     /// Jitter stays inside both the setting and the gap, whatever the digest.

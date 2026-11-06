@@ -217,6 +217,16 @@ pub trait MaintenanceStore: Send + Sync {
         limit: u32,
     ) -> impl Future<Output = Result<u64, StoreError>> + Send;
 
+    /// Deletes up to `rows` actions of schedules that are past their retention, looking at up to
+    /// `schedules` schedules, least recently visited first; returns how many. An action is kept
+    /// while it is among the last 1,000 of its schedule or younger than 30 days, and a waiting
+    /// (`BUFFERED`) action is never deleted (`FR-018-013`).
+    fn purge_schedule_actions(
+        &self,
+        schedules: u32,
+        rows: u32,
+    ) -> impl Future<Output = Result<u64, StoreError>> + Send;
+
     /// Deletes up to `limit` outbox messages delivered more than `older_than` ago; returns how
     /// many. Undelivered messages are never deleted.
     fn purge_outbox(

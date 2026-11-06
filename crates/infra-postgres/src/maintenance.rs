@@ -682,6 +682,18 @@ impl MaintenanceStore for PgRunStore {
         self.purge_script_records_impl(limit).await
     }
 
+    async fn purge_schedule_actions(&self, schedules: u32, rows: u32) -> Result<u64, StoreError> {
+        // the runtime role may not delete an action; it may run this bounded function, which keeps the
+        // last 1,000 and the last 30 days of each schedule and never a waiting action
+        let removed: i64 = sqlx::query_scalar("SELECT schedule_purge_actions($1, $2)")
+            .bind(i32::try_from(schedules).unwrap_or(i32::MAX))
+            .bind(i32::try_from(rows).unwrap_or(i32::MAX))
+            .fetch_one(self.pool())
+            .await
+            .map_err(store_error)?;
+        Ok(u64::try_from(removed).unwrap_or(0))
+    }
+
     async fn purge_sessions(&self) -> Result<u64, StoreError> {
         // Kept for an hour after expiry so a late report still finds its session's identity.
         sqlx::query("DELETE FROM worker_sessions WHERE expires_at < now() - interval '1 hour'")

@@ -452,10 +452,12 @@ impl PgRunStore {
             .any(|n| n.database_operation().is_some() || n.iceberg_write().is_some())
         {
             let mut actors = crate::database::run_actors(conn, &info).await?;
+            // a schedule that replays the key of a time stands on the member that authorized it
+            let subject = crate::database::authority_of(conn, tenant, subject).await?;
             if subject != sagat_domain::identity::Subject::engine().as_str()
-                && !actors.iter().any(|s| s == subject)
+                && !actors.contains(&subject)
             {
-                actors.push(subject.to_owned());
+                actors.push(subject);
             }
             crate::database::admit_definition(
                 conn,
@@ -1082,6 +1084,16 @@ impl RunStore for PgRunStore {
             {
                 let _ = tx.rollback().await;
                 return Err(error);
+            }
+            // The subject a schedule acts for is looked at again where the run is admitted, under
+            // the lock of its membership: a revocation that has returned stops the run. A workflow
+            // with managed database steps takes the catalog first, as 017 does (ADR-0050 decision 7).
+            if let Some(schedule) = &new.schedule {
+                let database = crate::database::database_writes(&new.definition);
+                if database.is_some() {
+                    crate::quotas::lock_secrets(&mut tx, tenant, new.info.namespace_id).await?;
+                }
+                crate::schedules::recheck_authority(&mut tx, tenant, schedule, database).await?;
             }
             let bindings = if new
                 .definition

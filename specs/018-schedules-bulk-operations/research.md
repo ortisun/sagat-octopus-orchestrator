@@ -337,6 +337,92 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
   schedule and delay instants are classified by 028's time-class catalog
   (`specs/028-developer-tooling/contracts/time-classes.md`: `workflow_due`/`workflow_record`, batch
   selection bounds `infrastructure`).
+- **D1950** (2026-11-04, T018-021) The authority of a schedule's action is checked where the run is admitted, and
+  a database step stands on it. (1) `ScheduleAdmission.authority` names the subject the action acts for
+  (`authorizedBy` for a scheduled time and a released waiting action, the requester of a backfill, the caller of
+  trigger-now). `RunStore::create` locks that membership `FOR SHARE` (through `sagat_lock_memberships`, the only way
+  the runtime role can) and checks `run:start` again, after the shard fence and the schedule row and before the quota
+  checks, so a revocation that has returned stops the run and one that has not waits for this transaction. The refusal
+  is `StateConflict(AUTHORITY_REVOKED)`, committed nothing; the firing records the time `AUTHORITY_REVOKED` and pauses
+  the schedule (a scheduled time, a waiting action), stops the backfill, or answers trigger-now `Forbidden` (the caller
+  lost the right; the schedule is not paused for it). The replay of a key is answered before this check. Before this,
+  the role was read once outside the transaction and a revocation committing in between did not stop the run.
+  (2) A run started by `system:schedule:<id>` stood on a subject that no membership has, so a workflow with a managed
+  database step could not be admitted at all: the 017 admission found no database authority for the starter and the
+  time stayed owed for ever (`fire` answered `NotFound`). The 017 actors of such a run are now the publisher and the
+  member `authorizedBy` of the schedule today (`database::authority_of`, also for the root starter of a child and for
+  the replay check), and a schedule action whose workflow has such steps requires of that member `database:use` (and
+  `database:write` when a step writes) besides `run:start`, taking the catalog lock before the membership as 017
+  does. Losing database authority is losing the authority of the schedule (`AUTHORITY_REVOKED`, paused). A run
+  started by trigger-now or a backfill stands, for its database steps, on `authorizedBy` as well as on the role of
+  its requester; the requester only presses the button. Not done: a run keeps no record of whose authority it
+  started under, so a database step claimed after the schedule was resumed by someone else is admitted under the new
+  `authorizedBy` (G1950).
+- **D1951** (2026-11-04, T018-029) A recovery is planned once and remembered. FR-018-008 limits a catch-up: mode `ONE`
+  acts on the earliest time inside the window, mode `ALL` on up to `catchup_actions`, and the rest is one `COALESCED`
+  summary. A step of the pass acts on one time and planned the backlog again from the next one, over a slice of
+  `catchup_actions + 2` times, so the limit held for one slice and never for a backlog: 20 owed times with a ceiling of
+  5 started 20 runs in mode `ALL` and 3 in mode `ONE`, and a hundred thousand owed times would have started them all
+  with a thundering herd of admissions, which is what the ceiling exists to prevent. The schedule now carries
+  `recovery_until` (the instant the recovery's times end; what falls due later is the next recovery) and
+  `recovery_acts` (the actions it may still take), migration `20261230001000_schedule_recovery`, both null outside
+  a recovery. The pure `plan_recovery_step` (domain) decides one step from the slice and the remembered recovery:
+  `Missed` (a summary of up to `SUMMARY_CHUNK` = 10,000 times older than the window, the recovery untouched), `Act`
+  (`settle` on the last allowed action or the last time owed, when the pass counts every later time up to the end of
+  the recovery into one `COALESCED` row in the same transaction and forgets the recovery; otherwise it remembers the
+  actions left, but only when the backlog is longer than the recovery may act on), `Coalesce` (the actions are
+  used up and times remain: one more summary), `Finished` and `Idle`. The slice a step reads is a chunk of 10,000
+  when it only summarizes (a year of per-minute times is a few dozen steps, not thousands) and `acts left + 2`
+  otherwise. Counting the rest is `ScheduleFiring::tally`: up to 100 calls of the calendar, a million times (G1951).
+  A revision, a pause or resume and a delete clear the recovery; trigger-now and a backfill leave it alone. A
+  property test runs a whole recovery step by step over random backlogs, windows, modes and ceilings and checks that
+  the actions never exceed the mode's allowance, are the earliest times inside the window, and that every due time
+  is acted on, coalesced or missed exactly once. Alternatives refused: counting the whole backlog in the first step
+  without remembering (unbounded work, and the same herd if the count is cut), and a `COALESCED` marker in the
+  `counters` object (it is returned by describe and bounded to 1 KiB).
+- **D1952** (2026-11-04, T018-029) A time that cannot start because the workflow has no published version is owed
+  with the same backoff as a full quota (5 s doubling to 5 min), not retried on every round: `StateConflict` with
+  `runs::NO_PUBLISHED_VERSION` is told apart from the `StateConflict` of "another process acted first", which still
+  commits nothing and defers nothing.
+- **D1953** (2026-11-04, T018-030) `CANCEL_OTHER` owes each open run an ordinary cancellation, recorded with the
+  action that waits and paid by the pass. The `Buffer { cancel_open }` decision of the domain was ignored: the action
+  waited and nothing cancelled the run. The decision transaction now inserts one `schedule_obligations` row per run the
+  schedule tracks as open, with the key `schedule:{id}:cancel:{µs of the waiting time}:{run}`, and makes the schedule due
+  at once (a schedule with a debt is looked at in the next round, not in five seconds). The pass pays the oldest debt
+  before anything else, right after the authority check: it calls the cancel use case of the run service
+  (`RunService::operate`, `run.cancel_requested` audited by `system:schedule:<id>` with the reason "the overlap rule of
+  the schedule is CANCEL_OTHER") under that key, then records the debt `DONE`. **The first commit wins:** the cancel
+  of a run that ended by itself (`StateConflict`) or is gone (`NotFound`) leaves nothing to do and the debt is paid;
+  `Forbidden` means the subject the schedule acts for may not cancel runs and is the loss of its authority
+  (`AUTHORITY_REVOKED`, paused); any other failure leaves the debt and the pass tries again. The waiting action
+  starts through the existing release once the runs are over (a run that waits for review is not over). Two
+  transactions, not the plan's one: the plan puts the shard fence and the obligation row inside the run's cancel
+  transaction, which would change the cancel path of the run store for one caller. The key makes the pair
+  idempotent instead (a cancel that committed before the record is replayed as a no-op, so the run is cancelled once),
+  and the fence guards the record: a replica that lost its lease may repeat the cancel it was about to repeat anyway,
+  but cannot record it, and the new owner pays again. Paying a recorded debt is not a new decision, so it needs no lease
+  to be right. **Who may write the rule:** cancelling a run needs `run:operate`, which a developer lacks, so creating,
+  updating or resuming a schedule with `CANCEL_OTHER`, asking for it in a backfill and overriding the rule in
+  trigger-now need `run:operate` (admin, operator), and the authority check of every action asks for it too (O1950).
+- **D1954** (2026-11-04, T018-030) A debt may be paid after the run that owes it was forgotten: the pass forgets runs that
+  ended before it looks at debts, and a debt for a run that is terminal is paid by the `StateConflict` of the cancel, not
+  by a special case, so the code has one path.
+- **D1956** (2026-11-04, T018-016) The input of a schedule is checked for shape and size, not against the `inputSchema` of the
+  target version (G1955): nothing on the platform enforces that schema, so a schedule would be stricter than a person
+  starting the same workflow.
+- **D1955** (2026-11-04, T018-028) The actions of a schedule are purged by a bounded function, visiting schedules in
+  turn. Nothing deleted them: an hourly schedule writes 8,700 rows a year and one every minute 525,000. FR-018-013
+  keeps "at least the last 1,000 or 30 days": an action goes when it is older than 30 days **and** beyond the
+  newest 1,000 of its schedule, and a `BUFFERED` action never goes (the guard of the table refuses it as well).
+  The runtime role has no `DELETE` on the table, so retention is `schedule_purge_actions(schedules, rows)`
+  (`SECURITY DEFINER`, fixed `search_path`, migration `20261230002000_schedule_action_purge`), called by the
+  housekeeping of the scheduler a few schedules at a time and at most 5,000 rows per call. A rule of "oldest rows
+  first" would starve: a schedule with fewer than 1,000 actions keeps all of them however old, and its old rows
+  would be the first candidates of every call, for ever. The function therefore visits schedules in the order of
+  `schedules.actions_purged_at` (never visited first) and marks one visited only when its purgeable rows are
+  gone, so a schedule cut short by the row budget is the first to be looked at again and one with nothing to purge
+  is looked at once per cycle. The cut is the time of the thousandth newest action, found through the index that
+  already serves the recent-actions read.
 
 ## 4. Gaps
 
@@ -364,6 +450,12 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
 | G1607 | A binary older than the instance-capability registry release does not register, so no activation can see it; activations therefore require the registry release deployed fleet-wide first (operator precondition, checked by nothing but the runbook), and rollback below a recorded requirement is unsupported. | Inherent to introducing the registry; 029's prerequisite release (T029-003) is the vehicle. | Accepted |
 | G1605 | Draft lock orders that deviated from ADR-0050 decision 7 on 2026-10-27 (026 T2 membership and rate buckets after the link row; 030 endpoint head before memberships; 021 asset heads after secrets and the variable fence as an "authority slot"). Resolved the same day: 021 and 026 now follow decision 7 exactly (021 D1624, 026 D1337 revised); 030 follows it with one listed exception, a caller transaction locking its own `START` row after its run (030 D1660), recorded in decision 7. | Owners 021, 026, 030. | Resolved |
 | G1606 | `REMATERIALIZE` checks of other features (retired version, paused resource, retired snapshot, busy permit) are evaluated at reset time; a preview reports them as provisional and a reset can still fail on them. | Inherent to reset at a later time. | Accepted |
+| G1950 | A run keeps no record of whose authority it started under. The 017 admission of a database step claimed after the schedule was resumed by someone else (or after `authorizedBy` changed through an update) stands on the new `authorizedBy`, not on the member the run started under (D1950). | Fails closed when that member lacks database authority (the step is refused, the run is not corrupted), and open when the new one has it and the old one did not. Closing it needs a column on `runs` (an additive migration with the erasure-aware immutability trigger of the provenance columns) or a different rule for the claim. | Open |
+| G1951 | The count of a recovery's summary stops after 100 calls of the calendar (a million times: a year of a schedule every 30 s, the densest the spacing floor and the longest window allow). Past it the step records a partial `COALESCED` summary and the recovery is remembered with no actions left, so the next step goes on summarizing instead of acting again; the work per step is bounded, the number of steps is not. | A schedule that dense with a window that long and an outage that long is not a case anyone sized for; the steps are cheap (one small transaction each) and the pass takes `steps_per_schedule` of them per round. Revisit with the benchmark (T018-072). | Open |
+| G1953 | A waiting action keeps waiting however long the runs that hold it back stay open (a run in `MANUAL_REVIEW` after a failed compensation can stay open for days) and starts when they end, even if it is older than the catch-up window; `data-model.md` has it become `MISSED_CATCHUP_WINDOW` instead. | Starting a stale time is the safe direction (the work is not lost) and the action is visible as `BUFFERED`; the transition needs an update of an action row under the append-only guard. | Open |
+| G1954 | Only the actions are purged. The revisions of a schedule (append-only: a trigger refuses every `UPDATE` and `DELETE`, and they carry the content the tenant is charged for), the obligations that are `DONE`, the finished backfills and the tombstone of a deleted schedule are kept for ever; `data-model.md` has the tombstone go 30 days after the last purge of its actions. | They are small next to the actions (a row per edit, per debt, per backfill), but a tenant that edits a big schedule often keeps charging its content quota with revisions nobody reads. Needs a guard that lets a purge function through, and a rule for the revision an action still names. | Open |
+| G1955 | The input of a schedule is not validated against the `inputSchema` of the target version at write or at action (`SCHEDULE_INPUT_INVALID` means "not an object" or "too large"), and `nominalTimeField` is not checked to be a declared string property (`NOMINAL_TIME_FIELD_INVALID` is never answered). | The IR declares `inputSchema` but the platform enforces it nowhere (run start, signal, worker), so enforcing it for schedules alone would refuse what the same workflow accepts from a person. Close it with the run start: a validator port (`infra-schema::validate` exists) used by both, and the contract `errors.md` already has the two reasons. | Open |
+| G1952 | A backfill step that the admission refuses (a full quota, no published version) waits and is tried again on every round of the pass, with no backoff, unlike a scheduled time (D1952). | A round is one poll of the database per owned shard and the step is one rolled-back transaction; harmless at the default poll but wasteful. Fix with a `retry_at` on the backfill (a migration). | Open |
 
 ## 5. Owner questions (the plan implements the recommended defaults)
 
@@ -382,3 +474,7 @@ paragraphs below are kept as the question that was put.
 - **O1002 — Who holds `run:batch`.** (a) admin and operator; (b) also developer for actions a developer
   may take one by one. **Recommended: (a)** — a batch multiplies an action's blast radius by up to
   100,000.
+- **O1950 — Who may write a `CANCEL_OTHER` schedule.** (a) whoever holds `run:operate` (admin, operator; of the roles
+  that write schedules only admin), because the schedule cancels runs for them; (b) whoever holds `schedule:write`
+  (admin, developer), the schedule cancelling as the platform. **Recommended and implemented: (a)** — a developer who
+  may not cancel a run by hand would otherwise cancel any run of a workflow by writing a schedule (D1953).

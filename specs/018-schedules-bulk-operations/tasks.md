@@ -149,7 +149,7 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   exclusive, exclusions in UTC, the later of an ambiguous time) were each caught. `infra-ir` + `application` suites 470
   passed, clippy `-D warnings`, fmt and `check-architecture.py` clean. The port is `sagat_application::schedules::
   ScheduleCalendar` (also part of T018-011). G1013: the `dst` policy does not reach cron strings.
-- [ ] T018-014 [US1] PostgreSQL `ScheduleStore` (revisions, head CAS, due scan by `(shard, next_wake_at)`
+- [x] T018-014 [US1] PostgreSQL `ScheduleStore` (revisions, head CAS, due scan by `(shard, next_wake_at)`
   bounded by `now()`, actions, purge) — `crates/infra-postgres/src/schedules.rs` —
   `tests/integration/schedules-bulk-operations/store.rs` — FR-018-001, FR-018-013, FR-018-014.
   *Part done 2026-10-29 (task stays open).* `PgScheduleStore` (`infra-postgres/src/schedules.rs`) creates, reads and lists
@@ -167,6 +167,11 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `DROPPED_DELETED`, the name is free, a second delete is a no-op). Evidence: `integration_schedules_bulk_operations` 34
   passed (9 in `changes`), also as the runtime role; `integration_platform_foundation` 101; dropping the head check fails 2
   tests. Not done: the due scan by `(shard, next_wake_at)`, actions, purge, backfills, obligations.
+  *Reconciled and ticked 2026-11-04.* The "not done" above was written before the later tasks and is out of date: the due
+  scan is `PgScheduleStore::due_schedules` (the shards the replica owns, `ACTIVE`, `next_wake_at <= clock_timestamp()`,
+  oldest first, bounded; tested through the pass in `pass::` and `fault_schedules_bulk_operations`), the actions are
+  written with the decisions and the admissions (T018-015, T018-024..027, T018-030) and read by `describe`, the purge is
+  T018-028, the backfills T018-025 and the obligations T018-030. Retention of the revisions and tombstones is G1954.
 - [x] T018-015 [US1] Schedule admission inside `RunStore::create` (fence, CAS, action + state after the
   initial reduction, refusal commits nothing) — `crates/infra-postgres/src/{execution.rs,schedules.rs}`
   — one-commit content test — FR-018-004, FR-018-005.
@@ -210,6 +215,12 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   into the declared input field. The business-id prefix is refused with `NotAllowed` until US03. Evidence: 15 tests in
   `firing.rs`, 82 passed in all, also as the runtime role. Not done: the input check against the schema of the target
   version, `nominalTimeField` against that schema, business-id prefix.
+  *Decision 2026-11-04 (D1956, gap G1955): the input is not checked against the input schema of the target version.* The
+  workflow IR declares an `inputSchema`, but nothing on the platform enforces it: a run started by the API, a signal or
+  a worker is not validated against it either, so a schedule that refused the input a person may start the same
+  workflow with would be inconsistent, and the check needs a validator port that the run start would use as well. What a
+  schedule checks stays: an object, at most 64 KiB. The business-id prefix waits for US03. `nominalTimeField` is
+  already written into the input at the action.
 - [ ] T018-017 [US1] Schedule pass (owned shards, fairness, round ceiling, metrics) and engine wiring —
   `crates/scheduler/src/{schedules.rs,lib.rs,monitor.rs}`, `apps/execution-engine/src/lib.rs` — two-replica
   pass tests — FR-018-005, FR-018-044.
@@ -221,8 +232,12 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   whose lease was taken is refused where it acts and the time stays owed), 2 in `apps/execution-engine/tests/config.rs`;
   removing the fence from the pass makes the lease test fail (1 step, 0 refused instead of 0 and 1). Not done: fairness
   between tenants, the gauges (`scheduler_lag_seconds{pass="schedules"}`, `schedule_actions_total`) and the monitor alert.
+  *Update 2026-11-04 (T018-022):* the round ceiling is built: `round_actions` (100, hard 1,000) bounds the steps one round
+  takes over all its schedules and backfills.
   *Update 2026-11-03:* the engine now gives the firing a `DatabaseClock` synced before every round (D1802, T018-020), so
   due-ness and the planning of the times agree on the database's time.
+  *Update 2026-11-04 (T018-029):* the pass that bounds the due slice of a long outage, which T018-003 left to this task,
+  is built: a recovery is planned once, remembered on the schedule and carried out a step at a time (D1951).
 - [ ] T018-018 [US1] REST create/read/list/update/delete — `crates/api-http/src/routes/{schedules.rs,mod.rs}`,
   `crates/api-http/src/dto_schedules.rs` — contract tests — FR-018-001, FR-018-013, FR-018-043.
   *Part done 2026-10-30 (task stays open).* Built behind `SAGAT_SCHEDULES_ENABLED` (control plane, off by default):
@@ -237,8 +252,24 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `describe` and delete at a revision; `crates/application/tests/schedule_document.rs` 4); without the namespace check of
   the route the isolation test fails. Not done: the list filters `origin`, `state`, `workflowId`, `name` and `inputBytes`
   (G1015).
-- [ ] T018-019 [P] [US1] US01 scenarios 1–5 — `tests/integration/schedules-bulk-operations/schedules.rs`
+- [x] T018-019 [P] [US1] US01 scenarios 1–5 — `tests/integration/schedules-bulk-operations/schedules.rs`
   — target output — FR-018-001..005, FR-018-016.
+  *Done 2026-11-04.* The scenario file walks the five scenarios of the story and says, for each, which test proves it.
+  These are tests of behaviour that already existed, so none was red first and none found a defect (the defects of the
+  story were found by T018-020..022, 029). Scenario 1: a spec with a calendar, a cron string and an interval, the zone
+  `Europe/Lisbon`, `startAt`, `endAt` and ten minutes of jitter is revision 1, its first nominal time is the earliest
+  of the three kinds on or after the start, the actual time moves by less than the setting, the next ten times are in
+  order and inside the bounds, nothing runs on 1 November and one run starts for 2 November. Scenario 2: the replica
+  that lost the shard considers the time first and is fenced with nothing started, the holder starts exactly one
+  run (`startedBy = system:schedule:<id>`, schedule id, nominal time, kind and revision on the run, key
+  `nominal-{ms}` in scope `schedule:{id}`), and a second look by the former finds nothing; the engine-level proof is
+  `pass::two_replicas_split_the_schedules_by_shard_and_every_time_starts_one_run`; "counted" waits for the gauges
+  of T018-017. Scenario 3: the 28-write kill matrix of T018-020 (`fault_schedules_bulk_operations`). Scenario 4: four
+  specs that never fire or fire too often are refused with `SCHEDULE_NEVER_FIRES` / `SCHEDULE_TOO_FREQUENT` and a
+  before-and-after count of schedules, revisions, payloads, audit records and charges is unchanged. Scenario 5:
+  `catchup::` (a full quota, then the window ends; no published version, with a backoff). Evidence:
+  `integration_schedules_bulk_operations` 169 passed, also with `SAGAT_TEST_AS_RUNTIME_ROLE=1` (169); `cargo fmt --check`
+  and `cargo clippy --workspace --all-targets --locked -- -D warnings` clean.
 - [x] T018-020 [US1] Faults: crash after each statement of transaction 2, stale fence, duplicate pass,
   lost hint, restart, skewed process clocks — `tests/fault/schedules-bulk-operations/firing.rs` (+ `clocks.rs`,
   `tripwire.rs`) — one run
@@ -285,12 +316,53 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `sagat-application` green; `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`,
   `check-architecture.py` and `check-agent-config.py` clean. Not run: the whole-workspace test run (CI runs it) and the SDK
   checks (no SDK or contract changed).
-- [ ] T018-021 [US1] Authority and provenance (recheck under membership lock order, auto-pause + audit,
+- [x] T018-021 [US1] Authority and provenance (recheck under membership lock order, auto-pause + audit,
   `system:schedule:<id>`, 017 database authority, key replay) —
   `tests/integration/schedules-bulk-operations/authority.rs` — SC-018-004 — FR-018-015, FR-018-016, FR-018-041.
-- [ ] T018-022 [US1] Schedule ceilings and quotas (count incl. zero, entries, spacing, input bytes,
+  *Done 2026-11-04 (decision D1950, gap G1950).* Two real defects, both found by a test that failed first. (1) The
+  authority was read once outside the transaction that admits the run, so a revocation that committed in between did not
+  stop the run: `ScheduleAdmission.authority` now names the subject the action acts for and `RunStore::create` locks its
+  membership `FOR SHARE` (`sagat_lock_memberships`) and checks `run:start` again, after the shard fence and the schedule
+  row and before the quota checks; the refusal is `StateConflict(AUTHORITY_REVOKED)`, which the firing turns into the
+  `AUTHORITY_REVOKED` action plus the pause (a scheduled time, a waiting action), the stop of a backfill, or `Forbidden`
+  for trigger-now; a replay of the key is answered before the check. (2) A workflow with a managed database step could
+  never be started by a schedule: the 017 admission looked for the database authority of `system:schedule:<id>`, which no
+  membership has (`fire` answered `NotFound` and the time stayed owed for ever); `database::authority_of` now stands the
+  run on the member `authorizedBy`, and the action requires of that member `database:use` (and `database:write` when a step
+  writes), taking the catalog lock before the membership as 017 does. Evidence, all on the final tree with a private
+  `CARGO_TARGET_DIR` and `RUST_TEST_THREADS=2`: `integration_schedules_bulk_operations` 144 passed (134 before; 10 new:
+  6 in `authority`, 2 in `admission`, 1 in `trigger`, 1 in `backfill`), also with `SAGAT_TEST_AS_RUNTIME_ROLE=1` (144);
+  `fault_schedules_bulk_operations` 11 passed, both ways; `integration_platform_foundation` 101 (the runtime-privilege audit
+  reads the new statement); `integration_security_multitenancy` 126; `integration_database_connections` 7;
+  `contract_schedules_bulk_operations` 1; unit suites of domain, application, infra-postgres, scheduler, api-http and
+  execution-engine green; `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`,
+  `check-architecture.py` and `check-agent-config.py` clean. Seen failing first: the race (a run started on revoked
+  authority) and the database step (`NotFound`). The three race tests written after the fix (trigger-now, backfill,
+  the waiting action) were run with `recheck_authority` switched off as a mutation: all six race tests failed, and the
+  mutation was reverted. The race is made with a held row lock and `pg_stat_activity` (no sleeps): another transaction
+  holds the schedule row, the action waits for it, the membership is revoked and committed, the row is released.
+- [x] T018-022 [US1] Schedule ceilings and quotas (count incl. zero, entries, spacing, input bytes,
   round size) — `tests/integration/schedules-bulk-operations/limits.rs` — one test per row —
   FR-018-003, FR-018-045; NFR-018-003.
+  *Done 2026-11-04.* Evidence: `cargo test -p sagat-tests --locked --test integration_schedules_bulk_operations limits::`
+  — 11 passed; the whole suite 134 passed, also with `SAGAT_TEST_AS_RUNTIME_ROLE=1`; `fault_schedules_bulk_operations` 11 passed;
+  `cargo test -p sagat-scheduler -p sagat-execution-engine` green; `cargo fmt --check`, `cargo clippy --workspace --all-targets
+  --locked -- -D warnings`, `check-architecture.py` and `check-agent-config.py` clean (the integration runs took 427-525 s on a
+  loaded machine against 68 s on the previous day; no test timed out). One test per row of the plan's table that the first story
+  meets: schedules per namespace with a limit of **zero** (a new one is refused with nothing stored, charged or audited —
+  a before/after count of `schedules`, `schedule_revisions`, `payloads`, `audit_records`, `quota_transaction_deltas` — and the
+  existing one still fires); spec entries 10 accepted / 11 refused and exclusions 10 / 11 with nothing stored; the hard
+  ceiling of 32 entries holds whatever a namespace asks for; spacing 60 s accepted, 30 s `SCHEDULE_TOO_FREQUENT`, the 10 s
+  floor; input exactly 64 KiB (65,536 bytes) accepted and one byte more `PayloadTooLarge` with nothing stored; note 512 / 513;
+  remaining actions 1 and 1,000,000 accepted, 0 and 1,000,001 refused; a ceiling lowered after the fact refuses a new
+  five-entry spec while the five-entry schedule made before it is read back and fires (NFR-018-003); and **round size**: the
+  row "schedule actions per pass round per replica, 100 / 1,000" was not enforced by `SchedulePass`
+  (the round-ceiling item of T018-017), so the test was seen failing first (five due schedules, a ceiling of three: the
+  round took all five) and `ScheduleSettings::round_actions` (default 100, hard 1,000, `effective()`) now stops the round
+  there; the next round carries on (3 + 2 steps, then 0; every schedule started once); `SAGAT_SCHEDULES_ROUND_ACTIONS`
+  (1..=1,000, refused outside) in the engine config (`apps/execution-engine/tests/config.rs`), and a unit test of
+  `effective()` (0 → 1, above 1,000 → 1,000). Not covered here, and not a US01 row: jitter (its test is in `service.rs`),
+  catch-up and buffer ceilings (domain tests), backfill ceilings (`backfill.rs`), and the rows of US03..US06.
 
 ## Phase 4: US02 — Operate a schedule (P1)
 
@@ -361,11 +433,76 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `a_waiting_trigger_starts_when_the_run_ends_and_uses_up_nothing` (only a scheduled start decrements).
 - [ ] T018-028 [US2] Describe (next N, recent, counters), actions route, action purge keeping `BUFFERED`
   — `crates/infra-postgres/src/maintenance.rs` — contract + purge tests — FR-018-013.
+  *Part done 2026-11-04 (task stays open: the actions route, `listScheduleActions`, changes the canonical OpenAPI and
+  waits for the REST work; describe is built, T018-018).* Nothing deleted actions. Now
+  `schedule_purge_actions(schedules, rows)` keeps an action while it is among the newest 1,000 of its schedule or younger
+  than 30 days and never deletes a `BUFFERED` one, runs through the housekeeping of the scheduler (a few schedules at a
+  time, at most 5,000 rows a call) and visits schedules in turn (decision D1955, migration
+  `20261230002000_schedule_action_purge`, gap G1954 for the revisions and tombstones). Evidence: `purge::` 7 passed in
+  `integration_schedules_bulk_operations` (1,300 days of actions: the 300 beyond the last thousand go, the oldest first,
+  and a second purge finds nothing; a schedule with 10 ancient actions keeps them; a waiting action 2,000 days old
+  stays; with one schedule per call the busy schedule is reached although a quiet one sorts first; at most the rows
+  given are deleted and the next call goes on; the runtime role may run the function and has no `DELETE` on the table;
+  a rollback drops the function and applying again brings it back). Seen failing first against a stub (nothing was
+  purged, the function did not exist), and the test of the rotation fails when the function orders by id alone.
+  Gates on the final tree (private `CARGO_TARGET_DIR`, `RUST_TEST_THREADS=2`): `integration_schedules_bulk_operations`
+  166 passed and `fault_schedules_bulk_operations` 16 passed, each also with `SAGAT_TEST_AS_RUNTIME_ROLE=1`;
+  `integration_platform_foundation` 101 (migrations, runtime-privilege audit); `integration_security_multitenancy` 126;
+  `integration_database_connections` 7; `contract_schedules_bulk_operations` 1; unit suites of domain, application,
+  infra-postgres, scheduler, api-http and execution-engine green; `cargo fmt --check` and
+  `cargo clippy --workspace --all-targets --locked -- -D warnings` clean.
 - [ ] T018-029 [US2] Catch-up after a simulated outage (`ONE`, `ALL`, summary, trigger-owned 366 d) —
   `tests/integration/schedules-bulk-operations/catchup.rs` — SC-018-003 — FR-018-008.
-- [ ] T018-030 [US2] `CANCEL_OTHER` obligations via the ordinary cancel use case; races with self
+  *Part done 2026-11-04 (task stays open: the trigger-owned schedule with its 366-day window is US07, T018-060).* The
+  outage tests found that the limits of a recovery held for one slice of the backlog and never for the backlog itself
+  (decision D1951, migration `20261230001000_schedule_recovery`): with a ceiling of 5 and 20 owed times, mode `ALL`
+  started 20 runs and mode `ONE` started 3; a 14-day outage on a per-minute schedule never became idle in 50 steps (a
+  step summarized 102 times); and a workflow with no published version was retried on every round with no backoff
+  (D1952). Seen failing first, then fixed: a recovery is planned once and remembered on the schedule
+  (`recovery_until`, `recovery_acts`), carried out one step at a time by the pure `plan_recovery_step`, summarized
+  10,000 times at a step and counted past the slice. Evidence: `catchup::` 8 passed (ceiling in mode `ALL` and `ONE`;
+  the limits kept between steps, read from the columns; a 20,000-minute outage with a one-day window in 3 steps and
+  18,560 + 1 + 1,439 times accounted for; US01 scenario 5, a time owed until the window ends and then missed; no
+  published version backs off; the migration refuses a rollback in the middle of a recovery, rolls back and applies
+  again; the constraints of the two columns); `schedules_properties` 9 passed, among them
+  `a_recovery_in_steps_keeps_its_ceiling_and_counts_every_time_once` (random backlogs, windows, modes and ceilings; a
+  mutation that stops remembering the recovery fails it with "25 actions, at most 2"); `schedules` 45. Gates on the
+  final tree (private `CARGO_TARGET_DIR`, `RUST_TEST_THREADS=2`): `integration_schedules_bulk_operations` 152 passed,
+  also with `SAGAT_TEST_AS_RUNTIME_ROLE=1` (152); `fault_schedules_bulk_operations` 11, both ways;
+  `integration_platform_foundation` 101; `integration_security_multitenancy` 126; `integration_database_connections` 7;
+  `contract_schedules_bulk_operations` 1; unit suites of domain, application, infra-postgres, scheduler, api-http and
+  execution-engine green; `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`
+  clean. Gaps G1951 (the count stops after a million times) and G1952 (a refused backfill step has no backoff).
+- [x] T018-030 [US2] `CANCEL_OTHER` obligations via the ordinary cancel use case; races with self
   completion and with failed compensation — `tests/fault/schedules-bulk-operations/cancel_other.rs` —
   first commit wins — FR-018-006, FR-018-007.
+  *Done 2026-11-04 (decisions D1953, D1954; gap G1953; owner question O1950).* The domain already decided
+  `Buffer { cancel_open }` and nothing acted on it: the action waited and the open run was never cancelled. Now the
+  decision transaction records a debt per open run (`schedule_obligations`, key `schedule:{id}:cancel:{µs}:{run}`)
+  with the waiting action and makes the schedule due at once; the pass pays the oldest debt before anything else,
+  through `RunService::operate` (Cancel) as `system:schedule:<id>`, and records it `DONE` under the shard fence; the
+  waiting action then starts by the existing release. The cancel of a run that ended by itself or is gone leaves the
+  debt paid (first commit wins); `Forbidden` is the loss of the authority; the cancel is keyed, so a lease lost
+  between the cancel and the record costs a no-op repeat. Cancelling runs needs `run:operate`: creating, updating
+  or resuming such a schedule, a backfill that asks for the rule and the override of trigger-now need it, and so does
+  every action (a developer cannot write one: O1950). Seen failing first (7 integration tests: no debt was recorded,
+  nothing paid it, no permission was asked), then fixed. Evidence: `cancel_other::` 7 passed in
+  `integration_schedules_bulk_operations` (the debt in the same transaction, paid through the ordinary cancel with
+  one audited cancellation by the schedule, a run that ended by itself first, one debt per open run, trigger-now with
+  the rule overridden, who may write the rule, an authority that can no longer operate runs pauses the schedule) and
+  5 in `fault_schedules_bulk_operations` (a run that really finishes through a worker just before the cancel is left
+  `SUCCEEDED` and uncancelled; a cancel that committed before the debt was recorded is not asked twice; a replica
+  with a lost lease cannot record the debt and the new owner pays it once; a run that waits for review keeps the new
+  time waiting and is not cancelled again; a compensation that failed pauses a schedule that pauses on failure). Two
+  mutations were caught: recording the debt without the fence fails the lease test, and not treating `StateConflict`
+  as paid fails the self-completion race. The failed-compensation outcomes are set on the run row (the saga
+  machinery is proved in its own suites); G1953: a waiting action older than the catch-up window still starts when
+  the runs end. Gates on the final tree (private `CARGO_TARGET_DIR`, `RUST_TEST_THREADS=2`):
+  `integration_schedules_bulk_operations` 159 passed and `fault_schedules_bulk_operations` 16 passed, each also with
+  `SAGAT_TEST_AS_RUNTIME_ROLE=1`; `integration_platform_foundation` 101; `integration_security_multitenancy` 126;
+  `integration_database_connections` 7; `contract_schedules_bulk_operations` 1; unit suites of domain, application,
+  infra-postgres, scheduler, api-http and execution-engine green; `cargo fmt --check` and
+  `cargo clippy --workspace --all-targets --locked -- -D warnings` clean.
 - [x] T018-031 [US2] Revisions on update; delete → `DROPPED_DELETED`, name freed —
   `tests/integration/schedules-bulk-operations/revisions.rs` — FR-018-014.
   *Done 2026-10-30; the tests are in `changes.rs`, `service.rs` and `firing.rs` (no `revisions.rs`).* Evidence:
@@ -383,6 +520,9 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   component tests — FR-018-047.
 - [ ] T018-033 [P] [US2] Schedule input disclosure (016 audiences, `no-store`, audit) —
   `tests/integration/schedules-bulk-operations/disclosure.rs` — per-level cases — FR-018-042.
+  *Not started (2026-11-04).* It needs the route `discloseScheduleInput`
+  (`contracts/rest.openapi.yaml`, `/schedules/{scheduleId}/input-disclosures`), so it changes the canonical OpenAPI, the
+  generated reference and the Studio types and wires the route; it is done with the other REST leftovers.
 
 ## Phase 5: US03 — Business identifiers and start delay (P1)
 

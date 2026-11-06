@@ -1209,6 +1209,131 @@ pub fn plan_catch_up(
     }
 }
 
+// --- one recovery, step by step ------------------------------------------------------------------
+
+/// How many due times one step looks at when it has times older than the window to summarize: a
+/// summary row stands for up to this many, so a year of per-minute times is a few dozen steps, not
+/// thousands.
+pub const SUMMARY_CHUNK: usize = 10_000;
+
+/// A recovery that has begun and is not finished (`FR-018-008`). A step acts on one time, so the
+/// limits of the recovery must outlive the step: `until` is the instant its times end (what falls
+/// due later belongs to the next recovery) and `acts_left` how many of them may still start a run.
+/// Without it every step would plan the same backlog again, and the ceiling would never be reached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Recovery {
+    pub until: OffsetDateTime,
+    pub acts_left: u32,
+}
+
+/// What one step of a recovery does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveryStep {
+    /// Nothing is due.
+    Idle,
+    /// A recovery that is remembered has nothing left to do: forget it.
+    Finished,
+    /// The times older than the window that the step looked at: one `MISSED_CATCHUP_WINDOW` summary.
+    /// The recovery, if any, is unchanged.
+    Missed(Summary),
+    /// Act on `time`. When `settle` this is the last action the recovery may take, or the last time
+    /// it has: the pass summarizes every time after `time` up to the end of the recovery as one
+    /// `COALESCED` row in the same transaction and forgets the recovery. Otherwise `then` is what the
+    /// schedule remembers (`None`: nothing, the backlog fits in what may be acted on).
+    Act {
+        time: OffsetDateTime,
+        settle: bool,
+        then: Option<Recovery>,
+    },
+    /// The recovery has used its actions and times remain: the pass summarizes the next ones.
+    Coalesce,
+}
+
+/// The actions one recovery may take: one in mode `ONE`, up to the ceiling in mode `ALL`.
+#[must_use]
+pub fn recovery_acts(policies: &Policies, ceilings: &Ceilings) -> u32 {
+    match policies.catchup_mode() {
+        CatchupMode::One => 1,
+        CatchupMode::All => ceilings.clamped().catchup_actions,
+    }
+}
+
+/// How many due times, counted from the first, a step needs to see: a chunk when `first` is older
+/// than the window (it only summarizes), otherwise two more than the actions that are left, enough
+/// to know whether the backlog is longer than the recovery may act on.
+#[must_use]
+pub fn recovery_slice(
+    first: OffsetDateTime,
+    now: OffsetDateTime,
+    recovery: Option<Recovery>,
+    policies: &Policies,
+    ceilings: &Ceilings,
+) -> usize {
+    let window =
+        Duration::milliseconds(i64::try_from(policies.catchup_window_ms()).unwrap_or(i64::MAX));
+    let cutoff = now
+        .checked_sub(window)
+        .unwrap_or(OffsetDateTime::UNIX_EPOCH);
+    if first < cutoff {
+        return SUMMARY_CHUNK;
+    }
+    let left = recovery.map_or_else(|| recovery_acts(policies, ceilings), |r| r.acts_left);
+    usize::try_from(left)
+        .unwrap_or(usize::MAX)
+        .saturating_add(2)
+}
+
+/// Plans one step of a recovery over `due`, the times from the first one owed up to the end of the
+/// recovery (`recovery.until`, or `now` when none is remembered), at most [`recovery_slice`] of them.
+///
+/// The step acts on at most one time. The limits come from the remembered recovery or, when there
+/// is none, from the policies, so a backlog longer than the recovery may act on is acted on up to
+/// the ceiling however many steps it takes and however many processes take them.
+#[must_use]
+pub fn plan_recovery_step(
+    due: &[OffsetDateTime],
+    now: OffsetDateTime,
+    recovery: Option<Recovery>,
+    policies: &Policies,
+    ceilings: &Ceilings,
+) -> RecoveryStep {
+    let window =
+        Duration::milliseconds(i64::try_from(policies.catchup_window_ms()).unwrap_or(i64::MAX));
+    let cutoff = now
+        .checked_sub(window)
+        .unwrap_or(OffsetDateTime::UNIX_EPOCH);
+    let end = recovery.map_or(now, |r| r.until.min(now));
+    let mut due: Vec<OffsetDateTime> = due.iter().copied().filter(|t| *t <= end).collect();
+    due.sort_unstable();
+    let old = due.partition_point(|t| *t < cutoff);
+    if let Some(missed) = summarize(&due[..old]) {
+        return RecoveryStep::Missed(missed);
+    }
+    let left = recovery.map_or_else(|| recovery_acts(policies, ceilings), |r| r.acts_left);
+    let Some(&time) = due.first() else {
+        return if recovery.is_some() {
+            RecoveryStep::Finished
+        } else {
+            RecoveryStep::Idle
+        };
+    };
+    if left == 0 {
+        return RecoveryStep::Coalesce;
+    }
+    let settle = left == 1 || due.len() == 1;
+    let then = if settle {
+        None
+    } else if recovery.is_some() || u32::try_from(due.len()).unwrap_or(u32::MAX) > left {
+        Some(Recovery {
+            until: recovery.map_or(now, |r| r.until),
+            acts_left: left - 1,
+        })
+    } else {
+        None
+    };
+    RecoveryStep::Act { time, settle, then }
+}
+
 // --- jitter -----------------------------------------------------------------------------------
 
 /// The bytes the caller hashes with SHA-256 to get the digest of [`jitter_offset_ms`]: the schedule

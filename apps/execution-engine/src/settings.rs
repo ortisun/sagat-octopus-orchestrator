@@ -580,6 +580,20 @@ impl EngineConfig {
                 name: "SAGAT_SCHEDULES_BATCH",
                 reason: format!("must be at most {MAX_BATCH}"),
             })?,
+            round_actions: u32::try_from(positive(
+                "SAGAT_SCHEDULES_ROUND_ACTIONS",
+                optional(
+                    get,
+                    "SAGAT_SCHEDULES_ROUND_ACTIONS",
+                    u64::from(schedule_defaults.round_actions),
+                )?,
+            )?)
+            .ok()
+            .filter(|actions| *actions <= ScheduleSettings::MAX_ROUND_ACTIONS)
+            .ok_or_else(|| ConfigError::Invalid {
+                name: "SAGAT_SCHEDULES_ROUND_ACTIONS",
+                reason: format!("must be at most {}", ScheduleSettings::MAX_ROUND_ACTIONS),
+            })?,
             ..schedule_defaults
         };
         let schedule_poll = Duration::from_millis(positive(

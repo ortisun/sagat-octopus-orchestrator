@@ -27,7 +27,7 @@ pub(crate) async fn run_actors(
         .fetch_optional(&mut *conn).await.map_err(store_error)?.ok_or(StoreError::DatabaseUnavailable)?;
     let mut actors = BTreeSet::from([publisher]);
     if info.started_by != Subject::engine().as_str() {
-        actors.insert(info.started_by.clone());
+        actors.insert(authority_of(conn, info.tenant_id, &info.started_by).await?);
     }
     if info.parent.is_some() {
         let (starter, publisher): (String, String) = sqlx::query_as(
@@ -37,10 +37,42 @@ pub(crate) async fn run_actors(
         actors.insert(if starter == Subject::engine().as_str() {
             publisher
         } else {
-            starter
+            authority_of(conn, info.tenant_id, &starter).await?
         });
     }
     Ok(actors.into_iter().collect())
+}
+
+/// The member whose authority a subject recorded on a run stands for. A person or a service is its
+/// own authority. `system:schedule:<id>` belongs to no membership: a run a schedule started stands on
+/// the subject that authorized the schedule, today (`FR-018-015`, decision D1950), so a database
+/// step is admitted under, and loses its admission with, that member.
+pub(crate) async fn authority_of(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    subject: &str,
+) -> Result<String, StoreError> {
+    let Some(schedule) = Subject::schedule_of(subject) else {
+        return Ok(subject.to_owned());
+    };
+    sqlx::query_scalar("SELECT authorized_by FROM schedules WHERE tenant_id=$1 AND id=$2")
+        .bind(tenant.as_uuid())
+        .bind(schedule)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(store_error)?
+        .ok_or(StoreError::DatabaseUnavailable)
+}
+
+/// What the managed database steps of a workflow ask of the subject behind a run: `None` for a
+/// workflow with none, otherwise whether any of them writes.
+pub(crate) fn database_writes(definition: &WorkflowDefinition) -> Option<bool> {
+    let mut operations = definition.nodes().filter_map(|n| n.database_operation());
+    let first = operations.next()?;
+    Some(
+        first.kind == OperationKind::Execute
+            || operations.any(|op| op.kind == OperationKind::Execute),
+    )
 }
 
 /// Resolved revisions only; connection settings and all credentials stay out of admission receipts.

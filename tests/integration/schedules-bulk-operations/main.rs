@@ -7,12 +7,18 @@
 mod support;
 
 mod admission;
+mod authority;
 mod backfill;
+mod cancel_other;
+mod catchup;
 mod changes;
 mod firing;
+mod limits;
 mod migration;
 mod pass;
+mod purge;
 mod rest;
+mod schedules;
 mod service;
 mod store;
 mod store_support;

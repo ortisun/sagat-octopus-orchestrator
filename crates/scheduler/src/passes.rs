@@ -71,6 +71,8 @@ use crate::shards::{Placement, Snapshot};
 
 /// Delivered outbox messages deleted per housekeeping round.
 const PURGE_BATCH: u32 = 5_000;
+/// How many schedules one call of the purge of schedule actions looks at.
+const SCHEDULE_PURGE_SCHEDULES: u32 = 50;
 /// Batches one housekeeping call may purge (about 100 000 messages).
 const PURGE_ROUNDS: u32 = 20;
 
@@ -3484,6 +3486,33 @@ where
             tracing::info!(
                 removed = scripts,
                 "purged script records past their retention"
+            );
+        }
+        // The actions schedules keep end with their retention: the last 1,000 of a schedule, or 30 days
+        // (a waiting action never). Schedules are visited in turn, a few at a time.
+        let mut actions = 0u64;
+        for _ in 0..PURGE_ROUNDS {
+            match self
+                .store
+                .purge_schedule_actions(SCHEDULE_PURGE_SCHEDULES, PURGE_BATCH)
+                .await
+            {
+                Ok(n) => {
+                    actions += n;
+                    if n < u64::from(PURGE_BATCH) {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "could not purge schedule actions");
+                    break;
+                }
+            }
+        }
+        if actions > 0 {
+            tracing::info!(
+                removed = actions,
+                "purged schedule actions past their retention"
             );
         }
         // One bounded statement at a time, so a backlog never holds a long one, repeated until the

@@ -65,6 +65,17 @@ impl ScheduledStarts for Starts {
     ) -> Result<RunId, AppError> {
         ScheduledStarts::start_scheduled(&self.0.runs, principal, request, admission, ctx).await
     }
+
+    async fn cancel_run(
+        &self,
+        principal: &Principal,
+        run: Uuid,
+        reason: &str,
+        key: &str,
+        ctx: &RequestContext,
+    ) -> Result<(), AppError> {
+        ScheduledStarts::cancel_run(&self.0.runs, principal, run, reason, key, ctx).await
+    }
 }
 
 pub(crate) type Service = ScheduleService<PgScheduleStore, SpecCalendar, TestClock>;
@@ -90,6 +101,12 @@ pub(crate) async fn fixture() -> Fixture {
 
 /// A fixture whose clock starts at `start`.
 pub(crate) async fn fixture_from(start: OffsetDateTime) -> Fixture {
+    fixture_with(start, Ceilings::default()).await
+}
+
+/// A fixture whose firing acts under `ceilings` (a recovery, a buffer, the runs it tracks) instead of
+/// the defaults, so that a test reaches a ceiling with a handful of times.
+pub(crate) async fn fixture_with(start: OffsetDateTime, ceilings: Ceilings) -> Fixture {
     let w = world().await;
     let (workflow, _) = w.publish(chain("scheduled")).await;
     let w = Arc::new(w);
@@ -107,7 +124,7 @@ pub(crate) async fn fixture_from(start: OffsetDateTime) -> Fixture {
         clock.clone(),
         PgIdentityStore::new(w.db.pool.clone()),
         Starts(Arc::clone(&w)),
-        Ceilings::default(),
+        ceilings,
     );
     Fixture {
         w,
@@ -123,17 +140,19 @@ pub(crate) fn hourly() -> Value {
 }
 
 impl Fixture {
-    pub(crate) async fn create(
+    /// The write of a schedule, decoded under the hard ceilings so that a test can build a spec the
+    /// service of a namespace with lower ceilings must still refuse.
+    pub(crate) fn write_of(
         &self,
         name: &str,
         spec: &Value,
         policies: &Value,
         target: Option<Value>,
-    ) -> ScheduleRecord {
-        let write = ScheduleWrite {
+    ) -> ScheduleWrite {
+        ScheduleWrite {
             name: ScheduleName::new(name).expect("name"),
-            spec: spec_from_json(spec, &Ceilings::default()).expect("spec"),
-            policies: policies_from_json(policies, &Ceilings::default()).expect("policies"),
+            spec: spec_from_json(spec, &Ceilings::HARD).expect("spec"),
+            policies: policies_from_json(policies, &Ceilings::HARD).expect("policies"),
             target: target_from_json(
                 &target.unwrap_or_else(|| json!({"workflowId": self.workflow.to_string()})),
             )
@@ -142,7 +161,14 @@ impl Fixture {
             paused: false,
             note: None,
             remaining_actions: None,
-        };
+        }
+    }
+
+    /// Creates the schedule, or says why the service refused.
+    pub(crate) async fn try_create(
+        &self,
+        write: ScheduleWrite,
+    ) -> Result<ScheduleRecord, AppError> {
         self.service
             .create(
                 &self.w.admin,
@@ -151,7 +177,120 @@ impl Fixture {
                 &RequestContext::default(),
             )
             .await
+    }
+
+    pub(crate) async fn create(
+        &self,
+        name: &str,
+        spec: &Value,
+        policies: &Value,
+        target: Option<Value>,
+    ) -> ScheduleRecord {
+        self.try_create(self.write_of(name, spec, policies, target))
+            .await
             .expect("create the schedule")
+    }
+
+    /// Creates the schedule as `who`, who becomes its authority.
+    pub(crate) async fn create_as(
+        &self,
+        who: &Principal,
+        name: &str,
+        spec: &Value,
+        policies: &Value,
+        target: Option<Value>,
+    ) -> ScheduleRecord {
+        self.service
+            .create(
+                who,
+                self.w.namespace.id(),
+                self.write_of(name, spec, policies, target),
+                &RequestContext::default(),
+            )
+            .await
+            .expect("create the schedule")
+    }
+
+    /// Runs `action` while another transaction holds the row of `schedule`; once the action is
+    /// waiting for that row, `subject` is demoted to a viewer and committed, and then the row is
+    /// released. Whatever the action read about `subject` before it started is out of date when it
+    /// admits its run: a revocation that has returned must stop it (`FR-018-015`, ADR-0050 decision 7).
+    ///
+    /// The wait is for a backend that waits on a lock (`pg_stat_activity`), not for a time.
+    pub(crate) async fn revoked_while_the_action_waits<T>(
+        &self,
+        schedule: &ScheduleRecord,
+        subject: &str,
+        action: impl std::future::Future<Output = T>,
+    ) -> T {
+        let mut held = self.w.db.pool.begin().await.expect("hold the schedule");
+        sqlx::query("SELECT id FROM schedules WHERE id = $1 FOR UPDATE")
+            .bind(schedule.id.as_uuid())
+            .fetch_one(&mut *held)
+            .await
+            .expect("lock the row of the schedule");
+        let revoke = async {
+            self.wait_for_a_backend_on_a_lock("the action waits for the row of the schedule")
+                .await;
+            sqlx::query(
+                "UPDATE memberships SET role = 'viewer' WHERE tenant_id = $1 AND subject = $2",
+            )
+            .bind(schedule.tenant_id.as_uuid())
+            .bind(subject)
+            .execute(&self.w.db.pool)
+            .await
+            .expect("revoke");
+            held.commit().await.expect("release the schedule");
+        };
+        let (done, ()) = tokio::join!(action, revoke);
+        done
+    }
+
+    /// Runs `action` while another transaction holds the row of `run` and has already finished it
+    /// as `status`; once the action is waiting for that row the transaction commits. The first
+    /// commit wins: the action finds a run that is over (`FR-018-007`).
+    pub(crate) async fn finished_while_the_action_waits<T>(
+        &self,
+        run: Uuid,
+        status: &str,
+        action: impl std::future::Future<Output = T>,
+    ) -> T {
+        let mut held = self.w.db.pool.begin().await.expect("hold the run");
+        sqlx::query("UPDATE runs SET status = $2, finished_at = now() WHERE id = $1")
+            .bind(run)
+            .bind(status)
+            .execute(&mut *held)
+            .await
+            .expect("finish the run, uncommitted");
+        let finish = async {
+            self.wait_for_a_backend_on_a_lock("the action waits for the row of the run")
+                .await;
+            held.commit().await.expect("commit the end of the run");
+        };
+        let (done, ()) = tokio::join!(action, finish);
+        done
+    }
+
+    /// Waits until some backend waits on a lock (`pg_stat_activity`, not a time), for at most two
+    /// minutes, then panics naming `stage`.
+    async fn wait_for_a_backend_on_a_lock(&self, stage: &str) {
+        super::bounded::within(stage, std::time::Duration::from_secs(120), async {
+            loop {
+                let waiting: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM pg_stat_activity \
+                     WHERE datname = current_database() AND pid <> pg_backend_pid() \
+                       AND wait_event_type = 'Lock'",
+                )
+                .fetch_one(&self.w.db.pool)
+                .await
+                .expect("look at the backends");
+                if waiting > 0 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
     }
 
     pub(crate) fn due(&self, schedule: &ScheduleRecord) -> DueSchedule {

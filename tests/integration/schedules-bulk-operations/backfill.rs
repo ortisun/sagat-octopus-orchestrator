@@ -479,6 +479,27 @@ async fn a_backfill_whose_requester_lost_run_start_is_stopped_and_starts_nothing
 }
 
 #[tokio::test]
+async fn a_requester_who_loses_run_start_while_a_step_is_admitted_starts_nothing_and_stops_the_backfill()
+ {
+    let f = fixture().await;
+    let schedule = f.create("backfill-race", &hourly(), &json!({}), None).await;
+    let backfill = request(&f, schedule.id, &allow_all())
+        .await
+        .expect("backfill");
+
+    let fired = f
+        .revoked_while_the_action_waits(&schedule, "alice", step(&f, &backfill))
+        .await;
+
+    assert_eq!(fired, Fired::Acted, "the stop is a step");
+    assert!(
+        f.runs(&schedule).await.is_empty(),
+        "no run after the revocation"
+    );
+    assert_eq!(read(&f, &backfill).await.state, BackfillState::Cancelled);
+}
+
+#[tokio::test]
 async fn a_backfill_that_buffers_waits_for_room_instead_of_dropping_times() {
     let f = fixture().await;
     let schedule = f.create("patient", &hourly(), &json!({}), None).await;
