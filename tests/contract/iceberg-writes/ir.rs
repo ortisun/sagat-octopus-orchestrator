@@ -377,25 +377,48 @@ fn the_samples_cover_every_mode_scope_record_source_and_destination_kind() {
     );
 }
 
-/// The schema is the editor-time gate: it describes the nodes, and publication is the codec's decision. Until the
-/// domain parses `icebergWrite` and `destinations` (T035-093 and the tasks before it) the codec must refuse a
-/// workflow that uses them, instead of accepting it and dropping the step. This is the pending state, written down
-/// (AGENTS.md rule 11); the domain task replaces it with the acceptance tests.
+/// The schema is the editor-time gate: it describes the nodes, and publication is the codec's decision. The codec builds
+/// the append `icebergWrite` (T035-053) and refuses everything it cannot build as an unsupported capability, instead of
+/// accepting the document and dropping the step. This is the pending state, written down per document (AGENTS.md rule
+/// 11): the destinations (T035-093 and before), overwrite and upsert (T035-080, T035-085) and a record schema
+/// (T035-054, which teaches the classification check to read it) each replace their line here with an acceptance test. That the codec accepts a document does not publish
+/// it: the store refuses a definition that holds an Iceberg node until its admission exists (D035-085), which the
+/// real-store scenario of `integration_database_connections` and the application test of the default show.
 #[test]
-fn schema_acceptance_does_not_enable_publication_yet() {
-    use sagat_application::definitions::IrCodec;
+fn the_codec_builds_the_append_step_and_refuses_the_rest_instead_of_dropping_it() {
+    use sagat_application::definitions::{IrCodec, IrError};
     use sagat_infra_ir::JsonIrCodec;
 
-    let accepted_by_the_codec: Vec<String> = valid_documents()
+    let found: std::collections::BTreeMap<String, String> = valid_documents()
         .into_iter()
-        .filter(|(_, document)| {
-            let bytes = serde_json::to_vec(document).expect("JSON");
-            JsonIrCodec.parse(&bytes).is_ok()
+        .map(|(name, document)| {
+            let bytes = serde_json::to_vec(&document).expect("JSON");
+            let outcome = match JsonIrCodec.parse(&bytes) {
+                Ok(_) => "built".to_owned(),
+                Err(IrError::Unsupported { kind, .. }) => kind,
+                // The classification check refuses an `x-sagat-classification` annotation where it does not know to
+                // read one, which is a record schema, before the step is built.
+                Err(IrError::Classification(_)) => "classification".to_owned(),
+                Err(other) => format!("unexpected: {other:?}"),
+            };
+            (name, outcome)
         })
-        .map(|(name, _)| name)
         .collect();
-    assert!(
-        accepted_by_the_codec.is_empty(),
-        "the codec publishes workflows that the engine cannot run: {accepted_by_the_codec:?}"
+    let expected: std::collections::BTreeMap<String, String> = [
+        ("append-inline", "built"),
+        ("append-blobs-mapped", "classification"),
+        ("destinations-every-kind", "destinations"),
+        ("destinations-on-database", "destinations"),
+        ("overwrite-batch-partitions", "icebergWrite.overwrite"),
+        ("overwrite-filter", "icebergWrite.overwrite"),
+        ("overwrite-table-allow-empty", "icebergWrite.overwrite"),
+        ("upsert-database-result", "icebergWrite.upsert"),
+    ]
+    .into_iter()
+    .map(|(name, outcome)| (name.to_owned(), outcome.to_owned()))
+    .collect();
+    assert_eq!(
+        found, expected,
+        "what the codec builds and what it refuses, per valid sample"
     );
 }
