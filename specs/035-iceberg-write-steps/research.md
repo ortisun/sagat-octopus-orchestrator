@@ -1311,6 +1311,38 @@ The other fixes were wording:
   dictionary and bloom-filter sizes. The first is closed by the in-memory pin of T035-034. For the rest only the sandbox's memory and
   time limits stop a hostile value. *Exit condition:* the host pins or caps them in memory the way it pins the retries, when the
   append path writes.
+- **D035-093 — The commit is made once: the host sets PyIceberg's commit retry to zero on the table it loaded, and the claim is
+  measured.** T035-034 (the part that decides G035-020) and the Python half of T035-019. **Decided by: delegate** (the owner delegated
+  the decisions of this feature).
+  - *Measured* (2026-11-06, PyIceberg 0.12.0; a REST catalog over real HTTP on the loopback with a real SQL catalog behind it,
+    counting the commit requests one `append` sends). Without the override: a refused commit (409) is sent **5 times** (PyIceberg
+    refreshes the table, rebuilds the snapshot on the new head and commits again, `table/__init__.py:1090-1143`); 500, 502 and 504
+    (`CommitStateUnknownException`), 503, 429 and a connection closed without a reply are sent once; a 401 twice (one refresh of the
+    token). The number of retries is read from `commit.retry.num-retries` among the properties of **the table the catalog returned**:
+    a table whose properties say 6 gets 7 requests, so the owner of a table chooses how often the host commits. A writer that loses a
+    race is rebased and lands its rows on top of the new head without the host having searched the new history, which is the
+    hazard D035-030 exists to prevent.
+  - *With the override.* `commit.pin_commit_once(table)` sets that one property to `"0"` on the loaded table object, in memory; the
+    stored table never has it and the other properties are kept. Then every answer above is one request, except the 401; a table that
+    says 1000 gets none; a writer that loses a real race is refused with `CommitFailedException` by the requirement on the head that
+    PyIceberg adds itself, and nothing of ours lands; an uncontested commit lands once and carries its effect key.
+  - *The one repeat left* is the 401: PyIceberg's REST client asks again once after refreshing the token. The catalog applied nothing
+    to a request it did not authorise, so it is safe and it is at most one more request.
+  - *Consequence for G035-020.* The override works on PyIceberg 0.12.0, so the fallback of D035-030 (build the updates and call the
+    catalog's commit directly) is not needed. The tests that state what PyIceberg does without it are kept as the premise: a newer
+    PyIceberg that changes the mechanism fails them, and the override is looked at again then.
+  - *Evidence.* `runners/lake/tests/test_commit.py` (17 tests) with the fixture `counting_catalog.py`, written first and seen failing
+    (the module did not exist); 6 mutations of `commit.py`, all caught; `runners/lake`: 370 passed, 1 skipped; `ruff check`, `ruff
+    format --check` and strict `mypy` clean. **Not done:** T035-019 as written (the Rust test with the counting relay in front of the
+    REST fixture, end to end through the relay; it needs Docker), and the rest of T035-034 (the conditional commit around the append,
+    which comes with the append mode).
+- **G035-043 — PyIceberg's REST client has no request timeout.** Measured 2026-11-06 with a scratch script against a local catalog
+  that accepts the commit and never answers: three seconds later `append` was still waiting, and `catalog/rest/__init__.py` passes no
+  `timeout` to `requests`. FR-035-018 and D035-030 step 6 speak of a commit that "times out", but nothing in PyIceberg produces one.
+  *Exit condition:* decide when the catalog loader is written between (a) mounting an adapter with a timeout on the catalog's session
+  (`catalog._session`, a private attribute, pinned by the exact version 0.12.0 and a test) and (b) relying on the sandbox runner's
+  deadline of the attempt (T035-035) and treating the killed attempt as an unknown outcome, which D035-030 already handles by
+  searching the history again. Either way a test must show the hang ends.
 - **D035-094 — A table's properties pass an allowlist before PyIceberg sees them.** T035-018 follow-up, closing the REST half of G035-041.
   **Decided by: delegate** (the owner delegated the decisions of this feature).
   - *Why.* D035-050 filtered the catalog's own configuration (`/v1/config` and `LoadTable.config`) and left the `properties` of the table's
