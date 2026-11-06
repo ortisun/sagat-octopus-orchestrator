@@ -1298,11 +1298,13 @@ The other fixes were wording:
   named by `py-io-impl` first (`io/__init__.py:371`). So `py-io-impl`, `s3.endpoint`, `s3.proxy-uri`, signer and credential keys in the
   properties of a table beat what D035-050 pins, and it happens inside `load_table`, before any fact is read. `Hygiene.accept_table`
   filters `LoadTable.config` and the four location properties, and reads nothing else of `metadata.properties`. The relay allow-list
-  (D035-049) still stops a redirected endpoint from leaving the sandbox; the import of a named class is not stopped by it. **Not fixed
-  here.** *Exit condition:* `accept_table` returns only the table properties the host lets PyIceberg see (an allowlist of the `write.`,
-  `commit.`, `format-version`, `gc.`, `history.`, `read.`, `schema.` families) and counts the rest as dropped, with the hostile fixture
-  carrying `py-io-impl` and `s3.endpoint` in the table's properties; for a catalog that reads the metadata file itself the loader
-  builds the table's IO from the host's own properties, or that catalog type is refused until it does.
+  (D035-049) still stops a redirected endpoint from leaving the sandbox; the import of a named class is not stopped by it.
+  *Measured the same day:* `tests/test_table_io_premise.py` makes the catalog pin `py-io-impl` and the table name another class;
+  PyIceberg builds the table's, on `load_table`. **Closed for the REST path by D035-094** (`accept_table` returns only the table
+  properties the host lets PyIceberg see, with the hostile fixture carrying `py-io-impl` and `s3.endpoint` in a table's properties).
+  *Still open, exit condition:* the loader that builds the REST catalog hands PyIceberg `AcceptedTable.properties` and not the
+  document's own (it does not exist yet); and for a catalog that reads the metadata file itself (Glue, Hive, SQL) the loader builds the
+  table's IO from the host's own properties, or that catalog type is refused until it does.
 - **G035-042 — Table properties that size the write are not bounded.** Found by the same review. The retry loop reads
   `commit.retry.num-retries`, `.max-wait-ms` and `.total-timeout-ms` from the table (2026-11-06, measured: a table that says 6
   retries gets 7 commit requests; see T035-034), and the write reads `write.target-file-size-bytes` and the Parquet row-group, page,
@@ -1341,3 +1343,18 @@ The other fixes were wording:
   (`catalog._session`, a private attribute, pinned by the exact version 0.12.0 and a test) and (b) relying on the sandbox runner's
   deadline of the attempt (T035-035) and treating the killed attempt as an unknown outcome, which D035-030 already handles by
   searching the history again. Either way a test must show the hang ends.
+- **D035-094 — A table's properties pass an allowlist before PyIceberg sees them.** T035-018 follow-up, closing the REST half of G035-041.
+  **Decided by: delegate** (the owner delegated the decisions of this feature).
+  - *Why.* D035-050 filtered the catalog's own configuration (`/v1/config` and `LoadTable.config`) and left the `properties` of the table's
+    metadata alone except for four locations. PyIceberg merges those over the catalog's properties when it builds the file IO, so a
+    table could name the class to import and move the endpoint, the proxy, the signer and the region. The premise is measured in
+    `test_table_io_premise.py`.
+  - *The rule.* `Hygiene.table_properties` keeps a key only if it is text under the `write.`, `commit.`, `gc.`, `history.`, `read.` or
+    `schema.` family (the whole key, in exact case, as PyIceberg reads it) and drops and counts every other: `py-io-impl`, `s3.*`,
+    `gcs.*`, `adls.*`, `client.*`, `uri`, `warehouse`, `token`, `credential`, `rest.*`, and also the harmless `owner` and `comment`, so
+    the count is a trend for the audit of a connection and not an alarm by itself. `write.py-location-provider.impl` is kept on purpose:
+    dropping it would give the table a default placement without anyone having said no, and D035-092 refuses it. The properties that
+    move the data files are still checked as locations.
+  - *Evidence.* 24 new tests in `test_config_hygiene.py` (the hostile table served over real HTTP, 14 keys that must not pass, the six
+    families that must, a value that is not text, the provider) and 2 premise tests; 18 mutations of the filter, all caught (one needed a
+    corrected mutation to be applied). `runners/lake`: 424 passed, 1 skipped; `ruff check`, `ruff format --check` and strict `mypy` clean.
