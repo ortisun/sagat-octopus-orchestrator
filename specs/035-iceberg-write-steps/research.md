@@ -1515,3 +1515,30 @@ The other fixes were wording:
   one JSON line of `sagat.lake.v1`, loads the catalog from the pinned connection (with `Hygiene.accept_table` and a request timeout,
   G035-041 and G035-043), reads `inputs` in Parquet, or writes the result line. *Exit condition:* `host.py` gains the `icebergWrite`
   operation that does, tested through the protocol; overwrite and upsert follow.
+- **D035-101 — The request line is checked field by field, against the limits of the domain.** T035-057, seventh part (G035-047, first
+  half). **Decided by: delegate** (the owner delegated the decisions of this feature).
+  - *`request.parse_write(document, attempt_dir=...)`* (`runners/lake/sagat_lake/request.py`) turns the one JSON line of `sagat.lake.v1`
+    into a `WriteRequest`: the table, an `AppendRequest` and the pinned connection. The runner is the platform's own, but the line carries
+    what people write (a table, a mapping, a ref) and a connection with its credentials. A field the host does not know, one that is
+    missing and one that does not hold what the contract says are the same break, `LAKE_HOST_PROTOCOL`, with no field name and no value
+    (`Failure` has no free text). The things that are not served yet are breaks too: another mode, an `overwrite` or `upsert` section, a
+    Parquet input; the docstring of `host.py` already says a request for an operation that is not there is answered so, never with a
+    pretence.
+  - *The limits are those of the domain* (`crates/domain/src/database/iceberg_write.rs`), so the host takes everything the platform
+    publishes and nothing more: names and refs 1 to 255 **bytes** with no control character (Unicode `Cc`, not `isprintable`, which
+    would refuse a no-break space the platform accepts), 1 to 8 namespace levels, a mapped column up to 255 bytes, a JSON pointer up to
+    512 bytes and 16 segments with only the escapes `~0` and `~1`, at most 1,024 mappings and 32 inputs. A first version used the
+    wrong limits (characters, 16 levels, a restricted charset for the ref); reading the domain showed that it would have refused
+    `feature/x` and any table the platform lets a user name with an accent, and the tests now say what the platform publishes is accepted.
+  - *Paths are resolved here.* An input is `in/<name>` with a name of letters, digits, `.`, `_` and `-` that does not start with a dot, and is
+    resolved below `<attempt dir>/in/`: nothing downstream follows a name out of the attempt's directory. The attempt id is the name of
+    the attempt directory and must be a valid one (at most 60 characters, for the numbers each try adds).
+  - *Counts and times.* The two byte limits are decimal strings within int64 (the five-language representation), the retries an integer
+    from 0 to 16 and not a boolean, the times `YYYY-MM-DDTHH:MM:SS[.f{1,6}]Z` read to milliseconds. The snapshot properties are a closed set
+    of five keys: PyIceberg refuses a key it owns, and the host does not let a request name any other.
+  - *The connection* (`catalog`, `storage`, `warehouseLocations` of 1 to 16, `credentials` as text to text) is kept whole for the catalog
+    loader that does not exist yet, and is not part of `repr`, so a log of the request cannot carry a credential.
+  - *Evidence.* 141 tests in `test_request.py` (every field missing, a field unknown, 71 wrong values, 23 wrong sections, the limits at
+    their edge from both sides, what the platform publishes up to its limits, the repr, the failure), written first and seen failing
+    (the module did not exist); 68 mutations, all caught after the corrections that the survivors asked for (a mapping that is not a list,
+    the limits taken from the domain). One mutation, a time with an offset, is an equivalent mutant: the next step refuses it anyway.
