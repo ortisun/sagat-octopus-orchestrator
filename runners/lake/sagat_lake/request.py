@@ -162,9 +162,10 @@ def _flag(value: object) -> bool:
     return value
 
 
-def _object(value: object, keys: set[str]) -> dict[str, Any]:
-    """An object with exactly these keys."""
-    if not isinstance(value, dict) or value.keys() != keys:
+def _object(value: object, keys: set[str], *, required: set[str] | None = None) -> dict[str, Any]:
+    """An object with exactly these keys, or with these at most and ``required`` at least."""
+    needed = keys if required is None else required
+    if not isinstance(value, dict) or not needed <= value.keys() <= keys:
         raise _break()
     return value
 
@@ -208,11 +209,13 @@ def _connection(value: object) -> dict[str, Any]:
         raise _break()
     for location in locations:
         _text(location, 2048)
-    credentials = connection["credentials"]
-    if not isinstance(credentials, dict) or not all(
-        isinstance(name, str) and isinstance(secret, str) for name, secret in credentials.items()
-    ):
-        raise _break()
+    # the secret documents of the data model, each text to text: the catalog's and the storage's
+    credentials = _object(connection["credentials"], {"catalog", "storage"}, required=set())
+    for document in credentials.values():
+        if not isinstance(document, dict) or not all(
+            isinstance(name, str) and isinstance(secret, str) for name, secret in document.items()
+        ):
+            raise _break()
     return connection
 
 

@@ -1615,3 +1615,40 @@ The other fixes were wording:
     gain would be an image without Python and one language in the platform. Look at each release of iceberg-rust.
   - *Not verified:* the Glue and JDBC catalogs, ADLS and GCS through OpenDAL, and the use of REST `storage-credentials` in the code (only
     its absence from the release notes).
+- **D035-105 — The pinned connection is turned into the catalog client by the host, and the catalog is asked only for what the
+  connection declares.** T035-018 follow-up; closes the loader half of G035-047. **Decided by: delegate** (the owner delegated the
+  decisions of this feature; the shape of `credentials` was announced to the owner on 2026-11-06 and not objected to).
+  - *The shape of the request's `connection`* is the one of `data-model.md` §1, as stored, with the secrets next to it:
+    `catalog: {type: "rest", rest: {uri, warehouse, accessDelegation, prefix?, auth?, remoteSigning?}}`,
+    `storage: {type: "s3", credentials: "static" | "vended", s3: {region, pathStyle, endpoint?}}`, `warehouseLocations`, and
+    `credentials: {catalog?: {...}, storage?: {...}}`, where each is the secret document of the data model (`{clientId, clientSecret}`
+    for OAuth2, `{token}` for a bearer, `{accessKeyId, secretAccessKey, sessionToken?}` for S3). `request.py` checks that `credentials`
+    has those two keys at most and that each is text to text; `connection.py` checks the rest. **`contracts/lake-runtime.md` still says
+    `"credentials": {...resolved values...}`; it is updated with the Rust runner that writes it (T035-035), because a change of a
+    contract file runs the whole stack in CI.**
+  - *`connection.open_connection(connection)`* returns the hygiene of the attempt (storage type, warehouse locations, what may be
+    delegated), the client properties, and `catalog(request_timeout=...)`, which builds the `LakeRestCatalog` of D035-102. Serves a
+    REST catalog with no authentication, OAuth2 or a bearer token, over S3 with static or vended credentials. A Glue, Hive or JDBC
+    catalog, SigV4, remote signing, GCS, ADLS and an assumed role (`roleArn`, `externalId`) are not served yet and are
+    `LAKE_HOST_PROTOCOL`, like anything unknown or of the wrong shape. A static credential that is missing is told apart, with the
+    hygiene's own `DATABASE_CREDENTIAL_UNAVAILABLE`.
+  - *Consistency rules, each refused as a break.* Vended storage needs `accessDelegation: vended-credentials`, static storage needs
+    `none`; credentials sent for vended storage (nothing would use them in the sandbox); catalog credentials that are not those of its
+    `auth`, or any for a catalog without one; an OAuth2 client id with a `:` (PyIceberg joins the two with it). An address has no user
+    information, query or fragment, and is `https`, or `http` on the loopback only (the catalog's, not the token server's or the
+    storage's), so a secret is never sent in the clear to another host.
+  - *Found while reading PyIceberg: it asks every catalog for vended credentials by default.* `_config_headers` does
+    `session.headers.setdefault("X-Iceberg-Access-Delegation", "vended-credentials")`, and a `header.` property can say anything. A
+    connection that declared static credentials still invited the catalog to hand over others; `Hygiene` already dropped them on
+    arrival, but the invitation was sent. `Hygiene.access_delegation` now says what the connection allows (`vended-credentials`,
+    `remote-signing`, both, or nothing), and `LakeRestCatalog` sends exactly that header and none when there is nothing to ask. A
+    test shows the plain client sending it, and one shows a `header.` property unable to ask for more.
+  - *Evidence.* 91 tests in `test_connection.py` (what is built, each consistency rule, what is not served, every part missing or
+    unknown, the limits of addresses, regions, prefixes and locations, and two with the catalog it opens against the stub that lies:
+    one loads a table with the file IO pinned, the credentials in and no delegation header sent, one gets a `ReadTimeout`), 2 groups in
+    `test_config_hygiene.py` and 5 cases in `test_rest_catalog.py` for the delegation, and `test_request.py` moved to the new shape.
+    Written before the module; I did not run them before it existed, so they were not "seen failing" except the 8 of the delegation,
+    which were. `runners/lake`: 965 passed, 1 skipped; `ruff` and strict `mypy` clean. No mutation pass (OD-2026-11-06-2).
+- **G035-048 — The Glue, Hive and JDBC catalogs, SigV4, remote signing, GCS, ADLS and an assumed role have no loader.** Each is a
+  `LAKE_HOST_PROTOCOL` today. They read the metadata file themselves, so G035-041 and G035-043 apply to them again. *Exit condition:*
+  one loader per catalog and storage with its own hostile test, in the order the owner's connections need them.

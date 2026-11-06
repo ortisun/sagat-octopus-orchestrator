@@ -618,3 +618,24 @@ def test_an_entry_that_is_not_a_prefix_with_a_config_is_dropped_and_counted(bad:
 
 def test_no_credentials_is_no_credentials() -> None:
     assert s3(vended=True).storage_credentials([]) == []
+
+
+# -- what the connection lets the catalog delegate ------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("vended", "signing", "expected"),
+    [
+        (False, False, None),
+        (True, False, "vended-credentials"),
+        (False, True, "remote-signing"),
+        (True, True, "vended-credentials,remote-signing"),
+    ],
+)
+def test_the_connection_asks_the_catalog_for_only_what_it_declares(
+    vended: bool, signing: bool, expected: str | None
+) -> None:
+    assert s3(vended=vended, signing=signing).access_delegation == expected
+
+
+def test_remote_signing_is_not_asked_for_on_a_storage_that_does_not_sign() -> None:
+    hygiene = Hygiene(Declaration(StorageType.GCS, ("gs://lake/warehouse/",), remote_signing=True))
+    assert hygiene.access_delegation is None

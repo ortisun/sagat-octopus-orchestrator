@@ -37,7 +37,7 @@ def document(**changes: Any) -> dict[str, Any]:
             "catalog": {"type": "rest", "uri": "https://catalog.example/api"},
             "storage": {"type": "s3", "region": "eu-west-1"},
             "warehouseLocations": ["s3://lake/warehouse/"],
-            "credentials": {"s3.access-key-id": "AKIA", "s3.secret-access-key": "secret"},
+            "credentials": {"storage": {"accessKeyId": "AKIA", "secretAccessKey": "secret"}},
         },
         "relay": {"socket": f"/work/{ATTEMPT}/relay.sock", "token": "t" * 40},
         "table": {"namespace": ["sales"], "name": "orders"},
@@ -99,7 +99,7 @@ def test_a_request_of_the_contract_is_parsed_into_what_the_append_needs(tmp_path
 
 def test_the_connection_is_kept_whole_for_the_catalog_loader_and_never_shown(tmp_path: Path) -> None:
     parsed = parse_write(document(), attempt_dir=attempt_dir(tmp_path))
-    assert parsed.connection["credentials"] == {"s3.access-key-id": "AKIA", "s3.secret-access-key": "secret"}
+    assert parsed.connection["credentials"] == {"storage": {"accessKeyId": "AKIA", "secretAccessKey": "secret"}}
     assert "secret" not in repr(parsed)
     assert "AKIA" not in repr(parsed)
 
@@ -249,6 +249,11 @@ def test_a_field_that_does_not_hold_what_the_contract_says_is_a_protocol_break(
         ("connection", {"storage": None}),
         ("connection", {"credentials": ["a"]}),
         ("connection", {"credentials": {"k": 1}}),
+        ("connection", {"credentials": {"k": {"a": "b"}}}),  # a secret document the host does not know
+        ("connection", {"credentials": {"storage": "x"}}),
+        ("connection", {"credentials": {"storage": {"k": 1}}}),
+        ("connection", {"credentials": {"catalog": ["a"]}}),
+        ("connection", {"credentials": {"catalog": {"token": None}}}),
         ("connection", {"warehouseLocations": []}),
         ("connection", {"warehouseLocations": ["s3://lake/"] * 17}),
         ("connection", {"warehouseLocations": [5]}),
