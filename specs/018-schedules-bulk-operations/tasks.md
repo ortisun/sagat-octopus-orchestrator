@@ -1109,8 +1109,9 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   *Part done 2026-11-05 (D1977), the task stays open:* the service `reset_points`, `reset_preview` and `reset` in
   `crates/application/src/runs/reset.rs` (permissions `run:operate` and `run:start`, justification of 8 to 2000
   characters, the typed reasons `RESET_NOT_SUPPORTED_FOR_SOURCE`, `RESET_SOURCE_NOT_TERMINAL`, `RESET_POINT_NOT_ELIGIBLE`,
-  `RESET_PREFIX_TOO_LONG`, `RESET_RULE_MISSING`, `RESET_REEXECUTION_NOT_ACKNOWLEDGED` as `AppError::ResetRefused`, mapped to
-  409 in `crates/api-http/src/error.rs`) and the idempotency of the request. The four tests above prove the points, the
+  `RESET_PREFIX_TOO_LONG`, `RESET_RULE_MISSING`, `RESET_REEXECUTION_NOT_ACKNOWLEDGED` as `AppError::ResetRefused`, mapped in
+  `crates/api-http/src/error.rs` to `422 VALIDATION_FAILED`, and `409 CONFLICT` for `RESET_SOURCE_NOT_TERMINAL`, as
+  `contracts/errors.md` says; no test drives that mapping yet) and the idempotency of the request. The four tests above prove the points, the
   preview, the permission refusals, `RESET_SOURCE_NOT_TERMINAL`, `RESET_POINT_NOT_ELIGIBLE`,
   `RESET_REEXECUTION_NOT_ACKNOWLEDGED` and the key; three more tests prove `RESET_PREFIX_TOO_LONG` (past the ceiling and
   at it), `RESET_NOT_SUPPORTED_FOR_SOURCE` for a child run, and `RESET_RULE_MISSING` with the type named (a row of a

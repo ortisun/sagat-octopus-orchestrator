@@ -623,7 +623,9 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
   (4) The projections the events would have written are rebuilt from the same prefix: the outputs of the steps it
   completed are given to the new run's steps (same digest, same content), and the declared state is restored to the last
   revision in the prefix (`restore_declared_state`), so the run goes on from the point with the state it had there. (5)
-  The service refuses before it writes, with typed reasons (`AppError::ResetRefused { reason, event_type }`, 409):
+  The service refuses before it writes, with typed reasons (`AppError::ResetRefused { reason, event_type }`, which the API
+  answers as `422 VALIDATION_FAILED` with `details.reason` (and `details.eventType`), except `RESET_SOURCE_NOT_TERMINAL`,
+  `409 CONFLICT`, as `contracts/errors.md` says):
   `RESET_NOT_SUPPORTED_FOR_SOURCE` (a child run, a run of a database execution, a continuation chain),
   `RESET_SOURCE_NOT_TERMINAL`, `RESET_POINT_NOT_ELIGIBLE` (not one of `reset_points`, which includes a prefix with a
   scoped event, `ResetBlock::ScopedEvents`), `RESET_PREFIX_TOO_LONG` (more than `RESET_PREFIX_EVENTS`, 5,000 events),
