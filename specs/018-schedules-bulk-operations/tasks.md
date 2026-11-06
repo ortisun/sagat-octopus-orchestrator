@@ -1163,9 +1163,21 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
 - [ ] T018-057 [US6] `CANCEL_SOURCE` pending reset (fenced completion, eligibility re-check, races,
   crash, failed source compensation, pending quota) — `crates/scheduler/src/passes.rs`,
   `tests/fault/schedules-bulk-operations/reset.rs` — SC-018-012 — FR-018-038, FR-018-040.
-- [ ] T018-058 [US6] Telemetry projector skips the restored prefix and links the source span —
+- [x] T018-058 [US6] Telemetry projector skips the restored prefix and links the source span —
   `crates/application/src/telemetry.rs`, `crates/scheduler/src/telemetry.rs` — no duplicate attempt
   spans — FR-018-037, FR-018-044.
+  *Done 2026-11-06.* `RunFacts` carries `reset: Option<ResetOrigin { source, source_trace, restored_through }>`,
+  which the store reads from `runs.reset_sequence`, `rerun_of` and the trace of the source
+  (`crates/infra-postgres/src/telemetry.rs`; the projector of `crates/scheduler/src/telemetry.rs` needed no change).
+  `derive` takes the entries `1..=restored_through` as context whatever the progress of the projector says, so a
+  projector that starts again from the beginning does not tell them either; the run span tells only what happened
+  after them and links the span of the source when its trace is known. Proved by
+  `telemetry_derive::the_restored_prefix_of_a_reset_run_is_not_told_again_and_the_run_span_links_its_source` (spans,
+  measurements, span events, progress 0, 3 and 6, a source without a trace) and by
+  `reset_telemetry::the_attempts_of_the_restored_prefix_are_told_once_by_the_source_and_the_new_run_links_it` (the
+  real projector and an OTLP collector: the source tells three attempts, the new run one, its span links the
+  source's); 5 mutants killed, two of the store and three of `derive`. The progress of the note is not started at the
+  restored sequence: the projector reads the prefix once and derives nothing from it.
 - [ ] T018-059 [P] [US6] Studio reset dialog and provenance links — `frontend/apps/studio/src/features/runs/`
   — component tests — FR-018-047.
 

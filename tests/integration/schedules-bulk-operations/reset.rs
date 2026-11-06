@@ -34,7 +34,7 @@ async fn chain(f: &Fixture) -> WorkflowId {
 }
 
 /// Runs the activities named, in order, to completion with an output each; the run ends when they are done.
-async fn finish(f: &Fixture, run: RunId, nodes: &[&str]) {
+pub(crate) async fn finish(f: &Fixture, run: RunId, nodes: &[&str]) {
     let activities: Vec<String> = nodes.iter().map(|node| format!("act.{node}")).collect();
     let names: Vec<&str> = activities.iter().map(String::as_str).collect();
     let session = f.w.session(&names).await;
@@ -47,7 +47,7 @@ async fn finish(f: &Fixture, run: RunId, nodes: &[&str]) {
     let _ = run;
 }
 
-async fn ended_chain(f: &Fixture) -> RunId {
+pub(crate) async fn ended_chain(f: &Fixture) -> RunId {
     let workflow = chain(f).await;
     let run = f.w.start(workflow, &json!({"k": 1})).await;
     finish(f, run, &["a", "b", "c"]).await;
@@ -55,7 +55,7 @@ async fn ended_chain(f: &Fixture) -> RunId {
     run
 }
 
-fn request(sequence: u64, acknowledge: bool) -> ResetRequest<'static> {
+pub(crate) fn request(sequence: u64, acknowledge: bool) -> ResetRequest<'static> {
     ResetRequest {
         sequence,
         reason: "the third step used a wrong price list",

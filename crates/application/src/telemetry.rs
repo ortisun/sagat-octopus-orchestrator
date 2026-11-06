@@ -48,6 +48,19 @@ pub struct UnsupportedEntry {
     pub occurred_at: OffsetDateTime,
 }
 
+/// What a run made by a reset says about the history it starts with (feature 018, `FR-018-037`, `FR-018-044`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResetOrigin {
+    /// The run whose prefix this one re-emitted.
+    pub source: RunId,
+    /// The trace of the source, when it has one: a link to its span needs it.
+    pub source_trace: Option<TraceId>,
+    /// The entries `1..=restored_through` of the journal are the source's, copied: what they say happened
+    /// to the source, and the source's spans and measurements already tell it. This run does not tell it
+    /// again.
+    pub restored_through: u64,
+}
+
 /// What is known about a run apart from its journal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunFacts {
@@ -64,6 +77,8 @@ pub struct RunFacts {
     pub created_at: OffsetDateTime,
     /// The durable identity of each logical step, which an attempt's span id is computed from.
     pub steps: HashMap<ExecutionInstanceId, Uuid>,
+    /// Set when a reset made the run: where the history it starts with came from.
+    pub reset: Option<ResetOrigin>,
 }
 
 /// How an attempt ended.
@@ -515,6 +530,10 @@ pub fn derive_unsupported(
 /// context: they are never turned into a span again.
 #[must_use]
 pub fn derive(facts: &RunFacts, entries: &[JournalEntry], applied_seq: u64) -> Derived {
+    // The entries a reset copied from its source are the source's: its spans and measurements tell them.
+    // Whatever the progress of the projector says, they are context here and never become a span again.
+    let restored_through = facts.reset.map_or(0, |origin| origin.restored_through);
+    let applied_seq = applied_seq.max(restored_through);
     let run_uuid = facts.run_id.as_uuid();
     let run_span = run_span_id(run_uuid);
     let mut out = Derived::default();
@@ -1127,6 +1146,7 @@ pub fn derive(facts: &RunFacts, entries: &[JournalEntry], applied_seq: u64) -> D
         ));
         let events = entries
             .iter()
+            .filter(|entry| entry.seq > restored_through)
             .filter_map(|entry| {
                 let notable = matches!(
                     entry.event,
@@ -1188,7 +1208,17 @@ pub fn derive(facts: &RunFacts, entries: &[JournalEntry], applied_seq: u64) -> D
             end_unix_nano: nanos(ended_at),
             attributes,
             events,
-            links: Vec::new(),
+            // a run a reset made points at the span of the run it was made from
+            links: facts
+                .reset
+                .and_then(|origin| {
+                    origin.source_trace.map(|trace_id| SpanLink {
+                        trace_id,
+                        span_id: run_span_id(origin.source.as_uuid()),
+                    })
+                })
+                .into_iter()
+                .collect(),
             status: match status {
                 RunStatus::Succeeded | RunStatus::Compensated => SpanStatus::Ok,
                 RunStatus::Failed
@@ -1373,6 +1403,7 @@ mod primitive_tests {
             parent_run: None,
             created_at: OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("time"),
             steps: HashMap::new(),
+            reset: None,
         }
     }
 

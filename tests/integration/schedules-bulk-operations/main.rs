@@ -36,6 +36,7 @@ mod privacy;
 mod purge;
 mod reset;
 mod reset_rest;
+mod reset_telemetry;
 mod rest;
 mod retained_arguments;
 mod schedules;

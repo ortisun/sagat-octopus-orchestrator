@@ -5,15 +5,18 @@ use sagat_domain::saga::ReconcileVerdict;
 use std::collections::HashMap;
 
 use sagat_application::telemetry::{
-    AttemptOutcome, CONTEXT_EVENTS, JournalEntry, Observation, RunFacts, attempts, derive,
+    AttemptOutcome, CONTEXT_EVENTS, JournalEntry, Observation, ResetOrigin, RunFacts, attempts,
+    derive,
 };
 use sagat_domain::execution::{
-    ExecutionInstanceId, FailureCode, Fence, InstancePath, ReconcileResult, ReviewOutcome,
-    RunEvent, RunId, RunStatus, StopReason,
+    ExecutionInstanceId, FailureCode, Fence, InstancePath, ReconcileResult, ResetReapply,
+    ReviewOutcome, RunEvent, RunId, RunStatus, StopReason,
 };
 use sagat_domain::identity::{NamespaceId, TenantId};
-use sagat_domain::workflow::NodeId;
-use sagat_telemetry::{AttrValue, SpanData, SpanStatus, TraceId, attempt_span_id, run_span_id};
+use sagat_domain::workflow::{Digest, NodeId};
+use sagat_telemetry::{
+    AttrValue, SpanData, SpanLink, SpanStatus, TraceId, attempt_span_id, run_span_id,
+};
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
@@ -68,6 +71,7 @@ fn facts(steps: &[&str]) -> RunFacts {
             .iter()
             .map(|s| (ExecutionInstanceId::root(node(s)), Uuid::new_v4()))
             .collect(),
+        reset: None,
     }
 }
 
@@ -1284,4 +1288,156 @@ async fn the_attempts_of_a_journal_longer_than_a_batch_are_all_there_and_all_clo
         .expect("the run exists");
         assert_eq!(read, whole, "batches of {page}");
     }
+}
+
+/// The history of a run a reset made: the source's first four steps of life, two things done to it, the
+/// reset, and what the new run did.
+fn reset_journal(source: RunId) -> Journal {
+    let (a, b) = (node("a"), node("b"));
+    let mut j = Journal::new();
+    j.push(
+        0,
+        "system:engine",
+        RunEvent::RunStarted {
+            entrypoint: a.clone(),
+        },
+    );
+    j.push(
+        5,
+        "system:engine",
+        RunEvent::StepReleased { node: a.clone() },
+    );
+    j.push(
+        20,
+        "worker:w1",
+        RunEvent::StepLeased {
+            node: a.clone(),
+            attempt: 1,
+            generation: 1,
+        },
+    );
+    j.push(
+        100,
+        "worker:w1",
+        RunEvent::StepCompleted {
+            node: a,
+            attempt: 1,
+            generation: 1,
+        },
+    );
+    // two things an operator did to the source, which a span of the source already tells
+    j.push(30, "alice", RunEvent::RunPaused);
+    j.push(30, "alice", RunEvent::RunResumed);
+    j.push(
+        10,
+        "alice",
+        RunEvent::RunReset {
+            source_run_id: source,
+            source_sequence: 6,
+            prefix_digest: Digest::new([1; 32]),
+            reapply: ResetReapply::None,
+        },
+    );
+    j.push(
+        5,
+        "system:engine",
+        RunEvent::StepReleased { node: b.clone() },
+    );
+    j.push(
+        20,
+        "worker:w1",
+        RunEvent::StepLeased {
+            node: b.clone(),
+            attempt: 1,
+            generation: 1,
+        },
+    );
+    j.push(
+        100,
+        "worker:w1",
+        RunEvent::StepCompleted {
+            node: b,
+            attempt: 1,
+            generation: 1,
+        },
+    );
+    j.push(
+        1,
+        "system:engine",
+        RunEvent::RunFinished {
+            status: RunStatus::Succeeded,
+        },
+    );
+    j
+}
+
+#[test]
+fn the_restored_prefix_of_a_reset_run_is_not_told_again_and_the_run_span_links_its_source() {
+    let source = RunId::generate();
+    let source_trace = TraceId::generate();
+    let journal = reset_journal(source).entries;
+    let mut facts = facts(&["a", "b"]);
+
+    // without the fact that a reset made it, every attempt of the journal is this run's
+    let plain = derive(&facts, &journal, 0);
+    assert_eq!(named(&plain.spans, "step.attempt").len(), 2);
+
+    facts.reset = Some(ResetOrigin {
+        source,
+        source_trace: Some(source_trace),
+        restored_through: 6,
+    });
+    let derived = derive(&facts, &journal, 0);
+    // only what this run did: the attempt of `b`
+    let attempts_told = named(&derived.spans, "step.attempt");
+    assert_eq!(attempts_told.len(), 1, "{attempts_told:?}");
+    assert_eq!(
+        attr(attempts_told[0], "sagat.node"),
+        Some(&AttrValue::from("b"))
+    );
+    let measured = derived
+        .observations
+        .iter()
+        .filter(|o| matches!(o, Observation::AttemptEnded { .. }))
+        .count();
+    assert_eq!(measured, 1, "one attempt is measured, not two");
+
+    // the run span links the span of the source, and tells only what happened to this run
+    let runs = named(&derived.spans, "workflow.run");
+    assert_eq!(runs.len(), 1);
+    assert_eq!(
+        runs[0].links,
+        [SpanLink {
+            trace_id: source_trace,
+            span_id: run_span_id(source.as_uuid())
+        }]
+    );
+    assert!(
+        runs[0].events.is_empty(),
+        "the pause and the resume were the source's: {:?}",
+        runs[0].events
+    );
+    let plain_runs = named(&plain.spans, "workflow.run");
+    assert!(plain_runs[0].links.is_empty());
+    assert_eq!(plain_runs[0].events.len(), 2);
+
+    // a projector that starts again from the beginning tells the same: the prefix is never derived
+    for applied in [0, 3, 6] {
+        let again = derive(&facts, &journal, applied);
+        assert_eq!(
+            named(&again.spans, "step.attempt").len(),
+            1,
+            "applied {applied}"
+        );
+    }
+
+    // a source without a trace is not linked, and the prefix is still the source's
+    facts.reset = Some(ResetOrigin {
+        source,
+        source_trace: None,
+        restored_through: 6,
+    });
+    let unlinked = derive(&facts, &journal, 0);
+    assert!(named(&unlinked.spans, "workflow.run")[0].links.is_empty());
+    assert_eq!(named(&unlinked.spans, "step.attempt").len(), 1);
 }
