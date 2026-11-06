@@ -1146,6 +1146,18 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   020 search-attribute upserts); outputs and attribute rows equal the source at N; holder count = open
   non-restored acquisitions; ceiling; crash during reset — `tests/integration/schedules-bulk-operations/reset.rs`
   — SC-018-011 — FR-018-037, FR-018-050.
+  *Part done 2026-11-06, the task stays open:* `reset::at_every_point_the_run_that_is_made_replays_to_its_projection_keeps_the_history_and_goes_on_to_the_end`
+  takes all four points of a sequential run (the start and the end of each of three steps): the projection of the new
+  run equals a replay of its journal before it goes on and after it ends, rows `1..N` are the source's as it stored
+  them (type, who, payload, when), the steps of the prefix hold the output the source gave them and no other step
+  does, the run finishes what is left (at the last point it ends with what it was given), and the source is
+  untouched. `tests/fault/schedules-bulk-operations/reset.rs` kills the connection after each of the 62 writing
+  statements of a reset (one transaction, 13 tables) in both roles: nothing changes in any table, and the request sent
+  again makes one run and one entry with the source's history, and sent a third time answers the first. A mutant
+  that makes a retry another request is killed by it. Not done: the other shapes of the corpus at every point
+  (parallel, saga, collection, loop, child, a wait), approvals, the 022 run-permit holder and the 020 attribute rows
+  (not approved), and a prefix at the ceiling (the ceiling is tested at its boundary by sequence, not with a journal
+  of 5,000 events).
 - [ ] T018-056 [US6] Reapply order, first-undeliverable stop, `LEGACY_EVENT`, ceiling, key replay, lost
   hint — `tests/integration/schedules-bulk-operations/reapply.rs` — report equals expectation — FR-018-039.
 - [ ] T018-057 [US6] `CANCEL_SOURCE` pending reset (fenced completion, eligibility re-check, races,

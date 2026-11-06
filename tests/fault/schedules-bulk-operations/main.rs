@@ -15,6 +15,7 @@ mod cancel_other;
 mod clocks;
 mod delay;
 mod firing;
+mod reset;
 mod run_driven_locks;
 mod tripwire;
 mod update_with_start;

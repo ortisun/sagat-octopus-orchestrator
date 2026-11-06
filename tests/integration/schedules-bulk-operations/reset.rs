@@ -1003,3 +1003,97 @@ async fn a_member_of_a_continuation_chain_is_not_a_source_of_a_reset() {
         );
     }
 }
+
+/// The digest of the output of a step, if it has one.
+async fn output_of(f: &Fixture, run: RunId, node: &str) -> Option<Vec<u8>> {
+    sqlx::query_scalar::<_, Option<Vec<u8>>>(
+        "SELECT output_digest FROM steps WHERE run_id = $1 AND node = $2",
+    )
+    .bind(run.as_uuid())
+    .bind(node)
+    .fetch_optional(&f.w.db.pool)
+    .await
+    .expect("the step")
+    .flatten()
+}
+
+#[tokio::test]
+async fn at_every_point_the_run_that_is_made_replays_to_its_projection_keeps_the_history_and_goes_on_to_the_end()
+ {
+    let f = fixture().await;
+    let source = ended_chain(&f).await;
+    let source_rows = rows(&f, source).await;
+    let points: Vec<u64> =
+        f.w.runs
+            .reset_points(&f.w.admin, source, &ctx())
+            .await
+            .expect("points")
+            .iter()
+            .map(|point| point.sequence)
+            .collect();
+    assert_eq!(
+        points.len(),
+        4,
+        "the start and the end of each of three steps"
+    );
+    let steps = ["a", "b", "c"];
+
+    for point in points {
+        let kept = usize::try_from(point).expect("small");
+        let made =
+            f.w.runs
+                .reset(&f.w.admin, source, request(point, true), &key(), &ctx())
+                .await
+                .unwrap_or_else(|error| panic!("a reset to {point}: {error:?}"));
+        let new = made.run.info.run_id;
+
+        // the projection of the new run is what a replay of its journal gives, before it goes on
+        f.w.assert_consistent(new).await;
+
+        // its history up to the point is the source's: what happened, who did it, when, with which payload
+        let new_rows = rows(&f, new).await;
+        for (restored, original) in new_rows.iter().zip(&source_rows).take(kept) {
+            assert_eq!(restored.0, original.0, "point {point}: the sequence");
+            assert_eq!(restored.1, original.1, "point {point}: the type");
+            assert_eq!(restored.2, original.2, "point {point}: who");
+            assert_eq!(restored.3, original.3, "point {point}: the payload");
+            assert_eq!(restored.5, original.5, "point {point}: when");
+        }
+        assert!(new_rows.len() > kept, "point {point}: it goes on");
+
+        // the steps that completed in the prefix hold the output the source gave them, and no other does
+        let done = source_rows[..kept]
+            .iter()
+            .filter(|row| row.1 == "step.completed")
+            .count();
+        for (index, node) in steps.iter().enumerate() {
+            let expected = if index < done {
+                let source_output = output_of(&f, source, node).await;
+                assert!(source_output.is_some(), "the source gave {node} an output");
+                source_output
+            } else {
+                None
+            };
+            assert_eq!(
+                output_of(&f, new, node).await,
+                expected,
+                "point {point}: the output of {node}"
+            );
+        }
+
+        // and it goes on from there to the end, with the projection still equal to a replay
+        // (at the last point nothing is left to do, and the run ends with what it was given)
+        if done < steps.len() {
+            finish(&f, new, &steps[done..]).await;
+        }
+        assert_eq!(
+            f.w.run_status(new).await,
+            RunStatus::Succeeded,
+            "point {point}"
+        );
+        f.w.assert_consistent(new).await;
+    }
+    // the source was not touched by any of it
+    assert_eq!(rows(&f, source).await, source_rows);
+    f.w.assert_consistent(source).await;
+}
