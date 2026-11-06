@@ -432,6 +432,11 @@ three conditions pass.
 - [ ] T035-020 [P] Write the failing rollout tests in `tests/integration/iceberg-writes/rollout.rs`:
   with `lake.enabled` off (the default), both publication and admission refuse with
   `VALIDATION_FAILED`, reason `LAKE_DISABLED`. Refs: D035-059.
+
+  *2026-11-06, publication half written (D035-087):* the publication case is `the_lake_switch_reaches_the_services_that_publish`
+  in `tests/e2e/platform-foundation/us03.rs` (the real `serve`, both ways, over REST) and the lake-off case of the scenario in
+  `tests/integration/database-connections/lake.rs`. The admission half waits for T035-055; the task stays unticked and
+  `rollout.rs` is not written.
 - [x] T035-021 [P] Write the failing telemetry tests in `crates/telemetry/src/metrics.rs`: every label
   of the plan's Observability metrics takes values only from its closed set, and none takes a
   connection, table, run or tenant identifier. Refs: FR-035-030, NFR-035-OBS.
@@ -656,6 +661,12 @@ three conditions pass.
 - [ ] T035-036 [P] Add the `lake.enabled` setting, off by default, to the control-plane and
   execution-engine configuration. Check it in `crates/application/src/publishing.rs` and at run
   admission in `crates/application/src/runs.rs`. T035-020 passes. Refs: D035-059.
+
+  *2026-11-06, partly done, left unticked (D035-087, G035-036):* the control plane has `SAGAT_LAKE_ENABLED` (strict boolean, off
+  by default) and publication and validation refuse an `icebergWrite` with `LAKE_DISABLED` at the node. Not done: the same
+  setting in the execution engine and the check at run admission (`runs.rs`, `worker.rs`), which T035-055 owns because
+  admission of an Iceberg run does not exist before it; until then no definition can hold the node past the store's fail-closed
+  guard, so no run can meet the gap.
 - [x] T035-037 [P] Register the metric families of plan.md "Observability" in
   `crates/telemetry/src/metrics.rs`. T035-021 passes. Refs: FR-035-030.
 

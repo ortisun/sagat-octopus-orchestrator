@@ -86,6 +86,21 @@ Use a namespace connection with an OpenBao credential and positional SQL paramet
 Integer and decimal literal values are strings; expression bindings must declare their type.
 See [managed database SDK examples](../guides/managed-database-sdk.md) for the canonical shape.
 
+### LAKE_DISABLED
+
+This deployment has not enabled the lake, so a workflow cannot hold an Apache Iceberg write. Ask the operator to turn on SAGAT_LAKE_ENABLED, or publish the workflow to a deployment that has it.
+
+The lake is off by default. An operator turns it on with `SAGAT_LAKE_ENABLED=true` on the control plane; publishing an
+Apache Iceberg write is still refused until the checks of access, allowed modes and data classification exist.
+
+### INVALID_ICEBERG_NODE
+
+Check the connection reference, the table, the record source (exactly one of inline, blobs or a database result), the mapping and the limits. An Apache Iceberg write cannot declare its own retries or effect, impersonate an ordinary activity, or name a field and a column twice.
+
+### ICEBERG_NODE_NOT_ROOT
+
+An Apache Iceberg write belongs to the root graph of a definition without loops, collections or a continuation policy, and never inside a body. Move the write out of the loop, or into a child workflow.
+
 ### SECRET_UNAVAILABLE
 
 A node names a secret that does not exist in the namespace, or that you may not use. Create it there, or ask an administrator for access to it.

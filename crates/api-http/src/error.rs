@@ -926,6 +926,7 @@ fn definition_details(error: &IrError) -> Value {
         IrError::Expression { node, field, .. } => {
             json!({ "reason": "EXPRESSION", "node": node, "field": field })
         }
+        IrError::LakeDisabled { node } => json!({ "reason": "LAKE_DISABLED", "node": node }),
         IrError::NameMismatch { .. } => json!({ "reason": "NAME_MISMATCH" }),
         IrError::UnknownScript { digest } => {
             json!({ "reason": "UNKNOWN_SCRIPT", "artifactDigest": digest })
@@ -934,6 +935,12 @@ fn definition_details(error: &IrError) -> Value {
         IrError::Malformed => json!({ "reason": "MALFORMED" }),
         IrError::EscapingBodyEdge { body, from, .. } => {
             json!({ "reason": "INVALID_SCOPE", "body": body.as_str(), "node": from.as_str() })
+        }
+        IrError::Invalid(WorkflowError::IcebergNodeNotRoot) => {
+            json!({ "reason": "ICEBERG_NODE_NOT_ROOT" })
+        }
+        IrError::Invalid(WorkflowError::InvalidIcebergNode) => {
+            json!({ "reason": "INVALID_ICEBERG_NODE" })
         }
         IrError::Invalid(WorkflowError::ExpressionByteLimit { node, limit }) => {
             json!({ "reason": "EXPRESSION", "node": node.as_str(), "limit": limit })

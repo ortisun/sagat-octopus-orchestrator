@@ -1054,3 +1054,37 @@ The other fixes were wording:
   - *Evidence.* 20 configuration tests; 9 tests against a real Docker engine (the group of the container, a container in another
     group reading nothing, the slot's own token readable, the cost test); 3 mutations of the group logic, all caught, one of them
     against the real engine.
+- **D035-087 — The lake is one operator switch that the publication path reads; `LAKE_DISABLED` names it.** Part of T035-036.
+  **Decided by: delegate** (the owner delegated the decisions of this feature).
+  - *The decision.* `SAGAT_LAKE_ENABLED` is a strict boolean (`true` or `false`; anything else is a configuration error) of the
+    control plane, off when unset. `ServeConfig.lake_enabled` reaches `DefinitionService` and `PublishingService` through
+    `with_lake_enabled`, which `serve` calls for both. With it off, **publication** refuses a definition that holds an `icebergWrite`
+    with `VALIDATION_FAILED`, reason `LAKE_DISABLED` and the node (`details: {reason, node}`, status 422), before any check of secrets
+    or connections, so an operator who left the lake off is told about the switch and not about a connection; **validation**
+    reports the same problem at the node. A **draft** may hold the node either way: an author can prepare a workflow before the
+    operator turns the lake on, and nothing runs from a draft.
+  - *What it does not do.* With the switch on, the store still fails closed until the publication checks exist (T035-054, D035-085):
+    the switch is necessary, not sufficient. It is read once at start; changing it takes a restart, like `SAGAT_SCHEDULES_ENABLED`.
+  - *The error mapping.* `LAKE_DISABLED`, `INVALID_ICEBERG_NODE` and `ICEBERG_NODE_NOT_ROOT` have an HTTP reason, a CLI help text and
+    a section of `docs/quickstarts/errors.md` with the same sentence. The two reasons of the domain were already problem codes
+    of validation (`ir_problems`) but had no HTTP `details.reason`, help or section; the note of T035-024 deferred them to the check
+    that raises them, and publication now raises them.
+  - *Evidence.* 4 application tests (refused at publication, named by validation, still the store's call with the lake on, no cost
+    for a definition without the node); 1 configuration test (off by default, strict); 3 HTTP mapping tests; the real-store scenario of
+    `integration_database_connections` (lake off → `LAKE_DISABLED` at node `save`; lake on → the store's fail-closed refusal);
+    and `the_lake_switch_reaches_the_services_that_publish` in `e2e_platform_foundation`, which starts the real `serve` both ways
+    and publishes over REST. 15 mutations of the gate (the default, the inverted switch, each of the two gates, the problem
+    code, the setter, the configuration variable read two ways, the wiring in `serve`, the three HTTP reasons and the node, the CLI
+    sentence): 14 caught, 1 survives (G035-036 point 3).
+- **G035-036 — What the switch leaves open.** (1) The execution engine has no `SAGAT_LAKE_ENABLED` and run admission
+  (`runs.rs`, `worker.rs`) does not check it: T035-020 asks that "both publication and admission" refuse, and only publication does,
+  so T035-036 stays unticked. A definition with an Iceberg node cannot exist until T035-054, so no run can meet the gap before
+  the task closes it (T035-055). (2) The deployment documents (compose, runbook `docs/runbooks/lake-destinations.md`) do not list the
+  switch yet; it goes in with the runtime image (T035-027) and the runbook. (3) **One mutant survives:** `PublishingService::with_lake_enabled`
+  forwards the switch to the service that approved publication and promotion go through (`publish_through`), and no test sees
+  it. The plain `POST .../publish` does not use that service, so the e2e test does not reach it; a test needs a namespace
+  publication policy that asks for approval and a second approver (or `tests/support` changed, which selects every suite in CI).
+  Nothing can hold an Iceberg version for these paths to promote or approve until the store's guard is replaced, so the code is
+  unreachable today, not untested by choice. *Exit condition:* point 1 by T035-055 with a test of a run that is refused with the
+  lake off; point 2 by the runbook; point 3 by T035-054, whose publication checks make a version holding the node reachable and
+  must be tested through the approval path with the lake off and on.

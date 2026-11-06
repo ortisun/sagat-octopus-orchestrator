@@ -7,6 +7,7 @@ use crate::support::engine::{World, ctx, document};
 use sagat_application::{
     clock::SystemClock,
     database::{ConnectionService, ConnectionWrite},
+    definitions::IrError,
     error::AppError,
     reveal_grants::RevealGrantService,
 };
@@ -213,25 +214,60 @@ pub async fn run(w: &World) {
         Err(AppError::NotFound)
     ));
 
-    // An Iceberg write step is refused at publication until its admission exists (T035-054): the codec parses the node and
-    // the store fails closed, as it does for a connection the author may not use, rather than publish a step that nobody
-    // checked for access, modes or egress.
-    assert!(matches!(
-        w.try_publish_as(
-            &w.admin,
-            document(
-                "iceberg-write-on-a-lake-connection",
-                "save",
-                vec![json!({
-                    "id": "save", "type": "icebergWrite", "connectionRef": {"name": "lake-main"},
-                    "table": {"namespace": ["sales"], "name": "orders"}, "mode": "append",
-                    "records": {"inline": "input.rows"}
-                })],
-            )
+    // A deployment without the lake refuses an Iceberg write at publication, and says why (`LAKE_DISABLED`, T035-036).
+    let step = |name: &str| {
+        document(
+            name,
+            "save",
+            vec![json!({
+                "id": "save", "type": "icebergWrite", "connectionRef": {"name": "lake-main"},
+                "table": {"namespace": ["sales"], "name": "orders"}, "mode": "append",
+                "records": {"inline": "input.rows"}
+            })],
         )
-        .await,
-        Err(AppError::NotFound)
-    ));
+    };
+    match w
+        .try_publish_as(&w.admin, step("iceberg-write-with-the-lake-off"))
+        .await
+    {
+        Err(AppError::InvalidDefinition(error)) => assert!(
+            matches!(*error, IrError::LakeDisabled { ref node } if node == "save"),
+            "{error:?}"
+        ),
+        other => panic!("expected LAKE_DISABLED, got {other:?}"),
+    }
+
+    // With the lake on, the store still fails closed until the admission of an Iceberg write exists (T035-054): the
+    // codec parses the node, and the store refuses it as it refuses a connection the author may not use, rather than
+    // publish a step that nobody checked for access, modes or egress.
+    let lake_on = w.defs.clone().with_lake_enabled(true);
+    let doc = step("iceberg-write-with-the-lake-on");
+    let bytes = serde_json::to_vec(&doc).expect("json");
+    let created = lake_on
+        .create_workflow(
+            &w.admin,
+            "payments",
+            "iceberg-write-with-the-lake-on",
+            &bytes,
+            &format!("create-{}", uuid::Uuid::now_v7()),
+            &ctx(),
+        )
+        .await
+        .expect("create the workflow");
+    let published = lake_on
+        .publish(
+            &w.admin,
+            created.workflow.id(),
+            created.workflow.draft_revision(),
+            None,
+            &format!("publish-{}", uuid::Uuid::now_v7()),
+            &ctx(),
+        )
+        .await;
+    assert!(
+        matches!(published, Err(AppError::NotFound)),
+        "{published:?}"
+    );
 
     // Plain `http` is for a development namespace, as a plaintext PostgreSQL connection is.
     let plain = iceberg(
