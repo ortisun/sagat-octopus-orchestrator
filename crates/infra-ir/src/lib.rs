@@ -21,6 +21,7 @@ pub use database_result::JsonDatabaseResultValidator;
 mod diff;
 mod evaluator;
 mod lake;
+mod lake_egress;
 mod operation_evaluator;
 mod schema;
 
@@ -302,7 +303,9 @@ fn converted_document(
     value: &Value,
     convert: fn(&Value) -> Result<WorkflowDefinition, IrError>,
 ) -> Result<ParsedDefinition, IrError> {
-    let definition = convert(value)?;
+    // The levels of what an Iceberg write sends out are read from the schemas of this document, once, for publication and
+    // for the restore that admission relies on; they are derived, so they never reach the canonical bytes.
+    let definition = lake_egress::attach(value, convert(value)?);
     check_expressions(&definition)?;
     let canonical = canonical::canonical_json(value);
     let digest = canonical::digest_of(&canonical);

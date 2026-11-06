@@ -933,6 +933,14 @@ one commit carries the key.
   - `lake.enabled`.
 
   T035-048 passes. Refs: FR-035-005, FR-035-024, FR-035-025.
+
+  *2026-11-06, first slice done, left unticked (D035-088, G035-037):* the level of each field an `icebergWrite` writes is read by
+  the codec from the schema of its source (a plain reference to the input or to a root step's output; anything else, blobs and
+  database results are `pii`) and attached to the step (`IcebergWrite::egress`, `EgressRefusal`), for publication and for the
+  restore that admission uses. A step with no list is refused whole. Not done: the comparison with the ceiling of a connection in
+  the definition service and the store (`CLASSIFICATION_EGRESS_REFUSED`), access (`database:use`, `database:write`), allowed modes
+  (`MODE_NOT_ALLOWED`), the connection's kind, existence and pins, the audit of a denial, and the removal of the store's
+  fail-closed guard; `publication.rs` (T035-048) is not written either.
 - [ ] T035-055 [US02] Pin admission (T3) in `crates/application/src/runs.rs` and
   `crates/infra-postgres/src/database.rs`:
   - connection pins on direct, child, event, rerun and ad hoc paths;
