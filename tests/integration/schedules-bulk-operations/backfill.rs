@@ -71,6 +71,18 @@ async fn read(f: &Fixture, backfill: &BackfillRecord) -> BackfillRecord {
         .expect("the backfill")
 }
 
+/// The decisions of a schedule as the table keeps them, oldest nominal time first: the kind of action, its outcome and
+/// the backfill that made it (none for a scheduled time or a trigger).
+async fn action_rows(f: &Fixture, schedule: Uuid) -> Vec<(String, String, Option<Uuid>)> {
+    sqlx::query_as(
+        "SELECT kind, outcome, backfill_id FROM schedule_actions WHERE schedule_id = $1 ORDER BY nominal_at",
+    )
+    .bind(schedule)
+    .fetch_all(&f.w.db.pool)
+    .await
+    .expect("the rows of the decisions")
+}
+
 fn counters(pairs: &[(&str, u64)]) -> std::collections::BTreeMap<String, u64> {
     pairs.iter().map(|(k, n)| ((*k).to_owned(), *n)).collect()
 }
@@ -363,6 +375,17 @@ async fn a_backfill_acts_on_each_time_of_its_range_in_order_and_then_completes()
             .collect::<Vec<_>>(),
         "in the order of the times, each a BACKFILL action"
     );
+    assert_eq!(
+        action_rows(&f, schedule.id.as_uuid()).await,
+        (0..5)
+            .map(|_| (
+                "BACKFILL".to_owned(),
+                "STARTED".to_owned(),
+                Some(backfill.id)
+            ))
+            .collect::<Vec<_>>(),
+        "each action of the backfill says which backfill made it"
+    );
     let done = read(&f, &backfill).await;
     assert_eq!(done.state, BackfillState::Completed);
     assert_eq!(done.counters, counters(&[("STARTED", 5)]));
@@ -411,6 +434,18 @@ async fn a_time_that_already_has_an_action_is_counted_not_acted_on_twice() {
     assert_eq!(
         done.counters,
         counters(&[("ALREADY_ACTED", 1), ("STARTED", 1)])
+    );
+    assert_eq!(
+        action_rows(&f, schedule.id.as_uuid()).await,
+        vec![
+            (
+                "BACKFILL".to_owned(),
+                "STARTED".to_owned(),
+                Some(backfill.id)
+            ),
+            ("SCHEDULED".to_owned(), "STARTED".to_owned(), None),
+        ],
+        "the time the backfill started names it; the one the schedule acted on by itself names none"
     );
 }
 
@@ -550,4 +585,20 @@ async fn a_backfill_that_buffers_waits_for_room_instead_of_dropping_times() {
     .await
     .expect("dropped");
     assert_eq!(dropped, 0, "no time of a backfill is dropped");
+    assert_eq!(
+        action_rows(&f, schedule.id.as_uuid()).await,
+        vec![
+            (
+                "BACKFILL".to_owned(),
+                "STARTED".to_owned(),
+                Some(backfill.id)
+            ),
+            (
+                "BACKFILL".to_owned(),
+                "BUFFERED".to_owned(),
+                Some(backfill.id)
+            ),
+        ],
+        "a time the backfill kept waiting names it as well as one it started"
+    );
 }
