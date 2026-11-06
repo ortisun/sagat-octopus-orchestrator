@@ -108,6 +108,25 @@ pub(super) async fn available(conn: &mut PgConnection, info: &RunInfo) -> Result
     if head != info.run_id.as_uuid() {
         return Ok(refuse(Refusal::StaleHead));
     }
+    // ADR-0075 (activation condition j): decide from an unlocked header read first. A vacant,
+    // retired or foreign-held group refuses without a row lock, so member pollers never contend
+    // with the NOWAIT native Acquire. A stale unlocked answer is safe: a refusal grants no lease,
+    // and a grant is only possible through the locked reread below.
+    let header: Option<(String, Option<Uuid>)> = sqlx::query_as(
+        "SELECT possession,holder_member_id FROM capacity_groups \
+         WHERE tenant_id=$1 AND group_id=$2",
+    )
+    .bind(info.tenant_id.as_uuid())
+    .bind(group_id)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    let Some((possession, holder)) = header else {
+        return Ok(refuse(Refusal::MembershipChanged));
+    };
+    if possession != "HELD" || holder != Some(member_id) {
+        return Ok(refuse(Refusal::NotHolder));
+    }
     let group = sqlx::query(
         "SELECT revision,epoch,active_members,possession,holder_member_id \
          FROM capacity_groups WHERE tenant_id=$1 AND group_id=$2 FOR UPDATE SKIP LOCKED",

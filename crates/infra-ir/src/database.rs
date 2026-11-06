@@ -113,11 +113,10 @@ fn limits(value: Option<&Value>) -> Result<DatabaseLimits, DatabaseError> {
     Ok(limits)
 }
 
-fn parse(node: &Map<String, Value>) -> Result<DatabaseOperation, DatabaseError> {
-    let connection = node
-        .get("connectionRef")
-        .and_then(Value::as_object)
-        .ok_or_else(invalid)?;
+/// A `connectionRef` object: a name and, optionally, the revision it is pinned to.
+pub(crate) fn connection_ref(
+    connection: &Map<String, Value>,
+) -> Result<ConnectionRef, DatabaseError> {
     let name = Slug::parse(field(connection, "name")?).map_err(|_| invalid())?;
     let revision = connection
         .get("revision")
@@ -128,7 +127,15 @@ fn parse(node: &Map<String, Value>) -> Result<DatabaseOperation, DatabaseError> 
                 .ok_or(DatabaseError::InvalidRevision)
         })
         .transpose()?;
-    let connection = ConnectionRef::new(name, revision)?;
+    ConnectionRef::new(name, revision)
+}
+
+fn parse(node: &Map<String, Value>) -> Result<DatabaseOperation, DatabaseError> {
+    let connection = connection_ref(
+        node.get("connectionRef")
+            .and_then(Value::as_object)
+            .ok_or_else(invalid)?,
+    )?;
     let kind = match field(node, "operation")? {
         "query" => OperationKind::Query,
         "execute" => OperationKind::Execute,

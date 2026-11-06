@@ -41,6 +41,7 @@ fn clip(text: &str) -> String {
 const ROOT_NODE_TYPES: &[&str] = &[
     "activity",
     "database",
+    "icebergWrite",
     "timer",
     "waitEvent",
     "condition",
@@ -165,6 +166,12 @@ fn node_issues(node: &Value, path: &str, expected: &[&str]) -> Vec<IrIssue> {
                 return issue(
                     path.to_owned(),
                     "invalid database node fields or limits".into(),
+                );
+            }
+            if kind == "icebergWrite" {
+                return issue(
+                    path.to_owned(),
+                    "invalid icebergWrite node fields or limits".into(),
                 );
             }
             issue(

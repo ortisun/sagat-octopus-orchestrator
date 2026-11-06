@@ -46,6 +46,37 @@ impl std::fmt::Debug for pb::ResolvedDatabase {
         f.write_str("ResolvedDatabase { <redacted> }")
     }
 }
+/// A lake connection prints the names of its credentials and never their values.
+fn debug_connection(
+    f: &mut std::fmt::Formatter<'_>,
+    name: &str,
+    credentials: &std::collections::HashMap<String, Vec<u8>>,
+) -> std::fmt::Result {
+    let mut names: Vec<&String> = credentials.keys().collect();
+    names.sort();
+    let redacted: Vec<String> = names
+        .into_iter()
+        .map(|key| format!("{key}: <redacted>"))
+        .collect();
+    f.debug_struct(name)
+        .field("credentials", &redacted)
+        .finish_non_exhaustive()
+}
+impl std::fmt::Debug for pb::IcebergConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        debug_connection(f, "IcebergConnection", &self.credentials)
+    }
+}
+impl std::fmt::Debug for pb::ObjectStorageConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        debug_connection(f, "ObjectStorageConnection", &self.credentials)
+    }
+}
+impl std::fmt::Debug for pb::ClickHouseConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        debug_connection(f, "ClickHouseConnection", &self.credentials)
+    }
+}
 impl std::fmt::Debug for pb::DatabaseValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("DatabaseValue { <redacted> }")

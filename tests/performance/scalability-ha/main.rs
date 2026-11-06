@@ -90,6 +90,7 @@ fn app_error_variant(error: &AppError) -> &'static str {
         AppError::SecretUnavailable { .. } => "SecretUnavailable",
         AppError::StaleAttempt => "StaleAttempt",
         AppError::StateConflict(_) => "StateConflict",
+        AppError::InvalidConnection { .. } => "InvalidConnection",
         AppError::InvalidSchedule { .. } => "InvalidSchedule",
         AppError::ScheduleConflict { .. } => "ScheduleConflict",
         AppError::OutcomeUnresolved => "OutcomeUnresolved",

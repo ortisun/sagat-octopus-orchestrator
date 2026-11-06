@@ -1,0 +1,10 @@
+{
+  "kind": "postgresql",
+  "outcome": "COMMITTED",
+  "effectKey": "run-7f3a/extract~d.mirror/1",
+  "foundByLookup": false,
+  "mode": "upsert",
+  "rowsInserted": "40",
+  "rowsUpdated": "2",
+  "rowsAlreadyPresent": "0"
+}

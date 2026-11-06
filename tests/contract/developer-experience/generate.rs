@@ -62,7 +62,14 @@ pub fn api_reference(openapi: &Value, source: &str) -> String {
                     description.to_owned(),
                 ));
             }
-            let feature = operation["x-implemented"].as_str().unwrap_or("001");
+            // An operation merged before its route carries `x-planned`; it must not read as feature 001.
+            let planned = operation["x-planned"]
+                .as_str()
+                .map(|feature| format!("{feature} (planned)"));
+            let feature = operation["x-implemented"]
+                .as_str()
+                .or(planned.as_deref())
+                .unwrap_or("001");
             let mut row = String::new();
             let _ = write!(
                 row,

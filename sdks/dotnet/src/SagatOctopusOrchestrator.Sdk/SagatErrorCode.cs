@@ -62,6 +62,81 @@ public enum SagatErrorCode
 
     /// <summary>The payload is over the limit (raised by the SDK, before it is sent).</summary>
     PayloadTooLarge,
+
+    /// <summary>The table or the target ref does not exist.</summary>
+    IcebergTableNotFound,
+
+    /// <summary>The step cannot write this table (format version, file format, partition transform or key).</summary>
+    IcebergUnsupportedTable,
+
+    /// <summary>A table, data or metadata location is outside the connection's warehouse locations.</summary>
+    IcebergLocationNotAllowed,
+
+    /// <summary>A record does not map losslessly to the table schema.</summary>
+    IcebergSchemaMismatch,
+
+    /// <summary>The batch holds the same key twice.</summary>
+    IcebergDuplicateKey,
+
+    /// <summary>A row is outside the overwrite filter, or the batch is empty without allowEmpty.</summary>
+    IcebergScopeViolation,
+
+    /// <summary>Concurrent commits kept the write from landing.</summary>
+    IcebergCommitConflict,
+
+    /// <summary>A later commit changed what this step wrote, so it cannot be reverted automatically.</summary>
+    IcebergRevertBlocked,
+
+    /// <summary>The write is over a records, bytes, files or columns limit.</summary>
+    IcebergLimitExceeded,
+
+    /// <summary>The catalog could not be reached.</summary>
+    CatalogUnavailable,
+
+    /// <summary>The object storage could not be reached or is throttling.</summary>
+    StorageUnavailable,
+
+    /// <summary>The destination key has no primary key or unique constraint.</summary>
+    DestinationKeyConstraintMissing,
+
+    /// <summary>A destination column is missing or cannot hold a value.</summary>
+    DestinationSchemaMismatch,
+
+    /// <summary>The retry is outside the destination's deduplication window, so a duplicate cannot be ruled out.</summary>
+    DestinationDeduplicationNotConfirmed,
+
+    /// <summary>An object with this name and different content already exists.</summary>
+    DestinationObjectConflict,
+
+    /// <summary>The delivery is over a message size, count or bytes limit.</summary>
+    DestinationDeliveryBoundExceeded,
+
+    /// <summary>The subscription also carries run events.</summary>
+    DestinationSubscriptionShared,
+
+    /// <summary>The destination refused the credentials.</summary>
+    DestinationAuthFailed,
+
+    /// <summary>The destination could not be reached or is overloaded.</summary>
+    DestinationUnavailable,
+
+    /// <summary>The subscription is disabled, deleted or below a field's classification level.</summary>
+    DestinationSubscriptionUnusable,
+
+    /// <summary>A destination whose policy is fail did not complete.</summary>
+    DestinationFailed,
+
+    /// <summary>The sandboxed lake host broke its protocol.</summary>
+    LakeHostProtocol,
+
+    /// <summary>The sandbox for the attempt could not be started.</summary>
+    LakeSandboxUnavailable,
+
+    /// <summary>A field is above the connection's classification ceiling, or is a secret.</summary>
+    ClassificationEgressRefused,
+
+    /// <summary>Whether the write happened is unknown.</summary>
+    OutcomeUnknown,
 }
 
 /// <summary>The wire names and the catalog facts of <see cref="SagatErrorCode"/>.</summary>

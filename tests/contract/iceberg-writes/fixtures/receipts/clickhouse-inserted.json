@@ -1,0 +1,8 @@
+{
+  "kind": "clickhouse",
+  "outcome": "INSERTED",
+  "effectKey": "run-7f3a/extract~d.events/1",
+  "foundByLookup": false,
+  "records": "1",
+  "deduplicationConfirmed": true
+}
