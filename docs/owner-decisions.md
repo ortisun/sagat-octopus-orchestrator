@@ -12,11 +12,21 @@ which would have started a run on `develop`. The assistant recorded it; the rule
 | ID | Decision | Decided by | Status | Covers |
 |---|---|---|---|---|
 | OD-2026-11-05-1 | "Desativar o ci para merges na develop. Deixar o ci somente para merges de release" | owner | Decided | docs/constitution.md, .github/workflows/ci.yml |
+| OD-2026-11-06-1 | "O que deve ter é execucao de testes do que foi alterado ou modificado e seus dependentes, e integração também só do que foi alterado" | owner | Decided | docs/constitution.md (4.3.0), scripts/select-test-targets.py |
 
 Read as the owner wrote it: the CI that a *merge* into `develop` starts (the `push` event) is turned off. The CI of a *pull
 request* is not a merge and keeps the rule of 4.1.0 (the tests of what it changes; the whole stack for a pull request into
 a release branch). If the owner meant that a pull request into `develop` should start no CI either, that is one more
 amendment and one more line of the workflow.
+
+## 2026-11-06 — A pull request runs what it changed, its dependents' unit tests, and only the integration it changed
+
+Row OD-2026-11-06-1 states what a pull request runs. The CI of a pull request selected every integration suite whose sources
+name an affected package; with `sagat-application` changed that was nearly all of them, and each pull request of feature 035
+ran for about an hour and three quarters (the assistant cancelled four runs of it). The owner said that a pull request should
+run the tests of what was changed and of its dependents, and the integration suites only for what was changed. From 4.3.0 the unit tests of a changed package and of every package that depends on it run, and an
+integration suite runs only when it was itself changed (its files, its `[[test]]` entry or a harness it drives). A
+release still runs everything, and a merge into `develop` still starts no run.
 
 ## 2026-11-05 — The lake containers share the runner's group
 

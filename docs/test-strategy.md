@@ -18,15 +18,17 @@ The rule is in the constitution (Development Workflow, CI gates) and is checked 
 **A pull request** runs only the tests of what it changes (a merge into `develop` starts no run, since the push that
 merges a pull request would prove again what the pull request proved):
 
-- the unit tests of the workspace packages that contain a changed file (`cargo test -p <package>`), and every package when
+- the unit tests of the workspace packages that contain a changed file and of every package that depends on one of them,
+  directly or not (`cargo test -p <package>`), and every package when
   `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/`, `clippy.toml`, `rustfmt.toml` or `vendor/` changes;
 - the unit tests of an SDK when a file under `sdks/<language>/` changes, of the Studio when a file under `frontend/` changes,
   and of the scripts when a file under `scripts/` changes; and of the lake runtime (Python, `runners/lake/`) with the
   audit of its lock when a file other than Markdown under it changes;
 - the integration suites (the `sagat-tests` targets: integration, contract, fault, e2e and performance, which start
-  PostgreSQL through Testcontainers) that touch the change: the suite whose directory holds a changed file (the deepest
-  one, so `tests/contract/<feature>/rest/` does not select its parent) or whose `[[test]]` entry is new or changed; the
-  suites whose own sources name an affected package, that is a changed package or one that depends on it; the browser
+  PostgreSQL through Testcontainers) that were themselves changed: the suite whose directory holds a changed file (the
+  deepest one, so `tests/contract/<feature>/rest/` does not select its parent) or whose `[[test]]` entry is new or
+  changed. A changed package does not select a suite because the suite uses it, or uses what depends on it: the suites are
+  expensive and the release runs all of them. The browser
   suites when `frontend/e2e` or `examples/` changes; the SDK suites when `sdks/<language>/conformance` changes; the lake
   suites (`integration`, `fault`, `e2e` and `performance` of `iceberg-writes`) when `runners/lake/` changes; and every
   suite when `tests/support`, `tests/fixtures`, any other `runners/` directory, a contract file under `specs/` or a
