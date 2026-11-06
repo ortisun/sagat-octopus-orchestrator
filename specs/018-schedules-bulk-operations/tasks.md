@@ -1220,9 +1220,23 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   tests + scenarios — FR-018-048.
 - [ ] T018-068 All five SDKs against one server build, skips stated — `sdk_conformance` output
   (SC-018-013) — FR-018-048.
-- [ ] T018-069 [P] CLI `sagat schedule …`, `sagat batch …`, `sagat workflow {reset,signal-with-start,update-with-start}`,
+- [x] T018-069 [P] CLI `sagat schedule …`, `sagat batch …`, `sagat workflow {reset,signal-with-start,update-with-start}`,
   `--business-id`/`--if-exists`/`--start-delay` on `sagat workflow run` — `apps/cli/src/{args.rs,workflow.rs}`
   — CLI tests — FR-018-047.
+  *Done 2026-11-06.* `workflow run` takes `--business-id`, `--if-exists fail|use-existing`, `--reuse …` and
+  `--start-delay <SECONDS>` (sent in milliseconds, once) and says when an open run already held the identifier;
+  `workflow signal-with-start` and `workflow update-with-start` (`apps/cli/src/with_start.rs`); the reset is three
+  commands, `workflow reset-points`, `reset-preview` and `reset` (`--acknowledge`, `--drop-business-id`;
+  `apps/cli/src/reset.rs`); `sagat schedule list|get|create|update|delete|pause|resume|trigger|backfill|actions`
+  (`schedule.rs`, the schedule is a JSON file given by `--definition`) and `sagat batch
+  preview|create|get|list|items|cancel` (`batch.rs`). Each command is one request of the REST API and its answer in
+  words; the tool decides nothing the platform decides, a refusal (403, 404, 409, 422, 429) is said and exits 1, a
+  business identifier is never echoed in an error, and every request that changes something carries a key (the one
+  given by `--key`, or one made for the call). Proved by `args.rs` (17 tests), `reset_and_with_start.rs` (11) and
+  `schedule_and_batch.rs` (12) over a mock platform; 40 mutants of the parser and the commands, all killed after the
+  tests that let 4 survive were strengthened (a space in an identifier, a request that must not be sent, a 403, the
+  filters of `batch items`). The generated `docs/reference/cli.md` follows the usage text. The auditing of the runtime
+  privileges reads every string literal of `apps/` too, so `businessId: DROP` is written by a serde derive.
 - [x] T018-070 Cross-tenant battery over every new route and pass — `tests/contract/security-multitenancy/rest/battery.rs`
   — battery output, audited probes — FR-018-041; NFR-018-002.
   *Done 2026-11-05:* routes — `battery::every_implemented_operation_resists_an_administrator_of_another_tenant` walks every
