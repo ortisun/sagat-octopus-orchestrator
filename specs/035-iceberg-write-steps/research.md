@@ -1136,7 +1136,11 @@ The other fixes were wording:
     connection, a revision that does not exist, a developer who lacks `database:write`. It reads as not found and a denial is audited
     (`database.denied`). Only then does the connection's own word count: `IcebergWrite::refusal_by(config)` refuses first a mode the
     connection does not allow (`MODE_NOT_ALLOWED`, naming the mode), and only then fields above its ceiling or never classified
-    (`CLASSIFICATION_EGRESS_REFUSED`, listing path and class, never a value, at most 20 in the answer with a count of the rest).
+    (`CLASSIFICATION_EGRESS_REFUSED`, listing path and class, never a value; the HTTP details list at most 20 with a count of the
+    rest, and validation caps its problems at 20 as it does for every check). A step that **pins a revision** is judged by that
+    revision and by the current one, the stricter winning: a mode or a ceiling that was tightened since applies to it, so pinning an
+    older revision cannot loosen what the connection says now (a security review found it could). A refusal by the connection's
+    settings counts as `denied` in `database_admissions_total`, not as an error of the store.
     These are `VALIDATION_FAILED`, not hidden: the author may use the connection, so nothing is learned that they could not read.
     The domain decides (`refusal_by` is pure and tested without a database); the store finds the connection.
   - *Run creation.* `create` of a run, and the replay of a run that is already there, now see an Iceberg write: a definition that
@@ -1155,7 +1159,10 @@ The other fixes were wording:
     version to another namespace is refused with the lake off, not found without the target's connection, and published with it.
     Publication never contacts the catalog: `catalog.example` does not resolve and the publication succeeds. 26 mutations of the
     decision, the conversions, the HTTP details and the store; 25 caught, 1 survives (G035-038 point 1). It also closes the mutant
-    that survived in #115 (`PublishingService` forwarding the switch; G035-036 point 3), now caught by the promotion.
+    that survived in #115 (`PublishingService` forwarding the switch; G035-036 point 3), now caught by the promotion. Two more
+    mutations of the pinned-revision rule, both caught by the scenario case that tightens the modes of a connection and then
+    publishes a step pinned to the first revision. A correctness review and a security review read this change and the levels of
+    D035-088 before it merged; what they found is fixed (D035-088, D035-090) or recorded below.
 - **G035-038 — What the publication checks leave open.** (1) The replay of a run receipt (`check_database_replay`) sees an Iceberg
   write like the creation does, but no test reaches it: no run of an Iceberg write can exist yet, so there is no receipt to replay. It
   is defensive, and T035-055 gives it its test with the run admission. (2) `records.databaseResult` must name an earlier root-level
@@ -1164,5 +1171,11 @@ The other fixes were wording:
   creation (T035-055 decides each). (4) The ACL of the secrets cannot be told apart from the role at publication in the current role
   matrix (only an administrator holds `database:write`, and an administrator may use any secret), so a lake connection whose secret
   ACL excludes the publisher has no test of its own; it is the same code the SQL path runs. *Exit condition:* points 1 and 3 by T035-055;
-  point 2 by the next slice of T035-054 with a test of a `databaseResult` that names a later or missing step; point 4 when a role
-  other than an administrator can hold `database:write`.
+  point 2 closed by D035-090; point 4 when a role other than an administrator can hold `database:write`. (5) The deployment's
+  `allowUnauthenticatedMetastore` is checked when a connection is written (`crates/application/src/database.rs`) and not again at
+  admission, so turning the flag off later leaves an old Hive `tls: none` connection publishable. The run admission of T035-055 must
+  check it again. (6) The codec reads a mapped field's JSON pointer (`~1` before `~0`, a numeric segment as everything under what
+  it indexes). The host that writes the record (`runners/lake`, T035-057) must read the same property for `~0`, `~1` and a number
+  on an array, or the field that is written differs from the field that was classified; its tests must pin that. (7) An
+  egress refusal is not audited (a `database.denied` is for an access denial) and `validate` audits nothing, as for the SQL path;
+  a refusal to send `secret` data may deserve a record of its own when the audit vocabulary is next touched.

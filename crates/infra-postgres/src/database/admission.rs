@@ -67,7 +67,11 @@ pub(crate) async fn admit_definition(
     .await;
     let outcome = match &result {
         Ok(_) => "authorized",
-        Err(StoreError::DatabaseUnavailable | StoreError::DatabaseLimit) => "denied",
+        Err(
+            StoreError::DatabaseUnavailable
+            | StoreError::DatabaseLimit
+            | StoreError::LakeRefused { .. },
+        ) => "denied",
         Err(_) => "error",
     };
     metrics::counter!("database_admissions_total", "outcome" => outcome).increment(1);
@@ -240,26 +244,57 @@ async fn check_definition(
         ));
     }
     for (node, write) in lake_writes {
-        let revision = write.connection().revision.map(i64::from);
-        let key = (write.connection().name.as_str(), revision);
-        let (id, revision, config) = if let Some(found) = resolved.get(&key) {
-            found
-        } else {
-            let found = resolve_connection(
-                conn,
-                (tenant, namespace),
-                actors,
-                &roles,
-                &environment,
-                key.0,
-                revision,
-            )
-            .await?;
-            resolved.entry(key).or_insert(found)
+        let name = write.connection().name.as_str();
+        let pinned_revision = write.connection().revision.map(i64::from);
+        let (id, revision, refusal) = {
+            let key = (name, pinned_revision);
+            let (id, revision, config) = if let Some(found) = resolved.get(&key) {
+                found
+            } else {
+                let found = resolve_connection(
+                    conn,
+                    (tenant, namespace),
+                    actors,
+                    &roles,
+                    &environment,
+                    key.0,
+                    key.1,
+                )
+                .await?;
+                resolved.entry(key).or_insert(found)
+            };
+            // A lake write can only use a lake connection; a SQL connection is unusable here, as a lake one is to a SQL node.
+            let iceberg = config.as_iceberg().ok_or(StoreError::DatabaseUnavailable)?;
+            (*id, *revision, write.refusal_by(iceberg))
         };
-        // A lake write can only use a lake connection; a SQL connection is unusable here, as a lake one is to a SQL node.
-        let iceberg = config.as_iceberg().ok_or(StoreError::DatabaseUnavailable)?;
-        if let Some(refusal) = write.refusal_by(iceberg) {
+        // A step that pins a revision is judged by the current one too: a mode or a ceiling that was tightened since applies
+        // to it, so pinning an older revision cannot loosen what the connection says now.
+        let refusal = match (refusal, pinned_revision) {
+            (None, Some(_)) => {
+                let key = (name, None);
+                let (_, _, current) = if let Some(found) = resolved.get(&key) {
+                    found
+                } else {
+                    let found = resolve_connection(
+                        conn,
+                        (tenant, namespace),
+                        actors,
+                        &roles,
+                        &environment,
+                        key.0,
+                        key.1,
+                    )
+                    .await?;
+                    resolved.entry(key).or_insert(found)
+                };
+                let current = current
+                    .as_iceberg()
+                    .ok_or(StoreError::DatabaseUnavailable)?;
+                write.refusal_by(current)
+            }
+            (refusal, _) => refusal,
+        };
+        if let Some(refusal) = refusal {
             return Err(StoreError::LakeRefused {
                 node: node.as_str().to_owned(),
                 refusal,
@@ -267,8 +302,8 @@ async fn check_definition(
         }
         result.push((
             node.clone(),
-            ConnectionId::new(*id),
-            u32::try_from(*revision).map_err(|_| corrupt("connection revision"))?,
+            ConnectionId::new(id),
+            u32::try_from(revision).map_err(|_| corrupt("connection revision"))?,
         ));
     }
     Ok(result)
