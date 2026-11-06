@@ -276,6 +276,8 @@ pub trait WorkerStore: QuotaLookup + Send + Sync {
 
     /// The same bounded, quota/pool/protocol-aware discovery window as `claimable_runs`, retaining
     /// exact path coordinates so scoped claims never need whole-run restoration to find work.
+    /// `capacity` selects the part of the window a guarded worker asks for.
+    #[allow(clippy::too_many_arguments)] // one bounded discovery window and its judging context
     fn claimable_paths(
         &self,
         tenant: TenantId,
@@ -284,6 +286,7 @@ pub trait WorkerStore: QuotaLookup + Send + Sync {
         limit: u32,
         accepted_protocol_minor: u32,
         subject: &str,
+        capacity: CapacityWindow,
     ) -> impl Future<
         Output = Result<Vec<(RunId, sagat_domain::execution::InstancePath)>, StoreError>,
     > + Send;
@@ -291,6 +294,7 @@ pub trait WorkerStore: QuotaLookup + Send + Sync {
     /// Runs of one namespace that have a `READY` step for one of `activities`, oldest first. Steps
     /// that declare a secret restricted to worker pools the identity `subject` holds none of are
     /// left out of the window, bar a few per activity that the claim refuses and audits (G48).
+    #[allow(clippy::too_many_arguments)] // one bounded discovery window and its judging context
     fn claimable_runs(
         &self,
         tenant: TenantId,
@@ -299,8 +303,29 @@ pub trait WorkerStore: QuotaLookup + Send + Sync {
         limit: u32,
         accepted_protocol_minor: u32,
         subject: &str,
+        capacity: CapacityWindow,
     ) -> impl Future<Output = Result<Vec<RunId>, StoreError>> + Send;
 }
+
+/// Which part of the candidate window a poll asks for when it enforces ChildRoot possession
+/// (ADR-0075, G715). The window is only a hint: it is never wider than the possession
+/// prerequisite in the sense that matters (nothing the prerequisite would grant is left out of
+/// `Eligible`), and the claim transaction stays the authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapacityWindow {
+    /// Every run, as before the prerequisite existed. The only window of a worker without the guard.
+    Any,
+    /// Runs the prerequisite does not certainly refuse.
+    Eligible,
+    /// Runs it certainly refuses: an ACTIVE ChildRoot member that is not the holder of its group.
+    Ineligible,
+}
+
+/// Runs of the `Ineligible` window a guarded poll still reads, behind its eligible candidates.
+/// Possession gates only the grant of a lease (O706), so such a run still needs its claim
+/// transaction for deterministic internal progress, for instance failing a step whose input is
+/// over the limit. The sample is bounded so stuck non-holders cannot crowd the window.
+const INELIGIBLE_SAMPLE: u32 = 4;
 
 /// The result of registering.
 #[derive(Debug, Clone)]
@@ -848,7 +873,7 @@ where
         if byte_budget == 0 {
             return Ok(Vec::new());
         }
-        let candidates = self
+        let mut candidates = self
             .store
             .claimable_paths(
                 session.tenant_id,
@@ -857,8 +882,29 @@ where
                 wanted.saturating_mul(4).min(64),
                 session.accepted_protocol_minor,
                 &session.subject,
+                if self.child_root_capacity_guard {
+                    CapacityWindow::Eligible
+                } else {
+                    CapacityWindow::Any
+                },
             )
             .await?;
+        if self.child_root_capacity_guard {
+            // Behind every eligible candidate, never ahead of one (ADR-0075 activation condition d).
+            let refused = self
+                .store
+                .claimable_paths(
+                    session.tenant_id,
+                    session.namespace_id,
+                    &session.activities,
+                    INELIGIBLE_SAMPLE,
+                    session.accepted_protocol_minor,
+                    &session.subject,
+                    CapacityWindow::Ineligible,
+                )
+                .await?;
+            candidates.extend(refused);
+        }
         let mut claimed = Vec::new();
         self.claim(
             principal,
