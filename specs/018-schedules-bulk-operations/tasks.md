@@ -1209,17 +1209,24 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
 
 ## Phase 10: Polish, SDKs and gates
 
-- [ ] T018-062 [P] Scenario files and expectations of `contracts/sdk-conformance.md` —
+- [x] T018-062 [P] Scenario files and expectations of `contracts/sdk-conformance.md` —
   `tests/contract/sdk-conformance/{scenarios,expected}/` — reviewed fixtures — FR-018-048.
-- [ ] T018-063 [P] TypeScript SDK — `sdks/typescript/src/` — unit tests + scenarios — FR-018-048.
-- [ ] T018-064 [P] Go SDK — `sdks/go/client/` — unit tests + scenarios — FR-018-048.
-- [ ] T018-065 [P] Python SDK — `sdks/python/sagat_octopus_orchestrator/{client.py,sync.py}` — unit tests +
+  *Done 2026-11-06 (D1981).* Nine scenarios (`schedules-crud`, `schedules-operate`, `schedules-overlap`, `business-ids`, `start-delay`, `signal-with-start`, `update-with-start`, `batch-operations`, `reset`) with their workflow and result goldens, blessed from the TypeScript SDK after every observation was read against the REST contract and then reproduced, equal, by the other five languages without bless. The draft's `errors-018.json` is not written (each reason is asserted where it is raised) and the concurrency-permit reset is not a scenario (T018-053's permit is not built). The harness gained `server.schedules` / `server.batches` for the engine passes. Found by them: the actions of a backfill never carried `backfillId` (fixed in `5cba87e0`, with tests) and G1981 (several refusals are a plain 422 without a reason; left open and pinned as they are).
+- [x] T018-063 [P] TypeScript SDK — `sdks/typescript/src/` — unit tests + scenarios — FR-018-048.
+  *Done 2026-11-06.* TypeScript: `src/operations.ts`, `src/wire.ts`, `src/client.ts`; 16 new unit tests (150 in all), 29 mutants of the client killed after four tests were strengthened (the first run let four survive). Nine scenarios equal to the goldens, twice in a row, by the agent that wrote it and again in the full run of T018-068.
+- [x] T018-064 [P] Go SDK — `sdks/go/client/` — unit tests + scenarios — FR-018-048.
+  *Done 2026-11-06.* Go: `client/{schedules,batch,businessids,withstart,reset,wire}.go`, runner `conformance/operations.go`; 17 new tests, `go test -race ./...`, `go vet`, `gofmt` clean; 13 mutants killed. Nine scenarios equal to the goldens, twice in a row, by the agent that wrote it and again in the full run of T018-068.
+- [x] T018-065 [P] Python SDK — `sdks/python/sagat_octopus_orchestrator/{client.py,sync.py}` — unit tests +
   scenarios — FR-018-048.
-- [ ] T018-066 [P] C# SDK — `sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/` — unit tests + scenarios — FR-018-048.
-- [ ] T018-067 [P] Java SDK — `sdks/java/sdk/src/main/java/dev/sagatoctopusorchestrator/sdk/` — unit
+  *Done 2026-11-06.* Python: `operations.py`, `_wire.py`, `client.py`, `sync.py`; 26 new tests (297 in all), mypy strict, `ruff check` and `ruff format --check` clean; 13 mutants killed. Nine scenarios equal to the goldens, twice in a row, and again in the full run of T018-068.
+- [x] T018-066 [P] C# SDK — `sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/` — unit tests + scenarios — FR-018-048.
+  *Done 2026-11-06.* C#: `Schedules.cs`, `Batch.cs`, `BusinessIds.cs`, `WithStart.cs`, `Resets.cs`, `SagatClient.Operations.cs`; 20 new test cases (472 in all), `dotnet format --verify-no-changes` clean; 13 mutants killed. `StartAsync` now returns `StartedRun` (a `Run` plus `Started`) and `ISagatClient` gained members: a custom implementer of the interface must add them. Nine scenarios equal to the goldens, twice in a row, by the agent that wrote it and again in the full run of T018-068.
+- [x] T018-067 [P] Java SDK — `sdks/java/sdk/src/main/java/dev/sagatoctopusorchestrator/sdk/` — unit
   tests + scenarios — FR-018-048.
-- [ ] T018-068 All five SDKs against one server build, skips stated — `sdk_conformance` output
+  *Done 2026-11-06.* Java: `Schedules`/`BatchOperations`/`BusinessIds` and the typed answers, blocking and `...Async` forms; 19 new tests (258 in all), `./mvnw -q verify` exits 0; 9 mutants killed. `start` now returns `StartedRun(run, started)` (`Run` is a final record), a source break for a caller that wrote `Run r = client.start(...)`. Nine scenarios equal to the goldens, twice in a row, and again in the full run of T018-068.
+- [x] T018-068 All five SDKs against one server build, skips stated — `sdk_conformance` output
   (SC-018-013) — FR-018-048.
+  *Done 2026-11-06 (six languages, not five: D1040).* `cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture` over the whole suite, on one server build (the tree of this commit), without bless and without reuse: 75 scenarios, each in 6 languages, `test result: ok. 1 passed; 0 failed`, 1853 s; none skipped. The registry tests of the same target pass (3 passed). The unit suites and linters of the six SDKs were rerun by me after the agents reported: TypeScript 150, Go (`-race`, vet, gofmt), Python 297 (mypy, ruff), C# 472 (`dotnet format`), Java `./mvnw -q verify` exit 0, Rust 127 (fmt, clippy). That the goldens bite was shown by the Go agent, who forced `started` to true and saw `business-ids` fail at `/observations/4/result/started`.
 - [x] T018-069 [P] CLI `sagat schedule …`, `sagat batch …`, `sagat workflow {reset,signal-with-start,update-with-start}`,
   `--business-id`/`--if-exists`/`--start-delay` on `sagat workflow run` — `apps/cli/src/{args.rs,workflow.rs}`
   — CLI tests — FR-018-047.
@@ -1341,8 +1348,9 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `apps/control-plane/`, `apps/execution-engine/src/lib.rs`, `tests/fault/schedules-bulk-operations/instances.rs`
   — activation-vs-registration race, stale-instance expiry, epoch change while serving (SC-018-017) —
   FR-018-052.
-- [ ] T018-081 [P] Rust SDK (D1040) — `sdks/rust/src/`, `sdks/rust/conformance/` — unit tests + scenarios —
+- [x] T018-081 [P] Rust SDK (D1040) — `sdks/rust/src/`, `sdks/rust/conformance/` — unit tests + scenarios —
   FR-018-048.
+  *Done 2026-11-06.* Rust: `src/client/{schedules,batch,business,resets,wire}.rs`, runner `conformance/src/runtime/operations.rs`; 16 new tests (127 in all), `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings` clean; 12 mutants killed. `start` returns `StartedRun` (it dereferences to `Run`); a 200 answer is accepted only when the conflict policy is `USE_EXISTING`. Nine scenarios equal to the goldens, twice in a row, and again in the full run of T018-068.
 - [ ] T018-075 Quickstart demos, then fmt, clippy `-D warnings`, workspace tests,
   `scripts/check-architecture.py`, contract checks, runtime-role sweep, Studio build; record results —
   `specs/018-schedules-bulk-operations/verification.md` (created at implementation) — FR-018-046,
