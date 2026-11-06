@@ -76,7 +76,6 @@ fn unsupported(kind: &str) -> Option<&'static str> {
         "forEach" | "while" | "repeatUntil" | "return" | "continueAsNew" => {
             "this workflow capability is not enabled by the runtime"
         }
-        "icebergWrite" => ICEBERG_WRITE_NOT_ENABLED,
         _ => return None,
     })
 }
@@ -85,16 +84,14 @@ fn unsupported_structured(kind: &str) -> Option<&'static str> {
     Some(match kind {
         "foreach" => "legacy collection placeholder has no executable definition",
         "humanApproval" => "legacy approval placeholder has no executable definition",
-        "icebergWrite" => ICEBERG_WRITE_NOT_ENABLED,
         _ => return None,
     })
 }
 
-/// The canonical schema describes the Iceberg write step and step-output destinations (feature 035), but no domain
-/// type runs them yet. Publishing such a workflow would drop the step, so the codec refuses it until the domain tasks
-/// of the feature parse and schedule them (T035-093 and before).
-const ICEBERG_WRITE_NOT_ENABLED: &str =
-    "the Apache Iceberg write step is not enabled by the runtime";
+/// The canonical schema describes step-output destinations (feature 035), but no domain type runs them yet. Publishing
+/// such a workflow would drop the step, so the codec refuses it until the domain tasks of the feature parse and
+/// schedule them (T035-093 and before). The Iceberg write step is parsed (T035-053); whether a deployment may publish
+/// it is the definition service's decision (`lake.enabled`), not the codec's.
 const DESTINATIONS_NOT_ENABLED: &str = "step-output destinations are not enabled by the runtime";
 
 fn integer_u32(node: &Map<String, Value>, field: &str, at: &str) -> Result<u32, IrError> {
@@ -538,6 +535,8 @@ fn nodes(raw_nodes: &[Value], at: &str, structured: bool) -> Result<Vec<Node>, I
         let id = node_id(id, &format!("{at}/id"))?;
         let mut built = if kind == "database" {
             Node::database(id, crate::database::operation(node, &at)?)
+        } else if kind == "icebergWrite" {
+            Node::iceberg(id, crate::lake::write(node, &at)?)
         } else {
             let kind = kind_of(node, kind, &at, &id, structured)?;
             Node::new(id, kind)

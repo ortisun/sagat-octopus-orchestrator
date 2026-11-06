@@ -213,6 +213,26 @@ pub async fn run(w: &World) {
         Err(AppError::NotFound)
     ));
 
+    // An Iceberg write step is refused at publication until its admission exists (T035-054): the codec parses the node and
+    // the store fails closed, as it does for a connection the author may not use, rather than publish a step that nobody
+    // checked for access, modes or egress.
+    assert!(matches!(
+        w.try_publish_as(
+            &w.admin,
+            document(
+                "iceberg-write-on-a-lake-connection",
+                "save",
+                vec![json!({
+                    "id": "save", "type": "icebergWrite", "connectionRef": {"name": "lake-main"},
+                    "table": {"namespace": ["sales"], "name": "orders"}, "mode": "append",
+                    "records": {"inline": "input.rows"}
+                })],
+            )
+        )
+        .await,
+        Err(AppError::NotFound)
+    ));
+
     // Plain `http` is for a development namespace, as a plaintext PostgreSQL connection is.
     let plain = iceberg(
         "http://catalog.local:8181",

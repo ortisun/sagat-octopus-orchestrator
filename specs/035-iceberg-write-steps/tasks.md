@@ -905,6 +905,12 @@ one commit carries the key.
 - [ ] T035-053 [US02] Add the codec in `crates/infra-ir/src/lake.rs` and `crates/infra-ir/src/convert.rs`.
   A field outside the contract is refused, and canonical bytes are stable across two publications.
   Refs: FR-035-008, FR-035-033.
+
+  *2026-11-05, partly done, left unticked (D035-085, G035-035):* the codec parses the append step into the domain node; a
+  field outside the contract is refused without echoing it; the canonical bytes do not depend on key order and do not
+  materialise defaults; the node is root-only. 14 tests, 15 mutations caught. Overwrite, upsert and `recordSchema` are refused
+  as unsupported. Nothing can be published yet: the store fails closed until T035-054, which is a placeholder and not a
+  decision to leave it so.
 - [ ] T035-054 [US02] Add the publication checks in
   `crates/application/src/{definitions.rs,publishing.rs,database.rs}`:
   - access;

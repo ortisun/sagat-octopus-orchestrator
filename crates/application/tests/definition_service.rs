@@ -1931,3 +1931,56 @@ fn eight_thousand_unknown_artifacts_are_found_in_one_pass() {
     // What was built is not reported.
     assert!(unknown_script_problems(&definition, &digests[..10]).len() == 10);
 }
+
+/// An adapter that has no lake support must not let an Iceberg write through unchecked, as it must not for a managed SQL
+/// step (T035-054 replaces this refusal with the real checks: access, allowed modes, ceiling, `lake.enabled`).
+#[tokio::test]
+async fn an_adapter_without_lake_support_refuses_a_definition_with_an_iceberg_write() {
+    use sagat_domain::database::{
+        ColumnMapping, ConnectionRef, IcebergWrite, IcebergWriteParts, LakeLimits, RecordSource,
+        TableIdentifier, WriteIntent,
+    };
+    let f = fixture();
+    let who = principal(f.tenant, Role::Admin);
+    let write = IcebergWrite::new(IcebergWriteParts {
+        connection: ConnectionRef::new(Slug::parse("lake-main").expect("slug"), None).expect("ref"),
+        table: TableIdentifier::new(vec!["sales".to_owned()], "orders").expect("table"),
+        reference: "main".to_owned(),
+        intent: WriteIntent::Append,
+        records: RecordSource::Inline(
+            sagat_domain::workflow::Expression::parse("input.rows").expect("expression"),
+        ),
+        mapping: vec![ColumnMapping::new("/id", "id").expect("mapping")],
+        ignore_unknown_fields: false,
+        limits: LakeLimits::default(),
+        revert: false,
+    })
+    .expect("a write");
+    let lake = WorkflowDefinition::new(
+        Slug::parse("lake-flow").expect("slug"),
+        NodeId::parse("save").expect("id"),
+        vec![Node::iceberg(NodeId::parse("save").expect("id"), write)],
+    )
+    .expect("a definition");
+    assert!(matches!(
+        f.store
+            .check_database_access(&who, f.namespace.id(), &lake)
+            .await,
+        Err(StoreError::DatabaseUnavailable)
+    ));
+    let plain = WorkflowDefinition::new(
+        Slug::parse("plain-flow").expect("slug"),
+        NodeId::parse("only").expect("id"),
+        vec![Node::new(
+            NodeId::parse("only").expect("id"),
+            NodeKind::End { output: None },
+        )],
+    )
+    .expect("a definition");
+    assert!(
+        f.store
+            .check_database_access(&who, f.namespace.id(), &plain)
+            .await
+            .is_ok()
+    );
+}

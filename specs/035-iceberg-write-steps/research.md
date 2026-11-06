@@ -1014,3 +1014,30 @@ The other fixes were wording:
   paths, `api-http/src/dto_exec.rs:576` (the step type label), and `apps/database-runner` (`runner.rs:188`, `attempt.rs:42`).
   (5) The HTTP reason, the CLI help (`apps/cli/src/diagnostics.rs`) and `docs/quickstarts/errors.md` for the two new codes come
   with the publication checks (T035-054). *Exit condition:* each is closed by the task named, with a test.
+- **D035-085 — The `icebergWrite` codec, and a store that fails closed until its admission exists.** T035-053. Decided by:
+  delegate.
+  - *A pure parser.* `crates/infra-ir/src/lake.rs` builds `Node::iceberg` from the node the schema describes; `convert.rs` no
+    longer refuses it and `schema.rs` knows the type (`ROOT_NODE_TYPES`, and a diagnostic that does not echo a value). There is
+    no codec flag: `JsonIrCodec` is a unit struct used in 461 places, and whether a deployment may publish the step is the
+    business of the definition service and the store, not of the parser.
+  - *Why nothing can be published yet.* The refusal of `lake_capabilities.rs` existed so that a step the schema accepts but the
+    engine cannot run is never published. Taking it away alone would let a deployment publish a step that no worker serves, and
+    the run would hang. So the store refuses a definition that holds an Iceberg node: the default of
+    `DefinitionStore::check_database_access`, `PgDefinitionStore::check_database_access` and `admit_definition`, which the
+    transaction of a publication also calls. The author sees what an unusable connection shows (`NotFound`). This is a marked
+    placeholder, replaced by T035-054 (access, allowed modes, ceiling, `lake.enabled`).
+  - *Refused as unsupported, never dropped.* An `overwrite` or `upsert` option (also beside `append`) and a `recordSchema`: a
+    step that wrote less than it said, or that lost a stricter classification of its fields, is worse than none.
+  - *Evidence.* 14 tests in `crates/infra-ir/tests/iceberg_write.rs` (written first and seen failing: 10 of 12 failed because the
+    converter refused the node), the application test of the default, and the lifecycle scenario of
+    `integration_database_connections` against real PostgreSQL and OpenBao, which now publishes an Iceberg write and sees it
+    refused (1 passed in 220 s). 15 mutations of the codec, all caught. The guard of `admit_definition` is mutation-checked
+    against the real-store scenario.
+- **G035-035 — What the codec leaves open.** (1) `lake.enabled` and the code `LAKE_DISABLED` are not built (T035-036): until they
+  are, the refusal is the one of an unusable connection. (2) `records.databaseResult` must name an earlier root-level database
+  node of the same run; neither the codec nor the graph checks it (T035-054). (3) Run admission (`execution.rs`, `worker.rs`
+  and their scoped paths) still keys on `database_operation()`; a definition with an Iceberg node cannot exist until T035-054,
+  so nothing reaches it, but each site needs a decision then (G035-034 item 4). (4) The author-feedback path (`validate`) calls only
+  `check_database_access` and is not covered by the real-store scenario, which exercises the publication. (5) Overwrite, upsert
+  and `recordSchema` come with their tasks (T035-080, T035-085, T035-054). *Exit condition:* each is closed by the task named,
+  with a test.
