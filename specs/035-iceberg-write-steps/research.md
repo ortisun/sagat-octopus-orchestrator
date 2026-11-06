@@ -1388,3 +1388,24 @@ The other fixes were wording:
   with `WORKER_ERROR` and deletes nothing, a test shows it with the fsspec IO on a local warehouse. *Exit condition:* write the fsspec
   listing and test it against an Azurite container (the compose file of the repository would need the component, pinned, with a healthcheck),
   or decide that an ADLS attempt leaves its orphans to the lifecycle rule of the storage account.
+- **D035-097 — The NDJSON of an attempt is read a bounded line at a time, and what is wrong carries nothing.** T035-057, fourth part
+  (D035-033, D035-063). **Decided by: delegate** (the owner delegated the decisions of this feature).
+  - *`records.read_ndjson(path, budget, max_line_bytes=...)`* (`runners/lake/sagat_lake/records.py`) yields the records of one file in
+    order. A line is at most `max_line_bytes` (16 MiB by default), terminator included, and it is read with `readline(limit + 1)` so that a
+    line with no end is never read whole: a test spies on the calls and none asks for more than a line may hold. The files of a step share a
+    `Budget` of bytes (the contract's `maxDecodedBytes`), spent per line read, blank lines included; going over either bound is
+    `ICEBERG_LIMIT_EXCEEDED`.
+  - *What is refused.* Text that is not UTF-8 (a byte order mark and UTF-16 or UTF-32 included: the decoding is explicit, since
+    `json.loads` on bytes would guess); a line that is not one JSON object; an object that repeats a key at any depth (the second would
+    silently replace the first, and so would the same key written two ways); nesting deeper than the decoder goes; a blank other than the
+    four of JSON (a no-break space is not an empty line). All are `ICEBERG_SCHEMA_MISMATCH`, reason `TYPE`, with **no column, no line and
+    no position**, since the contract has no code for a malformed line and a value must not travel in a failure. An integer of more than
+    4,300 digits, and an exponent a `Decimal` cannot hold, are reason `OVERFLOW`: outside the range of every column.
+  - *What is kept.* A number keeps the digits it was written with (`parse_float=Decimal`), `NaN` and the infinities reach the mapping, which
+    lets only `float` and `double` hold them, and a blank line or a Windows line end is not a record.
+  - *Not here:* the Parquet reader (it needs a decision on how a Parquet column maps to the table: checked casts, and what the step's
+    JSON-pointer mapping means for it), the Arrow batches, and the cap on a step's total (the runner sets it, 8 times the input ceiling).
+  - *Evidence.* 50 tests in `test_records.py`, written first and seen failing (the module did not exist); 24 mutations, all caught (one by a
+    hang, which is a legitimate catch of a loop that never ends); two survived the first tests and each got one (the unbounded `readline`, which
+    only a spy can see, and the Unicode blanks). `runners/lake`: 531 passed, 1 skipped; `ruff check`, `ruff format --check` and strict
+    `mypy` clean.
