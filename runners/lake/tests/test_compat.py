@@ -117,6 +117,16 @@ def test_a_location_outside_the_warehouse_is_refused(location: str) -> None:
     refused(facts(locations=(LOCATION, location)), "ICEBERG_LOCATION_NOT_ALLOWED")
 
 
+def test_a_table_that_names_its_own_location_provider_is_refused() -> None:
+    # PyIceberg imports the module the property names and calls the class with the table: code from the table's
+    # metadata would decide where files go, and no check of a location could see it.
+    refused(facts(location_provider="evil.Provider"), "ICEBERG_LOCATION_NOT_ALLOWED")
+
+
+def test_a_table_with_no_location_provider_of_its_own_is_accepted() -> None:
+    assert verdict(facts(location_provider=None)) is None
+
+
 def test_every_location_is_checked_not_only_the_table() -> None:
     refused(
         facts(locations=(LOCATION, "s3://elsewhere/data", LOCATION + "/metadata")),
@@ -176,6 +186,7 @@ def test_the_checks_run_in_a_fixed_order_so_the_answer_is_always_the_same() -> N
         default_file_format="orc",
         partition_transforms=("day",),
         locations=("s3://elsewhere/x",),
+        location_provider="evil.Provider",
     )
     refused(table, "ICEBERG_LIMIT_EXCEEDED", limit=4096, ref="release")
     refused(dataclasses.replace(table, metadata_bytes=1), "ICEBERG_TABLE_NOT_FOUND", ref="release")
@@ -192,3 +203,14 @@ def test_the_checks_run_in_a_fixed_order_so_the_answer_is_always_the_same() -> N
         ),
         "ICEBERG_LOCATION_NOT_ALLOWED",
     )
+    # the provider is a location problem too, and it is judged with the locations, after the rest
+    only_the_provider = dataclasses.replace(
+        table,
+        metadata_bytes=1,
+        format_version=2,
+        default_file_format="parquet",
+        partition_transforms=(),
+        locations=(LOCATION,),
+    )
+    refused(only_the_provider, "ICEBERG_LOCATION_NOT_ALLOWED")
+    assert verdict(dataclasses.replace(only_the_provider, location_provider=None)) is None

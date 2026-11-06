@@ -983,8 +983,12 @@ one commit carries the key.
 
   *2026-11-06, first part done, left unticked (D035-091, G035-039):* `mapping.py`, `lookup.py` and `compat.py` are in
   `runners/lake/sagat_lake/` as pure functions, with the published type table in `docs/guides/iceberg-type-mapping.md`. Not
-  done: `modes/append.py`, the conditional commit (T035-034), the adapters that build their inputs from a loaded table, the
-  deletion of the attempt's own files when a commit is refused, and `priorAttemptMayHaveLeftFiles`.
+  done: `modes/append.py`, the conditional commit (T035-034), the deletion of the attempt's own files when a commit is refused,
+  and `priorAttemptMayHaveLeftFiles`.
+
+  *2026-11-06, second part done, left unticked (D035-092):* `table_facts.py` builds the facts, the refs and the snapshots from a
+  loaded table (21 tests against a real SQLite catalog), and `compat.py` now refuses a table that names its own location provider,
+  because PyIceberg imports and calls the class a table property names.
 - [ ] T035-058 [US02] Add the activity `sagat.database.iceberg.write` to
   `apps/database-runner/src/lake.rs`: rebuild the receipt, report `CompleteStep` or `FailStep`, and
   audit relay denials. Refs: FR-035-023, FR-035-027.

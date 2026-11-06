@@ -1224,7 +1224,8 @@ The other fixes were wording:
     read without regard to case; the transforms are `identity` and `void` only, because those are the ones the runtime
     can apply (G035-040; the first version of this decision accepted year, month, day, hour, bucket and truncate and was wrong); a location is inside the warehouse by path and not by text (`warehouse-evil` is not
     below `warehouse`), a `..` segment is inside nothing, and an empty root allows nothing rather than everything. The checks
-    run in a fixed order: the size of the metadata, the ref, the format version, the file format, the transforms, the locations.
+    run in a fixed order: the size of the metadata, the ref, the format version, the file format, the transforms, the location
+    provider (D035-092), the locations.
   - *Evidence.* 64 tests of the mapping, 25 of the lookup and 45 of the compatibility, written first and seen failing (the modules
     did not exist). Mutations of each module: 35 of the mapping (7 survived the first tests and each got a test or, for a check
     that was redundant, was removed), 17 of the lookup (2 survived and each got a test) and 22 of the compatibility (3 survived:
@@ -1251,3 +1252,30 @@ The other fixes were wording:
   of the image (the Dockerfile installs wheels only), and run `pip-audit` and the SBOM check, since it puts a native (Rust) wheel in the
   sandbox image. *Exit condition:* the owner decides; then `_TRANSFORM` in `compat.py` accepts the transforms that a test of
   writing to a table of each shows the runtime applies.
+- **D035-092 — The host reads the facts of a table from the table PyIceberg loaded, and refuses a table that names its own location
+  provider.** T035-057, second part. **Decided by: delegate** (the owner delegated the decisions of this feature).
+  - *The adapters.* `runners/lake/sagat_lake/table_facts.py` builds the inputs of `compat.check` and `lookup.lookup` from a loaded
+    table and reads nothing else (no listing, no scan): `facts_of` (the table location, the metadata file, `write.data.path` and
+    `write.metadata.path` when not empty, the format version, `write.format.default` with Parquet as the default, the transforms of
+    the spec in force after any evolution, the size of the metadata file as the file IO reports it, the refs with `main` always
+    among them because the first commit creates it and the host never creates another), `refs_of` (the head of each branch and tag)
+    and `snapshots_of` (id, parent, the catalog's timestamp and the summary, which is empty for a snapshot that has none).
+  - *What PyIceberg 0.12 really reads.* Read in its source and tried, not assumed: `write.data.path` and `write.metadata.path` move
+    where files go; the Java-only `write.folder-storage.path` and `write.object-storage.path` do not (a test shows the provider still
+    places data under the table), so they are not facts about where the host writes.
+  - *Found in that reading: a table property runs code.* `write.py-location-provider.impl` makes PyIceberg `importlib.import_module`
+    the module the property names and call the class with the table location and its properties; creating a table that names a
+    missing class already fails with `Could not initialize LocationProvider`. Whoever can set a property of a table in the catalog
+    chooses which importable callable the host runs, and it also decides where every file is placed, which no check of a location
+    can see. `catalog` hygiene (`config_hygiene.py`) covers the catalog's own `py-io-impl` but nothing covered a table's properties.
+    I did not try to turn it into an execution and the refusal does not depend on whether it can be. `TableFacts.location_provider`
+    carries the name (a blank value means none, as it does for PyIceberg) and `check` refuses with `ICEBERG_LOCATION_NOT_ALLOWED`,
+    the contract's code for a location the host does not accept, so the closed set of codes and reasons does not change.
+  - *Evidence.* 21 tests in `test_table_facts.py` against a real SQLite catalog with a file warehouse (no network, no container),
+    plus 2 in `test_compat.py` and the ordering test extended; written first and seen failing (the module did not exist; the field
+    did not exist). 32 mutations of `table_facts.py` and the new rule in `compat.py`: 2 survived the first tests (the transforms of
+    the first spec instead of the current one, and a constant format version) and each got a test (a table evolved from identity to
+    `bucket[4]`; a version 1 and a version 2 table); the last, which turns `is not None` into `is not None or == ''`, is the same
+    condition, an equivalent mutant. `runners/lake`: 376 passed, 1 skipped; `ruff check`, `ruff format --check` and strict `mypy` clean.
+  - *Still open (G035-039):* the readers of NDJSON and Parquet into records, `modes/append.py`, the conditional commit and the
+    T035-019 spike, the deletion of the attempt's own files, `priorAttemptMayHaveLeftFiles` and `test_append.py`.

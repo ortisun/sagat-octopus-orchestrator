@@ -11,7 +11,8 @@ This directory holds the image, its lock and its checks (T035-006), the filter o
 (`host.py`). The host serves no operation yet: the write protocol and the receipts arrive with the tasks that test them.
 Three decisions of the write are already pure functions with their own tests: `mapping.py` (a record against the schema of
 the table, lossless or refused; the table is published in `docs/guides/iceberg-type-mapping.md`), `lookup.py` (the search for
-the effect key, D035-030) and `compat.py` (whether the table can be written, FR-035-011).
+the effect key, D035-030) and `compat.py` (whether the table can be written, FR-035-011). `table_facts.py` reads their
+inputs from a table PyIceberg loaded and from nothing else (D035-092).
 
 ## Interface
 

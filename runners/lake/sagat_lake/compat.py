@@ -43,6 +43,10 @@ class TableFacts:
     locations: Sequence[str]
     metadata_bytes: int
     refs: Collection[str]
+    # The class a table names to decide where its files go (``write.py-location-provider.impl``), or ``None``. PyIceberg
+    # imports the module and calls the class, so a table that names one hands the placement of every file to code the
+    # host has not read: no check of a location can see it, and the table is refused.
+    location_provider: str | None = None
 
 
 def check(
@@ -56,7 +60,7 @@ def check(
 
     The order is fixed so that the answer to a given table is always the same: the size of the metadata first,
     because nothing else is worth reading when it is too big, then the ref, the format version, the file format, the
-    transforms and the locations.
+    transforms, the location provider and the locations.
     """
     if table.metadata_bytes > max_metadata_bytes:
         raise Failure(LIMIT_EXCEEDED)
@@ -68,6 +72,8 @@ def check(
         raise Failure(UNSUPPORTED_TABLE, reason="FILE_FORMAT")
     if any(not _TRANSFORM.fullmatch(name) for name in table.partition_transforms):
         raise Failure(UNSUPPORTED_TABLE, reason="TRANSFORM")
+    if table.location_provider is not None:
+        raise Failure(LOCATION_NOT_ALLOWED)
     if any(not inside(location, warehouse_locations) for location in table.locations):
         raise Failure(LOCATION_NOT_ALLOWED)
 
