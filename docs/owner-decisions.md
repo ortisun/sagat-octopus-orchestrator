@@ -4,6 +4,24 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-06 — Mutation testing runs only when a release is closed
+
+The owner gave the instruction in the Claude session, right after the pull requests that closed the host of feature 035 up to
+its REST catalog, each of which had a mutation pass of its own (a few minutes to half an hour of throw-away runs per pull
+request). It follows the rule on CI: what a pull request and a merge cost is cut to what the change needs, and the expensive
+check waits for the release.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-06-2 | "Desabilite também testes mutantes. Deixe somente ao fechar release igual a regra anterior" | owner | Decided | docs/engineering/ai-engineering.md, docs/test-strategy.md |
+
+Read as the owner wrote it: no mutation run while a feature is built, in a pull request or in the CI; one when a release is
+closed. It replaces the pause of 2026-10-09 ("re-enable only when asked"), which had said only that mutation testing was off.
+The Constitution does not mention mutation testing, so it is not amended: the rule lives in
+[the engineering guide](engineering/ai-engineering.md) and [the test strategy](test-strategy.md). A test is still written
+first and seen failing, and an independent review still reads a slice that crosses a trust boundary; only the weakening of
+each guard to see that a test notices it moves to the release.
+
 ## 2026-11-05 — A merge into `develop` starts no CI
 
 The owner gave the instruction in the Claude session while the assistant was merging a stack of pull requests, each of
