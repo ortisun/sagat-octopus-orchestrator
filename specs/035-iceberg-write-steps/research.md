@@ -1722,3 +1722,21 @@ The other fixes were wording:
   than the row group declares, and a footer that understates, are stopped by `memory.max` of the container and by its deadline, not by the
   host. *Exit condition:* a test that runs the host in the container of the image with a crafted file and the real limits (T035-031/035),
   and, if it is not enough, a limit on the compressed size of a column chunk read from the footer.
+- **D035-108 — The receipts the Python host writes are checked against `receipts.schema.json`, the same file the Rust runner's types are
+  checked against.** Conformance of the two halves of the wire without running one against the other. **Decided by: delegate**.
+  - *Why.* The runner rebuilds each receipt from typed fields with `deny_unknown_fields` (`crates/infra-lake/src/protocol/receipt.rs`) and
+    refuses a line that is not exactly what the schema describes. The host and the runner were written apart; a member the host
+    spells differently would show only when the driver exists. The Rust tests (`crates/infra-lake/tests/protocol.rs`) validate their samples
+    against the schema; this adds the same check on the Python side, so each half conforms to the one contract and the two conform to each
+    other through it. The envelope of the request already agrees by reading: the Rust `encode_request` writes `protocol`, `operation`,
+    `effectKey`, `firstAttemptStartedAt` and `relay`, which `request.py` expects, and leaves the body, which the Rust builder of T035-035
+    has to write in the shape of D035-101 and D035-105.
+  - *The checker* (`runners/lake/tests/schema_check.py`, about 70 lines) implements the keywords that file uses (`type`, `const`, `enum`,
+    `pattern`, `maxLength`, `required`, `properties`, `allOf`, `$ref`, `unevaluatedProperties: false`) and **reports a keyword it does not
+    know**, so a schema that grows one cannot turn the check into a pass. No dependency is added to the image or the lock.
+  - *What it found.* Nothing: the four receipts the host writes (committed with `ignoredFields` and `priorAttemptMayHaveLeftFiles`, found by
+    lookup, `EMPTY_NO_COMMIT`, and a committed one after a refused try whose files could not all be deleted, `uncommittedFiles`) conform on the
+    first run, and the checker rejects seven kinds of wrong receipt (an extra member, a count with a leading zero, a count that is a number,
+    an outcome outside the enum, a missing `ref`, format version 3, a snapshot id with letters). The host never writes `droppedValues`.
+  - *Not covered.* The failure line (`{"failure": {...}}`) has no schema file; the Rust `HostFailure::from_wire` is its definition, and
+    `test_host_protocol.py` checks the Python side against the table of codes in `failure.rs`. Receipts of the other operations come with them.
