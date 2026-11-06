@@ -22,7 +22,7 @@ from typing import Any
 
 from .failures import LAKE_HOST_PROTOCOL, Failure
 from .lookup import EFFECT_KEY
-from .modes.append import AppendRequest
+from .modes.append import AppendRequest, InputFile
 
 PROTOCOL = "sagat.lake.v1"
 OPERATION = "icebergWrite"
@@ -74,6 +74,7 @@ _POINTER = re.compile(r"(/([^/~]|~[01])*)+")
 _MAX_NAME = 255
 _MAX_LEVELS = 8
 _MAX_INPUTS = 32
+_FORMATS = frozenset({"ndjson", "parquet"})
 _MAX_MAPPINGS = 1024
 _MAX_POINTER = 512
 _MAX_DEPTH = 16
@@ -229,18 +230,17 @@ def _snapshot_properties(value: object) -> dict[str, str]:
     return dict(value)
 
 
-def _inputs(value: object, attempt_dir: Path) -> tuple[Path, ...]:
+def _inputs(value: object, attempt_dir: Path) -> tuple[InputFile, ...]:
     if not isinstance(value, list) or not 1 <= len(value) <= _MAX_INPUTS:
         raise _break()
-    paths = []
+    files = []
     for entry in value:
         item = _object(entry, {"file", "format"})
-        # only NDJSON is read; a Parquet input is a request for something that is not here yet
         match = _FILE.fullmatch(item["file"]) if isinstance(item["file"], str) else None
-        if match is None or item["format"] != "ndjson":
+        if match is None or not isinstance(item["format"], str) or item["format"] not in _FORMATS:
             raise _break()
-        paths.append(attempt_dir / "in" / match.group(1))
-    return tuple(paths)
+        files.append(InputFile(attempt_dir / "in" / match.group(1), item["format"]))
+    return tuple(files)
 
 
 def _mapping(value: object) -> tuple[tuple[str, str], ...]:

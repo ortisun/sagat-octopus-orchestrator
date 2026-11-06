@@ -46,6 +46,7 @@ from ..compat import check
 from ..failures import Failure
 from ..lookup import EFFECT_KEY, Found, lookup
 from ..mapping import map_record
+from ..parquet_input import read_parquet
 from ..records import Budget, read_ndjson
 from ..table_facts import facts_of, refs_of, snapshots_of
 
@@ -66,6 +67,18 @@ _COUNT = re.compile(r"0|[1-9][0-9]{0,18}")
 
 
 @dataclass(frozen=True)
+class InputFile:
+    """A file of the attempt directory that holds records, and the format they are in."""
+
+    path: Path
+    format: str = "ndjson"
+
+    def __post_init__(self) -> None:
+        if self.format not in ("ndjson", "parquet"):
+            raise ValueError("an input is NDJSON or Parquet")
+
+
+@dataclass(frozen=True)
 class AppendRequest:
     """What the runner tells the host about one append (``contracts/lake-runtime.md``)."""
 
@@ -75,7 +88,7 @@ class AppendRequest:
     ref: str
     # Up to 60 characters: every try adds ``-<n>``, and a directory name is at most 64.
     attempt_id: str
-    inputs: Sequence[Path]
+    inputs: Sequence[InputFile]
     warehouse_locations: Sequence[str]
     mapping: Sequence[tuple[str, str]] = ()
     ignore_unknown_fields: bool = False
@@ -200,14 +213,18 @@ def _try(table: Table, request: AppendRequest, directory_id: str, counts: _Count
     return tried
 
 
+def _records(file: InputFile, budget: Budget) -> Iterator[dict[str, Any]]:
+    return read_parquet(file.path, budget) if file.format == "parquet" else read_ndjson(file.path, budget)
+
+
 def _data(table: Table, request: AppendRequest, tried: _Try) -> pa.Table | pa.RecordBatchReader | None:
     """The records as Arrow, or ``None`` when there are none. The files are read here, so a bad record ends here."""
     schema = table.schema()
     budget = Budget(request.max_decoded_bytes)
 
     def rows() -> Iterator[dict[str, Any]]:
-        for path in request.inputs:
-            for record in read_ndjson(path, budget):
+        for source in request.inputs:
+            for record in _records(source, budget):
                 row, dropped = map_record(
                     schema, record, mapping=request.mapping, ignore_unknown=request.ignore_unknown_fields
                 )

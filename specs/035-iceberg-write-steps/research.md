@@ -1687,3 +1687,38 @@ The other fixes were wording:
   and `credentials` of D035-105. Also open: the Parquet input, overwrite and upsert, the catalogs and storages of G035-048, and
   `priorAttemptMayHaveLeftFiles`, which the runner has to set from its lease. *Exit condition:* the driver, tested against the real host in
   its container.
+- **D035-107 — A Parquet blob is a table of records, read into the JSON form of the mapping table, so one mapping decides for both
+  formats.** T035-057, the Parquet input that G035-039 left open; the question the earlier note called a decision ("checked casts or the
+  JSON-pointer mapping"). **Decided by: delegate** (the owner delegated the decisions of this feature).
+  - *The choice.* Each row of the file is a record, and each cell is turned into the representation `docs/guides/iceberg-type-mapping.md`
+    publishes for JSON, then the record goes through `mapping.map_record` and the step's JSON-pointer `mapping` exactly as an NDJSON line
+    does. Rejected: casting the Arrow table straight to the table's schema (D035-033 said "checked casts only"). It would have been a
+    second mapping table with its own lossless rules to publish, test and keep equal to the first, for a path whose only consumer is the
+    same step. The cost of the choice is a Python object per cell, which is why the rows are read a batch at a time.
+  - *The conversion* (`runners/lake/sagat_lake/parquet_input.py`, `read_parquet`): a date as `YYYY-MM-DD`; a time and a timestamp as
+    `isoformat`, which keeps the offset the mapping stores as UTC; binary and fixed binary as the typed cell with padded base64; a uuid as
+    its canonical text; a decimal as `Decimal`; a list as a list; a struct as an object; a map as an array of `{"key", "value"}`; a
+    dictionary-encoded column as its values; integers, floats (`NaN` and the infinities included), booleans and text as they are.
+  - *Bounded* (D035-063). The length of the footer is read from the last eight bytes and bounded (16 MiB) **before** the footer is parsed;
+    the uncompressed size of each row group, which the footer states, is spent from the step's `Budget` **before** that row group is decoded,
+    so the first byte over the limit stops the step with no row of that group delivered; rows are decoded a batch at a time
+    (`iter_batches(batch_size=1024, row_groups=[i])`). A footer can understate a row group; `memory.max` of the container is what stops
+    that, as the contract already says for the whole host.
+  - *Refused.* A file that is not Parquet, is cut, has the wrong magic at either end, a footer of zero or longer than the file, is
+    `ICEBERG_SCHEMA_MISMATCH`/`TYPE` with no column. A column named twice at any depth (a row is a dictionary and would keep one), and a
+    type the mapping has no form for (a duration, an interval, a union), are `TYPE` naming the column. A nanosecond that would be lost
+    (pyarrow without pandas raises "not safely convertible") is `SCALE_OVERFLOW`; one that would not be lost is read. A missing file
+    raises `FileNotFoundError`: it is the runner's bug, not the data's, and becomes `WORKER_ERROR`.
+  - *Wired in.* `request.py` takes `format: "parquet"` and carries it per file (`InputFile(path, format)`); `modes/append` dispatches on
+    it; the budget is the same object for both formats, so 8 times the input ceiling bounds a step whatever its mix of files.
+  - *Evidence.* 22 tests in `test_parquet_input.py` (every scalar, the temporal forms, binary in four shapes, a uuid, lists/structs/maps
+    down to their cells, a dictionary column, four codecs, a row of every Iceberg type mapped into the table it was written for, eleven
+    kinds of file that are not Parquet, the footer bound at its edge, the row-group budget at its edge, a shared budget, a duplicate
+    column, the types without a form, the lossy and lossless nanoseconds, a missing file, no value in a failure, bounded batches), a
+    test and ten format cases in `test_request.py` and 4 tests in `test_append.py` for the wiring (Parquet and NDJSON in one commit, a cell that does not fit, a file that
+    is not Parquet, the shared budget). Written before the module; seen failing for its absence. No mutation pass (OD-2026-11-06-2).
+    `runners/lake`: 1022 passed, 1 skipped; `ruff` and strict `mypy` clean.
+- **G035-050 — The Parquet reader trusts the footer's sizes.** Decompression bombs inside a page, a column chunk that decodes to far more
+  than the row group declares, and a footer that understates, are stopped by `memory.max` of the container and by its deadline, not by the
+  host. *Exit condition:* a test that runs the host in the container of the image with a crafted file and the real limits (T035-031/035),
+  and, if it is not enough, a limit on the compressed size of a column chunk read from the footer.

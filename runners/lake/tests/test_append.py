@@ -20,6 +20,7 @@ from decimal import Decimal
 from typing import Any
 
 import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
 from pyiceberg.catalog.rest import RestCatalog
 from pyiceberg.catalog.sql import SqlCatalog
@@ -39,7 +40,7 @@ from sagat_lake.attempt import Removal
 from sagat_lake.failures import Failure
 from sagat_lake.lookup import EFFECT_KEY
 from sagat_lake.modes import append as append_mode
-from sagat_lake.modes.append import AppendRequest, append
+from sagat_lake.modes.append import AppendRequest, InputFile, append
 
 NAME = f"{counting_catalog.NAMESPACE}.{counting_catalog.TABLE}"
 SCHEMA = Schema(
@@ -105,6 +106,7 @@ def request(rig: Rig, content: bytes | None = None, *, key: str = KEY, **changes
         path = rig.directory / "inline.ndjson"
         path.write_bytes(content)
         inputs = [path]
+    inputs = [item if isinstance(item, InputFile) else InputFile(item) for item in inputs]
     base: dict[str, Any] = {
         "effect_key": key,
         "first_attempt_started_at_ms": 0,
@@ -703,3 +705,49 @@ def test_a_count_written_by_someone_else_in_the_contracts_own_form_is_kept(rig: 
     receipt = run(rig, request(rig))
 
     assert (receipt["rowsAdded"], receipt["dataFilesAdded"]) == ("9223372036854775807", "0")
+
+
+# ---------------------------------------------------------------------------------------------- a Parquet input
+def parquet_blob(rig: Rig, rows: list[dict[str, Any]], name: str = "blob-0.parquet") -> pathlib.Path:
+    path = rig.directory / name
+    pq.write_table(pa.Table.from_pylist(rows), path)
+    return path
+
+
+def test_a_parquet_blob_and_an_ndjson_file_end_in_one_commit(rig: Rig) -> None:
+    blob = parquet_blob(
+        rig, [{"id": 10, "name": "p", "amount": Decimal("5.25")}, {"id": 11, "name": None, "amount": None}]
+    )
+    inline = rig.directory / "inline.ndjson"
+    inline.write_bytes(lines({"id": 1, "name": "a"}))
+
+    receipt = run(rig, request(rig, inputs=[InputFile(blob, "parquet"), InputFile(inline)]))
+
+    assert receipt["rowsAdded"] == "3"
+    assert len(rig.rest.commits) == 1
+    assert [row["id"] for row in rig.rows()] == [1, 10, 11]
+    assert rig.rows()[1]["amount"] == Decimal("5.25")
+
+
+def test_a_parquet_cell_that_does_not_fit_the_table_is_a_mismatch_with_its_column(rig: Rig) -> None:
+    blob = parquet_blob(rig, [{"id": 1, "name": "a", "amount": Decimal("1.234")}])
+    failure = failure_of(rig, request(rig, inputs=[InputFile(blob, "parquet")]))
+    assert (failure.code, failure.reason, failure.column) == ("ICEBERG_SCHEMA_MISMATCH", "SCALE_OVERFLOW", "amount")
+    assert rig.rest.commits == []
+    assert rig.data_files() == []
+
+
+def test_a_file_that_is_not_parquet_is_a_mismatch_and_nothing_is_written(rig: Rig) -> None:
+    path = rig.directory / "blob-0.parquet"
+    path.write_bytes(b"id,name\n1,a\n")
+    failure = failure_of(rig, request(rig, inputs=[InputFile(path, "parquet")]))
+    assert (failure.code, failure.reason, failure.column) == ("ICEBERG_SCHEMA_MISMATCH", "TYPE", None)
+    assert rig.data_files() == []
+
+
+def test_the_decoded_budget_is_spent_by_both_formats_together(rig: Rig) -> None:
+    blob = parquet_blob(rig, [{"id": number, "name": "x" * 100} for number in range(50)])
+    size = pq.ParquetFile(blob).metadata.row_group(0).total_byte_size
+    failure = failure_of(rig, request(rig, inputs=[InputFile(blob, "parquet")], max_decoded_bytes=size))
+    assert failure.code == "ICEBERG_LIMIT_EXCEEDED"
+    assert rig.data_files() == []
