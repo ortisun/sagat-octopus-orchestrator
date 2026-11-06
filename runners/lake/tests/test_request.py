@@ -86,7 +86,10 @@ def test_a_request_of_the_contract_is_parsed_into_what_the_append_needs(tmp_path
     assert dict(append.snapshot_properties) == document()["snapshotProperties"]
     assert append.ref == "main"
     assert append.attempt_id == ATTEMPT
-    assert list(append.inputs) == [directory / "in" / "inline.ndjson", directory / "in" / "blob-0.ndjson"]
+    assert [(file.path, file.format) for file in append.inputs] == [
+        (directory / "in" / "inline.ndjson", "ndjson"),
+        (directory / "in" / "blob-0.ndjson", "ndjson"),
+    ]
     assert list(append.warehouse_locations) == ["s3://lake/warehouse/"]
     assert list(append.mapping) == [("/amount", "amount"), ("/a~1b/c~0d", "ab")]
     assert append.ignore_unknown_fields is True
@@ -177,7 +180,6 @@ def test_a_field_the_host_does_not_know_is_a_protocol_break(tmp_path: Path) -> N
         ({"table": {"namespace": "sales", "name": "orders"}}, "namespace not a list"),
         ({"table": {"namespace": ["sales"], "name": "orders", "extra": 1}}, "unknown table field"),
         ({"inputs": []}, "no input"),
-        ({"inputs": [{"file": "in/a.ndjson", "format": "parquet"}]}, "parquet is not read yet"),
         ({"inputs": [{"file": "in/a.ndjson", "format": "csv"}]}, "no such format"),
         ({"inputs": [{"file": "../etc/passwd", "format": "ndjson"}]}, "a way out"),
         ({"inputs": [{"file": "in/../relay.token", "format": "ndjson"}]}, "a way out below in/"),
@@ -325,3 +327,18 @@ def test_what_the_platform_publishes_is_accepted_up_to_the_limits_of_the_domain(
     tmp_path: Path, changes: dict[str, Any]
 ) -> None:
     parse_write(document(**changes), attempt_dir=attempt_dir(tmp_path))
+
+
+def test_a_parquet_input_is_read_as_a_parquet_input(tmp_path: Path) -> None:
+    inputs = [{"file": "in/blob-0.parquet", "format": "parquet"}, {"file": "in/inline.ndjson", "format": "ndjson"}]
+    directory = attempt_dir(tmp_path)
+    append = parse_write(document(inputs=inputs), attempt_dir=directory).append
+    assert [(file.path, file.format) for file in append.inputs] == [
+        (directory / "in" / "blob-0.parquet", "parquet"),
+        (directory / "in" / "inline.ndjson", "ndjson"),
+    ]
+
+
+@pytest.mark.parametrize("format", ["Parquet", "PARQUET", "parquet ", "avro", "orc", "csv", "json", "", None, 5])
+def test_a_format_the_host_does_not_read_is_a_break(tmp_path: Path, format: Any) -> None:
+    refused(tmp_path, document(inputs=[{"file": "in/a.bin", "format": format}]))
