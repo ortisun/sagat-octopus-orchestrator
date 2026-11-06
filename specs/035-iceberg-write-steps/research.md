@@ -1088,3 +1088,33 @@ The other fixes were wording:
   unreachable today, not untested by choice. *Exit condition:* point 1 by T035-055 with a test of a run that is refused with the
   lake off; point 2 by the runbook; point 3 by T035-054, whose publication checks make a version holding the node reachable and
   must be tested through the approval path with the lake off and on.
+- **D035-088 — The level of a written field is read by the codec from a plain reference, and anything else is `pii`.** Part of
+  T035-054 (the egress check of FR-035-025). **Decided by: delegate** (the owner delegated the decisions of this feature).
+  - *The problem.* 016 classifies the input, the result and the output of each step, and nothing derived from them, so the
+    platform cannot follow a value through an expression. FR-035-025 asks for "the level inherited from its source (the source step's
+    output schema)", and does not say how a step's source is found.
+  - *The decision.* Only a **plain reference** is followed: `input.a.b`, or `steps.<id>.output.a.b` for a root step. Its list of records is
+    read at that place of the schema, each mapped field below the record (`/a/b`, or the whole record when the step lists no
+    columns) takes the level the schema gives it, and `written_level(inherited, None)` applies (D035-051: unmarked is `pii`). Everything
+    else is `pii`: any other expression (an index, an operator, a call, an unknown name), a list of blobs, and a database result (which is
+    `pii` by D035-051 whatever a schema says). A carrier with no schema, or a step that does not exist, is `pii`.
+  - *Strictest wins.* A field is as strict as the strictest level that can reach it: every record position the schema describes on its
+    own (`prefixItems`, then the remaining `items`), and everything inside a structure that one column receives.
+  - *Where it lives.* The codec computes it, once, for `parse` and `parse_stored` alike (it is the only place that holds the whole
+    document), and attaches it to the step as derived data: `IcebergWrite::egress()`. It is not part of the canonical bytes, so no
+    digest changes. A step that carries no list is refused whole (`EgressRefusal::NotComputed`), so a codec that forgot to classify
+    fails closed. Admission restores the pinned version and meets the same list.
+  - *What it gives up.* An author who builds the records with an expression gets `pii` for every field, so the connection needs a `pii`
+    ceiling (which needs the reveal grant of the namespace) until `recordSchema` (T035-085) lets them declare levels, and a write from
+    blobs or a database result needs the same. That is FR-035-025's rule, now visible: the common safe shape is a plain reference to a
+    classified schema.
+  - *Evidence.* 9 tests of the domain type and its check (`crates/domain/tests/iceberg_egress.rs`), 21 tests of the codec
+    (`crates/infra-ir/tests/iceberg_egress.rs`; publication and restore agree, the canonical bytes carry no level). 23 mutations
+    of the two modules; 4 survived the first tests (the last item winning, the `output` marker, a name that is not plain, a stricter
+    field of another carrier counted inside) and each has a test now, all 23 caught.
+- **G035-037 — What the levels leave open.** (1) Nothing compares the levels with the ceiling of a connection yet: the publication
+  check (access, allowed modes, `CLASSIFICATION_EGRESS_REFUSED`, connection kind and pins) is the rest of T035-054, and the store still
+  fails closed until it lands. (2) `recordSchema` declares levels that can only raise these (T035-085). (3) A mapped field that is an
+  array index (`/items/0/x`) is read as a property named `0`, which the schema does not name, so it is `pii`: conservative, and a
+  complaint to take up if authors need it. (4) A reference through a body-local step or `result` is not followed. *Exit condition:*
+  point 1 by the next slice of T035-054, with a test of a `pii` field against an `internal` ceiling and of a `secret` field.

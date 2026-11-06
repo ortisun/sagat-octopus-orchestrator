@@ -28,7 +28,7 @@ use std::fmt;
 use std::time::Duration;
 
 use crate::database::{
-    DatabaseOperation, ICEBERG_REVERT_ACTIVITY, ICEBERG_WRITE_ACTIVITY, IcebergWrite,
+    DatabaseOperation, EgressField, ICEBERG_REVERT_ACTIVITY, ICEBERG_WRITE_ACTIVITY, IcebergWrite,
     MANAGED_DATABASE_ACTIVITY, MANAGED_DATABASE_PREFIX, OperationKind,
 };
 use crate::execution::{ApprovalPolicy, ExecutionInstanceId};
@@ -1499,6 +1499,24 @@ impl WorkflowDefinition {
                     || node.effect().high_risk
             })
         })
+    }
+
+    /// Gives each Apache Iceberg write of the root graph the level of every field it writes (FR-035-025).
+    ///
+    /// `levels` is asked once for each such step, with its id, and its answer replaces whatever the step carried. The
+    /// graph is not touched: an Iceberg write is root-only, so there is none in a body, and no node is added or moved.
+    #[must_use]
+    pub fn with_iceberg_egress(
+        mut self,
+        mut levels: impl FnMut(&NodeId, &IcebergWrite) -> Vec<EgressField>,
+    ) -> Self {
+        for (id, node) in &mut self.graph.nodes {
+            if let Some(write) = node.iceberg.take() {
+                let fields = levels(id, &write);
+                node.iceberg = Some(write.with_egress(fields));
+            }
+        }
+        self
     }
 
     /// The root graph's authored nodes, ordered by local id; bodies have separate local graphs.

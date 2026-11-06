@@ -7,8 +7,11 @@
 //! filter, key columns and a delete marker) and the tests that go with them: they are added to [`WriteIntent`] with user
 //! stories 4 and 5 (T035-080, T035-085). Until then there is no way to say them, rather than a way to say them untested.
 
-use super::{ConnectionRef, LakeLimits};
-use crate::workflow::{Expression, NodeId};
+use super::{ConnectionRef, EgressField, EgressRefusal, LakeLimits};
+use crate::{
+    classification::EgressCeiling,
+    workflow::{Expression, NodeId},
+};
 
 /// The reserved activity that writes. Only an [`IcebergWrite`] node may carry it.
 pub const ICEBERG_WRITE_ACTIVITY: &str = "sagat.database.iceberg.write";
@@ -186,15 +189,41 @@ pub struct IcebergWriteParts {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IcebergWrite {
     parts: IcebergWriteParts,
+    /// The level of each field the step writes, once someone who read the schemas of its source has set it. Not what the
+    /// author wrote: it is derived, so it is not part of the canonical document.
+    egress: Option<Vec<EgressField>>,
 }
 
 impl IcebergWrite {
     /// # Errors
     /// [`IcebergWriteError`] for the first part that is out of bounds.
     pub fn new(parts: IcebergWriteParts) -> Result<Self, IcebergWriteError> {
-        let write = Self { parts };
+        let write = Self {
+            parts,
+            egress: None,
+        };
         write.validate()?;
         Ok(write)
+    }
+
+    /// Gives the step the level of each field it writes (FR-035-025). Replaces any list it had.
+    #[must_use]
+    pub fn with_egress(mut self, fields: Vec<EgressField>) -> Self {
+        self.egress = Some(fields);
+        self
+    }
+
+    /// The level of each field the step writes, or `None` when nobody has classified them.
+    #[must_use]
+    pub fn egress(&self) -> Option<&[EgressField]> {
+        self.egress.as_deref()
+    }
+
+    /// Every field that may not leave through a connection whose ceiling is `ceiling`. A step whose fields were never
+    /// classified is refused whole.
+    #[must_use]
+    pub fn egress_refusals(&self, ceiling: EgressCeiling) -> Vec<EgressRefusal> {
+        super::iceberg_egress::refusals(self.egress(), ceiling)
     }
 
     /// Checks everything again: the parts are public until they are wrapped, and a definition does not trust a step it
