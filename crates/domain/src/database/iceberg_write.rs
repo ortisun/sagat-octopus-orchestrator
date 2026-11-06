@@ -60,6 +60,14 @@ fn plain(text: &str) -> bool {
     !text.is_empty() && text.len() <= MAX_NAME_BYTES && !text.chars().any(char::is_control)
 }
 
+/// RFC 6901: a `~` is the start of `~0` (a `~`) or `~1` (a `/`) and nothing else. The lake host refuses any other use, so
+/// the domain refuses it where the step is written and not when it runs.
+fn escapes_are_pointer_escapes(pointer: &str) -> bool {
+    let mut after = pointer.split('~');
+    after.next();
+    after.all(|rest| rest.starts_with(['0', '1']))
+}
+
 /// An Iceberg table: one to eight namespace levels and a name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableIdentifier {
@@ -132,6 +140,7 @@ impl ColumnMapping {
         if field.len() > MAX_FIELD_BYTES
             || segments.iter().any(|segment| segment.is_empty())
             || field.chars().any(char::is_control)
+            || !escapes_are_pointer_escapes(field)
         {
             return Err(IcebergWriteError::Field);
         }

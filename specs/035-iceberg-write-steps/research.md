@@ -1740,3 +1740,37 @@ The other fixes were wording:
     an outcome outside the enum, a missing `ref`, format version 3, a snapshot id with letters). The host never writes `droppedValues`.
   - *Not covered.* The failure line (`{"failure": {...}}`) has no schema file; the Rust `HostFailure::from_wire` is its definition, and
     `test_host_protocol.py` checks the Python side against the table of codes in `failure.rs`. Receipts of the other operations come with them.
+- **D035-109 — The body of the `icebergWrite` request is built by a typed Rust builder, `WriteAppend`, and the line it writes is a fixture
+  that both halves read.** First slice of T035-035. **Decided by: delegate**.
+  - *Why.* The runner's envelope (`encode_request`) was typed but the body was an open map, so the one place where the platform's
+    definition meets the host's parser was unchecked. A member spelled differently, a limit above what the host accepts, or a secret with a
+    newline would show only as `LAKE_HOST_PROTOCOL` from inside a container. The builder refuses all of it before a container exists, and
+    the same JSON file (`tests/contract/iceberg-writes/fixtures/requests/iceberg-write-append.json`) is asserted equal to what the builder
+    writes (`crates/infra-lake/tests/write_body.rs`) and is parsed by the host's own `parse_write` and `open_connection`
+    (`runners/lake/tests/test_wire_request.py`), so neither half can drift without a test failing on its side.
+  - *Shape.* `WriteAppend::new(table, ref, connection, inputs, limits)` with `snapshot_property`, `map_column`, `ignore_unknown_fields`,
+    `allow_empty` and `prior_attempt_may_have_left_files`; `into_body()` returns the `Map` for `Request::new`. The table and the mapping are
+    the domain's `TableIdentifier` and `ColumnMapping` (rule 6: one definition of what the contract refuses). `Connection` forwards the
+    `catalog` and `storage` documents exactly as `crates/infra-postgres/src/database/iceberg.rs::to_json` stored them, so the storage format
+    stays defined in one place, and carries the resolved secrets as two text-to-text documents that are left out when empty. Mode sections
+    that are not served (`overwrite`, `upsert`) are `null`. `Debug` shows no secret and no value of the body.
+  - *What the builder checks that the domain does not own.* The record file name (one path component, 1 to 128 bytes, no leading dot), 1 to
+    32 files, at most 16 commit retries, byte ceilings up to `i64::MAX` (sent as decimal strings), the shape of the deadline instant, the
+    ref, the 5 snapshot properties the platform writes (D035-016), at most 1024 mapped columns, 1 to 16 warehouse locations of at most 2048
+    bytes and secrets of at most 16384 bytes without a byte below `0x20` or `DEL` (the host's own rule for a secret).
+  - *What it found (G035-051, closed).* `ColumnMapping::new` accepted `/a~2`, `/a~` and `/~x`, which RFC 6901 does not allow and the host
+    refuses as a protocol break, so a step that validated and published would have failed at run time with `LAKE_HOST_PROTOCOL`. The domain
+    now refuses a `~` that does not start `~0` or `~1` (`IcebergWriteError::Field`), at the place the step is written. The contract
+    schema's pattern (`^(/[^/]+)+$`) is looser and is left as it is: changing a contract file selects the whole stack, and the domain is where
+    the rule is enforced. Test written first and seen failing (`/a~` was accepted).
+  - *Evidence.* `cargo test -p sagat-infra-lake`: 84 passed (16 in `write_body.rs`); `cargo test -p sagat-domain`: 847 passed, 0 failed
+    (the new test is `a_tilde_in_a_field_starts_only_the_two_escapes_of_a_json_pointer`); `runners/lake`: 1036 passed, 1 skipped, `ruff`
+    and strict `mypy` clean; `cargo fmt --check` and `cargo clippy -p sagat-infra-lake -p sagat-domain --all-targets -- -D warnings`
+    clean; `check-architecture.py` passes. The Python test passed on its first run because the fixture was written to the host's
+    contract; it cannot be seen failing for another reason, and I am reporting that and not presenting it as a failing-first test. The
+    Rust test failed first because the builder did not exist (a compile error), and one of its tests was wrong once (the base builder
+    already maps `/amount`) and was corrected, not the builder. No mutation pass (OD-2026-11-06-2).
+  - *Not done.* The secrets are `String`s in a `Map`, so they are not zeroised when the request is dropped. Zeroising belongs to the
+    driver, which owns the buffer of the encoded line and the resolved secret values (T035-035, next slice); this slice does not claim it.
+    The overwrite and upsert sections come with the host modes.
+- **G035-051 — Closed by D035-109.** A mapped field with a `~` that is not `~0` or `~1` validated in the domain and failed in the host.

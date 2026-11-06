@@ -11,6 +11,7 @@
 //! test needs no sleep.
 
 mod receipt;
+mod write_body;
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -23,6 +24,10 @@ use serde_json::{Map, Value};
 pub use receipt::{
     Count, EffectKey, FormatVersion, IcebergOutcome, IcebergReceipt, ObjectFormat, ObjectOutcome,
     ObjectStorageReceipt, Receipt, RefName, RowLevelMode, Sha256Hex, SnapshotId, WriteMode,
+};
+
+pub use write_body::{
+    BodyError, Connection, InputFile, InputFormat, Limits, SNAPSHOT_PROPERTIES, WriteAppend,
 };
 
 /// The protocol's name and version, the first member of every request.
@@ -137,8 +142,9 @@ impl RelayAccess {
 /// The request line: an envelope this module owns and an operation body its builder owns.
 ///
 /// The body holds the pinned connection with its resolved credentials, the table, the mode and the limits. Each
-/// operation gets its own typed builder with the task that adds the operation (US01 and US02), and none exists yet, so
-/// the body is an open map here. The envelope members cannot be overridden by it.
+/// operation gets its own typed builder with the task that adds the operation: [`WriteAppend`] builds the body of an
+/// `icebergWrite` in the append mode (D035-109), and the others are an open map until theirs exists. The envelope
+/// members cannot be overridden by it.
 #[derive(Clone)]
 pub struct Request {
     operation: Operation,
