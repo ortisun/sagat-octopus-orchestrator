@@ -335,3 +335,19 @@ def test_a_null_element_of_a_required_list_element_is_refused() -> None:
     with pytest.raises(Failure) as caught:
         map_record(schema(column("x", kind)), {"x": [1, None]})
     assert (caught.value.column, caught.value.reason) == ("x[]", "NULL_IN_REQUIRED")
+
+
+@pytest.mark.parametrize(
+    "key_type",
+    [
+        StructType(NestedField(50, "a", IntegerType(), required=False)),
+        ListType(element_id=51, element_type=IntegerType(), element_required=False),
+        MapType(key_id=52, key_type=StringType(), value_id=53, value_type=IntegerType(), value_required=False),
+    ],
+)
+def test_a_map_key_that_is_not_a_primitive_is_refused_and_does_not_crash(key_type: IcebergType) -> None:
+    # a struct, a list or a map as a key is legal in the format and unhashable in Python: the same key twice could not
+    # even be looked for. Keys are primitive; anything else is a type mismatch.
+    kind = MapType(key_id=40, key_type=key_type, value_id=41, value_type=IntegerType(), value_required=False)
+    refused(kind, [{"key": {"a": 1}, "value": 1}], "TYPE")
+    refused(kind, [], "TYPE")
