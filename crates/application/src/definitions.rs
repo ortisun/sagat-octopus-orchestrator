@@ -119,6 +119,12 @@ pub enum IrError {
         dependency: &'static str,
         reason: &'static str,
     },
+    /// The definition holds an Apache Iceberg write and this deployment has not turned the lake on
+    /// (`lake.enabled`, off by default; the contract code is `LAKE_DISABLED`).
+    #[error(
+        "node '{node}' is an Apache Iceberg write, and this deployment has not enabled the lake"
+    )]
+    LakeDisabled { node: String },
     #[error("declaration '{field}' is not supported yet: {reason}")]
     UnsupportedDeclaration {
         field: &'static str,
@@ -251,6 +257,9 @@ pub fn problems_of(error: &IrError) -> Vec<Problem> {
             .collect(),
         IrError::Unsupported { node, .. } | IrError::Pending { node, .. } => {
             vec![Problem::error("UNSUPPORTED_NODE", error.to_string()).at_node(node.clone())]
+        }
+        IrError::LakeDisabled { node } => {
+            vec![Problem::error("LAKE_DISABLED", error.to_string()).at_node(node.clone())]
         }
         IrError::UnsupportedDeclaration { field, .. } => {
             vec![Problem::error("UNSUPPORTED_NODE", error.to_string()).at_path(format!("/{field}"))]
@@ -688,6 +697,8 @@ pub struct DefinitionService<S, C, X> {
     store: S,
     clock: C,
     codec: X,
+    /// `lake.enabled`: whether a definition may hold an Apache Iceberg write. Off unless the deployment says so.
+    lake_enabled: bool,
 }
 
 impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
@@ -696,7 +707,27 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
             store,
             clock,
             codec,
+            lake_enabled: false,
         }
+    }
+
+    /// Lets a definition hold an Apache Iceberg write (the deployment's `lake.enabled`). The store still decides
+    /// whether this one may be published.
+    #[must_use]
+    pub const fn with_lake_enabled(mut self, enabled: bool) -> Self {
+        self.lake_enabled = enabled;
+        self
+    }
+
+    /// The first Iceberg write of a definition that this deployment may not publish, if there is one.
+    fn refused_lake_node<'a>(&self, definition: &'a WorkflowDefinition) -> Option<&'a NodeId> {
+        if self.lake_enabled {
+            return None;
+        }
+        definition
+            .nodes()
+            .find(|node| node.iceberg_write().is_some())
+            .map(sagat_domain::workflow::Node::id)
     }
 
     /// A draft is any JSON object up to [`MAX_IR_BYTES`]; full validation happens at publish.
@@ -934,6 +965,13 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                 },
             )));
         }
+        if let Some(node) = self.refused_lake_node(&parsed.definition) {
+            return Err(AppError::InvalidDefinition(Box::new(
+                IrError::LakeDisabled {
+                    node: node.as_str().to_owned(),
+                },
+            )));
+        }
         self.check_secrets(principal, &record, &parsed.definition, ctx)
             .await?;
         let database_check = self
@@ -1104,6 +1142,11 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                 .await?,
         );
         problems.extend(self.unknown_scripts(principal, &parsed.definition).await?);
+        if let Some(node) = self.refused_lake_node(&parsed.definition) {
+            problems.extend(problems_of(&IrError::LakeDisabled {
+                node: node.as_str().to_owned(),
+            }));
+        }
         match self
             .store
             .check_database_access(

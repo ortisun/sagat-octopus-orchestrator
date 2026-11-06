@@ -512,6 +512,45 @@ struct FakeCodec {
     saga: bool,
 }
 
+impl FakeCodec {
+    /// A definition whose only node is an Iceberg write (a draft that carries `"icebergWrite"`).
+    fn lake_definition(&self, document: &[u8]) -> ParsedDefinition {
+        use sagat_domain::database::{
+            ColumnMapping, ConnectionRef, IcebergWrite, IcebergWriteParts, LakeLimits,
+            RecordSource, TableIdentifier, WriteIntent,
+        };
+        let write = IcebergWrite::new(IcebergWriteParts {
+            connection: ConnectionRef::new(Slug::parse("lake-main").expect("slug"), None)
+                .expect("ref"),
+            table: TableIdentifier::new(vec!["sales".to_owned()], "orders").expect("table"),
+            reference: "main".to_owned(),
+            intent: WriteIntent::Append,
+            records: RecordSource::Inline(
+                sagat_domain::workflow::Expression::parse("input.rows").expect("expression"),
+            ),
+            mapping: vec![ColumnMapping::new("/id", "id").expect("mapping")],
+            ignore_unknown_fields: false,
+            limits: LakeLimits::default(),
+            revert: false,
+        })
+        .expect("a write");
+        let definition = WorkflowDefinition::new(
+            Slug::parse(self.name).expect("slug"),
+            NodeId::parse("a").expect("id"),
+            vec![Node::iceberg(NodeId::parse("a").expect("id"), write)],
+        )
+        .expect("valid");
+        let mut digest = [0u8; 32];
+        digest[0] = u8::try_from(document.len() % 251).expect("small");
+        ParsedDefinition {
+            definition,
+            canonical: document.to_vec(),
+            digest: Digest::new(digest),
+            warnings: Vec::new(),
+        }
+    }
+}
+
 impl IrCodec for FakeCodec {
     fn check_draft(&self, document: &[u8]) -> Result<(), IrError> {
         if document.len() > sagat_application::definitions::MAX_IR_BYTES {
@@ -540,6 +579,9 @@ impl IrCodec for FakeCodec {
 
     fn parse(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
         self.outcome.clone()?;
+        if String::from_utf8_lossy(document).contains("\"icebergWrite\"") {
+            return Ok(self.lake_definition(document));
+        }
         let node = Node::new(
             NodeId::parse("a").expect("id"),
             NodeKind::Activity {
@@ -1983,4 +2025,92 @@ async fn an_adapter_without_lake_support_refuses_a_definition_with_an_iceberg_wr
             .await
             .is_ok()
     );
+}
+
+// ------------------------------------------------------------------ the lake switch (T035-036)
+
+const LAKE_DRAFT: &[u8] = br#"{"kind":"Workflow","icebergWrite":true}"#;
+
+async fn create_lake_workflow(f: &Fixture) -> WorkflowRecord {
+    f.service
+        .create_workflow(
+            &principal(f.tenant, Role::Developer),
+            "payments",
+            "invoice-flow",
+            LAKE_DRAFT,
+            "key-0000001",
+            &ctx(),
+        )
+        .await
+        .expect("created")
+}
+
+#[tokio::test]
+async fn an_iceberg_write_is_refused_at_publication_while_the_lake_is_off() {
+    let f = fixture();
+    let p = principal(f.tenant, Role::Developer);
+    let w = create_lake_workflow(&f).await;
+    let result = f
+        .service
+        .publish(&p, w.workflow.id(), 1, None, "pub-0000001", &ctx())
+        .await;
+    match result {
+        Err(AppError::InvalidDefinition(error)) => {
+            assert!(
+                matches!(*error, IrError::LakeDisabled { ref node } if node == "a"),
+                "{error:?}"
+            );
+        }
+        other => panic!("expected LAKE_DISABLED, got {other:?}"),
+    }
+    assert!(
+        f.store.with(|s| s.versions.is_empty()),
+        "nothing was published"
+    );
+}
+
+#[tokio::test]
+async fn validation_names_the_lake_that_is_off_and_the_node_that_needs_it() {
+    let f = fixture();
+    let p = principal(f.tenant, Role::Developer);
+    let w = create_lake_workflow(&f).await;
+    let validation = f
+        .service
+        .validate(&p, w.workflow.id(), None, &ctx())
+        .await
+        .expect("a validation");
+    assert!(!validation.is_valid());
+    let lake: Vec<_> = validation
+        .problems
+        .iter()
+        .filter(|problem| problem.code == "LAKE_DISABLED")
+        .collect();
+    assert_eq!(lake.len(), 1, "{:?}", validation.problems);
+    assert_eq!(lake[0].node.as_deref(), Some("a"));
+}
+
+#[tokio::test]
+async fn with_the_lake_on_the_store_still_decides_until_its_admission_exists() {
+    let f = fixture();
+    let p = principal(f.tenant, Role::Developer);
+    let w = create_lake_workflow(&f).await;
+    let lake_on = f.service.clone().with_lake_enabled(true);
+    let result = lake_on
+        .publish(&p, w.workflow.id(), 1, None, "pub-0000001", &ctx())
+        .await;
+    assert!(matches!(result, Err(AppError::NotFound)), "{result:?}");
+}
+
+#[tokio::test]
+async fn a_definition_without_an_iceberg_write_does_not_care_whether_the_lake_is_on() {
+    let f = fixture();
+    let p = principal(f.tenant, Role::Developer);
+    let w = create(&f, Role::Developer, "key-0000001")
+        .await
+        .expect("created");
+    let lake_on = f.service.clone().with_lake_enabled(true);
+    lake_on
+        .publish(&p, w.workflow.id(), 1, None, "pub-0000001", &ctx())
+        .await
+        .expect("published");
 }

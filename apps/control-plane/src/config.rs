@@ -371,6 +371,10 @@ pub struct ServeConfig {
     /// Whether the schedule routes exist (`SAGAT_SCHEDULES_ENABLED`, off by default until the
     /// feature is released). The engine fires schedules under the same flag.
     pub schedules_enabled: bool,
+    /// Whether a workflow may hold an Apache Iceberg write (`SAGAT_LAKE_ENABLED`, feature 035, off by default).
+    /// With it off, publishing such a workflow is refused with `LAKE_DISABLED`. With it on, publication still
+    /// waits for the checks of access, allowed modes and data classification.
+    pub lake_enabled: bool,
     /// Native TLS identity is required for the mTLS webhook profile; no forwarded headers are trusted.
     pub tls: Option<sagat_api_http::HttpTlsConfig>,
     pub webhook_oidc: Vec<sagat_api_http::auth::WebhookOidcConfig>,
@@ -567,6 +571,7 @@ impl ServeConfig {
         Ok(Self {
             redis_callbacks: flag(get, "SAGAT_REDIS_CALLBACKS_ENABLED")?,
             schedules_enabled: flag(get, "SAGAT_SCHEDULES_ENABLED")?,
+            lake_enabled: flag(get, "SAGAT_LAKE_ENABLED")?,
             tls,
             webhook_oidc,
             webhook_oidc_development: environment == Environment::Dev,
