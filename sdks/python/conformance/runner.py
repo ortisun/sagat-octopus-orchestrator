@@ -18,6 +18,8 @@ import json
 import re
 import sys
 import traceback
+from collections.abc import Awaitable, Callable
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -29,19 +31,39 @@ from sagat_octopus_orchestrator import (
     ActivityContext,
     ActivityFailure,
     ApprovalPolicy,
+    BatchFilter,
+    BatchJob,
+    BatchRequest,
+    BatchSelector,
+    BatchSignal,
+    BatchUpdate,
     BlobDescriptor,
     BlobOutput,
     Body,
     ClientConfig,
     Flow,
     QueryDefinition,
+    Reset,
     RetryPolicy,
     Run,
     SagatClient,
     SagatError,
+    Schedule,
+    ScheduleAction,
+    ScheduleActionRecord,
+    ScheduleBackfill,
+    ScheduleCalendarSpec,
+    ScheduleDescription,
+    ScheduleDst,
+    ScheduleInterval,
+    SchedulePolicies,
+    ScheduleRange,
+    ScheduleSpec,
+    ScheduleWrite,
     StateDefinition,
     SwitchCase,
     UpdateDefinition,
+    UpdateWithStartReceipt,
     Verdict,
     WorkerConfig,
     WorkerHost,
@@ -307,7 +329,264 @@ def run_json(run: Run) -> Obj:
     # Present only for a run started again from an ended one.
     if run.rerun_of is not None:
         observed["rerunOf"] = run.rerun_of
+    # Present only for a run started under a business identifier, or held by a start delay.
+    if run.business_id is not None:
+        observed["businessId"] = run.business_id
+    if run.start_delayed_until is not None:
+        observed["startDelayedUntil"] = instant(run.start_delayed_until)
     return observed
+
+
+# The feature 018 results. Instants that depend on when the scenario ran are written as instants (the harness compares
+# them as `<time>`); the ones a fixed spec determines are written as epoch milliseconds, so that a wrong parse of an
+# instant shows.
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def epoch(value: datetime | None) -> int | None:
+    return None if value is None else (value - _EPOCH) // timedelta(milliseconds=1)
+
+
+def number(value: Any) -> Any:
+    """A JSON number as JavaScript prints it: a whole number has no fraction (``50.0`` is ``50``)."""
+    return int(value) if isinstance(value, float) and value.is_integer() else value
+
+
+def numbers(values: Any) -> Obj:
+    return {name: number(count) for name, count in values.items()}
+
+
+def schedule_json(schedule: Schedule) -> Obj:
+    action = schedule.action
+    return {
+        "scheduleId": schedule.schedule_id,
+        "name": schedule.name,
+        "origin": schedule.origin,
+        "state": schedule.state,
+        "revision": schedule.revision,
+        "exhausted": schedule.exhausted,
+        "action": {
+            "workflowId": action.workflow_id,
+            "versionPolicy": action.version_policy,
+            "versionId": action.version_id,
+            "inputDigest": action.input_digest,
+            "nominalTimeField": action.nominal_time_field,
+            "runTimeoutMs": number(action.run_timeout_ms),
+        },
+        "note": schedule.note,
+        "noteBy": schedule.note_by,
+        "remainingActions": number(schedule.remaining_actions),
+        "nextActionEpochMs": epoch(schedule.next_action_at),
+        "createdAt": instant(schedule.created_at),
+        "updatedAt": instant(schedule.updated_at),
+    }
+
+
+def action_json(record: ScheduleActionRecord) -> Obj:
+    return {
+        "kind": record.kind,
+        "origin": record.origin,
+        "revision": record.revision,
+        "outcome": record.outcome,
+        "reason": record.reason,
+        "runId": record.run_id,
+        "backfillId": record.backfill_id,
+        "nominalTime": instant(record.nominal_time),
+        "actualTime": instant(record.actual_time),
+        "summaryCount": number(record.summary_count),
+        "summaryLastNominalTime": instant(record.summary_last_nominal_time),
+        "decidedAt": instant(record.decided_at),
+    }
+
+
+def description_json(description: ScheduleDescription) -> Obj:
+    return {
+        **schedule_json(description),
+        "nextActions": [
+            {"nominalTimeEpochMs": epoch(entry.nominal_time), "actualTimeEpochMs": epoch(entry.actual_time)}
+            for entry in description.next_actions
+        ],
+        "recentActions": [action_json(record) for record in description.recent_actions],
+        "openRuns": list(description.open_runs),
+        "bufferedCount": number(description.buffered_count),
+        "counters": numbers(description.counters),
+    }
+
+
+def backfill_json(backfill: ScheduleBackfill) -> Obj:
+    return {
+        "backfillId": backfill.backfill_id,
+        "start": instant(backfill.start),
+        "end": instant(backfill.end),
+        "cursor": instant(backfill.cursor),
+        "state": backfill.state,
+        "overlap": backfill.overlap,
+        "counts": numbers(backfill.counts),
+    }
+
+
+def job_json(job: BatchJob) -> Obj:
+    counts = job.counts
+    return {
+        "batchId": job.batch_id,
+        "action": job.action,
+        "state": job.state,
+        "failureReason": job.failure_reason,
+        "createdBy": job.created_by,
+        "hasPayload": job.has_payload,
+        "maxItems": number(job.max_items),
+        "itemsPerSecond": number(job.items_per_second),
+        "counts": {
+            "selected": number(counts.selected),
+            "succeeded": number(counts.succeeded),
+            "skipped": number(counts.skipped),
+            "failed": number(counts.failed),
+            "cancelled": number(counts.cancelled),
+            "deferred": number(counts.deferred),
+        },
+        "createdAt": instant(job.created_at),
+        "startedAt": instant(job.started_at),
+        "finishedAt": instant(job.finished_at),
+        "expiresAt": instant(job.expires_at),
+    }
+
+
+def reset_json(reset: Reset) -> Obj:
+    return {
+        "resetId": reset.reset_id,
+        "sourceRunId": reset.source_run_id,
+        "sequence": reset.sequence,
+        "state": reset.state,
+        "failureReason": reset.failure_reason,
+        "newRunId": reset.new_run_id,
+        "reapplyReport": list(reset.reapply_report),
+        "createdAt": instant(reset.created_at),
+    }
+
+
+def receipt_json(receipt: UpdateWithStartReceipt | None) -> Obj | None:
+    if receipt is None:
+        return None
+    return {
+        "operation": receipt.operation,
+        "updateKey": receipt.update_key,
+        "status": receipt.status,
+        "result": receipt.result,
+        "beforeStateRevision": receipt.before_state_revision,
+        "afterStateRevision": receipt.after_state_revision,
+        "runVersion": receipt.run_version,
+        "replayed": receipt.replayed,
+    }
+
+
+# The requests of feature 018: the scenario names them as the wire does (camelCase JSON); the SDK takes dataclasses.
+
+
+def ranges_of(raw: Any) -> list[ScheduleRange] | None:
+    if raw is None:
+        return None
+    return [ScheduleRange(start=item["start"], end=item.get("end"), step=item.get("step")) for item in raw]
+
+
+def calendar_of(raw: Obj) -> ScheduleCalendarSpec:
+    return ScheduleCalendarSpec(
+        second=ranges_of(raw.get("second")),
+        minute=ranges_of(raw.get("minute")),
+        hour=ranges_of(raw.get("hour")),
+        day_of_month=ranges_of(raw.get("dayOfMonth")),
+        month=ranges_of(raw.get("month")),
+        year=ranges_of(raw.get("year")),
+        day_of_week=ranges_of(raw.get("dayOfWeek")),
+        comment=raw.get("comment"),
+    )
+
+
+def spec_of(raw: Obj) -> ScheduleSpec:
+    dst = raw.get("dst")
+    return ScheduleSpec(
+        calendars=[calendar_of(item) for item in raw["calendars"]] if "calendars" in raw else None,
+        cron=raw.get("cron"),
+        intervals=(
+            [ScheduleInterval(every_ms=item["everyMs"], offset_ms=item.get("offsetMs")) for item in raw["intervals"]]
+            if "intervals" in raw
+            else None
+        ),
+        exclusions=[calendar_of(item) for item in raw["exclusions"]] if "exclusions" in raw else None,
+        start_at=raw.get("startAt"),
+        end_at=raw.get("endAt"),
+        timezone=raw.get("timezone"),
+        jitter_ms=raw.get("jitterMs"),
+        dst=ScheduleDst(gap=dst.get("gap"), ambiguous=dst.get("ambiguous")) if dst is not None else None,
+    )
+
+
+def write_of(raw: Obj) -> ScheduleWrite:
+    policies = raw.get("policies")
+    action = raw["action"]
+    return ScheduleWrite(
+        name=raw["name"],
+        spec=spec_of(raw["spec"]),
+        action=ScheduleAction(
+            workflow_id=action["workflowId"],
+            input=action["input"],
+            version_policy=action.get("versionPolicy"),
+            version_id=action.get("versionId"),
+            nominal_time_field=action.get("nominalTimeField"),
+            run_timeout_ms=action.get("runTimeoutMs"),
+        ),
+        policies=(
+            SchedulePolicies(
+                overlap=policies.get("overlap"),
+                catchup_window_ms=policies.get("catchupWindowMs"),
+                catchup_mode=policies.get("catchupMode"),
+                pause_on_failure=policies.get("pauseOnFailure"),
+                buffer_limit=policies.get("bufferLimit"),
+            )
+            if policies is not None
+            else None
+        ),
+        paused=raw.get("paused"),
+        note=raw.get("note"),
+        remaining_actions=raw.get("remainingActions"),
+    )
+
+
+def selector_of(raw: Obj) -> BatchSelector:
+    chosen = raw.get("filter")
+    return BatchSelector(
+        filter=(
+            BatchFilter(
+                workflow_id=chosen.get("workflowId"),
+                version_id=chosen.get("versionId"),
+                status=chosen.get("status"),
+                origin=chosen.get("origin"),
+                schedule_id=chosen.get("scheduleId"),
+                created_after=chosen.get("createdAfter"),
+                created_before=chosen.get("createdBefore"),
+                business_id_prefix=chosen.get("businessIdPrefix"),
+            )
+            if chosen is not None
+            else None
+        ),
+        run_ids=raw.get("runIds"),
+        query=raw.get("query"),
+    )
+
+
+def batch_request_of(raw: Obj) -> BatchRequest:
+    signal = raw.get("signal")
+    update = raw.get("update")
+    return BatchRequest(
+        selector=selector_of(raw["selector"]),
+        action=raw["action"],
+        reason=raw["reason"],
+        signal=BatchSignal(name=signal["name"], payload=signal["payload"]) if signal is not None else None,
+        update=BatchUpdate(name=update["name"], args=update.get("args")) if update is not None else None,
+        step_id=raw.get("stepId"),
+        business_id=raw.get("businessId"),
+        max_items=raw.get("maxItems"),
+        items_per_second=raw.get("itemsPerSecond"),
+    )
 
 
 def error_json(error: BaseException) -> Obj:
@@ -602,15 +881,70 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                 return resolved
         return value
 
+    namespace_id = str(config["namespaceId"])
+
+    # References inside the parameters of a step: a value an earlier step produced (`{{step:<id>:<field>}}`), a
+    # workflow id (`{{workflow:<key>}}`), the namespace id, and instants computed when the step runs
+    # (`{{now:<offsetMs>}}`, and `{{hour:<offsetHours>}}` for the start of a UTC hour). A string that is exactly one
+    # reference becomes its value.
+    def refs(value: Any) -> Any:
+        if isinstance(value, str):
+            if value == "{{namespaceId}}":
+                return config["namespaceId"]
+            if found := re.fullmatch(r"\{\{workflow:([^}]+)\}\}", value):
+                return config["workflows"][found[1]]["workflowId"]
+            if found := re.fullmatch(r"\{\{step:([^:}]+):([^}]+)\}\}", value):
+                produced = results.get(found[1], {})
+                if found[2] not in produced:
+                    raise ValueError(f"step {found[1]} has no {found[2]}")
+                return produced[found[2]]
+            if found := re.fullmatch(r"\{\{now:(-?\d+)\}\}", value):
+                return format_instant(datetime.now(timezone.utc) + timedelta(milliseconds=int(found[1])))
+            if found := re.fullmatch(r"\{\{hour:(-?\d+)\}\}", value):
+                hour = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+                return format_instant(hour + timedelta(hours=int(found[1])))
+            return value
+        if isinstance(value, list):
+            return [refs(item) for item in value]
+        if isinstance(value, dict):
+            return {key: refs(item) for key, item in value.items()}
+        return value
+
+    def step_of_run(run_id: str) -> str:
+        """The id of the step whose result holds this run, or `?` for a run no step of the scenario started."""
+        for step_id, held in results.items():
+            if held.get("runId") == run_id or held.get("newRunId") == run_id:
+                return step_id
+        return "?"
+
+    def step_result(step_id: str, name: str) -> str:
+        found = results.get(step_id, {}).get(name)
+        if not isinstance(found, str):
+            raise ValueError(f"step {step_id} has no {name}")
+        return found
+
+    async def awaiting(what: str, timeout_ms: float, done: Callable[[], Awaitable[bool]]) -> None:
+        end = asyncio.get_running_loop().time() + timeout_ms / 1000
+        while not await done():
+            if asyncio.get_running_loop().time() > end:
+                raise ValueError(f"timed out waiting for {what}")
+            await asyncio.sleep(0.05)
+
     try:
         for key, (definition, _) in hosts.items():
             if definition.get("autostart") is not False:
                 Progress.step = f"autostart of worker {key}"
                 await start_worker(key)
 
-        for step in scenario["steps"]:
-            Progress.step = f"{step['id']} ({step['op']})"
-            client = clients[step.get("token") or "default"]
+        for given in scenario["steps"]:
+            Progress.step = f"{given['id']} ({given['op']})"
+            client = clients[given.get("token") or "default"]
+            try:
+                step = refs(given)
+            except Exception as error:
+                # A reference to a step that failed is a failure of this step, recorded like any other.
+                observations.append({"id": given["id"], "op": given["op"], "ok": False, "error": error_json(error)})
+                continue
             observation: Obj = {"id": step["id"], "op": step["op"]}
             op = step["op"]
             try:
@@ -618,16 +952,379 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                 if op == "start":
                     workflow_id = config["workflows"][step["workflow"]]["workflowId"]
                     deadline_in = step.get("deadlineInMs")
-                    result = run_json(
-                        await client.start(
-                            workflow_id,
-                            step.get("input") or {},
-                            idempotency_key=step.get("idempotencyKey"),
-                            correlation_id=step.get("correlationId"),
-                            traceparent=step.get("traceparent"),
-                            deadline_in=deadline_in / 1000 if deadline_in is not None else None,
+                    delay_ms = step.get("startDelayMs")
+                    started_run = await client.start(
+                        workflow_id,
+                        step.get("input") or {},
+                        idempotency_key=step.get("idempotencyKey"),
+                        correlation_id=step.get("correlationId"),
+                        traceparent=step.get("traceparent"),
+                        deadline_in=deadline_in / 1000 if deadline_in is not None else None,
+                        business_id=step.get("businessId"),
+                        business_id_conflict_policy=step.get("businessIdConflictPolicy"),
+                        business_id_reuse_policy=step.get("businessIdReusePolicy"),
+                        start_delay=timedelta(milliseconds=delay_ms) if delay_ms is not None else None,
+                    )
+                    # `started` only when the step asked for a business identifier: the other observations stay as
+                    # they were.
+                    result = run_json(started_run)
+                    if "businessId" in step:
+                        result["started"] = started_run.started
+                elif op == "scheduleCreate":
+                    result = schedule_json(
+                        await client.schedules.create(
+                            namespace_id, write_of(step["write"]), idempotency_key=step.get("idempotencyKey")
                         )
                     )
+                elif op == "scheduleGet":
+                    result = description_json(
+                        await client.schedules.get(
+                            namespace_id,
+                            step_result(step["schedule"], "scheduleId"),
+                            next_count=step.get("nextCount"),
+                            recent_count=step.get("recentCount"),
+                        )
+                    )
+                elif op == "scheduleList":
+                    names: list[Obj] = []
+                    wanted = step.get("filter") or {}
+                    list_cursor: str | None = None
+                    if step.get("all"):
+                        async for schedule in client.schedules.list_all(
+                            namespace_id,
+                            limit=step.get("limit"),
+                            state=wanted.get("state"),
+                            origin=wanted.get("origin"),
+                            workflow_id=wanted.get("workflowId"),
+                            name=wanted.get("name"),
+                        ):
+                            names.append(
+                                {
+                                    "name": schedule.name,
+                                    "state": schedule.state,
+                                    "origin": schedule.origin,
+                                    "revision": schedule.revision,
+                                }
+                            )
+                    else:
+                        schedules = await client.schedules.list(
+                            namespace_id,
+                            limit=step.get("limit"),
+                            state=wanted.get("state"),
+                            origin=wanted.get("origin"),
+                            workflow_id=wanted.get("workflowId"),
+                            name=wanted.get("name"),
+                        )
+                        names.extend(
+                            {"name": item.name, "state": item.state, "origin": item.origin, "revision": item.revision}
+                            for item in schedules.items
+                        )
+                        list_cursor = schedules.next_cursor
+                    result = {"items": names, "nextCursor": None if list_cursor is None else "<cursor>"}
+                elif op == "scheduleUpdate":
+                    result = schedule_json(
+                        await client.schedules.update(
+                            namespace_id,
+                            step_result(step["schedule"], "scheduleId"),
+                            write_of(step["write"]),
+                            step["expectedRevision"],
+                            idempotency_key=step.get("idempotencyKey"),
+                        )
+                    )
+                elif op == "scheduleDelete":
+                    await client.schedules.delete(
+                        namespace_id,
+                        step_result(step["schedule"], "scheduleId"),
+                        step["expectedRevision"],
+                        idempotency_key=step.get("idempotencyKey"),
+                    )
+                    result = {"deleted": True}
+                elif op == "schedulePause":
+                    result = schedule_json(
+                        await client.schedules.pause(
+                            namespace_id,
+                            step_result(step["schedule"], "scheduleId"),
+                            step["note"],
+                            idempotency_key=step.get("idempotencyKey"),
+                        )
+                    )
+                elif op == "scheduleResume":
+                    result = schedule_json(
+                        await client.schedules.resume(
+                            namespace_id,
+                            step_result(step["schedule"], "scheduleId"),
+                            step["note"],
+                            idempotency_key=step.get("idempotencyKey"),
+                        )
+                    )
+                elif op == "scheduleTrigger":
+                    result = action_json(
+                        await client.schedules.trigger(
+                            namespace_id,
+                            step_result(step["schedule"], "scheduleId"),
+                            overlap=step.get("overlap"),
+                            idempotency_key=step.get("idempotencyKey"),
+                        )
+                    )
+                elif op == "scheduleBackfill":
+                    result = backfill_json(
+                        await client.schedules.backfill(
+                            namespace_id,
+                            step_result(step["schedule"], "scheduleId"),
+                            step["start"],
+                            step["end"],
+                            overlap=step.get("overlap"),
+                            idempotency_key=step.get("idempotencyKey"),
+                        )
+                    )
+                elif op == "scheduleCancelBackfill":
+                    result = backfill_json(
+                        await client.schedules.cancel_backfill(
+                            namespace_id,
+                            step_result(step["schedule"], "scheduleId"),
+                            step_result(step["backfill"], "backfillId"),
+                            idempotency_key=step.get("idempotencyKey"),
+                        )
+                    )
+                elif op == "scheduleBackfills":
+                    result = {
+                        "items": [
+                            backfill_json(item)
+                            for item in await client.schedules.list_backfills(
+                                namespace_id, step_result(step["schedule"], "scheduleId")
+                            )
+                        ]
+                    }
+                elif op == "scheduleActions":
+                    actions = await client.schedules.list_actions(
+                        namespace_id,
+                        step_result(step["schedule"], "scheduleId"),
+                        outcome=step.get("outcome"),
+                        limit=step.get("limit"),
+                    )
+                    result = {
+                        "items": [action_json(item) for item in actions.items],
+                        "nextCursor": None if actions.next_cursor is None else "<cursor>",
+                    }
+                elif op == "awaitSchedule":
+                    # The scheduler decides the times of a backfill: wait for its counters, never for a delay.
+                    schedule_id = step_result(step["schedule"], "scheduleId")
+
+                    async def counted(
+                        client: SagatClient = client, schedule_id: str = schedule_id, step: Obj = step
+                    ) -> bool:
+                        described = await client.schedules.get(namespace_id, schedule_id, next_count=0, recent_count=0)
+                        return bool(described.counters.get(step["counter"], 0) >= step.get("atLeast", 1))
+
+                    await awaiting(f"schedule counter {step['counter']}", step.get("timeoutMs", 30_000), counted)
+                elif op == "awaitBackfill":
+                    # A backfill counts the times it found already acted on in its own counts, not in the schedule's.
+                    backfill_schedule = step_result(step["schedule"], "scheduleId")
+                    backfill_id = step_result(step["backfill"], "backfillId")
+
+                    async def reached(
+                        client: SagatClient = client,
+                        schedule_id: str = backfill_schedule,
+                        backfill_id: str = backfill_id,
+                        step: Obj = step,
+                    ) -> bool:
+                        listed = await client.schedules.list_backfills(namespace_id, schedule_id)
+                        return any(item.backfill_id == backfill_id and item.state == step["state"] for item in listed)
+
+                    await awaiting(f"backfill state {step['state']}", step.get("timeoutMs", 30_000), reached)
+                elif op == "businessIdGet":
+                    binding = await client.business_ids.get(namespace_id, step["businessId"])
+                    result = {
+                        "businessId": binding.business_id,
+                        "executionId": binding.execution_id,
+                        "currentRunId": binding.current_run_id,
+                        "open": binding.open,
+                        "lastStatus": binding.last_status,
+                        "workflowId": binding.workflow_id,
+                        "boundAt": instant(binding.bound_at),
+                        "reusableAfter": instant(binding.reusable_after),
+                    }
+                elif op == "signalWithStart":
+                    signalled_with_start = await client.signal_with_start(
+                        config["workflows"][step["workflow"]]["workflowId"]
+                        if step.get("workflow")
+                        else step["workflowId"],
+                        step["businessId"],
+                        step.get("input") or {},
+                        step["signal"]["name"],
+                        step["signal"].get("payload") or {},
+                        idempotency_key=step.get("idempotencyKey"),
+                        business_id_reuse_policy=step.get("businessIdReusePolicy"),
+                    )
+                    result = {
+                        "runId": signalled_with_start.run_id,
+                        "started": signalled_with_start.started,
+                        "deliveredTo": list(signalled_with_start.delivered_to),
+                    }
+                elif op == "updateWithStart":
+                    declared = step["update"]
+                    delay_ms = step.get("startDelayMs")
+                    updated_with_start = await client.update_with_start(
+                        config["workflows"][step["workflow"]]["workflowId"],
+                        step["businessId"],
+                        step.get("input") or {},
+                        declared["name"],
+                        declared["updateKey"],
+                        declared.get("args"),
+                        expected_state_revision=declared.get("expectedStateRevision"),
+                        idempotency_key=step.get("idempotencyKey"),
+                        business_id_conflict_policy=step.get("businessIdConflictPolicy"),
+                        business_id_reuse_policy=step.get("businessIdReusePolicy"),
+                        start_delay=timedelta(milliseconds=delay_ms) if delay_ms is not None else None,
+                    )
+                    result = {
+                        "runId": updated_with_start.run_id,
+                        "started": updated_with_start.started,
+                        "update": {
+                            "outcome": updated_with_start.update.outcome,
+                            "reason": updated_with_start.update.reason,
+                            "receipt": receipt_json(updated_with_start.update.receipt),
+                        },
+                    }
+                elif op == "batchPreview":
+                    preview = await client.batch.preview(
+                        namespace_id, selector_of(step["selector"]), step.get("maxItems")
+                    )
+                    # The sample is a set of runs in the order the server chose; the scenario compares which of its
+                    # own runs it holds.
+                    result = {
+                        "matched": preview.matched,
+                        "capped": preview.capped,
+                        "sampleSize": len(preview.sample),
+                        "sampleSteps": sorted(step_of_run(item) for item in preview.sample),
+                    }
+                elif op == "batchCreate":
+                    # What does not change while the job runs (its state and counters do): the job as it was accepted.
+                    created = await client.batch.create(
+                        namespace_id, batch_request_of(step["request"]), idempotency_key=step.get("idempotencyKey")
+                    )
+                    result = {
+                        "batchId": created.batch_id,
+                        "action": created.action,
+                        "createdBy": created.created_by,
+                        "hasPayload": created.has_payload,
+                        "maxItems": number(created.max_items),
+                        "itemsPerSecond": number(created.items_per_second),
+                    }
+                elif op == "batchGet":
+                    result = job_json(await client.batch.get(namespace_id, step_result(step["batch"], "batchId")))
+                elif op == "batchList":
+                    jobs = await client.batch.list(namespace_id, state=step.get("state"), limit=step.get("limit"))
+                    result = {
+                        "items": [
+                            {
+                                "action": job.action,
+                                "state": job.state,
+                                "counts": {
+                                    "selected": number(job.counts.selected),
+                                    "succeeded": number(job.counts.succeeded),
+                                    "skipped": number(job.counts.skipped),
+                                    "failed": number(job.counts.failed),
+                                    "cancelled": number(job.counts.cancelled),
+                                    "deferred": number(job.counts.deferred),
+                                },
+                            }
+                            for job in jobs.items
+                        ],
+                        "nextCursor": None if jobs.next_cursor is None else "<cursor>",
+                    }
+                elif op == "batchCancel":
+                    result = job_json(
+                        await client.batch.cancel(
+                            namespace_id,
+                            step_result(step["batch"], "batchId"),
+                            step["reason"],
+                            idempotency_key=step.get("idempotencyKey"),
+                        )
+                    )
+                elif op == "batchItems":
+                    batch_items = await client.batch.list_items(
+                        namespace_id,
+                        step_result(step["batch"], "batchId"),
+                        state=step.get("state"),
+                        limit=step.get("limit"),
+                    )
+                    # The order of the items is the server's; which of the scenario's runs sits at which ordinal is not
+                    # part of the contract, so the items are named by the step that started the run and sorted by it.
+                    result = {
+                        "items": sorted(
+                            (
+                                {
+                                    "runStep": step_of_run(item.run_id),
+                                    "state": item.state,
+                                    "reason": item.reason,
+                                    "errorCode": item.error_code,
+                                    "attempts": item.attempts,
+                                    "newRunId": item.new_run_id,
+                                }
+                                for item in batch_items.items
+                            ),
+                            key=lambda entry: str(entry["runStep"]),
+                        ),
+                        "nextCursor": None if batch_items.next_cursor is None else "<cursor>",
+                    }
+                elif op == "awaitBatch":
+                    batch_id = step_result(step["batch"], "batchId")
+
+                    async def in_state(
+                        client: SagatClient = client, batch_id: str = batch_id, step: Obj = step
+                    ) -> bool:
+                        return bool((await client.batch.get(namespace_id, batch_id)).state == step["state"])
+
+                    await awaiting(f"batch state {step['state']}", step.get("timeoutMs", 30_000), in_state)
+                elif op == "resetPoints":
+                    points = await client.reset_points(run_of(step), limit=step.get("limit"))
+                    result = {
+                        "items": [
+                            {
+                                "sequence": point.sequence,
+                                "kind": point.kind,
+                                "node": point.node,
+                                "occurredAt": instant(point.occurred_at),
+                            }
+                            for point in points.items
+                        ],
+                        "nextCursor": None if points.next_cursor is None else "<cursor>",
+                    }
+                elif op == "resetPreview":
+                    reset_plan = await client.preview_reset(run_of(step), step["sequence"], step.get("reapply"))
+                    result = {
+                        "sequence": reset_plan.sequence,
+                        "restored": [{"node": item.node, "kind": item.kind} for item in reset_plan.restored],
+                        "reexecuted": [
+                            {
+                                "node": item.node,
+                                "completedInSource": item.completed_in_source,
+                                "markers": list(item.markers),
+                            }
+                            for item in reset_plan.reexecuted
+                        ],
+                        "reapply": list(reset_plan.reapply),
+                        "requiresAcknowledgement": reset_plan.requires_acknowledgement,
+                        "prefixEvents": reset_plan.prefix_events,
+                    }
+                elif op == "reset":
+                    result = reset_json(
+                        await client.reset(
+                            run_of(step),
+                            sequence=step["sequence"],
+                            reason=step["reason"],
+                            reapply=step.get("reapply"),
+                            source_policy=step.get("sourcePolicy"),
+                            business_id=step.get("businessId"),
+                            acknowledge_reexecution=step.get("acknowledgeReexecution"),
+                            idempotency_key=step.get("idempotencyKey"),
+                        )
+                    )
+                elif op == "resets":
+                    result = {"items": [reset_json(item) for item in await client.list_resets(run_of(step))]}
+                elif op == "getReset":
+                    result = reset_json(await client.get_reset(run_of(step), step_result(step["reset"], "resetId")))
                 elif op == "startWithBlob":
                     workflow_id = config["workflows"][step["workflow"]]["workflowId"]
                     blob_body = (

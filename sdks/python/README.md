@@ -76,6 +76,76 @@ The blocking facade also exposes `update_chain`, `rerun_as_new` and
 `wait_for_chain_completion(namespace_id, chain_id)`. The chain wait follows `finalOutcome` across
 continuations; `wait_for_completion(run_id)` keeps waiting for that exact segment only.
 
+## Schedules, business identifiers, batch jobs and reset
+
+Three groups hang off the client (`client.schedules`, `client.batch`, `client.business_ids`; the blocking client has
+the same ones, blocking) and the calls about one run are methods of the client. Every call that changes something
+carries one `Idempotency-Key`, given as `idempotency_key=` or made once per call and reused by every retry.
+
+```python
+from datetime import datetime, timedelta, timezone
+from sagat_octopus_orchestrator import (
+    BatchRequest,
+    BatchSelector,
+    ScheduleAction,
+    ScheduleSpec,
+    ScheduleWrite,
+)
+
+# A run under a business identifier, held for a minute. `started` says whether this call created it:
+# `False` when an open run already held the identifier and USE_EXISTING was asked (the server answered 200).
+run = await client.start(
+    "order-flow",
+    {"orderId": "o-1"},
+    business_id="order-o-1",
+    business_id_conflict_policy="USE_EXISTING",
+    start_delay=timedelta(minutes=1),
+)
+binding = await client.business_ids.get(namespace_id, "order-o-1")
+
+# Signal the open run of an identifier, or start one with the signal delivered at its creation.
+await client.signal_with_start("order-flow", "order-o-1", {"orderId": "o-1"}, "payment.confirmed", {"paid": "19.99"})
+# Apply a declared Update the same way; a refusal of the validator is an answer (`update.outcome == "REJECTED"`).
+await client.update_with_start(
+    "order-flow", "order-o-1", {}, "balance.set", "set-1", {"next": 1}, expected_state_revision=0
+)
+
+write = ScheduleWrite(
+    name="nightly",
+    spec=ScheduleSpec(cron=["0 2 * * *"], timezone="UTC"),
+    action=ScheduleAction(workflow_id=workflow_id, input={"kind": "nightly"}),
+)
+schedule = await client.schedules.create(namespace_id, write)
+await client.schedules.update(
+    namespace_id, schedule.schedule_id, write, schedule.revision
+)  # REVISION_CONFLICT if stale
+await client.schedules.backfill(
+    namespace_id, schedule.schedule_id, datetime(2026, 1, 1, tzinfo=timezone.utc), "2026-01-02T00:00:00Z"
+)
+
+job = await client.batch.create(
+    namespace_id,
+    BatchRequest(selector=BatchSelector(run_ids=[run.run_id]), action="CANCEL", reason="clean up the held runs"),
+)
+
+points = await client.reset_points(run.run_id)
+await client.reset(run.run_id, sequence=points.items[0].sequence, reason="start over from the top")
+```
+
+* `start_delay` is a `timedelta`, turned once, before the first attempt, into integer milliseconds (truncated toward
+  zero) and sent as `startDelayMs`; anything that is not a `timedelta` is `VALIDATION_FAILED`. The range (1 ms to
+  366 days) is the server's to judge.
+* A business identifier is sent as given (no trimming, no case folding). `business_ids.get` percent-encodes it and
+  refuses locally only a value that is not 1 to 200 visible ASCII characters, and `.` or `..` alone (a whole dot
+  segment is a step in the path for every URL resolver, `%2E` too); `...` and `a..b` are valid.
+* An instant you send (`start_at`, `end_at`, a backfill range, `created_after`) is an aware `datetime` or RFC 3339 text
+  with an offset and goes out in UTC (`Z`); a naive `datetime` or text without an offset is `VALIDATION_FAILED`
+  because the SDK never guesses a local offset. An instant you read is an aware `datetime` in UTC.
+* An id that becomes a path segment must be a UUID, `expected_revision` an integer of at least 1, and a
+  pause/resume note and the `update_key` of `update_with_start` non-empty: otherwise `VALIDATION_FAILED`, nothing sent.
+* A value of an enumeration the SDK does not know (an action `outcome`, a batch item `state`, a reset point `kind`)
+  is kept as the string it came as. Every typed answer keeps the JSON it was read from in `raw`.
+
 ## An activity: register it, serve it
 
 ```python
