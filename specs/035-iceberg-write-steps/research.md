@@ -1224,7 +1224,8 @@ The other fixes were wording:
     read without regard to case; the transforms are `identity` and `void` only, because those are the ones the runtime
     can apply (G035-040; the first version of this decision accepted year, month, day, hour, bucket and truncate and was wrong); a location is inside the warehouse by path and not by text (`warehouse-evil` is not
     below `warehouse`), a `..` segment is inside nothing, and an empty root allows nothing rather than everything. The checks
-    run in a fixed order: the size of the metadata, the ref, the format version, the file format, the transforms, the locations.
+    run in a fixed order: the size of the metadata, the ref, the format version, the file format, the transforms, the location
+    provider (D035-092), the locations.
   - *Evidence.* 64 tests of the mapping, 25 of the lookup and 45 of the compatibility, written first and seen failing (the modules
     did not exist). Mutations of each module: 35 of the mapping (7 survived the first tests and each got a test or, for a check
     that was redundant, was removed), 17 of the lookup (2 survived and each got a test) and 22 of the compatibility (3 survived:
@@ -1251,3 +1252,60 @@ The other fixes were wording:
   of the image (the Dockerfile installs wheels only), and run `pip-audit` and the SBOM check, since it puts a native (Rust) wheel in the
   sandbox image. *Exit condition:* the owner decides; then `_TRANSFORM` in `compat.py` accepts the transforms that a test of
   writing to a table of each shows the runtime applies.
+- **D035-092 — The host reads the facts of a table from the table PyIceberg loaded, and refuses a table that names its own location
+  provider.** T035-057, second part. **Decided by: delegate** (the owner delegated the decisions of this feature).
+  - *The adapters.* `runners/lake/sagat_lake/table_facts.py` builds the inputs of `compat.check` and `lookup.lookup` from a loaded
+    table and reads nothing else (no listing, no scan): `facts_of` (the table location, the metadata file, `write.data.path` and
+    `write.metadata.path` when not empty, the format version, `write.format.default` with Parquet as the default, the transforms of
+    the spec in force after any evolution, the size of the metadata file as the file IO reports it, the refs with `main` always
+    among them because the first commit creates it and the host never creates another), `refs_of` (the head of each branch and tag)
+    and `snapshots_of` (id, parent, the catalog's timestamp and the summary, which is empty for a snapshot that has none).
+  - *What PyIceberg 0.12 really reads.* Read in its source and tried, not assumed: `write.data.path` and `write.metadata.path` move
+    where files go; the Java-only `write.folder-storage.path` and `write.object-storage.path` do not (a test shows the provider still
+    places data under the table), so they are not facts about where the host writes.
+  - *Found in that reading: a table property runs code.* `write.py-location-provider.impl` makes PyIceberg `importlib.import_module`
+    the module the property names and call the class with the table location and its properties; creating a table that names a
+    missing class already fails with `Could not initialize LocationProvider`. Whoever can set a property of a table in the catalog
+    chooses which importable callable the host runs, and it also decides where every file is placed, which no check of a location
+    can see. `catalog` hygiene (`config_hygiene.py`) covers the catalog's own `py-io-impl` but nothing covered a table's properties.
+    I did not try to turn it into an execution and the refusal does not depend on whether it can be. `TableFacts.location_provider`
+    carries the name (a blank value means none, as it does for PyIceberg) and `check` refuses with `ICEBERG_LOCATION_NOT_ALLOWED`,
+    the contract's code for a location the host does not accept, so the closed set of codes and reasons does not change.
+  - *Independent review (security-reviewer, read-only, given the diff and the spec and not my conclusion).* It read the PyIceberg
+    source for every property that decides where the host reads, writes or deletes, and found what the first version missed. Each
+    claim was checked against the source before anything changed. **Fixed here:** (1) the manifest list of every snapshot, the
+    metadata log (PyIceberg deletes the old metadata files it lists after each commit, `table/__init__.py:1850`) and the statistics
+    files are facts too and must lie inside the warehouse; the REST hygiene checked them, the other catalogs did not; (2) only a
+    branch is a ref the host can write to (an overwrite to a tag raises after it has written its data files); the lookup still
+    reads tags; (3) `inside` accepted a location the object store reads as another key: a `#` or `?` (dropped by the URL parser, so
+    every file of the table would land on one key), a backslash, an encoded dot or separator, a dot segment, a control character.
+    It now uses the one rule the connection's own hygiene has (`clean_path`, made public) for what is below the root; (4) a root
+    that is no more than a scheme (`s3://`) allowed every location of that scheme; (5) the size of the metadata file was asked of
+    the object store before its location was checked, which answers a question about someone else's object; it is now asked only
+    for a file inside the warehouse; (6) a docstring said the size bound protected the load, which it cannot: the table is loaded
+    and parsed before the facts are read.
+  - *Evidence.* 29 tests in `test_table_facts.py` against a real SQLite catalog with a file warehouse (no network, no container),
+    and `test_compat.py` extended (95 together); written first and seen failing. Mutations of `table_facts.py` and of the new
+    rules in `compat.py`: 32 on the first version (2 survived and got tests; 1 equivalent) and 16 on the review fixes (2 survived and
+    got tests: a metadata file that starts like the warehouse by text, and the root that is trusted while only what is below it is
+    cleaned); all caught in the end. `runners/lake`: 398 passed, 1 skipped; `ruff check`, `ruff format --check` and strict `mypy` clean.
+  - *Still open (G035-039):* the readers of NDJSON and Parquet into records, `modes/append.py`, the conditional commit and the
+    T035-019 spike, the deletion of the attempt's own files, `priorAttemptMayHaveLeftFiles` and `test_append.py`.
+- **G035-041 — A table's own properties reach PyIceberg's file IO, and the host's filter does not look at them.** Found 2026-11-06 by
+  the security review of D035-092 and checked in the source. PyIceberg builds the IO of a table from the catalog's properties
+  **overridden by the table's own** (`catalog/rest/__init__.py:837`: `{**metadata.properties, **table_response.config, ...}`; the SQL,
+  Glue, Hive and DynamoDB catalogs pass `metadata.properties` to `_load_file_io` as well), and `load_file_io` imports and calls the class
+  named by `py-io-impl` first (`io/__init__.py:371`). So `py-io-impl`, `s3.endpoint`, `s3.proxy-uri`, signer and credential keys in the
+  properties of a table beat what D035-050 pins, and it happens inside `load_table`, before any fact is read. `Hygiene.accept_table`
+  filters `LoadTable.config` and the four location properties, and reads nothing else of `metadata.properties`. The relay allow-list
+  (D035-049) still stops a redirected endpoint from leaving the sandbox; the import of a named class is not stopped by it. **Not fixed
+  here.** *Exit condition:* `accept_table` returns only the table properties the host lets PyIceberg see (an allowlist of the `write.`,
+  `commit.`, `format-version`, `gc.`, `history.`, `read.`, `schema.` families) and counts the rest as dropped, with the hostile fixture
+  carrying `py-io-impl` and `s3.endpoint` in the table's properties; for a catalog that reads the metadata file itself the loader
+  builds the table's IO from the host's own properties, or that catalog type is refused until it does.
+- **G035-042 — Table properties that size the write are not bounded.** Found by the same review. The retry loop reads
+  `commit.retry.num-retries`, `.max-wait-ms` and `.total-timeout-ms` from the table (2026-11-06, measured: a table that says 6
+  retries gets 7 commit requests; see T035-034), and the write reads `write.target-file-size-bytes` and the Parquet row-group, page,
+  dictionary and bloom-filter sizes. The first is closed by the in-memory pin of T035-034. For the rest only the sandbox's memory and
+  time limits stop a hostile value. *Exit condition:* the host pins or caps them in memory the way it pins the retries, when the
+  append path writes.

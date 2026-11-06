@@ -104,7 +104,7 @@ def scrubbed_environment(source: Mapping[str, str]) -> dict[str, str]:
     return {**kept, **_SET_ENVIRONMENT}
 
 
-def _clean_path(path: str) -> bool:
+def clean_path(path: str) -> bool:
     """True when `path` cannot climb out of its prefix: no control character, backslash, query, fragment, encoded dot or
     separator, and no `.` or `..` segment."""
     if any(ord(c) <= 0x20 or ord(c) == 0x7F or c in "\\?#" for c in path) or _ENCODED.search(path):
@@ -115,7 +115,7 @@ def _clean_path(path: str) -> bool:
 def _valid_prefix(storage: StorageType, prefix: str) -> bool:
     scheme, separator, rest = prefix.partition("://")
     authority, _, path = rest.partition("/")
-    if separator != "://" or scheme != _SCHEME[storage] or not authority or not _clean_path(path):
+    if separator != "://" or scheme != _SCHEME[storage] or not authority or not clean_path(path):
         return False
     if any(ord(c) <= 0x20 or c in "\\?#" for c in authority):
         return False
@@ -205,7 +205,7 @@ class Hygiene:
     @staticmethod
     def _plausible(key: str, value: str) -> bool:
         if key == "prefix":
-            return _PREFIX.fullmatch(value) is not None and _clean_path(value)
+            return _PREFIX.fullmatch(value) is not None and clean_path(value)
         return 0 < len(value) <= _MAX_VALUE and all(ord(c) > 0x20 and ord(c) != 0x7F for c in value)
 
     # -- locations -------------------------------------------------------------------------------------------------
@@ -215,7 +215,7 @@ class Hygiene:
         fails; the error does not say which location."""
         candidate = location if location.endswith("/") else location + "/"
         for prefix in self._declaration.warehouse_locations:
-            if candidate.startswith(prefix) and _clean_path(candidate[len(prefix) :]):
+            if candidate.startswith(prefix) and clean_path(candidate[len(prefix) :]):
                 return location
         raise self._refusal()
 
