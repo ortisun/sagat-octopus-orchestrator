@@ -1,0 +1,28 @@
+{
+  "canonical": {
+    "work": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"description\":\"One activity the worker serves.\",\"name\":\"delay-work\"},\"nodes\":[{\"activity\":\"delay.work\",\"id\":\"work\",\"next\":\"done\",\"type\":\"activity\"},{\"id\":\"done\",\"type\":\"end\"}]}"
+  },
+  "workflows": {
+    "work": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "work",
+      "kind": "Workflow",
+      "metadata": {
+        "description": "One activity the worker serves.",
+        "name": "delay-work"
+      },
+      "nodes": [
+        {
+          "activity": "delay.work",
+          "id": "work",
+          "next": "done",
+          "type": "activity"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ]
+    }
+  }
+}

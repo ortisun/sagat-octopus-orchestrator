@@ -1,0 +1,502 @@
+{
+  "name": "schedules-crud",
+  "description": "Feature 018 US01: the schedule as a resource. A schedule with a calendar, a cron string and an interval is created; its next nominal times (fixed by a spec bounded to January 2099, so they do not depend on when the scenario runs) are read as epoch milliseconds; an update with a stale revision is REVISION_CONFLICT, a current one is the next revision; the listing filters and pages; a duplicate name, a spec that is invalid, a zone that does not exist and a spec that never fires are refused with their reasons; a delete needs the current revision and frees the name.",
+  "server": {
+    "schedules": true
+  },
+  "workflows": {
+    "plain": {
+      "name": "schedule-plain",
+      "description": "The workflow every schedule of this scenario starts; it is never run.",
+      "program": [
+        {
+          "op": "step",
+          "id": "work",
+          "activity": "schedule.work"
+        },
+        {
+          "op": "end",
+          "id": "done"
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "id": "create",
+      "op": "scheduleCreate",
+      "idempotencyKey": "sched-create-{{unique}}",
+      "write": {
+        "name": "crud-{{unique}}",
+        "spec": {
+          "calendars": [
+            {
+              "hour": [
+                {
+                  "start": 9
+                }
+              ],
+              "minute": [
+                {
+                  "start": 0
+                }
+              ],
+              "year": [
+                {
+                  "start": 2099
+                }
+              ]
+            }
+          ],
+          "cron": [
+            "30 18 1 1 *"
+          ],
+          "intervals": [
+            {
+              "everyMs": 86400000
+            }
+          ],
+          "startAt": "2099-01-01T00:00:00Z",
+          "endAt": "2099-02-01T00:00:00Z",
+          "timezone": "UTC"
+        },
+        "policies": {
+          "overlap": "SKIP",
+          "catchupWindowMs": 3600000,
+          "catchupMode": "ONE"
+        },
+        "action": {
+          "workflowId": "{{workflow:plain}}",
+          "input": {
+            "n": 1,
+            "label": "nightly"
+          },
+          "nominalTimeField": "scheduledFor"
+        },
+        "note": "created by the conformance suite",
+        "remainingActions": 100
+      }
+    },
+    {
+      "id": "create-replay",
+      "op": "scheduleCreate",
+      "idempotencyKey": "sched-create-{{unique}}",
+      "write": {
+        "name": "crud-{{unique}}",
+        "spec": {
+          "calendars": [
+            {
+              "hour": [
+                {
+                  "start": 9
+                }
+              ],
+              "minute": [
+                {
+                  "start": 0
+                }
+              ],
+              "year": [
+                {
+                  "start": 2099
+                }
+              ]
+            }
+          ],
+          "cron": [
+            "30 18 1 1 *"
+          ],
+          "intervals": [
+            {
+              "everyMs": 86400000
+            }
+          ],
+          "startAt": "2099-01-01T00:00:00Z",
+          "endAt": "2099-02-01T00:00:00Z",
+          "timezone": "UTC"
+        },
+        "policies": {
+          "overlap": "SKIP",
+          "catchupWindowMs": 3600000,
+          "catchupMode": "ONE"
+        },
+        "action": {
+          "workflowId": "{{workflow:plain}}",
+          "input": {
+            "n": 1,
+            "label": "nightly"
+          },
+          "nominalTimeField": "scheduledFor"
+        },
+        "note": "created by the conformance suite",
+        "remainingActions": 100
+      }
+    },
+    {
+      "id": "describe",
+      "op": "scheduleGet",
+      "schedule": "create",
+      "nextCount": 5,
+      "recentCount": 5
+    },
+    {
+      "id": "describe-none",
+      "op": "scheduleGet",
+      "schedule": "create",
+      "nextCount": 0,
+      "recentCount": 0
+    },
+    {
+      "id": "update-stale",
+      "op": "scheduleUpdate",
+      "schedule": "create",
+      "expectedRevision": 7,
+      "idempotencyKey": "sched-stale-{{unique}}",
+      "write": {
+        "name": "crud-{{unique}}",
+        "spec": {
+          "cron": [
+            "0 12 * * *"
+          ]
+        },
+        "action": {
+          "workflowId": "{{workflow:plain}}",
+          "input": {
+            "n": 2
+          }
+        }
+      }
+    },
+    {
+      "id": "update",
+      "op": "scheduleUpdate",
+      "schedule": "create",
+      "expectedRevision": 1,
+      "idempotencyKey": "sched-update-{{unique}}",
+      "write": {
+        "name": "crud-{{unique}}",
+        "spec": {
+          "calendars": [
+            {
+              "hour": [
+                {
+                  "start": 12
+                }
+              ],
+              "minute": [
+                {
+                  "start": 15
+                }
+              ],
+              "year": [
+                {
+                  "start": 2099
+                }
+              ],
+              "month": [
+                {
+                  "start": 1
+                }
+              ],
+              "dayOfMonth": [
+                {
+                  "start": 2,
+                  "end": 4
+                }
+              ]
+            }
+          ]
+        },
+        "policies": {
+          "overlap": "BUFFER_ONE"
+        },
+        "action": {
+          "workflowId": "{{workflow:plain}}",
+          "input": {
+            "n": 2
+          }
+        },
+        "note": "second revision"
+      }
+    },
+    {
+      "id": "describe-updated",
+      "op": "scheduleGet",
+      "schedule": "create",
+      "nextCount": 5,
+      "recentCount": 0
+    },
+    {
+      "id": "second",
+      "op": "scheduleCreate",
+      "idempotencyKey": "sched-second-{{unique}}",
+      "write": {
+        "name": "crud-{{unique}}-b",
+        "spec": {
+          "calendars": [
+            {
+              "hour": [
+                {
+                  "start": 6
+                }
+              ],
+              "year": [
+                {
+                  "start": 2099
+                }
+              ]
+            }
+          ]
+        },
+        "action": {
+          "workflowId": "{{workflow:plain}}",
+          "input": {}
+        },
+        "paused": true
+      }
+    },
+    {
+      "id": "list-by-name",
+      "op": "scheduleList",
+      "filter": {
+        "name": "crud-{{unique}}"
+      }
+    },
+    {
+      "id": "list-paused",
+      "op": "scheduleList",
+      "filter": {
+        "name": "crud-{{unique}}",
+        "state": "PAUSED"
+      }
+    },
+    {
+      "id": "list-first-page",
+      "op": "scheduleList",
+      "filter": {
+        "name": "crud-{{unique}}"
+      },
+      "limit": 1
+    },
+    {
+      "id": "list-all",
+      "op": "scheduleList",
+      "filter": {
+        "name": "crud-{{unique}}"
+      },
+      "limit": 1,
+      "all": true
+    },
+    {
+      "id": "list-by-origin",
+      "op": "scheduleList",
+      "filter": {
+        "name": "crud-{{unique}}",
+        "origin": "TRIGGER"
+      }
+    },
+    {
+      "id": "duplicate-name",
+      "op": "scheduleCreate",
+      "idempotencyKey": "sched-duplicate-{{unique}}",
+      "write": {
+        "name": "crud-{{unique}}",
+        "spec": {
+          "cron": [
+            "0 12 * * *"
+          ]
+        },
+        "action": {
+          "workflowId": "{{workflow:plain}}",
+          "input": {}
+        }
+      }
+    },
+    {
+      "id": "bad-cron",
+      "op": "scheduleCreate",
+      "idempotencyKey": "sched-cron-{{unique}}",
+      "write": {
+        "name": "crud-{{unique}}-c",
+        "spec": {
+          "cron": [
+            "not a cron string"
+          ]
+        },
+        "action": {
+          "workflowId": "{{workflow:plain}}",
+          "input": {}
+        }
+      }
+    },
+    {
+      "id": "unknown-zone",
+      "op": "scheduleCreate",
+      "idempotencyKey": "sched-zone-{{unique}}",
+      "write": {
+        "name": "crud-{{unique}}-d",
+        "spec": {
+          "cron": [
+            "0 12 * * *"
+          ],
+          "timezone": "Mars/Olympus_Mons"
+        },
+        "action": {
+          "workflowId": "{{workflow:plain}}",
+          "input": {}
+        }
+      }
+    },
+    {
+      "id": "never-fires",
+      "op": "scheduleCreate",
+      "idempotencyKey": "sched-never-{{unique}}",
+      "write": {
+        "name": "crud-{{unique}}-e",
+        "spec": {
+          "calendars": [
+            {
+              "year": [
+                {
+                  "start": 2001
+                }
+              ]
+            }
+          ]
+        },
+        "action": {
+          "workflowId": "{{workflow:plain}}",
+          "input": {}
+        }
+      }
+    },
+    {
+      "id": "too-frequent",
+      "op": "scheduleCreate",
+      "idempotencyKey": "sched-frequent-{{unique}}",
+      "write": {
+        "name": "crud-{{unique}}-f",
+        "spec": {
+          "intervals": [
+            {
+              "everyMs": 10000
+            }
+          ]
+        },
+        "action": {
+          "workflowId": "{{workflow:plain}}",
+          "input": {}
+        }
+      }
+    },
+    {
+      "id": "no-spec",
+      "op": "scheduleCreate",
+      "idempotencyKey": "sched-nospec-{{unique}}",
+      "write": {
+        "name": "crud-{{unique}}-g",
+        "spec": {},
+        "action": {
+          "workflowId": "{{workflow:plain}}",
+          "input": {}
+        }
+      }
+    },
+    {
+      "id": "unknown-workflow",
+      "op": "scheduleCreate",
+      "idempotencyKey": "sched-workflow-{{unique}}",
+      "write": {
+        "name": "crud-{{unique}}-h",
+        "spec": {
+          "cron": [
+            "0 12 * * *"
+          ]
+        },
+        "action": {
+          "workflowId": "00000000-0000-4000-8000-000000000001",
+          "input": {}
+        }
+      }
+    },
+    {
+      "id": "delete-stale",
+      "op": "scheduleDelete",
+      "schedule": "create",
+      "expectedRevision": 1,
+      "idempotencyKey": "sched-delete-stale-{{unique}}"
+    },
+    {
+      "id": "delete",
+      "op": "scheduleDelete",
+      "schedule": "create",
+      "expectedRevision": 2,
+      "idempotencyKey": "sched-delete-{{unique}}"
+    },
+    {
+      "id": "describe-deleted",
+      "op": "scheduleGet",
+      "schedule": "create"
+    },
+    {
+      "id": "name-is-free",
+      "op": "scheduleCreate",
+      "idempotencyKey": "sched-again-{{unique}}",
+      "write": {
+        "name": "crud-{{unique}}",
+        "spec": {
+          "calendars": [
+            {
+              "hour": [
+                {
+                  "start": 6
+                }
+              ],
+              "year": [
+                {
+                  "start": 2099
+                }
+              ]
+            }
+          ]
+        },
+        "action": {
+          "workflowId": "{{workflow:plain}}",
+          "input": {}
+        }
+      }
+    },
+    {
+      "id": "other-tenant",
+      "op": "scheduleGet",
+      "schedule": "second",
+      "token": "other"
+    },
+    {
+      "id": "viewer-cannot-write",
+      "op": "scheduleCreate",
+      "token": "viewer",
+      "idempotencyKey": "sched-viewer-{{unique}}",
+      "write": {
+        "name": "crud-{{unique}}-v",
+        "spec": {
+          "cron": [
+            "0 12 * * *"
+          ]
+        },
+        "action": {
+          "workflowId": "{{workflow:plain}}",
+          "input": {}
+        }
+      }
+    },
+    {
+      "id": "viewer-can-read",
+      "op": "scheduleGet",
+      "schedule": "second",
+      "token": "viewer",
+      "nextCount": 1,
+      "recentCount": 0
+    }
+  ]
+}

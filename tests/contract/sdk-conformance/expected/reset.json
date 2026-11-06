@@ -1,0 +1,695 @@
+{
+  "faultsApplied": [],
+  "observations": [
+    {
+      "id": "source",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "businessId": "reset-{{unique}}",
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "started": true,
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "source-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "businessId": "reset-{{unique}}",
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "points",
+      "ok": true,
+      "op": "resetPoints",
+      "result": {
+        "items": [
+          {
+            "kind": "RUN_STARTED",
+            "node": null,
+            "occurredAt": "<time>",
+            "sequence": 1
+          },
+          {
+            "kind": "STEP_COMPLETED",
+            "node": "a",
+            "occurredAt": "<time>",
+            "sequence": 4
+          },
+          {
+            "kind": "STEP_COMPLETED",
+            "node": "b",
+            "occurredAt": "<time>",
+            "sequence": 8
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    {
+      "id": "points-first-page",
+      "ok": true,
+      "op": "resetPoints",
+      "result": {
+        "items": [
+          {
+            "kind": "RUN_STARTED",
+            "node": null,
+            "occurredAt": "<time>",
+            "sequence": 1
+          }
+        ],
+        "nextCursor": "<cursor>"
+      }
+    },
+    {
+      "id": "preview-start",
+      "ok": true,
+      "op": "resetPreview",
+      "result": {
+        "prefixEvents": 1,
+        "reapply": [],
+        "reexecuted": [
+          {
+            "completedInSource": true,
+            "markers": [],
+            "node": "a"
+          },
+          {
+            "completedInSource": true,
+            "markers": [],
+            "node": "b"
+          },
+          {
+            "completedInSource": false,
+            "markers": [],
+            "node": "done"
+          }
+        ],
+        "requiresAcknowledgement": true,
+        "restored": [],
+        "sequence": 1
+      }
+    },
+    {
+      "id": "preview-after-a",
+      "ok": true,
+      "op": "resetPreview",
+      "result": {
+        "prefixEvents": 4,
+        "reapply": [],
+        "reexecuted": [
+          {
+            "completedInSource": true,
+            "markers": [],
+            "node": "b"
+          },
+          {
+            "completedInSource": false,
+            "markers": [],
+            "node": "done"
+          }
+        ],
+        "requiresAcknowledgement": true,
+        "restored": [
+          {
+            "kind": "STEP",
+            "node": "a"
+          }
+        ],
+        "sequence": 4
+      }
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": "RESET_POINT_NOT_ELIGIBLE",
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:2>"
+      },
+      "id": "preview-not-a-point",
+      "ok": false,
+      "op": "resetPreview"
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:3>"
+      },
+      "id": "preview-signals",
+      "ok": false,
+      "op": "resetPreview"
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:4>"
+      },
+      "id": "preview-unknown-policy",
+      "ok": false,
+      "op": "resetPreview"
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": "RESET_REEXECUTION_NOT_ACKNOWLEDGED",
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:5>"
+      },
+      "id": "not-acknowledged",
+      "ok": false,
+      "op": "reset"
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:6>"
+      },
+      "id": "reapply-refused",
+      "ok": false,
+      "op": "reset"
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:7>"
+      },
+      "id": "cancel-source-refused",
+      "ok": false,
+      "op": "reset"
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:8>"
+      },
+      "id": "short-reason",
+      "ok": false,
+      "op": "reset"
+    },
+    {
+      "id": "reset",
+      "ok": true,
+      "op": "reset",
+      "result": {
+        "createdAt": "<time>",
+        "failureReason": null,
+        "newRunId": "<uuid:4>",
+        "reapplyReport": [],
+        "resetId": "<uuid:5>",
+        "sequence": 4,
+        "sourceRunId": "<uuid:1>",
+        "state": "CREATED"
+      }
+    },
+    {
+      "id": "reset-again",
+      "ok": true,
+      "op": "reset",
+      "result": {
+        "createdAt": "<time>",
+        "failureReason": null,
+        "newRunId": "<uuid:4>",
+        "reapplyReport": [],
+        "resetId": "<uuid:5>",
+        "sequence": 4,
+        "sourceRunId": "<uuid:1>",
+        "state": "CREATED"
+      }
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "IDEMPOTENCY_KEY_REUSED",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:9>"
+      },
+      "id": "reset-other-sequence",
+      "ok": false,
+      "op": "reset"
+    },
+    {
+      "id": "new-run-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "rerunOf": "<uuid:1>",
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:10>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "register",
+      "ok": true,
+      "op": "resets",
+      "result": {
+        "items": [
+          {
+            "createdAt": "<time>",
+            "failureReason": null,
+            "newRunId": "<uuid:4>",
+            "reapplyReport": [],
+            "resetId": "<uuid:5>",
+            "sequence": 4,
+            "sourceRunId": "<uuid:1>",
+            "state": "CREATED"
+          }
+        ]
+      }
+    },
+    {
+      "id": "register-entry",
+      "ok": true,
+      "op": "getReset",
+      "result": {
+        "createdAt": "<time>",
+        "failureReason": null,
+        "newRunId": "<uuid:4>",
+        "reapplyReport": [],
+        "resetId": "<uuid:5>",
+        "sequence": 4,
+        "sourceRunId": "<uuid:1>",
+        "state": "CREATED"
+      }
+    },
+    {
+      "id": "register-of-the-new-run",
+      "ok": true,
+      "op": "resets",
+      "result": {
+        "items": []
+      }
+    },
+    {
+      "id": "events-of-the-new-run",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": "a",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "a",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "a",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.reset"
+          },
+          {
+            "attempt": null,
+            "stepId": "a",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "b",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "b",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "b",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "b",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "done",
+            "type": "end.reached"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    },
+    {
+      "id": "open",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:6>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:11>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:7>",
+        "workflowId": "<uuid:8>"
+      }
+    },
+    {
+      "id": "open-points",
+      "ok": true,
+      "op": "resetPoints",
+      "result": {
+        "items": [
+          {
+            "kind": "RUN_STARTED",
+            "node": null,
+            "occurredAt": "<time>",
+            "sequence": 1
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "RESET_SOURCE_NOT_TERMINAL",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:12>"
+      },
+      "id": "open-source",
+      "ok": false,
+      "op": "reset"
+    },
+    {
+      "error": {
+        "code": "NOT_FOUND",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "The resource does not exist in this tenant and namespace: check the id and the namespace.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 404,
+        "traceId": "<trace:13>"
+      },
+      "id": "other-tenant",
+      "ok": false,
+      "op": "resetPoints"
+    },
+    {
+      "error": {
+        "code": "FORBIDDEN",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "The identity may not do this: ask an administrator for the role or permission the call needs.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 403,
+        "traceId": "<trace:14>"
+      },
+      "id": "viewer-cannot-reset",
+      "ok": false,
+      "op": "reset"
+    }
+  ],
+  "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "hold",
+          "kind": "FORWARD",
+          "status": "READY",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:6>",
+      "status": "RUNNING"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "a",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "b",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "end",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:4>",
+      "status": "SUCCEEDED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "a",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "b",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "end",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:1>",
+      "status": "SUCCEEDED"
+    }
+  ],
+  "workerLog": {
+    "w1": [
+      {
+        "abortedReason": null,
+        "activity": "reset.a",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:a",
+        "input": {},
+        "kind": "activity",
+        "node": "a",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "reset.b",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:b",
+        "input": {},
+        "kind": "activity",
+        "node": "b",
+        "outcome": "returned",
+        "steps": {
+          "a": {
+            "step": "a"
+          }
+        },
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "reset.b",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:4>:b",
+        "input": {},
+        "kind": "activity",
+        "node": "b",
+        "outcome": "returned",
+        "steps": {
+          "a": {
+            "step": "a"
+          }
+        },
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:10>",
+        "traceparentPresent": true
+      }
+    ]
+  }
+}

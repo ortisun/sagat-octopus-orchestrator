@@ -1,0 +1,667 @@
+{
+  "faultsApplied": [],
+  "observations": [
+    {
+      "id": "far",
+      "ok": true,
+      "op": "scheduleCreate",
+      "result": {
+        "action": {
+          "inputDigest": "c427c3890149534850bcafab688abb2ee055a0d7f2bd9d42d6d3880706cb81d2",
+          "nominalTimeField": null,
+          "runTimeoutMs": null,
+          "versionId": null,
+          "versionPolicy": "ACTIVE",
+          "workflowId": "<uuid:1>"
+        },
+        "createdAt": "<time>",
+        "exhausted": false,
+        "name": "operate-far-{{unique}}",
+        "nextActionEpochMs": 4070941200000,
+        "note": null,
+        "noteBy": null,
+        "origin": "API",
+        "remainingActions": 5,
+        "revision": 1,
+        "scheduleId": "<uuid:2>",
+        "state": "ACTIVE",
+        "updatedAt": "<time>"
+      }
+    },
+    {
+      "id": "pause",
+      "ok": true,
+      "op": "schedulePause",
+      "result": {
+        "action": {
+          "inputDigest": "c427c3890149534850bcafab688abb2ee055a0d7f2bd9d42d6d3880706cb81d2",
+          "nominalTimeField": null,
+          "runTimeoutMs": null,
+          "versionId": null,
+          "versionPolicy": "ACTIVE",
+          "workflowId": "<uuid:1>"
+        },
+        "createdAt": "<time>",
+        "exhausted": false,
+        "name": "operate-far-{{unique}}",
+        "nextActionEpochMs": null,
+        "note": "maintenance window",
+        "noteBy": "alice",
+        "origin": "API",
+        "remainingActions": 5,
+        "revision": 1,
+        "scheduleId": "<uuid:2>",
+        "state": "PAUSED",
+        "updatedAt": "<time>"
+      }
+    },
+    {
+      "id": "pause-again",
+      "ok": true,
+      "op": "schedulePause",
+      "result": {
+        "action": {
+          "inputDigest": "c427c3890149534850bcafab688abb2ee055a0d7f2bd9d42d6d3880706cb81d2",
+          "nominalTimeField": null,
+          "runTimeoutMs": null,
+          "versionId": null,
+          "versionPolicy": "ACTIVE",
+          "workflowId": "<uuid:1>"
+        },
+        "createdAt": "<time>",
+        "exhausted": false,
+        "name": "operate-far-{{unique}}",
+        "nextActionEpochMs": null,
+        "note": "still in the window",
+        "noteBy": "alice",
+        "origin": "API",
+        "remainingActions": 5,
+        "revision": 1,
+        "scheduleId": "<uuid:2>",
+        "state": "PAUSED",
+        "updatedAt": "<time>"
+      }
+    },
+    {
+      "id": "paused",
+      "ok": true,
+      "op": "scheduleGet",
+      "result": {
+        "action": {
+          "inputDigest": "c427c3890149534850bcafab688abb2ee055a0d7f2bd9d42d6d3880706cb81d2",
+          "nominalTimeField": null,
+          "runTimeoutMs": null,
+          "versionId": null,
+          "versionPolicy": "ACTIVE",
+          "workflowId": "<uuid:1>"
+        },
+        "bufferedCount": 0,
+        "counters": {},
+        "createdAt": "<time>",
+        "exhausted": false,
+        "name": "operate-far-{{unique}}",
+        "nextActionEpochMs": null,
+        "nextActions": [],
+        "note": "still in the window",
+        "noteBy": "alice",
+        "openRuns": [],
+        "origin": "API",
+        "recentActions": [],
+        "remainingActions": 5,
+        "revision": 1,
+        "scheduleId": "<uuid:2>",
+        "state": "PAUSED",
+        "updatedAt": "<time>"
+      }
+    },
+    {
+      "id": "trigger-paused",
+      "ok": true,
+      "op": "scheduleTrigger",
+      "result": {
+        "actualTime": "<time>",
+        "backfillId": null,
+        "decidedAt": "<time>",
+        "kind": "TRIGGERED",
+        "nominalTime": "<time>",
+        "origin": "MANUAL",
+        "outcome": "STARTED",
+        "reason": null,
+        "revision": 1,
+        "runId": "<uuid:3>",
+        "summaryCount": null,
+        "summaryLastNominalTime": null
+      }
+    },
+    {
+      "id": "trigger-replay",
+      "ok": true,
+      "op": "scheduleTrigger",
+      "result": {
+        "actualTime": "<time>",
+        "backfillId": null,
+        "decidedAt": "<time>",
+        "kind": "TRIGGERED",
+        "nominalTime": "<time>",
+        "origin": "MANUAL",
+        "outcome": "STARTED",
+        "reason": null,
+        "revision": 1,
+        "runId": "<uuid:3>",
+        "summaryCount": null,
+        "summaryLastNominalTime": null
+      }
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "IDEMPOTENCY_KEY_REUSED",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:1>"
+      },
+      "id": "trigger-other-overlap",
+      "ok": false,
+      "op": "scheduleTrigger"
+    },
+    {
+      "id": "trigger-overlaps",
+      "ok": true,
+      "op": "scheduleTrigger",
+      "result": {
+        "actualTime": null,
+        "backfillId": null,
+        "decidedAt": "<time>",
+        "kind": "TRIGGERED",
+        "nominalTime": "<time>",
+        "origin": "MANUAL",
+        "outcome": "SKIPPED_OVERLAP",
+        "reason": null,
+        "revision": 1,
+        "runId": null,
+        "summaryCount": null,
+        "summaryLastNominalTime": null
+      }
+    },
+    {
+      "id": "after-triggers",
+      "ok": true,
+      "op": "scheduleGet",
+      "result": {
+        "action": {
+          "inputDigest": "c427c3890149534850bcafab688abb2ee055a0d7f2bd9d42d6d3880706cb81d2",
+          "nominalTimeField": null,
+          "runTimeoutMs": null,
+          "versionId": null,
+          "versionPolicy": "ACTIVE",
+          "workflowId": "<uuid:1>"
+        },
+        "bufferedCount": 0,
+        "counters": {
+          "SKIPPED_OVERLAP": 1,
+          "STARTED": 1
+        },
+        "createdAt": "<time>",
+        "exhausted": false,
+        "name": "operate-far-{{unique}}",
+        "nextActionEpochMs": null,
+        "nextActions": [],
+        "note": "still in the window",
+        "noteBy": "alice",
+        "openRuns": [
+          "<uuid:3>"
+        ],
+        "origin": "API",
+        "recentActions": [
+          {
+            "actualTime": null,
+            "backfillId": null,
+            "decidedAt": "<time>",
+            "kind": "TRIGGERED",
+            "nominalTime": "<time>",
+            "origin": "MANUAL",
+            "outcome": "SKIPPED_OVERLAP",
+            "reason": null,
+            "revision": 1,
+            "runId": null,
+            "summaryCount": null,
+            "summaryLastNominalTime": null
+          },
+          {
+            "actualTime": "<time>",
+            "backfillId": null,
+            "decidedAt": "<time>",
+            "kind": "TRIGGERED",
+            "nominalTime": "<time>",
+            "origin": "MANUAL",
+            "outcome": "STARTED",
+            "reason": null,
+            "revision": 1,
+            "runId": "<uuid:3>",
+            "summaryCount": null,
+            "summaryLastNominalTime": null
+          }
+        ],
+        "remainingActions": 5,
+        "revision": 1,
+        "scheduleId": "<uuid:2>",
+        "state": "PAUSED",
+        "updatedAt": "<time>"
+      }
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": null,
+        "traceId": ""
+      },
+      "id": "empty-note",
+      "ok": false,
+      "op": "schedulePause"
+    },
+    {
+      "id": "resume",
+      "ok": true,
+      "op": "scheduleResume",
+      "result": {
+        "action": {
+          "inputDigest": "c427c3890149534850bcafab688abb2ee055a0d7f2bd9d42d6d3880706cb81d2",
+          "nominalTimeField": null,
+          "runTimeoutMs": null,
+          "versionId": null,
+          "versionPolicy": "ACTIVE",
+          "workflowId": "<uuid:1>"
+        },
+        "createdAt": "<time>",
+        "exhausted": false,
+        "name": "operate-far-{{unique}}",
+        "nextActionEpochMs": 4070941200000,
+        "note": "back to normal",
+        "noteBy": "alice",
+        "origin": "API",
+        "remainingActions": 5,
+        "revision": 1,
+        "scheduleId": "<uuid:2>",
+        "state": "ACTIVE",
+        "updatedAt": "<time>"
+      }
+    },
+    {
+      "id": "resumed",
+      "ok": true,
+      "op": "scheduleGet",
+      "result": {
+        "action": {
+          "inputDigest": "c427c3890149534850bcafab688abb2ee055a0d7f2bd9d42d6d3880706cb81d2",
+          "nominalTimeField": null,
+          "runTimeoutMs": null,
+          "versionId": null,
+          "versionPolicy": "ACTIVE",
+          "workflowId": "<uuid:1>"
+        },
+        "bufferedCount": 0,
+        "counters": {
+          "SKIPPED_OVERLAP": 1,
+          "STARTED": 1
+        },
+        "createdAt": "<time>",
+        "exhausted": false,
+        "name": "operate-far-{{unique}}",
+        "nextActionEpochMs": 4070941200000,
+        "nextActions": [
+          {
+            "actualTimeEpochMs": 4070941200000,
+            "nominalTimeEpochMs": 4070941200000
+          }
+        ],
+        "note": "back to normal",
+        "noteBy": "alice",
+        "openRuns": [
+          "<uuid:3>"
+        ],
+        "origin": "API",
+        "recentActions": [],
+        "remainingActions": 5,
+        "revision": 1,
+        "scheduleId": "<uuid:2>",
+        "state": "ACTIVE",
+        "updatedAt": "<time>"
+      }
+    },
+    {
+      "id": "hourly",
+      "ok": true,
+      "op": "scheduleCreate",
+      "result": {
+        "action": {
+          "inputDigest": "ca2efa0c76ec0a270ab2fea8dd4498cf8127d946b687c5ae4c57ab305ba58df0",
+          "nominalTimeField": "scheduledFor",
+          "runTimeoutMs": null,
+          "versionId": null,
+          "versionPolicy": "ACTIVE",
+          "workflowId": "<uuid:1>"
+        },
+        "createdAt": "<time>",
+        "exhausted": false,
+        "name": "operate-hourly-{{unique}}",
+        "nextActionEpochMs": null,
+        "note": null,
+        "noteBy": null,
+        "origin": "API",
+        "remainingActions": null,
+        "revision": 1,
+        "scheduleId": "<uuid:4>",
+        "state": "PAUSED",
+        "updatedAt": "<time>"
+      }
+    },
+    {
+      "id": "backfill",
+      "ok": true,
+      "op": "scheduleBackfill",
+      "result": {
+        "backfillId": "<uuid:5>",
+        "counts": {},
+        "cursor": null,
+        "end": "<time>",
+        "overlap": "ALLOW_ALL",
+        "start": "<time>",
+        "state": "PENDING"
+      }
+    },
+    {
+      "id": "backfill-acted",
+      "ok": true,
+      "op": "awaitSchedule"
+    },
+    {
+      "id": "backfill-actions",
+      "ok": true,
+      "op": "scheduleActions",
+      "result": {
+        "items": [
+          {
+            "actualTime": "<time>",
+            "backfillId": "<uuid:5>",
+            "decidedAt": "<time>",
+            "kind": "BACKFILL",
+            "nominalTime": "<time>",
+            "origin": "SPEC",
+            "outcome": "STARTED",
+            "reason": null,
+            "revision": 1,
+            "runId": "<uuid:6>",
+            "summaryCount": null,
+            "summaryLastNominalTime": null
+          },
+          {
+            "actualTime": "<time>",
+            "backfillId": "<uuid:5>",
+            "decidedAt": "<time>",
+            "kind": "BACKFILL",
+            "nominalTime": "<time>",
+            "origin": "SPEC",
+            "outcome": "STARTED",
+            "reason": null,
+            "revision": 1,
+            "runId": "<uuid:7>",
+            "summaryCount": null,
+            "summaryLastNominalTime": null
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    {
+      "id": "backfills",
+      "ok": true,
+      "op": "scheduleBackfills",
+      "result": {
+        "items": [
+          {
+            "backfillId": "<uuid:5>",
+            "counts": {
+              "STARTED": 2
+            },
+            "cursor": "<time>",
+            "end": "<time>",
+            "overlap": "ALLOW_ALL",
+            "start": "<time>",
+            "state": "COMPLETED"
+          }
+        ]
+      }
+    },
+    {
+      "id": "backfill-again",
+      "ok": true,
+      "op": "scheduleBackfill",
+      "result": {
+        "backfillId": "<uuid:8>",
+        "counts": {},
+        "cursor": null,
+        "end": "<time>",
+        "overlap": "ALLOW_ALL",
+        "start": "<time>",
+        "state": "PENDING"
+      }
+    },
+    {
+      "id": "already-acted",
+      "ok": true,
+      "op": "awaitBackfill"
+    },
+    {
+      "id": "after-backfills",
+      "ok": true,
+      "op": "scheduleGet",
+      "result": {
+        "action": {
+          "inputDigest": "ca2efa0c76ec0a270ab2fea8dd4498cf8127d946b687c5ae4c57ab305ba58df0",
+          "nominalTimeField": "scheduledFor",
+          "runTimeoutMs": null,
+          "versionId": null,
+          "versionPolicy": "ACTIVE",
+          "workflowId": "<uuid:1>"
+        },
+        "bufferedCount": 0,
+        "counters": {
+          "STARTED": 2
+        },
+        "createdAt": "<time>",
+        "exhausted": false,
+        "name": "operate-hourly-{{unique}}",
+        "nextActionEpochMs": null,
+        "nextActions": [],
+        "note": null,
+        "noteBy": null,
+        "openRuns": [
+          "<uuid:7>",
+          "<uuid:6>"
+        ],
+        "origin": "API",
+        "recentActions": [],
+        "remainingActions": null,
+        "revision": 1,
+        "scheduleId": "<uuid:4>",
+        "state": "PAUSED",
+        "updatedAt": "<time>"
+      }
+    },
+    {
+      "id": "backfills-after",
+      "ok": true,
+      "op": "scheduleBackfills",
+      "result": {
+        "items": [
+          {
+            "backfillId": "<uuid:8>",
+            "counts": {
+              "ALREADY_ACTED": 2
+            },
+            "cursor": "<time>",
+            "end": "<time>",
+            "overlap": "ALLOW_ALL",
+            "start": "<time>",
+            "state": "COMPLETED"
+          },
+          {
+            "backfillId": "<uuid:5>",
+            "counts": {
+              "STARTED": 2
+            },
+            "cursor": "<time>",
+            "end": "<time>",
+            "overlap": "ALLOW_ALL",
+            "start": "<time>",
+            "state": "COMPLETED"
+          }
+        ]
+      }
+    },
+    {
+      "id": "cancel-finished-backfill",
+      "ok": true,
+      "op": "scheduleCancelBackfill",
+      "result": {
+        "backfillId": "<uuid:5>",
+        "counts": {
+          "STARTED": 2
+        },
+        "cursor": "<time>",
+        "end": "<time>",
+        "overlap": "ALLOW_ALL",
+        "start": "<time>",
+        "state": "COMPLETED"
+      }
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": "BACKFILL_RANGE_INVALID",
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:2>"
+      },
+      "id": "future-range",
+      "ok": false,
+      "op": "scheduleBackfill"
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": "BACKFILL_RANGE_INVALID",
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:3>"
+      },
+      "id": "empty-range",
+      "ok": false,
+      "op": "scheduleBackfill"
+    }
+  ],
+  "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "work",
+          "kind": "FORWARD",
+          "status": "READY",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:6>",
+      "status": "RUNNING"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "work",
+          "kind": "FORWARD",
+          "status": "READY",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:7>",
+      "status": "RUNNING"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "work",
+          "kind": "FORWARD",
+          "status": "READY",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:3>",
+      "status": "RUNNING"
+    }
+  ],
+  "workerLog": {}
+}

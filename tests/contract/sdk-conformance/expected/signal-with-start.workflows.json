@@ -1,0 +1,78 @@
+{
+  "canonical": {
+    "late": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"prepare\",\"kind\":\"Workflow\",\"metadata\":{\"description\":\"An unserved activity first: the entry is not a wait.\",\"name\":\"sws-late\"},\"nodes\":[{\"activity\":\"sws.unserved\",\"id\":\"prepare\",\"next\":\"paid\",\"type\":\"activity\"},{\"correlationExpr\":\"input.orderId\",\"eventType\":\"payment.confirmed\",\"id\":\"paid\",\"next\":\"fulfilled\",\"onTimeout\":\"gave-up\",\"timeoutMs\":600000,\"type\":\"waitEvent\"},{\"id\":\"fulfilled\",\"type\":\"end\"},{\"activity\":\"sws.give-up\",\"id\":\"gave-up\",\"type\":\"activity\"}]}",
+    "waiter": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"paid\",\"kind\":\"Workflow\",\"metadata\":{\"description\":\"The entry waits for a payment signal, then one served activity.\",\"name\":\"sws-waiter\"},\"nodes\":[{\"correlationExpr\":\"input.orderId\",\"eventType\":\"payment.confirmed\",\"id\":\"paid\",\"next\":\"fulfil\",\"onTimeout\":\"gave-up\",\"timeoutMs\":600000,\"type\":\"waitEvent\"},{\"activity\":\"sws.fulfil\",\"id\":\"fulfil\",\"next\":\"fulfilled\",\"type\":\"activity\"},{\"id\":\"fulfilled\",\"type\":\"end\"},{\"activity\":\"sws.give-up\",\"id\":\"gave-up\",\"type\":\"activity\"}]}"
+  },
+  "workflows": {
+    "late": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "prepare",
+      "kind": "Workflow",
+      "metadata": {
+        "description": "An unserved activity first: the entry is not a wait.",
+        "name": "sws-late"
+      },
+      "nodes": [
+        {
+          "activity": "sws.unserved",
+          "id": "prepare",
+          "next": "paid",
+          "type": "activity"
+        },
+        {
+          "correlationExpr": "input.orderId",
+          "eventType": "payment.confirmed",
+          "id": "paid",
+          "next": "fulfilled",
+          "onTimeout": "gave-up",
+          "timeoutMs": 600000,
+          "type": "waitEvent"
+        },
+        {
+          "id": "fulfilled",
+          "type": "end"
+        },
+        {
+          "activity": "sws.give-up",
+          "id": "gave-up",
+          "type": "activity"
+        }
+      ]
+    },
+    "waiter": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "paid",
+      "kind": "Workflow",
+      "metadata": {
+        "description": "The entry waits for a payment signal, then one served activity.",
+        "name": "sws-waiter"
+      },
+      "nodes": [
+        {
+          "correlationExpr": "input.orderId",
+          "eventType": "payment.confirmed",
+          "id": "paid",
+          "next": "fulfil",
+          "onTimeout": "gave-up",
+          "timeoutMs": 600000,
+          "type": "waitEvent"
+        },
+        {
+          "activity": "sws.fulfil",
+          "id": "fulfil",
+          "next": "fulfilled",
+          "type": "activity"
+        },
+        {
+          "id": "fulfilled",
+          "type": "end"
+        },
+        {
+          "activity": "sws.give-up",
+          "id": "gave-up",
+          "type": "activity"
+        }
+      ]
+    }
+  }
+}

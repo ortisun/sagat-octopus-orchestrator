@@ -41,18 +41,34 @@ Rules shared with `sdks/SPEC.md` §3:
 
 ## Scenarios
 
-| File | Covers | Assertions (normalized; identical across the five SDKs) |
+Nine scenario files, built from the table above and blessed from the TypeScript SDK after every observation was read
+against the REST contract; the other five languages hold their output equal to the same goldens. (The draft listed
+`errors-018.json`; every `details.reason` reachable from a client is instead asserted in the scenario of the operation
+that raises it, so the reason and the call stay together.)
+
+| File | Covers | Assertions (normalized; identical across the SDKs) |
 | --- | --- | --- |
-| `schedules-crud.json` | create with calendar + cron + interval, describe, update with stale revision, delete | revision numbers, `REVISION_CONFLICT`, next nominal times for a fixed spec and a fixed database instant supplied by the harness |
-| `schedules-operate.json` | pause/resume with note, trigger-now while paused, replay of trigger with same key, backfill with `ALREADY_ACTED` | action records (kind, outcome, run started or not), remaining actions unchanged by trigger |
-| `schedules-overlap.json` | `SKIP`, `BUFFER_ONE`, `ALLOW_ALL` with a blocking activity the harness controls | outcomes per nominal time |
-| `business-ids.json` | `FAIL`, `USE_EXISTING`, each reuse policy, lookup | 409 reasons, `started` flag, binding fields |
-| `start-delay.json` | delayed start, signal refused, cancel during delay | status `WAITING`, `startDelayedUntil` present, `NOT_WAITING`, final `CANCELLED` |
-| `signal-with-start.json` | absent id (entry waits), open waiting run, open run not waiting, entry not waiting | `started`, `deliveredTo`, 409 reasons, no run created on refusal |
-| `update-with-start.json` | applied, rejected by validator, undeclared operation, replay with same key | receipt status, `started`, revisions, replay equality |
-| `batch-operations.json` | preview, create cancel job over seeded runs, list items, cancel job; `REPIN` refused without feature 019 | counts, item states and reasons, `BATCH_ACTION_UNAVAILABLE` |
-| `reset.json` | list points, preview, reset `REQUIRE_TERMINAL` with `SIGNALS` reapply; with 022 present, a reset on a busy concurrency key | points, plan (`concurrencyPermit`), `resetFrom`, reapply report, `CONCURRENCY_PERMIT_UNAVAILABLE` |
-| `errors-018.json` | each `details.reason` reachable from a client | code, reason, retryable |
+| `schedules-crud.json` | create with a calendar, a cron string and an interval (bounded to January 2099, so the next times do not depend on the day it runs), describe, update with a stale and a current revision, list with filters and pages, duplicate name, invalid spec, unknown zone, never fires, too frequent, delete with a stale and a current revision, the name freed, another tenant, a viewer | revisions, `REVISION_CONFLICT`, the next nominal times as epoch milliseconds, `SCHEDULE_*` reasons, 403 and 404 |
+| `schedules-operate.json` | pause and resume with a note, trigger while paused, replay of a trigger with the same key, the same key with another body, a backfill of two whole UTC hours of an hourly cron, a second backfill of the same range, a future range | action records (kind, origin, outcome, `backfillId`, run started or not), `remainingActions` unchanged by a trigger, backfill counts (`STARTED` 2, then `ALREADY_ACTED` 2), `BACKFILL_RANGE_INVALID` |
+| `schedules-overlap.json` | `SKIP`, `BUFFER_ONE` (buffered, then buffer full), `ALLOW_ALL`, an unknown policy, with a run the harness leaves open; every action is a trigger, so no outcome depends on the clock | outcome per action, counters, `bufferedCount` |
+| `business-ids.json` | `FAIL`, `USE_EXISTING`, each reuse policy, the lookup of an open and of a closed holder, an invalid identifier, a policy without an identifier, an unknown policy, a replay | `409 BUSINESS_ID_IN_USE` / `BUSINESS_ID_REUSE_REJECTED`, `started`, binding fields, `422 BUSINESS_ID_INVALID` |
+| `start-delay.json` | a held start, a signal while held (`409 STATE_CONFLICT`: nothing waits for it), cancel during the delay, a short delay released by the scheduler, zero and too long, the longest, a fraction, the same key with another delay | status `WAITING`, `startDelayedUntil` present, journal events, `START_DELAY_INVALID`, `IDEMPOTENCY_KEY_REUSED` |
+| `signal-with-start.json` | no holder (the entry waits), an open waiting run, an open run that does not wait for that name (`NOT_WAITING`), an entry that is not a wait (`SIGNAL_NOT_ACCEPTED_AT_START`, no run created), a replay, a different body under the same key, an invalid identifier, a closed holder with `REJECT_DUPLICATE` | `started`, `deliveredTo`, reasons |
+| `update-with-start.json` | applied at creation, replay, same key with another request, applied to an open holder, rejected by the validator, stale revision, `FAIL` on an open holder, undeclared operation, arguments outside the declaration, rejected at creation, with a start delay | receipt revisions, `outcome` and `reason` of a rejection, `started`, replay equality |
+| `batch-operations.json` | preview (count, cap, filter), create `CANCEL` over three open runs, the same key and body, the same key with another body, await `COMPLETED`, items (all and filtered, paged), a second job over the ended runs, cancel of an ended job, `REPIN`, empty selector, short reason, business id prefix, query selector | counts and item states, `ALREADY_TERMINAL`, `BATCH_NOT_CANCELLABLE`, `BATCH_ACTION_UNAVAILABLE`, `BATCH_SELECTOR_INVALID`, `BATCH_REASON_INVALID`, `BATCH_SELECTOR_UNSUPPORTED`, `QUERY_UNSUPPORTED_OPERATOR` |
+| `reset.json` | list points (and a page of one), preview at the start and after the first step, a sequence that is not a point, `reapply` other than `NONE` and `CANCEL_SOURCE` (422 in this version), no acknowledgement, a short reason, the reset, its replay, the same key with another sequence, the new run finishing, the register, an open source, another tenant, a viewer | points, plan (`restored`, `reexecuted`, `requiresAcknowledgement`), `RESET_REEXECUTION_NOT_ACKNOWLEDGED`, `RESET_POINT_NOT_ELIGIBLE`, `RESET_SOURCE_NOT_TERMINAL`, `rerunOf` of the new run, `run.reset` in its journal |
+
+The concurrency-permit reset of feature 022 is not a scenario: the permit is not built (T018-053), and a scenario for it
+would assert nothing.
+
+### Steps and server settings the scenarios use
+
+The step operations are those of `tests/contract/sdk-conformance/README.md`, with the feature 018 ones listed there
+(`scheduleCreate` ... `getReset`, `awaitSchedule`, `awaitBackfill`, `awaitBatch`). A parameter of a step may be a
+reference: `{{step:<id>:<field>}}`, `{{workflow:<key>}}`, `{{namespaceId}}`, `{{now:<offsetMs>}}` or
+`{{hour:<offsetHours>}}` (the start of a UTC hour). A scenario that needs the engine's schedule or batch passes says so
+in `server` (`"schedules": true`, `"batches": true`): those passes are off in an engine until told to run, and a
+scenario that waits on them without the setting would only time out.
 
 A scenario runs only against a server that implements its routes; a server that does not answers
 `NOT_FOUND` with reason `ROUTE_NOT_FOUND` (canonical `Error.details` rule), and the harness records the
