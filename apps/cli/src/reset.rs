@@ -3,6 +3,7 @@
 
 use serde_json::{Value, json};
 
+use crate::args::Reapply;
 use crate::client::CallError;
 use crate::{EXIT_DONE, EXIT_FAILED, Env, Io, namespace_of, session};
 
@@ -76,21 +77,82 @@ fn refused(io: &mut Io<'_>, what: &str, why: &str) -> Result<u8, String> {
     Ok(EXIT_FAILED)
 }
 
+/// What a reason of the preview or of the report of a reset comes to, in words. A reason this tool does not know
+/// is said as the platform wrote it.
+fn reason_words(reason: &str) -> String {
+    match reason {
+        "LEGACY_EVENT" => "it was recorded before the platform said what it was".to_owned(),
+        "NOT_RETAINED" => "its content is no longer kept".to_owned(),
+        "PREVIOUS_SIGNAL_NOT_DELIVERED" => {
+            "an earlier signal was not delivered, and a later one would reach its wait".to_owned()
+        }
+        "NOT_WAITING" => "no step of the new run was waiting for it".to_owned(),
+        "UPDATE_REJECTED" => "the validator of the update declined it".to_owned(),
+        "REVISION_CONFLICT" => {
+            "the state was not at the revision the update was applied to".to_owned()
+        }
+        "UPDATE_NOT_ACCEPTED" => "the declaration does not accept the update".to_owned(),
+        other => crate::one_line(other),
+    }
+}
+
+/// One signal or Update the reset delivers again, or did: what it is and what came, or comes, of it. Only the
+/// name of the signal or the operation is said, never what was sent.
+fn entry_words(entry: &Value) -> String {
+    let (what, name) = match entry["kind"].as_str() {
+        Some("SIGNAL") => ("signal", entry["name"].as_str()),
+        Some("UPDATE") => ("update", entry["operation"].as_str()),
+        _ => ("entry", None),
+    };
+    let outcome = match entry["outcome"].as_str().unwrap_or("?") {
+        "WILL_TRY" => "will be tried".to_owned(),
+        "REAPPLIED" => "delivered".to_owned(),
+        "REJECTED" => "rejected".to_owned(),
+        "NOT_REAPPLIED" => "not delivered".to_owned(),
+        other => crate::one_line(other),
+    };
+    let because = entry["reason"]
+        .as_str()
+        .map(|reason| format!(": {}", reason_words(reason)))
+        .unwrap_or_default();
+    format!(
+        "{what} {} (event {}): {outcome}{because}",
+        crate::one_line(name.unwrap_or("?")),
+        entry["sequence"].as_u64().unwrap_or(0),
+    )
+}
+
+/// The lines that say what a reset delivers again, or did; nothing for a reset that asked for none.
+fn say_reapply(io: &mut Io<'_>, title: &str, entries: &Value) {
+    let Some(entries) = entries.as_array().filter(|entries| !entries.is_empty()) else {
+        return;
+    };
+    io.say(title);
+    for entry in entries {
+        io.say(format!("    {}", entry_words(entry)));
+    }
+}
+
 pub(crate) async fn preview(
     common: &crate::args::Common,
     env: &Env,
     run: &str,
     sequence: u64,
+    reapply: Option<Reapply>,
     io: &mut Io<'_>,
 ) -> Result<u8, String> {
     let namespace = namespace_of(common, env)?;
     let session = session(common, env, &namespace)?;
+    let mut body = json!({ "sequence": sequence });
+    if let Some(reapply) = reapply {
+        body["reapply"] = json!(reapply.api());
+    }
     let plan = match session
         .client
         .call(
             "POST",
             &format!("/runs/{run}/reset-previews"),
-            Some(&json!({ "sequence": sequence })),
+            Some(&body),
             None,
         )
         .await
@@ -148,6 +210,11 @@ pub(crate) async fn preview(
             }
         ));
     }
+    say_reapply(
+        io,
+        "  deliver again what the run received after that point, in order:",
+        &plan["reapply"],
+    );
     if plan["requiresAcknowledgement"].as_bool() == Some(true) {
         io.say("  the reset asks you to say you know that: add --acknowledge");
     }
@@ -161,6 +228,7 @@ pub(crate) struct ResetAsk<'a> {
     pub reason: &'a str,
     pub acknowledge: bool,
     pub drop_business_id: bool,
+    pub reapply: Option<Reapply>,
     pub key: Option<&'a str>,
 }
 
@@ -184,6 +252,9 @@ pub(crate) async fn reset(
     if ask.drop_business_id {
         body["businessId"] = dropped_business_id();
     }
+    if let Some(reapply) = ask.reapply {
+        body["reapply"] = json!(reapply.api());
+    }
     match session
         .client
         .call(
@@ -202,6 +273,11 @@ pub(crate) async fn reset(
                 ask.sequence,
                 ask.run
             ));
+            say_reapply(
+                io,
+                "  delivered again, in the order the run received them:",
+                &made["reapplyReport"],
+            );
             io.say(format!("follow it with: sagat workflow inspect {new_run}"));
             Ok(EXIT_DONE)
         }

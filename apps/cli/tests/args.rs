@@ -1,7 +1,7 @@
 //! The command line: every command, its required flags and what is refused.
 #![allow(clippy::expect_used, clippy::panic)]
 
-use sagat_cli::args::{Command, IfExists, Reuse, StartOptions, parse};
+use sagat_cli::args::{Command, IfExists, Reapply, Reuse, StartOptions, parse};
 
 fn argv(line: &str) -> Vec<String> {
     line.split_whitespace().map(str::to_owned).collect()
@@ -598,6 +598,7 @@ fn the_usage_names_every_command_the_parser_takes() {
         "workflow reset-points",
         "workflow reset-preview",
         "workflow reset",
+        "--reapply",
         "--business-id",
         "--if-exists",
         "--start-delay",
@@ -789,9 +790,54 @@ fn the_with_start_and_reset_commands_take_the_words_and_flags_they_document() {
             .command,
         Command::WorkflowResetPreview {
             run: RUN.into(),
-            sequence: 5
+            sequence: 5,
+            reapply: None,
         }
     );
+    // the policy of a reapply is one of four words, in either case
+    for (word, expected) in [
+        ("none", Reapply::None),
+        ("signals", Reapply::Signals),
+        ("updates", Reapply::Updates),
+        ("all", Reapply::All),
+        ("ALL", Reapply::All),
+        ("Signals", Reapply::Signals),
+    ] {
+        assert_eq!(
+            parse(&argv(&format!(
+                "workflow reset-preview {RUN} --sequence 5 --reapply {word}"
+            )))
+            .expect("parses")
+            .command,
+            Command::WorkflowResetPreview {
+                run: RUN.into(),
+                sequence: 5,
+                reapply: Some(expected),
+            },
+            "{word}"
+        );
+        assert_eq!(
+            parse(&argv(&format!(
+                "workflow reset {RUN} --sequence 5 --reason x --reapply {word}"
+            )))
+            .expect("parses")
+            .command,
+            Command::WorkflowReset {
+                run: RUN.into(),
+                sequence: 5,
+                reason: "x".into(),
+                acknowledge: false,
+                drop_business_id: false,
+                reapply: Some(expected),
+                key: None,
+            },
+            "{word}"
+        );
+    }
+    assert_eq!(Reapply::None.api(), "NONE");
+    assert_eq!(Reapply::Signals.api(), "SIGNALS");
+    assert_eq!(Reapply::Updates.api(), "UPDATES");
+    assert_eq!(Reapply::All.api(), "ALL");
     assert_eq!(
         parse(&argv(&format!(
             "workflow reset {RUN} --sequence 5 --reason price-list --acknowledge --drop-business-id --key k-0123456789"
@@ -804,6 +850,7 @@ fn the_with_start_and_reset_commands_take_the_words_and_flags_they_document() {
             reason: "price-list".into(),
             acknowledge: true,
             drop_business_id: true,
+            reapply: None,
             key: Some("k-0123456789".into()),
         }
     );
@@ -819,6 +866,7 @@ fn the_with_start_and_reset_commands_take_the_words_and_flags_they_document() {
             reason: "x".into(),
             acknowledge: false,
             drop_business_id: false,
+            reapply: None,
             key: None,
         }
     );
@@ -882,6 +930,14 @@ fn what_the_with_start_and_reset_commands_get_wrong_is_named() {
         (
             "workflow reset ../x --sequence 5 --reason r",
             "the run is given by its id",
+        ),
+        (
+            "workflow reset 01a12aca-0d9d-7589-bf01-bc7b7cc0a7b8 --sequence 5 --reason r --reapply sometimes",
+            "--reapply is none, signals, updates or all",
+        ),
+        (
+            "workflow reset-preview 01a12aca-0d9d-7589-bf01-bc7b7cc0a7b8 --sequence 5 --reapply",
+            "--reapply",
         ),
         ("workflow frobnicate", "reset-points"),
     ] {

@@ -35,11 +35,14 @@ ONE WORKFLOW:
                          [--if-exists fail|use-existing] [--reuse <POLICY>] [--start-delay <SECONDS>] [--expected-revision <N>] [--key <KEY>]
                           apply a declared Update to the open run of the identifier, or start one and apply it
     workflow reset-points <RUN>          where a run that ended can be reset to
-    workflow reset-preview <RUN> --sequence <N>
-                          what a reset to that point keeps and runs again
-    workflow reset <RUN> --sequence <N> --reason <TEXT> [--acknowledge] [--drop-business-id] [--key <KEY>]
+    workflow reset-preview <RUN> --sequence <N> [--reapply none|signals|updates|all]
+                          what a reset to that point keeps and runs again; --reapply also lists the signals and
+                          Updates the run received after the point that the reset would deliver again
+    workflow reset <RUN> --sequence <N> --reason <TEXT> [--acknowledge] [--drop-business-id]
+                         [--reapply none|signals|updates|all] [--key <KEY>]
                           a new run from that point of a run that ended; --acknowledge says you know the steps
-                          that completed will run again
+                          that completed will run again; --reapply delivers again, in order, the signals the run
+                          received after the point and the Updates that kept their arguments, and reports each
     workflow runs <NAME> [--limit <N>]   the latest runs of a workflow (the ones an event or a schedule started too)
     workflow inspect <RUN> [--values [--reveal-pii] [--sequence N]]
                                           the status, journal and attempts; optionally disclosed values
@@ -216,6 +219,7 @@ pub enum Command {
     WorkflowResetPreview {
         run: String,
         sequence: u64,
+        reapply: Option<Reapply>,
     },
     /// A new run from a point of a run that ended.
     WorkflowReset {
@@ -224,6 +228,7 @@ pub enum Command {
         reason: String,
         acknowledge: bool,
         drop_business_id: bool,
+        reapply: Option<Reapply>,
         key: Option<String>,
     },
     WorkflowRuns {
@@ -406,6 +411,28 @@ impl IfExists {
     }
 }
 
+/// What a reset delivers again to the run it makes (`--reapply`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reapply {
+    None,
+    Signals,
+    Updates,
+    All,
+}
+
+impl Reapply {
+    /// The name the API uses.
+    #[must_use]
+    pub const fn api(self) -> &'static str {
+        match self {
+            Self::None => "NONE",
+            Self::Signals => "SIGNALS",
+            Self::Updates => "UPDATES",
+            Self::All => "ALL",
+        }
+    }
+}
+
 /// What to do when a run that ended still remembers the business identifier (`--reuse`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reuse {
@@ -488,7 +515,7 @@ impl Flags {
 }
 
 /// Flags that take a value; every other `--flag` is a switch.
-const WITH_VALUE: [&str; 50] = [
+const WITH_VALUE: [&str; 51] = [
     "--definition",
     "--note",
     "--revision",
@@ -503,6 +530,7 @@ const WITH_VALUE: [&str; 50] = [
     "--business-id",
     "--if-exists",
     "--reuse",
+    "--reapply",
     "--start-delay",
     "--signal",
     "--payload",
@@ -761,6 +789,22 @@ fn if_exists(flags: &mut Flags) -> Result<Option<IfExists>, UsageError> {
             "fail" => Ok(IfExists::Fail),
             "use-existing" => Ok(IfExists::UseExisting),
             _ => Err(UsageError("--if-exists is fail or use-existing".to_owned())),
+        })
+        .transpose()
+}
+
+/// `--reapply`, in the words of the other policies (the names of the API in lower case are accepted too).
+fn reapply(flags: &mut Flags) -> Result<Option<Reapply>, UsageError> {
+    flags
+        .take_value(&["--reapply"])
+        .map(|value| match value.to_ascii_lowercase().as_str() {
+            "none" => Ok(Reapply::None),
+            "signals" => Ok(Reapply::Signals),
+            "updates" => Ok(Reapply::Updates),
+            "all" => Ok(Reapply::All),
+            _ => Err(UsageError(
+                "--reapply is none, signals, updates or all".to_owned(),
+            )),
         })
         .transpose()
 }
@@ -1038,6 +1082,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, UsageError> {
             Some((sub, tail)) if sub == "reset-preview" => Command::WorkflowResetPreview {
                 run: run_id(argument(tail, "the run (its id)")?)?,
                 sequence: sequence(&flags.required("--sequence")?)?,
+                reapply: reapply(&mut flags)?,
             },
             Some((sub, tail)) if sub == "reset" => Command::WorkflowReset {
                 run: run_id(argument(tail, "the run (its id)")?)?,
@@ -1045,6 +1090,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, UsageError> {
                 reason: flags.required("--reason")?,
                 acknowledge: flags.take_switch("--acknowledge"),
                 drop_business_id: flags.take_switch("--drop-business-id"),
+                reapply: reapply(&mut flags)?,
                 key: flags.take_value(&["--key"]),
             },
             Some((sub, tail)) if sub == "runs" => Command::WorkflowRuns {

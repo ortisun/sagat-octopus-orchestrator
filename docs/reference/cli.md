@@ -37,11 +37,14 @@ ONE WORKFLOW:
                          [--if-exists fail|use-existing] [--reuse <POLICY>] [--start-delay <SECONDS>] [--expected-revision <N>] [--key <KEY>]
                           apply a declared Update to the open run of the identifier, or start one and apply it
     workflow reset-points <RUN>          where a run that ended can be reset to
-    workflow reset-preview <RUN> --sequence <N>
-                          what a reset to that point keeps and runs again
-    workflow reset <RUN> --sequence <N> --reason <TEXT> [--acknowledge] [--drop-business-id] [--key <KEY>]
+    workflow reset-preview <RUN> --sequence <N> [--reapply none|signals|updates|all]
+                          what a reset to that point keeps and runs again; --reapply also lists the signals and
+                          Updates the run received after the point that the reset would deliver again
+    workflow reset <RUN> --sequence <N> --reason <TEXT> [--acknowledge] [--drop-business-id]
+                         [--reapply none|signals|updates|all] [--key <KEY>]
                           a new run from that point of a run that ended; --acknowledge says you know the steps
-                          that completed will run again
+                          that completed will run again; --reapply delivers again, in order, the signals the run
+                          received after the point and the Updates that kept their arguments, and reports each
     workflow runs <NAME> [--limit <N>]   the latest runs of a workflow (the ones an event or a schedule started too)
     workflow inspect <RUN> [--values [--reveal-pii] [--sequence N]]
                                           the status, journal and attempts; optionally disclosed values

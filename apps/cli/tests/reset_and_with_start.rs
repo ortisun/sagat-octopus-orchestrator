@@ -636,3 +636,234 @@ fn a_reset_that_is_refused_says_why_and_fails_without_the_token() {
     assert_eq!(code, 1, "{out}{err}");
     assert!(!format!("{out}{err}").contains("the run could not be reset"));
 }
+/// The signals and Updates a plan or a report lists, in the shapes the platform answers them.
+fn entries() -> Value {
+    json!([
+        {"sequence": 8, "kind": "UPDATE", "operation": "balance.replace", "outcome": "REAPPLIED"},
+        {"sequence": 9, "kind": "SIGNAL", "name": "payment.confirmed", "outcome": "REAPPLIED"},
+        {"sequence": 16, "kind": "SIGNAL", "name": "payment.settled", "outcome": "REJECTED", "reason": "NOT_WAITING"},
+        {"sequence": 19, "kind": "UPDATE", "operation": "balance.replace", "outcome": "REJECTED", "reason": "REVISION_CONFLICT"},
+        {"sequence": 24, "kind": "SIGNAL", "name": "payment.closed", "outcome": "NOT_REAPPLIED", "reason": "PREVIOUS_SIGNAL_NOT_DELIVERED"},
+        {"sequence": 25, "kind": "UPDATE", "operation": "balance.replace", "outcome": "NOT_REAPPLIED", "reason": "NOT_RETAINED"},
+        {"sequence": 26, "kind": "UPDATE", "operation": "balance.replace", "outcome": "NOT_REAPPLIED", "reason": "LEGACY_EVENT"},
+        {"sequence": 27, "kind": "UPDATE", "operation": "balance.replace", "outcome": "REJECTED", "reason": "UPDATE_REJECTED"},
+        {"sequence": 28, "kind": "UPDATE", "operation": "balance.replace", "outcome": "REJECTED", "reason": "UPDATE_NOT_ACCEPTED"},
+        {"sequence": 29, "kind": "SIGNAL", "name": "payment.later", "outcome": "WILL_TRY"},
+        {"sequence": 30, "kind": "SIGNAL", "name": "payment.future", "outcome": "REJECTED", "reason": "SOMETHING_NEWER"}
+    ])
+}
+
+#[test]
+fn a_preview_with_a_reapply_sends_the_policy_and_lists_what_would_be_delivered_again_in_words() {
+    let (code, out, err, requests) = run(
+        &[
+            "workflow",
+            "reset-preview",
+            RUN,
+            "--sequence",
+            "5",
+            "--reapply",
+            "all",
+        ],
+        vec![Reply::ok(
+            json!({
+                "sequence": 5, "prefixEvents": 5, "requiresAcknowledgement": false,
+                "restored": [], "reexecuted": [], "reapply": entries()
+            })
+            .to_string(),
+        )],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        received(&requests)[0].1,
+        json!({"sequence": 5, "reapply": "ALL"})
+    );
+    assert!(
+        out.contains("deliver again what the run received after that point, in order:"),
+        "{out}"
+    );
+    for line in [
+        "update balance.replace (event 8): delivered",
+        "signal payment.confirmed (event 9): delivered",
+        "signal payment.settled (event 16): rejected: no step of the new run was waiting for it",
+        "update balance.replace (event 19): rejected: the state was not at the revision the update was applied to",
+        "signal payment.closed (event 24): not delivered: an earlier signal was not delivered, and a later one would reach its wait",
+        "update balance.replace (event 25): not delivered: its content is no longer kept",
+        "update balance.replace (event 26): not delivered: it was recorded before the platform said what it was",
+        "update balance.replace (event 27): rejected: the validator of the update declined it",
+        "update balance.replace (event 28): rejected: the declaration does not accept the update",
+        "signal payment.later (event 29): will be tried",
+        // a reason this tool does not know is said as the platform wrote it
+        "signal payment.future (event 30): rejected: SOMETHING_NEWER",
+    ] {
+        assert!(out.contains(line), "{line}\n{out}");
+    }
+    // in the order of the journal
+    let positions: Vec<usize> = [
+        "event 8)",
+        "event 9)",
+        "event 16)",
+        "event 19)",
+        "event 24)",
+    ]
+    .iter()
+    .map(|needle| out.find(needle).expect(needle))
+    .collect();
+    assert!(positions.windows(2).all(|pair| pair[0] < pair[1]), "{out}");
+
+    // the policy is sent as given, and `none` is a policy too
+    let (_, _, _, requests) = run(
+        &[
+            "workflow",
+            "reset-preview",
+            RUN,
+            "--sequence",
+            "5",
+            "--reapply",
+            "none",
+        ],
+        vec![Reply::ok(
+            json!({"sequence": 5, "restored": [], "reexecuted": [], "reapply": [], "requiresAcknowledgement": false, "prefixEvents": 5})
+                .to_string(),
+        )],
+    );
+    assert_eq!(
+        received(&requests)[0].1,
+        json!({"sequence": 5, "reapply": "NONE"})
+    );
+    // and a preview without candidates says nothing about delivering again
+    let (_, out, _, _) = run(
+        &["workflow", "reset-preview", RUN, "--sequence", "5"],
+        vec![Reply::ok(
+            json!({"sequence": 5, "restored": [], "reexecuted": [], "reapply": [], "requiresAcknowledgement": false, "prefixEvents": 5})
+                .to_string(),
+        )],
+    );
+    assert!(!out.contains("deliver again"), "{out}");
+}
+
+#[test]
+fn a_reset_with_a_reapply_sends_the_policy_and_says_what_was_delivered_again_without_its_content() {
+    let (code, out, err, requests) = run(
+        &[
+            "workflow",
+            "reset",
+            RUN,
+            "--sequence",
+            "5",
+            "--reason",
+            "wrong price list",
+            "--reapply",
+            "signals",
+        ],
+        vec![reply(
+            202,
+            &json!({
+                "resetId": "r-9", "sourceRunId": RUN, "sequence": 5, "state": "CREATED",
+                "newRunId": NEW, "reapplyReport": entries()
+            }),
+        )],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        received(&requests)[0].1,
+        json!({"sequence": 5, "reason": "wrong price list", "acknowledgeReexecution": false, "reapply": "SIGNALS"})
+    );
+    assert!(
+        out.contains("delivered again, in the order the run received them:"),
+        "{out}"
+    );
+    assert!(
+        out.contains("signal payment.confirmed (event 9): delivered"),
+        "{out}"
+    );
+    assert!(
+        out.contains("update balance.replace (event 19): rejected: the state was not at the revision the update was applied to"),
+        "{out}"
+    );
+    // the report is before the line that says what to do next
+    assert!(
+        out.find("event 9)").expect("the report")
+            < out
+                .find(&format!("sagat workflow inspect {NEW}"))
+                .expect("the next step"),
+        "{out}"
+    );
+    assert!(!out.contains(TOKEN));
+
+    // a reset that asked for none says nothing about it
+    let (_, out, _, _) = run(
+        &["workflow", "reset", RUN, "--sequence", "5", "--reason", "x"],
+        vec![reply(
+            202,
+            &json!({"resetId": "r-2", "newRunId": NEW, "state": "CREATED", "reapplyReport": []}),
+        )],
+    );
+    assert!(!out.contains("delivered again"), "{out}");
+}
+
+#[test]
+fn what_an_entry_names_is_a_name_and_never_what_was_sent() {
+    // a report entry that carried content (it must not) is still said by its name and its place alone
+    let (_, out, _, _) = run(
+        &[
+            "workflow",
+            "reset",
+            RUN,
+            "--sequence",
+            "5",
+            "--reason",
+            "x",
+            "--reapply",
+            "all",
+        ],
+        vec![reply(
+            202,
+            &json!({
+                "resetId": "r-3", "newRunId": NEW, "state": "CREATED",
+                "reapplyReport": [{
+                    "sequence": 9, "kind": "SIGNAL", "name": "payment\u{1b}[31m.confirmed",
+                    "outcome": "REAPPLIED", "payload": {"card": "4111111111111111"},
+                    "arguments": {"secret": "hunter2"}
+                }]
+            }),
+        )],
+    );
+    assert!(!out.contains("4111") && !out.contains("hunter2"), "{out}");
+    // a name is one line of the report whatever it holds: a new line in it does not start another
+    let (_, out, _, _) = run(
+        &[
+            "workflow",
+            "reset",
+            RUN,
+            "--sequence",
+            "5",
+            "--reason",
+            "x",
+            "--reapply",
+            "all",
+        ],
+        vec![reply(
+            202,
+            &json!({
+                "resetId": "r-4", "newRunId": NEW, "state": "CREATED",
+                "reapplyReport": [{
+                    "sequence": 9, "kind": "SIGNAL", "name": "payment\n.confirmed",
+                    "outcome": "REAPPLIED"
+                }]
+            }),
+        )],
+    );
+    let lines: Vec<&str> = out
+        .lines()
+        .filter(|line| line.contains("payment"))
+        .collect();
+    assert_eq!(lines.len(), 1, "{out:?}");
+    assert!(
+        lines[0].contains("signal payment .confirmed (event 9): delivered"),
+        "{out:?}"
+    );
+    // a control character in a name is not passed to the terminal
+    assert!(!out.contains('\u{1b}'), "{out:?}");
+    assert!(out.contains("signal"), "{out}");
+}
