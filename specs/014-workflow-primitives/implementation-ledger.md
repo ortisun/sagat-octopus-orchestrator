@@ -1676,3 +1676,41 @@ and retained-loop rollback refusal assertions remain. The scenario runs first in
 Full corrected CI is pending. No release or primitive task is closed here.
 
 Refs: T014-043.
+
+## ADR-0075 activation condition (j): unlocked header first — 2026-11-05
+
+Owner instruction, 2026-11-05: implement every remaining task (the first option of the release
+question). This is the first increment of that run, on `feature/014-claim-header-first`, cut from
+`origin/develop@074e0246`. It closes **one activation condition** of ADR-0075 and **no canonical
+task**; the guard stays off and no membership may be created.
+
+`worker_capacity::available` locked the group header G (`FOR UPDATE SKIP LOCKED`) before it knew
+whether the claiming member was the holder. With the group vacant every member is a non-holder, so
+each member poller held G until its commit and the NOWAIT native Acquire answered `Busy`. It now
+reads `possession` and `holder_member_id` without a lock and refuses `capacity_not_holder` unless
+the group is HELD by this member; only then does it take G with `SKIP LOCKED` and reread. A stale
+unlocked answer cannot grant a lease: a refusal grants nothing and a grant still needs the locked
+reread. The metric reason for a busy non-holder group changes from `capacity_group_busy` to
+`capacity_not_holder`; a busy group of the actual holder still reports `capacity_group_busy`.
+
+Red first, native, `SAGAT_TEST_AS_RUNTIME_ROLE=1`: `a_peer_poll_on_a_vacant_group_does_not_starve_native_acquire`
+failed with `Err(Busy)` and `a_nonholder_refusal_takes_no_row_lock_on_g` failed with SQLSTATE `55P03`
+(0 passed, 2 failed, 3.50 s). Both hold a peer's claim transaction open (no sleep) and probe G with the
+real Acquire or `FOR UPDATE NOWAIT`. Green after the change, same profile:
+
+- `integration_workflow_primitives -- worker_leases::`: 14 passed, 0 failed, 18.32 s (includes
+  `a_lease_retains_group_possession_while_waiting_for_activity_admission`, so a holder still keeps G
+  through the lease commit, and the scoped and input-limit cases).
+- `integration_workflow_primitives -- capacity`: 114 passed, 0 failed, 158.87 s.
+- `integration_platform_foundation`: 101 passed, 0 failed, owner 78.30 s and runtime role 62.87 s.
+- `integration_security_multitenancy`: 126 passed, 0 failed, owner 129.04 s and runtime role 156.50 s.
+- `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings` (exit 0),
+  `check-architecture.py` (25 crates, layers respected, no cycles), `check-agent-config.py` and
+  `check-capacity-activation.py`: all passed. No SDK or contract file changed, so no SDK or contract
+  suite was run.
+
+Not proven here: the race between the unlocked read and a concurrent Acquire or Vacate (the locked
+reread is unchanged and its existing cases pass, but no barrier test injects a holder change between
+the two reads; that belongs to condition (e)), and any throughput effect.
+
+Refs: T014-014, T014-015 (activation condition j of ADR-0075).
