@@ -8,7 +8,10 @@ text).
 from __future__ import annotations
 
 import datetime
+import signal
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from decimal import Decimal
 
 import pytest
@@ -335,6 +338,110 @@ def test_a_null_element_of_a_required_list_element_is_refused() -> None:
     with pytest.raises(Failure) as caught:
         map_record(schema(column("x", kind)), {"x": [1, None]})
     assert (caught.value.column, caught.value.reason) == ("x[]", "NULL_IN_REQUIRED")
+
+
+# ---------------------------------------------------------------------------- numbers written to cost something
+@contextmanager
+def within(seconds: int) -> Iterator[None]:
+    """Fails the test when the block takes longer: a number that makes the mapping work for a minute is a defect."""
+
+    def too_slow(signum: int, frame: object) -> None:
+        del signum, frame
+        raise AssertionError(f"the mapping took more than {seconds} s")
+
+    previous = signal.signal(signal.SIGALRM, too_slow)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+@pytest.mark.parametrize("kind", [IntegerType(), LongType()])
+@pytest.mark.parametrize("exponent", [20, 1_000, 1_000_000, 999_999_999])
+@pytest.mark.parametrize("sign", ["", "-"])
+def test_a_number_with_a_huge_exponent_is_an_overflow_and_costs_nothing(
+    kind: IcebergType, exponent: int, sign: str
+) -> None:
+    # `1e1000000` read with parse_float=Decimal is a Decimal of one digit; turning it into an integer first would build
+    # a number of a million digits (twenty seconds, and quadratic) before comparing it with the width of the column
+    with within(2):
+        refused(kind, Decimal(f"{sign}1E+{exponent}"), "OVERFLOW")
+
+
+def test_zero_is_zero_whatever_its_exponent() -> None:
+    with within(2):
+        assert one(LongType(), Decimal("0E+1000000000")) == 0
+        assert one(IntegerType(), Decimal("-0E+5")) == 0
+
+
+@pytest.mark.parametrize(
+    ("kind", "inside", "outside"),
+    [
+        (LongType(), "9.223372036854775807E+18", "9.223372036854775808E+18"),
+        (LongType(), "-9.223372036854775808E+18", "-9.223372036854775809E+18"),
+        (IntegerType(), "2.147483647E+9", "2.147483648E+9"),
+        (IntegerType(), "-2.147483648E+9", "-2.147483649E+9"),
+    ],
+)
+def test_the_edges_of_the_width_hold_for_numbers_written_with_an_exponent(
+    kind: IcebergType, inside: str, outside: str
+) -> None:
+    assert one(kind, Decimal(inside)) == int(Decimal(inside))
+    refused(kind, Decimal(outside), "OVERFLOW")
+
+
+def test_a_tiny_fraction_is_a_type_error_and_costs_nothing() -> None:
+    with within(2):
+        refused(LongType(), Decimal("1E-1000000"), "TYPE")
+
+
+@pytest.mark.parametrize("kind", [IntegerType(), LongType()])
+def test_a_string_of_more_digits_than_python_converts_is_an_overflow_and_not_a_crash(kind: IcebergType) -> None:
+    refused(kind, "9" * 5_000, "OVERFLOW")
+    refused(kind, "-" + "9" * 5_000, "OVERFLOW")
+
+
+def test_leading_zeros_do_not_count_as_digits_of_the_value() -> None:
+    assert one(LongType(), "0" * 5_000 + "1") == 1
+    assert one(LongType(), "-" + "0" * 5_000 + "7") == -7
+    assert one(IntegerType(), "0" * 5_000) == 0
+
+
+@pytest.mark.parametrize(
+    ("kind", "value"),
+    [
+        (DoubleType(), Decimal("1E-400")),
+        (DoubleType(), Decimal("-1E-999999999")),
+        (FloatType(), Decimal("1E-46")),
+        (FloatType(), Decimal("-1E-50")),
+        (FloatType(), 1e-46),  # a float already, and not zero in a double
+    ],
+)
+def test_a_value_so_small_that_it_would_become_zero_is_refused_and_not_stored_as_zero(
+    kind: IcebergType, value: object
+) -> None:
+    refused(kind, value, "OVERFLOW")
+
+
+@pytest.mark.parametrize(
+    ("kind", "value", "stored"),
+    [
+        (DoubleType(), Decimal("0E-1000"), 0.0),
+        (FloatType(), Decimal("0E-1000"), 0.0),
+        (FloatType(), 0, 0.0),
+        (DoubleType(), 0.0, 0.0),
+        (DoubleType(), Decimal("5E-324"), 5e-324),
+        (FloatType(), Decimal("2E-45"), 2e-45),
+        (FloatType(), Decimal("1.17549435E-38"), 1.17549435e-38),
+        (DoubleType(), Decimal("2.2250738585072014E-308"), 2.2250738585072014e-308),
+    ],
+)
+def test_zero_and_the_smallest_values_a_column_can_hold_are_stored(
+    kind: IcebergType, value: object, stored: float
+) -> None:
+    assert one(kind, value) == pytest.approx(stored, rel=1e-6, abs=0)
 
 
 @pytest.mark.parametrize(

@@ -12,7 +12,8 @@ boolean            ``true`` or ``false``
 int, long          a JSON integer, or a string of digits for a value a JSON number cannot hold in every
                    language. A fraction, text or a boolean is ``TYPE``; outside the width, ``OVERFLOW``.
 float, double      a finite JSON number, and also NaN and the infinities, which only these columns can hold.
-                   A finite value past the largest float32 is ``OVERFLOW`` in a float column.
+                   A finite value past the largest float32 is ``OVERFLOW`` in a float column, and so is a value
+                   that is not zero and is so small that the column would store zero.
 decimal(p, s)      a string of digits with an optional point, or an exact JSON number. A digit that would be
                    rounded away is ``SCALE_OVERFLOW`` (trailing zeros carry nothing and are accepted); more
                    digits than the precision is ``OVERFLOW``. A float is ``TYPE``: it is already inexact.
@@ -82,6 +83,8 @@ SCHEMA_MISMATCH = "ICEBERG_SCHEMA_MISMATCH"
 _MAX_COLUMN = 128
 
 _INT_WIDTH = {"int": (-(2**31), 2**31 - 1), "long": (-(2**63), 2**63 - 1)}
+# 2**63 has 19 digits; a value of 20 digits or more is outside the width of every integer column.
+_MAX_INTEGER_DIGITS = 20
 _FLOAT32_MAX = 3.4028234663852886e38
 _DIGITS = re.compile(r"-?[0-9]+")
 _DECIMAL = re.compile(r"-?[0-9]+(\.[0-9]+)?")
@@ -208,13 +211,21 @@ def _integer(value: Any, width: str, path: str) -> int:
     elif isinstance(value, Decimal):
         if not value.is_finite() or value != value.to_integral_value():
             raise _mismatch(path, "TYPE")
+        # A Decimal carries its exponent: `1e1000000` is one digit, and int() of it builds a million. The size is judged
+        # first (more than 20 digits cannot fit in 64 bits), and a zero is zero whatever its exponent.
+        if value != 0 and value.adjusted() >= _MAX_INTEGER_DIGITS:
+            raise _mismatch(path, "OVERFLOW")
         number = int(value)
     elif isinstance(value, float):
         if not value.is_integer() or abs(value) > 2**53:
             raise _mismatch(path, "TYPE")
         number = int(value)
     elif isinstance(value, str) and _DIGITS.fullmatch(value):
-        number = int(value)
+        # Python refuses to convert a string of more than 4300 digits, and leading zeros are not digits of the value.
+        digits = value.lstrip("-").lstrip("0")
+        if len(digits) > _MAX_INTEGER_DIGITS:
+            raise _mismatch(path, "OVERFLOW")
+        number = -int(digits or "0") if value.startswith("-") else int(digits or "0")
     else:
         raise _mismatch(path, "TYPE")
     low, high = _INT_WIDTH[width]
@@ -232,12 +243,15 @@ def _floating(value: Any, *, narrow: bool, path: str) -> float:
         raise _mismatch(path, "OVERFLOW") from None
     if math.isinf(number) and not isinstance(value, float):
         raise _mismatch(path, "OVERFLOW")
+    # A value that is not zero and would be stored as zero is out of the range of the column, as a large one is.
+    if number == 0 and value != 0:
+        raise _mismatch(path, "OVERFLOW")
     if narrow and math.isfinite(number):
         try:
-            struct.pack("f", number)
+            narrowed: float = struct.unpack("f", struct.pack("f", number))[0]
         except OverflowError:
             raise _mismatch(path, "OVERFLOW") from None
-        if abs(number) > _FLOAT32_MAX:
+        if abs(number) > _FLOAT32_MAX or (narrowed == 0 and number != 0):
             raise _mismatch(path, "OVERFLOW")
     return number
 
