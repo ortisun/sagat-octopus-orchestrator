@@ -1289,6 +1289,14 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   was read from the code (engine and control-plane settings, `Limits`, the quota defaults, the audit table, the roles); a link
   check of the relative links of both found none missing, and `check-design-docs.py` and `check-agent-config.py` pass. Not
   done: a review by an operator.
+  *More done 2026-11-06 (still open: the cron section of `events.md`, which belongs to US07, and a review by an operator).*
+  `docs/runbooks/run-reset.md` (what a reset copies and promises, the points and what blocks one, the preview to read before
+  acknowledging, the register, the refusals and what to do, what is not built) and `docs/runbooks/business-ids.md` (the one
+  promise of an identifier, the reuse window, the start delay, **the privacy warning: an identifier is customer content, use an
+  opaque reference**, the entry-wait pattern of signal-with-start, update-with-start, the refusals, what is not built). Every
+  reason, status, permission, limit and command they name was read from the code, the OpenAPI and the CLI usage; the relative links
+  of both resolve; `check-design-docs.py` and `check-agent-config.py` pass. The batch runbook's stale sentence about business
+  ids is corrected.
 - [ ] T018-074 Real-browser e2e of schedule, batch and reset flows, keyboard only, WCAG AA, failure states
   — `tests/e2e/schedules-bulk-operations/` — SC-018-015 — FR-018-047.
 - [ ] T018-076 Barrier test: every run-driven transition (completion, failure, timer, wait timeout,
