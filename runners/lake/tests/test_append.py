@@ -30,6 +30,7 @@ from pyiceberg.schema import Schema
 from pyiceberg.table import Table
 from pyiceberg.transforms import IdentityTransform
 from pyiceberg.types import DecimalType, LongType, NestedField, StringType
+from schema_check import problems
 
 import counting_catalog
 from counting_catalog import LOST, LOST_500, Catalog
@@ -751,3 +752,63 @@ def test_the_decoded_budget_is_spent_by_both_formats_together(rig: Rig) -> None:
     failure = failure_of(rig, request(rig, inputs=[InputFile(blob, "parquet")], max_decoded_bytes=size))
     assert failure.code == "ICEBERG_LIMIT_EXCEEDED"
     assert rig.data_files() == []
+
+
+# --------------------------------------------------------------------------------------- the schema of the receipts
+RECEIPTS = json.loads(
+    (
+        pathlib.Path(__file__).resolve().parents[3] / "specs/035-iceberg-write-steps/contracts/receipts.schema.json"
+    ).read_text()
+)
+
+
+def conforms(receipt: dict[str, Any]) -> list[str]:
+    return problems(receipt, RECEIPTS["$defs"]["iceberg"], RECEIPTS["$defs"])
+
+
+def test_the_checker_catches_what_the_schema_forbids() -> None:
+    good = {
+        "kind": "iceberg",
+        "outcome": "COMMITTED",
+        "effectKey": "k",
+        "foundByLookup": False,
+        "mode": "append",
+        "ref": "main",
+    }
+    assert conforms(good) == []
+    assert conforms({**good, "extra": 1})
+    assert conforms({**good, "rowsAdded": "007"})
+    assert conforms({**good, "rowsAdded": 7})
+    assert conforms({**good, "outcome": "DONE"})
+    assert conforms({k: v for k, v in good.items() if k != "ref"})
+    assert conforms({**good, "formatVersion": 3})
+    assert conforms({**good, "snapshotId": "12ab"})
+
+
+def test_every_receipt_the_host_writes_conforms_to_the_schema_the_runner_rebuilds_it_from(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipts = []
+    # committed, with every optional member the host can add
+    records = lines({"id": 1, "x": 1}, {"id": 2, "y": 2})
+    receipts.append(run(rig, request(rig, records, ignore_unknown_fields=True, prior_attempt_may_have_left_files=True)))
+    # found by lookup
+    receipts.append(run(rig, request(rig, records, ignore_unknown_fields=True, attempt_id="attempt-2")))
+    # nothing to commit
+    receipts.append(run(rig, request(rig, b"", key="run-2:empty", allow_empty=True)))
+    # a refused try whose files could not all be deleted
+    monkeypatch.setattr("sagat_lake.modes.append.remove_attempt_files", lambda *a, **k: Removal(deleted=0, failed=2))
+    receipts.append(run(rig, request(rig, lines({"id": 9}), key="run-3:raced"), racing(rig, 1)))
+
+    assert [receipt["outcome"] for receipt in receipts] == ["COMMITTED", "COMMITTED", "EMPTY_NO_COMMIT", "COMMITTED"]
+    assert [receipt["foundByLookup"] for receipt in receipts] == [False, True, False, False]
+    members = set().union(*(set(receipt) for receipt in receipts))
+    assert {
+        "ignoredFields",
+        "priorAttemptMayHaveLeftFiles",
+        "uncommittedFiles",
+        "snapshotId",
+        "bytesWritten",
+    } <= members
+    for receipt in receipts:
+        assert conforms(receipt) == [], receipt
