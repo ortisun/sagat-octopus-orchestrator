@@ -172,8 +172,13 @@ async fn without_fairness_the_same_tenant_waits_for_the_whole_burst() {
     // The negative control: it is what the test above would have seen before feature 010, and it
     // shows that the test above is sensitive to what it claims to prove.
     let noisy_done = noisy_then_quiet(false).await;
-    assert_eq!(
-        noisy_done, NOISY,
-        "with the oldest candidates taken first the quiet tenant is served after the burst"
+    // "After the whole burst" is a bound, not an exact count. The engine acts on four candidates at a time, so a noisy
+    // timer can fire after the last quiet one is counted: CI saw 299 of 300 once (a loaded runner, 2026-11-06; the
+    // mechanism is not established, a candidate retried after a transient conflict is one cause not excluded) while eight
+    // local runs saw 300 every time. What the control has to show is how far the quiet tenant is from the fair case, which
+    // serves it behind at most half the burst, so it needs nearly all of the burst and not all of it.
+    assert!(
+        noisy_done >= NOISY * 9 / 10,
+        "with the oldest candidates taken first the quiet tenant is served after the burst: {noisy_done} of {NOISY} fired before it"
     );
 }
