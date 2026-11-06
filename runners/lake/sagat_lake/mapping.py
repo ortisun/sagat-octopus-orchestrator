@@ -68,6 +68,7 @@ from pyiceberg.types import (
     ListType,
     LongType,
     MapType,
+    PrimitiveType,
     StringType,
     StructType,
     TimestampType,
@@ -403,6 +404,10 @@ def _list(kind: ListType, value: Any, path: str) -> list[Any]:
 
 
 def _map(kind: MapType, value: Any, path: str) -> list[tuple[Any, Any]]:
+    # A struct, a list or a map is a legal key in the format and an unhashable one in Python, so the same key twice
+    # could not be looked for. Keys are primitive.
+    if not isinstance(kind.key_type, PrimitiveType):
+        raise _mismatch(path, "TYPE")
     if isinstance(value, Mapping):
         if not isinstance(kind.key_type, StringType):
             raise _mismatch(path, "TYPE")

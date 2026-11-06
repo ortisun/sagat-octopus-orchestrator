@@ -442,3 +442,19 @@ def test_zero_and_the_smallest_values_a_column_can_hold_are_stored(
     kind: IcebergType, value: object, stored: float
 ) -> None:
     assert one(kind, value) == pytest.approx(stored, rel=1e-6, abs=0)
+
+
+@pytest.mark.parametrize(
+    "key_type",
+    [
+        StructType(NestedField(50, "a", IntegerType(), required=False)),
+        ListType(element_id=51, element_type=IntegerType(), element_required=False),
+        MapType(key_id=52, key_type=StringType(), value_id=53, value_type=IntegerType(), value_required=False),
+    ],
+)
+def test_a_map_key_that_is_not_a_primitive_is_refused_and_does_not_crash(key_type: IcebergType) -> None:
+    # a struct, a list or a map as a key is legal in the format and unhashable in Python: the same key twice could not
+    # even be looked for. Keys are primitive; anything else is a type mismatch.
+    kind = MapType(key_id=40, key_type=key_type, value_id=41, value_type=IntegerType(), value_required=False)
+    refused(kind, [{"key": {"a": 1}, "value": 1}], "TYPE")
+    refused(kind, [], "TYPE")
