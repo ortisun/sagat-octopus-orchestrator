@@ -11,7 +11,7 @@ A refusal is `ICEBERG_SCHEMA_MISMATCH` with the **column** (the path of a nested
 |---|---|---|
 | `boolean` | `true` or `false` | `TYPE` |
 | `int`, `long` | a JSON integer, or a string of ASCII digits (with an optional `-`) for a value a JSON number cannot hold in every language | a fraction, text, a boolean, a sign `+`, a space or a digit of another script: `TYPE`; outside the width: `OVERFLOW` |
-| `float`, `double` | a finite JSON number; also `NaN` and the infinities, which only these columns can hold | text or a boolean: `TYPE`; a finite value past the largest `float`: `OVERFLOW` |
+| `float`, `double` | a finite JSON number; also `NaN` and the infinities, which only these columns can hold | text or a boolean: `TYPE`; a finite value past the largest `float`, or one that is not zero and so small that the column would store zero: `OVERFLOW` |
 | `decimal(p, s)` | a string of digits with an optional point, or an exact JSON number | a digit that would be rounded away: `SCALE_OVERFLOW` (trailing zeros carry nothing and are accepted); more digits than `p`: `OVERFLOW`; a float, `NaN`, text: `TYPE` |
 | `date` | `YYYY-MM-DD` | `TYPE` |
 | `time` | `HH:MM:SS` with up to six fractional digits, **no zone** | a zone: `ZONE`; a digit past the sixth that is not zero: `SCALE_OVERFLOW` |

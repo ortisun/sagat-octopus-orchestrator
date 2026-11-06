@@ -1388,6 +1388,23 @@ The other fixes were wording:
   with `WORKER_ERROR` and deletes nothing, a test shows it with the fsspec IO on a local warehouse. *Exit condition:* write the fsspec
   listing and test it against an Azurite container (the compose file of the repository would need the component, pinned, with a healthcheck),
   or decide that an ADLS attempt leaves its orphans to the lifecycle rule of the storage account.
+- **D035-096 — A number written to cost something is refused cheaply, and a value is never stored as zero.** Fixes three defects of the
+  mapping of D035-091, found by probing it with hostile numbers before writing the readers. **Decided by: delegate** (the owner delegated
+  the decisions of this feature).
+  - *Measured* (2026-11-06, Python 3.12). Records are read with `parse_float=Decimal`, so `1e1000000` is a `Decimal` of one digit with
+    an exponent of a million. Mapped to an `int` or `long` column, `int()` of it built a number of a million digits: **20 seconds** of CPU,
+    quadratic (`1e100000` took 0.2 s), and `1e999999999` does not return. A string of more than 4,300 digits raised Python's own
+    `ValueError` ("Exceeds the limit (4300 digits) for integer string conversion") out of the mapping, which would have ended the attempt with
+    the wrong failure instead of `OVERFLOW`. And `1e-400` into a `double` was stored as `0.0`, a value that changes by all of itself.
+  - *The rule.* An integer column judges the size of a `Decimal` before converting it (more than 20 digits cannot fit in 64 bits; a zero is
+    zero whatever its exponent); a string of digits is judged by its digits without the leading zeros and converted from them; a value that is
+    not zero and would be stored as zero in a `float` or a `double` column is `OVERFLOW`, because it is out of the range of the column as a
+    large one is. The published type table says so.
+  - *Evidence.* 8 test functions (38 cases) written first (a time guard fails the test that takes more than two seconds; the huge exponents were not run
+    against the old code beyond one million, since a conversion in C cannot be interrupted), 12 mutations of the new code, all caught after
+    one more test for zero in a `float` column. `runners/lake`: the mapping suite 102 passed; whole suite below.
+  - *Not changed:* a number with a large negative exponent into a `decimal` or an integer column is `SCALE_OVERFLOW` or `TYPE` at once; a
+    huge positive exponent into a `decimal` is `OVERFLOW` at once (the context precision bounds `quantize`); both were measured and are tested.
 - **D035-097 — The NDJSON of an attempt is read a bounded line at a time, and what is wrong carries nothing.** T035-057, fourth part
   (D035-033, D035-063). **Decided by: delegate** (the owner delegated the decisions of this feature).
   - *`records.read_ndjson(path, budget, max_line_bytes=...)`* (`runners/lake/sagat_lake/records.py`) yields the records of one file in
