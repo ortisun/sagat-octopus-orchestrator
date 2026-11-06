@@ -26,6 +26,7 @@ pub mod nats;
 pub mod oidc;
 pub mod receiver;
 pub mod scale;
+pub mod schedules;
 pub mod scope_flow;
 pub mod scripts;
 pub mod signed;
