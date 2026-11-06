@@ -121,6 +121,11 @@ export function RunHeader({
           </Fact>
           <Fact label="Started by">{run.startedBy ? clip(run.startedBy, 80) : 'unknown'}</Fact>
           {run.businessId ? <Fact label="Business id">{clip(run.businessId, 200)}</Fact> : null}
+          {run.rerunOf ? (
+            <Fact label="Started again from">
+              <Link to={path`/runs/${run.rerunOf}`}>run {run.rerunOf.slice(0, 8)}</Link>
+            </Fact>
+          ) : null}
           {held && run.startDelayedUntil ? (
             <Fact label="Starts at">
               <Moment at={run.startDelayedUntil} />

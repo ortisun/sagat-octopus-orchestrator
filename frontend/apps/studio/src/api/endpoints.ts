@@ -1,7 +1,7 @@
 import type { ApiClient } from './client';
 import { path } from './client';
 import type { components } from './schema';
-import type { DefinitionDiff, GraphChanges, JournalEvent, OperationRequest, OperationResult, Page, Run, RunTelemetry, RuntimeGraph, Validation, VersionSummary, Workflow, WorkflowVersion } from './types';
+import type { DefinitionDiff, GraphChanges, JournalEvent, OperationRequest, OperationResult, Page, Reset, ResetPlan, ResetPoint, ResetRequest, Run, RunTelemetry, RuntimeGraph, Validation, VersionSummary, Workflow, WorkflowVersion } from './types';
 
 type Schemas = components['schemas'];
 
@@ -27,6 +27,13 @@ export interface ScheduleWrite {
   note?: string;
   remainingActions?: number;
 }
+/**
+ * What `resetRun` takes. The generated type makes the fields that have a default required; the contract has them optional.
+ */
+export type ResetWrite = Omit<ResetRequest, 'reapply' | 'sourcePolicy' | 'businessId' | 'acknowledgeReexecution'> & {
+  businessId?: ResetRequest['businessId'];
+  acknowledgeReexecution?: boolean;
+};
 export type BatchJob = Schemas['BatchJob'];
 export type BatchItem = Schemas['BatchItem'];
 export type BatchPreview = Schemas['BatchPreview'];
@@ -83,6 +90,12 @@ export function endpoints(api: ApiClient) {
     journal: (id: string, query: { cursor?: string; limit?: number } = {}, signal?: AbortSignal) => api.get<Page<JournalEvent>>(path`/runs/${id}/events`, { query, signal }),
     telemetry: (id: string, signal?: AbortSignal) => api.get<RunTelemetry>(path`/runs/${id}/telemetry`, { signal }),
     operate: (id: string, request: OperationRequest, key?: string) => api.post<OperationResult>(path`/runs/${id}/operations`, { body: request, ...(key ? { key } : {}) }),
+
+    // Reset to a point (feature 018): where a run can be reset to, what it would do, the reset, and the register.
+    resetPoints: (id: string, signal?: AbortSignal) => collectPages((cursor) => api.get<Page<ResetPoint>>(path`/runs/${id}/reset-points`, { query: { limit: 200, cursor }, signal })),
+    previewReset: (id: string, sequence: number, signal?: AbortSignal) => api.post<ResetPlan>(path`/runs/${id}/reset-previews`, { body: { sequence }, signal }),
+    resetRun: (id: string, request: ResetWrite, key: string, signal?: AbortSignal) => api.post<Reset>(path`/runs/${id}/resets`, { body: request, key, signal }),
+    runResets: (id: string, signal?: AbortSignal) => api.get<{ items: Reset[] }>(path`/runs/${id}/resets`, { signal }),
 
     // Schedules (feature 018): the routes carry the namespace id, not its slug.
     listSchedules: (namespaceId: string, query: { cursor?: string; limit?: number; state?: 'ACTIVE' | 'PAUSED'; origin?: 'API' | 'TRIGGER'; workflowId?: string; name?: string } = {}, signal?: AbortSignal) =>

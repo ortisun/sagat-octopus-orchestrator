@@ -76,6 +76,18 @@ describe('the run page: header', () => {
     expect(screen.getByText('order-1001')).toBeInTheDocument();
   });
 
+  it('links a run that was started again, or reset, to the run it came from', async () => {
+    await open({ run: runOf({ rerunOf: '019b5d6e-0000-7000-8000-0000000000aa' }) });
+    expect(await screen.findByText('Started again from')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /run 019b5d6e/ })).toHaveAttribute('href', '/runs/019b5d6e-0000-7000-8000-0000000000aa');
+  });
+
+  it('has no such link for a run that was not started again', async () => {
+    await open();
+    await screen.findByText('Started by');
+    expect(screen.queryByText('Started again from')).not.toBeInTheDocument();
+  });
+
   it('has no business identifier fact when the run has none', async () => {
     await open();
     await screen.findByText('Started by');

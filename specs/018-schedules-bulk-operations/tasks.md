@@ -1178,8 +1178,21 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   real projector and an OTLP collector: the source tells three attempts, the new run one, its span links the
   source's); 5 mutants killed, two of the store and three of `derive`. The progress of the note is not started at the
   restored sequence: the projector reads the prefix once and derives nothing from it.
-- [ ] T018-059 [P] [US6] Studio reset dialog and provenance links — `frontend/apps/studio/src/features/runs/`
+- [x] T018-059 [P] [US6] Studio reset dialog and provenance links — `frontend/apps/studio/src/features/runs/`
   — component tests — FR-018-047.
+  *Done 2026-11-06.* `ResetRun.tsx`: "Reset to a point…" on a run that ended, for someone who may operate and start
+  runs; the points in words (the start, after a step, a child, a collection, a loop) with their time; what a reset to
+  the one chosen keeps and runs again, each step with what it declares in words; the acknowledgement that steps run
+  again, asked only when the plan says so and forgotten when another point is chosen; the choice about the business
+  identifier for a run that has one; a reason; the key of the request kept for an identical retry and changed with
+  the request; the platform's refusals in words; the person is taken to the new run. Nothing is sent before the plan
+  has been read. `ResetsMade` lists the resets made from the run with a link to each run they made (nothing for a
+  platform that does not serve the register), and the header of a run that was started again, or reset, links the run
+  it came from (the contract's `rerunOf`; it did not do so for a rerun either). Proved by `ResetRun.test.tsx` (17
+  tests) and two of `RunDetailPage.test.tsx`; the Studio gate: lint, typecheck, 1,377 tests in 98 files, build,
+  `check:api`; 21 mutants of the component, 20 killed and 1 not (the guard against a second submit while sending,
+  which the disabled button and the idempotency key make unreachable). The e2e workspace typecheck needs the TypeScript
+  SDK built and was not run; no browser journey covers the dialog.
 
 ## Phase 9: US07 — Existing cron triggers as schedules (P3)
 
