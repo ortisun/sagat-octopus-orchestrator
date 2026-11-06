@@ -41,11 +41,11 @@ caller or another tenant's identifier. A foreign resource is `NOT_FOUND` without
 | `VALIDATION_FAILED` | 422 | `BATCH_SELECTOR_UNSUPPORTED` | no | batch create/preview with `businessIdPrefix` | Business ids are not bound to runs yet; select by the other filters or by run ids. |
 | `VALIDATION_FAILED` | 422 | `BATCH_ACTION_PARAMETERS` | no | batch create | The action needs (or refuses) `stepId`, `signal` or `update`; a signal name is 1 to 128 characters of letters, digits and `_ . : -`; a step id is a step of the workflow. |
 | `CONFLICT` | 409 | `BATCH_NOT_CANCELLABLE` | no | batch cancel | The job already ended. |
-| `VALIDATION_FAILED` | 422 | `RESET_NOT_SUPPORTED_FOR_SOURCE` | no | reset points/preview/reset | Chain segments and child runs cannot be reset in this version. |
+| `VALIDATION_FAILED` | 422 | `RESET_NOT_SUPPORTED_FOR_SOURCE` | no | reset points/preview/reset | Child runs, members of a continuation chain and runs of a database execution cannot be reset in this version. |
 | `VALIDATION_FAILED` | 422 | `RESET_POINT_NOT_ELIGIBLE` | no | preview/reset | Choose a sequence listed by `listResetPoints`. |
 | `VALIDATION_FAILED` | 422 | `RESET_PREFIX_TOO_LONG` | no | preview/reset | The prefix exceeds the reset ceiling; choose an earlier point. |
 | `VALIDATION_FAILED` | 422 | `RESET_REEXECUTION_NOT_ACKNOWLEDGED` | no | reset | Steps that completed in the source will run again; set `acknowledgeReexecution`. |
-| `CONFLICT` | 409 | `RESET_SOURCE_NOT_TERMINAL` | no | reset with `REQUIRE_TERMINAL` | Wait for the run to end or use `CANCEL_SOURCE`. |
+| `CONFLICT` | 409 | `RESET_SOURCE_NOT_TERMINAL` | no | reset with `REQUIRE_TERMINAL` | Wait for the run to end; resetting a run that is still open (`CANCEL_SOURCE`) is not available in this version. |
 | `VALIDATION_FAILED` | 422 | `RESET_RULE_MISSING` | no | reset points/preview/reset whose prefix holds an event type without a rule in the reset-rule registry (`details.eventType`) | Reset to an earlier point; the owning feature must declare the rule. |
 | `CONFLICT` | 409 | `CONCURRENCY_PERMIT_UNAVAILABLE` | no | reset of a version with run-level `concurrency` whose key has no free permit (a reset cannot queue) | Retry the reset when a holder of the key has finished. |
 | `VALIDATION_FAILED` | 422 | `RESET_SOURCE_TEST_RUN` | no | reset points/preview/reset of a 022 draft test run | Test runs are re-run through feature 022's test API. |

@@ -468,8 +468,20 @@ fn the_plan_lists_what_is_restored_and_what_runs_again_with_its_effects() {
         reset_plan(&def, run.state.run_id(), &journal, 2),
         Err(ResetRefusal::NotAPoint)
     );
+    // the start keeps nothing: the entry step exists in the state at that point, but it has not run, so it
+    // is not something the reset keeps; the source ran every step after it, so all of them run again and
+    // the caller must say it knows
     let start = reset_plan(&def, run.state.run_id(), &journal, 1).expect("the start");
-    assert!(start.restored.iter().all(|step| step.node.as_str() == "a"));
+    assert!(start.restored.is_empty(), "{:?}", start.restored);
+    assert_eq!(
+        start
+            .reexecuted
+            .iter()
+            .map(|step| (step.node.as_str(), step.completed_in_source))
+            .collect::<Vec<_>>(),
+        [("a", true), ("b", true), ("c", true)]
+    );
+    assert!(start.needs_acknowledgement());
 }
 
 fn reset_event(source_sequence: u64) -> RunEvent {

@@ -43,6 +43,10 @@ pub enum ApiOperation {
     DatabaseResultRead,
     RunOperate,
     RunRerun,
+    /// Create a run from the prefix of an ended one (feature 018): the permissions of a rerun.
+    RunReset,
+    /// The points a run can be reset to, and what a reset would do: it reads the journal of a run.
+    ResetInspect,
     RunSignal,
     ApprovalRead,
     ApprovalDecide,
@@ -108,7 +112,8 @@ impl ApiOperation {
             Self::PayloadDisclose => &[RunRead],
             Self::DatabaseResultRead => &[RunRead, Permission::DatabaseResultRead],
             Self::RunOperate => &[RunOperate],
-            Self::RunRerun => &[RunOperate, RunStart],
+            Self::RunRerun | Self::RunReset => &[RunOperate, RunStart],
+            Self::ResetInspect => &[RunOperate, RunRead],
             Self::RunSignal => &[RunSignal],
             Self::ApprovalRead => &[RunRead, ApprovalRead],
             Self::ApprovalDecide => &[ApprovalDecide],

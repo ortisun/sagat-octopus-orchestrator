@@ -738,6 +738,90 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/runs/{runId}/reset-points": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Where a run can be reset to, by ascending sequence
+         * @description Needs `run:operate` and `run:read`. A point is the start of the run or the end of a step, child, collection or loop at its root, where the run was quiet (nothing in flight, not paused or stopping) and nothing in the prefix is excluded from a reset. A child run, a member of a continuation chain and a run of a database execution are `422 VALIDATION_FAILED` with `details.reason` `RESET_NOT_SUPPORTED_FOR_SOURCE`. A point whose prefix holds an event of a kind this version has no reset rule for is not listed, and neither is one whose prefix holds an event of an iteration (a scope below the root): this version restores the events of the root only.
+         */
+        get: operations["listResetPoints"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runs/{runId}/reset-previews": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * What a reset to a point would restore and run again; changes nothing
+         * @description Needs `run:operate` and `run:read`. `restored` lists the steps the new run keeps as they were and `reexecuted` the steps the source ran after the point, which the new run runs again, with the effects each declares (`compensateWith`, `reconcileWith`, `irreversible`, `highRisk`) and whether it completed in the source; when any did, `requiresAcknowledgement` is true and the reset needs `acknowledgeReexecution`. A sequence that is not a point is `422` with `details.reason` `RESET_POINT_NOT_ELIGIBLE`, one beyond the ceiling of the prefix `RESET_PREFIX_TOO_LONG`, and one whose prefix holds an event this version has no rule for `RESET_RULE_MISSING` (with `details.eventType`). Delivering signals and updates again (`reapply` other than `NONE`) is not available in this version and is `422`.
+         */
+        post: operations["previewReset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runs/{runId}/resets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The resets made from this run, newest first
+         * @description Needs `run:read`. At most 200 entries.
+         */
+        get: operations["listRunResets"];
+        put?: never;
+        /**
+         * Create a new run from an eligible prefix of a run that ended
+         * @description Needs `run:operate` and `run:start`, and a justification in `reason` (8 to 2000 characters, audited with it). The new run has the version and the input of the source and re-emits its journal up to `sequence` as the source stored it (who did each thing and when are the source's), then goes on from there; the events it restored say so in their detail. The source must have ended: an open run is `409 CONFLICT` with `details.reason` `RESET_SOURCE_NOT_TERMINAL`. When steps that completed in the source run again (see `previewReset`) the request must say `acknowledgeReexecution: true`, else `422` with `RESET_REEXECUTION_NOT_ACKNOWLEDGED`. With `businessId: KEEP` (the default) the new run takes over the business identifier of the source, `409 BUSINESS_ID_IN_USE` if another open run holds it; `DROP` starts it without one. `sourcePolicy: CANCEL_SOURCE` and a `reapply` other than `NONE` are not available in this version and are `422`. The same `Idempotency-Key` with the same request answers the entry of the first one; with another sequence it is `409 IDEMPOTENCY_KEY_REUSED`. A reset is recorded in the register (`listRunResets`, `getRunReset`) in the transaction that creates the run.
+         */
+        post: operations["resetRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runs/{runId}/resets/{resetId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One reset made from this run
+         * @description Needs `run:read`. A reset that another run made, or that does not exist, is `404`.
+         */
+        get: operations["getRunReset"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/runs/{runId}/signals/{signalName}": {
         parameters: {
             query?: never;
@@ -3258,7 +3342,7 @@ export interface components {
             requestId?: string;
             /** @description What can be done about it, in a sentence from a closed table: the same for every error of a `code`, refined by `details.reason` when that changes what to do. It never carries a payload, a secret or another tenant's data. Absent from the errors of a platform older than feature 008. */
             remediation?: string;
-            /** @description Extra, safe context. `reason` is a stable machine-readable refinement of `code` (for example `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`). A call the server does not have is `NOT_FOUND` with the reason `ROUTE_NOT_FOUND` (an unknown path) or `BAD_REQUEST` with `METHOD_NOT_ALLOWED` (a known path, another method): an SDK newer than the server tells that from a resource that does not exist, which is `NOT_FOUND` without those reasons. Structured workflow capabilities refine existing codes with `INVALID_SCOPE`, `INVALID_OPERATION_STATE`, `NOT_ELIGIBLE`, `INITIATOR_CANNOT_DECIDE`, `CHAIN_HEAD_CHANGED`, `RUN_NOT_MUTABLE`, `RUN_CONTINUED`, `INVALID_ARGUMENTS`, `INVALID_UPDATE_KEY`, `INVALID_DECISION_KEY`, `INVALID_REASON_CODE`, `REVISION_CONFLICT` and `UPDATE_REJECTED`; payload classification refines existing codes with `PII_REVEAL_NOT_GRANTED`, `CLASSIFICATION`, `UNKNOWN_SUBJECT`, `ROLE_CANNOT_REVEAL` and `GRANT_LIMIT`; compensation safety (feature 037) refines `CONFLICT` with `OUTCOME_UNRESOLVED` (another attempt was asked of a step whose last outcome is unknown); schedules, batch operations, business identifiers and start options (feature 018) refine `VALIDATION_FAILED` with `SCHEDULE_SPEC_INVALID`, `SCHEDULE_NEVER_FIRES`, `SCHEDULE_TOO_FREQUENT`, `SCHEDULE_ZONE_UNKNOWN`, `SCHEDULE_INPUT_INVALID`, `BACKFILL_RANGE_INVALID`, `BACKFILL_LIMIT`, `BUSINESS_ID_INVALID`, `START_DELAY_INVALID`, `START_DELAY_WITH_SIGNAL`, `BATCH_SELECTOR_INVALID`, `QUERY_UNSUPPORTED_OPERATOR`, `BATCH_ACTION_UNAVAILABLE`, `BATCH_LIMITS_INVALID`, `BATCH_REASON_INVALID`, `BATCH_PAYLOAD_INVALID`, `BATCH_PAYLOAD_TOO_LARGE`, `BATCH_SELECTOR_UNSUPPORTED` and `BATCH_ACTION_PARAMETERS`, `CONFLICT` with `SCHEDULE_TRIGGER_OWNED`, `SCHEDULE_TRIGGER_HANDOVER_PENDING`, `BUSINESS_ID_IN_USE`, `BUSINESS_ID_REUSE_REJECTED`, `NOT_WAITING`, `SIGNAL_NOT_ACCEPTED_AT_START` and `BATCH_NOT_CANCELLABLE`, and `QUOTA_EXCEEDED` with `SCHEDULE_LIMIT`, `BACKFILL_CONCURRENCY` and `BATCH_LIMIT`; they do not add a new `Error.code` value. An `UNSUPPORTED_NODE` for a combination the design accepts but whose prerequisite is not built yet also carries `dependency`, a closed name of what has to exist first (`SCOPED_COMPENSATION`: an approval inside a collection or loop body), next to `node` and `kind`. */
+            /** @description Extra, safe context. `reason` is a stable machine-readable refinement of `code` (for example `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`). A call the server does not have is `NOT_FOUND` with the reason `ROUTE_NOT_FOUND` (an unknown path) or `BAD_REQUEST` with `METHOD_NOT_ALLOWED` (a known path, another method): an SDK newer than the server tells that from a resource that does not exist, which is `NOT_FOUND` without those reasons. Structured workflow capabilities refine existing codes with `INVALID_SCOPE`, `INVALID_OPERATION_STATE`, `NOT_ELIGIBLE`, `INITIATOR_CANNOT_DECIDE`, `CHAIN_HEAD_CHANGED`, `RUN_NOT_MUTABLE`, `RUN_CONTINUED`, `INVALID_ARGUMENTS`, `INVALID_UPDATE_KEY`, `INVALID_DECISION_KEY`, `INVALID_REASON_CODE`, `REVISION_CONFLICT` and `UPDATE_REJECTED`; payload classification refines existing codes with `PII_REVEAL_NOT_GRANTED`, `CLASSIFICATION`, `UNKNOWN_SUBJECT`, `ROLE_CANNOT_REVEAL` and `GRANT_LIMIT`; compensation safety (feature 037) refines `CONFLICT` with `OUTCOME_UNRESOLVED` (another attempt was asked of a step whose last outcome is unknown); schedules, batch operations, business identifiers and start options (feature 018) refine `VALIDATION_FAILED` with `SCHEDULE_SPEC_INVALID`, `SCHEDULE_NEVER_FIRES`, `SCHEDULE_TOO_FREQUENT`, `SCHEDULE_ZONE_UNKNOWN`, `SCHEDULE_INPUT_INVALID`, `BACKFILL_RANGE_INVALID`, `BACKFILL_LIMIT`, `BUSINESS_ID_INVALID`, `START_DELAY_INVALID`, `START_DELAY_WITH_SIGNAL`, `BATCH_SELECTOR_INVALID`, `QUERY_UNSUPPORTED_OPERATOR`, `BATCH_ACTION_UNAVAILABLE`, `BATCH_LIMITS_INVALID`, `BATCH_REASON_INVALID`, `BATCH_PAYLOAD_INVALID`, `BATCH_PAYLOAD_TOO_LARGE`, `BATCH_SELECTOR_UNSUPPORTED`, `BATCH_ACTION_PARAMETERS`, `RESET_NOT_SUPPORTED_FOR_SOURCE`, `RESET_POINT_NOT_ELIGIBLE`, `RESET_PREFIX_TOO_LONG`, `RESET_REEXECUTION_NOT_ACKNOWLEDGED` and `RESET_RULE_MISSING`, `CONFLICT` with `SCHEDULE_TRIGGER_OWNED`, `SCHEDULE_TRIGGER_HANDOVER_PENDING`, `BUSINESS_ID_IN_USE`, `BUSINESS_ID_REUSE_REJECTED`, `NOT_WAITING`, `SIGNAL_NOT_ACCEPTED_AT_START`, `BATCH_NOT_CANCELLABLE` and `RESET_SOURCE_NOT_TERMINAL`, and `QUOTA_EXCEEDED` with `SCHEDULE_LIMIT`, `BACKFILL_CONCURRENCY` and `BATCH_LIMIT`; they do not add a new `Error.code` value. An `UNSUPPORTED_NODE` for a combination the design accepts but whose prerequisite is not built yet also carries `dependency`, a closed name of what has to exist first (`SCOPED_COMPENSATION`: an approval inside a collection or loop body), next to `node` and `kind`. */
             details?: {
                 [key: string]: unknown;
             };
@@ -3451,6 +3535,83 @@ export interface components {
                 args: unknown;
                 expectedStateRevision?: number;
             };
+        };
+        ResetPoint: {
+            /** @description The sequence of the last event of the run that a reset to this point keeps. */
+            sequence: number;
+            /** @enum {string} */
+            kind: "RUN_STARTED" | "STEP_COMPLETED" | "CHILD_FINISHED" | "COLLECTION_FINISHED" | "LOOP_FINISHED";
+            /** @description The node whose completion this is; null for the start of the run. */
+            node?: string | null;
+            /** Format: date-time */
+            occurredAt: string;
+        };
+        /**
+         * @description What is delivered again after the point. Only NONE is available in this version.
+         * @default NONE
+         * @enum {string}
+         */
+        ReapplyPolicy: "NONE" | "SIGNALS" | "UPDATES" | "ALL";
+        ResetPreviewRequest: {
+            sequence: number;
+            reapply?: components["schemas"]["ReapplyPolicy"];
+        };
+        ResetPlan: {
+            sequence: number;
+            restored: {
+                node: string;
+                /**
+                 * @description APPROVAL is a decision the reset keeps instead of asking again.
+                 * @enum {string}
+                 */
+                kind: "STEP" | "APPROVAL";
+            }[];
+            reexecuted: {
+                node: string;
+                /** @description It completed in the source, so running it again repeats an effect. */
+                completedInSource: boolean;
+                markers: ("compensateWith" | "reconcileWith" | "irreversible" | "highRisk")[];
+            }[];
+            /** @description Always empty in this version: nothing is delivered again. */
+            reapply: Record<string, never>[];
+            requiresAcknowledgement: boolean;
+            /** @description How many events of the source the new run re-emits. */
+            prefixEvents: number;
+        };
+        ResetRequest: {
+            sequence: number;
+            reason: string;
+            reapply?: components["schemas"]["ReapplyPolicy"];
+            /**
+             * @description Only REQUIRE_TERMINAL is available in this version.
+             * @default REQUIRE_TERMINAL
+             * @enum {string}
+             */
+            sourcePolicy: "REQUIRE_TERMINAL" | "CANCEL_SOURCE";
+            /**
+             * @default KEEP
+             * @enum {string}
+             */
+            businessId: "KEEP" | "DROP";
+            /** @default false */
+            acknowledgeReexecution: boolean;
+        };
+        Reset: {
+            /** Format: uuid */
+            resetId: string;
+            /** Format: uuid */
+            sourceRunId: string;
+            sequence: number;
+            /** @enum {string} */
+            state: "PENDING_SOURCE" | "CREATED" | "FAILED";
+            /** @description Why a reset that failed did (FAILED only). */
+            failureReason?: string | null;
+            /** Format: uuid */
+            newRunId?: string | null;
+            /** @description Always empty in this version. */
+            reapplyReport?: Record<string, never>[];
+            /** Format: date-time */
+            createdAt?: string;
         };
         UpdateWithStartResult: {
             /** Format: uuid */
@@ -7551,6 +7712,184 @@ export interface operations {
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listResetPoints: {
+        parameters: {
+            query?: {
+                /** @description Opaque cursor returned as `nextCursor` by the previous page. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size; values outside 1..200 are clamped. */
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path: {
+                runId: components["parameters"]["RunId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Page of points */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["ResetPoint"][];
+                        nextCursor?: string | null;
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    previewReset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: components["parameters"]["RunId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResetPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Plan */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResetPlan"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listRunResets: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: components["parameters"]["RunId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Resets */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["Reset"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    resetRun: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                runId: components["parameters"]["RunId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResetRequest"];
+            };
+        };
+        responses: {
+            /** @description Reset created */
+            202: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Reset"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    getRunReset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: components["parameters"]["RunId"];
+                resetId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Reset */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Reset"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
             default: components["responses"]["InternalError"];

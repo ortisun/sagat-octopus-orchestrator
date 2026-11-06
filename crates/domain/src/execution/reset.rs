@@ -477,8 +477,12 @@ pub fn reset_plan(
     let after = usize::try_from(sequence).unwrap_or(usize::MAX);
     let prefix = journal.get(..after).ok_or(ResetRefusal::NotAPoint)?;
     let state = RunState::replay_addressed(run_id, prefix).map_err(|_| ResetRefusal::NotAPoint)?;
+    // What the reset keeps is what has a result at the point. A step that exists but has not run (the entry
+    // step at the start of the run) is something the new run does, and if the source did it later it is a
+    // step that runs again.
     let restored: Vec<RestoredStep> = state
         .steps()
+        .filter(|(_, step)| step.status().is_terminal())
         .map(|(node, _)| RestoredStep {
             node: node.clone(),
             approval: matches!(

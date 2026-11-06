@@ -17,6 +17,14 @@ use super::*;
 /// minimum of the request, the namespace and the deployment, like every ceiling of the feature (G1980).
 pub const RESET_PREFIX_EVENTS: usize = 5_000;
 
+/// What a refusal to deliver signals and updates again after a reset says (T018-056 is not built).
+pub const REAPPLY_NOT_AVAILABLE: &str =
+    "delivering signals and updates again after a reset is not available in this version";
+
+/// What a refusal to reset an open source by cancelling it says (T018-057 is not built).
+pub const CANCEL_SOURCE_NOT_AVAILABLE: &str =
+    "CANCEL_SOURCE is not available in this version: reset a run that has ended";
+
 /// What a reset is asked for (`ResetRequest` of the contract).
 #[derive(Debug, Clone, Copy)]
 pub struct ResetRequest<'a> {
@@ -69,6 +77,79 @@ impl ResetState {
             _ => None,
         }
     }
+}
+
+/// What a reset point is, by the event whose completion it is (`ResetPoint.kind` of the contract).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResetPointKind {
+    RunStarted,
+    StepCompleted,
+    ChildFinished,
+    CollectionFinished,
+    LoopFinished,
+}
+
+impl ResetPointKind {
+    /// The closed name the API answers.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RunStarted => "RUN_STARTED",
+            Self::StepCompleted => "STEP_COMPLETED",
+            Self::ChildFinished => "CHILD_FINISHED",
+            Self::CollectionFinished => "COLLECTION_FINISHED",
+            Self::LoopFinished => "LOOP_FINISHED",
+        }
+    }
+
+    /// The kind of the point that ends at an event of this type; `None` for a type that never ends one.
+    #[must_use]
+    pub fn of_event_type(event_type: &str) -> Option<Self> {
+        match event_type {
+            "run.started" => Some(Self::RunStarted),
+            "step.completed" => Some(Self::StepCompleted),
+            "child.finished" => Some(Self::ChildFinished),
+            "collection.finished" => Some(Self::CollectionFinished),
+            "loop.finished" => Some(Self::LoopFinished),
+            _ => None,
+        }
+    }
+}
+
+/// A place a run can be reset to, as the API shows it: where, of what kind, at which node and when.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResetPointInfo {
+    /// `N`: the events `1..=N` of the source are re-emitted.
+    pub sequence: u64,
+    pub kind: ResetPointKind,
+    /// The root node whose completion this is; none for the start of the run.
+    pub node: Option<String>,
+    /// When the event that ends the prefix happened.
+    pub occurred_at: OffsetDateTime,
+}
+
+fn point_info(source: &ResetSource, point: ResetPoint) -> Result<ResetPointInfo, AppError> {
+    let row = usize::try_from(point.sequence)
+        .ok()
+        .and_then(|sequence| sequence.checked_sub(1))
+        .and_then(|index| source.events.get(index));
+    let Some(row) = row else {
+        tracing::error!(
+            sequence = point.sequence,
+            "a reset point is not a row of the journal"
+        );
+        return Err(AppError::Internal);
+    };
+    let Some(kind) = ResetPointKind::of_event_type(&row.event_type) else {
+        tracing::error!(sequence = point.sequence, event_type = %row.event_type, "a reset point ends at an event that cannot end one");
+        return Err(AppError::Internal);
+    };
+    Ok(ResetPointInfo {
+        sequence: point.sequence,
+        kind,
+        node: point.completes.map(|node| node.as_str().to_owned()),
+        occurred_at: row.occurred_at,
+    })
 }
 
 /// An entry of the register of resets (`run_resets`, `Reset` of the contract): that a run was created from the
@@ -227,13 +308,17 @@ where
         principal: &Principal,
         id: RunId,
         ctx: &RequestContext,
-    ) -> Result<Vec<ResetPoint>, AppError> {
+    ) -> Result<Vec<ResetPointInfo>, AppError> {
         let (_, source) = self.reset_candidate(principal, id, ctx).await?;
         let points = reset_points(id, &Self::reset_journal(&source)).map_err(|error| {
             tracing::error!(%error, run = %id, "the journal of a run does not replay");
             AppError::Internal
         })?;
-        Ok(points.eligible)
+        points
+            .eligible
+            .into_iter()
+            .map(|point| point_info(&source, point))
+            .collect()
     }
 
     /// What a reset to `sequence` would restore, run again and reapply, changing nothing (`FR-018-036`).
@@ -326,9 +411,7 @@ where
             ));
         }
         if request.reapply != ResetReapply::None {
-            return Err(AppError::NotAllowed(
-                "delivering signals and updates again after a reset is not available in this version",
-            ));
+            return Err(AppError::NotAllowed(REAPPLY_NOT_AVAILABLE));
         }
         let (record, source) = self.reset_candidate(principal, id, ctx).await?;
         if !record.status.is_terminal() {
@@ -487,5 +570,53 @@ mod tests {
             .sequence(),
             0
         );
+    }
+
+    #[test]
+    fn a_point_is_named_by_the_event_that_ends_its_prefix() {
+        for (event_type, kind, name) in [
+            ("run.started", ResetPointKind::RunStarted, "RUN_STARTED"),
+            (
+                "step.completed",
+                ResetPointKind::StepCompleted,
+                "STEP_COMPLETED",
+            ),
+            (
+                "child.finished",
+                ResetPointKind::ChildFinished,
+                "CHILD_FINISHED",
+            ),
+            (
+                "collection.finished",
+                ResetPointKind::CollectionFinished,
+                "COLLECTION_FINISHED",
+            ),
+            (
+                "loop.finished",
+                ResetPointKind::LoopFinished,
+                "LOOP_FINISHED",
+            ),
+        ] {
+            assert_eq!(ResetPointKind::of_event_type(event_type), Some(kind));
+            assert_eq!(kind.as_str(), name);
+        }
+        // an event that cannot end a prefix names no point
+        for other in ["step.started", "run.succeeded", "timer.fired", ""] {
+            assert_eq!(ResetPointKind::of_event_type(other), None, "{other}");
+        }
+    }
+
+    #[test]
+    fn a_state_of_the_register_has_one_name_each_and_an_unknown_name_is_none() {
+        for (state, name) in [
+            (ResetState::PendingSource, "PENDING_SOURCE"),
+            (ResetState::Created, "CREATED"),
+            (ResetState::Failed, "FAILED"),
+        ] {
+            assert_eq!(state.as_str(), name);
+            assert_eq!(ResetState::parse(name), Some(state));
+        }
+        assert_eq!(ResetState::parse("created"), None);
+        assert_eq!(ResetState::parse("CANCELLED"), None);
     }
 }

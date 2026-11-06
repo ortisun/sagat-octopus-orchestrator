@@ -33,6 +33,7 @@ mod dto_exec;
 mod dto_gov;
 mod dto_ops;
 mod dto_primitives;
+mod dto_resets;
 mod dto_schedules;
 mod dto_scripts;
 mod dto_versioning;
@@ -865,6 +866,7 @@ where
     ExecState<S, C, P, X, E>: Exec,
 {
     use routes::execution as ex;
+    use routes::resets;
     use routes::{health, identity};
 
     // One place configures every limit: the per-tenant cap comes from `limits`, like the global one.
@@ -1118,6 +1120,23 @@ where
         .route(
             "/runs/{run_id}/signals/{signal_name}",
             axum::routing::post(ex::signal_run::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/runs/{run_id}/reset-points",
+            get(resets::list_reset_points::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/runs/{run_id}/reset-previews",
+            axum::routing::post(resets::preview_reset::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/runs/{run_id}/resets",
+            get(resets::list_run_resets::<B<S, C, P, X, E>>)
+                .post(resets::reset_run::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/runs/{run_id}/resets/{reset_id}",
+            get(resets::get_run_reset::<B<S, C, P, X, E>>),
         )
         .layer(RequestBodyLimitLayer::new(EXEC_MAX_BODY_BYTES))
         .route_layer(shed())

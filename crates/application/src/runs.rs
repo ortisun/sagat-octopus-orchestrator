@@ -13,7 +13,8 @@ pub use ad_hoc::{
     AdHocMode, ConnectionProbe, RetainedDefinition, RunOrigin, StartDatabaseExecution,
 };
 pub use reset::{
-    RESET_PREFIX_EVENTS, ResetMade, ResetRecord, ResetRegistration, ResetRequest, ResetSource,
+    CANCEL_SOURCE_NOT_AVAILABLE, REAPPLY_NOT_AVAILABLE, RESET_PREFIX_EVENTS, ResetMade,
+    ResetPointInfo, ResetPointKind, ResetRecord, ResetRegistration, ResetRequest, ResetSource,
     ResetState, RestoredPrefix, SourceEvent, prefix_digest,
 };
 

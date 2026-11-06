@@ -194,6 +194,24 @@ impl ErrorCode {
                 "The action needs (or refuses) `stepId`, `signal` or `update`; a signal name is 1 to 128 characters of letters, digits and `_ . : -`; a step id is a step of the workflow."
             }
             (Self::Conflict, "BATCH_NOT_CANCELLABLE") => "The job already ended.",
+            (Self::ValidationFailed, "RESET_NOT_SUPPORTED_FOR_SOURCE") => {
+                "Child runs, members of a continuation chain and runs of a database execution cannot be reset in this version."
+            }
+            (Self::ValidationFailed, "RESET_POINT_NOT_ELIGIBLE") => {
+                "Choose a sequence listed by `listResetPoints`."
+            }
+            (Self::ValidationFailed, "RESET_PREFIX_TOO_LONG") => {
+                "The prefix exceeds the reset ceiling; choose an earlier point."
+            }
+            (Self::ValidationFailed, "RESET_REEXECUTION_NOT_ACKNOWLEDGED") => {
+                "Steps that completed in the source will run again; set `acknowledgeReexecution`."
+            }
+            (Self::Conflict, "RESET_SOURCE_NOT_TERMINAL") => {
+                "Wait for the run to end; resetting a run that is still open (`CANCEL_SOURCE`) is not available in this version."
+            }
+            (Self::ValidationFailed, "RESET_RULE_MISSING") => {
+                "Reset to an earlier point; the owning feature must declare the rule."
+            }
             (Self::NotFound, "ROUTE_NOT_FOUND") | (Self::BadRequest, "METHOD_NOT_ALLOWED") => {
                 "This server does not have that call: check the path and method, and the version of the API it speaks."
             }

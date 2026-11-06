@@ -1112,13 +1112,13 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   characters, the typed reasons `RESET_NOT_SUPPORTED_FOR_SOURCE`, `RESET_SOURCE_NOT_TERMINAL`, `RESET_POINT_NOT_ELIGIBLE`,
   `RESET_PREFIX_TOO_LONG`, `RESET_RULE_MISSING`, `RESET_REEXECUTION_NOT_ACKNOWLEDGED` as `AppError::ResetRefused`, mapped in
   `crates/api-http/src/error.rs` to `422 VALIDATION_FAILED`, and `409 CONFLICT` for `RESET_SOURCE_NOT_TERMINAL`, as
-  `contracts/errors.md` says; no test drives that mapping yet) and the idempotency of the request. The four tests above prove the points, the
+  `contracts/errors.md` says; the routes of 2026-11-06 below drive it) and the idempotency of the request. The four tests above prove the points, the
   preview, the permission refusals, `RESET_SOURCE_NOT_TERMINAL`, `RESET_POINT_NOT_ELIGIBLE`,
   `RESET_REEXECUTION_NOT_ACKNOWLEDGED` and the key; three more tests prove `RESET_PREFIX_TOO_LONG` (past the ceiling and
   at it), `RESET_NOT_SUPPORTED_FOR_SOURCE` for a child run, and `RESET_RULE_MISSING` with the type named (a row of a
-  newer kind after the run's last event); a battery of 6 mutants of those three reasons was killed. The branches of
-  `RESET_NOT_SUPPORTED_FOR_SOURCE` for a member of a continuation chain and for a run of a database execution **have no
-  test yet**.
+  newer kind after the run's last event); a battery of 6 mutants of those three reasons was killed. A member of a
+  continuation chain (a row of either chain event in its journal) is also proved not to be a source, 2026-11-06.
+  The branch of `RESET_NOT_SUPPORTED_FOR_SOURCE` for a run of a database execution **has no test** (G1980 (5)).
   *Also done 2026-11-05 (D1978):* the register `run_resets` (migration `20270107000000`: the table, a guard trigger, the
   quota triggers for the justification, grants, the storage classification, the three upgrade oracles moved), written
   in the transaction that creates the run (`RunTx::register_reset`), `reset()` answering `ResetMade { reset, run }`,
@@ -1127,9 +1127,21 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   the_register_is_private_to_the_tenant_and_to_the_run_that_made_the_reset,
   what_a_reset_is_never_changes_and_a_completed_one_stays_as_it_completed}` and a battery of 17 mutants (13 of the
   store and 4 of the guard trigger), all killed, then 3 more of the business policy after the runtime-privilege audit
-  (which reads a bare `"DROP"` in Rust as a statement) made the statement write the name: all killed. Not done: the five routes (`listResetPoints`, `previewReset`,
-  `resetRun`, `listRunResets`, `getRunReset`), the OpenAPI operations and Studio types, the battery body, the contract
-  tests and the rows of the error table; `PENDING_SOURCE` / `FAILED` entries (T018-057).
+  (which reads a bare `"DROP"` in Rust as a statement) made the statement write the name: all killed.
+  *Also done 2026-11-06 (D1979):* the five routes (`listResetPoints`, `previewReset`, `resetRun`, `listRunResets`,
+  `getRunReset`) in `crates/api-http/src/routes/resets.rs` and `dto_resets.rs`, the OpenAPI operations
+  (`x-implemented: '018'`), the generated reference and the Studio types, the cross-tenant battery (a victim reset and
+  the two bodies), the six `RESET_*` reasons raised with the sentences of `contracts/errors.md`. Proved by
+  `reset_rest::*` (5 tests over a real API, a real worker and real tokens: the points by kind, node, time and cursor;
+  the preview; the reset, its retry and its refusals; the business identifier; the register and who may read it),
+  `contract_schedules_bulk_operations resets::every_reset_operation_conforms_to_the_contract_on_its_normal_and_error_paths`
+  (every answer has a documented status and schema), `errors::*`, the battery of `contract_rest_security_multitenancy`,
+  and the unit tests of the DTO and of the kinds of a point; a battery of 19 mutants of the routes, the DTO, the plan,
+  the admission and the chain refusal: 18 killed (one of them after the test of a page that ends at the limit was
+  added), 1 equivalent (the admission of the points asks `run:operate` and
+  the service asks it again). It also found and fixed a defect of the plan (D1979 (2)). Not done: the Studio dialog (T018-059), `CANCEL_SOURCE` and the reapply (T018-057, T018-056: both are
+  `422` in words); the branches of `RESET_NOT_SUPPORTED_FOR_SOURCE` for a run of a database execution (a trigger ties
+  `origin` to an internal workflow, so a test cannot make one with SQL) has no test, G1980.
 - [ ] T018-055 [US6] Replay = projection at every eligible point (corpus incl. a 022 run-permit holder and
   020 search-attribute upserts); outputs and attribute rows equal the source at N; holder count = open
   non-restored acquisitions; ceiling; crash during reset — `tests/integration/schedules-bulk-operations/reset.rs`

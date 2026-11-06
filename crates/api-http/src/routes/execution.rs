@@ -104,7 +104,7 @@ fn operation_id(run: &str, key: &str) -> String {
     Uuid::from_bytes(bytes).to_string()
 }
 
-fn parse_id<T: FromStr>(raw: &str) -> Result<T, ApiError> {
+pub(crate) fn parse_id<T: FromStr>(raw: &str) -> Result<T, ApiError> {
     raw.parse().map_err(|_| ApiError::not_found())
 }
 
@@ -565,7 +565,10 @@ fn business_options(body: &StartRunBody) -> Result<StartOptions, ApiError> {
 
 /// A refusal because a business identifier is held names the holder, to a caller who may read runs
 /// and to nobody else: the identifier is theirs to use, the run behind it may not be.
-fn holder_for_readers(error: sagat_application::error::AppError, caller: &Caller) -> ApiError {
+pub(crate) fn holder_for_readers(
+    error: sagat_application::error::AppError,
+    caller: &Caller,
+) -> ApiError {
     let may_read = caller
         .session
         .principal

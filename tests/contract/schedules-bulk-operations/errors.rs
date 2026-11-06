@@ -39,6 +39,12 @@ const RAISED: &[&str] = &[
     "BATCH_SELECTOR_UNSUPPORTED",
     "BATCH_ACTION_PARAMETERS",
     "BATCH_NOT_CANCELLABLE",
+    "RESET_NOT_SUPPORTED_FOR_SOURCE",
+    "RESET_POINT_NOT_ELIGIBLE",
+    "RESET_PREFIX_TOO_LONG",
+    "RESET_REEXECUTION_NOT_ACKNOWLEDGED",
+    "RESET_SOURCE_NOT_TERMINAL",
+    "RESET_RULE_MISSING",
 ];
 
 /// The reasons the table lists that no operation raises yet, and why.
@@ -56,13 +62,7 @@ const NOT_YET: &[(&str, &str)] = &[
     ("CONCURRENCY_QUEUE_FULL", "feature 022"),
     ("CONCURRENCY_PERMIT_UNAVAILABLE", "feature 022 and US06"),
     ("RUN_PURGED", "feature 020"),
-    ("RESET_NOT_SUPPORTED_FOR_SOURCE", "US06, reset"),
-    ("RESET_POINT_NOT_ELIGIBLE", "US06, reset"),
-    ("RESET_PREFIX_TOO_LONG", "US06, reset"),
-    ("RESET_REEXECUTION_NOT_ACKNOWLEDGED", "US06, reset"),
-    ("RESET_SOURCE_NOT_TERMINAL", "US06, reset"),
-    ("RESET_RULE_MISSING", "US06, reset"),
-    ("RESET_SOURCE_TEST_RUN", "US06, reset"),
+    ("RESET_SOURCE_TEST_RUN", "feature 022"),
 ];
 
 const CODES: [ErrorCode; 10] = [

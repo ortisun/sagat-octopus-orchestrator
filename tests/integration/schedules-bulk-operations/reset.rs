@@ -940,3 +940,66 @@ async fn what_a_reset_is_never_changes_and_a_completed_one_stays_as_it_completed
     }
     assert_eq!(register(&f, source).await.len(), 1);
 }
+
+#[tokio::test]
+async fn a_member_of_a_continuation_chain_is_not_a_source_of_a_reset() {
+    let f = fixture().await;
+    // the first segment of a chain says it starts one; every later segment says whom it follows
+    let successor = json!({
+        "chain_id": uuid::Uuid::now_v7().to_string(),
+        "predecessor": uuid::Uuid::now_v7().to_string(),
+        "segment_index": 1,
+        "max_segments": 3,
+        "original_deadline_us": 0,
+        "input_digest": "ab".repeat(32),
+        "state_digest": null
+    });
+    for (event_type, detail) in [
+        (
+            "execution_chain.started",
+            json!({"max_segments": 3, "original_deadline_us": 0}),
+        ),
+        ("execution_chain.successor_linked", successor),
+    ] {
+        let source = ended_chain(&f).await;
+        // the run is reset like any other until its journal says it is a segment of a chain
+        assert!(
+            f.w.runs
+                .reset_points(&f.w.admin, source, &ctx())
+                .await
+                .is_ok()
+        );
+        let last: i64 = sqlx::query_scalar("SELECT max(seq) FROM run_events WHERE run_id = $1")
+            .bind(source.as_uuid())
+            .fetch_one(&f.w.db.pool)
+            .await
+            .expect("the last row");
+        sqlx::query(
+            "INSERT INTO run_events (tenant_id,run_id,seq,event_type,detail,actor,occurred_at) \
+             VALUES ($1,$2,$3,$4,$5,'system:reset-test',clock_timestamp())",
+        )
+        .bind(f.w.admin.tenant_id().as_uuid())
+        .bind(source.as_uuid())
+        .bind(last + 1)
+        .bind(event_type)
+        .bind(detail)
+        .execute(&f.w.db.pool)
+        .await
+        .expect("a row of a chain");
+
+        assert_eq!(
+            reason_of(f.w.runs.reset_points(&f.w.admin, source, &ctx()).await),
+            ("RESET_NOT_SUPPORTED_FOR_SOURCE", None),
+            "{event_type}"
+        );
+        assert_eq!(
+            reason_of(
+                f.w.runs
+                    .reset(&f.w.admin, source, request(1, true), &key(), &ctx())
+                    .await
+            ),
+            ("RESET_NOT_SUPPORTED_FOR_SOURCE", None),
+            "{event_type}"
+        );
+    }
+}
