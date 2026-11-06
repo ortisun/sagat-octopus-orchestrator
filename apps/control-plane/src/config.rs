@@ -374,6 +374,10 @@ pub struct ServeConfig {
     /// Whether the batch operation routes exist (`SAGAT_BATCHES_ENABLED`, off by default until the
     /// feature is released); the engine runs the jobs under the same flag.
     pub batches_enabled: bool,
+    /// Whether a reset may deliver again the signals and the Updates of its source, and a workflow may declare
+    /// an Update with `reapplyOnReset` (`SAGAT_RESET_REAPPLY_ENABLED`, off by default until the feature is
+    /// released). The engine has no such setting: it reads the versions it was given (D1990).
+    pub reset_reapply_enabled: bool,
     /// Native TLS identity is required for the mTLS webhook profile; no forwarded headers are trusted.
     pub tls: Option<sagat_api_http::HttpTlsConfig>,
     pub webhook_oidc: Vec<sagat_api_http::auth::WebhookOidcConfig>,
@@ -571,6 +575,7 @@ impl ServeConfig {
             redis_callbacks: flag(get, "SAGAT_REDIS_CALLBACKS_ENABLED")?,
             schedules_enabled: flag(get, "SAGAT_SCHEDULES_ENABLED")?,
             batches_enabled: flag(get, "SAGAT_BATCHES_ENABLED")?,
+            reset_reapply_enabled: flag(get, "SAGAT_RESET_REAPPLY_ENABLED")?,
             tls,
             webhook_oidc,
             webhook_oidc_development: environment == Environment::Dev,

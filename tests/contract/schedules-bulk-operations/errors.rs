@@ -45,6 +45,8 @@ const RAISED: &[&str] = &[
     "RESET_REEXECUTION_NOT_ACKNOWLEDGED",
     "RESET_SOURCE_NOT_TERMINAL",
     "RESET_RULE_MISSING",
+    "RESET_REAPPLY_NOT_AVAILABLE",
+    "RESET_REAPPLY_TOO_MANY",
 ];
 
 /// The reasons the table lists that no operation raises yet, and why.

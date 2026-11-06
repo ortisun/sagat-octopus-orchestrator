@@ -162,8 +162,12 @@ pub async fn world_with_breaker(
         execution_pool: store_pool,
         defs: DefinitionService::new(store.clone(), SystemClock, JsonIrCodec),
         publishing: Publishing::new(store.clone(), SystemClock, JsonIrCodec),
+        // The reapply of a reset is ON here, unlike in production (off unless the operator sets
+        // `SAGAT_RESET_REAPPLY_ENABLED`), so that the suites can exercise it. The production default is proved by
+        // `reapply::the_service_the_control_plane_builds_refuses_the_reapply_unless_the_operator_set_it`.
         runs: RunService::new(store.clone(), SystemClock, engine.clone(), cache.clone())
-            .with_declared_updates(Arc::new(sagat_infra_ir::JsonDeclaredOperationEvaluator)),
+            .with_declared_updates(Arc::new(sagat_infra_ir::JsonDeclaredOperationEvaluator))
+            .with_reset_reapply(true),
         quotas: QuotaService::new(store.clone(), SystemClock),
         bindings: BindingService::new(store.clone(), SystemClock),
         secrets: SecretService::new(store.clone(), SystemClock, keys.cipher()),

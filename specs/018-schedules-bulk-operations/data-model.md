@@ -260,7 +260,8 @@ block item retention; the item keeps the identifier only.
 `prefix_digest bytea(32)`, `reapply` (closed), `business_id_policy` (`KEEP`, `DROP`), `source_policy`,
 `state` (`PENDING_SOURCE`, `CREATED`, `FAILED`), `failure_reason`, `new_run_id uuid null` (FK runs),
 `actor`, `reason text` (8..2000, content), `reapply_report jsonb` (closed list ≤ 256 of
-`{sequence, kind, outcome, reason}`; protected), `shard` generated, `created_at`, `completed_at`.
+`{sequence, kind: SIGNAL|UPDATE, name|operation, outcome, reason?}`, D1985: a name, never a payload, an argument or a digest;
+protected), `shard` generated, `created_at`, `completed_at`.
 Index `(shard, created_at) WHERE state = 'PENDING_SOURCE'`.
 
 ### Journal

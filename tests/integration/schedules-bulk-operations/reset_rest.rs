@@ -7,7 +7,8 @@ use reqwest::Method;
 use sagat_domain::identity::Role;
 use serde_json::{Value, json};
 
-use crate::support::worker::{HUMAN, Platform, TENANT, chain_ir, platform};
+use crate::support::api::Options;
+use crate::support::worker::{HUMAN, Platform, TENANT, chain_ir, platform, platform_with};
 
 const REASON: &str = "the second step used a wrong price list";
 
@@ -190,14 +191,24 @@ async fn a_preview_says_what_is_kept_and_what_runs_again_and_changes_nothing() {
     assert_eq!(reason(&refused), "RESET_PREFIX_TOO_LONG");
     let (status, _) = preview(0).await;
     assert_eq!(status, 422);
-    let (status, refused) = p
+    // a reapply is served, and a run that received nothing after the point has nothing to deliver again
+    let (status, listed) = p
         .rest(
             Method::POST,
             &format!("/runs/{run}/reset-previews"),
             Some(&json!({"sequence": seq[1], "reapply": "SIGNALS"})),
         )
         .await;
-    assert_eq!(status, 422, "{refused}");
+    assert_eq!(status, 200, "{listed}");
+    assert_eq!(listed["reapply"], json!([]));
+    let (status, unknown) = p
+        .rest(
+            Method::POST,
+            &format!("/runs/{run}/reset-previews"),
+            Some(&json!({"sequence": seq[1], "reapply": "SOMETIMES"})),
+        )
+        .await;
+    assert_eq!(status, 422, "{unknown}");
     let (status, _) = p
         .rest(
             Method::POST,
@@ -254,10 +265,7 @@ async fn a_reset_makes_a_run_and_an_entry_a_retry_is_the_same_entry_and_the_regi
     )
     .await;
     assert_eq!(status, 422);
-    for extra in [
-        json!({"sourcePolicy": "CANCEL_SOURCE"}),
-        json!({"reapply": "ALL"}),
-    ] {
+    for extra in [json!({"sourcePolicy": "CANCEL_SOURCE"})] {
         let mut body = ask(true);
         for (key, value) in extra.as_object().expect("an object") {
             body[key] = value.clone();
@@ -471,4 +479,251 @@ async fn the_business_identifier_follows_the_choice_and_a_holder_is_named_to_who
         2,
         "the refused reset left no entry"
     );
+}
+
+/// `a`, then a wait for a signal, then `b`.
+fn waiting_ir(name: &str) -> Value {
+    json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1", "kind": "Workflow",
+        "metadata": {"name": name}, "entrypoint": "a",
+        "nodes": [
+            {"id": "a", "type": "activity", "activity": "act.a", "next": "w"},
+            {"id": "w", "type": "waitEvent", "eventType": "payment.confirmed",
+             "correlationExpr": "input.k", "timeoutMs": 300000, "next": "b"},
+            {"id": "b", "type": "activity", "activity": "act.b"}
+        ]
+    })
+}
+
+/// A run of [`waiting_ir`] that a worker and a signal take to the end, and the sequence after `a`.
+async fn signalled(p: &Platform) -> (String, u64) {
+    let workflow = p.publish("signalled", &waiting_ir("signalled")).await;
+    let run = p.start(&workflow, &json!({"k": "s"})).await;
+    let mut worker = p.worker("reapply-worker").await;
+    worker.register(&["act.a", "act.b"]).await;
+    p.tick().await;
+    let task = worker.one_task().await;
+    worker
+        .complete(&task, &json!({"ok": true}))
+        .await
+        .expect("a completes");
+    let (status, woken) = p
+        .rest(
+            Method::POST,
+            &format!("/runs/{run}/signals/payment.confirmed"),
+            Some(&json!({"paid": true})),
+        )
+        .await;
+    assert_eq!(status, 202, "{woken}");
+    p.tick().await;
+    let task = worker.one_task().await;
+    worker
+        .complete(&task, &json!({"ok": true}))
+        .await
+        .expect("b completes");
+    assert_eq!(p.status(&run).await, "SUCCEEDED");
+    let (_, page) = points(p, &run, "").await;
+    (run, sequences(&page)[1])
+}
+
+#[tokio::test]
+async fn the_preview_lists_the_signals_to_deliver_again_and_the_reset_reports_what_became_of_them()
+{
+    let p = platform().await;
+    let (run, after_a) = signalled(&p).await;
+
+    let (status, plan) = p
+        .rest(
+            Method::POST,
+            &format!("/runs/{run}/reset-previews"),
+            Some(&json!({"sequence": after_a, "reapply": "SIGNALS"})),
+        )
+        .await;
+    assert_eq!(status, 200, "{plan}");
+    let listed = plan["reapply"].as_array().expect("the candidates");
+    assert_eq!(listed.len(), 1, "{plan}");
+    assert_eq!(listed[0]["kind"], "SIGNAL");
+    assert_eq!(listed[0]["name"], "payment.confirmed");
+    assert_eq!(listed[0]["outcome"], "WILL_TRY");
+    assert!(listed[0]["sequence"].as_u64().expect("sequence") > after_a);
+    assert!(listed[0].get("reason").is_none(), "{plan}");
+    // NONE (the default) lists nothing
+    let (_, none) = p
+        .rest(
+            Method::POST,
+            &format!("/runs/{run}/reset-previews"),
+            Some(&json!({"sequence": after_a})),
+        )
+        .await;
+    assert_eq!(none["reapply"], json!([]));
+
+    let (status, made) = reset_with(
+        &p,
+        &run,
+        "reset-key-0020",
+        &json!({"sequence": after_a, "reason": REASON, "acknowledgeReexecution": true,
+                "reapply": "SIGNALS"}),
+    )
+    .await;
+    assert_eq!(status, 202, "{made}");
+    assert_eq!(
+        made["reapplyReport"],
+        json!([{
+            "sequence": listed[0]["sequence"], "kind": "SIGNAL", "name": "payment.confirmed",
+            "outcome": "REAPPLIED"
+        }])
+    );
+    // the report holds no content, and the register and the entry answer it the same way
+    assert!(!made.to_string().contains("paid"), "{made}");
+    let reset_id = made["resetId"].as_str().expect("the id");
+    let (_, one) = p
+        .rest(Method::GET, &format!("/runs/{run}/resets/{reset_id}"), None)
+        .await;
+    assert_eq!(one, made);
+    let (_, listed_resets) = p
+        .rest(Method::GET, &format!("/runs/{run}/resets"), None)
+        .await;
+    assert_eq!(listed_resets["items"][0], made);
+    // a retry answers the same report
+    let (status, again) = reset_with(
+        &p,
+        &run,
+        "reset-key-0020",
+        &json!({"sequence": after_a, "reason": REASON, "acknowledgeReexecution": true,
+                "reapply": "SIGNALS"}),
+    )
+    .await;
+    assert_eq!(status, 202, "{again}");
+    assert_eq!(again, made);
+
+    // the new run went past the wait: the signal was delivered to it
+    let new_run = made["newRunId"].as_str().expect("the new run");
+    let journal = p
+        .rest(Method::GET, &format!("/runs/{new_run}/events"), None)
+        .await
+        .1;
+    assert!(
+        journal.to_string().contains("wait.satisfied"),
+        "the signal woke the wait: {journal}"
+    );
+}
+
+#[tokio::test]
+async fn the_keys_of_the_platform_are_not_for_a_caller() {
+    let p = platform().await;
+    let (run, after_a) = signalled(&p).await;
+    let body = json!({"sequence": after_a, "reason": REASON, "acknowledgeReexecution": true});
+    // a key a reset derives for what it delivers again cannot be the key of a request
+    let (status, refused) = reset_with(
+        &p,
+        &run,
+        "reset:0194f5e2-7b1c-7000-8000-000000000009:12",
+        &body,
+    )
+    .await;
+    assert_eq!(status, 400, "{refused}");
+    let (_, resets) = p
+        .rest(Method::GET, &format!("/runs/{run}/resets"), None)
+        .await;
+    assert_eq!(resets["items"], json!([]));
+    // batch: and schedule: stay reserved as they were
+    for key in ["batch:one-0001", "schedule:one-0001"] {
+        let (status, _) = reset_with(&p, &run, key, &body).await;
+        assert_eq!(status, 400, "{key}");
+    }
+    // and a key that only looks like one is a key
+    let (status, made) = reset_with(&p, &run, "my-reset:0001", &body).await;
+    assert_eq!(status, 202, "{made}");
+}
+
+#[tokio::test]
+async fn a_deployment_that_did_not_turn_the_reapply_on_refuses_it_with_a_reason() {
+    let p = platform_with(Options {
+        reset_reapply: false,
+        ..Options::default()
+    })
+    .await;
+    let (run, after_a) = signalled(&p).await;
+    for policy in ["SIGNALS", "UPDATES", "ALL"] {
+        let (status, refused) = p
+            .rest(
+                Method::POST,
+                &format!("/runs/{run}/reset-previews"),
+                Some(&json!({"sequence": after_a, "reapply": policy})),
+            )
+            .await;
+        assert_eq!(status, 422, "{policy}: {refused}");
+        assert_eq!(reason(&refused), "RESET_REAPPLY_NOT_AVAILABLE");
+        let (status, refused) = reset_with(
+            &p,
+            &run,
+            "reset-key-0030",
+            &json!({"sequence": after_a, "reason": REASON, "acknowledgeReexecution": true,
+                    "reapply": policy}),
+        )
+        .await;
+        assert_eq!(status, 422, "{policy}: {refused}");
+        assert_eq!(reason(&refused), "RESET_REAPPLY_NOT_AVAILABLE");
+        assert_eq!(refused["code"], "VALIDATION_FAILED");
+    }
+    // and nothing else changed: NONE is served, and nothing was made by the refusals
+    let (_, resets) = p
+        .rest(Method::GET, &format!("/runs/{run}/resets"), None)
+        .await;
+    assert_eq!(resets["items"], json!([]));
+    let (status, made) = reset_with(
+        &p,
+        &run,
+        "reset-key-0031",
+        &json!({"sequence": after_a, "reason": REASON, "acknowledgeReexecution": true,
+                "reapply": "NONE"}),
+    )
+    .await;
+    assert_eq!(status, 202, "{made}");
+    assert_eq!(made["reapplyReport"], json!([]));
+}
+#[tokio::test]
+async fn a_report_that_a_newer_version_wrote_is_read_as_written_and_never_refused() {
+    let p = platform().await;
+    let (run, after_a) = signalled(&p).await;
+    let body = json!({"sequence": after_a, "reason": REASON, "acknowledgeReexecution": true,
+                      "reapply": "SIGNALS"});
+    let (status, made) = reset_with(&p, &run, "reset-key-0040", &body).await;
+    assert_eq!(status, 202, "{made}");
+    let id = made["resetId"].as_str().expect("the id").to_owned();
+
+    // a later version wrote an outcome, a reason and a kind this one does not know, with a field of its own; an
+    // entry that is not an entry at all is the only thing left out
+    sqlx::query("UPDATE run_resets SET reapply_report = $2 WHERE id = $1::uuid")
+        .bind(&id)
+        .bind(json!([
+            {"sequence": 7, "kind": "SIGNAL", "name": "payment.confirmed", "outcome": "FUTURE_OUTCOME",
+             "reason": "FUTURE", "someday": true},
+            {"sequence": 9, "kind": "QUERY", "operation": "later.thing", "outcome": "REAPPLIED"},
+            {"kind": "SIGNAL", "name": "no.sequence", "outcome": "REAPPLIED"},
+            "not an entry"
+        ]))
+        .execute(&p.api.db.pool)
+        .await
+        .expect("the register");
+    let expected = json!([
+        {"sequence": 7, "kind": "SIGNAL", "name": "payment.confirmed", "outcome": "FUTURE_OUTCOME",
+         "reason": "FUTURE"},
+        {"sequence": 9, "kind": "QUERY", "operation": "later.thing", "outcome": "REAPPLIED"}
+    ]);
+
+    // the entry, the list and the replay of the request answer it
+    let (status, one) = p
+        .rest(Method::GET, &format!("/runs/{run}/resets/{id}"), None)
+        .await;
+    assert_eq!(status, 200, "{one}");
+    assert_eq!(one["reapplyReport"], expected);
+    let (status, listed) = p
+        .rest(Method::GET, &format!("/runs/{run}/resets"), None)
+        .await;
+    assert_eq!(status, 200, "{listed}");
+    assert_eq!(listed["items"][0]["reapplyReport"], expected);
+    let (status, again) = reset_with(&p, &run, "reset-key-0040", &body).await;
+    assert_eq!(status, 202, "{again}");
+    assert_eq!(again["reapplyReport"], expected);
 }

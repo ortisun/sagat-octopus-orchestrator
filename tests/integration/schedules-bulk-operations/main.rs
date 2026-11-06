@@ -34,6 +34,7 @@ mod migration;
 mod pass;
 mod privacy;
 mod purge;
+mod reapply;
 mod reset;
 mod reset_rest;
 mod reset_telemetry;

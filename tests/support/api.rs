@@ -259,6 +259,12 @@ pub struct Options {
     pub streams: Option<sagat_api_http::streams::StreamLimits>,
     /// Serve the Studio from this directory under `/studio/` (D143).
     pub studio: Option<sagat_api_http::studio::StudioConfig>,
+    /// Let a reset deliver signals and Updates again (`SAGAT_RESET_REAPPLY_ENABLED`, feature 018). ON BY DEFAULT
+    /// HERE, unlike in production (where it is off unless the operator sets it), so that the suites can exercise
+    /// the reapply; the gate is what a test of the refusal turns off. That the production default is off is
+    /// proved by `reapply::the_service_the_control_plane_builds_refuses_the_reapply_unless_the_operator_set_it`,
+    /// which builds the service from the real configuration.
+    pub reset_reapply: bool,
 }
 
 impl Default for Options {
@@ -291,6 +297,7 @@ impl Default for Options {
             script_ceiling: sagat_domain::scripts::Policy::default(),
             streams: None,
             studio: None,
+            reset_reapply: true,
         }
     }
 }
@@ -513,7 +520,8 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         Engine::new(JsonEvaluator),
         cache,
     )
-    .with_declared_updates(Arc::new(sagat_infra_ir::JsonDeclaredOperationEvaluator));
+    .with_declared_updates(Arc::new(sagat_infra_ir::JsonDeclaredOperationEvaluator))
+    .with_reset_reapply(options.reset_reapply);
     if let Some(blobs) = &blobs {
         runs = runs.with_input_blobs(blobs.clone(), Arc::new(sagat_infra_schema::Schemas));
     }

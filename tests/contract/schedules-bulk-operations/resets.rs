@@ -139,7 +139,17 @@ async fn every_reset_operation_conforms_to_the_contract_on_its_normal_and_error_
         ),
         (alice.clone(), json!({"sequence": 7}), 422),
         (alice.clone(), json!({"sequence": 0}), 422),
-        (alice.clone(), json!({"sequence": 1, "reapply": "ALL"}), 422),
+        (alice.clone(), json!({"sequence": 1, "reapply": "ALL"}), 200),
+        (
+            alice.clone(),
+            json!({"sequence": 1, "reapply": "SIGNALS"}),
+            200,
+        ),
+        (
+            alice.clone(),
+            json!({"sequence": 1, "reapply": "SOMETIMES"}),
+            422,
+        ),
         (alice.clone(), json!({"sequence": 1, "nonsense": true}), 422),
         (vera.clone(), json!({"sequence": 1}), 403),
         (bob.clone(), json!({"sequence": 1}), 404),
@@ -238,7 +248,7 @@ async fn every_reset_operation_conforms_to_the_contract_on_its_normal_and_error_
         ),
         (
             alice.clone(),
-            json!({"sequence": 1, "reason": "the price list was wrong", "reapply": "SIGNALS"}),
+            json!({"sequence": 1, "reason": "the price list was wrong", "reapply": "SOMETIMES"}),
             422,
         ),
         (
@@ -264,6 +274,142 @@ async fn every_reset_operation_conforms_to_the_contract_on_its_normal_and_error_
         ))
         .await;
     }
+    // a reapply is served: the run received nothing after the start, so there is nothing to report
+    n += 1;
+    let (_, _, _, none) = check(keyed(
+        scenario(
+            "POST",
+            RESETS,
+            &resets,
+            alice.clone(),
+            Some(
+                json!({"sequence": 1, "reason": "the price list was wrong", "reapply": "ALL", "businessId": "DROP"}),
+            ),
+            202,
+        ),
+        n,
+    ))
+    .await;
+    assert_eq!(none["reapplyReport"], json!([]));
+
+    // and a run that was signalled has something to report: the shapes of the plan and of the report conform
+    let waiting = json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1", "kind": "Workflow",
+        "metadata": {"name": "signalled"}, "entrypoint": "w",
+        "nodes": [
+            {"id": "w", "type": "waitEvent", "eventType": "payment.confirmed",
+             "correlationExpr": "input.k", "timeoutMs": 300000, "next": "b"},
+            {"id": "b", "type": "activity", "activity": "act.b"}
+        ]
+    });
+    let created = api
+        .as_user(Method::POST, "/workflows", "alice", "acme")
+        .header("x-octopus-namespace", "payments")
+        .header("idempotency-key", "reset-setup-0003")
+        .json(&json!({"name": "signalled", "ir": waiting}))
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(created.status(), 201);
+    let signalled = created.json::<Value>().await.expect("json")["id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let published = api
+        .as_user(
+            Method::POST,
+            &format!("/workflows/{signalled}/publish"),
+            "alice",
+            "acme",
+        )
+        .header("x-octopus-namespace", "payments")
+        .header("idempotency-key", "reset-setup-0004")
+        .json(&json!({"draftRevision": 1}))
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(published.status(), 201);
+    n += 1;
+    let (_, _, _, started) = check(keyed(
+        namespaced(scenario(
+            "POST",
+            "/runs",
+            "/runs",
+            alice.clone(),
+            Some(json!({"workflowId": signalled, "input": {"k": "s"}})),
+            202,
+        )),
+        n,
+    ))
+    .await;
+    let waiting_run = started["runId"].as_str().expect("run id").to_owned();
+    n += 1;
+    check(keyed(
+        scenario(
+            "POST",
+            "/runs/{runId}/signals/{signalName}",
+            &format!("/runs/{waiting_run}/signals/payment.confirmed"),
+            alice.clone(),
+            Some(json!({"paid": true})),
+            202,
+        ),
+        n,
+    ))
+    .await;
+    n += 1;
+    check(keyed(
+        scenario(
+            "POST",
+            "/runs/{runId}/operations",
+            &format!("/runs/{waiting_run}/operations"),
+            alice.clone(),
+            Some(json!({"action": "CANCEL", "reason": "ended to be reset"})),
+            202,
+        ),
+        n,
+    ))
+    .await;
+    let (_, _, _, plan) = check(scenario(
+        "POST",
+        PREVIEWS,
+        &format!("/runs/{waiting_run}/reset-previews"),
+        alice.clone(),
+        Some(json!({"sequence": 1, "reapply": "SIGNALS"})),
+        200,
+    ))
+    .await;
+    assert_eq!(plan["reapply"].as_array().map(Vec::len), Some(1), "{plan}");
+    assert_eq!(plan["reapply"][0]["kind"], "SIGNAL");
+    assert_eq!(plan["reapply"][0]["name"], "payment.confirmed");
+    assert_eq!(plan["reapply"][0]["outcome"], "WILL_TRY");
+    n += 1;
+    let (_, _, _, report) = check(keyed(
+        scenario(
+            "POST",
+            RESETS,
+            &format!("/runs/{waiting_run}/resets"),
+            alice.clone(),
+            Some(json!({
+                "sequence": 1, "reason": "the price list was wrong", "reapply": "SIGNALS",
+                "acknowledgeReexecution": true
+            })),
+            202,
+        ),
+        n,
+    ))
+    .await;
+    assert_eq!(
+        report["reapplyReport"].as_array().map(Vec::len),
+        Some(1),
+        "{report}"
+    );
+    assert_eq!(report["reapplyReport"][0]["outcome"], "REAPPLIED");
+    assert_eq!(report["reapplyReport"][0]["name"], "payment.confirmed");
+    assert!(
+        !report.to_string().contains("paid"),
+        "the report holds no content: {report}"
+    );
+
     // without a key there is no reset
     check(scenario(
         "POST",
@@ -285,7 +431,15 @@ async fn every_reset_operation_conforms_to_the_contract_on_its_normal_and_error_
         let (m, t, s, listed) = check(scenario("GET", RESETS, &resets, who, None, expect)).await;
         seen.insert((m, t));
         if s == 200 {
-            assert_eq!(listed["items"][0]["resetId"], json!(reset));
+            // newest first: the first reset is among the two this source made
+            assert!(
+                listed["items"]
+                    .as_array()
+                    .expect("items")
+                    .iter()
+                    .any(|item| item["resetId"] == json!(reset)),
+                "{listed}"
+            );
         }
     }
     let one = format!("{resets}/{reset}");

@@ -114,9 +114,10 @@ async fn a_run_is_reset_to_a_point_and_goes_on_from_there_with_the_history_it_ha
     let after_a = completed[0];
     let plan =
         f.w.runs
-            .reset_preview(&f.w.admin, source, after_a, &ctx())
+            .reset_preview(&f.w.admin, source, after_a, ResetReapply::None, &ctx())
             .await
-            .expect("a plan");
+            .expect("a plan")
+            .plan;
     assert_eq!(
         plan.restored
             .iter()
@@ -290,20 +291,12 @@ async fn a_reset_to_the_start_is_a_run_of_its_own_and_the_refusals_are_typed() {
         "{refused:?}"
     );
 
-    // a justification, and a delivery after the point this version does not make
+    // a justification (the delivery of signals and Updates again is `reapply.rs`)
     let mut no_reason = request(1, true);
     no_reason.reason = "short";
     assert!(matches!(
         f.w.runs
             .reset(&f.w.admin, source, no_reason, &key(), &ctx())
-            .await,
-        Err(AppError::NotAllowed(_))
-    ));
-    let mut signals = request(1, true);
-    signals.reapply = ResetReapply::Signals;
-    assert!(matches!(
-        f.w.runs
-            .reset(&f.w.admin, source, signals, &key(), &ctx())
             .await,
         Err(AppError::NotAllowed(_))
     ));
@@ -481,7 +474,7 @@ async fn a_sequence_past_the_ceiling_is_too_long_and_the_ceiling_itself_is_not()
     assert_eq!(
         reason_of(
             f.w.runs
-                .reset_preview(&f.w.admin, source, past, &ctx())
+                .reset_preview(&f.w.admin, source, past, ResetReapply::None, &ctx())
                 .await
         ),
         ("RESET_PREFIX_TOO_LONG", None)
@@ -498,7 +491,7 @@ async fn a_sequence_past_the_ceiling_is_too_long_and_the_ceiling_itself_is_not()
     assert_eq!(
         reason_of(
             f.w.runs
-                .reset_preview(&f.w.admin, source, ceiling, &ctx())
+                .reset_preview(&f.w.admin, source, ceiling, ResetReapply::None, &ctx())
                 .await
         ),
         ("RESET_POINT_NOT_ELIGIBLE", None)
@@ -601,7 +594,7 @@ async fn a_point_past_an_event_this_version_cannot_read_has_no_rule() {
             .collect();
     assert_eq!(after, points);
     f.w.runs
-        .reset_preview(&f.w.admin, source, last_point, &ctx())
+        .reset_preview(&f.w.admin, source, last_point, ResetReapply::None, &ctx())
         .await
         .expect("a point before the unknown event has a plan");
 
@@ -610,7 +603,7 @@ async fn a_point_past_an_event_this_version_cannot_read_has_no_rule() {
     assert_eq!(
         reason_of(
             f.w.runs
-                .reset_preview(&f.w.admin, source, beyond, &ctx())
+                .reset_preview(&f.w.admin, source, beyond, ResetReapply::None, &ctx())
                 .await
         ),
         (

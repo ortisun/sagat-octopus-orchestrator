@@ -1,8 +1,10 @@
 //! Wire types of the reset routes (feature 018, US06): the points a run can be reset to, what a reset would
 //! do, the request that makes one, and the entry of the register that answers it (camelCase, RFC 3339).
 
-use sagat_application::runs::{ResetPointInfo, ResetRecord};
-use sagat_domain::execution::{EffectMarkers, ResetPlan, ResetReapply};
+use sagat_application::runs::{
+    ReapplyEntry, ReportEntry, ResetPointInfo, ResetPreview, ResetRecord,
+};
+use sagat_domain::execution::{EffectMarkers, ResetReapply};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -100,6 +102,42 @@ pub struct ReexecutedStepBody {
     pub markers: Vec<&'static str>,
 }
 
+/// One signal or Update that a reset delivers again, or did (`ReapplyEntry`): the preview says `WILL_TRY` or
+/// `NOT_REAPPLIED`, the report of a reset `REAPPLIED`, `REJECTED` or `NOT_REAPPLIED`. A signal has a `name`, an
+/// Update an `operation`; never a payload, an argument or a digest of them.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReapplyEntryBody {
+    pub sequence: u64,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation: Option<String>,
+    pub outcome: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl From<&ReportEntry> for ReapplyEntryBody {
+    fn from(entry: &ReportEntry) -> Self {
+        Self {
+            sequence: entry.sequence,
+            kind: entry.kind.clone(),
+            name: entry.name.clone(),
+            operation: entry.operation.clone(),
+            outcome: entry.outcome.clone(),
+            reason: entry.reason.clone(),
+        }
+    }
+}
+
+impl From<&ReapplyEntry> for ReapplyEntryBody {
+    fn from(entry: &ReapplyEntry) -> Self {
+        Self::from(&ReportEntry::from(entry))
+    }
+}
+
 /// What a reset would restore, run again and reapply (`ResetPlan`).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -107,8 +145,8 @@ pub struct ResetPlanBody {
     pub sequence: u64,
     pub restored: Vec<RestoredStepBody>,
     pub reexecuted: Vec<ReexecutedStepBody>,
-    /// Nothing is reapplied in this version, so the list is empty.
-    pub reapply: Vec<serde_json::Value>,
+    /// The signals and Updates the reset would try to deliver again, in journal order; empty for `NONE`.
+    pub reapply: Vec<ReapplyEntryBody>,
     pub requires_acknowledgement: bool,
     pub prefix_events: u64,
 }
@@ -125,8 +163,9 @@ fn markers(effects: &EffectMarkers) -> Vec<&'static str> {
     .collect()
 }
 
-impl From<&ResetPlan> for ResetPlanBody {
-    fn from(plan: &ResetPlan) -> Self {
+impl From<&ResetPreview> for ResetPlanBody {
+    fn from(preview: &ResetPreview) -> Self {
+        let plan = &preview.plan;
         Self {
             sequence: plan.point.sequence,
             restored: plan
@@ -146,7 +185,7 @@ impl From<&ResetPlan> for ResetPlanBody {
                     markers: markers(&step.effects),
                 })
                 .collect(),
-            reapply: Vec::new(),
+            reapply: preview.reapply.iter().map(ReapplyEntryBody::from).collect(),
             requires_acknowledgement: plan.needs_acknowledgement(),
             prefix_events: plan.point.sequence,
         }
@@ -163,8 +202,8 @@ pub struct ResetBody {
     pub state: &'static str,
     pub failure_reason: Option<String>,
     pub new_run_id: Option<String>,
-    /// What the reapply did; empty until a reset reapplies something.
-    pub reapply_report: Vec<serde_json::Value>,
+    /// What the reapply did, in journal order; empty for a reset that did not ask for one.
+    pub reapply_report: Vec<ReapplyEntryBody>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
@@ -178,7 +217,11 @@ impl From<&ResetRecord> for ResetBody {
             state: record.state.as_str(),
             failure_reason: record.failure_reason.clone(),
             new_run_id: record.new_run.map(|run| run.to_string()),
-            reapply_report: Vec::new(),
+            reapply_report: record
+                .reapply_report
+                .iter()
+                .map(ReapplyEntryBody::from)
+                .collect(),
             created_at: record.created_at,
         }
     }
@@ -195,7 +238,8 @@ pub struct ResetListBody {
 mod tests {
     #![allow(clippy::expect_used)]
 
-    use sagat_domain::execution::{ReexecutedStep, ResetPoint, RestoredStep};
+    use sagat_application::runs::{ReapplyKind, ReapplyOutcome, ReapplyReason};
+    use sagat_domain::execution::{ReexecutedStep, ResetPlan, ResetPoint, RestoredStep};
     use sagat_domain::workflow::NodeId;
     use serde_json::json;
 
@@ -250,7 +294,26 @@ mod tests {
                 },
             ],
         };
-        let body = serde_json::to_value(ResetPlanBody::from(&plan)).expect("json");
+        let preview = ResetPreview {
+            plan,
+            reapply: vec![
+                ReapplyEntry {
+                    sequence: 12,
+                    kind: ReapplyKind::Signal,
+                    name: "payment.confirmed".to_owned(),
+                    outcome: ReapplyOutcome::WillTry,
+                    reason: None,
+                },
+                ReapplyEntry {
+                    sequence: 14,
+                    kind: ReapplyKind::Update,
+                    name: "balance.replace".to_owned(),
+                    outcome: ReapplyOutcome::NotReapplied,
+                    reason: Some(ReapplyReason::NotRetained),
+                },
+            ],
+        };
+        let body = serde_json::to_value(ResetPlanBody::from(&preview)).expect("json");
         assert_eq!(
             body,
             json!({
@@ -265,7 +328,12 @@ mod tests {
                     {"node": "notify", "completedInSource": false, "markers": []},
                     {"node": "log", "completedInSource": false, "markers": ["reconcileWith"]}
                 ],
-                "reapply": [],
+                "reapply": [
+                    {"sequence": 12, "kind": "SIGNAL", "name": "payment.confirmed",
+                     "outcome": "WILL_TRY"},
+                    {"sequence": 14, "kind": "UPDATE", "operation": "balance.replace",
+                     "outcome": "NOT_REAPPLIED", "reason": "NOT_RETAINED"}
+                ],
                 "requiresAcknowledgement": true,
                 "prefixEvents": 9
             })

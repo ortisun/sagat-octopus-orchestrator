@@ -980,6 +980,33 @@ fn batch_operations_are_an_explicit_strict_operator_switch() {
 }
 
 #[test]
+fn delivering_signals_and_updates_again_after_a_reset_is_an_explicit_strict_operator_switch() {
+    assert!(
+        !ServeConfig::from_lookup(&env(&OIDC))
+            .expect("defaults")
+            .reset_reapply_enabled,
+        "off by default"
+    );
+    let mut values = OIDC.to_vec();
+    values.push(("SAGAT_RESET_REAPPLY_ENABLED", "true"));
+    assert!(
+        ServeConfig::from_lookup(&env(&values))
+            .expect("activated")
+            .reset_reapply_enabled
+    );
+    // it is not one of the other switches
+    assert!(
+        !ServeConfig::from_lookup(&env(&values))
+            .expect("activated")
+            .batches_enabled
+    );
+    values.pop();
+    values.push(("SAGAT_RESET_REAPPLY_ENABLED", "maybe"));
+    let error = ServeConfig::from_lookup(&env(&values)).expect_err("refused");
+    assert!(error.to_string().contains("SAGAT_RESET_REAPPLY_ENABLED"));
+}
+
+#[test]
 fn redis_callback_activation_is_an_explicit_strict_operator_switch() {
     assert!(
         !ServeConfig::from_lookup(&env(&OIDC))

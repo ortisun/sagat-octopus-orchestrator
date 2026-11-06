@@ -10,16 +10,17 @@ use sagat_domain::execution::{
 use sha2::{Digest as _, Sha256};
 use time::OffsetDateTime;
 
+use super::reapply::{
+    Delivery, Material, PlannedReapply, ReapplyEntry, ReapplyKind, ReapplyOutcome, ReapplyReason,
+    ReportEntry, TooMany, candidates, end_signals_at_first_skip, reapply_key, update_answer,
+    update_refusal,
+};
 use super::*;
 
 /// The events a reset re-emits at most, by default (`FR-018-045`): a longer prefix is refused
 /// (`RESET_PREFIX_TOO_LONG`), because the re-emission is one transaction. The effective value will be the
 /// minimum of the request, the namespace and the deployment, like every ceiling of the feature (G1980).
 pub const RESET_PREFIX_EVENTS: usize = 5_000;
-
-/// What a refusal to deliver signals and updates again after a reset says (T018-056 is not built).
-pub const REAPPLY_NOT_AVAILABLE: &str =
-    "delivering signals and updates again after a reset is not available in this version";
 
 /// What a refusal to reset an open source by cancelling it says (T018-057 is not built).
 pub const CANCEL_SOURCE_NOT_AVAILABLE: &str =
@@ -38,6 +39,15 @@ pub struct ResetRequest<'a> {
     pub business: RerunBusinessId,
     /// What is delivered again after the point.
     pub reapply: ResetReapply,
+}
+
+/// What a preview says: the plan of the reset, and the signals and Updates it would try to deliver again
+/// (empty for `reapply: NONE`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResetPreview {
+    pub plan: ResetPlan,
+    /// Each candidate as `WILL_TRY`, or `NOT_REAPPLIED` with the reason it already has.
+    pub reapply: Vec<ReapplyEntry>,
 }
 
 fn refused(reason: &'static str) -> AppError {
@@ -166,12 +176,17 @@ pub struct ResetRecord {
     /// The run the reset created (`CREATED` only).
     pub new_run: Option<RunId>,
     pub reapply: ResetReapply,
+    /// What the reapply did, in journal order (empty for `NONE`): never a payload or an argument. Read as the register
+    /// holds it, because a later version may have written names this one does not know.
+    pub reapply_report: Vec<ReportEntry>,
     pub created_at: OffsetDateTime,
 }
 
 /// What a reset writes to the register in the transaction that creates its run.
 #[derive(Debug, Clone, Copy)]
 pub struct ResetRegistration<'a> {
+    /// The id of the entry. It is chosen before the reapply, whose keys are derived from it.
+    pub id: ResetId,
     pub source: RunId,
     pub sequence: u64,
     /// The digest of the prefix re-emitted, which `run.reset` carries too.
@@ -182,6 +197,8 @@ pub struct ResetRegistration<'a> {
     pub actor: &'a str,
     /// The justification, in plain text; the register keeps it as content of the tenant.
     pub reason: &'a str,
+    /// What the reapply did, written with the entry in the transaction that creates the run.
+    pub report: &'a [ReapplyEntry],
 }
 
 /// What a reset answers: the entry of the register and the run it created.
@@ -321,20 +338,138 @@ where
             .collect()
     }
 
-    /// What a reset to `sequence` would restore, run again and reapply, changing nothing (`FR-018-036`).
+    /// What a reset to `sequence` would restore, run again and reapply, changing nothing (`FR-018-036`). With a
+    /// `reapply` policy it lists the signals and Updates after the point that the reset would try to deliver
+    /// again, in journal order: `WILL_TRY`, or `NOT_REAPPLIED` with the reason they already have. Whether the new
+    /// run will accept them (a step that waits, a validator that agrees) is decided by the reset, not here.
     ///
     /// # Errors
     /// As [`Self::reset_points`]; [`AppError::ResetRefused`] `RESET_POINT_NOT_ELIGIBLE`,
-    /// `RESET_RULE_MISSING` (with the type) or `RESET_PREFIX_TOO_LONG`.
+    /// `RESET_RULE_MISSING` (with the type), `RESET_PREFIX_TOO_LONG`, `RESET_REAPPLY_NOT_AVAILABLE` for a
+    /// `reapply` this deployment does not serve and `RESET_REAPPLY_TOO_MANY`.
     pub async fn reset_preview(
         &self,
         principal: &Principal,
         id: RunId,
         sequence: u64,
+        reapply: ResetReapply,
         ctx: &RequestContext,
-    ) -> Result<ResetPlan, AppError> {
+    ) -> Result<ResetPreview, AppError> {
+        self.reapply_available(reapply)?;
         let (record, source) = self.reset_candidate(principal, id, ctx).await?;
-        self.plan_reset(principal, &record, &source, sequence).await
+        let plan = self
+            .plan_reset(principal, &record, &source, sequence)
+            .await?;
+        let planned = self
+            .plan_reapply(principal, &record, &source, sequence, reapply, false)
+            .await?;
+        Ok(ResetPreview {
+            plan,
+            reapply: planned.into_iter().map(|item| item.entry).collect(),
+        })
+    }
+
+    /// Whether this deployment lets a reset deliver signals and Updates again. A preview asks it at once; a reset asks it
+    /// where it would create the run (`finish_start`), so that a retry of a request that succeeded is answered from
+    /// the register whatever the setting is now.
+    pub(super) fn reapply_available(&self, reapply: ResetReapply) -> Result<(), AppError> {
+        if reapply != ResetReapply::None && !self.reset_reapply {
+            return Err(refused("RESET_REAPPLY_NOT_AVAILABLE"));
+        }
+        Ok(())
+    }
+
+    /// The signals and Updates of the source after `sequence` that `reapply` delivers again to the new run, in
+    /// journal order, each with what it needs to be tried (`keep`: the content, for a reset) or the reason it
+    /// will not be. The content is read here, outside the transaction that creates the run: it is immutable and
+    /// addressed by its digest.
+    async fn plan_reapply(
+        &self,
+        principal: &Principal,
+        record: &RunRecord,
+        source: &ResetSource,
+        sequence: u64,
+        reapply: ResetReapply,
+        keep: bool,
+    ) -> Result<Vec<PlannedReapply>, AppError> {
+        if reapply == ResetReapply::None {
+            return Ok(Vec::new());
+        }
+        // rows the source holds after the point that this version cannot read may be signals or Updates
+        if let Some(event_type) = &source.unknown_event_type {
+            return Err(AppError::ResetRefused {
+                reason: "RESET_RULE_MISSING",
+                event_type: Some(event_type.clone()),
+            });
+        }
+        let definition = self.definition_of(principal, record).await?;
+        let found = candidates(&definition, &source.events, sequence, reapply)
+            .map_err(|TooMany| refused("RESET_REAPPLY_TOO_MANY"))?;
+        // what every candidate needs is read in one statement for the signals and one for the Updates, whatever
+        // their number: the chain of resets that made the source is read once
+        let tenant = principal.tenant_id();
+        let digests: Vec<Vec<u8>> = found
+            .iter()
+            .filter_map(|candidate| match &candidate.material {
+                Material::Signal { payload_digest } => Some(payload_digest.clone()),
+                Material::Skip(_) | Material::Update { .. } => None,
+            })
+            .collect();
+        let sequences: Vec<u64> = found
+            .iter()
+            .filter(|candidate| matches!(candidate.material, Material::Update { .. }))
+            .map(|candidate| candidate.sequence)
+            .collect();
+        let mut signals = if digests.is_empty() {
+            Vec::new()
+        } else {
+            self.store.payload_contents(tenant, &digests, keep).await?
+        }
+        .into_iter();
+        let mut updates = if sequences.is_empty() {
+            Vec::new()
+        } else {
+            self.store
+                .retained_update_arguments(tenant, record.info.run_id, &sequences, keep)
+                .await?
+        }
+        .into_iter();
+        let mut planned: Vec<PlannedReapply> = found
+            .iter()
+            .map(|candidate| match &candidate.material {
+                Material::Skip(reason) => PlannedReapply::skipped(candidate, *reason),
+                Material::Signal { .. } => {
+                    PlannedReapply::of_signal(candidate, signals.next().flatten(), keep)
+                }
+                Material::Update { before_revision } => PlannedReapply::of_update(
+                    candidate,
+                    *before_revision,
+                    updates.next().flatten(),
+                    keep,
+                ),
+            })
+            .collect();
+        end_signals_at_first_skip(&mut planned);
+        Ok(planned)
+    }
+
+    /// The definition a run was started with.
+    async fn definition_of(
+        &self,
+        principal: &Principal,
+        record: &RunRecord,
+    ) -> Result<Arc<WorkflowDefinition>, AppError> {
+        let version = self
+            .store
+            .get_version_by_id(principal.tenant_id(), record.info.version_id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        self.cache
+            .get_or_parse(version.version.id(), &version.document)
+            .map_err(|error| {
+                tracing::error!(%error, version = %version.version.id(), "a stored version no longer parses");
+                AppError::Internal
+            })
     }
 
     async fn plan_reset(
@@ -356,18 +491,7 @@ where
         if usize::try_from(sequence).map_or(true, |n| n > RESET_PREFIX_EVENTS) {
             return Err(refused("RESET_PREFIX_TOO_LONG"));
         }
-        let version = self
-            .store
-            .get_version_by_id(principal.tenant_id(), record.info.version_id)
-            .await?
-            .ok_or(AppError::NotFound)?;
-        let definition = self
-            .cache
-            .get_or_parse(version.version.id(), &version.document)
-            .map_err(|error| {
-                tracing::error!(%error, version = %version.version.id(), "a stored version no longer parses");
-                AppError::Internal
-            })?;
+        let definition = self.definition_of(principal, record).await?;
         reset_plan(
             &definition,
             record.info.run_id,
@@ -387,10 +511,10 @@ where
     /// acknowledgement.
     ///
     /// # Errors
-    /// [`AppError::Forbidden`] without `run:operate` and `run:start`; [`AppError::NotAllowed`] without a
-    /// justification or for a reapply this version does not do; [`AppError::ResetRefused`]
-    /// `RESET_SOURCE_NOT_TERMINAL` for a run that has not ended, `RESET_REEXECUTION_NOT_ACKNOWLEDGED`, and
-    /// those of [`Self::reset_preview`]; the errors of a start.
+    /// [`AppError::Forbidden`] without `run:operate` and `run:start` (and `run:signal` to reapply signals,
+    /// `run:update` to reapply Updates); [`AppError::NotAllowed`] without a justification;
+    /// [`AppError::ResetRefused`] `RESET_SOURCE_NOT_TERMINAL` for a run that has not ended,
+    /// `RESET_REEXECUTION_NOT_ACKNOWLEDGED`, and those of [`Self::reset_preview`]; the errors of a start.
     pub async fn reset(
         &self,
         principal: &Principal,
@@ -410,8 +534,12 @@ where
                 "a justification of 8 to 2000 characters, in plain text, is required",
             ));
         }
-        if request.reapply != ResetReapply::None {
-            return Err(AppError::NotAllowed(REAPPLY_NOT_AVAILABLE));
+        // what the reset delivers again it delivers as the caller: with the right to do it
+        if request.reapply.signals() {
+            principal.authorize(Permission::RunSignal)?;
+        }
+        if request.reapply.updates() {
+            principal.authorize(Permission::RunUpdate)?;
         }
         let (record, source) = self.reset_candidate(principal, id, ctx).await?;
         if !record.status.is_terminal() {
@@ -420,6 +548,21 @@ where
         let plan = self
             .plan_reset(principal, &record, &source, request.sequence)
             .await?;
+        // Where the reapply is off nothing is planned: a retry of a request that succeeded is answered from the
+        // register, and a request that was never made is refused where it would create the run.
+        let planned = if self.reset_reapply {
+            self.plan_reapply(
+                principal,
+                &record,
+                &source,
+                request.sequence,
+                request.reapply,
+                true,
+            )
+            .await?
+        } else {
+            Vec::new()
+        };
         if plan.needs_acknowledgement() && !request.acknowledge_reexecution {
             return Err(refused("RESET_REEXECUTION_NOT_ACKNOWLEDGED"));
         }
@@ -451,6 +594,7 @@ where
                     reset: Some(ResetStart {
                         prefix: &prefix,
                         reapply: request.reapply,
+                        plan: &planned,
                         reason,
                         business: request.business,
                     }),
@@ -473,6 +617,125 @@ where
             return Err(AppError::Internal);
         };
         Ok(ResetMade { reset, run })
+    }
+
+    /// Delivers to the run `run_id`, which the reset `reset` is creating in `tx`, what `plan` says, in journal
+    /// order (`FR-018-039`), and returns the report the register keeps. Each signal and Update goes in as its
+    /// first delivery did (`deliver_signal`, `apply_declared_update`) under a key derived from the reset, so
+    /// they are audited, journaled and announced as any other.
+    ///
+    /// A signal nobody waits for is `REJECTED` and ends the reapply of signals; an Update the declaration
+    /// declines, or whose state is no longer at the revision it was applied to, is `REJECTED` and the next
+    /// candidate still goes. Anything else (storage, wiring, a refusal that is not the new run's answer) is an
+    /// error: the caller drops `tx` and nothing of the reset exists.
+    pub(super) async fn reapply(
+        &self,
+        tx: &mut S::Tx,
+        principal: &Principal,
+        run_id: RunId,
+        reset: ResetId,
+        plan: &[PlannedReapply],
+        ctx: &RequestContext,
+    ) -> Result<Vec<ReapplyEntry>, AppError> {
+        let mut report = Vec::with_capacity(plan.len());
+        let mut signals_ended = false;
+        for item in plan {
+            let mut entry = item.entry.clone();
+            let key = reapply_key(reset, entry.sequence);
+            match (&item.delivery, entry.kind) {
+                // settled before the transaction: it will not be tried, and says why
+                (None, _) if entry.outcome == ReapplyOutcome::NotReapplied => {}
+                (Some(Delivery::Signal { payload }), ReapplyKind::Signal) => {
+                    if signals_ended {
+                        entry.outcome = ReapplyOutcome::NotReapplied;
+                        entry.reason = Some(ReapplyReason::PreviousSignalNotDelivered);
+                    } else {
+                        let idempotency = Idempotency {
+                            scope: format!("run.signal:{run_id}"),
+                            key,
+                            fingerprint: fingerprint(&[entry.name.as_bytes(), payload]),
+                        };
+                        match self
+                            .deliver_signal(
+                                tx,
+                                principal,
+                                run_id,
+                                &entry.name,
+                                payload,
+                                idempotency,
+                                WaitVia::Signal,
+                                ctx,
+                            )
+                            .await
+                        {
+                            Ok(_) => entry.outcome = ReapplyOutcome::Reapplied,
+                            Err(AppError::StateConflict(NOT_WAITING_FOR_SIGNAL)) => {
+                                entry.outcome = ReapplyOutcome::Rejected;
+                                entry.reason = Some(ReapplyReason::NotWaiting);
+                                signals_ended = true;
+                            }
+                            Err(other) => return Err(other),
+                        }
+                    }
+                }
+                (
+                    Some(Delivery::Update {
+                        before_revision,
+                        arguments,
+                    }),
+                    ReapplyKind::Update,
+                ) => {
+                    let (Ok(operation), Ok(update_key)) =
+                        (ActivityName::parse(&entry.name), UpdateKey::parse(&key))
+                    else {
+                        tracing::error!("a reapplied Update has a name or a key that is not valid");
+                        return Err(AppError::Internal);
+                    };
+                    let evaluator = self.declared_evaluator()?;
+                    let command = self.declared_update(
+                        principal,
+                        tx.info().namespace_id,
+                        run_id,
+                        UpdateAtStart {
+                            operation: &operation,
+                            update_key: &update_key,
+                            arguments,
+                            // only to the state it was applied to in the source
+                            expected_state_revision: Some(*before_revision),
+                            batch_job: None,
+                        },
+                        tx.now(),
+                        ctx,
+                    );
+                    match tx.apply_declared_update(&command, evaluator).await {
+                        Ok(applied) => {
+                            let receipt = applied.resolution.receipt();
+                            let Some((outcome, reason)) =
+                                update_answer(receipt.status(), receipt.rejection())
+                            else {
+                                tracing::error!("a rejected Update has no rejection");
+                                return Err(AppError::Internal);
+                            };
+                            entry.outcome = outcome;
+                            entry.reason = reason;
+                        }
+                        Err(error) => match update_refusal(&error) {
+                            Some(reason) => {
+                                entry.outcome = ReapplyOutcome::Rejected;
+                                entry.reason = Some(reason);
+                            }
+                            None => return Err(AppError::DeclaredUpdate(error)),
+                        },
+                    }
+                }
+                _ => {
+                    tracing::error!("a reapply entry does not match what it is delivered with");
+                    return Err(AppError::Internal);
+                }
+            }
+            report.push(entry);
+        }
+        Ok(report)
     }
 
     /// The resets made from a run, newest first (at most 200).

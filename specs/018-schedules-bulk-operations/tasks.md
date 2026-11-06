@@ -1160,6 +1160,56 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   of 5,000 events).
 - [ ] T018-056 [US6] Reapply order, first-undeliverable stop, `LEGACY_EVENT`, ceiling, key replay, lost
   hint — `tests/integration/schedules-bulk-operations/reapply.rs` — report equals expectation — FR-018-039.
+  *Built 2026-11-06 (D1982..D1995, G1982..G1988); left unticked for the maintainer to tick after reading it. Reworked the same
+  day after three independent reviews (correctness, security, architecture).* A reset with `reapply` `SIGNALS`, `UPDATES` or
+  `ALL` delivers again, in the transaction that creates the run and in the order of the source journal, the signals recorded
+  `via: signal` and the Updates that kept their arguments (`reapplyOnReset`), under the key `reset:{reset id}:{sequence}` (the
+  prefix is reserved, with `batch:` and `schedule:`, in one list that every validator of a caller's key uses, D1995); each is
+  reported `REAPPLIED`, `REJECTED` or `NOT_REAPPLIED` with its reason, the report is stored with the entry and is the same on a
+  replay; the preview lists the same candidates `WILL_TRY` or `NOT_REAPPLIED`; more than 256 is `RESET_REAPPLY_TOO_MANY`; the
+  setting `SAGAT_RESET_REAPPLY_ENABLED` (the control plane only; the engine has none, D1990) turns it on, closing G1977 (off:
+  `RESET_REAPPLY_NOT_AVAILABLE` for a request that was never made, asked where a run would be created, so a retry of one that
+  succeeded is still answered, D1991); the Studio dialog and the CLI (`--reapply`) show it. The first test of it found a defect
+  of Update-with-Start's store (D1984): an Update left the in-memory state of a transaction behind its journal.
+  What the reviews changed, each with the test that was seen failing first (or, for a pure guard, the mutant that survived
+  until the test existed): (A, D1989) two equal signals a reset delivered in one transaction are two signals in a reset of that
+  reset: `a_reset_of_a_reset_keeps_two_equal_signals_that_the_first_reset_delivered_in_one_transaction` and three unit tests of
+  `candidates`; (B, D1990) the engine setting is gone (`config` tests of both binaries, the harness of the SDK conformance
+  passes nothing); (C, D1991) `a_retry_is_answered_from_the_register_where_the_reapply_is_off_now_and_a_new_request_is_refused`
+  and `a_deployment_that_did_not_turn_the_reapply_on_says_so_before_it_looks_at_the_source`; (D, D1992) a report that a newer
+  version wrote is read as written, never an error (`reset_rest::a_report_that_a_newer_version_wrote_...`, unit
+  `what_another_version_wrote_is_read_as_written_and_never_fails`, the OpenAPI names are open strings, Studio shows an
+  unknown name as written); (E, D1993) one bounded chain walk and batched reads
+  (`a_chain_of_resets_of_resets_is_walked_once_and_the_walk_stops_at_its_bound`: 6 connections for a preview of 200 candidates
+  and 16 for the reset, bounded at 12 and 32, 64 hops found and 65 `NOT_RETAINED`; three unit tests of the owner of a row);
+  (F, D1994) `the_service_the_control_plane_builds_refuses_the_reapply_unless_the_operator_set_it` (unset refuses, set serves;
+  the test support turns it on and says so); (G, D1994) an Update to a run that is paused or being cancelled is a clean
+  refusal and one addressed to another run is refused before it writes (`an_update_to_a_run_that_is_paused_or_being_cancelled_...`,
+  `an_update_addressed_to_another_run_than_the_transaction_s_is_refused_before_it_writes`); (H, D1995, G1986) the counter
+  `workflow_reset_reapply_total{kind,outcome,reason}` is counted once the reset is committed
+  (`what_a_reset_delivers_again_is_counted_once_it_is_committed_with_closed_labels`, and the totals of the crash matrix);
+  (I, D1995, G1985) the audit trail and the trace id join; (J, G1982) the domain test
+  `a_role_that_may_reset_a_run_may_deliver_again_what_the_reset_reapplies`; (K, D1993 (4))
+  `nothing_can_delete_the_content_a_reset_reads_before_the_transaction_that_delivers_it`; (L, D1995) the hint no longer names the
+  variable and `Candidate`, `Material`, `Delivery` and `Retained` print no content; (M, D1995) the reserved prefixes are one
+  list with a test that fails for a validator that does not use it and a behaviour test in each of `chains.rs` and `versioning.rs`.
+  Evidence: `reapply::*` 24 tests in the integration target (real PostgreSQL) and 9 in `reset_rest::`;
+  `fault_schedules_bulk_operations reset::` cuts the connection after each of the 91 writing statements of a reset that delivers
+  again and counts the metric; unit tests: `sagat-application` 110 (27 of the reapply), `sagat-api-http` 37, `sagat-infra-postgres`
+  29, the engine 13, `sagat-cli` all; the config of both binaries; Studio 1,386 tests. Gates on the final tree:
+  `integration_schedules_bulk_operations` 390 passed in both roles, `integration_platform_foundation` 101 in both
+  (runtime-privilege audit included), `fault_schedules_bulk_operations` 39 in both, `contract_schedules_bulk_operations` 7,
+  `contract_developer_experience` 8 (`docs/reference/cli.md` regenerated, rerun without bless), `contract_rest_security_multitenancy`
+  21, `integration_workflow_primitives operations` 27, `sagat-domain` all, Studio lint, typecheck, build and `check:api`, the `reset`
+  scenario of the SDK conformance suite equal in all six languages; fmt, clippy over the workspace, the architecture,
+  agent-config and design-docs checks. A battery of 144 mutants (the candidates and their dedupe, the stop, the answers, the
+  keys, the planner, the service, the gate, the store and its chain, the API, the CLI, the Studio, the roles, the metric, the
+  wiring): 141 killed, 3 survived, all equivalent: the permission checks of `run:signal` and `run:update`, which no role of the
+  matrix lacks while holding `run:operate` (G1982, and the domain test now pins the matrix), and the preview asking the store for
+  the bodies it then ignores (`read: false` is a cost, not an output; the store returns no content for it, tested, and the planner
+  never carries it into a preview, tested). Not done: `CANCEL_SOURCE` (T018-057); the 022 permit and the 020 attribute fold; a wait
+  below the root (G1983); the span and the latency histogram of an Update delivered by a reset (G1986); the unbounded 256 x 256 KiB
+  of a reset's reads (the run output ceiling covers it).
 - [ ] T018-057 [US6] `CANCEL_SOURCE` pending reset (fenced completion, eligibility re-check, races,
   crash, failed source compensation, pending quota) — `crates/scheduler/src/passes.rs`,
   `tests/fault/schedules-bulk-operations/reset.rs` — SC-018-012 — FR-018-038, FR-018-040.
@@ -1223,7 +1273,7 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   *Done 2026-11-06.* C#: `Schedules.cs`, `Batch.cs`, `BusinessIds.cs`, `WithStart.cs`, `Resets.cs`, `SagatClient.Operations.cs`; 20 new test cases (472 in all), `dotnet format --verify-no-changes` clean; 13 mutants killed. `StartAsync` now returns `StartedRun` (a `Run` plus `Started`) and `ISagatClient` gained members: a custom implementer of the interface must add them. Nine scenarios equal to the goldens, twice in a row, by the agent that wrote it and again in the full run of T018-068.
 - [x] T018-067 [P] Java SDK — `sdks/java/sdk/src/main/java/dev/sagatoctopusorchestrator/sdk/` — unit
   tests + scenarios — FR-018-048.
-  *Done 2026-11-06.* Java: `Schedules`/`BatchOperations`/`BusinessIds` and the typed answers, blocking and `...Async` forms; 19 new tests (258 in all), `./mvnw -q verify` exits 0; 9 mutants killed. `start` now returns `StartedRun(run, started)` (`Run` is a final record), a source break for a caller that wrote `Run r = client.start(...)`. Nine scenarios equal to the goldens, twice in a row, and again in the full run of T018-068.
+  *Done 2026-11-06.* Java: `Schedules`/`BatchOperations`/`BusinessIds` and the typed answers, blocking and `...Async` forms; 19 new tests (258 in all), `./mvnw -q verify` exits 0; 9 mutants killed. `start` still returns the `Run` (a final record: widening it would break `Run r = client.start(...)`, which the first CI run caught in `examples/hello-world/java`), and `startResult` returns `StartedRun(run, started)`. Nine scenarios equal to the goldens, twice in a row, and again in the full run of T018-068.
 - [x] T018-068 All five SDKs against one server build, skips stated — `sdk_conformance` output
   (SC-018-013) — FR-018-048.
   *Done 2026-11-06 (six languages, not five: D1040).* `cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture` over the whole suite, on one server build (the tree of this commit), without bless and without reuse: 75 scenarios, each in 6 languages, `test result: ok. 1 passed; 0 failed`, 1853 s; none skipped. The registry tests of the same target pass (3 passed). The unit suites and linters of the six SDKs were rerun by me after the agents reported: TypeScript 150, Go (`-race`, vet, gofmt), Python 297 (mypy, ruff), C# 472 (`dotnet format`), Java `./mvnw -q verify` exit 0, Rust 127 (fmt, clippy). That the goldens bite was shown by the Go agent, who forced `started` to true and saw `business-ids` fail at `/observations/4/result/started`.

@@ -4,7 +4,7 @@ For operators who start a run again from the middle of one that ended ("the firs
 and for the people who answer for what that repeats. It says what a reset does and promises, which points exist, what to read
 before confirming, and what to do when a reset is refused.
 
-Design: decisions D1976 to D1979 and gap G1980 in [`specs/018-schedules-bulk-operations/research.md`](../../specs/018-schedules-bulk-operations/research.md);
+Design: decisions D1976 to D1979 and D1982 to D1995, gaps G1980 and G1982 to G1988 in [`specs/018-schedules-bulk-operations/research.md`](../../specs/018-schedules-bulk-operations/research.md);
 the contract is the `Operations` tag of [`openapi.yaml`](../../specs/001-platform-foundation/contracts/openapi.yaml)
 (`listResetPoints`, `previewReset`, `resetRun`, `listRunResets`, `getRunReset`).
 
@@ -56,7 +56,7 @@ Also:
 - **Not every run can be reset**: a child run, a member of a continuation chain and a run of a database execution are refused
   (`RESET_NOT_SUPPORTED_FOR_SOURCE`).
 - **The source must have ended.** A run that is still open is `409 RESET_SOURCE_NOT_TERMINAL`: wait for it, or cancel it
-  yourself first. `sourcePolicy: CANCEL_SOURCE` (reset an open run by cancelling it) is not built (section 6).
+  yourself first. `sourcePolicy: CANCEL_SOURCE` (reset an open run by cancelling it) is not built (section 7).
 
 ## 3. What to read before you confirm
 
@@ -71,25 +71,106 @@ changes nothing and answers:
   (`422 RESET_REEXECUTION_NOT_ACKNOWLEDGED`) unless the request says `acknowledgeReexecution: true` (Studio: the checkbox;
   CLI: `--acknowledge`).
 - `prefixEvents`: how many events of the source the new run re-emits.
-- `reapply`: always empty in this version (section 6).
+- `reapply`: with `reapply` in the request (`SIGNALS`, `UPDATES`, `ALL`; section 4) the signals and Updates the source received
+  after the point that the reset would deliver again, in the order they arrived: each is `WILL_TRY`, or `NOT_REAPPLIED` with the
+  reason it already has. Empty for `NONE`, the default.
 
 A sequence that is not a point is `422 RESET_POINT_NOT_ELIGIBLE`; choose one the list names.
 
 ## 4. Doing it and reading what became of it
 
-`POST /runs/{id}/resets` with `{sequence, reason, acknowledgeReexecution?, businessId?}` (Studio: the dialog; CLI:
-`sagat workflow reset <run> --sequence N --reason "…" [--acknowledge] [--drop-business-id] [--key K]`) answers `202` with the reset:
+`POST /runs/{id}/resets` with `{sequence, reason, acknowledgeReexecution?, businessId?, reapply?}` (Studio: the dialog; CLI:
+`sagat workflow reset <run> --sequence N --reason "…" [--acknowledge] [--drop-business-id] [--reapply none|signals|updates|all] [--key K]`)
+answers `202` with the reset:
 
 | Field | Meaning |
 |---|---|
 | `resetId`, `sourceRunId`, `sequence` | the register entry, the run it came from and the last event kept |
 | `state` | `CREATED`: the new run exists. `PENDING_SOURCE` and `FAILED` belong to the reset of an open source, which is not built, so a reset you can make today answers `CREATED` |
 | `newRunId` | the run to follow; read it as any run (`GET /runs/{newRunId}`) |
-| `reapplyReport` | always empty in this version |
+| `reapplyReport` | what the reset delivered again, one entry for each signal or Update, in the order they arrived (section 4.1); empty for `NONE` |
 
 `GET /runs/{id}/resets` lists the resets made from a run, newest first (at most 200); `GET /runs/{id}/resets/{resetId}` reads one. The
 register entry is written in the transaction that creates the run, so a reset that crashed half way leaves no entry and no run,
 and the same request sent again makes one.
+
+### 4.1 Delivering signals and updates again
+
+By default a reset delivers nothing after the point: if the run needs a signal the source received, you send it. With `reapply`
+the reset sends it for you, **in the transaction that creates the run**, so the new run is never seen without it and a crash
+leaves no half delivery:
+
+| `reapply` | What is delivered again |
+|---|---|
+| `NONE` (default) | nothing |
+| `SIGNALS` | each signal the source received after the point (`wait.satisfied` of a step at the root, recorded `via: signal`), with the payload the source gave it |
+| `UPDATES` | each declared Update after the point whose declaration says `reapplyOnReset: true` (its arguments were kept for this), with those arguments |
+| `ALL` | both, interleaved as they arrived |
+
+What the report says. Each entry is `{sequence, kind: SIGNAL|UPDATE, name|operation, outcome, reason?}`: the row of the source it
+is, the name of the signal or of the operation, and what came of it. It **never holds a payload, an argument or a digest of
+them**. A repeat of the same request answers the same report.
+
+| `outcome` | `reason` | Meaning |
+|---|---|---|
+| `REAPPLIED` | | delivered; the new run's journal has it as a signal or an Update of its own, audited by the caller |
+| `REJECTED` | `NOT_WAITING` | no step of the new run was waiting for the signal. **It ends the signals**: the ones after it are not tried |
+| `REJECTED` | `UPDATE_REJECTED` | the validator of the Update declined it |
+| `REJECTED` | `REVISION_CONFLICT` | an Update is applied only to the state it was applied to in the source; the new run's state is at another revision (an earlier Update was not reapplied) |
+| `REJECTED` | `UPDATE_NOT_ACCEPTED` | the declaration does not accept the arguments or the state they make |
+| `NOT_REAPPLIED` | `NOT_RETAINED` | the payload or the arguments are no longer kept |
+| `NOT_REAPPLIED` | `LEGACY_EVENT` | the row was written before the journal said what satisfied the wait or whether the Update kept its arguments, so it cannot be told from what must not be sent again |
+| `NOT_REAPPLIED` | `PREVIOUS_SIGNAL_NOT_DELIVERED` | an earlier signal was not delivered (it was rejected, not kept or legacy), and delivering this one would reach the wait the earlier was meant for |
+
+Read it as a list of what the new run now has and does not have. The usual cause of a `REJECTED` `NOT_WAITING` is a step between
+two signals that has to run again first: the new run is not yet at the wait the second signal was for. Send it yourself when it
+is.
+
+What is never delivered again: a wait an **event** satisfied, the signal of a **Signal-with-Start** (the caller asked for it in
+one request with the start), and anything below the root of the run (an iteration). An Update that did not opt in with
+`reapplyOnReset` is not a candidate: its arguments were not kept.
+
+Limits. At most **256** candidates (those that are only reported count): more is `422 RESET_REAPPLY_TOO_MANY`, for the preview as
+well, and nothing is dropped; pick a later point. The reset needs `run:signal` for `SIGNALS` and `ALL`, `run:update` for
+`UPDATES` and `ALL`. A reset of a reset delivers the Updates of the first source too (their arguments are followed through
+the resets that made the run, **at most 64 resets deep**; past that an Update says `NOT_RETAINED`). The preview reads how long
+what is kept is, not what it says, so it says `WILL_TRY` for what is kept; the reset can still find that arguments that are
+kept do not read as arguments, and say `NOT_RETAINED`.
+
+Equal signals. Two equal signals (the same name and payload) that a reset delivers one after the other are two signals in the
+new run, and a reset of that reset delivers both again: they are told apart by the journal (the second step began to wait only
+after the first signal), not by the clock. When that cannot be shown, the entries are two.
+
+Audit. `run.reset` is audited with your justification and, when something is delivered again, the closed word of the policy
+(`… reapply=ALL: <justification>`); each delivery is audited as the signal or the Update it is, by the caller, and carries the trace
+id of the request, which is how to join it to the reset. Neither says what was sent.
+
+Keys. What the platform sends under a key of its own, `reset:{reset id}:{sequence of the row}`, is audited like any signal or
+Update. The prefix `reset:` (like `batch:` and `schedule:`) cannot be the `Idempotency-Key` of a call or the update key of
+`updateRun`; it is refused `400` / `INVALID_UPDATE_KEY`.
+
+#### Turning it on
+
+It is a **deployment setting**, off by default: `SAGAT_RESET_REAPPLY_ENABLED=true` on the **control plane**, which serves the
+reset and publishes workflows. The engine has no setting: it reads the versions it was given, whatever the setting says, and a
+reset is made by the control plane. With it off, a preview or a reset with `reapply` other than `NONE` is
+`422 RESET_REAPPLY_NOT_AVAILABLE` and nothing is made; `NONE` is served as always. **A retry of a reset that succeeded is answered
+with what it made even where the setting is off now** (the `Idempotency-Key` promise holds): only a request that was never made
+is refused. With it on, a workflow may declare an Update with `reapplyOnReset: true` (ADR-0032: a new publication that declares
+it is refused where the setting is off). Replicas of the control plane read it each; during a rollout a request can be served by
+one and refused by another.
+
+What happens to workflows published before:
+
+- A version published **with the setting on** keeps its declaration and its retained arguments whatever the setting says later;
+  turning it off stops the reset from delivering them and does not erase anything. Turning it on again serves them.
+- A version published **before** the field existed has no Update that opted in: its Updates are not candidates (`retained: false`,
+  or `LEGACY_EVENT` for a row older than the marker). Publish a new version that opts in; the runs of the old version cannot
+  be reapplied.
+
+Retained arguments are content of the tenant: they are charged to the tenant's content quota like any payload (once, however many
+runs apply the same arguments). Read the tenant's usage before turning the setting on for a workflow with large or frequent
+Updates.
 
 In traces, the new run's span **links** the source's span and does not emit the restored prefix again: its first spans are the
 steps after the point. Whatever you read in the prefix of the new run's journal happened in the source, at the source's time.
@@ -106,13 +187,26 @@ steps after the point. Whatever you read in the prefix of the new run's journal 
 | `422` | `RESET_RULE_MISSING` | the prefix holds an event this version has no rule for (`details.eventType` names it); pick an earlier point |
 | `409` | `BUSINESS_ID_IN_USE` | another open run holds the identifier; end it, or reset with `DROP` |
 | `409` | `IDEMPOTENCY_KEY_REUSED` | the same key was used for another request; use a new key |
-| `422`, no reason | `reapply` other than `NONE`, `sourcePolicy: CANCEL_SOURCE`, or a reason of fewer than 8 characters | not available in this version, or too short (a reason is missing from these answers: G1981) |
+| `422` | `RESET_REAPPLY_NOT_AVAILABLE` | `reapply` other than `NONE` on a deployment whose operator did not turn `SAGAT_RESET_REAPPLY_ENABLED` on; ask for `NONE` or turn it on (section 4.1). The sentence the API gives a caller does not name the variable |
+| `422` | `RESET_REAPPLY_TOO_MANY` | more than 256 signals and retained Updates after the point; pick a later point or `NONE` |
+| `422`, no reason | `sourcePolicy: CANCEL_SOURCE`, a `reapply` or a `businessId` the server does not know, or a reason of fewer than 8 characters | not available in this version, not a policy, or too short (a reason is missing from these answers: G1981) |
+| `400` | | the `Idempotency-Key` starts with `batch:`, `schedule:` or `reset:` (the platform's own) |
 | `403` / `404` | | the caller lacks `run:operate`/`run:start`; or the run does not exist or is another tenant's (the two look the same) |
 
-## 6. What is not built yet
+## 6. What it counts
 
-- **Delivering signals and updates again** (`reapply` `SIGNALS`, `UPDATES`, `ALL`; T018-056): refused. A signal or an update the
-  source received after the point is not delivered to the new run; if the run needs it, send it yourself.
+| Metric | Labels | Meaning |
+|---|---|---|
+| `workflow_reset_reapply_total` | `kind` (`SIGNAL`, `UPDATE`), `outcome` (`REAPPLIED`, `REJECTED`, `NOT_REAPPLIED`), `reason` (the closed reasons of section 4.1, `none` when there is none) | What a reset delivered again, counted once the reset is committed: a reset that was refused, cut off or answered from the register counts nothing. No tenant, run, signal or operation is a label |
+
+A rising `NOT_WAITING` or `REVISION_CONFLICT` says that resets are made to points where what followed does not fit: read the report
+of one of them (`GET /runs/{id}/resets`). The Updates a reset delivers again do not have the span and the latency histogram of
+an Update made through the API (G1986); their events are in the journal, and the telemetry derives their spans from it.
+
+## 7. What is not built yet
+
+- **Delivering again what was received below the root** (an iteration of a collection or a loop; G1983): not delivered, and not
+  reported.
 - **Resetting an open run** (`sourcePolicy: CANCEL_SOURCE`; T018-057): refused; the states `PENDING_SOURCE` and `FAILED` of a
   reset exist in the register for it and are never written today.
 - **Points inside a collection, a parallel branch, a loop iteration or a child scope** (G1980 (1)).

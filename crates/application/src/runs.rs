@@ -7,15 +7,22 @@
 
 mod ad_hoc;
 mod batch_items;
+mod reapply;
 mod reset;
 pub(crate) use ad_hoc::audit_denied as audit_database_execution_denied;
 pub use ad_hoc::{
     AdHocMode, ConnectionProbe, RetainedDefinition, RunOrigin, StartDatabaseExecution,
 };
+pub use reapply::{
+    Candidate, Delivery, Material, PlannedReapply, REAPPLY_CEILING, RESET_KEY_PREFIX, ReapplyEntry,
+    ReapplyKind, ReapplyOutcome, ReapplyReason, ReportEntry, TooMany, candidates, count_reapply,
+    end_signals_at_first_skip, reapply_key, report_from_json, report_json, update_answer,
+    update_refusal,
+};
 pub use reset::{
-    CANCEL_SOURCE_NOT_AVAILABLE, REAPPLY_NOT_AVAILABLE, RESET_PREFIX_EVENTS, ResetMade,
-    ResetPointInfo, ResetPointKind, ResetRecord, ResetRegistration, ResetRequest, ResetSource,
-    ResetState, RestoredPrefix, SourceEvent, prefix_digest,
+    CANCEL_SOURCE_NOT_AVAILABLE, RESET_PREFIX_EVENTS, ResetMade, ResetPointInfo, ResetPointKind,
+    ResetPreview, ResetRecord, ResetRegistration, ResetRequest, ResetSource, ResetState,
+    RestoredPrefix, SourceEvent, prefix_digest,
 };
 
 use std::future::Future;
@@ -105,6 +112,23 @@ pub struct BusinessBinding {
     pub bound_at: OffsetDateTime,
     /// When `REJECT_DUPLICATE` stops applying to a closed holder.
     pub reusable_after: Option<OffsetDateTime>,
+}
+
+/// Content of the tenant that a reset reads to deliver it again: how long it is, and the bytes unless they were not asked
+/// for. Its `Debug` never prints them.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Retained {
+    pub size: u64,
+    pub content: Option<Vec<u8>>,
+}
+
+impl std::fmt::Debug for Retained {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Retained")
+            .field("size", &self.size)
+            .finish_non_exhaustive()
+    }
 }
 
 /// What a start came to: the run, and whether it already existed (an open execution held the
@@ -475,6 +499,30 @@ pub trait RunStore:
         run: RunId,
     ) -> impl Future<Output = Result<Option<ResetRecord>, StoreError>> + Send;
 
+    /// What the tenant keeps under each digest, in the order asked, `None` for one it no longer keeps (the payload
+    /// of a signal that a reset delivers again is the one its `wait.satisfied` row names; feature 018,
+    /// `FR-018-039`). One statement for all of them. With `read` false the content is not read: the length says it is
+    /// kept.
+    fn payload_contents(
+        &self,
+        tenant: TenantId,
+        digests: &[Vec<u8>],
+        read: bool,
+    ) -> impl Future<Output = Result<Vec<Option<Retained>>, StoreError>> + Send;
+
+    /// The canonical arguments that the Updates recorded by the rows `sequences` of `run` kept for a reset
+    /// (`reapplyOnReset`), in the order asked, `None` for the ones no longer kept. A row may have been restored into
+    /// `run` by a reset: the arguments are on the receipt of the run that applied the Update first, which is found
+    /// by following the resets that made `run` (G1978 (1)): the chain is read once for all the rows, at most 64
+    /// resets deep, and a row beyond that is `None`. With `read` false the content is not read.
+    fn retained_update_arguments(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+        sequences: &[u64],
+        read: bool,
+    ) -> impl Future<Output = Result<Vec<Option<Retained>>, StoreError>> + Send;
+
     /// Journal entries with `seq > after`, ascending. `None` when the run does not exist.
     fn journal(
         &self,
@@ -628,6 +676,8 @@ pub struct Rerun<'a> {
 pub struct ResetStart<'a> {
     pub prefix: &'a RestoredPrefix,
     pub reapply: sagat_domain::execution::ResetReapply,
+    /// What is delivered again to the new run after the point, in journal order, and what is not and why.
+    pub plan: &'a [PlannedReapply],
     /// The justification the caller gave, which the register keeps.
     pub reason: &'a str,
     /// What became of the business identifier of the source.
@@ -678,6 +728,8 @@ pub struct RunService<S, C, E> {
     )>,
     /// Evaluates the declared Update an Update-with-Start carries; absent, that request is refused.
     declared_updates: Option<Arc<dyn DeclaredOperationEvaluator>>,
+    /// Whether a reset may deliver signals and Updates again (`SAGAT_RESET_REAPPLY_ENABLED`, off by default).
+    reset_reapply: bool,
 }
 
 /// The state of a run's telemetry and what it is judged by.
@@ -710,7 +762,16 @@ where
             lag_budget: Duration::from_secs(30),
             input_blobs: None,
             declared_updates: None,
+            reset_reapply: false,
         }
+    }
+
+    /// Lets a reset deliver again the signals and the Updates of its source (`reapply` other than `NONE`,
+    /// feature 018, `FR-018-039`). Off, such a request is refused `RESET_REAPPLY_NOT_AVAILABLE`.
+    #[must_use]
+    pub const fn with_reset_reapply(mut self, enabled: bool) -> Self {
+        self.reset_reapply = enabled;
+        self
     }
 
     /// Serves Update-with-Start: `evaluator` checks and evaluates the declared Update it carries.
@@ -1265,8 +1326,14 @@ where
                 now,
             )
             .with_reason(format!(
-                "reset from {of} at {}: {reason}",
-                reset.prefix.sequence()
+                "reset from {of} at {}{}: {reason}",
+                reset.prefix.sequence(),
+                // the closed word of the policy, when something is to be delivered again; never content
+                if reset.reapply == sagat_domain::execution::ResetReapply::None {
+                    String::new()
+                } else {
+                    format!(" reapply={}", reset.reapply.as_str())
+                }
             )),
             Some(rerun) => AuditRecord::by(
                 principal,
@@ -1568,11 +1635,19 @@ where
                 Ok(started)
             }
             Admitted::Created(mut tx) => {
+                let mut reapplied: Vec<ReapplyEntry> = Vec::new();
                 let effects = Effects::by(
                     Actor::Principal(principal.subject().as_str().to_owned()),
                     ctx.trace_id.clone(),
                 );
                 if let Some(reset) = reset {
+                    // A reset that would deliver again is refused here, where a run would be created, and not
+                    // before the replay of the request: a retry of a request that succeeded must be answered from
+                    // the register whatever the setting is now. Nothing has been written: the transaction is dropped.
+                    if let Err(refusal) = self.reapply_available(reset.reapply) {
+                        drop(tx);
+                        return Err(refusal);
+                    }
                     // the events of the source up to the point are written as they were, and the run goes on
                     // from there: the reset is recorded and the successors of the point are released
                     tx.restore_prefix(reset.prefix).await?;
@@ -1591,8 +1666,16 @@ where
                         })
                         .await
                         .map_err(engine_error)?;
+                    // what the source received after the point is delivered again, in its order, in this
+                    // transaction: a failure that is not an answer of the new run drops it, and with it the run
+                    let reset_id = execution::ResetId::generate();
+                    let report = self
+                        .reapply(&mut tx, principal, run_id, reset_id, reset.plan, ctx)
+                        .await?;
+                    reapplied.clone_from(&report);
                     // the register says it in the same transaction, so a run made by a reset always has its entry
                     tx.register_reset(&ResetRegistration {
+                        id: reset_id,
                         source: reset.prefix.source,
                         sequence: reset.prefix.sequence(),
                         prefix_digest: reset.prefix.digest(),
@@ -1600,6 +1683,7 @@ where
                         business: reset.business,
                         actor: principal.subject().as_str(),
                         reason: reset.reason,
+                        report: &report,
                     })
                     .await?;
                 } else {
@@ -1667,6 +1751,8 @@ where
                     };
                 }
                 tx.commit().await?;
+                // counted once it is committed: a creation that was dropped delivered nothing
+                count_reapply(&reapplied);
                 let mut started = self
                     .known_start(principal, &run_id.to_string(), false)
                     .await?;

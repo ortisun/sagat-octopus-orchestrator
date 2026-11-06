@@ -310,15 +310,15 @@ pub(crate) struct OperationTelemetry {
 }
 
 /// The update key of a call made by a person or a program. The platform's own keys (the item of a
-/// batch job is `batch:{job}:{run}`, the action of a schedule `schedule:…`) are not for callers: one
+/// batch job is `batch:{job}:{run}`, the action of a schedule `schedule:…`, an Update a reset applies
+/// again `reset:{reset}:{sequence}`) are not for callers: one
 /// that took such a key first would make the platform's own item fail as a reuse of it.
 ///
 /// # Errors
 /// [`OperationError::InvalidUpdateKey`] for a key that is not 1 to 128 printable ASCII characters
 /// without spaces, or that starts with a prefix the platform keeps for itself.
 pub(crate) fn caller_update_key(text: &str) -> Result<UpdateKey, OperationError> {
-    const RESERVED: [&str; 2] = ["batch:", "schedule:"];
-    if RESERVED.iter().any(|prefix| text.starts_with(prefix)) {
+    if super::execution::is_reserved_key(text) {
         return Err(OperationError::InvalidUpdateKey);
     }
     UpdateKey::parse(text)
@@ -936,6 +936,8 @@ mod tests {
     fn the_platforms_own_update_keys_are_not_for_a_caller() {
         assert!(caller_update_key("batch:job:run").is_err());
         assert!(caller_update_key("schedule:action").is_err());
+        assert!(caller_update_key("reset:0192a3b4-0000-7000-8000-000000000000:12").is_err());
+        assert!(caller_update_key("my-reset:key").is_ok());
         assert!(caller_update_key("my-batch:key").is_ok());
         assert!(caller_update_key("plain-key-1").is_ok());
     }

@@ -439,6 +439,22 @@ pub async fn reseal_secrets(
     Ok(moved)
 }
 
+/// The service of runs the API serves, as the configuration says: how late telemetry may be, whether an Update-with-Start
+/// is served, and whether a reset may deliver signals and Updates again (`SAGAT_RESET_REAPPLY_ENABLED`, off unless the
+/// operator set it). One function, so that what the operator configured and what the service does can be tested together.
+#[must_use]
+pub fn run_service(
+    executions: sagat_infra_postgres::PgRunStore,
+    cache: DefinitionCache,
+    serve: &ServeConfig,
+) -> RunService<sagat_infra_postgres::PgRunStore, SystemClock, JsonEvaluator> {
+    RunService::new(executions, SystemClock, Engine::new(JsonEvaluator), cache)
+        .with_lag_budget(serve.telemetry_lag_budget)
+        .with_reset_reapply(serve.reset_reapply_enabled)
+        // Update-with-Start applies a declared Update in the transaction that creates the run
+        .with_declared_updates(Arc::new(JsonDeclaredOperationEvaluator))
+}
+
 /// Runs the HTTP API on `listener` until `shutdown` completes, then drains in-flight requests.
 ///
 /// # Errors
@@ -478,6 +494,11 @@ pub async fn serve_with_admin(
             "SAGAT_MIGRATE_ON_START needs the schema-owning database role and is only allowed when \
              SAGAT_ENV=dev; run `control-plane migrate` as a separate step",
         ));
+    }
+    // A workflow may declare an Update that a reset applies again only where the operator turned the reapply
+    // on (ADR-0032, D1974): the capability is the process's, and is only ever switched on here.
+    if serve.reset_reapply_enabled {
+        sagat_infra_ir::set_reset_reapply(true);
     }
     // Everything that can be checked without the database comes first.
     let fetcher = HttpJwksFetcher::new(&serve.auth).map_err(|e| RunError::Auth(e.to_string()))?;
@@ -687,15 +708,7 @@ pub async fn serve_with_admin(
         );
     }
     let publishing = PublishingService::new(executions.clone(), SystemClock, JsonIrCodec);
-    let mut runs = RunService::new(
-        executions.clone(),
-        SystemClock,
-        Engine::new(JsonEvaluator),
-        cache,
-    )
-    .with_lag_budget(serve.telemetry_lag_budget)
-    // Update-with-Start applies a declared Update in the transaction that creates the run
-    .with_declared_updates(Arc::new(JsonDeclaredOperationEvaluator));
+    let mut runs = run_service(executions.clone(), cache, serve);
     if let Some(settings) = &serve.blobs {
         let backend = sagat_infra_blobstore::build_backend(&settings.store, settings.part_size)
             .map_err(|_| RunError::Refused("could not set up the object store (SAGAT_BLOB_*)"))?;

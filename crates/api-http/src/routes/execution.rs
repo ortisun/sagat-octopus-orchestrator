@@ -67,6 +67,23 @@ pub(crate) fn optional_idempotency_key(headers: &HeaderMap) -> Result<Option<&st
     idempotency_key(headers).map(Some)
 }
 
+/// The prefixes of the keys the platform derives for itself, for what a batch job, a schedule and a reset do to a run
+/// (`batch:{job}:{run}`, `schedule:{id}:cancel:...`, `reset:{reset}:{sequence}`). A caller who sent one first would
+/// decide what that effect is, so no validator of a caller's `Idempotency-Key` or update key accepts one: they all ask
+/// [`is_reserved_key`], and a test fails for a validator that does not.
+pub(crate) const RESERVED_KEY_PREFIXES: [&str; 3] = [
+    "batch:",
+    "schedule:",
+    sagat_application::runs::RESET_KEY_PREFIX,
+];
+
+/// Whether `key` starts with a prefix the platform keeps for its own keys.
+pub(crate) fn is_reserved_key(key: &str) -> bool {
+    RESERVED_KEY_PREFIXES
+        .iter()
+        .any(|prefix| key.starts_with(prefix))
+}
+
 /// `Idempotency-Key` is mandatory on every operation that creates or changes something, so a client
 /// that retries after an ambiguous failure can never apply it twice.
 pub(crate) fn idempotency_key(headers: &HeaderMap) -> Result<&str, ApiError> {
@@ -79,12 +96,9 @@ pub(crate) fn idempotency_key(headers: &HeaderMap) -> Result<&str, ApiError> {
             "the Idempotency-Key must be 8 to 160 printable ASCII characters",
         ));
     }
-    // The platform derives keys of its own for what a batch job and a schedule do to a run
-    // (`batch:{job}:{run}`, `schedule:{id}:cancel:...`); a caller who sent one first would decide
-    // what that effect is.
-    if key.starts_with("batch:") || key.starts_with("schedule:") {
+    if is_reserved_key(key) {
         return Err(ApiError::bad_request(
-            "the Idempotency-Key prefixes batch: and schedule: are reserved for the platform",
+            "the Idempotency-Key prefixes batch:, schedule: and reset: are reserved for the platform",
         ));
     }
     Ok(key)
@@ -596,7 +610,75 @@ mod tests {
     use sagat_application::error::AppError;
     use sagat_domain::execution::RunId;
 
-    use super::name_the_holder;
+    use super::{RESERVED_KEY_PREFIXES, is_reserved_key, name_the_holder};
+
+    /// Every place that reads the `Idempotency-Key` of a caller, or takes an update key from one, refuses the keys the
+    /// platform derives for itself through the one shared list; a route that validates the key on its own and does not
+    /// is a route a caller could take such a key through. The test reads the sources, so a new helper that is not
+    /// listed here fails it by name.
+    #[test]
+    fn every_validator_of_a_callers_key_refuses_the_keys_of_the_platform_through_the_one_list() {
+        fn sources(dir: &std::path::Path, found: &mut Vec<(String, String)>) {
+            for entry in std::fs::read_dir(dir).expect("a directory").flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    sources(&path, found);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    let text = std::fs::read_to_string(&path).expect("a source");
+                    found.push((path.to_string_lossy().into_owned(), text));
+                }
+            }
+        }
+        let mut files = Vec::new();
+        sources(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut files,
+        );
+        // the marker of a validator of a caller's key: the sentence it answers with, or the helper for update keys
+        let validators: Vec<&str> = files
+            .iter()
+            .filter(|(_, text)| {
+                text.contains("the Idempotency-Key header is required")
+                    || text.contains("fn caller_update_key")
+            })
+            .map(|(path, _)| path.as_str())
+            .collect();
+        assert!(
+            validators.len() >= 4,
+            "execution, chains, versioning and the update keys: {validators:?}"
+        );
+        for (path, text) in &files {
+            if validators.contains(&path.as_str()) {
+                assert!(
+                    text.contains("is_reserved_key("),
+                    "{path} validates a caller's key and does not refuse the platform's own through \
+                     `is_reserved_key`"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_prefixes_of_the_platform_s_own_keys_are_one_list() {
+        assert_eq!(RESERVED_KEY_PREFIXES, ["batch:", "schedule:", "reset:"]);
+        for key in [
+            "batch:job:run",
+            "schedule:abc:cancel:1",
+            "reset:0194f5e2-7b1c-7000-8000-000000000009:12",
+        ] {
+            assert!(is_reserved_key(key), "{key}");
+        }
+        for key in [
+            "my-batch:1",
+            "resets:1",
+            "Batch:1",
+            "x-reset:1",
+            "plain-key-1",
+            "",
+        ] {
+            assert!(!is_reserved_key(key), "{key}");
+        }
+    }
 
     fn conflict() -> (AppError, RunId) {
         let holder = RunId::generate();

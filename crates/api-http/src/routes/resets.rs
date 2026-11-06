@@ -13,7 +13,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sagat_application::api_admission::{ApiOperation, ApiTarget};
 use sagat_application::error::AppError;
-use sagat_application::runs::{CANCEL_SOURCE_NOT_AVAILABLE, REAPPLY_NOT_AVAILABLE, ResetRequest};
+use sagat_application::runs::{CANCEL_SOURCE_NOT_AVAILABLE, ResetRequest};
 use sagat_domain::execution::{ResetId, ResetReapply, RunId};
 use serde::Deserialize;
 
@@ -55,11 +55,8 @@ fn encode_cursor(sequence: u64) -> String {
     URL_SAFE_NO_PAD.encode(sequence.to_be_bytes())
 }
 
-fn reapply_of(policy: Option<ReapplyPolicyBody>) -> Result<ResetReapply, AppError> {
-    match policy.map_or(ResetReapply::None, ResetReapply::from) {
-        ResetReapply::None => Ok(ResetReapply::None),
-        _ => Err(AppError::NotAllowed(REAPPLY_NOT_AVAILABLE)),
-    }
+fn reapply_of(policy: Option<ReapplyPolicyBody>) -> ResetReapply {
+    policy.map_or(ResetReapply::None, ResetReapply::from)
 }
 
 /// `GET /runs/{runId}/reset-points`: where a run can be reset to, by ascending sequence.
@@ -120,12 +117,17 @@ pub async fn preview_reset<B: Exec>(
     if body.sequence == 0 {
         return Err(ApiError::validation("the sequence is at least 1"));
     }
-    reapply_of(body.reapply)?;
-    let plan = state
+    let preview = state
         .runs()
-        .reset_preview(&caller.session.principal, id, body.sequence, &caller.ctx)
+        .reset_preview(
+            &caller.session.principal,
+            id,
+            body.sequence,
+            reapply_of(body.reapply),
+            &caller.ctx,
+        )
         .await?;
-    Ok(Json(ResetPlanBody::from(&plan)))
+    Ok(Json(ResetPlanBody::from(&preview)))
 }
 
 /// `POST /runs/{runId}/resets`: a new run from the prefix of an ended one.
@@ -143,7 +145,7 @@ pub async fn reset_run<B: Exec>(
     if body.sequence == 0 {
         return Err(ApiError::validation("the sequence is at least 1"));
     }
-    let reapply = reapply_of(body.reapply)?;
+    let reapply = reapply_of(body.reapply);
     if matches!(body.source_policy, Some(SourcePolicyBody::CancelSource)) {
         return Err(AppError::NotAllowed(CANCEL_SOURCE_NOT_AVAILABLE).into());
     }

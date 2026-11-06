@@ -405,6 +405,13 @@ async fn boot(scenario: &Value) -> Run {
     if scenario["server"]["batches"] == true {
         extra.push(("SAGAT_BATCHES_ENABLED", "true"));
     }
+    // A reset that delivers signals and Updates again, and a workflow that declares an Update with `reapplyOnReset`,
+    // are off until the operator says so, and only the control plane is told: the engine reads the versions it was
+    // given with `parse_stored`, which does not look at the setting (ADR-0032 decision 8). The control plane of a
+    // scenario is this process, whose capability is switched on here.
+    if scenario["server"]["resetReapply"] == true {
+        sagat_infra_ir::set_reset_reapply(true);
+    }
     let mut env = engine_env(&platform.api.db, &platform.api.idp, &extra);
     if let Some(db) = &database {
         env.extend(db.engine_env());

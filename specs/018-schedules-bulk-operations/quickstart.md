@@ -109,15 +109,19 @@ sagat batch get <batchId> --items
 Expected: the preview count equals the matched runs; the job cancels them at about 5 per second;
 items are `SUCCEEDED` or `SKIPPED` (`ALREADY_TERMINAL`); counters equal items.
 
+Delivering again what the run received after the point is a deployment setting: start the control plane with
+`SAGAT_RESET_REAPPLY_ENABLED=true` (the engine needs nothing; the runbook `docs/runbooks/run-reset.md` §4.1).
+
 ```sh
-sagat workflow reset points <failedRunId>
-sagat workflow reset preview <failedRunId> --sequence <after compose> --reapply SIGNALS
-sagat workflow reset apply <failedRunId> --sequence <after compose> --acknowledge-reexecution \
+sagat workflow reset-points <failedRunId>
+sagat workflow reset-preview <failedRunId> --sequence <after compose> --reapply signals
+sagat workflow reset <failedRunId> --sequence <after compose> --acknowledge --reapply signals \
   --reason "deliver fixed in release 1.2"
 ```
 
-Expected: a new run with `rerunOf` and `resetFrom` whose journal begins with the restored prefix and
-`run.reset`; `deliver` runs again; the source stays terminal.
+Expected: a new run with `rerunOf` whose journal begins with the restored prefix and `run.reset`; the preview lists the
+signals the run received after that point as `will be tried`, and the reset reports each as `delivered`, `rejected` (a signal
+nobody waited for yet, with the reason) or `not delivered`; `deliver` runs again; the source stays terminal.
 
 ## 6. Failure scenarios (each must be demonstrated)
 
@@ -128,7 +132,10 @@ Expected: a new run with `rerunOf` and `resetFrom` whose journal begins with the
 | Authority revoked | remove the developer who created the schedule from the namespace | next action `AUTHORITY_REVOKED`, schedule `PAUSED` with a system note, audit `schedule.auto_paused` |
 | Signal-with-Start on a workflow whose entry does not wait | use `hello-world` | 409 `SIGNAL_NOT_ACCEPTED_AT_START`; `GET business-ids/<id>` is 404 (nothing created) |
 | Batch cancelled half way | `sagat batch cancel <id> --reason "stop now please"` | remaining items `CANCELLED`, applied cancellations stay applied |
-| Reset of a run with an attempt in flight | choose a sequence not listed by `points` | 422 `RESET_POINT_NOT_ELIGIBLE` |
+| Reset of a run with an attempt in flight | choose a sequence not listed by `reset-points` | 422 `RESET_POINT_NOT_ELIGIBLE` |
+| Reset that delivers again on a deployment without the setting | `--reapply all` with `SAGAT_RESET_REAPPLY_ENABLED` unset | 422 `RESET_REAPPLY_NOT_AVAILABLE`; nothing is made |
+| Reset that would deliver more than 256 things | a run that received more than 256 signals and retained Updates after the point | 422 `RESET_REAPPLY_TOO_MANY`; nothing is made (test: `reapply::the_ceiling_is_the_most_a_reapply_holds...`) |
+| Reset killed while it delivers | kill the connection after any statement of the transaction | no run, no entry; the same request makes one run, one entry and one report, and nothing is delivered twice (test: `fault_schedules_bulk_operations reset`) |
 | Pause a trigger-owned schedule before the handover | `sagat schedule pause <trigger-owned> --note "test"` while `schedule_trigger_handover` is `LEGACY` | 409 `SCHEDULE_TRIGGER_HANDOVER_PENDING`; the tick keeps firing once |
 | Quota at zero | set `schedules` quota of the namespace to 0, create a schedule | 429 `QUOTA_EXCEEDED` reason `SCHEDULE_LIMIT`; existing schedules keep firing |
 

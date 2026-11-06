@@ -1,6 +1,9 @@
 {
   "name": "reset",
-  "description": "Feature 018 US06: resetting a run that ended to a point of its journal. The points are listed and one is previewed (what the new run keeps, what it runs again, whether the caller must acknowledge it); a reset that runs completed steps again needs the acknowledgement; the reset creates a new run that finishes, is recorded in the register of the source and is read back by id; the same key answers the first reset; a run that is still open, a sequence that is not a point and a reapply policy this version does not offer are refused with their reasons.",
+  "description": "Feature 018 US06: resetting a run that ended to a point of its journal. The points are listed and one is previewed (what the new run keeps, what it runs again, whether the caller must acknowledge it); a reset that runs completed steps again needs the acknowledgement; the reset creates a new run that finishes, is recorded in the register of the source and is read back by id; the same key answers the first reset; a run that is still open, a sequence that is not a point and a policy the server does not know are refused with their reasons. A run that was signalled is reset with its signal delivered again (the preview lists it, the report says it was delivered), and reset to its start the same signal finds nothing waiting for it and is reported rejected. The server runs with the reapply turned on.",
+  "server": {
+    "resetReapply": true
+  },
   "workflows": {
     "two": {
       "name": "reset-two",
@@ -30,6 +33,35 @@
           "op": "step",
           "id": "hold",
           "activity": "reset.hold"
+        },
+        {
+          "op": "end",
+          "id": "done"
+        }
+      ]
+    },
+    "signalled": {
+      "name": "reset-signalled",
+      "description": "An activity, a wait for a signal, and an activity.",
+      "program": [
+        {
+          "op": "step",
+          "id": "a",
+          "activity": "reset.a"
+        },
+        {
+          "op": "waitForEvent",
+          "id": "paid",
+          "options": {
+            "eventType": "payment.confirmed",
+            "correlationExpr": "input.orderId",
+            "timeoutMs": 600000
+          }
+        },
+        {
+          "op": "step",
+          "id": "b",
+          "activity": "reset.b"
         },
         {
           "op": "end",
@@ -128,12 +160,12 @@
       "idempotencyKey": "reset-first-{{unique}}"
     },
     {
-      "id": "reapply-refused",
+      "id": "reapply-unknown-policy",
       "op": "reset",
       "run": "source",
       "sequence": 4,
       "reason": "run b again after a",
-      "reapply": "SIGNALS",
+      "reapply": "SOMETIMES",
       "acknowledgeReexecution": true,
       "idempotencyKey": "reset-reapply-{{unique}}"
     },
@@ -248,6 +280,111 @@
       "acknowledgeReexecution": true,
       "token": "viewer",
       "idempotencyKey": "reset-viewer-{{unique}}"
+    },
+    {
+      "id": "signalled",
+      "op": "start",
+      "workflow": "signalled",
+      "input": {
+        "orderId": "o-{{unique}}"
+      },
+      "idempotencyKey": "reset-signalled-{{unique}}"
+    },
+    {
+      "id": "signalled-waits",
+      "op": "awaitJournal",
+      "run": "signalled",
+      "eventType": "wait.started",
+      "stepId": "paid",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "signalled-signal",
+      "op": "signal",
+      "run": "signalled",
+      "name": "payment.confirmed",
+      "payload": {
+        "paid": "12.50"
+      }
+    },
+    {
+      "id": "signalled-done",
+      "op": "waitForCompletion",
+      "run": "signalled",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "signalled-points",
+      "op": "resetPoints",
+      "run": "signalled"
+    },
+    {
+      "id": "signalled-preview",
+      "op": "resetPreview",
+      "run": "signalled",
+      "sequence": 4,
+      "reapply": "SIGNALS"
+    },
+    {
+      "id": "signalled-preview-none",
+      "op": "resetPreview",
+      "run": "signalled",
+      "sequence": 4,
+      "reapply": "NONE"
+    },
+    {
+      "id": "signalled-reset",
+      "op": "reset",
+      "run": "signalled",
+      "sequence": 4,
+      "reason": "deliver the payment again after a",
+      "reapply": "SIGNALS",
+      "acknowledgeReexecution": true,
+      "idempotencyKey": "reset-signalled-made-{{unique}}"
+    },
+    {
+      "id": "signalled-reset-again",
+      "op": "reset",
+      "run": "signalled",
+      "sequence": 4,
+      "reason": "deliver the payment again after a",
+      "reapply": "SIGNALS",
+      "acknowledgeReexecution": true,
+      "idempotencyKey": "reset-signalled-made-{{unique}}"
+    },
+    {
+      "id": "signalled-reset-done",
+      "op": "waitForCompletion",
+      "run": "signalled-reset",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "signalled-reset-events",
+      "op": "events",
+      "run": "signalled-reset"
+    },
+    {
+      "id": "signalled-reset-early",
+      "op": "reset",
+      "run": "signalled",
+      "sequence": 1,
+      "reason": "deliver the payment again from the start",
+      "reapply": "ALL",
+      "acknowledgeReexecution": true,
+      "idempotencyKey": "reset-signalled-early-{{unique}}"
+    },
+    {
+      "id": "signalled-reset-early-waits",
+      "op": "awaitJournal",
+      "run": "signalled-reset-early",
+      "eventType": "wait.started",
+      "stepId": "paid",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "signalled-register",
+      "op": "resets",
+      "run": "signalled"
     }
   ]
 }

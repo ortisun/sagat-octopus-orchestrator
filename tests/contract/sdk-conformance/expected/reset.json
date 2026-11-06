@@ -166,19 +166,33 @@
       "op": "resetPreview"
     },
     {
-      "error": {
-        "code": "VALIDATION_FAILED",
-        "message": "<text>",
-        "reason": null,
-        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
-        "retryAfterMs": null,
-        "retryable": false,
-        "status": 422,
-        "traceId": "<trace:3>"
-      },
       "id": "preview-signals",
-      "ok": false,
-      "op": "resetPreview"
+      "ok": true,
+      "op": "resetPreview",
+      "result": {
+        "prefixEvents": 4,
+        "reapply": [],
+        "reexecuted": [
+          {
+            "completedInSource": true,
+            "markers": [],
+            "node": "b"
+          },
+          {
+            "completedInSource": false,
+            "markers": [],
+            "node": "done"
+          }
+        ],
+        "requiresAcknowledgement": true,
+        "restored": [
+          {
+            "kind": "STEP",
+            "node": "a"
+          }
+        ],
+        "sequence": 4
+      }
     },
     {
       "error": {
@@ -189,7 +203,7 @@
         "retryAfterMs": null,
         "retryable": false,
         "status": 422,
-        "traceId": "<trace:4>"
+        "traceId": "<trace:3>"
       },
       "id": "preview-unknown-policy",
       "ok": false,
@@ -204,7 +218,7 @@
         "retryAfterMs": null,
         "retryable": false,
         "status": 422,
-        "traceId": "<trace:5>"
+        "traceId": "<trace:4>"
       },
       "id": "not-acknowledged",
       "ok": false,
@@ -219,9 +233,9 @@
         "retryAfterMs": null,
         "retryable": false,
         "status": 422,
-        "traceId": "<trace:6>"
+        "traceId": "<trace:5>"
       },
-      "id": "reapply-refused",
+      "id": "reapply-unknown-policy",
       "ok": false,
       "op": "reset"
     },
@@ -234,7 +248,7 @@
         "retryAfterMs": null,
         "retryable": false,
         "status": 422,
-        "traceId": "<trace:7>"
+        "traceId": "<trace:6>"
       },
       "id": "cancel-source-refused",
       "ok": false,
@@ -249,7 +263,7 @@
         "retryAfterMs": null,
         "retryable": false,
         "status": 422,
-        "traceId": "<trace:8>"
+        "traceId": "<trace:7>"
       },
       "id": "short-reason",
       "ok": false,
@@ -294,7 +308,7 @@
         "retryAfterMs": null,
         "retryable": false,
         "status": 409,
-        "traceId": "<trace:9>"
+        "traceId": "<trace:8>"
       },
       "id": "reset-other-sequence",
       "ok": false,
@@ -316,7 +330,7 @@
         "runId": "<uuid:4>",
         "startedBy": "alice",
         "status": "SUCCEEDED",
-        "traceId": "<trace:10>",
+        "traceId": "<trace:9>",
         "updatedAt": "<time>",
         "version": "<n>",
         "versionId": "<uuid:2>",
@@ -449,7 +463,7 @@
         "runId": "<uuid:6>",
         "startedBy": "alice",
         "status": "RUNNING",
-        "traceId": "<trace:11>",
+        "traceId": "<trace:10>",
         "updatedAt": "<time>",
         "version": "<n>",
         "versionId": "<uuid:7>",
@@ -481,7 +495,7 @@
         "retryAfterMs": null,
         "retryable": false,
         "status": 409,
-        "traceId": "<trace:12>"
+        "traceId": "<trace:11>"
       },
       "id": "open-source",
       "ok": false,
@@ -496,7 +510,7 @@
         "retryAfterMs": null,
         "retryable": false,
         "status": 404,
-        "traceId": "<trace:13>"
+        "traceId": "<trace:12>"
       },
       "id": "other-tenant",
       "ok": false,
@@ -511,14 +525,552 @@
         "retryAfterMs": null,
         "retryable": false,
         "status": 403,
-        "traceId": "<trace:14>"
+        "traceId": "<trace:13>"
       },
       "id": "viewer-cannot-reset",
       "ok": false,
       "op": "reset"
+    },
+    {
+      "id": "signalled",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:9>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:14>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:10>",
+        "workflowId": "<uuid:11>"
+      }
+    },
+    {
+      "id": "signalled-waits",
+      "ok": true,
+      "op": "awaitJournal"
+    },
+    {
+      "id": "signalled-signal",
+      "ok": true,
+      "op": "signal",
+      "result": {
+        "deliveredTo": [
+          "paid"
+        ]
+      }
+    },
+    {
+      "id": "signalled-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:9>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:14>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:10>",
+        "workflowId": "<uuid:11>"
+      }
+    },
+    {
+      "id": "signalled-points",
+      "ok": true,
+      "op": "resetPoints",
+      "result": {
+        "items": [
+          {
+            "kind": "RUN_STARTED",
+            "node": null,
+            "occurredAt": "<time>",
+            "sequence": 1
+          },
+          {
+            "kind": "STEP_COMPLETED",
+            "node": "a",
+            "occurredAt": "<time>",
+            "sequence": 4
+          },
+          {
+            "kind": "STEP_COMPLETED",
+            "node": "b",
+            "occurredAt": "<time>",
+            "sequence": 11
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    {
+      "id": "signalled-preview",
+      "ok": true,
+      "op": "resetPreview",
+      "result": {
+        "prefixEvents": 4,
+        "reapply": [
+          {
+            "kind": "SIGNAL",
+            "name": "payment.confirmed",
+            "outcome": "WILL_TRY",
+            "sequence": 7
+          }
+        ],
+        "reexecuted": [
+          {
+            "completedInSource": false,
+            "markers": [],
+            "node": "paid"
+          },
+          {
+            "completedInSource": true,
+            "markers": [],
+            "node": "b"
+          },
+          {
+            "completedInSource": false,
+            "markers": [],
+            "node": "done"
+          }
+        ],
+        "requiresAcknowledgement": true,
+        "restored": [
+          {
+            "kind": "STEP",
+            "node": "a"
+          }
+        ],
+        "sequence": 4
+      }
+    },
+    {
+      "id": "signalled-preview-none",
+      "ok": true,
+      "op": "resetPreview",
+      "result": {
+        "prefixEvents": 4,
+        "reapply": [],
+        "reexecuted": [
+          {
+            "completedInSource": false,
+            "markers": [],
+            "node": "paid"
+          },
+          {
+            "completedInSource": true,
+            "markers": [],
+            "node": "b"
+          },
+          {
+            "completedInSource": false,
+            "markers": [],
+            "node": "done"
+          }
+        ],
+        "requiresAcknowledgement": true,
+        "restored": [
+          {
+            "kind": "STEP",
+            "node": "a"
+          }
+        ],
+        "sequence": 4
+      }
+    },
+    {
+      "id": "signalled-reset",
+      "ok": true,
+      "op": "reset",
+      "result": {
+        "createdAt": "<time>",
+        "failureReason": null,
+        "newRunId": "<uuid:12>",
+        "reapplyReport": [
+          {
+            "kind": "SIGNAL",
+            "name": "payment.confirmed",
+            "outcome": "REAPPLIED",
+            "sequence": 7
+          }
+        ],
+        "resetId": "<uuid:13>",
+        "sequence": 4,
+        "sourceRunId": "<uuid:9>",
+        "state": "CREATED"
+      }
+    },
+    {
+      "id": "signalled-reset-again",
+      "ok": true,
+      "op": "reset",
+      "result": {
+        "createdAt": "<time>",
+        "failureReason": null,
+        "newRunId": "<uuid:12>",
+        "reapplyReport": [
+          {
+            "kind": "SIGNAL",
+            "name": "payment.confirmed",
+            "outcome": "REAPPLIED",
+            "sequence": 7
+          }
+        ],
+        "resetId": "<uuid:13>",
+        "sequence": 4,
+        "sourceRunId": "<uuid:9>",
+        "state": "CREATED"
+      }
+    },
+    {
+      "id": "signalled-reset-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "rerunOf": "<uuid:9>",
+        "runId": "<uuid:12>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:15>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:10>",
+        "workflowId": "<uuid:11>"
+      }
+    },
+    {
+      "id": "signalled-reset-events",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": "a",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "a",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "a",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.reset"
+          },
+          {
+            "attempt": null,
+            "stepId": "a",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "paid",
+            "type": "wait.started"
+          },
+          {
+            "attempt": null,
+            "stepId": "paid",
+            "type": "wait.satisfied"
+          },
+          {
+            "attempt": null,
+            "stepId": "paid",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "b",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "b",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "b",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "b",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "done",
+            "type": "end.reached"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    },
+    {
+      "id": "signalled-reset-early",
+      "ok": true,
+      "op": "reset",
+      "result": {
+        "createdAt": "<time>",
+        "failureReason": null,
+        "newRunId": "<uuid:14>",
+        "reapplyReport": [
+          {
+            "kind": "SIGNAL",
+            "name": "payment.confirmed",
+            "outcome": "REJECTED",
+            "reason": "NOT_WAITING",
+            "sequence": 7
+          }
+        ],
+        "resetId": "<uuid:15>",
+        "sequence": 1,
+        "sourceRunId": "<uuid:9>",
+        "state": "CREATED"
+      }
+    },
+    {
+      "id": "signalled-reset-early-waits",
+      "ok": true,
+      "op": "awaitJournal"
+    },
+    {
+      "id": "signalled-register",
+      "ok": true,
+      "op": "resets",
+      "result": {
+        "items": [
+          {
+            "createdAt": "<time>",
+            "failureReason": null,
+            "newRunId": "<uuid:14>",
+            "reapplyReport": [
+              {
+                "kind": "SIGNAL",
+                "name": "payment.confirmed",
+                "outcome": "REJECTED",
+                "reason": "NOT_WAITING",
+                "sequence": 7
+              }
+            ],
+            "resetId": "<uuid:15>",
+            "sequence": 1,
+            "sourceRunId": "<uuid:9>",
+            "state": "CREATED"
+          },
+          {
+            "createdAt": "<time>",
+            "failureReason": null,
+            "newRunId": "<uuid:12>",
+            "reapplyReport": [
+              {
+                "kind": "SIGNAL",
+                "name": "payment.confirmed",
+                "outcome": "REAPPLIED",
+                "sequence": 7
+              }
+            ],
+            "resetId": "<uuid:13>",
+            "sequence": 4,
+            "sourceRunId": "<uuid:9>",
+            "state": "CREATED"
+          }
+        ]
+      }
     }
   ],
   "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "a",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "b",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "paid",
+          "kind": "FORWARD",
+          "status": "WAITING",
+          "type": "waitEvent",
+          "waitingOn": "event"
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:14>",
+      "status": "WAITING"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "a",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "b",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "paid",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "waitEvent",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:12>",
+      "status": "SUCCEEDED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "a",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "b",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "paid",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "waitEvent",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:9>",
+      "status": "SUCCEEDED"
+    },
     {
       "nodes": [
         {
@@ -687,7 +1239,97 @@
         "targetIdempotencyKey": "",
         "targetNode": "",
         "taskKind": "FORWARD",
-        "traceId": "<trace:10>",
+        "traceId": "<trace:9>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "reset.a",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:9>:a",
+        "input": {
+          "orderId": "o-{{unique}}"
+        },
+        "kind": "activity",
+        "node": "a",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:14>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "reset.b",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:9>:b",
+        "input": {
+          "orderId": "o-{{unique}}"
+        },
+        "kind": "activity",
+        "node": "b",
+        "outcome": "returned",
+        "steps": {
+          "a": {
+            "step": "a"
+          },
+          "paid": {
+            "paid": "12.50"
+          }
+        },
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:14>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "reset.b",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:12>:b",
+        "input": {
+          "orderId": "o-{{unique}}"
+        },
+        "kind": "activity",
+        "node": "b",
+        "outcome": "returned",
+        "steps": {
+          "a": {
+            "step": "a"
+          },
+          "paid": {
+            "paid": "12.50"
+          }
+        },
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:15>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "reset.a",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:14>:a",
+        "input": {
+          "orderId": "o-{{unique}}"
+        },
+        "kind": "activity",
+        "node": "a",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:16>",
         "traceparentPresent": true
       }
     ]

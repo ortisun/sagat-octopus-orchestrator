@@ -212,6 +212,12 @@ impl ErrorCode {
             (Self::ValidationFailed, "RESET_RULE_MISSING") => {
                 "Reset to an earlier point; the owning feature must declare the rule."
             }
+            (Self::ValidationFailed, "RESET_REAPPLY_NOT_AVAILABLE") => {
+                "Ask for `reapply: NONE`, or ask the operator of the platform to enable reset reapply."
+            }
+            (Self::ValidationFailed, "RESET_REAPPLY_TOO_MANY") => {
+                "The run received more than 256 signals and retained Updates after that point; choose a later point or `reapply: NONE`."
+            }
             (Self::NotFound, "ROUTE_NOT_FOUND") | (Self::BadRequest, "METHOD_NOT_ALLOWED") => {
                 "This server does not have that call: check the path and method, and the version of the API it speaks."
             }

@@ -1602,6 +1602,25 @@ impl RunStore for PgRunStore {
         resets::made(&self.pool, tenant, run).await
     }
 
+    async fn payload_contents(
+        &self,
+        tenant: TenantId,
+        digests: &[Vec<u8>],
+        read: bool,
+    ) -> Result<Vec<Option<sagat_application::runs::Retained>>, StoreError> {
+        resets::payload_contents(&self.pool, tenant, digests, read).await
+    }
+
+    async fn retained_update_arguments(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+        sequences: &[u64],
+        read: bool,
+    ) -> Result<Vec<Option<sagat_application::runs::Retained>>, StoreError> {
+        resets::retained_arguments(&self.pool, tenant, run, sequences, read).await
+    }
+
     async fn rerun_source(
         &self,
         tenant: TenantId,
@@ -3499,6 +3518,39 @@ impl std::fmt::Debug for PgRunTx {
 }
 
 impl PgRunTx {
+    /// Takes into the state of this transaction the journal row `sequence`, which a declared Update wrote to the
+    /// database directly: the event is read back and applied, and the sequence persisted moves to it, so what
+    /// this transaction writes next goes after it.
+    async fn absorb_written_update(&mut self, sequence: u64) -> Result<(), StoreError> {
+        if sequence != self.persisted + 1 {
+            return Err(StoreError::Internal {
+                detail: "an Update was written out of sequence".to_owned(),
+            });
+        }
+        let row = sqlx::query(
+            "SELECT event_type, node, detail FROM run_events \
+             WHERE tenant_id = $1 AND run_id = $2 AND seq = $3",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(i64::try_from(sequence).map_err(|_| corrupt("sequence"))?)
+        .fetch_one(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        let event_type: String = col(&row, "event_type")?;
+        let node: Option<String> = col(&row, "node")?;
+        let detail: serde_json::Value = col(&row, "detail")?;
+        let event = decode(&event_type, node.as_deref(), &detail)
+            .ok_or_else(|| corrupt("the journal row of an Update"))?;
+        self.state
+            .apply_addressed(&AddressedRunEvent::root(event))
+            .map_err(|error| StoreError::Internal {
+                detail: format!("the journal row of an Update does not apply: {error}"),
+            })?;
+        self.persisted = sequence;
+        Ok(())
+    }
+
     async fn ensure_node_kind(
         &mut self,
         instance: &ExecutionInstanceId,
@@ -3761,8 +3813,36 @@ impl RunTx for PgRunTx {
         sagat_application::declared_operations::AppliedInTx,
         sagat_application::declared_operations::DeclaredOperationStoreError,
     > {
-        crate::declared_operations::apply_declared_update_in_tx(&mut self.tx, update, evaluator)
-            .await
+        // The Update is written to the database as it is addressed, and what is absorbed below is this run's: an
+        // Update for another run is refused before anything is written.
+        if update.request().resolved_run_id() != self.info.run_id {
+            return Err(
+                sagat_application::declared_operations::DeclaredOperationStoreError::Storage(
+                    StoreError::Internal {
+                        detail:
+                            "an Update addressed to another run than the one of the transaction"
+                                .to_owned(),
+                    },
+                ),
+            );
+        }
+        let applied = crate::declared_operations::apply_declared_update_in_tx(
+            &mut self.tx,
+            update,
+            evaluator,
+        )
+        .await?;
+        // The Update wrote its journal row straight to the database. This transaction goes on after it (a reset
+        // delivers signals and Updates one after the other), so the journal row it wrote is part of the state
+        // and the sequence it persists from: read back, the way a replay would take it.
+        if applied.resolution.receipt().status()
+            == sagat_domain::execution::UpdateReceiptStatus::Applied
+            && !applied.resolution.replayed()
+        {
+            self.absorb_written_update(applied.resolution.receipt().run_version())
+                .await?;
+        }
+        Ok(applied)
     }
 
     fn info(&self) -> &RunInfo {

@@ -606,6 +606,177 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
   an answer to the caller here and a rejection in the metrics). The platform's own update keys (`batch:`, `schedule:`) are
   refused to callers of `updateRun` and `updateWithStart` (`INVALID_UPDATE_KEY`), so a caller cannot make the item of a
   batch job fail by taking its key first.
+- **D1995** (2026-11-06, T018-056, `FR-018-044`, `FR-018-043`, rule 10) Observability, audit and the key prefixes, after review.
+  (1) The counter `workflow_reset_reapply_total{kind,outcome,reason}` (kind `SIGNAL`/`UPDATE`, outcome and reason the closed
+  names of the report, reason `none` when there is none) is incremented by `count_reapply` in `finish_start` *after the
+  commit*, so a creation that was dropped (a cut connection, a refusal) counts nothing and a retry answered from the register
+  counts nothing; the crash matrix of 91 cuts proves it by the totals. It is in the metrics tables of the runbooks
+  (`run-reset.md` §7, `observability.md`). The reapplied Updates do not go through the spans and histograms of the API layer
+  (G1986). (2) The audit reason of `run.reset` carries the justification of the caller (that is the contract, "audited with it")
+  and, when something is to be delivered again, the closed token ` reapply=<POLICY>` before the justification; the count
+  delivered is not in it (the audit record is written with the run, before the delivery). A delivery is joined to its reset by
+  the trace id of the request, which both carry (G1985). (3) The hint of `RESET_REAPPLY_NOT_AVAILABLE` says "ask the operator of
+  the platform to enable reset reapply" and not the name of an environment variable, which a tenant caller has no use for; the
+  runbook keeps the variable. (4) The platform-reserved key prefixes are one list in `api-http` (`RESERVED_KEY_PREFIXES`,
+  `is_reserved_key`), asked by every validator of a caller's `Idempotency-Key` (the shared one, `chains`, `versioning`) and of an
+  update key, and a test reads the sources and fails for a validator that does not.
+- **D1994** (2026-11-06, T018-056) Wiring and the transaction, after review. (1) The control plane builds its service of runs in
+  one function, `sagat_control_plane::run_service`, and `reapply::the_service_the_control_plane_builds_refuses_the_reapply_unless_the_operator_set_it`
+  builds it from the real configuration: unset, `false`, `0`, `no` and empty refuse; `true`, `1` and `yes` serve. The test
+  support turns the reapply ON by default so that the suites can exercise it; the comments at both defaults say so and point at
+  that test, so a fail-open production default cannot hide behind them. (2) The Update of D1984 can only be refused cleanly
+  where the database check and the reducer agree: both accept `StateUpdated` only in `Running` or `Waiting`, so an Update to a
+  run that is paused, cancelling, compensating or in manual review is `RunNotMutable` (409), written nowhere (the check is one
+  line for all of them); a test pauses a run and cancels another with an attempt in flight, applies an Update-with-Start to
+  each, and checks the refusal, the journal and the replay of the projection (compensating and manual review are not set up
+  by a test of their own). (3) An Update addressed to another run than the one of the transaction is refused before
+  anything is written (it was refused only by the failure of the read-back of D1984, after the write, and would have been
+  absorbed into the wrong state had the sequences coincided).
+- **D1993** (2026-11-06, T018-056, `FR-018-045`, `NFR`, security review) The reads of a reapply are bounded in statements,
+  whatever the number of candidates and the depth of the chain. (1) The chain of resets that made the source is read **once**
+  per request, by one recursive statement at most 64 hops deep (`MAX_RESET_HOPS`; it was one walk of up to 1,000 queries for each
+  of 256 candidates, outside the transaction, also for the preview); the owner of each row is found in memory; the receipts are
+  read in one statement (`unnest`) and the payloads of the signals in another. A row whose owner is beyond the bound is
+  `NOT_RETAINED` and reported. A test builds a chain of 65 resets of 200 Updates and previews and resets at 64 hops (all found,
+  in under two seconds; the old walk took 9 seconds) and at 65 (all `NOT_RETAINED`), over a store whose pool counts the
+  connections it hands out: the preview took 6 and the reset 16, and the test bounds them at 12 and 32, so a walk for each of
+  the 200 candidates (200 more, though each is one cheap statement and no clock would see it) fails it. (2) The preview reads the length, not the
+  body (`read: false`): it says `WILL_TRY` for what is kept; arguments that are kept and do not parse are `NOT_RETAINED` only
+  at the reset (G1987). (3) `candidates` stops at the 257th and keeps its delivery groups in a map. (4) *Nothing deletes
+  content between the read and the commit.* The reset reads the payload of a signal and the arguments of an Update before its
+  transaction, and the delivery writes the content again (`INSERT … ON CONFLICT DO NOTHING`); an erasure that ran in between
+  would put erased content back. Nothing can erase: `payloads` has a guard (`payloads_append_only`, enabled ALWAYS) against
+  `UPDATE` and `DELETE`, the runtime role holds neither privilege nor `TRUNCATE`, no function of the schema deletes from it,
+  and the events migration says content is never deleted. A test pins all three, so that feature 020's erasure, or any change
+  that lets content go, fails it and has to move the read inside the transaction (or check the digest there) first.
+- **D1992** (2026-11-06, T018-056, `FR-018-046`) A report is read as it was written, after review. A version that is not this one
+  may have written a kind, an outcome or a reason this one does not know (the report is data of the register, and the register
+  outlives the binary). Writing stays typed (`ReapplyEntry`); **reading** is `ReportEntry`, whose kind, outcome and reason are the
+  strings the register holds, a field it does not know is left out, and a line that is not a line (no sequence, kind or
+  outcome) is left out; reading never fails. `GET /resets`, `GET /resets/{id}` and the replay of a reset answer it. The
+  OpenAPI does not close `kind`, `outcome` and `reason` (a strict generated client, Java or C#, would refuse a new value
+  otherwise); their meanings stay in the description, and the Studio and the CLI show a name they do not know as written. A
+  test stores `"reason": "FUTURE"` and an unknown kind and reads it through the three.
+- **D1991** (2026-11-06, T018-056, `FR-018-037`, ADR idempotency) The setting is asked where a run would be created, not before
+  the replay. A client that retries a reset that succeeded with `reapply: ALL` after the setting was turned off (or on a replica
+  where it is off) is answered with the stored entry and its report, as the `Idempotency-Key` promises; a request that was never
+  made is refused where the creation transaction is open (`finish_start`), which is dropped, so no run, entry or receipt exists
+  (tests count runs and entries). Where the setting is off nothing is planned or read. The preview asks at once.
+- **D1990** (2026-11-06, T018-056, `FR-018-046`, ADR-0032 decision 8) The engine has no setting. The engine builds its
+  definitions with `DefinitionCache`, which parses stored versions with `parse_stored`, and `parse_stored` reads a version
+  that declares `reapplyOnReset` whatever the capability says (`crates/infra-ir/tests/reapply_on_reset_enabled.rs`); it
+  publishes nothing and makes no reset. The variable, its configuration test, its `--help` lines and the call of
+  `set_reset_reapply` are removed from the engine, and the harness of the SDK conformance does not pass it. D1986, G1977's
+  closure and the runbook are corrected.
+- **D1989** (2026-11-06, T018-056, `FR-018-039`, D1982 (3)) **Defect found by review; the rule of "one delivery" is the
+  journal's, not the clock's.** All the rows a transaction writes have one `occurred_at`, so two equal signals that a reset
+  delivered one after the other in the transaction that created its run looked like one delivery to a reset of that reset, and
+  the second was dropped without a word. A row joins the delivery of an earlier row (same name, payload and instant) only when
+  its step was **already waiting when that earlier row was written** (its `wait.started` has a smaller sequence than the first
+  row of the delivery): a delivery wakes everything that is waiting for the name at that moment, and a step that began to wait
+  after the first row was woken by another. When the beginning of the wait cannot be found the rows are two: nothing is dropped
+  without being reported. Tests: the unit tests of the rule (consecutive waits are two signals, parallel waits one, a missing
+  beginning is two) and `a_reset_of_a_reset_keeps_two_equal_signals_that_the_first_reset_delivered_in_one_transaction`
+  (red first: the second signal was dropped).
+- **D1988** (2026-11-06, T018-056, T018-059, T018-069, `FR-018-039`, `FR-018-047`) The Studio and the CLI show the reapply.
+  (1) The Studio dialog offers, once the points are listed, the four policies in words (nothing, the signals, the updates whose
+  arguments were kept, both), nothing being the default and not sent. Choosing a policy reads the plan again with it (the
+  acknowledgement of the steps that run again is about the steps and stays); the plan lists what would be delivered in the order
+  of the journal, `WILL_TRY` or `NOT_REAPPLIED` with its reason in words. A reset that delivered something does not take the
+  person away at once: the dialog says what came of each, with a button to open the new run (the report is read nowhere else
+  at that moment); a reset that delivered nothing goes to the new run as before. The register under the source lists the
+  report of each reset (`Delivered again (N)`). (2) The CLI takes `--reapply none|signals|updates|all` (the API's names in
+  lower case are accepted) on `reset-preview` and `reset`, sends it only when given (an older server never sees the field), and
+  prints each entry as `signal NAME (event N): outcome: reason in words`. Both say a name and a place and never what was sent:
+  the API does not return a payload, and a control character in a name is not passed to the terminal. A reason neither knows
+  is shown as the platform wrote it, so a later version can add one.
+- **D1987** (2026-11-06, T018-056, `FR-018-039`, `FR-018-048`) The shared scenario `reset` follows the new truth. The server of
+  the scenario runs with `SAGAT_RESET_REAPPLY_ENABLED` (`server.resetReapply`; the harness switches the capability on in its own
+  process, which is the scenario's control plane, and tells the engine by the flag). The two steps that expected a `422` for
+  `SIGNALS` now see it served: `preview-signals` lists nothing (the run received nothing) and `reapply-refused` becomes
+  `reapply-unknown-policy`, which keeps the refusal that is still one (`SOMETIMES`, a plain `422`, G1981 (2)). A new workflow
+  `signalled` (`a`, a wait for `payment.confirmed`, `b`) is signalled; the preview lists the signal `WILL_TRY`; the reset
+  delivers it again and its report says `REAPPLIED`; the same key answers the same report; the reset to the start finds nothing
+  waiting for the signal and reports `REJECTED` `NOT_WAITING`.
+- **D1986** (2026-11-06, T018-056, `FR-018-039`, `FR-018-046`, G1977; *corrected 2026-11-06 after review, D1990, D1991*) The
+  reapply is a deployment setting of the control plane, `SAGAT_RESET_REAPPLY_ENABLED` (off by default; `true`/`false`, a
+  mistyped value is refused naming the variable), listed in its `--help`. (1) It sets `RunService::with_reset_reapply` (through
+  `run_service`, D1994) and, when on, the process capability `sagat_infra_ir::set_reset_reapply(true)`, so a workflow may
+  declare `reapplyOnReset` (D1974) where the reset that applies it again is served. The capability is only ever switched on
+  by a binary (a process that starts with the flag off leaves it as it is), because it is a global of the process. The
+  engine has no setting: it reads the versions it was given with `parse_stored`, which does not look at the capability
+  (ADR-0032 decision 8), and a reset is made by the control plane in its own transaction (D1990). (2) With the flag off a
+  *preview* with `reapply` other than `NONE` is `422` with `details.reason` `RESET_REAPPLY_NOT_AVAILABLE` at once (it was a plain
+  `422`: this closes G1981 (3) for the reapply; `CANCEL_SOURCE` stays a plain `422`), and so is a *reset that would create a
+  run*; a retry of a reset that succeeded is answered from the register whatever the setting is now (D1991). With it on they
+  are served. (3) Workflows published before follow ADR-0032 decision 8: a version published while the capability was on is
+  read whatever the flag says now (`parse_stored`), keeps retaining the arguments of its Updates, and its retained rows are
+  reapplied as soon as the reset is served; a version published before the capability existed has no `reapplyOnReset`, its
+  Updates say `retained: false` (or, if older than D1975, nothing) and are not candidates (`LEGACY_EVENT` for the rows that
+  say nothing). Turning the flag off does not erase anything. Replicas of the control plane can disagree during a rollout
+  (G1988).
+- **D1985** (2026-11-06, T018-056, `FR-018-039`) The report and the preview have one closed shape, `ReapplyEntry` of the OpenAPI
+  (additive: `ResetPlan.reapply` and `Reset.reapplyReport` were arrays of free objects that were always empty):
+  `{sequence, kind: SIGNAL|UPDATE, name|operation, outcome, reason?}`; a signal has a `name`, an Update an `operation`; `sequence`
+  is the row of the source journal; `outcome` is `WILL_TRY` (preview only), `REAPPLIED`, `REJECTED` or `NOT_REAPPLIED`; `reason` is
+  one of `LEGACY_EVENT`, `NOT_RETAINED`, `PREVIOUS_SIGNAL_NOT_DELIVERED` (not delivered), `NOT_WAITING`, `UPDATE_REJECTED`,
+  `REVISION_CONFLICT`, `UPDATE_NOT_ACCEPTED` (rejected). It carries no payload, no argument and no digest of either: they are
+  content of the tenant (`FR-018-042`), and a test reads the stored report for the content of every signal and the arguments
+  of every Update. It is stored as `jsonb` in `run_resets.reapply_report` by the same statement that writes the entry, in the
+  transaction that creates the run, so a replay of the request answers the same list. The register bounds it at 256 entries and
+  65,536 bytes; the longest entry the closed names allow (a 128-character name, the longest reason, a sequence of eight digits)
+  is 253 bytes as `jsonb` writes it, so 256 of them are 64,768: the bound in bytes cannot be reached before the one in entries
+  (a unit test computes it). The preview lists the same candidates from the same function, so for the same source and point it
+  cannot list others than the report; what only the delivery can know (a step that waits, a validator) it leaves as `WILL_TRY`
+  (and G1987). The names are read as they are stored (D1992).
+- **D1984** (2026-11-06, T018-056, `FR-018-039`) **Defect found by the first test of the reapply:** an Update applied in a
+  transaction that goes on afterwards left the in-memory state of that transaction behind its journal. `apply_declared_update`
+  writes the `state.updated` row, the receipt and the run's version straight to the database (it was built for Update-with-Start,
+  which commits right after), so the next write of the same transaction numbered its events from a sequence the Update had taken
+  (`Internal`, every reset that interleaved an Update and a signal). `PgRunTx::apply_declared_update` now reads back the row the
+  Update wrote and applies it to the state and to the sequence it persists from (`absorb_written_update`), the way a replay would
+  take it; an Update that finds the sequence elsewhere is an error, not a guess. Update-with-Start, whose transaction ends there,
+  is unchanged (`update_with_start` suites pass).
+- **D1983** (2026-11-06, T018-056, `FR-018-039`, `FR-018-044`, `FR-018-050`) The delivery. (1) In the creation transaction, after
+  `run.reset` and before the entry of the register is written (it carries the report), in the order of the source journal, each
+  candidate on its own: a signal through the same `deliver_signal` as `signalRun` and Signal-with-Start, recorded `via: signal`
+  (so a reset of the new run may deliver it again), an Update through `apply_declared_update` as Update-with-Start does, with the
+  caller as the actor, so each is audited (`run.signalled`, `run.updated`), journaled and announced as any other. The reset
+  itself is one `run.reset` audit record. (2) The key of a candidate is `reset:{reset id}:{sequence of the row}` (the reset id is
+  chosen before the delivery and is the id of the entry): stable for the reset, distinct for every candidate, and the prefix
+  `reset:` is reserved as `batch:` and `schedule:` are, for the `Idempotency-Key` of every call and for the update key of
+  `updateRun`/`updateWithStart` (`400`, `INVALID_UPDATE_KEY`), so a caller cannot take a key the platform will use. A retry of the
+  request is not a second delivery because the creation is answered from the receipt of the first (a crash test cuts the
+  transaction after each of its writing statements, 91 of them in the test). (3) A signal nobody waits for (`NOT_WAITING`) is `REJECTED` and ends the signals.
+  So does any signal that cannot be delivered at all (`LEGACY_EVENT`, `NOT_RETAINED`), and this is known before the transaction,
+  so the preview says it: every later signal is `PREVIOUS_SIGNAL_NOT_DELIVERED`, because delivering it would reach the wait the
+  earlier one was meant for (two signals of one name). A signal that already has a reason of its own keeps it. Updates are not
+  affected by that stop. (4) An Update is applied only to the state it was applied to in the source: the request carries
+  `expectedStateRevision` = the `before_revision` of the row. A rejected one therefore makes the Updates that followed it
+  `REVISION_CONFLICT`, which is what they are: they were made for a state that the new run does not have. The validator declining
+  is `UPDATE_REJECTED`; a declaration that no longer accepts the arguments or the state they make (`InvalidArguments`,
+  `EvaluationFailed`, `ValueTooLarge`, `StateSchemaChanged`, `UnsupportedDisclosure`, the `422` of `updateRun`) is
+  `UPDATE_NOT_ACCEPTED`. (5) Anything else, storage, wiring, a receipt that contradicts itself, a quota, aborts the whole
+  creation: nothing of the run exists and the caller is told it failed (the conservative choice: a reset that cannot say what it
+  did is not made). (6) The caller needs `run:signal` for `SIGNALS` and `ALL` and `run:update` for `UPDATES` and `ALL`, asked
+  before the source is read (the role matrix gives both to every role that has `run:operate`, G1982).
+- **D1982** (2026-11-06, T018-056, `FR-018-039`, G1978) What a reset delivers again, computed from the source journal after the
+  point `N`, in journal order, by one function used by the preview and the reset (`crates/application/src/runs/reapply.rs`).
+  (1) A **signal** is a `wait.satisfied` of a root step with `via: signal`, named by the `eventType` of that node's wait in the
+  pinned definition; its payload is the one the row names (the output of the step it woke). `via: event` and
+  `via: signal_with_start` are not candidates (G1978 (2): a reset must not deliver again what the caller asked for in one
+  request that also started the run, nor what an event did); a row with no `via` is `NOT_REAPPLIED` `LEGACY_EVENT`; a payload
+  that is not named or no longer kept is `NOT_RETAINED`. Several waits one delivery woke are one signal, otherwise the second would
+  find nobody waiting and end the signals for nothing; *the rule is D1989* (it was "the same name, payload and instant", which
+  merged two real signals a reset had delivered in one transaction). A wait below the root is not a candidate (G1983). (2) An **Update** is a `state.updated` with `retained: true`; its operation is the
+  row's, its arguments those of the receipt of the run that applied it, which for a row a reset restored (`sequence <= reset_sequence`)
+  is found by walking `rerun_of` through the resets that made the run (G1978 (1); the chain is read once and is bounded at 64 hops, D1993): a reset of a reset
+  delivers the Updates of the first source. `retained: false` is not a candidate; no marker is `LEGACY_EVENT`; arguments that
+  are gone or do not parse are `NOT_RETAINED`. (3) **At most 256 candidates**, the skipped ones included (the report lists
+  them): more is `422` `RESET_REAPPLY_TOO_MANY` for the preview and for the reset, and nothing is dropped. (4) A source with a row
+  this version cannot read is refused `RESET_RULE_MISSING` (with the type) when something is to be delivered again: the rows
+  after the point may hold what is to be delivered and the first unreadable one hides the rest. (5) `sourcePolicy: CANCEL_SOURCE`,
+  an open source and a scoped prefix are as before.
 - **D1981** (2026-11-06, T018-062, T018-063, `FR-018-048`) The client surface of feature 018 in the SDKs and its nine
   conformance scenarios. (1) The surface is the table of `contracts/sdk-conformance.md` and `sdks/SPEC.md` §3.1: three groups
   on the client (`schedules`, `batch`, `businessIds`) and, on the client, `start` with the new options, `signalWithStart`,
@@ -857,13 +1028,20 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
 | G1973 | Three cases of Signal-with-Start (D1969) are not proved. (1) *Closed 2026-11-05 (D1969, amended):* a request served by an open holder now keeps the receipt of the request with the signal, so a retry after the holder closed is answered by the holder. (It was: the same key started a new run and signaled it.) (2) A new run that 022's run-level permit would queue instead of start: 022 is not approved, so the rollback of that case (FR-018-024) has no test and no code. (3) The race of a wait's timeout against the delivery at creation: the wait has a timer, but a run is created and signalled in one transaction, so the timer cannot fire between them; no test pins that with a clock at the boundary. | (1) is a retry after the first request succeeded and the world moved on; the same shape exists for `signalRun` and the answer is truthful about what happens now. (2) waits for the owner's approval of 022. (3) needs a wait whose timeout is the creation instant. | Open |
 | G1975 | The table of reasons lists two for operations that are built and that the API words otherwise: `NOMINAL_TIME_FIELD_INVALID` (a `nominalTimeField` that is not a top-level string property of the input schema is `SCHEDULE_SPEC_INVALID` with the field's pointer) and `SCHEDULE_DELETED` (a deleted schedule is `NOT_FOUND`, as one that never existed, which is what the contract's own preamble asks of a resource the caller cannot see). The rest that nothing raises waits on a feature (029, 031 `BINARY_CAPABILITY_MISSING`; US06 `PENDING_RESET_LIMIT` and the `RESET_*` reasons; 020 `RUN_PURGED`; 022 `CONCURRENCY_*`). | Changing either would give a caller more than the preamble allows or break a documented answer; the table should say what the API does. The contract test lists them as not raised, with the reason, so they are not forgotten. | Open (amend the table when T018-057/US06 touch it) |
 | G1976 | Three smaller points of the review of the with-start and batch `UPDATE` slices are left. (1) The route of Signal-with-Start has no operation telemetry of its own (the signal route does not either), and an Update a batch job applies is counted in no metric because the batch runs in the engine, where the API's telemetry does not: a job of 100,000 Updates is invisible in `workflow_operation_duration_seconds`. (2) The contract says the payload of a signal is an object; `signalWithStart` accepts any JSON, as `signalRun` does, and trims the name before it joins the fingerprint (a batch job refuses the names `valid_signal_name` refuses). (3) The holder of a business identifier is not compared with the request's `workflowId`: a request naming workflow A whose identifier is held by a run of workflow B in the same namespace acts on B, as `startRun` with `USE_EXISTING` already does. | (1) belongs to T018-071 (observability gates), which already lists the batch metrics; the rest are choices the owner may want to make once, for the whole family of signal and start routes, not per route. | Open |
-| G1981 | Several refusals reach the client as a plain `422` with no `details.reason`, though the contract promises one or the code could give one: (1) a negative `startDelayMs` (the body type is unsigned, so the JSON is refused before the range is checked, where `0` and `31622400001` are `START_DELAY_INVALID`); (2) an overlap policy or a reapply policy the server does not know (`WHENEVER`, `SOMETIMES`); (3) `reapply` other than `NONE` and `sourcePolicy` `CANCEL_SOURCE` on `resetRun`, which are not offered in this version; (4) a `reason` under 8 characters on `resetRun`. The scenarios pin each refusal as it is (a negative delay is left out of them, since pinning a defect is not a test of the contract). | A reason is what lets a client tell two 422s apart without parsing a sentence; an enum the deserializer rejects never reaches the code that names reasons. Closure: map the serde rejection of these fields to the reason of its field (`START_DELAY_INVALID` with `details.field`, `RESET_REAPPLY_NOT_AVAILABLE`, `RESET_SOURCE_POLICY_NOT_AVAILABLE`, `RESET_REASON_INVALID`) in `crates/api-http`, with a contract test, and then bless the goldens of `start-delay` and `reset` after reading the diff; breaking nothing, since only `details` gains a field. | open |
+| G1988 | The setting is read by each replica of the control plane. During a rollout, or when an operator sets it on some replicas only, a request can be served by one and refused `RESET_REAPPLY_NOT_AVAILABLE` by another; a retry of a reset that succeeded is answered everywhere (D1991). | The instance-capability registry of ADR-0050 decision 9 would refuse the mismatch and is not built (the same as G1965). | Open |
+| G1987 | The preview and the report can differ in two ways that are not the setting: the preview reads the length of what is kept, not the body, so arguments that are kept and do not parse are `WILL_TRY` in the preview and `NOT_RETAINED` in the report; and the preview cannot know whether a step will be waiting or a validator will agree. | Reading the bodies of up to 256 payloads to say the first is the cost the security review asked to avoid; the second is the nature of a preview (D1985). | Open |
+| G1986 | The Updates a reset delivers again do not go through `OperationTelemetry` of the API layer (the `workflow.update` span, `workflow_operation_duration_seconds{kind="update"}` and `workflow_primitive_rejections_total`): they are applied inside the creation transaction by the application layer, which has no span or histogram facility for them. What exists is `workflow_reset_reapply_total{kind,outcome,reason}` (D1995), and the journal events, which the telemetry projector turns into spans like any other. | A span and a histogram per delivery would be created inside a transaction that may be dropped; the counter is emitted after the commit. | Open |
+| G1985 | What a reset audits. The audit reason of `run.reset` carries the justification of the caller: that is the contract ("audited with it"), and not a leak. When something is to be delivered again it also carries the closed token ` reapply=<POLICY>` (D1995). The deliveries are audited by what they are (`run.signalled`, reason `signal '<name>'`; `run.updated`, reason `operation=<name>;outcome=<…>`) and share the **trace id** of the request with the reset, which is the exact join between them; they do not name the reset or the policy, and the reset does not say how many were delivered (the audit record of the run is written with the run, before the delivery). | The reason of a delivery is the one every other path of `deliver_signal` and of the Update writes; the trace id is already there for the join. | Open |
+| G1984 | `UPDATE_REJECTED` (the validator declines) and `UPDATE_NOT_ACCEPTED` (the declaration does not accept the arguments) are proved end to end only with data put there by the test: arguments the validator declines, and arguments the schema does not accept, are kept in the place of those of an Update. The pinned version accepted what the source retained, and a validator that reads only the arguments and the state cannot decline at the same revision what it accepted, so no run the platform makes can produce either of them at a reapply. | Both need a definition that depends on something other than its arguments and its state; the declared-operation language has none. The wiring (a refusal is a rejection of that entry, the next candidate still goes) is the same code whatever made the refusal. | Open |
+| G1983 | Two limits of the candidates. (1) A wait below the root of the source (an iteration of a collection or a loop) is not a candidate, and is not reported: `deliver_signal` reaches the root steps only, as `signalRun` does. (2) *Closed 2026-11-06 (D1989):* waits woken by one delivery are told by the journal (the step was already waiting), not by the clock. | (1) follows G1980 (1): the scoped side tables are not restored, so nothing a scope held can be delivered to. | Open (1) |
+| G1982 | The extra checks of `run:signal` (for `SIGNALS`, `ALL`) and `run:update` (for `UPDATES`, `ALL`) before a reset cannot be reached by a test through the role matrix: the roles that hold `run:operate` and `run:start` (`operator`, `admin`) hold both. A mutant that removes them survives. A fitness function (`a_role_that_may_reset_a_run_may_deliver_again_what_the_reset_reapplies`, `crates/domain/tests/schedule_permissions.rs`) fails for a role that grants the first two and not the others, and for a role that is not listed, so that the gap cannot widen unseen. Also: an Update rechecks the authority of the actor in the transaction (`run:update` is read from the membership there), and a signal does not (the same as `signalRun` and the with-start requests: the permission is the one of the principal of the request). | They are defence for a role that grants the first two and not the others (a custom role); a reset delivers as the caller. | Open |
+| G1981 | Several refusals reach the client as a plain `422` with no `details.reason`, though the contract promises one or the code could give one: (1) a negative `startDelayMs` (the body type is unsigned, so the JSON is refused before the range is checked, where `0` and `31622400001` are `START_DELAY_INVALID`); (2) an overlap policy or a reapply policy the server does not know (`WHENEVER`, `SOMETIMES`); (3) `sourcePolicy` `CANCEL_SOURCE` on `resetRun`, which is not offered in this version (`reapply` other than `NONE` on a deployment that does not serve it has its reason, `RESET_REAPPLY_NOT_AVAILABLE`, since D1986); (4) a `reason` under 8 characters on `resetRun`. The scenarios pin each refusal as it is (a negative delay is left out of them, since pinning a defect is not a test of the contract). | A reason is what lets a client tell two 422s apart without parsing a sentence; an enum the deserializer rejects never reaches the code that names reasons. Closure: map the serde rejection of these fields to the reason of its field (`START_DELAY_INVALID` with `details.field`, `RESET_REAPPLY_NOT_AVAILABLE`, `RESET_SOURCE_POLICY_NOT_AVAILABLE`, `RESET_REASON_INVALID`) in `crates/api-http`, with a contract test, and then bless the goldens of `start-delay` and `reset` after reading the diff; breaking nothing, since only `details` gains a field. | open |
 | G1980 | Four limits of the first reset store (D1977) are not settled. (1) A prefix that holds a scoped event (an event of a child scope, a parallel branch, a collection item) is blocked (`ResetBlock::ScopedEvents`, answered `RESET_POINT_NOT_ELIGIBLE`): restoring it needs the side tables of those scopes (`REMATERIALIZE` in D1605) and none exists yet. Points after the first scoped event of a run therefore cannot be reset to, and `reset_points` says so for them. (2) The ceiling `RESET_PREFIX_EVENTS` is a constant of the application, not a setting of the deployment or the namespace: a longer prefix is refused, not truncated. (3) Only `REQUIRE_TERMINAL` sources and `reapply = NONE` exist: `CANCEL_SOURCE` (T018-057) and `SIGNALS`/`UPDATES`/`ALL` (T018-056) are not built. (4) *Closed 2026-11-06 (D1978, D1979):* the `run_resets` register, its reads and the five routes exist. (5) A run of a
 database execution is refused as a source (`origin` is set), and no test shows it: a trigger ties `origin` to an internal
 workflow, so a test cannot make such a run with SQL, and the ad-hoc database runner is not in this suite's fixtures. | (1) needs the scoped side tables, which belong to the features that own them; refusing is the honest answer and the refusal names the event type. (2) A setting is a product choice (how large a history may be copied in one transaction) that the owner decides with the namespace limits of 022. (3) and (4) are the next slices of US06 and each has its own task. | Open (T018-054, T018-056, T018-057) |
 | G1979 | Three things about the reset points of D1976 are not settled. (1) By D1022 a loop that succeeds is not a point: it ends at its last checkpoint (`loop.iteration_checkpointed` that completes it) and `loop.finished` is journaled only for a loop that failed or was cancelled; `timer.fired`, `wait.satisfied` and the decision of an approval complete a root node too and are not in the list. The literal list is implemented, which is the conservative reading: those completions are not offered, and the next completion after them is. (2) The clause "a prefix instance compensated, skipped, resolved or reconciled later" cannot be reached by a journal the reducer accepts: a compensation exists only inside a saga, whose node is parked while its body runs, so every point before a compensated instance is already refused for a waiting step. The clause is implemented and its predicate is unit-tested, but no end-to-end journal exercises its wiring. (3) The corpus of `tests/reset.rs` has no approval run and no loop run, for (1): their completions are not candidates; approval decisions are covered where real approval flows exist (T018-055). | (1) widening the points is a product choice (more places to reset to) and the owner decides it; (2) is a defence for event shapes a later feature may add. | Open (owner, for 1) |
-| G1978 | Two consequences of D1975 for the reset are not settled. (1) The retained arguments are on the receipt of the run that applied the Update. A reset re-emits the prefix of the source with its `retained: true` markers under a new run, so a reset of that reset run finds `retained: true` rows whose arguments sit on the receipts of the source: the reset must follow `reset_of` to the source's receipts, or copy the references. (2) A Signal-with-Start whose signal reaches an open holder is recorded `signal_with_start`, as the contract's table says, so a reset with `SIGNALS` (which re-delivers `via: signal`) does not deliver it again, although it is a signal to an open run; delivering it would make the reset re-signal what the caller asked for in one request that also may have started a run. | Both belong to the reset (T018-053, T018-054, T018-056): the rows are written now so the reset can choose; changing what `via` says later would need a rewrite of history. The reset reports a row it cannot reapply (`NOT_REAPPLIED`) with a reason. | Open (T018-053, T018-056) |
-| G1977 | The `reapplyOnReset` capability (D1974) has no setting of a deployment: `set_reset_reapply` is called by no binary, so a workflow that opts in cannot be published anywhere yet. And the CLI's `sagat check`, which has no deployment, accepts a document that the server will refuse. | Wiring it before the reset exists would let workflows opt in whose arguments nothing retains or reads; the setting arrives with the reset flag of US06 (T018-056, T018-057), where the retention (T018-043) and the reapply are proved together. A client cannot know the capabilities of a server (ADR-0032, consequences), and the refusal names the field. | Open (T018-043, T018-056) |
+| G1978 | Two consequences of D1975 for the reset are not settled. (1) The retained arguments are on the receipt of the run that applied the Update. A reset re-emits the prefix of the source with its `retained: true` markers under a new run, so a reset of that reset run finds `retained: true` rows whose arguments sit on the receipts of the source: the reset must follow `reset_of` to the source's receipts, or copy the references. (2) A Signal-with-Start whose signal reaches an open holder is recorded `signal_with_start`, as the contract's table says, so a reset with `SIGNALS` (which re-delivers `via: signal`) does not deliver it again, although it is a signal to an open run; delivering it would make the reset re-signal what the caller asked for in one request that also may have started a run. | Both belong to the reset (T018-053, T018-054, T018-056): the rows are written now so the reset can choose; changing what `via` says later would need a rewrite of history. The reset reports a row it cannot reapply (`NOT_REAPPLIED`) with a reason. | **Closed 2026-11-06 (D1982):** (1) the arguments are found by following the resets that made the run; (2) a `signal_with_start` row is not delivered again. |
+| G1977 | The `reapplyOnReset` capability (D1974) has no setting of a deployment: `set_reset_reapply` is called by no binary, so a workflow that opts in cannot be published anywhere yet. And the CLI's `sagat check`, which has no deployment, accepts a document that the server will refuse. | Wiring it before the reset exists would let workflows opt in whose arguments nothing retains or reads; the setting arrives with the reset flag of US06 (T018-056, T018-057), where the retention (T018-043) and the reapply are proved together. A client cannot know the capabilities of a server (ADR-0032, consequences), and the refusal names the field. | **Closed 2026-11-06 (D1986, D1990):** `SAGAT_RESET_REAPPLY_ENABLED` in the control plane (the engine has none: it reads stored versions with `parse_stored`); `sagat check` still has no deployment and accepts what a server without the flag refuses. |
 | G1974 | Two cases of Update-with-Start (D1970) are not proved or are weaker than the clause. (1) With an open holder the Update runs in a transaction after the claim of the identifier has ended, not under it: if the holder closes in between, the answer is `409 RUN_NOT_MUTABLE`, not a new run. (2) A holder that is a continuation chain is served in the segment that is current when the claim ends (`current_segment`); if that run hands off to its successor between that read and the effect, the answer is `409 RUN_CONTINUED` or `NOT_WAITING`. And a new run that 022's permit would queue is not rolled back, for the reason of G1973 (2). | (1) and (2) are races the caller sees as a typed 409 that a retry resolves, and they are the answers `updateRun` gives to the same race; closing them needs the Update inside the claim's transaction for an existing holder too, which the binding lock order (ADR-0050) allows and a later slice may do. | Open |
 | G1952 | A backfill step that the admission refuses (a full quota, no published version) waits and is tried again on every round of the pass, with no backoff, unlike a scheduled time (D1952). | A round is one poll of the database per owned shard and the step is one rolled-back transaction; harmless at the default poll but wasteful. Fix with a `retry_at` on the backfill (a migration). | Open |
 

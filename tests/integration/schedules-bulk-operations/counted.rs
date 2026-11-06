@@ -26,7 +26,7 @@ use crate::batch_executor::{
 use crate::firing::{Fixture, fixture, hourly};
 
 /// What `body` counts, as the Prometheus page: a recorder of its own on a runtime of one thread.
-fn recorded<F: Future<Output = ()>>(body: impl FnOnce() -> F) -> String {
+pub(crate) fn recorded<F: Future<Output = ()>>(body: impl FnOnce() -> F) -> String {
     let (metrics, recorder) = Metrics::detached(StdDuration::from_secs(60));
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -37,7 +37,7 @@ fn recorded<F: Future<Output = ()>>(body: impl FnOnce() -> F) -> String {
 }
 
 /// The value of the series of `name` whose labels are exactly `labels`, on the rendered page.
-fn series(page: &str, name: &str, labels: &[(&str, &str)]) -> Option<f64> {
+pub(crate) fn series(page: &str, name: &str, labels: &[(&str, &str)]) -> Option<f64> {
     page.lines()
         .filter(|line| line.starts_with(name) && line[name.len()..].starts_with('{'))
         .find(|line| {
