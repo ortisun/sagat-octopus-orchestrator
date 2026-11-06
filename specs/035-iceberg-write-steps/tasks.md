@@ -869,6 +869,10 @@ one commit carries the key.
     - the decoding bounds hold (D035-063).
 
   Refs: FR-035-010..014, FR-035-018, FR-035-019.
+
+  *2026-11-06, partly done, left unticked (D035-091, G035-039):* `test_mapping.py` (64 tests), `test_lookup.py` (25) and
+  `test_compat.py` (45) are written, were seen failing, and pass. `test_append.py` (streamed batches, an empty batch, the
+  decoding bounds) is not written.
 - [ ] T035-050 [P] [US02] Write the failing tests in `tests/integration/iceberg-writes/append.rs`:
   - a 10,000-record blob append makes one snapshot on the target ref;
   - its summary holds exactly `sagat.effect-key`, `sagat.run-id`, `sagat.step-id`, `sagat.workflow` and
@@ -976,6 +980,11 @@ one commit carries the key.
   - `priorAttemptMayHaveLeftFiles` is set after a crash.
 
   T035-049 passes. Refs: FR-035-010..014, FR-035-018, FR-035-020, D035-031.
+
+  *2026-11-06, first part done, left unticked (D035-091, G035-039):* `mapping.py`, `lookup.py` and `compat.py` are in
+  `runners/lake/sagat_lake/` as pure functions, with the published type table in `docs/guides/iceberg-type-mapping.md`. Not
+  done: `modes/append.py`, the conditional commit (T035-034), the adapters that build their inputs from a loaded table, the
+  deletion of the attempt's own files when a commit is refused, and `priorAttemptMayHaveLeftFiles`.
 - [ ] T035-058 [US02] Add the activity `sagat.database.iceberg.write` to
   `apps/database-runner/src/lake.rs`: rebuild the receipt, report `CompleteStep` or `FailStep`, and
   audit relay denials. Refs: FR-035-023, FR-035-027.

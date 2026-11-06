@@ -1198,3 +1198,43 @@ The other fixes were wording:
     refusals failed; so did the parallel, saga and failed-source cases once a review asked for them). Two rounds of mutation: 7 of the
     first version (one survived: the visited set, caught by the linear-time test) and 14 of the version that follows a join and drops
     the error edge of the source (one survived and showed a call that nothing needed, which is removed); all caught.
+- **D035-091 — The host decides three things with pure functions: how a value maps, whether the key is already there, and whether
+  the table can be written.** T035-049 and T035-057, first part. **Decided by: delegate** (the owner delegated the decisions
+  of this feature).
+  - *Why pure.* The correctness of the write rests on these three decisions, and each can be tested without a catalog, an object
+    store or a container: `mapping.py` (a record against the schema of the table), `lookup.py` (the walk of D035-030 over a mapping
+    of snapshots) and `compat.py` (FR-035-011 over facts read from the loaded table). The host's adapters (the table, its
+    snapshots, its metadata size) come later and only build their inputs.
+  - *The mapping table is published* in `docs/guides/iceberg-type-mapping.md` (FR-035-010 asks for one published table; none existed).
+    The choices it makes where the specification was silent: a large integer may arrive as a string of ASCII digits; a number is
+    read with its digits (`parse_float=Decimal`), so `12.50` stays `12.50`; a decimal never takes a float (it is already
+    inexact), and a digit that would be rounded away is `SCALE_OVERFLOW` while a trailing zero is accepted; `NaN` and the
+    infinities only reach `float` and `double`; a timestamp without a zone into a zoned column is `ZONE` (not guessed), and a zone
+    into a column without one is `ZONE` too (it would be dropped); microseconds, and a digit past the sixth that is not zero is
+    `SCALE_OVERFLOW`; **binary and fixed take only the typed cell of feature 017** (`{"type": "binary", "value": "<padded
+    base64>"}`), so a bare string into binary is `TYPE`, as the specification lists; a map is an array of key and value pairs,
+    or an object when the keys are strings, and the same key twice is `TYPE`; a nested key the table does not have is always
+    `UNKNOWN_FIELD` (ignoring unknown fields is for the record); a column named in the step's mapping that the table lacks is
+    `UNKNOWN_FIELD`, and a field the mapping does not name is neither written nor unknown.
+  - *Lookup.* `OUTCOME_UNKNOWN`, with no text, for a search that cannot decide (a parent the table no longer holds inside the
+    window, or more than 10,000 snapshots) and for the effect key found on another ref (FR-035-019, the edge case of the
+    specification). A key on the target ref wins even when the same commit is visible from another ref. A snapshot exactly at the
+    start minus five minutes is not older than the window, so the walk goes on to its parent.
+  - *Compatibility.* Format versions 1 and 2 are written, 3 and anything newer are not; the default file format is Parquet,
+    read without regard to case; the transforms are identity, year, month, day, hour, bucket[n] and truncate[n] with n positive,
+    and `void` or an unknown name is refused; a location is inside the warehouse by path and not by text (`warehouse-evil` is not
+    below `warehouse`), a `..` segment is inside nothing, and an empty root allows nothing rather than everything. The checks
+    run in a fixed order: the size of the metadata, the ref, the format version, the file format, the transforms, the locations.
+  - *Evidence.* 64 tests of the mapping, 25 of the lookup and 45 of the compatibility, written first and seen failing (the modules
+    did not exist). Mutations of each module: 35 of the mapping (7 survived the first tests and each got a test or, for a check
+    that was redundant, was removed), 17 of the lookup (2 survived and each got a test) and 22 of the compatibility (3 survived:
+    tests were added for one, and two checks that nothing needed were removed, leaving 21); all caught in the end. The whole of `runners/lake`: 348 passed, 1
+    skipped; `ruff check`, `ruff format --check` and `mypy` clean.
+- **G035-039 — What the host's pure checks leave open.** (1) Nothing builds their inputs yet: the facts of a loaded PyIceberg
+  table, the mapping of its snapshots, the reading of NDJSON and Parquet into records, the Arrow batches, the data files in the
+  attempt's directory and the conditional commit (T035-034) are still to write, and the T-commit-once spike (T035-019) that
+  decides whether PyIceberg's retry can be switched off still has to run. (2) `test_append.py` of T035-049 is not written, and
+  with it the bounds on decoding (D035-063). (3) The rules for overwrite and upsert (a scope, a delete marker, duplicate keys,
+  identifier fields) are not in `compat.py`; they come with T035-082 and T035-088. (4) The type table names the types the
+  Iceberg v1 and v2 formats have; `timestamp_ns`, `variant` and the geometry types are v3 and refused with the version.
+  *Exit condition:* points 1 and 2 by the append path of T035-057; point 3 by the tasks named.
