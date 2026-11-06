@@ -18,6 +18,23 @@ request* is not a merge and keeps the rule of 4.1.0 (the tests of what it change
 a release branch). If the owner meant that a pull request into `develop` should start no CI either, that is one more
 amendment and one more line of the workflow.
 
+## 2026-11-05 — The lake containers share the runner's group
+
+Feature 035. The relay token of an Iceberg attempt is meant to be readable by the attempt's container alone, which takes
+`CAP_CHOWN` in a runner that the contract says is a plain user (`USER 10001`) and runs with `no-new-privileges`. The assistant put
+three options to the owner: the runner runs as root with that one capability, the sandbox runner prepares the directory, or the
+slots share a group. The owner chose the third, in the Claude session.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-05-2 | "Vamos com a letra C. As vagas compartilham um grupo." | owner | Decided | specs/035-iceberg-write-steps/contracts/lake-runtime.md, crates/infra-sandbox/src/lake.rs |
+
+What the choice costs, as the owner was told: no privilege is added to the process that holds the credentials, and the user id of a
+slot stops protecting the files between attempts. What keeps two attempts apart is the mount (a container is given its own
+sub-path only, which the isolation tests show) and the token on the relay. If the engine failed to keep a container to its sub-path,
+the files of another attempt would be readable to it. The test `the_user_of_a_slot_is_not_a_boundary_between_attempts` states
+this and fails on the day the user becomes a boundary again.
+
 ## 2026-11-04 — The CI runs the tests of the change; the whole stack runs for a release
 
 The owner gave two instructions in the Claude session, the second replacing the first. The assistant recorded them; the

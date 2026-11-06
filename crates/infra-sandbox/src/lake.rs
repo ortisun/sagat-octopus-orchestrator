@@ -6,11 +6,19 @@
 //!
 //! The container is created with: no network interface but loopback, a read-only root, a small writable `/tmp` that
 //! cannot run code, every Linux capability dropped, `no-new-privileges`, the engine's default seccomp profile, a user
-//! of its own per slot, a private PID and IPC namespace, a memory limit with swap off, a CPU quota, a limit on
+//! of its own per slot and the group of the lake runner, a private PID and IPC namespace, a memory limit with swap off, a CPU quota, a limit on
 //! processes, on file size and on open files, no core dumps, no log driver and **one** mount: its own attempt
 //! directory, taken as a sub-path of the work volume, so that another attempt's directory is not there to be read. A
 //! start carries no credential: the host finds the relay socket and its token in the attempt directory, where the
 //! lake runner put them.
+//!
+//! **The group, not the user, lets the container read what the runner left (D035-086, the owner's decision).** The
+//! runner is a plain user and cannot give a file to the user of a slot, which takes `CAP_CHOWN`. It makes the attempt
+//! directory 0770, the token 0640 and the socket 0660 in its own group, and the container runs as its slot's user in
+//! that group. What separates two attempts is therefore the mount (each container is given only its own directory)
+//! and the token on the relay, not the user id of the slot: the user id gives each attempt a process identity of its
+//! own and nothing more. If the engine failed to keep a container to its sub-path, the files of another attempt would
+//! be readable to it.
 //!
 //! What this cannot say is how strong the runtime under it is (`runc` here; a stronger runtime is the engine's
 //! configuration, as for the script sandbox in [`crate::docker`]), and whether the engine gives the container a user
@@ -50,6 +58,8 @@ pub enum LakeProfileError {
     AttemptId,
     /// The slot is past the last one.
     Slot,
+    /// The group is root's, which is never a group of a lake container.
+    Group,
     /// A limit is zero, and zero is not unlimited.
     Limits,
     /// An image, volume or owner name is empty, too long or carries a character it must not.
@@ -63,6 +73,7 @@ impl std::fmt::Display for LakeProfileError {
                 "the attempt id is not 1 to 64 lower-case hexadecimal digits and hyphens"
             }
             Self::Slot => "the slot is past the last one",
+            Self::Group => "the group of a lake container is never root's",
             Self::Limits => "a limit of the lake container is zero",
             Self::Name => "an image, volume or owner name is not acceptable",
         })
@@ -103,6 +114,8 @@ pub struct LakeSpec {
     pub attempt_id: String,
     /// The slot of the attempt on this node; it selects the user id.
     pub slot: u32,
+    /// The group of the lake runner, which owns the files in the attempt directory and lets the container read them.
+    pub group: u32,
     /// The work volume.
     pub mount: AttemptMount,
     /// The budget.
@@ -166,6 +179,9 @@ pub fn container_config(spec: &LakeSpec) -> Result<ContainerCreateBody, LakeProf
         return Err(LakeProfileError::AttemptId);
     }
     let uid = uid_for_slot(spec.slot).ok_or(LakeProfileError::Slot)?;
+    if spec.group == 0 {
+        return Err(LakeProfileError::Group);
+    }
     let limits = &spec.limits;
     if limits.memory_bytes == 0
         || limits.processes == 0
@@ -191,7 +207,7 @@ pub fn container_config(spec: &LakeSpec) -> Result<ContainerCreateBody, LakeProf
         image: Some(spec.image.clone()),
         cmd: Some(host_command(&spec.attempt_id)),
         working_dir: Some("/tmp".to_owned()),
-        user: Some(format!("{uid}:{uid}")),
+        user: Some(format!("{uid}:{}", spec.group)),
         env: Some(vec![
             "PATH=/usr/local/bin:/usr/bin:/bin".to_owned(),
             "HOME=/tmp".to_owned(),

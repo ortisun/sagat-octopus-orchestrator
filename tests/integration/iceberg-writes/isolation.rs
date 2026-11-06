@@ -28,6 +28,12 @@ const TOKEN_A: &str = "token-of-attempt-a";
 const TOKEN_B: &str = "token-of-attempt-b";
 const SLOT_A: u32 = 11;
 const SLOT_B: u32 = 12;
+/// The user and the group of the lake runner (`USER 10001`): what it owns in the work volume, and the group that lets a
+/// lake container read it (D035-086).
+const RUNNER_UID: u32 = 10_001;
+const GROUP: u32 = 10_001;
+/// A group that is not the runner's.
+const OTHER_GROUP: u32 = 20_000;
 const PROBE_WAIT: Duration = Duration::from_secs(60);
 
 fn image() -> String {
@@ -82,6 +88,7 @@ impl Work {
             image: image(),
             attempt_id: "0".to_owned(),
             slot: 0,
+            group: GROUP,
             mount: AttemptMount {
                 volume: volume.clone(),
             },
@@ -120,6 +127,7 @@ impl Work {
             image: image(),
             attempt_id: attempt.to_owned(),
             slot,
+            group: GROUP,
             mount: AttemptMount {
                 volume: self.volume.clone(),
             },
@@ -128,19 +136,16 @@ impl Work {
         }
     }
 
-    /// The lake runner's part: make the two directories and their tokens. Handing a file to the user of a slot needs
-    /// `CAP_CHOWN`, which the holder has (who holds it in a deployment is G035-033).
+    /// The lake runner's part: make the two directories and their tokens, owned by the runner's user and group, the
+    /// directory 0770 and the token 0640 (D035-086). The runner is a plain user and cannot give a file to the user of a
+    /// slot; the holder is root only because the test volume is created by root.
     async fn prepare(&self) {
-        let (ua, ub) = (
-            uid_for_slot(SLOT_A).expect("slot"),
-            uid_for_slot(SLOT_B).expect("slot"),
-        );
         let (a, b) = (&self.attempt_a, &self.attempt_b);
         let script = format!(
             "set -e; mkdir /w/{a} /w/{b}; \
              printf %s {TOKEN_A} > /w/{a}/relay.token; printf %s {TOKEN_B} > /w/{b}/relay.token; \
-             chown {ua}:{ua} /w/{a} /w/{a}/relay.token; chown {ub}:{ub} /w/{b} /w/{b}/relay.token; \
-             chmod 0700 /w/{a} /w/{b}; chmod 0400 /w/{a}/relay.token /w/{b}/relay.token"
+             chown {RUNNER_UID}:{GROUP} /w/{a} /w/{a}/relay.token /w/{b} /w/{b}/relay.token; \
+             chmod 0770 /w/{a} /w/{b}; chmod 0640 /w/{a}/relay.token /w/{b}/relay.token"
         );
         let exit = self
             .holder
@@ -162,11 +167,25 @@ impl Work {
         limits: LakeLimits,
         script: &str,
     ) -> (Exit, HashMap<String, String>) {
+        self.probe_in_group(attempt, slot, GROUP, limits, script)
+            .await
+    }
+
+    /// As [`Self::probe`], with the container in `group` instead of the runner's.
+    async fn probe_in_group(
+        &self,
+        attempt: &str,
+        slot: u32,
+        group: u32,
+        limits: LakeLimits,
+        script: &str,
+    ) -> (Exit, HashMap<String, String>) {
         let script = script
             .replace("@A@", &self.attempt_a)
             .replace("@B@", &self.attempt_b);
-        let mut body =
-            container_config(&self.spec(attempt, slot, limits)).expect("a valid profile");
+        let mut spec = self.spec(attempt, slot, limits);
+        spec.group = group;
+        let mut body = container_config(&spec).expect("a valid profile");
         body.cmd = Some(vec!["sh".to_owned(), "-c".to_owned(), script]);
         let exit = self
             .engine
@@ -224,7 +243,8 @@ async fn an_attempt_container_has_the_user_the_root_the_capabilities_and_the_lim
     let uid = uid_for_slot(SLOT_A).expect("slot").to_string();
     assert_eq!(
         (got["uid"].as_str(), got["gid"].as_str()),
-        (uid.as_str(), uid.as_str())
+        (uid.as_str(), GROUP.to_string().as_str()),
+        "the user of the slot, in the group of the runner"
     );
     assert_eq!(
         got["capeff"], "0000000000000000",
@@ -298,19 +318,45 @@ async fn an_attempt_sees_its_own_directory_and_not_another_attempts() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_token_belongs_to_the_user_of_its_slot_and_to_no_other_slot() {
+async fn only_the_group_of_the_runner_reads_what_the_runner_left_in_the_attempt_directory() {
     let work = Work::new().await;
-    // Attempt A's directory, mounted by a container of slot B: the mount is right and the user is wrong.
+    // The container is in the attempt's mount and in another group: the directory is 0770 and the token 0640, so nothing
+    // is open to "others".
     let (exit, got) = work
-        .probe(&work.attempt_a.clone(), SLOT_B, limits(), SURVEY)
+        .probe_in_group(
+            &work.attempt_a.clone(),
+            SLOT_A,
+            OTHER_GROUP,
+            limits(),
+            SURVEY,
+        )
         .await;
     assert_eq!(exit.code, Some(0), "{exit:?}");
     assert!(
         got["ownfile"].contains("Permission denied") || got["ownfile"].contains("Can't open"),
-        "slot B read attempt A's token: {}",
+        "a container outside the runner's group read the token: {}",
         got["ownfile"]
     );
     assert!(!got["ownfile"].contains(TOKEN_A));
+    work.finish().await;
+}
+
+/// What the decision costs (D035-086, the owner's choice of a shared group over a capability for the runner). The user id of
+/// a slot is a process identity, not a boundary between attempts: if a container were given another attempt's directory,
+/// the group would let it read the token. What keeps two attempts apart is the mount (`an_attempt_sees_its_own_directory_and_
+/// not_another_attempts`) and the token on the relay. This test fails the day someone makes the user a boundary again, so
+/// that the contract is amended with it.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_user_of_a_slot_is_not_a_boundary_between_attempts() {
+    let work = Work::new().await;
+    let (exit, got) = work
+        .probe(&work.attempt_a.clone(), SLOT_B, limits(), SURVEY)
+        .await;
+    assert_eq!(exit.code, Some(0), "{exit:?}");
+    assert_eq!(
+        got["ownfile"], TOKEN_A,
+        "a container of another slot in the runner's group, given this directory, reads the token"
+    );
     work.finish().await;
 }
 

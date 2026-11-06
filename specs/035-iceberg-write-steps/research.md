@@ -1041,3 +1041,16 @@ The other fixes were wording:
   `check_database_access` and is not covered by the real-store scenario, which exercises the publication. (5) Overwrite, upsert
   and `recordSchema` come with their tasks (T035-080, T035-085, T035-054). *Exit condition:* each is closed by the task named,
   with a test.
+- **D035-086 — The lake containers run as their slot's user in the runner's group.** Closes point 1 of G035-033. **Decided by:
+  owner** (OD-2026-11-05-2).
+  - *The decision.* The runner, a plain user, makes the attempt directory 0770, `relay.token` 0640 and `relay.sock` 0660 in its own
+    group; the container runs as `<slot uid>:<runner gid>`. `LakeSpec` carries the group (never root's); `container_config` sets
+    `user: "<uid>:<group>"`.
+  - *What it gives up.* The user id of a slot no longer protects the files of one attempt from a container that were given another
+    attempt's directory. The separation is the sub-path mount and the token on the relay. The decision is stated by a test that
+    fails if the user becomes a boundary again (`the_user_of_a_slot_is_not_a_boundary_between_attempts`).
+  - *The contract.* `lake-runtime.md` is amended: the modes and owners above, and the host path `python3 -I -X utf8
+    /opt/sagat/lake/sagat_lake/host.py` (D035-081, point 1 of G035-031).
+  - *Evidence.* 20 configuration tests; 9 tests against a real Docker engine (the group of the container, a container in another
+    group reading nothing, the slot's own token readable, the cost test); 3 mutations of the group logic, all caught, one of them
+    against the real engine.
