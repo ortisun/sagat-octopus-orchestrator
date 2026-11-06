@@ -13,13 +13,13 @@ the attempt's own id.
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from .compat import inside
 from .failures import WORKER_ERROR, Failure
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Collection, Sequence
 
     from pyiceberg.table import Table
 
@@ -49,8 +49,25 @@ def pin_attempt_directory(table: Table, attempt_id: str) -> str:
     return directory
 
 
-def remove_attempt_files(table: Table, directory: str, attempt_id: str, *, warehouse_locations: Sequence[str]) -> int:
-    """Deletes the files below ``directory``, the directory of the attempt, and returns how many it deleted.
+class Removal(NamedTuple):
+    """What a removal did: the files it deleted and the files it could not."""
+
+    deleted: int
+    failed: int
+
+
+def remove_attempt_files(
+    table: Table,
+    directory: str,
+    attempt_id: str,
+    *,
+    warehouse_locations: Sequence[str],
+    keep: Collection[str] = (),
+) -> Removal:
+    """Deletes the files below ``directory``, the directory of the attempt, except those in ``keep``.
+
+    ``keep`` holds the locations a commit references, as the table writes them (``s3://bucket/key``). A file that cannot
+    be deleted is counted and the others still go: the removal of orphans never ends an attempt that has committed.
 
     A directory that is not inside the warehouse, that is not clean, or whose last segment is not the attempt's id is
     refused with ``WORKER_ERROR`` before anything is listed: it would be a bug of the host, and the host must not delete
@@ -60,10 +77,10 @@ def remove_attempt_files(table: Table, directory: str, attempt_id: str, *, wareh
     directory = directory.rstrip("/")
     if directory.rpartition("/")[2] != attempt_id or not inside(directory, warehouse_locations):
         raise Failure(WORKER_ERROR)
-    return _delete_below(table, directory)
+    return _delete_below(table, directory, keep)
 
 
-def _delete_below(table: Table, directory: str) -> int:
+def _delete_below(table: Table, directory: str, keep: Collection[str]) -> Removal:
     from pyarrow.fs import FileSelector, FileType  # type: ignore[import-untyped]
     from pyiceberg.io.pyarrow import PyArrowFileIO
 
@@ -74,9 +91,14 @@ def _delete_below(table: Table, directory: str) -> int:
         raise Failure(WORKER_ERROR)
     scheme, netloc, path = io.parse_location(directory, io.properties)
     fs = io.fs_by_scheme(scheme, netloc)
-    removed = 0
+    deleted = failed = 0
     for info in fs.get_file_info(FileSelector(path, recursive=True, allow_not_found=True)):
-        if info.type == FileType.File:
+        if info.type != FileType.File or f"{scheme}://{info.path}" in keep:
+            continue
+        try:
             fs.delete_file(info.path)
-            removed += 1
-    return removed
+        except OSError:
+            failed += 1
+        else:
+            deleted += 1
+    return Removal(deleted, failed)
