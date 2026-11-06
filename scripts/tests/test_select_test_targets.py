@@ -273,16 +273,29 @@ class Scope(unittest.TestCase):
         self.assertEqual(result.returncode, 2, result.stdout)
         self.assertNotIn("rm -rf", result.stdout)
 
-    # -- unit tests of the changed packages ------------------------------------------------
-    def test_a_changed_package_gets_its_own_unit_tests_only(self):
+    # -- unit tests of the changed packages and of their dependents -------------------------
+    def test_a_changed_package_nobody_depends_on_gets_its_own_unit_tests_only(self):
         self.write("crates/leaf/src/lib.rs", "// changed\n")
         self.commit()
         self.assertEqual(self.decide()["crates"], "sagat-leaf")
 
-    def test_a_changed_core_package_does_not_pull_in_its_dependents_unit_tests(self):
+    def test_a_changed_core_package_pulls_in_the_unit_tests_of_its_dependents(self):
         self.write("crates/domain/src/lib.rs", "// changed\n")
         self.commit()
-        self.assertEqual(self.decide()["crates"], "sagat-domain")
+        # application depends on domain, and the cli on application: a break in domain shows in their tests.
+        self.assertEqual(set(self.decide()["crates"].split()), {"sagat-domain", "sagat-application", "sagat-cli"})
+
+    def test_the_integration_crate_is_never_a_dependent_whose_unit_tests_run(self):
+        # In the real workspace the integration crate depends on every package, so it would always be "affected".
+        self.write("tests/Cargo.toml", manifest(dependency='tempfile = "3"\nsagat-domain = { workspace = true }'))
+        self.write("crates/domain/src/lib.rs", "// changed\n")
+        self.commit()
+        self.assertNotIn("sagat-tests", self.decide()["crates"].split())
+
+    def test_a_changed_middle_package_pulls_in_what_depends_on_it_and_not_what_it_depends_on(self):
+        self.write("crates/application/src/lib.rs", "// changed\n")
+        self.commit()
+        self.assertEqual(set(self.decide()["crates"].split()), {"sagat-application", "sagat-cli"})
 
     def test_two_changed_packages_are_both_listed(self):
         self.write("crates/leaf/src/lib.rs", "// changed\n")
@@ -307,40 +320,37 @@ class Scope(unittest.TestCase):
         self.commit()
         self.assertEqual(self.decide()["crates"], "")
 
-    # -- integration suites that touch the affected packages -------------------------------
-    def test_a_changed_leaf_package_selects_only_the_suite_that_names_it(self):
+    # -- integration suites run only for what changed ---------------------------------------
+    def test_a_changed_package_selects_no_integration_suite_even_one_that_names_it(self):
+        # contract_rest_a names sagat_leaf in its sources; its own files did not change, so it does not run.
         self.write("crates/leaf/src/lib.rs", "// changed\n")
         self.commit()
-        self.assertEqual(self.chosen(), {"contract_rest_a"})
+        self.assertEqual(self.chosen(), set())
 
-    def test_a_changed_core_package_selects_the_suites_that_name_it_or_its_dependents(self):
+    def test_a_changed_core_package_selects_no_suite_that_names_it_or_its_dependents(self):
         self.write("crates/domain/src/lib.rs", "// changed\n")
         self.commit()
-        # integration_a names sagat_domain; contract_a names sagat_application, which depends on it.
-        self.assertEqual(self.chosen(), {"integration_a", "contract_a"})
+        # integration_a names sagat_domain and contract_a names sagat_application, which depends on it.
+        self.assertEqual(self.chosen(), set())
 
     def test_an_app_that_no_suite_names_selects_no_suite(self):
         self.write("apps/cli/src/main.rs", "// changed\n")
         self.commit()
         self.assertEqual(self.chosen(), set())
 
-    def test_the_shared_support_does_not_link_a_suite_to_every_package(self):
-        # tests/support names sagat_domain and sagat_leaf, but only the suite's own sources count.
-        self.write("crates/leaf/src/lib.rs", "// changed\n")
+    def test_a_changed_package_and_a_changed_suite_select_that_suite_only(self):
+        self.write("crates/domain/src/lib.rs", "// changed\n")
+        self.write("tests/fault/b/x.rs", "// x\n")
         self.commit()
-        self.assertNotIn("fault_b", self.chosen())
-
-    def test_a_parent_suite_does_not_inherit_what_its_nested_suite_names(self):
-        self.write("crates/leaf/src/lib.rs", "// changed\n")
-        self.commit()
-        self.assertNotIn("contract_a", self.chosen())
+        decision = self.decide()
+        self.assertEqual(set(decision["targets"].split()), {"fault_b"})
+        self.assertEqual(set(decision["crates"].split()), {"sagat-domain", "sagat-application", "sagat-cli"})
 
     def test_the_log_says_why_a_suite_was_selected(self):
-        self.write("crates/leaf/src/lib.rs", "// changed\n")
+        self.write("tests/fault/b/x.rs", "// x\n")
         self.commit()
         result = self.run_select()
-        self.assertIn("contract_rest_a", result.stdout)
-        self.assertIn("sagat-leaf", result.stdout)
+        self.assertIn("select fault_b: tests/fault/b/x.rs", result.stdout)
 
     # -- SDKs, Studio and scripts ----------------------------------------------------------
     def test_an_sdk_change_selects_that_languages_unit_tests(self):
@@ -410,6 +420,7 @@ class Scope(unittest.TestCase):
     # -- output ------------------------------------------------------------------------------
     def test_the_github_output_file_gets_the_whole_decision(self):
         self.write("crates/leaf/src/lib.rs", "// changed\n")
+        self.write("tests/contract/a/rest/x.rs", "// x\n")
         self.commit()
         out = self.root / "gh_output.txt"
         self.run_select(output=out)
