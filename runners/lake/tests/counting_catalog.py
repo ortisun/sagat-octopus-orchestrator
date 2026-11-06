@@ -53,6 +53,8 @@ class Catalog:
     config_overrides: dict[str, str] = field(default_factory=dict)
     table_config: dict[str, str] = field(default_factory=dict)
     storage_credentials: list[dict[str, Any]] = field(default_factory=list)
+    # The headers of every request received, as a client sent them (names as the HTTP server reads them).
+    headers: list[dict[str, str]] = field(default_factory=list)
     # Seconds every request waits before it is answered: a catalog that does not answer in time.
     delay: float = 0.0
     # A text and its replacement in the table the catalog returns: the same table, said to be somewhere else.
@@ -74,6 +76,7 @@ def _handler(state: Catalog) -> type[BaseHTTPRequestHandler]:
             self.wfile.write(payload)
 
         def do_GET(self) -> None:
+            state.headers.append(dict(self.headers.items()))
             time.sleep(state.delay)
             path = self.path.split("?", 1)[0]
             if path == "/v1/config":
@@ -105,6 +108,7 @@ def _handler(state: Catalog) -> type[BaseHTTPRequestHandler]:
             return dict(json.loads(response.model_dump_json(by_alias=True, exclude_none=True)))
 
         def do_POST(self) -> None:
+            state.headers.append(dict(self.headers.items()))
             body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
             state.commits.append(self.path)
             time.sleep(state.delay)

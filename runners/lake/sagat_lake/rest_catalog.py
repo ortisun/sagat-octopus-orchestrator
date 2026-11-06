@@ -66,6 +66,15 @@ class LakeRestCatalog(RestCatalog):
         _bound(session, self._request_timeout)
         return session
 
+    def _config_headers(self, session: Session) -> None:
+        super()._config_headers(session)
+        # PyIceberg sets `vended-credentials` when nobody did, and lets a `header.` property say anything. The
+        # connection decides what the catalog is asked to delegate.
+        if (delegation := self._hygiene.access_delegation) is None:
+            session.headers.pop("X-Iceberg-Access-Delegation", None)
+        else:
+            session.headers["X-Iceberg-Access-Delegation"] = delegation
+
     def _fetch_config(self) -> None:
         params = {}
         if warehouse_location := self.properties.get(WAREHOUSE_LOCATION):

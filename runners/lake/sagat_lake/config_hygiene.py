@@ -210,6 +210,20 @@ class Hygiene:
         declares, and the FileIO implementation of the host."""
         return {**catalog, **declared, "py-io-impl": _FILE_IO[self._declaration.storage]}
 
+    @property
+    def access_delegation(self) -> str | None:
+        """The value of ``X-Iceberg-Access-Delegation`` the connection allows, or ``None`` for no header at all.
+
+        PyIceberg asks every catalog for vended credentials by default. The host asks for what the connection declares
+        and nothing else, so a catalog is never invited to hand over credentials the connection does not use.
+        """
+        wanted = []
+        if self._declaration.vended_credentials:
+            wanted.append("vended-credentials")
+        if self._declaration.remote_signing and self._declaration.storage is StorageType.S3:
+            wanted.append("remote-signing")
+        return ",".join(wanted) or None
+
     @staticmethod
     def _plausible(key: str, value: str) -> bool:
         if key == "prefix":

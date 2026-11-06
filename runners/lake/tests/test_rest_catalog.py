@@ -225,3 +225,40 @@ def test_the_file_io_is_pinned_even_when_the_caller_forgot_to_name_it(rest: Cata
     rest.config_overrides = {"py-io-impl": HOSTILE_IO}
     catalog = LakeRestCatalog("lake", hygiene=hygiene(), request_timeout=5.0, uri=rest.uri)
     assert catalog.properties["py-io-impl"] == PINNED_IO
+
+
+# ------------------------------------------------------------------------------------------- access delegation
+def delegation_headers(rest: Catalog) -> list[str | None]:
+    return [headers.get("X-Iceberg-Access-Delegation") for headers in rest.headers]
+
+
+def test_pyiceberg_alone_asks_every_catalog_for_vended_credentials(rest: Catalog) -> None:
+    # the premise: the plain client sets the header by default, whatever the connection says
+    RestCatalog("plain", uri=rest.uri, **{"py-io-impl": PINNED_IO})
+    assert delegation_headers(rest) == ["vended-credentials"]
+
+
+def test_a_connection_that_declares_no_delegation_does_not_ask_for_any(rest: Catalog) -> None:
+    said_to_be_in_the_warehouse(rest)
+    lake(rest, hygiene(vended=False)).load_table(NAME)
+    assert delegation_headers(rest)
+    assert set(delegation_headers(rest)) == {None}
+
+
+def test_a_connection_that_declares_vended_credentials_asks_for_them(rest: Catalog) -> None:
+    said_to_be_in_the_warehouse(rest)
+    lake(rest, hygiene(vended=True)).load_table(NAME)
+    assert set(delegation_headers(rest)) == {"vended-credentials"}
+
+
+def test_remote_signing_is_asked_for_next_to_vended_credentials(rest: Catalog) -> None:
+    guard = Hygiene(Declaration(StorageType.S3, (WAREHOUSE,), vended_credentials=True, remote_signing=True))
+    LakeRestCatalog("lake", hygiene=guard, request_timeout=5.0, **guard.properties({"uri": rest.uri}, {}))
+    assert set(delegation_headers(rest)) == {"vended-credentials,remote-signing"}
+
+
+def test_a_header_property_cannot_ask_for_more_than_the_connection_declares(rest: Catalog) -> None:
+    guard = hygiene(vended=False)
+    properties = {**guard.properties({"uri": rest.uri}, {}), "header.X-Iceberg-Access-Delegation": "vended-credentials"}
+    LakeRestCatalog("lake", hygiene=guard, request_timeout=5.0, **properties)
+    assert set(delegation_headers(rest)) == {None}

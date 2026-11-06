@@ -17,7 +17,8 @@ instead of repeating a refused one on its own (D035-093); `tests/counting_catalo
 commit requests it receives. `attempt.py` puts the data files of an attempt in a directory of their own and deletes
 exactly those when a commit is refused (D035-095). `records.py` reads the NDJSON of a step a bounded line at a time (D035-097). `batches.py` gives the mapped rows to PyIceberg as Arrow record batches, bounded in rows and bytes (D035-098). `modes/append.py` is the append of D035-030 around them: one commit per search, a directory per try, and nothing
 deleted that a landed commit may reference (D035-100). `request.py` checks the request line field by field, against the limits of the domain (D035-101). `rest_catalog.py` is PyIceberg's REST client that believes nothing the catalog says and bounds every request in time
-(D035-102).
+(D035-102). `connection.py` turns the pinned connection into the hygiene, the client properties and that catalog, and asks the
+catalog to delegate only what the connection declares (D035-105).
 
 ## Interface
 
