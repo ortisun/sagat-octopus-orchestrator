@@ -23,7 +23,7 @@ def facts(**changes: Any) -> TableFacts:
     base = TableFacts(
         format_version=2,
         default_file_format="parquet",
-        partition_transforms=("identity", "day", "bucket[16]", "truncate[4]", "year", "month", "hour"),
+        partition_transforms=("identity", "void"),
         locations=(LOCATION, LOCATION + "/data", LOCATION + "/metadata"),
         metadata_bytes=1024,
         refs=("main", "audit"),
@@ -72,25 +72,26 @@ def test_a_default_file_format_other_than_parquet_is_refused(name: str) -> None:
     refused(facts(default_file_format=name), "ICEBERG_UNSUPPORTED_TABLE", "FILE_FORMAT")
 
 
+# The runtime image has PyIceberg without `pyiceberg-core`, and PyIceberg 0.12 needs it to apply every transform but
+# these two (checked by writing to a table of each: `year`, `month`, `day`, `hour`, `bucket` and `truncate` fail
+# with NotInstalledError).
+@pytest.mark.parametrize("transform", ["year", "month", "day", "hour", "bucket[16]", "truncate[4]"])
+def test_a_transform_that_needs_pyiceberg_core_is_refused_until_the_runtime_has_it(transform: str) -> None:
+    refused(facts(partition_transforms=("identity", transform)), "ICEBERG_UNSUPPORTED_TABLE", "TRANSFORM")
+
+
 @pytest.mark.parametrize(
     "transform",
-    [
-        "void",
-        "foo",
-        "bucket",
-        "bucket[0]",
-        "bucket[x]",
-        "truncate[]",
-        "Identity",
-        "",
-        "day2",
-        "yearly",
-        "bucket[16]x",
-        "identity(a)",
-    ],
+    ["foo", "bucket", "bucket[0]", "bucket[x]", "truncate[]", "Identity", "", "identity2", "voided", "identity(a)"],
 )
-def test_a_partition_transform_the_host_cannot_apply_is_refused(transform: str) -> None:
+def test_a_partition_transform_that_is_not_one_is_refused(transform: str) -> None:
     refused(facts(partition_transforms=("identity", transform)), "ICEBERG_UNSUPPORTED_TABLE", "TRANSFORM")
+
+
+def test_identity_and_void_are_the_transforms_the_runtime_applies() -> None:
+    assert verdict(facts(partition_transforms=("identity",))) is None
+    assert verdict(facts(partition_transforms=("void",))) is None
+    assert verdict(facts(partition_transforms=("identity", "identity", "void"))) is None
 
 
 def test_an_unpartitioned_table_is_accepted() -> None:
@@ -173,7 +174,7 @@ def test_the_checks_run_in_a_fixed_order_so_the_answer_is_always_the_same() -> N
         metadata_bytes=10_000,
         format_version=3,
         default_file_format="orc",
-        partition_transforms=("void",),
+        partition_transforms=("day",),
         locations=("s3://elsewhere/x",),
     )
     refused(table, "ICEBERG_LIMIT_EXCEEDED", limit=4096, ref="release")
