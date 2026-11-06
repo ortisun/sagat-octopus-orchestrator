@@ -1736,7 +1736,7 @@ The other fixes were wording:
     know**, so a schema that grows one cannot turn the check into a pass. No dependency is added to the image or the lock.
   - *What it found.* Nothing: the four receipts the host writes (committed with `ignoredFields` and `priorAttemptMayHaveLeftFiles`, found by
     lookup, `EMPTY_NO_COMMIT`, and a committed one after a refused try whose files could not all be deleted, `uncommittedFiles`) conform on the
-    first run, and the checker rejects eight kinds of wrong receipt (an extra member, a count with a leading zero, a count that is a number,
+    first run, and the checker rejects seven kinds of wrong receipt (an extra member, a count with a leading zero, a count that is a number,
     an outcome outside the enum, a missing `ref`, format version 3, a snapshot id with letters). The host never writes `droppedValues`.
   - *Not covered.* The failure line (`{"failure": {...}}`) has no schema file; the Rust `HostFailure::from_wire` is its definition, and
     `test_host_protocol.py` checks the Python side against the table of codes in `failure.rs`. Receipts of the other operations come with them.
