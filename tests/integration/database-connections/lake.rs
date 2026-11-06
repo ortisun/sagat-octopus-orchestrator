@@ -9,23 +9,41 @@ use sagat_application::{
     database::{ConnectionService, ConnectionWrite},
     definitions::IrError,
     error::AppError,
+    managed_secrets::{ManagedSecretService, ManagedSecretWrite},
+    publishing::Promotion,
     reveal_grants::RevealGrantService,
 };
 use sagat_domain::{
     audit::AuditAction,
-    classification::EgressCeiling,
+    classification::{EgressCeiling, Level},
     database::{
-        AccessDelegation, ConnectionConfig, ConnectionStatus, IcebergCatalog, IcebergConfig,
-        LakeLimits, LakeStorage, RestAuth, RestCatalog, S3Storage, StorageCredentials, StorageKind,
-        WriteMode,
+        AccessDelegation, ConnectionConfig, ConnectionStatus, DatabaseLimits, EgressRefusal,
+        IcebergCatalog, IcebergConfig, LakeLimits, LakeRefusal, LakeStorage, RestAuth, RestCatalog,
+        S3Storage, StorageCredentials, StorageKind, TlsPolicy, WriteMode,
     },
-    identity::{Permission, Slug},
-    secrets::SecretName,
+    definition::WorkflowId,
+    identity::{Environment, Permission, Principal, Role, Slug},
+    secrets::{SecretName, SecretValue},
 };
+use sagat_infra_postgres::PgRunStore;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 fn iceberg(uri: &str, catalog_secret: &str, ceiling: EgressCeiling) -> ConnectionConfig {
+    iceberg_in(
+        uri,
+        catalog_secret,
+        ceiling,
+        vec![WriteMode::Append, WriteMode::Overwrite],
+    )
+}
+
+fn iceberg_in(
+    uri: &str,
+    catalog_secret: &str,
+    ceiling: EgressCeiling,
+    modes: Vec<WriteMode>,
+) -> ConnectionConfig {
     ConnectionConfig::iceberg(IcebergConfig {
         catalog: IcebergCatalog::Rest(RestCatalog {
             uri: uri.to_owned(),
@@ -49,7 +67,7 @@ fn iceberg(uri: &str, catalog_secret: &str, ceiling: EgressCeiling) -> Connectio
             credentials: StorageCredentials::Static,
         },
         warehouse_locations: vec!["s3://lake/warehouse/".to_owned()],
-        allowed_modes: vec![WriteMode::Append, WriteMode::Overwrite],
+        allowed_modes: modes,
         catalog_secret: Some(SecretName::parse(catalog_secret).unwrap()),
         storage_secret: Some(SecretName::parse("db-credentials").unwrap()),
         egress_ceiling: ceiling,
@@ -101,7 +119,7 @@ async fn stored(
     .unwrap()
 }
 
-pub async fn run(w: &World) {
+pub async fn run(w: &World, secrets: &ManagedSecretService<PgRunStore, SystemClock>) {
     let catalog = ConnectionService::new(w.store.clone(), SystemClock);
     let ns = w.namespace.id();
     let name = Slug::parse("lake-main").unwrap();
@@ -237,36 +255,23 @@ pub async fn run(w: &World) {
         other => panic!("expected LAKE_DISABLED, got {other:?}"),
     }
 
-    // With the lake on, the store still fails closed until the admission of an Iceberg write exists (T035-054): the
-    // codec parses the node, and the store refuses it as it refuses a connection the author may not use, rather than
-    // publish a step that nobody checked for access, modes or egress.
-    let lake_on = w.defs.clone().with_lake_enabled(true);
-    let doc = step("iceberg-write-with-the-lake-on");
-    let bytes = serde_json::to_vec(&doc).expect("json");
-    let created = lake_on
-        .create_workflow(
-            &w.admin,
-            "payments",
+    // With the lake on, the store looks at the connection: `lake-main` accepts `internal` at most, and a workflow with no
+    // input schema gives every field the level of a field nobody classified.
+    let published = publish_on_lake(
+        w,
+        &w.admin,
+        append(
             "iceberg-write-with-the-lake-on",
-            &bytes,
-            &format!("create-{}", uuid::Uuid::now_v7()),
-            &ctx(),
-        )
-        .await
-        .expect("create the workflow");
-    let published = lake_on
-        .publish(
-            &w.admin,
-            created.workflow.id(),
-            created.workflow.draft_revision(),
+            "lake-main",
+            &["/id"],
             None,
-            &format!("publish-{}", uuid::Uuid::now_v7()),
-            &ctx(),
-        )
-        .await;
-    assert!(
-        matches!(published, Err(AppError::NotFound)),
-        "{published:?}"
+        ),
+    )
+    .await;
+    assert_eq!(
+        egress_of(published),
+        vec![field("/id", Level::Pii)],
+        "unclassified is pii, and `lake-main` accepts internal"
     );
 
     // Plain `http` is for a development namespace, as a plaintext PostgreSQL connection is.
@@ -338,6 +343,9 @@ pub async fn run(w: &World) {
             .unwrap()
     );
 
+    let published = publication(w, &catalog, ns).await;
+    promotion(w, &catalog, secrets, published).await;
+
     // A revision can pause it, and the history keeps the first revision's configuration.
     let paused = catalog
         .put(
@@ -371,4 +379,541 @@ pub async fn run(w: &World) {
         (1, ConnectionStatus::Paused)
     );
     assert_eq!(history.config, first.config);
+
+    // A paused connection is unusable to a step, as one that does not exist is.
+    let on_a_paused_connection = publish_on_lake(
+        w,
+        &w.admin,
+        append(
+            "iceberg-write-on-a-paused-connection",
+            "lake-main",
+            &["/id"],
+            Some(rows_schema()),
+        ),
+    )
+    .await;
+    assert!(
+        matches!(on_a_paused_connection, Err(AppError::NotFound)),
+        "{on_a_paused_connection:?}"
+    );
+}
+
+// ------------------------------------------------------------------------------------------------ publication (T035-054)
+
+/// The input of the workflows below: a list of records whose classification the schema states. The root is `public`,
+/// and the unmarked `id` inherits it.
+fn rows_schema() -> Value {
+    json!({
+        "type": "object", "x-sagat-classification": "public",
+        "properties": {"rows": {"type": "array", "items": {"type": "object", "properties": {
+            "id": {"type": "string"},
+            "total": {"type": "integer", "x-sagat-classification": "internal"},
+            "email": {"type": "string", "x-sagat-classification": "pii"},
+            "token": {"type": "string", "x-sagat-classification": "secret"}
+        }}}}
+    })
+}
+
+/// A workflow with one append step reading `input.rows`, mapping the given fields.
+fn append(name: &str, connection: &str, fields: &[&str], schema: Option<Value>) -> Value {
+    let mapping: Vec<Value> = fields
+        .iter()
+        .enumerate()
+        .map(|(n, field)| json!({"field": field, "column": format!("column_{n}")}))
+        .collect();
+    let mut document = document(
+        name,
+        "save",
+        vec![json!({
+            "id": "save", "type": "icebergWrite", "connectionRef": {"name": connection},
+            "table": {"namespace": ["sales"], "name": "orders"}, "mode": "append",
+            "records": {"inline": "input.rows"}, "mapping": mapping
+        })],
+    );
+    if let Some(schema) = schema {
+        document["inputSchema"] = schema;
+    }
+    document
+}
+
+/// Creates the draft as the administrator and publishes it as `who`, on a service that has the lake on.
+async fn publish_on_lake(
+    w: &World,
+    who: &Principal,
+    document: Value,
+) -> Result<WorkflowId, AppError> {
+    let lake_on = w.defs.clone().with_lake_enabled(true);
+    let name = document["metadata"]["name"].as_str().unwrap().to_owned();
+    let created = lake_on
+        .create_workflow(
+            &w.admin,
+            "payments",
+            &name,
+            &serde_json::to_vec(&document).unwrap(),
+            &format!("create-{}", Uuid::now_v7()),
+            &ctx(),
+        )
+        .await
+        .expect("create the workflow");
+    let id = created.workflow.id();
+    lake_on
+        .publish(
+            who,
+            id,
+            created.workflow.draft_revision(),
+            None,
+            &format!("publish-{}", Uuid::now_v7()),
+            &ctx(),
+        )
+        .await
+        .map(|_| id)
+}
+
+/// The problems validation reports for the draft of `document`, on a service that has the lake on.
+async fn problems_on_lake(
+    w: &World,
+    document: Value,
+) -> Vec<(&'static str, Option<String>, String)> {
+    let lake_on = w.defs.clone().with_lake_enabled(true);
+    let name = document["metadata"]["name"].as_str().unwrap().to_owned();
+    let created = lake_on
+        .create_workflow(
+            &w.admin,
+            "payments",
+            &name,
+            &serde_json::to_vec(&document).unwrap(),
+            &format!("create-{}", Uuid::now_v7()),
+            &ctx(),
+        )
+        .await
+        .expect("create the workflow");
+    lake_on
+        .validate(&w.admin, created.workflow.id(), None, &ctx())
+        .await
+        .expect("validate")
+        .problems
+        .into_iter()
+        .map(|problem| (problem.code, problem.node, problem.message))
+        .collect()
+}
+
+fn field(path: &str, level: Level) -> EgressRefusal {
+    EgressRefusal::Field {
+        path: path.to_owned(),
+        level,
+    }
+}
+
+/// What a refused publication says about the step `save`, whichever way it is refused.
+fn refusal_of<T: std::fmt::Debug>(result: Result<T, AppError>) -> LakeRefusal {
+    match result {
+        Err(AppError::InvalidDefinition(error)) => match *error {
+            IrError::LakeWriteRefused { node, refusal } => {
+                assert_eq!(node, "save");
+                refusal
+            }
+            other => panic!("expected a refusal by the connection, got {other:?}"),
+        },
+        other => panic!("expected a refusal by the connection, got {other:?}"),
+    }
+}
+
+/// The fields a publication was refused for on grounds of classification.
+fn egress_of<T: std::fmt::Debug>(result: Result<T, AppError>) -> Vec<EgressRefusal> {
+    match refusal_of(result) {
+        LakeRefusal::Egress(fields) => fields,
+        other => panic!("expected a refusal on grounds of classification, got {other:?}"),
+    }
+}
+
+async fn publication(
+    w: &World,
+    catalog: &ConnectionService<PgRunStore, SystemClock>,
+    ns: sagat_domain::identity::NamespaceId,
+) -> WorkflowId {
+    // A connection that allows overwriting only, and a SQL one: the two ways a connection can be the wrong one.
+    catalog
+        .put(
+            &w.admin,
+            ns,
+            write(
+                "lake-overwrite-only",
+                0,
+                ConnectionStatus::Active,
+                iceberg_in(
+                    "https://catalog.example/api",
+                    "db-credentials",
+                    EgressCeiling::Internal,
+                    vec![WriteMode::Overwrite],
+                ),
+            ),
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    catalog
+        .put(
+            &w.admin,
+            ns,
+            write(
+                "orders-sql",
+                0,
+                ConnectionStatus::Active,
+                ConnectionConfig::postgres(
+                    "db.example.com",
+                    5432,
+                    "orders",
+                    TlsPolicy::VerifyFull { ca_pem: None },
+                    SecretName::parse("db-credentials").unwrap(),
+                    DatabaseLimits::default(),
+                )
+                .unwrap(),
+            ),
+            &ctx(),
+        )
+        .await
+        .unwrap();
+
+    // Fields the schema of the input marks `public` or `internal` leave through a connection that accepts `internal`.
+    // Publication never contacts the catalog: `catalog.example` does not resolve, and this is published all the same.
+    let published = publish_on_lake(
+        w,
+        &w.admin,
+        append(
+            "lake-within-ceiling",
+            "lake-main",
+            &["/id", "/total"],
+            Some(rows_schema()),
+        ),
+    )
+    .await
+    .expect("fields within the ceiling are published");
+
+    // A run of it is refused until the run admission of an Iceberg write exists (T035-055): nothing serves the step yet, and
+    // a run that started would wait for a worker that is not there.
+    let run = w
+        .start_with(
+            published,
+            &json!({"rows": []}),
+            "lake-run-start-0000001",
+            None,
+        )
+        .await;
+    assert!(matches!(run, Err(AppError::NotFound)), "{run:?}");
+
+    // A `pii` field is refused by an `internal` ceiling, and named by its path and class.
+    assert_eq!(
+        egress_of(
+            publish_on_lake(
+                w,
+                &w.admin,
+                append(
+                    "lake-pii-field",
+                    "lake-main",
+                    &["/id", "/email"],
+                    Some(rows_schema())
+                )
+            )
+            .await
+        ),
+        vec![field("/email", Level::Pii)]
+    );
+
+    // A `secret` field is refused by every ceiling, the `pii` one included.
+    for connection in ["lake-main", "lake-pii"] {
+        assert_eq!(
+            egress_of(
+                publish_on_lake(
+                    w,
+                    &w.admin,
+                    append(
+                        &format!("lake-secret-field-{connection}"),
+                        connection,
+                        &["/token"],
+                        Some(rows_schema())
+                    )
+                )
+                .await
+            ),
+            vec![field("/token", Level::Secret)],
+            "{connection}"
+        );
+    }
+
+    // A `pii` ceiling lets a `pii` field leave.
+    publish_on_lake(
+        w,
+        &w.admin,
+        append(
+            "lake-pii-ceiling",
+            "lake-pii",
+            &["/id", "/email"],
+            Some(rows_schema()),
+        ),
+    )
+    .await
+    .expect("a pii field leaves through a pii ceiling");
+
+    // A source with no schema is unclassified, which counts as `pii`: refused by `internal`, accepted by `pii`.
+    assert_eq!(
+        egress_of(
+            publish_on_lake(
+                w,
+                &w.admin,
+                append("lake-unclassified", "lake-main", &["/id"], None)
+            )
+            .await
+        ),
+        vec![field("/id", Level::Pii)]
+    );
+    publish_on_lake(
+        w,
+        &w.admin,
+        append("lake-unclassified-pii", "lake-pii", &["/id"], None),
+    )
+    .await
+    .expect("unclassified fields leave through a pii ceiling");
+
+    // A mode the connection does not allow is refused by name.
+    assert_eq!(
+        refusal_of(
+            publish_on_lake(
+                w,
+                &w.admin,
+                append(
+                    "lake-wrong-mode",
+                    "lake-overwrite-only",
+                    &["/id"],
+                    Some(rows_schema())
+                )
+            )
+            .await
+        ),
+        LakeRefusal::ModeNotAllowed(WriteMode::Append)
+    );
+
+    // Validation says the same, as problems an author can act on.
+    let problems = problems_on_lake(
+        w,
+        append(
+            "lake-validate-egress",
+            "lake-main",
+            &["/id", "/email", "/token"],
+            Some(rows_schema()),
+        ),
+    )
+    .await;
+    let refused: Vec<_> = problems
+        .iter()
+        .filter(|(code, _, _)| *code == "CLASSIFICATION_EGRESS_REFUSED")
+        .collect();
+    assert_eq!(refused.len(), 2, "{problems:?}");
+    assert!(
+        refused
+            .iter()
+            .all(|(_, node, _)| node.as_deref() == Some("save"))
+    );
+    assert!(refused[0].2.contains("/email") && refused[0].2.contains("pii"));
+    assert!(refused[1].2.contains("/token") && refused[1].2.contains("secret"));
+    let problems = problems_on_lake(
+        w,
+        append(
+            "lake-validate-mode",
+            "lake-overwrite-only",
+            &["/id"],
+            Some(rows_schema()),
+        ),
+    )
+    .await;
+    assert_eq!(
+        problems.iter().map(|(code, ..)| *code).collect::<Vec<_>>(),
+        ["MODE_NOT_ALLOWED"]
+    );
+    assert!(
+        problems_on_lake(
+            w,
+            append(
+                "lake-validate-clean",
+                "lake-main",
+                &["/id", "/total"],
+                Some(rows_schema())
+            )
+        )
+        .await
+        .is_empty()
+    );
+
+    // A connection that does not exist, a SQL one, and a revision that does not exist are all unusable to the step, and
+    // alike: not found.
+    for (name, connection, revision) in [
+        ("lake-ghost-connection", "lake-ghost", None),
+        ("lake-sql-connection", "orders-sql", None),
+        ("lake-ghost-revision", "lake-main", Some(99)),
+    ] {
+        let mut document = append(name, connection, &["/id"], Some(rows_schema()));
+        if let Some(revision) = revision {
+            document["nodes"][0]["connectionRef"]["revision"] = json!(revision);
+        }
+        let result = publish_on_lake(w, &w.admin, document).await;
+        assert!(
+            matches!(result, Err(AppError::NotFound)),
+            "{name}: {result:?}"
+        );
+    }
+    // The revision that does exist is usable.
+    let mut pinned = append(
+        "lake-pinned-revision",
+        "lake-main",
+        &["/id"],
+        Some(rows_schema()),
+    );
+    pinned["nodes"][0]["connectionRef"]["revision"] = json!(1);
+    publish_on_lake(w, &w.admin, pinned)
+        .await
+        .expect("revision 1 of lake-main is usable");
+
+    // A developer holds `database:use` and may use the secret, but not `database:write`, which every Iceberg write needs:
+    // the connection is as good as missing to them, and the refusal is audited.
+    let developer = w.member("lake-publisher", Role::Developer).await;
+    w.secrets
+        .grant(
+            &w.admin,
+            ns,
+            "db-credentials",
+            developer.subject().as_str(),
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    let denials = || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM audit_records WHERE tenant_id=$1 AND action=$2",
+        )
+        .bind(w.admin.tenant_id().as_uuid())
+        .bind(AuditAction::DatabaseDenied.as_str())
+        .fetch_one(&w.db.pool)
+        .await
+        .unwrap()
+    };
+    let before = denials().await;
+    let refused = publish_on_lake(
+        w,
+        &developer,
+        append(
+            "lake-no-database-write",
+            "lake-main",
+            &["/id"],
+            Some(rows_schema()),
+        ),
+    )
+    .await;
+    assert!(matches!(refused, Err(AppError::NotFound)), "{refused:?}");
+    // The audit of a denial is written off the request path, so it is waited for, boundedly.
+    crate::support::eventually("the audit of the refused publication", || async {
+        (denials().await == before + 1).then_some(())
+    })
+    .await;
+    published
+}
+
+/// The promotion of a version that holds an Iceberg write to another namespace. It goes through the publishing service,
+/// which has its own copy of the switch: a service with the lake off refuses it, one with the lake on looks at the target
+/// namespace's own connection and secret, as a publication there would.
+async fn promotion(
+    w: &World,
+    catalog: &ConnectionService<PgRunStore, SystemClock>,
+    secrets: &ManagedSecretService<PgRunStore, SystemClock>,
+    source: WorkflowId,
+) {
+    let target = w
+        .add_namespace_in("lake-staging", Environment::Staging)
+        .await;
+    let reason = "lake promotion validation";
+
+    match w
+        .publishing
+        .promote(
+            &w.admin,
+            source,
+            1,
+            target.id(),
+            reason,
+            false,
+            "lake-promotion-off",
+            &ctx(),
+        )
+        .await
+    {
+        Err(AppError::InvalidDefinition(error)) => assert!(
+            matches!(*error, IrError::LakeDisabled { ref node } if node == "save"),
+            "{error:?}"
+        ),
+        other => panic!("expected LAKE_DISABLED from a service with the lake off, got {other:?}"),
+    }
+
+    // With the lake on, the target namespace has to have the connection and the secret of its own: a source connection
+    // grants no authority in a different namespace.
+    let lake_on = w.publishing.clone().with_lake_enabled(true);
+    let missing = lake_on
+        .promote(
+            &w.admin,
+            source,
+            1,
+            target.id(),
+            reason,
+            false,
+            "lake-promotion-missing",
+            &ctx(),
+        )
+        .await;
+    assert!(matches!(missing, Err(AppError::NotFound)), "{missing:?}");
+
+    secrets
+        .put(
+            &w.admin,
+            target.id(),
+            ManagedSecretWrite {
+                name: "db-credentials",
+                value: SecretValue::new(b"staging-canary".to_vec()).unwrap(),
+                expected_version: 0,
+                request_id: Uuid::new_v4(),
+            },
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    catalog
+        .put(
+            &w.admin,
+            target.id(),
+            write(
+                "lake-main",
+                0,
+                ConnectionStatus::Active,
+                iceberg(
+                    "https://catalog.example/api",
+                    "db-credentials",
+                    EgressCeiling::Internal,
+                ),
+            ),
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    let promoted = lake_on
+        .promote(
+            &w.admin,
+            source,
+            1,
+            target.id(),
+            reason,
+            false,
+            "lake-promotion-on",
+            &ctx(),
+        )
+        .await;
+    assert!(
+        matches!(promoted, Ok(Promotion::Published(_))),
+        "the promotion is published once the target namespace has what the step needs: {promoted:?}"
+    );
 }

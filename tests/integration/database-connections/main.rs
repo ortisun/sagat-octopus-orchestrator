@@ -265,7 +265,7 @@ async fn managed_secret_lifecycle(progress: Progress) {
     progress.enter("egress ceiling and the reveal grant");
     Box::pin(egress_ceiling_needs_the_reveal_grant(&w)).await;
     progress.enter("the Iceberg connection");
-    Box::pin(lake::run(&w)).await;
+    Box::pin(lake::run(&w, &service)).await;
     progress.enter("ad_hoc::run");
     Box::pin(ad_hoc::run(&w)).await;
     progress.enter("admission::run");

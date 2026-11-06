@@ -7,7 +7,9 @@
 //! filter, key columns and a delete marker) and the tests that go with them: they are added to [`WriteIntent`] with user
 //! stories 4 and 5 (T035-080, T035-085). Until then there is no way to say them, rather than a way to say them untested.
 
-use super::{ConnectionRef, EgressField, EgressRefusal, LakeLimits};
+use super::{
+    ConnectionRef, EgressField, EgressRefusal, IcebergConfig, LakeLimits, LakeRefusal, WriteMode,
+};
 use crate::{
     classification::EgressCeiling,
     workflow::{Expression, NodeId},
@@ -168,6 +170,16 @@ pub enum WriteIntent {
     Append,
 }
 
+impl WriteIntent {
+    /// The write mode a connection has to allow for a step with this intent.
+    #[must_use]
+    pub const fn mode(self) -> WriteMode {
+        match self {
+            Self::Append => WriteMode::Append,
+        }
+    }
+}
+
 /// What an author says about one `icebergWrite` step.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IcebergWriteParts {
@@ -217,6 +229,19 @@ impl IcebergWrite {
     #[must_use]
     pub fn egress(&self) -> Option<&[EgressField]> {
         self.egress.as_deref()
+    }
+
+    /// What the settings of a connection refuse about this step, if anything: first a mode it does not allow, and only
+    /// then the fields above its ceiling, so a mode refusal never lists fields. A step whose fields were never classified
+    /// is refused whole.
+    #[must_use]
+    pub fn refusal_by(&self, config: &IcebergConfig) -> Option<LakeRefusal> {
+        let mode = self.parts.intent.mode();
+        if !config.allowed_modes.contains(&mode) {
+            return Some(LakeRefusal::ModeNotAllowed(mode));
+        }
+        let refusals = self.egress_refusals(config.egress_ceiling);
+        (!refusals.is_empty()).then_some(LakeRefusal::Egress(refusals))
     }
 
     /// Every field that may not leave through a connection whose ceiling is `ceiling`. A step whose fields were never

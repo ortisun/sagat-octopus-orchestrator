@@ -1118,3 +1118,43 @@ The other fixes were wording:
   array index (`/items/0/x`) is read as a property named `0`, which the schema does not name, so it is `pii`: conservative, and a
   complaint to take up if authors need it. (4) A reference through a body-local step or `result` is not followed. *Exit condition:*
   point 1 by the next slice of T035-054, with a test of a `pii` field against an `internal` ceiling and of a `secret` field.
+- **D035-089 — The settings of the connection decide a lake write at publication, and a run of one is refused until its admission
+  exists.** The rest of T035-054. **Decided by: delegate** (the owner delegated the decisions of this feature).
+  - *Publication and feedback.* In the store's admission, in the transaction of the publication and for the author's feedback
+    (`validate`), an Iceberg write needs `database:use` and `database:write` of every actor (it is a write), an active connection of
+    the namespace at the pinned revision or the current one, of the lake kind, reachable (plaintext only in a development
+    namespace), and every secret it refers to (the catalog's and the storage's) must exist with the OpenBao authority and be usable
+    by every actor. Whatever fails there is the one refusal of a connection nobody may use: a missing connection, a paused one, a SQL
+    connection, a revision that does not exist, a developer who lacks `database:write`. It reads as not found and a denial is audited
+    (`database.denied`). Only then does the connection's own word count: `IcebergWrite::refusal_by(config)` refuses first a mode the
+    connection does not allow (`MODE_NOT_ALLOWED`, naming the mode), and only then fields above its ceiling or never classified
+    (`CLASSIFICATION_EGRESS_REFUSED`, listing path and class, never a value, at most 20 in the answer with a count of the rest).
+    These are `VALIDATION_FAILED`, not hidden: the author may use the connection, so nothing is learned that they could not read.
+    The domain decides (`refusal_by` is pure and tested without a database); the store finds the connection.
+  - *Run creation.* `create` of a run, and the replay of a run that is already there, now see an Iceberg write: a definition that
+    holds one is refused at run creation with the same refusal as an unusable connection, until T035-055 builds the admission
+    (pins, quotas, the direct, child, event, rerun and ad hoc paths). Without this the removal of the store's fail-closed guard would
+    have let a published version start a run that waits for a worker that is not there (the hazard of G035-035). A published Iceberg
+    version exists after this change; it cannot run.
+  - *Where the cases live.* T035-048 names `tests/integration/iceberg-writes/publication.rs`. The cases are in the lifecycle scenario of
+    `integration_database_connections` (`lake.rs`) instead, because the world, the OpenBao secret, the roles and the connections are
+    there, and a second copy would double a start-up of about a minute. This decision amends the task text.
+  - *Evidence.* 7 and 9 domain tests (the decision, the levels), 6 application tests, 7 HTTP tests, the CLI consistency test, and the
+    scenario against real PostgreSQL and OpenBao (also as `sagat_app`): within the ceiling published; a `pii` field refused by an
+    `internal` ceiling and named; a `secret` field refused by every ceiling; unclassified refused by `internal` and accepted by `pii`;
+    a mode refused by name; validation says the same as problems; a missing, SQL or unpinned-revision connection is not found; a
+    developer is refused and audited; a paused connection is refused; a run of the published version is refused; the promotion of the
+    version to another namespace is refused with the lake off, not found without the target's connection, and published with it.
+    Publication never contacts the catalog: `catalog.example` does not resolve and the publication succeeds. 26 mutations of the
+    decision, the conversions, the HTTP details and the store; 25 caught, 1 survives (G035-038 point 1). It also closes the mutant
+    that survived in #115 (`PublishingService` forwarding the switch; G035-036 point 3), now caught by the promotion.
+- **G035-038 — What the publication checks leave open.** (1) The replay of a run receipt (`check_database_replay`) sees an Iceberg
+  write like the creation does, but no test reaches it: no run of an Iceberg write can exist yet, so there is no receipt to replay. It
+  is defensive, and T035-055 gives it its test with the run admission. (2) `records.databaseResult` must name an earlier root-level
+  database step of the same definition; neither the codec nor the graph checks it (G035-035 point 2). (3) The worker paths (claim, scoped
+  claim, ad hoc, rerun) still branch on `database_operation()` only; none can meet an Iceberg write while a run of one is refused at
+  creation (T035-055 decides each). (4) The ACL of the secrets cannot be told apart from the role at publication in the current role
+  matrix (only an administrator holds `database:write`, and an administrator may use any secret), so a lake connection whose secret
+  ACL excludes the publisher has no test of its own; it is the same code the SQL path runs. *Exit condition:* points 1 and 3 by T035-055;
+  point 2 by the next slice of T035-054 with a test of a `databaseResult` that names a later or missing step; point 4 when a role
+  other than an administrator can hold `database:write`.
