@@ -1652,3 +1652,38 @@ The other fixes were wording:
 - **G035-048 — The Glue, Hive and JDBC catalogs, SigV4, remote signing, GCS, ADLS and an assumed role have no loader.** Each is a
   `LAKE_HOST_PROTOCOL` today. They read the metadata file themselves, so G035-041 and G035-043 apply to them again. *Exit condition:*
   one loader per catalog and storage with its own hostile test, in the order the owner's connections need them.
+- **D035-106 — The host serves `icebergWrite`: parse, open the catalog, append, answer with the receipt.** T035-057, last part of the host
+  side; closes G035-047. **Decided by: delegate** (the owner delegated the decisions of this feature).
+  - *The operation* (`runners/lake/sagat_lake/write.py`, `iceberg_write(attempt_dir)`; `host.main` builds `operations_for(attempt_dir)` and
+    passes it to `run`) does what the protocol asks in order: `request.parse_write`, `connection.open_connection`, `modes.append.append`,
+    and the result is the receipt. PyIceberg blocks, so the whole of it runs on a thread (`asyncio.to_thread`) and the event loop keeps writing
+    the heartbeats of the protocol; a test with a catalog that takes 0.4 s sees at least three heartbeats before the result, which an operation
+    on the loop could not write.
+  - *What is mapped to a code, in this one place.* A catalog that refuses the client (401, 403, an OAuth2 error) is
+    `DATABASE_AUTHENTICATION_FAILED` (the code of 017 for it; the contract has none of its own for a catalog). A catalog that is down, slow or
+    overloaded (any `requests` error, a time limit, 5xx, 429) is `CATALOG_UNAVAILABLE`, which is retryable. A table or namespace the catalog
+    does not have is `ICEBERG_TABLE_NOT_FOUND`. A location the hygiene refuses carries the hygiene's code (`ICEBERG_LOCATION_NOT_ALLOWED`),
+    a missing static credential `DATABASE_CREDENTIAL_UNAVAILABLE`, an `OSError` of the storage `STORAGE_UNAVAILABLE`. `requests`' errors are
+    `OSError`s too, so the catalog is asked about first. Anything else is `WORKER_ERROR`, and `host._outcome` writes only the name of the
+    class to standard error.
+  - *Not used: the deadline.* The request carries `limits.deadlineAt` and `parse_write` reads it, but the host does not act on it. The
+    runner enforces it by killing the container (contract, "One attempt"); the host bounds each request to the catalog (30 s) so that it
+    never waits without end between two of the runner's checks.
+  - *The seam.* `iceberg_write(..., open_catalog=...)` takes the function that opens the catalog. The success path needs a write, and a
+    real connection speaks S3 and a write would leave the machine; the tests of the success path hand it a plain REST client to the stub
+    whose warehouse is a directory, and those of every failure that comes before a write use the real opener, so the request, the
+    connection, the hygiene and the catalog are the ones the host runs.
+  - *Evidence.* 21 tests in `test_write_operation.py` through the real protocol (a relay double, the host's `run`, the stub catalog over
+    HTTP): the receipt and the rows, a repeat that finds its commit, the heartbeats during a slow catalog, the mapping and flags reaching the
+    append, a record that does not map, a request the host cannot serve, a missing table, a table said to be outside the warehouse, 401, 403,
+    500, 503 and 429, a catalog nobody listens to, a catalog that does not answer in time, a missing static credential, a canary credential
+    that must not reach the result or either standard stream, an unexpected exception (only the class name on stderr), and a failure of the
+    closed set raised by the opener. The two old host tests that used `icebergWrite` as "an operation not served" use `objectWrite`.
+    `runners/lake`: 986 passed, 1 skipped; `ruff` and strict `mypy` clean. The test of the whole line through the real `host.py` as a
+    subprocess and the real relay of the Rust runner (T035-031) are not here.
+- **G035-049 — Nothing runs the host yet.** The Rust side is not written: the attempt driver (T035-035) that leases the task, writes
+  `in/`, opens the relay and asks the sandbox runner for the container, the `lake` profile of the sandbox runner, the image target, the
+  admission of a run that contains an Iceberg write (T035-055), and the update of `contracts/lake-runtime.md` to the shape of `connection`
+  and `credentials` of D035-105. Also open: the Parquet input, overwrite and upsert, the catalogs and storages of G035-048, and
+  `priorAttemptMayHaveLeftFiles`, which the runner has to set from its lease. *Exit condition:* the driver, tested against the real host in
+  its container.

@@ -221,7 +221,7 @@ def test_a_failure_cannot_carry_free_text() -> None:
 
 
 def test_an_operation_the_host_does_not_serve_is_a_protocol_failure() -> None:
-    conversation = serve_attempt(encoded(request("icebergWrite")), {})
+    conversation = serve_attempt(encoded(request("objectWrite")), {})
 
     assert conversation.results == [{"failure": {"code": LAKE_HOST_PROTOCOL}, "relayDenials": 0}]
 
@@ -364,7 +364,7 @@ def test_the_entry_point_refuses_arguments_it_does_not_know() -> None:
 
 def test_the_real_entry_point_runs_isolated_and_answers_an_operation_it_does_not_serve() -> None:
     """`python3 -I` ignores PYTHONPATH and the script's directory, so the entry puts its package on the path."""
-    conversation = Conversation(encoded(request("icebergWrite")))
+    conversation = Conversation(encoded(request("objectWrite")))
     relay = FakeRelay(TOKEN, control=conversation)
 
     async def main() -> tuple[int, str, str]:

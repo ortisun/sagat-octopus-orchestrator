@@ -57,6 +57,8 @@ class Catalog:
     headers: list[dict[str, str]] = field(default_factory=list)
     # Seconds every request waits before it is answered: a catalog that does not answer in time.
     delay: float = 0.0
+    # A status every GET is answered with (config and table alike): a catalog that refuses or is down.
+    get_status: int | None = None
     # A text and its replacement in the table the catalog returns: the same table, said to be somewhere else.
     rewrite: tuple[str, str] | None = None
 
@@ -78,6 +80,9 @@ def _handler(state: Catalog) -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:
             state.headers.append(dict(self.headers.items()))
             time.sleep(state.delay)
+            if state.get_status is not None:
+                self._reply(state.get_status, _error(state.get_status))
+                return
             path = self.path.split("?", 1)[0]
             if path == "/v1/config":
                 self._reply(200, {"defaults": state.config_defaults, "overrides": state.config_overrides})
