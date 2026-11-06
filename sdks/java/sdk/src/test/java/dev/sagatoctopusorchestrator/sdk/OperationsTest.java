@@ -151,7 +151,7 @@ class OperationsTest {
     @Test
     void aStartSendsTheBusinessIdentifierItsPoliciesAndTheDelayOnceAndSaysWhetherItCreatedTheRun() {
         server.prepare((req, reply) -> reply.send(202, run("businessId", "'order-1'", "startDelayedUntil", "'2026-10-10T10:00:05Z'")));
-        StartedRun started = client().start(WF, Map.of("a", 1), StartOptions.create()
+        StartedRun started = client().startResult(WF, Map.of("a", 1), StartOptions.create()
                 .idempotencyKey("key-12345678").businessId("Order/1 ")
                 .businessIdConflictPolicy(BusinessIdConflictPolicy.USE_EXISTING)
                 .businessIdReusePolicy(BusinessIdReusePolicy.REJECT_DUPLICATE)
@@ -164,7 +164,7 @@ class OperationsTest {
         assertEquals(Instant.parse("2026-10-10T10:00:05Z"), started.run().startDelayedUntil());
 
         server.prepare((req, reply) -> reply.send(202, run()));
-        StartedRun plain = client().start(WF, Map.of(), StartOptions.create().idempotencyKey("key-12345678"));
+        StartedRun plain = client().startResult(WF, Map.of(), StartOptions.create().idempotencyKey("key-12345678"));
         assertNull(plain.run().businessId());
         assertNull(plain.run().startDelayedUntil());
     }
@@ -172,12 +172,14 @@ class OperationsTest {
     @Test
     void the200OfUseExistingIsARunThatWasNotStartedHereAndAStartWithoutTheNewOptionsSendsNoneOfThem() {
         server.prepare((req, reply) -> reply.send(200, run()));
-        StartedRun existing = client().start(WF, Map.of(), StartOptions.create().idempotencyKey("key-12345678")
+        StartedRun existing = client().startResult(WF, Map.of(), StartOptions.create().idempotencyKey("key-12345678")
                 .businessId("o-1").businessIdConflictPolicy(BusinessIdConflictPolicy.USE_EXISTING));
         assertFalse(existing.started());
         assertEquals(RUN, existing.runId());
         server.prepare((req, reply) -> reply.send(202, run()));
-        client().start(WF, Map.of(), StartOptions.create().idempotencyKey("key-12345678"));
+        // `start` still answers a Run (a caller that holds it by that type keeps compiling: Run is a final record)
+        Run old = client().start(WF, Map.of(), StartOptions.create().idempotencyKey("key-12345678"));
+        assertEquals(RUN, old.runId());
         assertEquals("{\"workflowId\":\"" + WF + "\",\"input\":{}}", body(only()), "an old call is byte for byte what it was");
     }
 
@@ -638,7 +640,9 @@ class OperationsTest {
             ScheduleDescription described = c.schedules().getAsync(NS, SCHEDULE, null).get();
             assertEquals(SCHEDULE, described.schedule().scheduleId());
             server.prepare((req, reply) -> reply.send(202, run()));
-            assertTrue(c.startAsync(WF, Map.of(), StartOptions.create().businessId("o-1")).get().started());
+            assertTrue(c.startResultAsync(WF, Map.of(), StartOptions.create().businessId("o-1")).get().started());
+            server.prepare((req, reply) -> reply.send(202, run()));
+            assertEquals(RUN, c.startAsync(WF, Map.of(), null).get().runId());
             var failure = assertThrows(java.util.concurrent.ExecutionException.class,
                     () -> c.schedules().deleteAsync(NS, SCHEDULE, 0, null).get());
             assertEquals(ErrorCode.VALIDATION_FAILED, ((SagatException) failure.getCause()).code());

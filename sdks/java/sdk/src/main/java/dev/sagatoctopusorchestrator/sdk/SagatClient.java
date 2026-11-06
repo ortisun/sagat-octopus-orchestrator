@@ -221,12 +221,31 @@ public final class SagatClient implements AutoCloseable {
 
     /**
      * Starts a run of a published workflow, given by id or by name. {@code input} is any JSON value (an object by
-     * convention). The answer says whether this call created the run ({@link StartedRun#started()}): it is false only
-     * when {@link StartOptions#businessIdConflictPolicy} asked for {@link BusinessIdConflictPolicy#USE_EXISTING} and an
-     * open run already held the identifier. A call that gives none of the business identifier options and no start delay
-     * sends exactly what it sent before they existed.
+     * convention). With {@link BusinessIdConflictPolicy#USE_EXISTING} and an open run that already holds the
+     * identifier, the answer is that run and nothing was created: {@link #startResult} says which of the two happened.
+     * A call that gives none of the business identifier options and no start delay sends exactly what it sent before
+     * they existed.
      */
-    public StartedRun start(String workflow, Object input, StartOptions options) {
+    public Run start(String workflow, Object input, StartOptions options) {
+        return startResult(workflow, input, options).run();
+    }
+
+    /** {@link #start(String, Object, StartOptions)} with the defaults. */
+    public Run start(String workflow, Object input) {
+        return start(workflow, input, null);
+    }
+
+    public CompletableFuture<Run> startAsync(String workflow, Object input, StartOptions options) {
+        return async(() -> start(workflow, input, options));
+    }
+
+    /**
+     * As {@link #start(String, Object, StartOptions)}, and says whether this call created the run
+     * ({@link StartedRun#started()}): it is false only when {@link StartOptions#businessIdConflictPolicy} asked for
+     * {@link BusinessIdConflictPolicy#USE_EXISTING} and an open run already held the identifier. ({@code start} keeps
+     * answering a {@link Run} because {@code Run} is a final record and a caller may hold it by that type.)
+     */
+    public StartedRun startResult(String workflow, Object input, StartOptions options) {
         StartOptions opts = options == null ? StartOptions.create() : options;
         if (workflow == null || workflow.isEmpty()) {
             throw SagatException.invalid("start needs the name or the id of a workflow");
@@ -272,13 +291,13 @@ public final class SagatClient implements AutoCloseable {
         return new StartedRun(toRun(response.body()), response.status() != 200);
     }
 
-    /** {@link #start(String, Object, StartOptions)} with the defaults. */
-    public StartedRun start(String workflow, Object input) {
-        return start(workflow, input, null);
+    /** {@link #startResult(String, Object, StartOptions)} with the defaults. */
+    public StartedRun startResult(String workflow, Object input) {
+        return startResult(workflow, input, null);
     }
 
-    public CompletableFuture<StartedRun> startAsync(String workflow, Object input, StartOptions options) {
-        return async(() -> start(workflow, input, options));
+    public CompletableFuture<StartedRun> startResultAsync(String workflow, Object input, StartOptions options) {
+        return async(() -> startResult(workflow, input, options));
     }
 
     /** Streams a staged run input once and verifies the server descriptor against the bytes read. */

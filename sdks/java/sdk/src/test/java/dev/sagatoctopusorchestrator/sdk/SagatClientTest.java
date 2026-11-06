@@ -87,7 +87,7 @@ class SagatClientTest {
     @Test
     void aStartSendsTheHeadersAndTheBodyTheApiExpectsAndReturnsATypedRunThatKeepsTheRawAnswer() {
         server.prepare((req, reply) -> reply.send(202, run()));
-        StartedRun started = client().start(
+        StartedRun started = client().startResult(
                 WORKFLOW,
                 Map.of("orderId", "o-1"),
                 StartOptions.create()
@@ -506,7 +506,7 @@ class SagatClientTest {
             return real.send(call);
         };
         server.prepare((req, reply) -> reply.send(202, run()));
-        Run result = client(b -> b.transport(lossy)).start(WORKFLOW, Map.of(), StartOptions.create().idempotencyKey("key-12345678")).run();
+        Run result = client(b -> b.transport(lossy)).start(WORKFLOW, Map.of(), StartOptions.create().idempotencyKey("key-12345678"));
         assertEquals(RunStatus.RUNNING, result.status());
         assertEquals(2, server.seen.size());
         assertEquals(server.seen.get(0).header("idempotency-key"), server.seen.get(1).header("idempotency-key"));

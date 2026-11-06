@@ -842,7 +842,7 @@ public final class Runner {
                     // The scenario gives milliseconds; the SDK takes a Duration and drops what is below a millisecond.
                     options.startDelay(Operations.millis(step.get("startDelayMs")));
                 }
-                StartedRun started = client.start(
+                StartedRun started = client.startResult(
                         workflow.get("workflowId").asText(), step.has("input") ? step.get("input") : F.objectNode(), options);
                 ObjectNode result = runJson(started.run());
                 // "started" only when the step asked for a business identifier: the other observations stay as they were.
@@ -876,7 +876,7 @@ public final class Runner {
                 if (step.has("idempotencyKey")) {
                     options.idempotencyKey(step.get("idempotencyKey").asText());
                 }
-                return runJson(client.start(name, step.has("input") ? step.get("input") : F.objectNode(), options).run());
+                return runJson(client.start(name, step.has("input") ? step.get("input") : F.objectNode(), options));
             }
             case "get":
                 return runJson(client.get(runOf(step, results)));

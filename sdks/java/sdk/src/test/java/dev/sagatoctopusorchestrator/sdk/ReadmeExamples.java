@@ -31,7 +31,7 @@ final class ReadmeExamples {
                 .tokenProvider(() -> System.getenv("SAGAT_TOKEN")) // called before every request
                 .build();
         try (SagatClient client = SagatClient.create(config)) {
-            StartedRun run = client.start("order-flow", Map.of("orderId", "o-1", "amount", "19.99"),
+            Run run = client.start("order-flow", Map.of("orderId", "o-1", "amount", "19.99"),
                     StartOptions.create().idempotencyKey("order-o-1").correlationId("o-1"));
             Run finished = client.waitForCompletion(run.runId(), WaitOptions.create().timeout(Duration.ofMinutes(2)));
             System.out.println(finished.status());
@@ -52,7 +52,7 @@ final class ReadmeExamples {
         String workflowId = "0190aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee";
         try (SagatClient client = SagatClient.create(config)) {
             // A business identifier names the one open run of an order; a second start answers that run.
-            StartedRun order = client.start("order-flow", Map.of("orderId", "o-1"), StartOptions.create()
+            StartedRun order = client.startResult("order-flow", Map.of("orderId", "o-1"), StartOptions.create()
                     .businessId("order-o-1")
                     .businessIdConflictPolicy(BusinessIdConflictPolicy.USE_EXISTING)
                     .startDelay(Duration.ofMinutes(5)));

@@ -38,7 +38,7 @@ ClientConfig config = ClientConfig.builder()
         .tokenProvider(() -> System.getenv("SAGAT_TOKEN")) // called before every request
         .build();
 try (SagatClient client = SagatClient.create(config)) {
-    StartedRun run = client.start("order-flow", Map.of("orderId", "o-1", "amount", "19.99"),
+    Run run = client.start("order-flow", Map.of("orderId", "o-1", "amount", "19.99"),
             StartOptions.create().idempotencyKey("order-o-1").correlationId("o-1"));
     Run finished = client.waitForCompletion(run.runId(), WaitOptions.create().timeout(Duration.ofMinutes(2)));
     client.listAll(ListOptions.create().status(RunStatus.RUNNING)).limit(10).forEach(r -> System.out.println(r.runId()));
@@ -48,8 +48,8 @@ try (SagatClient client = SagatClient.create(config)) {
 }
 ```
 
-`start` takes a workflow name or id and answers a `StartedRun`: the `Run` (`run()`) and whether this call created it
-(`started()`; `false` is the `200` of a `USE_EXISTING` business identifier). Most network operations have a blocking form and an `...Async` form returning a
+`start` takes a workflow name or id and answers the `Run`. `startResult` is the same call answering a `StartedRun`: the `Run`
+(`run()`) and whether this call created it (`started()`; `false` is the `200` of a `USE_EXISTING` business identifier). Most network operations have a blocking form and an `...Async` form returning a
 `CompletableFuture` (the asynchronous form runs the blocking one on an executor, so cancelling the future
 interrupts a call that is waiting; the executor is the client's own, or yours through
 `ClientConfig.Builder.asyncExecutor`). `resolveWorkflow` has no asynchronous counterpart. `listAll` is a lazy `Stream` that reads a page when the previous one is
@@ -66,7 +66,7 @@ String namespaceId = "0190aaaa-0000-7000-8000-00000000aaaa";
 String workflowId = "0190aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee";
 try (SagatClient client = SagatClient.create(config)) {
     // A business identifier names the one open run of an order; a second start answers that run.
-    StartedRun order = client.start("order-flow", Map.of("orderId", "o-1"), StartOptions.create()
+    StartedRun order = client.startResult("order-flow", Map.of("orderId", "o-1"), StartOptions.create()
             .businessId("order-o-1")
             .businessIdConflictPolicy(BusinessIdConflictPolicy.USE_EXISTING)
             .startDelay(Duration.ofMinutes(5)));

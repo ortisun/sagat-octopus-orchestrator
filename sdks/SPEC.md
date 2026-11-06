@@ -198,7 +198,8 @@ Rules:
   `%2E`) takes a whole dot segment as a step in the path, so the request would reach another route. An identifier that
   merely contains dots is valid.
 - `start` says whether it created the run: `started` is true for `202` and false for the `200` of `USE_EXISTING`. An
-  SDK that never sends a conflict policy never sees the `200`. A `Run` carries `businessId` and `startDelayedUntil` when
+  SDK that never sends a conflict policy never sees the `200`. Where the language cannot widen the type `start` already
+  returns (Java: `Run` is a final record), `start` keeps answering the `Run` and `startResult` answers the pair. A `Run` carries `businessId` and `startDelayedUntil` when
   the server sent them.
 - A start delay is a duration in the language's idiom, converted **once**, before the first attempt, to integer
   milliseconds by truncation toward zero and sent as `startDelayMs`. Only a value that is not a finite number is
