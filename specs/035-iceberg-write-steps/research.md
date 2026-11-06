@@ -1098,8 +1098,14 @@ The other fixes were wording:
     columns) takes the level the schema gives it, and `written_level(inherited, None)` applies (D035-051: unmarked is `pii`). Everything
     else is `pii`: any other expression (an index, an operator, a call, an unknown name), a list of blobs, and a database result (which is
     `pii` by D035-051 whatever a schema says). A carrier with no schema, or a step that does not exist, is `pii`.
-  - *Strictest wins.* A field is as strict as the strictest level that can reach it: every record position the schema describes on its
-    own (`prefixItems`, then the remaining `items`), and everything inside a structure that one column receives.
+  - *Strictest wins, and what a schema does not say is `pii`.* A field is as strict as the strictest level that can reach it: every
+    record position the schema describes on its own (`prefixItems`, then the remaining `items`), and everything below the place that
+    answers, which is the schema that governs a name or an item the pointer did not spell out (`additionalProperties`, the remaining
+    items), not only the place the pointer names. A value that can hold more than one thing (a structure, a list, a whole record, any
+    schema that does not say its type is a scalar) is at least `pii`: a key or an element the schema does not name is `pii` under 016,
+    and nothing closes the object. A numeric segment may be a position or a property named by digits, so it reads everything under
+    what it indexes. A list described by more than 64 positions is read as `pii`, so the cost of the reading is bounded. (A review
+    found the first version read too low in four of these places; each has a test now.)
   - *Where it lives.* The codec computes it, once, for `parse` and `parse_stored` alike (it is the only place that holds the whole
     document), and attaches it to the step as derived data: `IcebergWrite::egress()`. It is not part of the canonical bytes, so no
     digest changes. A step that carries no list is refused whole (`EgressRefusal::NotComputed`), so a codec that forgot to classify
@@ -1108,13 +1114,15 @@ The other fixes were wording:
     ceiling (which needs the reveal grant of the namespace) until `recordSchema` (T035-085) lets them declare levels, and a write from
     blobs or a database result needs the same. That is FR-035-025's rule, now visible: the common safe shape is a plain reference to a
     classified schema.
-  - *Evidence.* 9 tests of the domain type and its check (`crates/domain/tests/iceberg_egress.rs`), 21 tests of the codec
-    (`crates/infra-ir/tests/iceberg_egress.rs`; publication and restore agree, the canonical bytes carry no level). 23 mutations
-    of the two modules; 4 survived the first tests (the last item winning, the `output` marker, a name that is not plain, a stricter
-    field of another carrier counted inside) and each has a test now, all 23 caught.
+  - *Evidence.* 9 tests of the domain type and its check (`crates/domain/tests/iceberg_egress.rs`), 32 tests of the codec
+    (`crates/infra-ir/tests/iceberg_egress.rs`; publication and restore agree, the canonical document is the document and nothing
+    more). Two mutation rounds: 23 mutations of the first version (4 survived the first tests and each got a test) and 24 of the
+    reading above (5 survived the first tests: a secret below an unnamed property, a schema with no type, a type given as a list,
+    the bound on positions, and a carrier counted into another; each got a test), all caught in the end.
 - **G035-037 — What the levels leave open.** (1) Nothing compares the levels with the ceiling of a connection yet: the publication
   check (access, allowed modes, `CLASSIFICATION_EGRESS_REFUSED`, connection kind and pins) is the rest of T035-054, and the store still
-  fails closed until it lands. (2) `recordSchema` declares levels that can only raise these (T035-085). (3) A mapped field that is an
-  array index (`/items/0/x`) is read as a property named `0`, which the schema does not name, so it is `pii`: conservative, and a
-  complaint to take up if authors need it. (4) A reference through a body-local step or `result` is not followed. *Exit condition:*
+  fails closed until it lands. (2) `recordSchema` declares levels that can only raise these (T035-085). (3) A numeric segment of
+  a mapped field (`/items/0/x`) reads everything under the list or object it indexes, and a structure or a whole record is at least
+  `pii` because the schema cannot say it is closed: conservative, and a complaint to take up if authors need a lower level (the
+  walk would have to expose `additionalProperties: false`, and `recordSchema` of T035-085 would let an author say it). (4) A reference through a body-local step or `result` is not followed. *Exit condition:*
   point 1 by the next slice of T035-054, with a test of a `pii` field against an `internal` ceiling and of a `secret` field.
